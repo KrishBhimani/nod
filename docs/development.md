@@ -8,6 +8,8 @@ Put your OpenAI or Anthropic key in `.env`, set `LLM_PROVIDER`, and restart. Com
 
 Use `/dev` for task state, safe tool event summaries and browser screenshots. The user chat does not expose execution plumbing. Set `DEV_INSPECTOR=false` to hide the inspector API and navigation.
 
-`npm run check` checks TypeScript; `npm test` runs checks that do not require PostgreSQL; `npm run test:integration` includes all database fixtures against the local PostgreSQL service; `npm run build` checks and builds the client. Database fixtures create and remove their own isolated schemas. Set `TEST_DATABASE_URL` to use a different PostgreSQL service. Browser UI checks and live provider checks must be reported separately from deterministic fixtures.
+`npm run check` checks TypeScript, import boundaries and formatting; `npm run format` formats the repository; `npm test` runs checks that do not require PostgreSQL; `npm run test:integration` includes all database fixtures against the local PostgreSQL service; `npm run build` checks and builds the client. Database fixtures create and remove their own isolated schemas. Set `TEST_DATABASE_URL` to use a different PostgreSQL service. Browser UI checks and live provider checks must be reported separately from deterministic fixtures.
 
 For isolated database tests, use a separate PostgreSQL database or schema and keep all seed values synthetic. Never run reset commands against another project's containers or data.
+
+Provider replacement starts in [replacing modules](replacing-modules.md). The full-stack substitute fixture uses the same HTTP routes, runtime and durable worker implementation with fake external adapters; protocol mapping is tested separately. Tests never need real provider keys.

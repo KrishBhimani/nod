@@ -4,11 +4,15 @@ This version binds to loopback and serves a single approved development account.
 
 Never put provider keys in prompts, React configuration, task files, artifacts or logs. The model may use bounded tools; it does not receive a tool that reads arbitrary host files or reveals a vault value. Tool arguments and raw exceptions are not logged by the main server. This does not make conversation content non-sensitive: local messages, memories and task transcripts still need private backups and retention limits.
 
+Provider selection and secret configuration belong in `src/server/composition.ts`. Interfaces in `src/ports` keep vendor SDKs and response parsing inside `src/providers`. Owner checks, approval decisions, quiet hours, event deduplication, and task revision checks remain in the application. Replacing an adapter does not grant it permission to bypass those checks. This module separation is a code boundary within one trusted server process, not operating-system isolation.
+
 Prompt instructions are not a secrecy boundary. The model receives operating instructions and can make mistakes about disclosing them or following hostile content. Keep secrets out of its context, constrain tools on the server, and require review for Google writes and persistent personal-data changes. This prototype does not claim complete prompt-injection resistance. An approved browser destination can receive typed values and observe actions; never treat all page content as trusted.
 
 ## Vault
 
 AES-GCM protects stored credentials. The encryption key lives outside PostgreSQL: Keychain on macOS, or an explicitly provided environment key on another machine. A cloud deployment should use KMS envelope encryption and workload identity. A non-exportable KMS key still lets an authorized running service decrypt data. Ordinary cloud KMS does not hide credentials from an administrator who controls that service or its host.
+
+The key-store interface returns key bytes only to the trusted vault service. Model tools and browser APIs receive no key or plaintext credential response. Secure forms are bound to a task revision; a stale or cancelled step cannot inject credentials. Retrying an expired form invalidates its earlier forms and requeues browser inspection without reusing a secret. Existing encrypted entries survive the module and revision migrations; changing the key itself requires a separate migration that is not implemented.
 
 Keeping secrets from the infrastructure operator requires a different architecture, such as a local user-controlled broker or attested confidential execution with externally controlled key release. This repository does not implement that claim. The website receiving a login and the trusted broker necessarily handle the credential. Composio holds the OAuth credentials for connections it manages.
 

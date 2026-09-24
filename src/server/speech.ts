@@ -1,30 +1,54 @@
 import { z } from 'zod';
+import type { AudioInput, GeneratedAudio, SpeechProvider } from '../ports/speech.ts';
 
-export async function synthesizeSpeech(input: string, signal?: AbortSignal): Promise<Buffer> {
-  signal?.throwIfAborted();
-  const key = process.env.OPENAI_API_KEY;
-  if (!key) throw Object.assign(new Error('OpenAI speech is not configured.'), { statusCode: 503 });
-  const text = z.string().trim().min(1).max(3000).parse(input);
-  const response = await fetch('https://api.openai.com/v1/audio/speech', {
-    method: 'POST', signal: AbortSignal.any([AbortSignal.timeout(60_000), ...(signal ? [signal] : [])]),
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: process.env.TTS_MODEL || 'gpt-4o-mini-tts', input: text, voice: 'coral', response_format: 'mp3' }),
-  });
-  if (!response.ok || !response.body) throw new Error('Speech generation failed.');
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    while (true) {
-      signal?.throwIfAborted();
-      const { value, done } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > 15 * 1024 * 1024) throw new Error('Generated audio is too large.');
-      chunks.push(value);
-    }
-  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
-  signal?.throwIfAborted();
-  if (!size) throw new Error('Speech generation returned no audio.');
-  return Buffer.concat(chunks, size);
+export function createSpeech(provider: SpeechProvider) {
+  function available(signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    if (!provider.configured)
+      throw Object.assign(new Error('Speech is not configured.'), { statusCode: 503 });
+  }
+  return {
+    async transcribe(input: AudioInput, signal?: AbortSignal): Promise<string> {
+      available(signal);
+      if (
+        !input.mimeType.startsWith('audio/') ||
+        !input.bytes.length ||
+        input.bytes.length > 15 * 1024 * 1024
+      ) {
+        throw Object.assign(new Error('Choose an audio recording smaller than 15 MB.'), {
+          statusCode: 400,
+        });
+      }
+      try {
+        const result = await provider.transcribe(input, signal);
+        signal?.throwIfAborted();
+        return z.string().max(100_000).parse(result);
+      } catch {
+        signal?.throwIfAborted();
+        throw new Error('Speech transcription failed.');
+      }
+    },
+    async synthesize(input: string, signal?: AbortSignal): Promise<GeneratedAudio> {
+      available(signal);
+      const text = z.string().trim().min(1).max(3000).parse(input);
+      try {
+        const result = await provider.synthesize(text, signal);
+        signal?.throwIfAborted();
+        if (
+          !Buffer.isBuffer(result.bytes) ||
+          !result.bytes.length ||
+          result.bytes.length > 15 * 1024 * 1024 ||
+          !/^audio\/(mpeg|wav|webm|ogg|mp4)$/.test(result.mimeType) ||
+          !/^[\w.-]{1,100}$/.test(result.fileName)
+        ) {
+          throw new Error('Invalid audio response.');
+        }
+        return result;
+      } catch {
+        signal?.throwIfAborted();
+        throw new Error('Speech generation failed.');
+      }
+    },
+  };
 }
+export type SpeechService = ReturnType<typeof createSpeech>;

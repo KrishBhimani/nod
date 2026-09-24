@@ -12,6 +12,8 @@ All five toolkits list managed OAuth support: [Gmail](https://docs.composio.dev/
 
 ## Runtime boundary
 
+`src/providers/composio/integrations.ts` implements the provider-neutral interface in `src/ports/integrations.ts`. It owns the SDK, hosted consent URL validation, callback decoding, account status mapping, trigger configuration, and raw webhook verification. `src/server/integrations.ts` owns account intent, user checks, the action approval policy, durable event delivery, and HTTP routes. `src/server/composition.ts` selects the adapter and supplies its credentials. Feature tests can replace the adapter without mocking the Composio SDK.
+
 The backend creates or restores one session per application user with an explicit five-toolkit allowlist. Remote sandboxes, premium tools, and in-chat connection management are disabled. The model gets tool schemas and results through the application broker, without a Composio project key or hosted MCP credential.
 
 `session.authorize(slug, {callbackUrl})` returns a hosted `redirectUrl` and an account ID. Sidekick stores that attempt with a random, expiring callback state. It verifies the returned account against the attempt and asks Composio to confirm an active connection. Query parameters alone never establish ownership. [Manual authentication](https://docs.composio.dev/docs/authentication/manually-authenticating).
@@ -19,6 +21,8 @@ The backend creates or restores one session per application user with an explici
 The runtime calls `execute(ownerId, 'SEARCH_TOOLS', {query})` for current Google action schemas. A small reviewed list of reads executes directly. Other Google actions return an approval request containing the exact action and arguments. Only the server's approved-action path calls `executeApproved()`. Non-Google tool prefixes and Composio meta execution are rejected. Do not give the agent direct access to `executeApproved()` or the project key. Google consent scopes and API availability still limit actions. [Session search and execution](https://docs.composio.dev/reference/sdk-reference/typescript/session).
 
 Composio owns the connected-account tokens in its default cloud deployment, refreshes them, and injects them into provider API requests. Provider tokens are redacted from account responses by default. Composio can still use those tokens, and tool results can contain private user data. Its execution logs retain tool payloads by default; review the project's retention controls. This service is not the browser password vault. [Token custody](https://docs.composio.dev/docs/security/token-custody).
+
+Account and session references are tagged with their provider. The migration renames `composio_sessions` and `composio_events` to `integration_sessions` and `integration_events`, retaining existing rows and event IDs. Disconnect and revoke connections with the old provider before replacing its adapter. A replacement provider cannot reuse another provider's account or session IDs. New authorization and webhook setup are required; changing adapters does not transfer Google OAuth credentials. Browser-vault ciphertext is unaffected.
 
 ## Notifications
 
@@ -34,7 +38,7 @@ Use the same `COMPOSIO_WEBHOOK_SECRET` in the CLI and app. For a hosted ingress,
 
 The enabled trigger is `GMAIL_NEW_GMAIL_MESSAGE` or `GOOGLECALENDAR_GOOGLE_CALENDAR_EVENT_SYNC_TRIGGER`, pinned to the selected account. Gmail watches the inbox; Calendar watches the primary calendar. Both use a 15-minute interval. These are polling integrations; do not promise immediate delivery or exact reminder timing. Shared managed OAuth can add about 15 minutes of latency. [Trigger setup](https://docs.composio.dev/docs/setting-up-triggers/creating-triggers), [Trigger latency](https://docs.composio.dev/docs/triggers).
 
-The handler verifies the signature over the raw body with the SDK's default five-minute timestamp tolerance. It checks the user, account, trigger, and enabled state, then stores a unique event receipt. A retryable outbox passes a bounded summary to Sidekick's notification filter before the main agent runs. It excludes message bodies and provider credential fields. Event subjects remain untrusted private content. Queued events are discarded if their connection or trigger is no longer enabled. Downstream work must also deduplicate by event ID because delivery across a process crash is at least once.
+The adapter verifies the signature over the raw body with the SDK's default five-minute timestamp tolerance. The application checks the user, provider, account, trigger, and enabled state, then stores a unique event receipt. A retryable outbox passes a bounded summary to Sidekick's notification filter before the main agent runs. It excludes message bodies and provider credential fields. Event subjects remain untrusted private content. Queued events and interrupted processing events are discarded if their connection or trigger is no longer enabled. Every claim rechecks those conditions before delivery. Downstream work must also deduplicate by event ID because delivery across a process crash is at least once.
 
 ## Cost and limits
 
@@ -42,4 +46,4 @@ As published on 2026-09-24, managed OAuth includes 20,000 calls and 10,000 deliv
 
 ## Validation
 
-The boundary tests use real disposable PostgreSQL schemas and a synthetic Composio client. They check callback ownership, provider status, signature tampering, old timestamps, account isolation, duplicate events, read access, and approval gates. They do not prove live Google consent, provider scopes, trigger arrival, or production delivery. Run them with `TEST_DATABASE_URL` pointing at a local test database.
+Feature tests inject a replacement provider and use real disposable PostgreSQL schemas. They check callback ownership, provider status, account isolation, duplicate events, revocation during recovery, read access, approval gates, and legacy-reference migration. Separate adapter tests exercise Composio's real signature parser with synthetic signed payloads and verify normalized session output. They do not prove live Google consent, provider scopes, trigger arrival, or production delivery. Run them with `TEST_DATABASE_URL` pointing at a local test database.

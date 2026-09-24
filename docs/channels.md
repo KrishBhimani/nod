@@ -52,7 +52,7 @@ Replies are free-form text only. Sidekick blocks a send if the latest accepted o
 
 The Mac must be awake, Sidekick and PostgreSQL must be running, and the provider must reach the exact HTTPS webhook path. A tunnel or small authenticated forwarding gateway must expose only the required webhook routes. Do not expose the entire app, `/api/channels`, the vault, screenshots, or credential forms. The rest of this prototype has no public user authentication. A forwarding gateway must preserve raw bytes and verification headers.
 
-The app permits external requests only to the registered provider webhook paths. Their handlers validate provider secrets and owner identity independently. A tunnel URL or a `PUBLIC_URL` value does not configure the provider webhook or make the rest of the app safe to publish.
+The app permits external requests only to the registered provider webhook paths. Their handlers validate provider secrets and owner identity independently. A tunnel URL does not configure the provider webhook or make the rest of the app safe to publish.
 
 Credential and approval links are replaced in outbound replies with an instruction to open Sidekick on the Mac. Credentials and approvals cannot be completed by messaging the bot. Each inbound message starts its own task; use the web app to continue a specific waiting task. Schedules and unrelated web tasks have no channel mapping and do not send messages to the owner automatically.
 

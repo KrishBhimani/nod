@@ -10,10 +10,12 @@
     "dev": "node scripts/start.mjs",
     "dev:server": "tsx watch src/server/index.ts",
     "build": "tsc --noEmit && vite build",
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && node scripts/check-architecture.mjs && npm run format:check",
     "test": "tsx --test tests/*.test.ts",
     "start": "tsx src/server/index.ts",
-    "test:integration": "node scripts/test-integration.mjs"
+    "test:integration": "node scripts/test-integration.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "@chat-adapter/state-pg": "^4.41.0",
@@ -50,6 +52,7 @@
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
     "@vitejs/plugin-react": "^5.1.0",
+    "prettier": "3.9.9",
     "tailwindcss": "^4.1.17",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",

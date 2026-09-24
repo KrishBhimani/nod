@@ -14,6 +14,7 @@ export async function initializeDatabase() {
       id uuid PRIMARY KEY, owner_id text NOT NULL, role text NOT NULL, text text NOT NULL,
       task_id uuid REFERENCES tasks(id), attachments jsonb NOT NULL DEFAULT '[]', created_at timestamptz NOT NULL DEFAULT now()
     );
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS stream_id text;
     CREATE TABLE IF NOT EXISTS task_events (
       id uuid PRIMARY KEY, task_id uuid NOT NULL REFERENCES tasks(id), type text NOT NULL,
       summary text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
@@ -43,7 +44,15 @@ export async function initializeDatabase() {
 
 export async function transaction<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
   const client = await pool.connect();
-  try { await client.query('BEGIN'); const value = await fn(client); await client.query('COMMIT'); return value; }
-  catch (error) { await client.query('ROLLBACK'); throw error; }
-  finally { client.release(); }
+  try {
+    await client.query('BEGIN');
+    const value = await fn(client);
+    await client.query('COMMIT');
+    return value;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }

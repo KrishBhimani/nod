@@ -22,15 +22,15 @@ This describes a target architecture, not infrastructure included here. `npm run
 
 ## Required boundaries
 
-| Area | Required change |
-| --- | --- |
-| Accounts | Add signup/login and secure sessions. Replace the fixed `local-development` owner with verified user IDs. Authorize every task, file, event stream, credential request, approval, and provider connection against that identity. OAuth connection consent is not app login. |
-| Execution | Give each tenant an isolated sandbox or VM, separate volumes, resource quotas, and controlled egress. All task folders currently share one offline Linux container and Unix user. A folder name does not isolate hostile shell commands. |
-| Browser and vault | Keep authenticated profiles, browser control, and credential decryption outside the unrestricted shell. Use a separate trusted service identity. Preserve exact-origin checks, serialized credential entry, and hidden observations during injection. |
-| Keys | Replace local Keychain handling with an appropriate secrets service and KMS envelope encryption. Add rotation, access auditing, and recovery. KMS does not hide plaintext from an operator who controls the authorized decrypting service. |
-| Files | Put artifacts in a private object store with owner checks, short-lived access, size limits, retention, and deletion. Do not mount or publish complete workspaces. Browser profiles and task transcripts need private persistent storage too. |
-| HTTP | Add HTTPS, authenticated app ingress, CSRF/session controls, request limits, and abuse protection. Retain signature verification over original webhook bytes, replay protection, account binding, and task deduplication. Expose only explicitly intended public routes. |
-| Database | Use restricted service credentials, migrations, encrypted backups, restore drills, retention policies, and monitored queue growth. Back up the data and necessary key material through separate controlled processes. |
+| Area              | Required change                                                                                                                                                                                                                                                             |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Accounts          | Add signup/login and secure sessions. Replace the fixed `local-development` owner with verified user IDs. Authorize every task, file, event stream, credential request, approval, and provider connection against that identity. OAuth connection consent is not app login. |
+| Execution         | Give each tenant an isolated sandbox or VM, separate volumes, resource quotas, and controlled egress. All task folders currently share one offline Linux container and Unix user. A folder name does not isolate hostile shell commands.                                    |
+| Browser and vault | Keep authenticated profiles, browser control, and credential decryption outside the unrestricted shell. Use a separate trusted service identity. Preserve exact-origin checks, serialized credential entry, and hidden observations during injection.                       |
+| Keys              | Replace local Keychain handling with an appropriate secrets service and KMS envelope encryption. Add rotation, access auditing, and recovery. KMS does not hide plaintext from an operator who controls the authorized decrypting service.                                  |
+| Files             | Put artifacts in a private object store with owner checks, short-lived access, size limits, retention, and deletion. Do not mount or publish complete workspaces. Browser profiles and task transcripts need private persistent storage too.                                |
+| HTTP              | Add HTTPS, authenticated app ingress, CSRF/session controls, request limits, and abuse protection. Retain signature verification over original webhook bytes, replay protection, account binding, and task deduplication. Expose only explicitly intended public routes.    |
+| Database          | Use restricted service credentials, migrations, encrypted backups, restore drills, retention policies, and monitored queue growth. Back up the data and necessary key material through separate controlled processes.                                                       |
 
 Native Mac control is not part of this runtime. Browser tasks can use separate sessions; a future shared desktop's physical mouse and keyboard would require exclusive coordination. A browser screenshot is not a remote computer desktop.
 

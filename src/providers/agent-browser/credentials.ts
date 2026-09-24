@@ -1,31 +1,43 @@
-export interface CredentialInput {
-  taskId: string;
-  origin: string;
-  kind?: 'password' | 'otp';
-  username?: string;
-  password?: string;
-  code?: string;
-  usernameSelector?: string;
-  passwordSelector: string;
-  submitSelector?: string;
+import type { CredentialInput } from '../../ports/computer.ts';
+
+export interface CredentialField {
+  selector: string;
+  value: string;
+  password: boolean;
 }
 
-export interface CredentialField { selector: string; value: string; password: boolean; }
-
 export function credentialFields(input: CredentialInput): CredentialField[] {
-  const value = input.kind === 'otp' ? input.code : input.password ?? input.code;
-  if (!value || value.length > 8192 || (input.username?.length ?? 0) > 320) throw new Error('A valid credential value is required.');
+  const value = input.kind === 'otp' ? input.code : (input.password ?? input.code);
+  if (!value || value.length > 8192 || (input.username?.length ?? 0) > 320)
+    throw new Error('A valid credential value is required.');
   const fields = [
-    ...(input.username ? [{ selector: input.usernameSelector || 'input[autocomplete="username"],input[type="email"]', value: input.username, password: false }] : []),
+    ...(input.username
+      ? [
+          {
+            selector:
+              input.usernameSelector || 'input[autocomplete="username"],input[type="email"]',
+            value: input.username,
+            password: false,
+          },
+        ]
+      : []),
     { selector: input.passwordSelector, value, password: input.kind !== 'otp' && !input.code },
   ];
-  for (const target of [...fields.map(field => field.selector), ...(input.submitSelector ? [input.submitSelector] : [])]) {
-    if (!target || target.length > 500 || /^[\s@-]/.test(target) || target.includes('\0')) throw new Error('Secure entry requires a CSS selector, not a transient reference.');
+  for (const target of [
+    ...fields.map((field) => field.selector),
+    ...(input.submitSelector ? [input.submitSelector] : []),
+  ]) {
+    if (!target || target.length > 500 || /^[\s@-]/.test(target) || target.includes('\0'))
+      throw new Error('Secure entry requires a CSS selector, not a transient reference.');
   }
   return fields;
 }
 
-export function credentialScript(origin: string, fields: CredentialField[], submitSelector?: string): string {
+export function credentialScript(
+  origin: string,
+  fields: CredentialField[],
+  submitSelector?: string,
+): string {
   return `(() => {
     const origin=${JSON.stringify(origin)}, fields=${JSON.stringify(fields)}, submit=${JSON.stringify(submitSelector ?? null)};
     if(location.origin!==origin) return {ok:false};

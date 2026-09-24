@@ -7,11 +7,11 @@ services:
       POSTGRES_PASSWORD: sidekick-local
       POSTGRES_DB: sidekick
     ports:
-      - "127.0.0.1:54329:5432"
+      - '127.0.0.1:54329:5432'
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sidekick"]
+      test: ['CMD-SHELL', 'pg_isready -U sidekick']
       interval: 2s
       timeout: 3s
       retries: 30
@@ -31,6 +31,6 @@ services:
       - ./.local/workspaces:/workspace
     tmpfs:
       - /tmp:size=256m
-    command: ["sleep", "infinity"]
+    command: ['sleep', 'infinity']
 volumes:
   postgres-data:

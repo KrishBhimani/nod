@@ -1,11 +1,17 @@
 # Sidekick
 
-Standalone local assistant. Never push, deploy, or publish without user authorization. Keep provider keys and personal content out of Git, browser responses and logs. Do not add code comments or JSDoc.
+Local personal assistant. Never push, deploy or publish without authorization. Keep secrets and user content out of Git, logs and client code. Do not add code comments or JSDoc.
 
-Read docs/api-contract.md before changing boundaries. Read docs/architecture.md for runtime ownership and docs/security.md before touching credentials, uploads, tools or authentication. Read docs/development.md for commands and verification.
+Start with [README.md](README.md) for setup and current capability limits. Read only the guide for the area you change:
 
-Use TypeScript, React, shadcn and Tailwind. Keep the main interface a quiet conversation. Development diagnostics belong in /dev. Use the palette in src/web/styles.css. Use small files with explicit imports; avoid hidden side effects and global service locators.
+| Change                                                      | Guide                                              |
+| ----------------------------------------------------------- | -------------------------------------------------- |
+| Routes, persistence, queues, approvals, personal features   | [src/server/AGENTS.md](src/server/AGENTS.md)       |
+| Agent tools, task segments and provider interfaces          | [src/runtime/AGENTS.md](src/runtime/AGENTS.md)     |
+| Model, browser, integrations, media or credential providers | [src/providers/AGENTS.md](src/providers/AGENTS.md) |
+| Web pages, controls and streaming                           | [src/web/AGENTS.md](src/web/AGENTS.md)             |
+| Fixtures and validation                                     | [tests/AGENTS.md](tests/AGENTS.md)                 |
 
-Persistence lives in src/server. Agent and computer tools live in src/runtime. Browser components live in src/web. Shared wire types live in src/shared/contracts.ts. Test boundaries and failure recovery, not implementation details.
+Shared HTTP types live in `src/shared/contracts.ts`. Capability interfaces live in `src/ports`. Providers are selected only in `src/server/composition.ts`. Read [architecture](docs/architecture.md) for ownership and [replacement guide](docs/replacing-modules.md) when swapping a capability. PostgreSQL is an explicit storage choice, not a generic provider interface.
 
-A change is complete when npm run check, npm run test:integration and npm run build pass, its behavior is verified, and affected documentation is current. Start the local PostgreSQL service for integration tests. State clearly which live services were verified and which remain unconfigured. Never call a fixture a live integration.
+Preserve a quiet conversation, the existing shadcn/Tailwind controls and palette. Keep developer details in `/dev`. Prefer narrow factory interfaces over globals or service locators. Run `npm run check`, `npm run test:integration` and `npm run build`; see [development](docs/development.md). Update the owning guide and affected contract when an entry point changes. Distinguish fixture results from live provider verification.
