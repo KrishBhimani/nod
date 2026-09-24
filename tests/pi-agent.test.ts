@@ -4,10 +4,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { createAgentSession } from '@earendil-works/pi-coding-agent';
+import { z } from 'zod';
+import { createAgentSession, SettingsManager } from '@earendil-works/pi-coding-agent';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
-import type { RuntimeContext } from '../src/ports/agent.ts';
+import type { AgentEvent, ModelUsageObservation, RuntimeContext } from '../src/ports/agent.ts';
 import { createPiAgent } from '../src/providers/pi/index.ts';
+import { createPiUsageTracker } from '../src/providers/pi/usage.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 
@@ -16,6 +18,7 @@ test('real Pi sessions persist a credential pause and resume without replaying c
   const id = 'test-' + randomUUID();
   const replies: string[] = [];
   const prompts: string[] = [];
+  const usage: ModelUsageObservation[] = [];
   let remembered = 0;
   let phase = 0;
   const context: RuntimeContext = {
@@ -28,6 +31,9 @@ test('real Pi sessions persist a credential pause and resume without replaying c
     signal: new AbortController().signal,
     attachments: [],
     emit: async () => {},
+    observe: async (event) => {
+      if (event.type === 'model_usage') usage.push(event);
+    },
     reply: async (text) => {
       replies.push(text);
     },
@@ -64,6 +70,7 @@ test('real Pi sessions persist a credential pause and resume without replaying c
         provider: model.provider,
         model: model.id,
         timestamp: Date.now(),
+        responseId: `fixture-phase-${phase}`,
         stopReason: phase === 0 ? 'toolUse' : 'stop',
         content:
           phase === 0
@@ -88,12 +95,18 @@ test('real Pi sessions persist a credential pause and resume without replaying c
               ]
             : [{ type: 'text', text: 'Resumed successfully.' }],
         usage: {
-          input: 0,
-          output: 0,
-          cacheRead: 0,
-          cacheWrite: 0,
-          totalTokens: 0,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          input: phase === 0 ? 100 : 200,
+          output: 10,
+          cacheRead: 20,
+          cacheWrite: 5,
+          totalTokens: phase === 0 ? 135 : 235,
+          cost: {
+            input: 0.001,
+            output: 0.0008,
+            cacheRead: 0.0001,
+            cacheWrite: 0.0001,
+            total: 0.002,
+          },
         },
       };
       const stream = createAssistantMessageEventStream();
@@ -136,6 +149,18 @@ test('real Pi sessions persist a credential pause and resume without replaying c
       'Secure sign-in is needed to continue: /credentials/fixture',
       'Resumed successfully.',
     ]);
+    assert.deepEqual(
+      usage.map((event) => event.inputTokens),
+      [100, 200],
+    );
+    assert.deepEqual(
+      usage.map((event) => event.totalTokens),
+      [135, 235],
+    );
+    assert.equal(new Set(usage.map((event) => event.id)).size, 2);
+    assert.ok(
+      usage.every((event) => event.costSource === 'sdk_estimate' && event.costUsd === 0.002),
+    );
   } finally {
     await runtime.dispose();
     await rm(directory, { recursive: true, force: true });
@@ -220,6 +245,260 @@ test('Responses commentary and final answer remain separate visible messages', a
       if (event.type === 'text_delta') streamed[streamed.length - 1] += event.text;
     }
     assert.deepEqual(streamed.filter(Boolean), [answer, answer]);
+    assert.equal(events.filter((event) => event.type === 'model_usage').length, 1);
+    await session.dispose();
+  } finally {
+    await agent.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+function usageMessage(overrides: Partial<AssistantMessage> = {}): AssistantMessage {
+  return {
+    role: 'assistant',
+    api: 'openai-responses',
+    provider: 'openai',
+    model: 'gpt-5.4-mini',
+    responseId: 'synthetic-response',
+    timestamp: Date.parse('2026-09-24T12:00:00Z'),
+    content: [{ type: 'text', text: 'Private fixture content' }],
+    stopReason: 'stop',
+    usage: {
+      input: 100,
+      output: 20,
+      cacheRead: 30,
+      cacheWrite: 10,
+      reasoning: 8,
+      totalTokens: 160,
+      cost: { input: 0.001, output: 0.002, cacheRead: 0.0003, cacheWrite: 0.0004, total: 0.0037 },
+    },
+    ...overrides,
+  };
+}
+
+function usageTracker(history: AssistantMessage[] = []) {
+  return createPiUsageTracker({
+    sessionId: 'synthetic-session',
+    provider: 'openai',
+    model: 'gpt-5.4-mini',
+    history,
+  });
+}
+
+test('Pi usage preserves cache categories without double counting reasoning, callbacks, or resumed history', () => {
+  const message = usageMessage();
+  const track = usageTracker();
+  const result = track(message)!;
+  assert.equal(z.uuid().safeParse(result.id).success, true);
+  assert.deepEqual(
+    { ...result, id: 'opaque-id' },
+    {
+      type: 'model_usage',
+      id: 'opaque-id',
+      provider: 'openai',
+      model: 'gpt-5.4-mini',
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheReadTokens: 30,
+      cacheWriteTokens: 10,
+      totalTokens: 160,
+      costUsd: 0.0037,
+      costSource: 'sdk_estimate',
+      createdAt: '2026-09-24T12:00:00.000Z',
+    },
+  );
+  assert.equal(track(message), undefined);
+  assert.equal(track(structuredClone(message)), undefined);
+  assert.equal(usageTracker([message])(structuredClone(message)), undefined);
+  assert.equal(usageTracker()(structuredClone(message))?.id, result.id);
+  assert.notEqual(
+    createPiUsageTracker({
+      sessionId: 'another-session',
+      provider: 'openai',
+      model: 'gpt-5.4-mini',
+      history: [],
+    })(message)?.id,
+    result.id,
+  );
+  const withoutResponseId = usageMessage({ responseId: undefined });
+  const anonymous = usageTracker();
+  assert.ok(anonymous(withoutResponseId));
+  assert.equal(anonymous(structuredClone(withoutResponseId)), undefined);
+  assert.ok(anonymous({ ...withoutResponseId, timestamp: withoutResponseId.timestamp + 1 }));
+  assert.equal(usageTracker([withoutResponseId])(structuredClone(withoutResponseId)), undefined);
+  assert.equal(JSON.stringify(result).includes('Private fixture content'), false);
+  assert.equal(JSON.stringify(result).includes('synthetic-response'), false);
+});
+
+test('Pi usage rejects absent or malformed cost and skips empty failed attempts', () => {
+  const message = usageMessage();
+  for (const cost of [
+    undefined,
+    null,
+    {},
+    { total: 4 },
+    { ...message.usage.cost, total: NaN },
+    { ...message.usage.cost, input: -1 },
+    { ...message.usage.cost, output: Infinity },
+    { ...message.usage.cost, total: 40 },
+  ]) {
+    const output = usageTracker()({
+      ...message,
+      usage: { ...message.usage, cost },
+    } as unknown as AssistantMessage)!;
+    assert.equal(output.costUsd, null);
+    assert.equal(output.costSource, 'unavailable');
+    assert.equal(output.totalTokens, 160);
+  }
+  const malformed = usageTracker()({
+    ...message,
+    provider: 'private\nprovider',
+    model: 'private model',
+    usage: {
+      ...message.usage,
+      input: -1,
+      output: NaN,
+      cacheRead: 3,
+      cacheWrite: 4.5,
+      totalTokens: Infinity,
+      cost: undefined,
+    },
+  } as unknown as AssistantMessage)!;
+  assert.equal(malformed.provider, 'openai');
+  assert.equal(malformed.model, 'gpt-5.4-mini');
+  assert.deepEqual(
+    [
+      malformed.inputTokens,
+      malformed.outputTokens,
+      malformed.cacheReadTokens,
+      malformed.cacheWriteTokens,
+      malformed.totalTokens,
+    ],
+    [0, 0, 3, 0, 3],
+  );
+  assert.equal(malformed.costSource, 'unavailable');
+  assert.equal(
+    usageTracker()({ ...message, usage: undefined } as unknown as AssistantMessage),
+    undefined,
+  );
+  const empty = usageMessage({
+    stopReason: 'error',
+    errorMessage: 'sensitive upstream exception',
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+  });
+  assert.equal(usageTracker()(empty), undefined);
+  assert.equal(
+    usageTracker()({
+      ...empty,
+      usage: { input: NaN, output: Infinity, cacheRead: -1 },
+    } as unknown as AssistantMessage),
+    undefined,
+  );
+  const track = usageTracker();
+  const reportedFailure = usageMessage({
+    responseId: 'failed-attempt',
+    stopReason: 'error',
+    errorMessage: 'sensitive upstream exception',
+  });
+  const failed = track(reportedFailure)!;
+  assert.equal(failed.costUsd, 0.0037);
+  assert.equal(JSON.stringify(failed).includes('sensitive'), false);
+  assert.equal(track(structuredClone(reportedFailure)), undefined);
+  assert.notEqual(track(usageMessage({ responseId: 'successful-retry' }))?.id, failed.id);
+});
+
+test('real Pi retry followed by a tool pause reports only new usage despite repeated completion callbacks', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sidekick-pi-retry-usage-'));
+  const events: AgentEvent[] = [];
+  let attempts = 0;
+  let paused = false;
+  const factory: typeof createAgentSession = async (options) => {
+    const result = await createAgentSession({
+      ...options,
+      settingsManager: SettingsManager.inMemory({
+        retry: { enabled: true, maxRetries: 2, baseDelayMs: 1, maxAgentDelayMs: 1 },
+        compaction: { enabled: false },
+      }),
+    });
+    const subscribe = result.session.subscribe.bind(result.session);
+    result.session.subscribe = (listener) =>
+      subscribe((event) => {
+        listener(event);
+        if (event.type === 'message_end' && event.message.role === 'assistant')
+          listener(structuredClone(event));
+      });
+    result.session.agent.streamFunction = (model) => {
+      attempts += 1;
+      const output = usageMessage({
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        responseId: `attempt-${attempts}`,
+      });
+      const stream = createAssistantMessageEventStream();
+      if (attempts === 1) {
+        output.stopReason = 'error';
+        output.errorMessage = '429 rate limit; private fixture error';
+        output.usage = {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        };
+        stream.push({ type: 'error', reason: 'error', error: output });
+      } else {
+        output.stopReason = 'toolUse';
+        output.content = [{ type: 'toolCall', id: 'pause-call', name: 'pause', arguments: {} }];
+        stream.push({ type: 'start', partial: output });
+        stream.push({ type: 'done', reason: 'toolUse', message: output });
+      }
+      return stream;
+    };
+    return result;
+  };
+  const agent = createPiAgent({
+    provider: 'openai',
+    apiKey: 'private-fixture-key',
+    sessionRoot: directory,
+    createSession: factory,
+  });
+  try {
+    const session = await agent.open({
+      taskId: `test-${randomUUID()}`,
+      systemPrompt: 'Fixture',
+      shouldStop: () => paused,
+      onEvent: (event) => events.push(event),
+      tools: [
+        {
+          name: 'pause',
+          description: 'Pause this fixture',
+          parameters: { type: 'object', properties: {} },
+          execute: async () => {
+            paused = true;
+            return { content: [{ type: 'text', text: 'Paused' }] };
+          },
+        },
+      ],
+    });
+    await session.prompt('Pause after retry', []);
+    const usage = events.filter((event) => event.type === 'model_usage');
+    assert.equal(attempts, 2);
+    assert.equal(paused, true);
+    assert.equal(usage.length, 1);
+    assert.equal(usage[0].totalTokens, 160);
+    assert.equal(usage[0].costUsd, 0.0037);
+    assert.ok(events.some((event) => event.type === 'message_end' && event.status === 'succeeded'));
+    assert.equal(JSON.stringify(events).includes('private fixture error'), false);
+    assert.equal(JSON.stringify(events).includes('private-fixture-key'), false);
     await session.dispose();
   } finally {
     await agent.dispose();

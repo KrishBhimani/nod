@@ -9,7 +9,7 @@ import { delta, refresh } from './events.ts';
 import { publishArtifact, storeArtifact } from './artifacts.ts';
 import type { SpeechService } from './speech.ts';
 import type { Artifact } from '../shared/contracts.ts';
-import type { RuntimeContext, RuntimeResult } from '../ports/agent.ts';
+import type { RuntimeContext, RuntimeObservation, RuntimeResult } from '../ports/agent.ts';
 
 const queue = 'assistant-task';
 export const boss = new PgBoss({
@@ -25,6 +25,8 @@ export interface SubmitTaskOptions {
   client?: PoolClient;
 }
 export interface TaskDependencies {
+  observe?: (taskId: string, revision: number, event: RuntimeObservation) => Promise<void>;
+  finishObservationSegment?: (taskId: string, revision: number) => Promise<void>;
   runTask: (
     context: RuntimeContext,
   ) => Promise<{ status: string; waitingFor?: RuntimeResult['waitingFor']; question?: string }>;
@@ -502,6 +504,9 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
       memories: contextFacts,
       workspacePath,
       signal: controller.signal,
+      observe: dependencies.observe
+        ? (event) => dependencies.observe!(taskId, revision, event)
+        : undefined,
       attachments: uploads.rows.map((row) => ({
         path: join(workspacePath, `${row.id}-${basename(row.name)}`),
         mimeType: row.mime_type,
@@ -625,6 +630,9 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
     });
   } finally {
     clearTimeout(timeout);
+    void Promise.resolve()
+      .then(() => dependencies.finishObservationSegment?.(taskId, revision))
+      .catch(() => {});
     if (running.get(taskId) === controller) running.delete(taskId);
     refresh();
   }

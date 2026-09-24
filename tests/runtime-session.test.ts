@@ -10,6 +10,7 @@ import type {
   AgentSessionOptions,
   AgentTool,
   RuntimeContext,
+  RuntimeObservation,
 } from '../src/ports/agent.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
@@ -17,6 +18,7 @@ import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 async function fixture(
   run: (tools: Map<string, AgentTool>, emit: (event: AgentEvent) => void) => Promise<void>,
   overrides: Partial<RuntimeContext> = {},
+  runtimeOptions: { observationTimeoutMs?: number } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'sidekick-session-'));
   const replies: string[] = [];
@@ -73,10 +75,20 @@ async function fixture(
     agent,
     computer: fakeComputer(),
     workspace: fakeWorkspace(),
+    ...runtimeOptions,
   });
   try {
     const result = await runtime.runTask(context);
-    return { result, replies, events, deltas, aborted, supplied: supplied!, userPrompt };
+    return {
+      result,
+      replies,
+      events,
+      deltas,
+      aborted,
+      supplied: supplied!,
+      userPrompt,
+      catalog: runtime.inspectTools(),
+    };
   } finally {
     await runtime.dispose();
     await rm(directory, { recursive: true, force: true });
@@ -488,4 +500,253 @@ test('eligible quoted personal learning stays quiet and does not pause work for 
     },
   ]);
   assert.deepEqual(result.replies, ['How can I help today?']);
+});
+
+test('tool observations pair validated input with output and bounded errors', async () => {
+  const observations: RuntimeObservation[] = [];
+  const result = await fixture(
+    async (tools) => {
+      await assert.rejects(call(tools, 'send_message', { text: 12 }), /schema/);
+      await call(tools, 'send_message', { text: 'Fixture result' });
+      await assert.rejects(
+        call(tools, 'google', { action: 'FIXTURE_FAIL', args: {} }),
+        /connected-account request/,
+      );
+    },
+    {
+      observe: async (event) => {
+        observations.push(event);
+      },
+      integration: async () => {
+        throw new Error('secret fixture key and /private/host/path');
+      },
+    },
+  );
+  assert.equal(result.result.status, 'succeeded');
+  assert.deepEqual(
+    observations.map((event) => event.type),
+    ['tool_start', 'tool_end', 'tool_start', 'tool_end'],
+  );
+  const [start, end, failedStart, failedEnd] = observations;
+  assert.equal(start.type, 'tool_start');
+  assert.equal(end.type, 'tool_end');
+  assert.equal(failedStart.type, 'tool_start');
+  assert.equal(failedEnd.type, 'tool_end');
+  if (
+    start.type !== 'tool_start' ||
+    end.type !== 'tool_end' ||
+    failedStart.type !== 'tool_start' ||
+    failedEnd.type !== 'tool_end'
+  )
+    throw new Error('Unexpected fixture observation');
+  assert.deepEqual(start.input, { text: 'Fixture result' });
+  assert.equal(start.id, end.id);
+  assert.equal(end.name, 'send_message');
+  assert.equal(end.status, 'succeeded');
+  assert.equal(end.output, 'Message delivered.');
+  assert.equal(failedStart.id, failedEnd.id);
+  assert.notEqual(start.id, failedStart.id);
+  assert.equal(failedEnd.status, 'failed');
+  assert.match(failedEnd.error || '', /connected-account request/);
+  assert.doesNotMatch(JSON.stringify(observations), /secret fixture|private\/host/);
+  for (const item of [end, failedEnd]) {
+    assert.ok(item.durationMs >= 0);
+    assert.ok(Number.isFinite(Date.parse(item.finishedAt)));
+  }
+  assert.ok(Number.isFinite(Date.parse(start.startedAt)));
+  assert.deepEqual(
+    result.catalog,
+    structuredClone(
+      result.supplied.tools.map(({ name, description, parameters }) => ({
+        name,
+        description,
+        parameters,
+      })),
+    ),
+  );
+});
+
+test('a successful tool-only retry clears an earlier model error before pausing', async () => {
+  const result = await fixture(async (tools, emit) => {
+    emit({ type: 'error' });
+    emit({ type: 'message_end', status: 'failed' });
+    emit({ type: 'message_start' });
+    emit({ type: 'message_end', status: 'succeeded' });
+    await call(tools, 'ask_user', { question: 'Which fixture should I use?' });
+  });
+  assert.equal(result.result.status, 'waiting_user');
+  assert.equal(result.result.waitingFor, 'question');
+});
+
+test('tool cancellation is observed without exposing the abort reason', async () => {
+  const controller = new AbortController();
+  const observations: RuntimeObservation[] = [];
+  await assert.rejects(
+    fixture(
+      async (tools) => {
+        await call(tools, 'google', { action: 'FIXTURE_WAIT', args: {} });
+      },
+      {
+        signal: controller.signal,
+        observe: async (event) => {
+          observations.push(event);
+        },
+        integration: async () => {
+          controller.abort(new Error('private cancellation details'));
+          throw controller.signal.reason;
+        },
+      },
+    ),
+    /cancelled/,
+  );
+  const end = observations.at(-1);
+  assert.equal(end?.type, 'tool_end');
+  if (end?.type !== 'tool_end') throw new Error('Missing fixture tool end');
+  assert.equal(end.status, 'cancelled');
+  assert.equal(end.error, 'The action was cancelled.');
+  assert.doesNotMatch(JSON.stringify(observations), /private cancellation details/);
+});
+
+test('observation failures do not block actions and queued usage is flushed before completion', async () => {
+  const observed: RuntimeObservation[] = [];
+  const usage: AgentEvent = {
+    type: 'model_usage',
+    id: 'fixture-usage',
+    provider: 'fixture',
+    model: 'fixture-model',
+    inputTokens: 10,
+    outputTokens: 2,
+    cacheReadTokens: 3,
+    cacheWriteTokens: 0,
+    totalTokens: 15,
+    costUsd: null,
+    costSource: 'unavailable',
+    createdAt: new Date().toISOString(),
+  };
+  const result = await fixture(
+    async (tools, emit) => {
+      await call(tools, 'send_message', { text: 'Still delivered' });
+      emit(usage);
+    },
+    {
+      observe: async (event) => {
+        if (event.type === 'tool_start') throw new Error('Observer unavailable');
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        observed.push(event);
+      },
+    },
+  );
+  assert.deepEqual(result.replies, ['Still delivered']);
+  assert.deepEqual(
+    observed.map((event) => event.type),
+    ['tool_end', 'model_usage'],
+  );
+  assert.deepEqual(observed.at(-1), usage);
+});
+
+test('cancellation while recording a tool start prevents the action from beginning', async () => {
+  const controller = new AbortController();
+  const observations: RuntimeObservation[] = [];
+  let executed = false;
+  await assert.rejects(
+    fixture(
+      async (tools) => {
+        await call(tools, 'google', { action: 'FIXTURE_ACTION', args: {} });
+      },
+      {
+        signal: controller.signal,
+        observe: async (event) => {
+          observations.push(event);
+          if (event.type === 'tool_start') controller.abort();
+        },
+        integration: async () => {
+          executed = true;
+          return {};
+        },
+      },
+    ),
+    /cancelled/,
+  );
+  assert.equal(executed, false);
+  assert.equal(observations.at(-1)?.type, 'tool_end');
+  const end = observations.at(-1);
+  assert.equal(end?.type === 'tool_end' && end.status, 'cancelled');
+});
+
+test('one stalled observation disables capture for the remaining segment without blocking tools or final flush', async () => {
+  let attempts = 0;
+  let rejectObservation!: (error: Error) => void;
+  const stalled = new Promise<void>((_resolve, reject) => {
+    rejectObservation = reject;
+  });
+  const result = await fixture(
+    async (tools, emit) => {
+      for (const text of ['First result', 'Second result', 'Third result'])
+        await call(tools, 'send_message', { text });
+      emit({
+        type: 'model_usage',
+        id: randomUUID(),
+        provider: 'fixture',
+        model: 'fixture',
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        totalTokens: 2,
+        costUsd: null,
+        costSource: 'unavailable',
+        createdAt: new Date().toISOString(),
+      });
+    },
+    {
+      observe: async () => {
+        attempts += 1;
+        return stalled;
+      },
+    },
+    { observationTimeoutMs: 10 },
+  );
+  assert.equal(result.result.status, 'succeeded');
+  assert.deepEqual(result.replies, ['First result', 'Second result', 'Third result']);
+  assert.equal(attempts, 1);
+  rejectObservation(new Error('Late fixture observer rejection'));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
+
+test('tool catalog is available before a task without opening capabilities', async () => {
+  const unavailable = () => {
+    throw new Error('A capability was opened');
+  };
+  const dependencies = {
+    agent: { open: async () => unavailable(), dispose: () => {} },
+    workspace: fakeWorkspace({ open: unavailable }),
+    computer: fakeComputer({
+      act: async () => unavailable(),
+      screenshot: async () => unavailable(),
+    }),
+  };
+  const runtime = createAgentRuntime(dependencies);
+  const withChooser = createAgentRuntime({
+    ...dependencies,
+    chooseBrowserAction: async () => ({ outcome: 'DONE', elapsedMs: 0 }),
+  });
+  try {
+    const catalog = runtime.inspectTools();
+    assert.ok(catalog.some((tool) => tool.name === 'shell'));
+    assert.equal(
+      catalog.some((tool) => tool.name === 'browser_fast_step'),
+      false,
+    );
+    assert.equal(
+      withChooser.inspectTools().some((tool) => tool.name === 'browser_fast_step'),
+      true,
+    );
+    catalog[0].description = 'Changed externally';
+    catalog[0].parameters.properties = {};
+    assert.notEqual(runtime.inspectTools()[0].description, 'Changed externally');
+    assert.notDeepEqual(runtime.inspectTools()[0].parameters.properties, {});
+  } finally {
+    await runtime.dispose();
+    await withChooser.dispose();
+  }
 });

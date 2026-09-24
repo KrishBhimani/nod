@@ -25,7 +25,7 @@ Add provider keys to the ignored `.env`, then restart. Keep keys out of chat, so
 | `COMPOSIO_WEBHOOK_SECRET`                     | Signed Google event forwarding                                                   |
 | `TYPESAFE_API_KEY`                            | Optional Jev browser choices and relevance checks                                |
 | `DATABASE_URL`, `PORT`                        | Local service settings; defaults are in `.env.example`                           |
-| `DEV_INSPECTOR=false`                         | Disable the inspector                                                            |
+| `DEV_INSPECTOR=false`                         | Disable the inspector and new debug recordings                                   |
 
 macOS Keychain supplies the encryption key for the vault and saved channel settings. Other hosts require `SIDEKICK_VAULT_KEY`; see [vault setup](docs/vault.md). Telegram and WhatsApp credentials can be saved through **Channels**, outside chat. Telegram supports local polling without a tunnel; WhatsApp still requires Meta callback setup and an eligibility check.
 
@@ -37,6 +37,7 @@ The sidebar contains **Chat, Goals, Schedule, Connections, Channels, and Vault**
 
 - Chat supports streamed replies, file uploads, pasted images, downloadable artifacts, reactions, timestamps, and task continuation. Markdown and embedded HTML are sanitized. Speech playback is optional; there is no recording control.
 - Each task has a browser session. The inspector opens alongside chat and refreshes its browser image about once a second. Pending secure steps pause observation; a labelled last-known image can remain visible.
+- The inspector’s Tools tab lists available tool schemas, redacted call inputs/results, timing, and assistant-model token/cost estimates. Recordings expire after seven days; missing prices stay unavailable. Estimates exclude speech, compaction, integrations, browser services and hosting.
 - Secure forms support observed identifier, password, and one-time-code steps. The trusted broker fills the website and resumes inspection; successful entry does not prove the website accepted the login.
 - Explicit personal facts can be remembered from the current user's own quoted message. Profile learning requires an explicit statement or a matching answer. Other proposed personal changes and Google writes require review.
 - Goals and schedules persist locally. Preferences, active goals, recent context, and feedback inform inexpensive hourly reviews before a main-agent task starts.

@@ -10,18 +10,20 @@ import {
   Layers,
   Terminal,
   FileText,
+  Wrench,
 } from 'lucide-react';
 import type { InspectorState, Artifact } from '../../shared/contracts';
 import { Button, Dialog, DialogContent, DialogTitle, Notice } from '../components/ui';
 import { statusLabels, StatusIcon } from '../components/task-list';
 import { api, errorMessage } from '../lib/api';
 import { relativeTime } from '../lib/utils';
+import { InspectorTools } from '../components/inspector-tools';
 
 type Detail = InspectorState & { artifacts?: (Artifact & { taskId: string })[] };
 export function Inspector({ onClose }: { onClose(): void }) {
   const [data, setData] = useState<Detail | null>(null);
   const [selected, setSelected] = useState('');
-  const [tab, setTab] = useState<'screen' | 'activity' | 'tasks'>('screen');
+  const [tab, setTab] = useState<'screen' | 'activity' | 'tools' | 'tasks'>('screen');
   const [error, setError] = useState('');
   const [screen, setScreen] = useState('');
   const [screenState, setScreenState] = useState('Waiting for a browser session.');
@@ -173,6 +175,7 @@ export function Inspector({ onClose }: { onClose(): void }) {
           [
             ['screen', 'Screen', Monitor],
             ['activity', 'Activity', Activity],
+            ['tools', 'Tools', Wrench],
             ['tasks', 'Tasks', Layers],
           ] as const
         ).map(([value, label, Icon]) => (
@@ -388,6 +391,9 @@ export function Inspector({ onClose }: { onClose(): void }) {
             ))}
             {data?.tasks.length === 0 && <p className="muted">Tasks appear as you chat.</p>}
           </div>
+        )}
+        {tab === 'tools' && (
+          <InspectorTools key={selected || 'no-task'} taskId={selected || undefined} />
         )}
       </div>
       <Dialog open={enlarged && Boolean(screen)} onOpenChange={setEnlarged}>

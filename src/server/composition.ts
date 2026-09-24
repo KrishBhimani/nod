@@ -26,9 +26,10 @@ import { createApprovals } from './approvals.ts';
 import { createChannels } from './channels.ts';
 import { createChannelSettings } from './channel-settings.ts';
 import { configuration, dataRoot, ownerId, port } from './config.ts';
-import { initializeDatabase, pool } from './db.ts';
+import { createInspectorPool, initializeDatabase, pool } from './db.ts';
 import { events, refresh } from './events.ts';
 import { createIntegrations } from './integrations.ts';
+import { createInspectorStore } from './inspector.ts';
 import { createPersonalService } from './personal.ts';
 import { createSpeech } from './speech.ts';
 import {
@@ -121,6 +122,14 @@ export async function createApplication(
   await mkdir(dataRoot, { recursive: true, mode: 0o700 });
   await initializeDatabase();
   await initializeTasks();
+  const inspectorDatabase = createInspectorPool();
+  const inspector = createInspectorStore(inspectorDatabase, {
+    ownerId,
+    enabled: () => configuration().inspectorEnabled,
+    secrets: Object.entries(process.env)
+      .filter(([key]) => /(?:API_KEY|SECRET|VAULT_KEY|BOT_TOKEN|ACCESS_TOKEN)$/.test(key))
+      .flatMap(([, value]) => (value ? [value] : [])),
+  });
   const runtime = createAgentRuntime({
     agent: adapters.agent,
     computer: adapters.computer,
@@ -160,9 +169,12 @@ export async function createApplication(
     },
   );
   if (options.workers !== false) {
+    await inspector.recover().catch(() => {});
     await triage.initializeHeartbeat();
     await startTaskWorkers({
       runTask: runtime.runTask,
+      observe: inspector.record,
+      finishObservationSegment: inspector.finishSegment,
       speech,
       manage: async (taskId, action, args, provenance) => {
         if (
@@ -221,6 +233,7 @@ export async function createApplication(
     speech,
     computer: adapters.computer,
     runtime,
+    inspector,
     configuration: () =>
       configuration({
         provider: adapters.model.provider,
@@ -272,8 +285,12 @@ export async function createApplication(
     channels.registerRoutes(app);
   }
   app.addHook('onClose', async () => {
-    await stopTasks();
-    await runtime.dispose();
+    try {
+      await stopTasks();
+      await runtime.dispose();
+    } finally {
+      await inspectorDatabase.end();
+    }
   });
   return { app, runtime, personal, triage, integrations, vault, channels, channelSettings };
 }

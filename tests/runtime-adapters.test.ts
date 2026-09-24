@@ -297,3 +297,77 @@ test('runtime disposal aborts an active task before releasing computer and works
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('stalled observations release active tasks on cancellation and disposal', async (t) => {
+  for (const method of ['cancel', 'dispose'] as const) {
+    await t.test(method, async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'sidekick-stalled-observer-'));
+      const controller = new AbortController();
+      let entered!: () => void;
+      const observed = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let rejectObservation!: (error: Error) => void;
+      const stalled = new Promise<void>((_resolve, reject) => {
+        rejectObservation = reject;
+      });
+      let executed = false;
+      const runtime = createAgentRuntime({
+        agent: {
+          open: async (input) => ({
+            resumed: false,
+            abort: () => {},
+            dispose: () => {},
+            prompt: async () => {
+              await input.tools
+                .find((tool) => tool.name === 'google')!
+                .execute({ action: 'FIXTURE_ACTION', args: {} });
+              executed = true;
+            },
+          }),
+          dispose: () => {},
+        },
+        computer: fakeComputer(),
+        workspace: fakeWorkspace(),
+      });
+      const running = runtime
+        .runTask({
+          ...context(directory),
+          signal: controller.signal,
+          observe: async () => {
+            entered();
+            return stalled;
+          },
+          integration: async () => {
+            executed = true;
+            return {};
+          },
+        })
+        .then(
+          () => 'succeeded',
+          (error: unknown) => error,
+        );
+      try {
+        await observed;
+        const disposing =
+          method === 'dispose' ? runtime.dispose() : Promise.resolve(controller.abort());
+        const completed = await Promise.race([
+          Promise.all([running, disposing]),
+          setTimeout(250).then(() => null),
+        ]);
+        assert.ok(completed, 'A stalled optional observer blocked cancellation');
+        assert.match(String(completed[0]), /cancelled/);
+        assert.equal(runtime.status().activeTasks, 0);
+        assert.equal(executed, false);
+        rejectObservation(new Error('Late private observer failure'));
+        await setTimeout(0);
+      } finally {
+        rejectObservation(new Error('Fixture observer cleanup'));
+        controller.abort();
+        await running;
+        await runtime.dispose();
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
+  }
+});

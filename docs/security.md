@@ -8,6 +8,12 @@ Provider selection and secret configuration belong in `src/server/composition.ts
 
 Prompt instructions are not a secrecy boundary. The model receives operating instructions and can make mistakes about disclosing them or following hostile content. Keep secrets out of its context, constrain tools on the server, and require review for Google writes. Explicit personal facts can be saved without review only when the server verifies their source against the user's own message; inferred facts and other persistent changes still require review. This prototype does not claim complete prompt-injection resistance. An approved browser destination can receive typed values and observe actions; never treat all page content as trusted.
 
+## Private developer observations
+
+With the inspector enabled, the server stores bounded tool inputs/results and model token/cost metadata in PostgreSQL. These records remain sensitive user content. Known configured provider keys, recognized secret fields, authentication headers and secure-form links are masked before storage; binary payloads are omitted. Each payload is limited to 16 KiB. Pattern masking cannot identify every secret embedded in arbitrary prose or encoded content. Trusted credential injection stays outside model tool output; the inspector cannot read the vault.
+
+Records expire after seven days and are pruned on startup and periodically during access. `DEV_INSPECTOR=false` stops capture and blocks inspector endpoints; it does not immediately erase existing records. Task ownership and revision checks prevent foreign or stale tool results from being returned as current work. A changed segment is marked interrupted without replaying its action. The inspector has no tool execution endpoint. Payloads are rendered as escaped text and are never forwarded to a telemetry service or console. Historical tasks are not backfilled from raw transcripts.
+
 ## Vault
 
 AES-GCM protects stored credentials. The encryption key lives outside PostgreSQL: Keychain on macOS, or an explicitly provided environment key on another machine. A cloud deployment should use KMS envelope encryption and workload identity. A non-exportable KMS key still lets an authorized running service decrypt data. Ordinary cloud KMS does not hide credentials from an administrator who controls that service or its host.

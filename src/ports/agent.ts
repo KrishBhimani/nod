@@ -1,6 +1,34 @@
 import type { CredentialKind } from './computer.ts';
 import type { Artifact } from '../shared/contracts.ts';
 
+export interface ModelUsageObservation {
+  type: 'model_usage';
+  id: string;
+  provider: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  costUsd: number | null;
+  costSource: 'sdk_estimate' | 'unavailable';
+  createdAt: string;
+}
+export type RuntimeObservation =
+  | { type: 'tool_start'; id: string; name: string; input: unknown; startedAt: string }
+  | {
+      type: 'tool_end';
+      id: string;
+      name: string;
+      status: 'succeeded' | 'failed' | 'cancelled';
+      output?: unknown;
+      error?: string;
+      finishedAt: string;
+      durationMs: number;
+    }
+  | ModelUsageObservation;
+
 export interface RuntimeContext {
   taskId: string;
   ownerId: string;
@@ -19,6 +47,7 @@ export interface RuntimeContext {
   signal: AbortSignal;
   attachments: Array<{ path: string; mimeType: string }>;
   emit(type: string, summary: string): Promise<void>;
+  observe?(event: RuntimeObservation): Promise<void>;
   reply(text: string, streamId?: string): Promise<void>;
   waitForUser?(question: string): Promise<void>;
   delta(text: string, streamId?: string, done?: boolean): void;
@@ -50,18 +79,21 @@ export interface AgentToolResult {
   content: Array<{ type: 'text'; text: string } | AgentImage>;
   details?: unknown;
 }
-export interface AgentTool {
+export interface AgentToolMetadata {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
+}
+export interface AgentTool extends AgentToolMetadata {
   execute(args: Record<string, unknown>): Promise<AgentToolResult>;
 }
 export type AgentEvent =
   | { type: 'turn_start' }
   | { type: 'message_start' }
-  | { type: 'message_end' }
+  | { type: 'message_end'; status?: 'succeeded' | 'failed' | 'cancelled' }
   | { type: 'text_delta'; text: string }
   | { type: 'final'; text: string }
+  | ModelUsageObservation
   | { type: 'error' };
 export interface AgentSessionOptions {
   taskId: string;

@@ -12,11 +12,17 @@ import { registerLocalAccess } from './access.ts';
 import type { SpeechService } from './speech.ts';
 import type { Computer } from '../ports/computer.ts';
 import type { Configuration } from '../shared/contracts.ts';
+import type { AgentToolMetadata } from '../ports/agent.ts';
+import { inspectorPayloadLimit, inspectorRetentionDays, type InspectorStore } from './inspector.ts';
 
 export interface AppDependencies {
   speech?: SpeechService;
   computer?: Pick<Computer, 'screenshot' | 'status' | 'screenStatus'>;
-  runtime?: { status(): { browser: string; workspace: string; activeTasks?: number } };
+  runtime?: {
+    status(): { browser: string; workspace: string; activeTasks?: number };
+    inspectTools?(): AgentToolMetadata[];
+  };
+  inspector?: Pick<InspectorStore, 'read'>;
   configuration?: () => Configuration;
   onboard?: (timeZone?: string) => Promise<unknown>;
 }
@@ -220,6 +226,30 @@ export async function createApp(dependencies: AppDependencies = {}) {
     const { text } = z.object({ text: z.string().min(1).max(3000) }).parse(request.body);
     const audio = await speech().synthesize(text);
     return storeArtifact(audio.bytes, audio.fileName, audio.mimeType);
+  });
+  app.get('/api/inspector/tools', async (_request, reply) => {
+    if (!publicConfiguration().inspectorEnabled)
+      return reply.code(404).send({ error: 'Inspector is disabled.' });
+    return {
+      tools: dependencies.runtime?.inspectTools?.() ?? [],
+      captureEnabled: Boolean(dependencies.inspector),
+      retentionDays: inspectorRetentionDays,
+      payloadLimitBytes: inspectorPayloadLimit,
+    };
+  });
+  app.get('/api/inspector/observations', async (request, reply) => {
+    if (!publicConfiguration().inspectorEnabled)
+      return reply.code(404).send({ error: 'Inspector is disabled.' });
+    const query = z
+      .object({
+        taskId: z.uuid(),
+        before: z.iso.datetime({ offset: true }).optional(),
+        beforeId: z.uuid().optional(),
+      })
+      .refine((value) => Boolean(value.before) === Boolean(value.beforeId))
+      .parse(request.query);
+    const result = await dependencies.inspector?.read(query.taskId, query);
+    return result ?? reply.code(404).send({ error: 'Task not found.' });
   });
   app.get('/api/inspector', async (_request, reply) => {
     if (!publicConfiguration().inspectorEnabled)

@@ -12,6 +12,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import type { Agent } from '../../ports/agent.ts';
 import { taskId } from '../../ports/task-identity.ts';
+import { createPiUsageTracker } from './usage.ts';
 
 function isFinalAnswer(signature: string | undefined) {
   if (!signature?.startsWith('{')) return false;
@@ -111,6 +112,16 @@ export function createPiAgent(options: {
         return input.shouldStop() ? { action: 'end' as const } : (result ?? undefined);
       };
       let textBlock: number | undefined;
+      const observeUsage = createPiUsageTracker({
+        sessionId: manager.getSessionId(),
+        provider: model.provider,
+        model: model.id,
+        history: manager
+          .getEntries()
+          .flatMap((entry) =>
+            entry.type === 'message' && entry.message.role === 'assistant' ? [entry.message] : [],
+          ),
+      });
       const unsubscribe = session.subscribe((event) => {
         if (event.type === 'message_start' && event.message.role === 'assistant') {
           textBlock = undefined;
@@ -130,6 +141,8 @@ export function createPiAgent(options: {
             input.onEvent({ type: 'text_delta', text: update.delta });
         }
         if (event.type === 'message_end' && event.message.role === 'assistant') {
+          const usage = observeUsage(event.message);
+          if (usage) input.onEvent(usage);
           if (event.message.stopReason === 'error') input.onEvent({ type: 'error' });
           if (event.message.stopReason === 'stop') {
             const blocks = event.message.content.filter((item) => item.type === 'text');
@@ -139,7 +152,14 @@ export function createPiAgent(options: {
               text: (finalBlocks.length ? finalBlocks : blocks).map((item) => item.text).join('\n'),
             });
           }
-          input.onEvent({ type: 'message_end' });
+          const status = ['stop', 'length', 'toolUse'].includes(event.message.stopReason)
+            ? 'succeeded'
+            : event.message.stopReason === 'error'
+              ? 'failed'
+              : event.message.stopReason === 'aborted'
+                ? 'cancelled'
+                : undefined;
+          input.onEvent({ type: 'message_end', ...(status ? { status } : {}) });
         }
       });
       return {

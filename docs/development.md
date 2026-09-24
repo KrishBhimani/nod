@@ -16,6 +16,8 @@ Read the relevant [area guide](../AGENTS.md), then use [architecture](architectu
 
 The inspector opens beside the current page and shows task state, safe event summaries, and browser images. `/dev` opens it directly; `DEV_INSPECTOR=false` disables it. Last-known images and pending sign-in states must be shown distinctly from a live capture.
 
+The Tools tab lists registered definitions even before a task runs. Choose a task to inspect redacted call inputs/results, status, duration, model token categories and SDK cost estimates. Filter by tool or status and load earlier records as needed. Data is retained for seven days, with 16 KiB per payload. Missing prices show as unavailable; provider fees, compaction, speech, triage and hosting are excluded. Existing tasks have no new recordings until they run again. Recording is best effort: a failed or slow inspector store can leave partial history and cost totals while the task continues. See [security](security.md) for capture and secret-masking limits.
+
 The Linux workspace can install CLI packages with `npm install -g` and `pipx install`; `/home/node` persists in `workspace-tools`. Base OS packages belong in `Dockerfile.workspace`. Rebuild with `docker compose up -d --build --wait` after Dockerfile or guard changes. The workspace must never receive provider keys, the host Docker socket, or browser profile mounts.
 
 ## Checks
@@ -32,16 +34,17 @@ Database fixtures create random schemas and their own pg-boss schema, then remov
 
 Run focused checks while changing a boundary:
 
-| Boundary                                      | Tests under `tests/`                                                                |
-| --------------------------------------------- | ----------------------------------------------------------------------------------- |
-| App composition and replacement adapters      | `application-adapters`, `runtime-adapters`, `provider-adapters`                     |
-| Task continuation, cancellation, and recovery | `task-continuation`, `task-durability`, `runtime-session`, `pi-agent`               |
-| HTTP, approvals, and access                   | `access`, `server-boundaries`, `chat-api`                                           |
-| Credential stages and browser recovery        | `vault`, `vault-staged`, `browser-login`, `browser-recovery`, `runtime-credentials` |
-| Google accounts and events                    | `integrations`, `provider-adapters`                                                 |
-| Channel verification, polling, and delivery   | `channel-settings`, `channels`, `channel-application`, `messaging-transport`        |
-| Personal learning and quiet work              | `personal`, `triage-preferences`, `task-durability`                                 |
-| Web content, streaming, links, and audio      | `web-markdown`, `web-streams`, `message-links`, `web-speech`, `speech`              |
+| Boundary                                      | Tests under `tests/`                                                                                                      |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| App composition and replacement adapters      | `application-adapters`, `runtime-adapters`, `provider-adapters`                                                           |
+| Task continuation, cancellation, and recovery | `task-continuation`, `task-durability`, `runtime-session`, `pi-agent`                                                     |
+| HTTP, approvals, and access                   | `access`, `server-boundaries`, `chat-api`                                                                                 |
+| Credential stages and browser recovery        | `vault`, `vault-staged`, `browser-login`, `browser-recovery`, `runtime-credentials`                                       |
+| Google accounts and events                    | `integrations`, `provider-adapters`                                                                                       |
+| Channel verification, polling, and delivery   | `channel-settings`, `channels`, `channel-application`, `messaging-transport`                                              |
+| Personal learning and quiet work              | `personal`, `triage-preferences`, `task-durability`                                                                       |
+| Web content, streaming, links, and audio      | `web-markdown`, `web-streams`, `message-links`, `web-speech`, `speech`                                                    |
+| Inspector catalog, private records and usage  | `inspector-redaction`, `inspector-store`, `inspector-observations`, `runtime-session`, `pi-agent`, `application-adapters` |
 
 Each name has a `.test.ts` suffix. For example:
 

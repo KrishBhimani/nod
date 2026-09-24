@@ -7,6 +7,7 @@ import test from 'node:test';
 import pg from 'pg';
 import type { Agent } from '../src/ports/agent.ts';
 import type { IntegrationProvider, IntegrationSession } from '../src/ports/integrations.ts';
+import { createPiUsageTracker } from '../src/providers/pi/usage.ts';
 import { fakeComputer } from './runtime-fixtures.ts';
 
 test(
@@ -143,6 +144,32 @@ test(
             input.onEvent({ type: 'text_delta', text: 'completed the request.' });
             input.onEvent({ type: 'final', text: 'Replacement providers completed the request.' });
             input.onEvent({ type: 'message_end' });
+            const usage = createPiUsageTracker({
+              sessionId: input.taskId,
+              provider: 'replacement',
+              model: 'fixture',
+              history: [],
+            })({
+              role: 'assistant',
+              api: 'openai-responses',
+              provider: 'replacement',
+              model: 'fixture',
+              responseId: 'fixture-response',
+              timestamp: Date.now(),
+              stopReason: 'stop',
+              content: [{ type: 'text', text: 'Replacement providers completed the request.' }],
+              usage: {
+                input: 10,
+                output: 5,
+                cacheRead: 0,
+                cacheWrite: 0,
+                totalTokens: 15,
+                cost: { input: 0.0005, output: 0.0005, cacheRead: 0, cacheWrite: 0, total: 0.001 },
+              },
+            });
+            assert.ok(usage);
+            input.onEvent(usage);
+            input.onEvent(structuredClone(usage));
           },
         };
       },
@@ -232,6 +259,22 @@ test(
       const screenResponse = await request('GET', `/api/inspector/screen?taskId=${id}`);
       assert.equal(screenResponse.statusCode, 200);
       assert.deepEqual(screenResponse.rawPayload, screen);
+      const catalog = (await request('GET', '/api/inspector/tools')).json();
+      assert.equal(catalog.captureEnabled, true);
+      assert.ok(catalog.tools.some((tool: { name: string }) => tool.name === 'google'));
+      const observations = (
+        await request('GET', `/api/inspector/observations?taskId=${id}`)
+      ).json();
+      assert.ok(
+        observations.calls.some(
+          (call: { name: string; status: string }) =>
+            call.name === 'shell' && call.status === 'succeeded',
+        ),
+      );
+      assert.equal(observations.usage.length, 1);
+      assert.equal(observations.usage[0].provider, 'replacement');
+      assert.equal(observations.summary.totalTokens, 15);
+      assert.equal(observations.summary.knownCostUsd, 0.001);
       const state = (await request('GET', '/api/state')).json();
       assert.equal(state.configuration.provider, 'replacement');
       const final = state.messages.find(

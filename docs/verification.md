@@ -5,7 +5,7 @@ This records the local prototype checks after the conversation, inspector, login
 ## Automated checks
 
 - `npm run check`: TypeScript, import boundaries and repository formatting passed.
-- `npm run test:integration`: 134 checks passed, zero skipped, using disposable PostgreSQL and pg-boss schemas.
+- `npm run test:integration`: 168 checks passed, zero skipped, using disposable PostgreSQL and pg-boss schemas.
 - `npm run build`: production web bundle passed.
 - `git diff --check`: passed.
 - Dependency audit: zero reported vulnerabilities at installation.
@@ -54,3 +54,11 @@ Live checks found and fixed a Composio SDK validation failure caused by absent a
 ## Still requiring setup or additional implementation
 
 Anthropic, Jev, live Telegram/WhatsApp delivery, new Google Drive/Docs/Sheets consent, external Google event delivery and real website credential/OTP flows are not live-verified. Chat SDK supports the implemented optional text channels; channel media remains in the web app. iMessage, native desktop control, payment-card storage and public multi-user authentication are not implemented. Prompt instructions and HTML filtering are not a guarantee against every disclosure or prompt-injection attack. See [production requirements](production.md), [channels](channels.md) and [vault boundaries](vault.md).
+
+## Tool and model inspection follow-up
+
+- The live browser/task check recorded three successful calls (`browser`, `write_file`, `publish_artifact`) and four OpenAI model responses. The inspector displayed 14,464 tokens, including 9,728 cache-read tokens, and USD 0.005305 in SDK estimates. The file `inspector-check.txt` was delivered through the conversation.
+- The Tools tab exposed all 14 configured runtime definitions before a new task, searchable schemas, the actual browser request/result, timings and usage. Old tasks showed no invented recordings. Chat remained visible, with no horizontal page overflow at the tested 770-pixel viewport.
+- PostgreSQL fixtures verified masking before persistence, owner checks, disabled capture, stable mixed-record pagination, retention, revision changes, interruptions, duplicate usage and a real statement timeout. The full application fixture uses Pi's real usage normalizer to verify valid IDs and duplicate handling through the HTTP API.
+- Runtime fixtures verified that stalled inspection cannot block cancellation/disposal, capture stops after its first timeout, late rejection is handled, and reported usage after cancellation has a nonblocking best-effort path.
+- Cost figures are recorded assistant-response estimates, not invoice totals. Separate compaction/cache-warming, triage, speech, browser services, integration and hosting charges are excluded. Failed or timed-out capture can leave partial records. No new provider plan, push or deployment was used.
