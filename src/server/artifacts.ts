@@ -1,0 +1,32 @@
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { basename, extname, join, relative, sep } from 'node:path';
+import { pool } from './db.ts';
+import { dataRoot, ownerId } from './config.ts';
+import type { Artifact } from '../shared/contracts.ts';
+
+const mimeTypes: Record<string, string> = { '.txt': 'text/plain', '.md': 'text/markdown', '.csv': 'text/csv', '.json': 'application/json', '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.webm': 'audio/webm', '.ogg': 'audio/ogg', '.html': 'text/html' };
+export const maxFileSize = 15 * 1024 * 1024;
+export function artifactView(row: Record<string, any>): Artifact {
+  return { id: row.id, name: row.name, mimeType: row.mime_type, size: row.size, url: `/api/artifacts/${row.id}` };
+}
+export async function storeArtifact(bytes: Buffer, name: string, mimeType: string, taskId?: string): Promise<Artifact> {
+  if (!bytes.length || bytes.length > maxFileSize) throw Object.assign(new Error('Files must be between 1 byte and 15 MB.'), { statusCode: 400 });
+  const id = randomUUID();
+  const directory = join(dataRoot, 'artifacts');
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const path = join(directory, id);
+  await writeFile(path, bytes, { mode: 0o600 });
+  const safeName = basename(name).replace(/[\r\n\x00-\x1f]/g, '').slice(0, 160) || 'file';
+  const result = await pool.query('INSERT INTO artifacts(id,owner_id,task_id,name,mime_type,size,storage_path) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *', [id, ownerId, taskId || null, safeName, mimeType, bytes.length, path]);
+  return artifactView(result.rows[0]);
+}
+export async function publishArtifact(taskId: string, path: string, name?: string) {
+  const root = await realpath(join(dataRoot, 'workspaces', taskId));
+  const actual = await realpath(path.startsWith('/') ? path : join(root, path));
+  const rel = relative(root, actual);
+  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || rel.startsWith('/')) throw new Error('Only files inside this task workspace can be published.');
+  const info = await stat(actual);
+  if (!info.isFile() || info.size > maxFileSize) throw new Error('The artifact is not a regular file under 15 MB.');
+  return storeArtifact(await readFile(actual), name || basename(actual), mimeTypes[extname(actual).toLowerCase()] || 'application/octet-stream', taskId);
+}
