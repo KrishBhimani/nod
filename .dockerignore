@@ -1,2 +1,4 @@
 *
 !Dockerfile.workspace
+!scripts/
+!scripts/workspace-network.sh

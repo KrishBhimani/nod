@@ -9,7 +9,7 @@ import { delta, refresh } from './events.ts';
 import { publishArtifact, storeArtifact } from './artifacts.ts';
 import type { SpeechService } from './speech.ts';
 import type { Artifact } from '../shared/contracts.ts';
-import type { RuntimeContext } from '../ports/agent.ts';
+import type { RuntimeContext, RuntimeResult } from '../ports/agent.ts';
 
 const queue = 'assistant-task';
 export const boss = new PgBoss({
@@ -21,26 +21,40 @@ type TaskSource = 'user' | 'schedule' | 'event';
 export interface SubmitTaskOptions {
   sourceId?: string;
   source?: TaskSource;
+  channel?: string;
   client?: PoolClient;
 }
 export interface TaskDependencies {
-  runTask: (context: RuntimeContext) => Promise<{ status: string }>;
+  runTask: (
+    context: RuntimeContext,
+  ) => Promise<{ status: string; waitingFor?: RuntimeResult['waitingFor']; question?: string }>;
   speech: Pick<SpeechService, 'synthesize'>;
   requestCredential: (
     taskId: string,
     input: Parameters<RuntimeContext['requestCredential']>[0],
   ) => ReturnType<RuntimeContext['requestCredential']>;
   integration: (taskId: string, action: string, args: Record<string, unknown>) => Promise<unknown>;
-  manage: (taskId: string, action: string, args: Record<string, unknown>) => Promise<unknown>;
+  manage: (
+    taskId: string,
+    action: string,
+    args: Record<string, unknown>,
+    provenance: { taskId: string; sourceMessageId: string | null },
+  ) => Promise<unknown>;
 }
 export async function initializeTaskSchema() {
   await pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS source_id text;
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'user';
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS channel text NOT NULL DEFAULT 'web';
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS waiting_reason text;
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS waiting_question text;
     CREATE UNIQUE INDEX IF NOT EXISTS tasks_owner_source ON tasks(owner_id,source_id) WHERE source_id IS NOT NULL;
     CREATE TABLE IF NOT EXISTS task_continuations (
       owner_id text NOT NULL, source_id text NOT NULL, task_id uuid NOT NULL REFERENCES tasks(id),
       PRIMARY KEY(owner_id,source_id)
-    )`);
+    );
+    UPDATE tasks SET waiting_reason='question',waiting_question=(SELECT text FROM messages WHERE task_id=tasks.id AND role='assistant' ORDER BY created_at DESC LIMIT 1)
+    WHERE status='waiting_user' AND waiting_reason IS NULL AND error IS NULL
+    AND (SELECT summary FROM task_events WHERE task_id=tasks.id AND type='tool_start' ORDER BY created_at DESC LIMIT 1)='ask user'`);
 }
 function taskStopped() {
   return Object.assign(new Error('This task segment is no longer active.'), { statusCode: 409 });
@@ -116,6 +130,8 @@ export async function submitTask(
 ) {
   if (options.sourceId !== undefined && (!options.sourceId.trim() || options.sourceId.length > 500))
     throw new Error('Invalid task source identity.');
+  if (options.channel !== undefined && !/^[a-z][a-z0-9:_-]{0,79}$/.test(options.channel))
+    throw new Error('Invalid conversation channel.');
   const create = async (client: PoolClient) => {
     let taskId = existingId || randomUUID();
     let revision = 0;
@@ -140,7 +156,7 @@ export async function submitTask(
         );
       revision = found.rows[0].revision + 1;
       await client.query(
-        "UPDATE tasks SET prompt=$2,status='queued',revision=$3,error=NULL,source=$4,updated_at=now() WHERE id=$1",
+        "UPDATE tasks SET prompt=$2,status='queued',revision=$3,error=NULL,source=$4,waiting_reason=NULL,waiting_question=NULL,updated_at=now() WHERE id=$1",
         [taskId, text, revision, options.source ?? (silent ? found.rows[0].source : 'user')],
       );
       if (options.sourceId)
@@ -150,7 +166,7 @@ export async function submitTask(
         );
     } else {
       const inserted = await client.query(
-        `INSERT INTO tasks(id,owner_id,title,prompt,source_id,source) VALUES($1,$2,$3,$4,$5,$6)
+        `INSERT INTO tasks(id,owner_id,title,prompt,source_id,source,channel) VALUES($1,$2,$3,$4,$5,$6,$7)
         ON CONFLICT(owner_id,source_id) WHERE source_id IS NOT NULL DO NOTHING RETURNING id`,
         [
           taskId,
@@ -159,6 +175,7 @@ export async function submitTask(
           text,
           options.sourceId ?? null,
           options.source ?? (silent ? 'event' : 'user'),
+          options.channel ?? 'web',
         ],
       );
       if (!inserted.rowCount) {
@@ -189,6 +206,143 @@ export async function submitTask(
   if (!options.client) refresh();
   return taskId;
 }
+export interface SubmitUserMessageOptions {
+  taskId?: string;
+  forceNew?: boolean;
+  sourceId?: string;
+  channel?: string;
+  client?: PoolClient;
+}
+function isShortAnswer(text: string, attachments: Artifact[]) {
+  const value = text.trim();
+  if (
+    !value ||
+    attachments.length ||
+    value.length > 120 ||
+    value.split(/\s+/).length > 8 ||
+    value.endsWith('?')
+  )
+    return false;
+  if (
+    /\b(?:open|install|send|create|write|research|search|find|download|delete|remove|run|execute|browse|visit|check|summarize|summarise|translate|book|schedule|remind|click|navigate|reply|show|tell|connect|plan|calculate|compute|describe|explain|draft|compare|convert|fix|update|edit|change|build|generate|solve|analyze|analyse|use|do|help|start|stop|cancel|restart|weather|sign in|log in|abre|instala|envia|cria|pesquisa|procura|apaga|remove|executa|visita|verifica|resume|traduz|reserva|agenda|clica|navega|responde|mostra|liga|planeia|calcula|descreve|explica|compara|corrige)\b/i.test(
+      value.replace(/^i use\s+/i, ''),
+    )
+  )
+    return false;
+  if (
+    /^(?:my (?:name|username|email|phone|number|location|budget) is|i(?:'m| am| live in| prefer| like| use| work)|o meu (?:nome|número|numero|email) é|chamo-me|vivo em|moro em|prefiro)\s+/i.test(
+      value,
+    )
+  )
+    return true;
+  if (
+    /^(?:yes|no|yep|nope|sure|ok|okay|go ahead|sim|não|claro)(?:[, ]+(?:please|thanks|thank you|obrigado|obrigada))?[.!]?$/i.test(
+      value,
+    )
+  )
+    return true;
+  if (
+    /^(?:@?[\p{L}\p{N}_][\p{L}\p{N}_.-]*|[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})$/u.test(
+      value,
+    )
+  )
+    return true;
+  if (
+    /^\p{Lu}[\p{L}\p{M}'’-]*(?:\s+(?:(?:de|da|do|dos|das|van|von)\s+)?\p{Lu}[\p{L}\p{M}'’-]*){1,3}$/u.test(
+      value,
+    )
+  )
+    return true;
+  if (
+    /^(?:[$€£]\s*)?\d[\d.,:/ -]*(?:\s*(?:am|pm|euros?|dollars?|usd|eur|gbp|minutes?|hours?|days?|people|pessoas))?$/i.test(
+      value,
+    )
+  )
+    return true;
+  return /^(?:(?:on|at|by|next|this|na|no|próxima|próximo)\s+)?(?:today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|hoje|amanhã|segunda|terça|quarta|quinta|sexta|sábado|domingo)(?:\s+(?:at|às))?(?:\s+\d{1,2}(?::\d{2})?(?:\s*[ap]m)?)?$/i.test(
+    value,
+  );
+}
+export async function submitUserMessage(
+  text: string,
+  attachments: Artifact[] = [],
+  options: SubmitUserMessageOptions = {},
+): Promise<{ taskId: string; continued: boolean }> {
+  const route = async (client: PoolClient) => {
+    const channel = options.channel ?? 'web';
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
+      `message:${ownerId}:${channel}`,
+    ]);
+    if (options.sourceId) {
+      const prior = await client.query(
+        `SELECT task_id AS id,true AS continued FROM task_continuations WHERE owner_id=$1 AND source_id=$2
+        UNION ALL SELECT id,false AS continued FROM tasks WHERE owner_id=$1 AND source_id=$2 LIMIT 1`,
+        [ownerId, options.sourceId],
+      );
+      if (prior.rows[0])
+        return {
+          taskId: prior.rows[0].id as string,
+          continued: prior.rows[0].continued as boolean,
+        };
+    }
+    let existingId = options.taskId;
+    if (existingId) {
+      const selected = await client.query(
+        'SELECT channel,waiting_reason FROM tasks WHERE id=$1 AND owner_id=$2 FOR UPDATE',
+        [existingId, ownerId],
+      );
+      if (!selected.rows[0] || selected.rows[0].channel !== channel)
+        throw Object.assign(new Error('Task not found in this conversation.'), { statusCode: 404 });
+      if (selected.rows[0].waiting_reason === 'approval')
+        throw Object.assign(new Error('Review the requested action before continuing this task.'), {
+          statusCode: 409,
+        });
+    } else if (!options.forceNew && isShortAnswer(text, attachments)) {
+      const waiting = await client.query(
+        `SELECT id,title,waiting_question AS question FROM tasks WHERE owner_id=$1 AND channel=$2
+        AND status='waiting_user' AND waiting_reason='question' ORDER BY updated_at DESC LIMIT 10 FOR UPDATE`,
+        [ownerId, channel],
+      );
+      if (waiting.rows.length > 1)
+        throw Object.assign(new Error('Which task is this answer for?'), {
+          statusCode: 409,
+          code: 'task_selection_required',
+          choices: waiting.rows,
+        });
+      existingId = waiting.rows[0]?.id;
+    }
+    const taskId = await submitTask(text, attachments, existingId, false, {
+      sourceId: options.sourceId,
+      source: 'user',
+      channel,
+      client,
+    });
+    return { taskId, continued: Boolean(existingId) };
+  };
+  const result = options.client ? await route(options.client) : await transaction(route);
+  if (!options.client) refresh();
+  return result;
+}
+export async function restartOnboarding() {
+  const result = await transaction(async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
+      `message:${ownerId}:web`,
+    ]);
+    const superseded = await client.query(
+      "UPDATE tasks SET status='cancelled',revision=revision+1,updated_at=now() WHERE owner_id=$1 AND source='user' AND channel='web' AND source_id LIKE 'onboarding:%' AND status IN ('queued','running','waiting_user','waiting_credentials') RETURNING id",
+      [ownerId],
+    );
+    const next = await submitUserMessage(
+      'Help me get set up. Use what you already know about me, help me connect the tools I need, and ask one short question about what I want to work on. Do not repeat questions I have already answered.',
+      [],
+      { forceNew: true, channel: 'web', sourceId: `onboarding:${randomUUID()}`, client },
+    );
+    return { ...next, superseded: superseded.rows.map((row) => row.id as string) };
+  });
+  for (const id of result.superseded) running.get(id)?.abort();
+  refresh();
+  return { taskId: result.taskId, continued: result.continued };
+}
 export async function resumeTask(taskId: string) {
   await transaction(async (client) => {
     const current = await client.query(
@@ -198,7 +352,7 @@ export async function resumeTask(taskId: string) {
     if (!current.rows[0]) return;
     if (current.rows[0].status !== 'waiting_credentials') return;
     const result = await client.query(
-      "UPDATE tasks SET status='queued',revision=revision+1,prompt='The secure credential step has completed. Inspect the current browser and continue the original task. Do not repeat completed external actions.',updated_at=now() WHERE id=$1 AND owner_id=$2 AND status='waiting_credentials' RETURNING revision",
+      "UPDATE tasks SET status='queued',revision=revision+1,waiting_reason=NULL,waiting_question=NULL,prompt='The secure credential step has completed. Inspect the current browser and continue the original task. Do not repeat completed external actions.',updated_at=now() WHERE id=$1 AND owner_id=$2 AND status='waiting_credentials' RETURNING revision",
       [taskId, ownerId],
     );
     if (!result.rowCount) return;
@@ -225,7 +379,7 @@ export async function cancelTask(taskId: string) {
 export async function retryTaskCredentials(taskId: string, expectedRevision: number) {
   await transaction(async (client) => {
     const result = await client.query(
-      "UPDATE tasks SET status='queued',revision=revision+1,prompt='The previous secure sign-in link expired. Inspect the current browser and request a fresh secure credential link if sign-in is still required. Do not repeat completed actions.',updated_at=now() WHERE id=$1 AND owner_id=$2 AND revision=$3 AND status='waiting_credentials' RETURNING revision",
+      "UPDATE tasks SET status='queued',revision=revision+1,waiting_reason=NULL,waiting_question=NULL,prompt='The previous secure sign-in link expired. Inspect the current browser and request a fresh secure credential link if sign-in is still required. Do not repeat completed actions.',updated_at=now() WHERE id=$1 AND owner_id=$2 AND revision=$3 AND status='waiting_credentials' RETURNING revision",
       [taskId, ownerId, expectedRevision],
     );
     if (!result.rowCount) throw taskStopped();
@@ -251,7 +405,7 @@ export async function initializeTasks() {
 }
 export async function startTaskWorkers(dependencies: TaskDependencies) {
   await pool.query(
-    "UPDATE tasks SET status='waiting_user',error='The server stopped during this task. Review its last action before continuing.',revision=revision+1,updated_at=now() WHERE owner_id=$1 AND status='running'",
+    "UPDATE tasks SET status='waiting_user',waiting_reason='recovery',waiting_question=NULL,error='The server stopped during this task. Review its last action before continuing.',revision=revision+1,updated_at=now() WHERE owner_id=$1 AND status='running'",
     [ownerId],
   );
   const pending = await pool.query(
@@ -273,6 +427,14 @@ export async function startTaskWorkers(dependencies: TaskDependencies) {
   );
 }
 async function executeTask(taskId: string, revision: number, dependencies: TaskDependencies) {
+  if (running.has(taskId)) {
+    await boss.send(
+      queue,
+      { taskId, revision },
+      { startAfter: 1, retryLimit: 0, expireInSeconds: 1800 },
+    );
+    return;
+  }
   const selected = await pool.query(
     "UPDATE tasks SET status='running',updated_at=now() WHERE id=$1 AND revision=$2 AND owner_id=$3 AND status='queued' RETURNING *",
     [taskId, revision, ownerId],
@@ -289,7 +451,7 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
   const ensureCurrent = () => current(async () => {});
   try {
     const history = await pool.query(
-      `SELECT role,text FROM (SELECT role,left(text,6000) AS text,created_at FROM messages
+      `SELECT role,text,created_at AS "createdAt",reaction FROM (SELECT role,left(text,6000) AS text,created_at,reaction FROM messages
       WHERE owner_id=$1 AND id IS DISTINCT FROM (SELECT id FROM messages WHERE task_id=$2 AND role='user' AND text=$3 ORDER BY created_at DESC LIMIT 1)
       ORDER BY created_at DESC LIMIT 30) m ORDER BY created_at`,
       [ownerId, taskId, task.prompt],
@@ -298,12 +460,13 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
       'SELECT text FROM memory_facts WHERE owner_id=$1 ORDER BY created_at DESC LIMIT 30',
       [ownerId],
     );
-    const [profile, goals] = await Promise.all([
+    const [profile, goals, preferences] = await Promise.all([
       pool.query('SELECT data FROM profiles WHERE owner_id=$1', [ownerId]),
       pool.query(
         "SELECT title,left(description,500) AS description,progress,left(next_action,300) AS next_action,target_date FROM goals WHERE owner_id=$1 AND status='active' ORDER BY updated_at DESC LIMIT 10",
         [ownerId],
       ),
+      pool.query('SELECT time_zone FROM preferences WHERE owner_id=$1', [ownerId]),
     ]);
     const storedProfile = profile.rows[0]?.data ?? {};
     const profileData = {
@@ -332,7 +495,9 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
       taskId,
       ownerId,
       prompt: task.prompt,
-      background: task.source === 'event',
+      background: task.source !== 'user',
+      channel: task.channel,
+      timeZone: preferences.rows[0]?.time_zone,
       history: history.rows,
       memories: contextFacts,
       workspacePath,
@@ -349,8 +514,22 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
         await ensureCurrent();
         await reply(taskId, text, [], revision, streamId);
       },
+      waitForUser: async (question) => {
+        await current(async (client) => {
+          const changed = await client.query(
+            "UPDATE tasks SET status='waiting_user',waiting_reason='question',waiting_question=$3,updated_at=now() WHERE id=$1 AND revision=$2 AND status='running' RETURNING id",
+            [taskId, revision, question.slice(0, 3000)],
+          );
+          if (!changed.rowCount) throw taskStopped();
+          await client.query(
+            'INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,$2,$3,$4,$5)',
+            [randomUUID(), ownerId, 'assistant', question.slice(0, 3000), taskId],
+          );
+        });
+        refresh();
+      },
       delta: (text, streamId, done) => {
-        if (!controller.signal.aborted && task.source !== 'event')
+        if (!controller.signal.aborted && task.source === 'user')
           delta(taskId, text, streamId, done);
       },
       remember: async (text) => {
@@ -384,7 +563,7 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
         if (request.filled) return request;
         await current((client) =>
           client.query(
-            "UPDATE tasks SET status='waiting_credentials',updated_at=now() WHERE id=$1 AND revision=$2 AND status='running'",
+            "UPDATE tasks SET status='waiting_credentials',waiting_reason='credentials',waiting_question=NULL,updated_at=now() WHERE id=$1 AND revision=$2 AND status='running'",
             [taskId, revision],
           ),
         );
@@ -395,16 +574,29 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
         return dependencies.integration(taskId, action, args);
       },
       manage: async (action, args) => {
-        await ensureCurrent();
-        return dependencies.manage(taskId, action, args);
+        const sourceMessageId = await current(async (client) => {
+          if (task.source !== 'user') return null;
+          const source = await client.query(
+            "SELECT id FROM messages WHERE task_id=$1 AND owner_id=$2 AND role='user' ORDER BY created_at DESC,id DESC LIMIT 1",
+            [taskId, ownerId],
+          );
+          return source.rows[0]?.id ?? null;
+        });
+        return dependencies.manage(taskId, action, args, { taskId, sourceMessageId });
       },
     });
     if (!['succeeded', 'waiting_credentials', 'waiting_user'].includes(result.status))
       throw new Error('Invalid task result.');
     await current(async (client) => {
       const updated = await client.query(
-        "UPDATE tasks SET status=$3,updated_at=now() WHERE id=$1 AND revision=$2 AND (status='running' OR status=$3) RETURNING id",
-        [taskId, revision, result.status],
+        "UPDATE tasks SET status=$3,waiting_reason=$4,waiting_question=$5,updated_at=now() WHERE id=$1 AND revision=$2 AND (status='running' OR status=$3) RETURNING id",
+        [
+          taskId,
+          revision,
+          result.status,
+          result.waitingFor ?? null,
+          result.question?.slice(0, 3000) ?? null,
+        ],
       );
       if (updated.rowCount)
         await client.query('INSERT INTO task_events(id,task_id,type,summary) VALUES($1,$2,$3,$4)', [
@@ -417,7 +609,7 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
   } catch (error) {
     const safeError = controller.signal.aborted
       ? 'The task stopped.'
-      : 'The task could not finish. Check provider configuration or retry from the chat.';
+      : 'I couldn’t finish this task. You can try again from the conversation.';
     await transaction(async (client) => {
       const updated = await client.query(
         "UPDATE tasks SET status='failed',error=$3,updated_at=now() WHERE id=$1 AND revision=$2 AND status='running' RETURNING id",

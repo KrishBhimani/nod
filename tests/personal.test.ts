@@ -73,12 +73,207 @@ test(
     try {
       await scheduler.start();
       await personal.initialize({ workers: false });
-      await pool.query(`CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text NOT NULL,role text NOT NULL);
+      await pool.query(`CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text NOT NULL,role text NOT NULL,text text NOT NULL DEFAULT '',task_id uuid,created_at timestamptz NOT NULL DEFAULT now());
         CREATE TABLE memory_facts(id uuid PRIMARY KEY,owner_id text NOT NULL,text text NOT NULL,
           source_message_id uuid REFERENCES messages(id),UNIQUE(owner_id,text))`);
+      await pool.query(`CREATE TABLE preferences(owner_id text PRIMARY KEY,notification_rule text NOT NULL DEFAULT '',
+        time_zone text NOT NULL DEFAULT 'Europe/Lisbon',quiet_start text NOT NULL DEFAULT '22:00',quiet_end text NOT NULL DEFAULT '08:00')`);
+      await t.test(
+        'conversation preferences start useful but preserve an explicit quiet choice and partial changes',
+        async () => {
+          const initial = (await personal.manage('notification_preferences_get', {})) as {
+            notificationRule: string;
+            timeZone: string;
+          };
+          assert.match(initial.notificationRule, /time-sensitive/);
+          assert.match(initial.notificationRule, /quiet/);
+          await personal.manage('notification_preferences_update', {
+            notificationRule: '',
+            quietStart: '21:00',
+          });
+          const updated = (await personal.manage('notification_preferences_update', {
+            timeZone: 'UTC',
+          })) as {
+            notificationRule: string;
+            timeZone: string;
+            quietStart: string;
+            quietEnd: string;
+          };
+          assert.equal(updated.notificationRule, '');
+          assert.equal(updated.timeZone, 'UTC');
+          assert.equal(updated.quietStart, '21:00');
+          assert.equal(updated.quietEnd, '08:00');
+          await assert.rejects(
+            personal.manage('notification_preferences_update', { timeZone: 'Unknown/Fixture' }),
+          );
+          await assert.rejects(
+            personal.manage('notification_preferences_update', { quietStart: '25:00' }),
+          );
+          await assert.rejects(
+            personal.manage('notification_preferences_update', { unexpected: true }),
+          );
+        },
+      );
+      await t.test(
+        'automatic learning requires an exact owned user statement and preserves provenance without approval',
+        async () => {
+          const id = randomUUID(),
+            taskId = randomUUID(),
+            foreign = randomUUID(),
+            assistant = randomUUID();
+          await pool.query(
+            "INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,'fixture-owner','user','I prefer concise replies',$4),($2,'other-owner','user','I prefer concise replies',$4),($3,'fixture-owner','assistant','I prefer concise replies',$4)",
+            [id, foreign, assistant, taskId],
+          );
+          assert.deepEqual(
+            await personal.manage(
+              'memory_remember',
+              { quote: 'I prefer concise replies' },
+              { sourceMessageId: id, taskId },
+            ),
+            { ok: true },
+          );
+          const remembered = (
+            await pool.query(
+              'SELECT text,source_message_id FROM memory_facts WHERE source_message_id=$1',
+              [id],
+            )
+          ).rows[0];
+          assert.deepEqual(remembered, { text: 'I prefer concise replies', source_message_id: id });
+          await assert.rejects(
+            personal.manage(
+              'memory_remember',
+              { quote: 'I prefer long replies' },
+              { sourceMessageId: id },
+            ),
+          );
+          await assert.rejects(
+            personal.manage(
+              'memory_remember',
+              { quote: 'I prefer concise replies' },
+              { sourceMessageId: foreign },
+            ),
+          );
+          await assert.rejects(
+            personal.manage(
+              'memory_remember',
+              { quote: 'I prefer concise replies' },
+              { sourceMessageId: assistant },
+            ),
+          );
+          await assert.rejects(
+            personal.manage(
+              'memory_remember',
+              { quote: 'I prefer concise replies' },
+              { sourceMessageId: null },
+            ),
+          );
+          await assert.rejects(
+            personal.manage(
+              'memory_remember',
+              { quote: 'I prefer concise replies' },
+              { sourceMessageId: id, taskId: randomUUID() },
+            ),
+          );
+          await assert.rejects(
+            personal.manage(
+              'memory_remember',
+              { quote: 'I prefer concise replies', sourceMessageId: id },
+              { sourceMessageId: null },
+            ),
+          );
+          const qualifiedSource = randomUUID();
+          await pool.query(
+            "INSERT INTO messages(id,owner_id,role,text) VALUES($1,'fixture-owner','user','I prefer concise replies only for notifications.')",
+            [qualifiedSource],
+          );
+          await assert.rejects(
+            personal.manage(
+              'memory_remember',
+              { quote: 'I prefer concise replies' },
+              { sourceMessageId: qualifiedSource },
+            ),
+          );
+          assert.deepEqual(
+            await personal.manage(
+              'memory_remember',
+              { quote: 'I prefer concise replies only for notifications.' },
+              { sourceMessageId: qualifiedSource },
+            ),
+            { ok: true },
+          );
+          for (const quote of [
+            'The website says I prefer concise replies',
+            'My password is a-fixture-only-secret',
+            'I prefer the api key fixture-private-token',
+          ]) {
+            const source = randomUUID();
+            await pool.query(
+              "INSERT INTO messages(id,owner_id,role,text) VALUES($1,'fixture-owner','user',$2)",
+              [source, quote],
+            );
+            await assert.rejects(
+              personal.manage('memory_remember', { quote }, { sourceMessageId: source }),
+            );
+          }
+        },
+      );
+      await t.test(
+        'explicit profile statements and answers to personal questions update only the cited field',
+        async () => {
+          const nameSource = randomUUID(),
+            locationSource = randomUUID(),
+            shortSource = randomUUID(),
+            questionSource = randomUUID(),
+            taskId = randomUUID();
+          await pool.query(
+            "INSERT INTO messages(id,owner_id,role,text) VALUES($1,'fixture-owner','user','My name is Fixture Person'),($2,'fixture-owner','user','I live in Lisbon')",
+            [nameSource, locationSource],
+          );
+          await personal.manage(
+            'profile_learn',
+            { field: 'name', value: 'Fixture Person', quote: 'My name is Fixture Person' },
+            { sourceMessageId: nameSource },
+          );
+          await personal.manage(
+            'profile_learn',
+            { field: 'location', value: 'Lisbon', quote: 'I live in Lisbon' },
+            { sourceMessageId: locationSource },
+          );
+          await assert.rejects(
+            personal.manage(
+              'profile_learn',
+              { field: 'location', value: 'Porto', quote: 'I live in Lisbon' },
+              { sourceMessageId: locationSource },
+            ),
+          );
+          assert.equal((await personal.getProfile()).name, 'Fixture Person');
+          assert.equal((await personal.getProfile()).location, 'Lisbon');
+          await pool.query(
+            "INSERT INTO messages(id,owner_id,role,text,task_id,created_at) VALUES($1,'fixture-owner','assistant','What should I call you?',$3,now()-interval '1 second'),($2,'fixture-owner','user','Filipe',$3,now())",
+            [questionSource, shortSource, taskId],
+          );
+          await personal.manage(
+            'profile_learn',
+            { field: 'name', value: 'Filipe', quote: 'Filipe' },
+            { sourceMessageId: shortSource, taskId },
+          );
+          assert.equal((await personal.getProfile()).name, 'Filipe');
+          assert.equal((await personal.getProfile()).location, 'Lisbon');
+          assert.equal(
+            (
+              await pool.query('SELECT source_message_id FROM memory_facts WHERE text=$1', [
+                'Filipe',
+              ])
+            ).rows[0].source_message_id,
+            shortSource,
+          );
+        },
+      );
       await t.test(
         'memory preserves trusted user-message provenance and rejects spoofed sources',
         async () => {
+          const initialMemoryCount = (await pool.query('SELECT id FROM memory_facts')).rowCount!;
           const trustedId = randomUUID();
           const laterId = randomUUID();
           const foreignId = randomUUID();
@@ -143,7 +338,10 @@ test(
             ),
             z.ZodError,
           );
-          assert.equal((await pool.query('SELECT * FROM memory_facts')).rowCount, 1);
+          assert.equal(
+            (await pool.query('SELECT * FROM memory_facts')).rowCount,
+            initialMemoryCount + 1,
+          );
           await personal.manage(
             'memory_propose',
             { text: 'Explicit direct fixture detail' },

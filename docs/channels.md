@@ -15,22 +15,39 @@ flowchart LR
   O --> S[Chat SDK thread.post]
 ```
 
+## Secure setup and saved settings
+
+Open **Channels** in the local app. Setup forms send credentials directly to the trusted local server, outside the conversation and model. The server verifies the selected account and stores the settings encrypted with AES-256-GCM in PostgreSQL. The key comes from the same injected Keychain or environment key store as the vault, with a separate authenticated binding for the owner and channel. Status endpoints return account labels and setup state, never tokens or webhook secrets.
+
+The saved settings override existing environment settings for that provider on startup. Disconnect disables the channel and removes its stored ciphertext; it does not revoke the provider token or change an existing remote webhook. Transport replacement waits for an active delivery before installing the new owner binding. Failed account verification does not replace the current local settings. A provider setup request and a database commit are separate systems; after an uncertain registration error, check the provider before retrying.
+
+`src/server/channel-settings.ts` owns storage and routes. `src/ports/channel-settings.ts` defines verification, `src/providers/chat-sdk/settings.ts` calls provider APIs, and composition injects the verifier and transport factory. The settings service does not expose a raw environment editor.
+
 ## Telegram setup
 
-Create a bot with BotFather. Use a numeric Telegram user ID for the owner, not a username. Set these values in the ignored local `.env`, then restart Sidekick:
+Create a bot with [BotFather](https://t.me/BotFather). In Channels, enter its token and your numeric Telegram user ID. The server checks `getMe` before saving. With no public webhook URL, Sidekick polls for messages locally; no tunnel is needed. Open the verified bot in Telegram, press Start, and send a short message.
+
+Local polling uses `getUpdates` every two seconds while the app runs, with a bounded request timeout. Each accepted message reaches the durable inbox before its offset advances in PostgreSQL. A failed inbox write leaves the update eligible for retry; duplicate updates cannot create duplicate tasks. Parsing and sending still use the official Chat SDK adapter. Sidekick does not start the SDK's automatic polling dispatcher, which would bypass the durable inbox.
+
+If the bot already has a webhook, local polling setup is rejected. Sidekick never deletes an existing webhook automatically. You can enter a public HTTPS URL ending in `/api/webhooks/telegram` instead. Saving that URL registers it with a generated secret and only `message` updates. The URL must expose only the webhook route, not the application. [Telegram Bot API](https://core.telegram.org/bots/api#getupdates), [webhook setup](https://core.telegram.org/bots/api#setwebhook).
+
+Legacy environment configuration remains supported:
 
 ```dotenv
 TELEGRAM_ENABLED=true
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_WEBHOOK_SECRET_TOKEN=
 TELEGRAM_ALLOWED_USER_ID=
+TELEGRAM_MODE=polling
 ```
 
-The webhook secret must have 16–256 characters from letters, digits, `_`, and `-`. Generate a random value. The Bot API `setWebhook` call must set the same `secret_token`, the public HTTPS URL ending in `/api/webhooks/telegram`, and `allowed_updates` containing `message`. Setup does not happen automatically. The owner must start the bot conversation first. [Telegram Bot API webhook setup](https://core.telegram.org/bots/api#setwebhook), [official Chat SDK Telegram adapter](https://chat-sdk.dev/adapters/official/telegram).
+Omit `TELEGRAM_MODE` for the existing webhook mode. The webhook secret must have 16–256 characters from letters, digits, `_`, and `-`. Configure the same secret through `setWebhook` when managing a webhook outside the form.
 
-The configured sender ID and private chat ID must both match the owner. Groups, channels, edits, callbacks, other senders, and messages without text do not start tasks. Sidekick fixes the adapter to webhook mode. It does not start polling or delete an existing webhook. Images, uploads, voice, approvals, and credentials remain available in the web app.
+The configured sender ID and private chat ID must both match the owner. Groups, channels, edits, callbacks, other senders, and messages without text do not start tasks. Voice, uploads, credentials, and approvals remain in the web app. [Chat SDK Telegram adapter](https://chat-sdk.dev/adapters/official/telegram).
 
 ## WhatsApp setup and eligibility
+
+The Channels form accepts the business access token, app secret, business phone number ID, your allowed number, and a verification token you choose. It checks the selected business phone through the Graph API before saving. Register the callback and verification token in Meta, and subscribe to `messages`; the UI reports that this manual setup is still required. Saving credentials does not verify message delivery.
 
 Use the official WhatsApp Business Cloud API, not personal-account QR automation. Before enabling it, check the current WhatsApp Business terms, AI-provider eligibility for the relevant market, account requirements, and charges. The flag below records that operator decision. It is not an eligibility check, approval from Meta, or permission to operate a general assistant worldwide. A transport SDK cannot bypass platform policy. [WhatsApp Business terms](https://www.whatsapp.com/legal/business-solution-terms), [Meta WhatsApp documentation](https://developers.facebook.com/documentation/business-messaging/whatsapp/overview).
 
@@ -50,11 +67,11 @@ Replies are free-form text only. Sidekick blocks a send if the latest accepted o
 
 ## Reachability and local access
 
-The Mac must be awake, Sidekick and PostgreSQL must be running, and the provider must reach the exact HTTPS webhook path. A tunnel or small authenticated forwarding gateway must expose only the required webhook routes. Do not expose the entire app, `/api/channels`, the vault, screenshots, or credential forms. The rest of this prototype has no public user authentication. A forwarding gateway must preserve raw bytes and verification headers.
+The Mac must be awake and Sidekick and PostgreSQL must be running. Telegram local polling needs outbound access only. For webhook mode, the provider must reach the exact HTTPS webhook path. A tunnel or small authenticated forwarding gateway must expose only the required webhook routes. Do not expose the entire app, `/api/channels`, the vault, screenshots, or credential forms. The rest of this prototype has no public user authentication. A forwarding gateway must preserve raw bytes and verification headers.
 
 The app permits external requests only to the registered provider webhook paths. Their handlers validate provider secrets and owner identity independently. A tunnel URL does not configure the provider webhook or make the rest of the app safe to publish.
 
-Credential and approval links are replaced in outbound replies with an instruction to open Sidekick on the Mac. Credentials and approvals cannot be completed by messaging the bot. Each inbound message starts its own task; use the web app to continue a specific waiting task. Schedules and unrelated web tasks have no channel mapping and do not send messages to the owner automatically.
+Credential and approval links are replaced in outbound replies with an instruction to open Sidekick on the Mac. Credentials and approvals cannot be completed by messaging the bot. Messages use a conversation identity bound to the provider, business/bot account, and allowed sender. A short answer can continue that conversation’s single task waiting for a question; it cannot resume a task from another channel. Secure forms and write approvals still require the web app. Schedules and unrelated web tasks have no channel mapping and do not send messages to the owner automatically.
 
 ## Persistence and recovery
 
@@ -74,4 +91,4 @@ The outbox records `sending` before the provider request. A provider acceptance 
 TEST_DATABASE_URL=postgresql://sidekick:sidekick-local@127.0.0.1:54329/sidekick npx tsx --test tests/channels.test.ts
 ```
 
-Without `TEST_DATABASE_URL`, the database fixture is skipped. No provider account, webhook registration, recipient delivery, or Meta approval was tested live.
+Without `TEST_DATABASE_URL`, the database fixture is skipped. `tests/channel-settings.test.ts` and `tests/channel-application.test.ts` also cover encrypted settings, verification failures, ciphertext binding, secret-free responses, polling offset recovery, transport replacement, and channel-specific continuation. No provider account, webhook registration, recipient delivery, or Meta approval was tested live by these fixtures.

@@ -17,6 +17,7 @@ export async function createApprovals(
     args: Record<string, unknown>,
     context: ApprovalExecutionContext,
   ) => Promise<unknown>,
+  preflight?: (action: string, args: Record<string, unknown>) => Promise<void>,
 ) {
   await pool.query(`CREATE TABLE IF NOT EXISTS approvals (
     id uuid PRIMARY KEY, owner_id text NOT NULL, task_id uuid NOT NULL REFERENCES tasks(id),
@@ -44,9 +45,10 @@ export async function createApprovals(
          VALUES($1,$2,$3,$4,$5,$6,(SELECT id FROM messages WHERE task_id=$3 AND owner_id=$2 AND role='user' ORDER BY created_at DESC,id DESC LIMIT 1))`,
         [id, ownerId, taskId, action, args, task.rows[0].revision],
       );
-      await client.query("UPDATE tasks SET status='waiting_user',updated_at=now() WHERE id=$1", [
-        taskId,
-      ]);
+      await client.query(
+        "UPDATE tasks SET status='waiting_user',waiting_reason='approval',waiting_question=NULL,updated_at=now() WHERE id=$1",
+        [taskId],
+      );
     });
     refresh();
     return { requiresApproval: true, url: `/approvals/${id}` };
@@ -64,6 +66,13 @@ export async function createApprovals(
     app.post<{ Params: { id: string } }>('/api/approvals/:id', async (request) => {
       const input = z.object({ approved: z.boolean() }).strict().parse(request.body);
       const approval = await transaction(async (client) => {
+        if (input.approved && preflight) {
+          const pending = await client.query(
+            "SELECT action,args FROM approvals WHERE id=$1 AND owner_id=$2 AND status='pending' AND expires_at>now() AND EXISTS(SELECT 1 FROM tasks WHERE tasks.id=approvals.task_id AND tasks.status='waiting_user' AND tasks.revision=approvals.task_revision) FOR UPDATE",
+            [z.uuid().parse(request.params.id), ownerId],
+          );
+          if (pending.rows[0]) await preflight(pending.rows[0].action, pending.rows[0].args);
+        }
         const result = await client.query(
           "UPDATE approvals SET status=$3 WHERE id=$1 AND owner_id=$2 AND status='pending' AND expires_at>now() AND EXISTS(SELECT 1 FROM tasks WHERE tasks.id=approvals.task_id AND tasks.status='waiting_user' AND tasks.revision=approvals.task_revision) RETURNING *",
           [z.uuid().parse(request.params.id), ownerId, input.approved ? 'executing' : 'declined'],

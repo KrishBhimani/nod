@@ -13,6 +13,16 @@ import {
 import type { Agent } from '../../ports/agent.ts';
 import { taskId } from '../../ports/task-identity.ts';
 
+function isFinalAnswer(signature: string | undefined) {
+  if (!signature?.startsWith('{')) return false;
+  try {
+    const value = JSON.parse(signature);
+    return value?.v === 1 && value.phase === 'final_answer';
+  } catch {
+    return false;
+  }
+}
+
 function resources(systemPrompt: string): ResourceLoader {
   return {
     getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
@@ -100,22 +110,35 @@ export function createPiAgent(options: {
         const result = await finishTurn?.(...args);
         return input.shouldStop() ? { action: 'end' as const } : (result ?? undefined);
       };
+      let textBlock: number | undefined;
       const unsubscribe = session.subscribe((event) => {
-        if (event.type === 'message_start' && event.message.role === 'assistant')
+        if (event.type === 'message_start' && event.message.role === 'assistant') {
+          textBlock = undefined;
           input.onEvent({ type: 'message_start' });
+        }
         if (event.type === 'turn_start') input.onEvent({ type: 'turn_start' });
-        if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta')
-          input.onEvent({ type: 'text_delta', text: event.assistantMessageEvent.delta });
+        if (event.type === 'message_update') {
+          const update = event.assistantMessageEvent;
+          if (update.type === 'text_start' || update.type === 'text_delta') {
+            if (textBlock !== undefined && textBlock !== update.contentIndex) {
+              input.onEvent({ type: 'message_end' });
+              input.onEvent({ type: 'message_start' });
+            }
+            textBlock = update.contentIndex;
+          }
+          if (update.type === 'text_delta')
+            input.onEvent({ type: 'text_delta', text: update.delta });
+        }
         if (event.type === 'message_end' && event.message.role === 'assistant') {
           if (event.message.stopReason === 'error') input.onEvent({ type: 'error' });
-          if (event.message.stopReason === 'stop')
+          if (event.message.stopReason === 'stop') {
+            const blocks = event.message.content.filter((item) => item.type === 'text');
+            const finalBlocks = blocks.filter((item) => isFinalAnswer(item.textSignature));
             input.onEvent({
               type: 'final',
-              text: event.message.content
-                .filter((item) => item.type === 'text')
-                .map((item) => item.text)
-                .join('\n'),
+              text: (finalBlocks.length ? finalBlocks : blocks).map((item) => item.text).join('\n'),
             });
+          }
           input.onEvent({ type: 'message_end' });
         }
       });

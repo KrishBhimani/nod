@@ -1,59 +1,71 @@
 # Before hosting Sidekick
 
-This repository is a loopback-only, single-owner prototype. A successful local browser task does not make it a hosted product. No deployment, public domain, production database, or multi-user signup is provisioned.
+Sidekick is a loopback-only, single-owner prototype. A successful local task does not make it a hosted product. No public login, production database, deployment, or multi-user signup is provisioned.
 
-## A practical first hosted shape
+## First hosted shape
 
-After the boundaries below are implemented, a small initial deployment can use one application VM, PostgreSQL, private object storage, and isolated task computers. Keep the web/API process separate from worker capacity as usage grows. Browser memory, concurrent tasks, and idle authenticated sessions determine compute needs more than the number of open chat windows.
+After implementing the boundaries below, an initial deployment can use an application service, PostgreSQL, private object storage, and isolated task computers. Separate web/API capacity from workers as usage grows. Browser memory, concurrent tasks, and retained authenticated sessions determine capacity more than open chat windows.
 
 ```text
-Authenticated web / verified channel ingress
+Authenticated app / verified channel ingress
                     |
              API + task broker
                     |
        PostgreSQL tasks, jobs, outbox
                     |
-       Workers -> isolated computers
+        Workers -> isolated computers
                     |
-    Credential broker + private artifacts
+     Credential broker + private artifacts
 ```
 
-This describes a target architecture, not infrastructure included here. `npm run build` currently checks TypeScript and builds the web client. A hosted release also needs a reproducible server image, supervised processes, health checks, versioned migrations, and a tested rollback path.
+This is a target architecture. The repository does not provision it. `npm run build` checks TypeScript and builds the client; production also needs reproducible server images, supervised processes, health checks, versioned migrations, and a tested rollback path.
 
 ## Required boundaries
 
-| Area              | Required change                                                                                                                                                                                                                                                             |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Accounts          | Add signup/login and secure sessions. Replace the fixed `local-development` owner with verified user IDs. Authorize every task, file, event stream, credential request, approval, and provider connection against that identity. OAuth connection consent is not app login. |
-| Execution         | Give each tenant an isolated sandbox or VM, separate volumes, resource quotas, and controlled egress. All task folders currently share one offline Linux container and Unix user. A folder name does not isolate hostile shell commands.                                    |
-| Browser and vault | Keep authenticated profiles, browser control, and credential decryption outside the unrestricted shell. Use a separate trusted service identity. Preserve exact-origin checks, serialized credential entry, and hidden observations during injection.                       |
-| Keys              | Replace local Keychain handling with an appropriate secrets service and KMS envelope encryption. Add rotation, access auditing, and recovery. KMS does not hide plaintext from an operator who controls the authorized decrypting service.                                  |
-| Files             | Put artifacts in a private object store with owner checks, short-lived access, size limits, retention, and deletion. Do not mount or publish complete workspaces. Browser profiles and task transcripts need private persistent storage too.                                |
-| HTTP              | Add HTTPS, authenticated app ingress, CSRF/session controls, request limits, and abuse protection. Retain signature verification over original webhook bytes, replay protection, account binding, and task deduplication. Expose only explicitly intended public routes.    |
-| Database          | Use restricted service credentials, migrations, encrypted backups, restore drills, retention policies, and monitored queue growth. Back up the data and necessary key material through separate controlled processes.                                                       |
+| Area                    | Required work                                                                                                                                                                                                                       |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| User accounts           | Replace `local-development` with authenticated identity and secure sessions. Authorize every task, file, event stream, credential, approval, and provider connection. Google consent and a configured bot sender are not app login. |
+| Execution               | Isolate tenants with separate sandboxes, volumes, identities, quotas, and egress policy. Current tasks share one Linux user, container, and tool volume. Task folder names do not isolate hostile commands.                         |
+| Browser and credentials | Separate authenticated profiles, browser control, and decryption from unrestricted shell execution under a trusted service identity. Retain origin, form, revision, and observation checks.                                         |
+| Keys                    | Add managed key storage, rotation, access auditing, and recovery. Existing ciphertext needs the same key or explicit re-encryption. KMS does not hide plaintext from an operator controlling its authorized decrypting service.     |
+| Files and retention     | Use private artifact/profile/transcript storage with ownership checks, retention, deletion, and short-lived access. Never publish complete workspaces. Database content outside the vault/channel ciphertext remains sensitive.     |
+| HTTP                    | Add HTTPS, authenticated ingress, session/CSRF controls, quotas, and abuse handling. Preserve raw webhook bytes, signatures, replay checks, account binding, and deduplication. Expose only intended public routes.                 |
+| Database                | Use restricted service credentials, versioned migrations, monitored queues, encrypted backups, and restore drills. Back up required key material separately under controlled access.                                                |
 
-Native Mac control is not part of this runtime. Browser tasks can use separate sessions; a future shared desktop's physical mouse and keyboard would require exclusive coordination. A browser screenshot is not a remote computer desktop.
+## Internet and computer access
 
-## Workers, schedules, and recovery
+The local workspace uses a separate firewall sidecar and runs without Linux capabilities or privilege escalation. It can access the public IPv4 Internet and install CLI packages; private/LAN/metadata destinations and external IPv6 are blocked. This is a useful local boundary, not a tenant sandbox or protection against public data exfiltration.
 
-The prototype runs its API, four task workers, pg-boss scheduler, heartbeat, and channel scans in one Node process. The Mac must remain awake and that process must run for timed work. Stored schedules survive a restart, but this is not a promise to run at the exact wall-clock time or to replay every missed occurrence.
+A production policy must decide which destinations, package registries, and downloads are allowed, and how to limit cost, malware, and resource use. Public egress can carry files, prompts, or other data the agent can access. The workspace has no provider environment, host Docker socket, or authenticated browser profile, but those exclusions alone do not prevent every prompt-injection outcome.
 
-Before using several replicas, add explicit worker ownership and leases, scheduler coordination, graceful draining, and reconciliation. Some current recovery logic assumes one process and can classify another process's work as interrupted. Keep durable task segments short: waiting for an approval or credential should persist a waiting state and release the worker.
+Native Mac/Windows applications and a GUI desktop are not implemented. A future shared desktop would also need exclusive coordination for its physical input state. A browser screenshot is not a remote operating-system desktop.
 
-Database idempotency prevents duplicate internal dispatch. It cannot make a browser click or external API write exactly once. Preserve approval records, provider idempotency keys where available, and review states for ambiguous outcomes. The channel outbox already stops automatic retries after an uncertain send. Add operator recovery tools and safe backoff for failures that are known to be retryable.
+## Workers and uncertain outcomes
 
-## Google and messaging connections
+The API, four task workers, pg-boss scheduler, heartbeat, and channel scans currently share one Node process. The machine must stay awake. Stored schedules survive restart, but exact execution time and replay of every missed occurrence are not guaranteed.
 
-Use separate development and production configurations, verified callback ownership, explicit toolkit/action permissions, and connection revocation. Audit the exact Google OAuth scopes for the actions offered; sensitive or restricted scopes can require verification and additional assessment. Managed OAuth does not remove these obligations or guarantee every required scope was granted. [Google production OAuth policy](https://developers.google.com/identity/protocols/oauth2/production-readiness/policy-compliance).
+Before running several replicas, add leases, worker ownership, scheduler coordination, graceful draining, and reconciliation. Current startup recovery assumes one process and can mistake another process's work for interrupted work. Persist waiting states and release workers rather than keeping long credential or approval requests open.
 
-Composio holds the OAuth tokens in the current design. Review its retention controls and the private data sent to provider tools and models. Gmail/Calendar changes use polling triggers, so notification timing has provider latency. See [Google integration details](composio.md).
+Database idempotency prevents duplicate internal dispatch. It cannot make external API writes or browser actions exactly once. Use provider idempotency keys where available and retain approval/result records. The channel outbox stops retries after uncertain sends; add an operator recovery flow and backoff for failures known to be retryable.
 
-The current Chat SDK channels accept one allowlisted owner and text only. Public bots need account pairing, tenant routing, per-user consent, quotas, revocation, and abuse handling. WhatsApp needs a market-specific eligibility review, current account/policy approval, reply-window handling, and any applicable templates. Neither a working adapter nor the local confirmation flag proves worldwide eligibility. [Channel requirements and limits](channels.md).
+## Google and messaging
 
-## Cost structure
+Composio holds managed OAuth tokens. Review its access, retention, scopes, event usage, and actual account plan. Google production consent can require verification or additional assessment for sensitive/restricted scopes. Managed OAuth does not remove those obligations. [Google production OAuth policy](https://developers.google.com/identity/protocols/oauth2/production-readiness/policy-compliance).
 
-Budget for a base application VM, PostgreSQL and backups, private file/profile storage, and bandwidth. Add worker or sandbox compute for simultaneous tasks and any computers kept warm while idle. A single VM can reduce an early fixed bill but is one failure domain and does not provide tenant isolation by itself.
+Multi-account actions and approvals must preserve a specific account binding throughout review and execution. Provider replacement requires revocation/reconnection and cannot silently adopt old account or subscription IDs. Gmail/Calendar watch preference being enabled does not prove an active subscription or webhook delivery. See [Google connections](composio.md).
 
-Variable costs include the selected OpenAI/Anthropic model, speech, optional Jev requests, Composio API calls and delivered events, and messaging-provider usage. Trigger checks and quiet goal reviews can still cost money even when no notification is sent. Repeated browser observations, long task histories, retries, screenshots, and artifact retention affect usage.
+Channel setup verifies a bot/business credential and stores it encrypted. It does not prove ownership of the user-entered recipient ID, public webhook reachability, or end-to-end delivery. A public bot needs secure account pairing, tenant routing, consent, revocation, quotas, and abuse controls.
 
-No fixed monthly estimate is validated for this workload. Measure active task time, model usage, events, stored bytes, and provider bills during the local pilot; then price the chosen hosting region and plans. Existing Composio accounts can have different plan terms, so check the actual account against [current Composio pricing](https://composio.dev/pricing). Set tenant budgets and service limits before a public launch.
+Telegram local polling requires no public ingress. Webhook deployments should expose only the signed callback route. Telegram webhook registration and local persistence are separate operations; failures may require checking both systems. Disconnecting locally does not revoke a token or remove the remote webhook.
+
+WhatsApp needs a current market-specific eligibility and pricing review, approved account configuration, reply-window handling, and templates if proactive messages are required. The prototype accepts text from one configured owner and sends free-form replies only within 24 hours. An operator confirmation checkbox or working SDK is not worldwide eligibility. [Channel setup and limits](channels.md).
+
+Messaging channels have no remote task chooser when several ordinary questions are waiting. Resolve ambiguity in the web app. Secure credentials, approvals, and attachments also remain local. Delivery receipts, media transport, and operator resend tools are not implemented.
+
+## Cost and evidence
+
+Budget for application and worker compute, PostgreSQL/backups, private file/profile storage, and bandwidth. Add model, speech, optional Jev, Composio tools/events, and messaging-provider usage. Trigger checks and hourly reviews can cost money even when no notification is sent. Tool installs, browser observations, long histories, retries, and retained artifacts also affect usage.
+
+No fixed monthly estimate is validated for this workload. Measure task time, model usage, events, stored bytes, and actual provider bills; then price the hosting region and plans. Existing Composio accounts may have different terms. [Composio pricing](https://composio.dev/pricing).
+
+Use [verification](verification.md) to distinguish synthetic checks from live provider evidence. Local network tests and a live Gmail label read do not validate every integration, deployment, or adversarial page.

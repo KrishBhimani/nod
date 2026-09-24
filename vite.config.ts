@@ -7,5 +7,15 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: { alias: { '@': fileURLToPath(new URL('./src/web', import.meta.url)) } },
   server: { host: '127.0.0.1', port: 4310, strictPort: true },
-  build: { outDir: 'dist/web', emptyOutDir: true },
+  build: {
+    outDir: 'dist/web',
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          markdown: ['react-markdown', 'remark-gfm', 'rehype-raw', 'rehype-sanitize'],
+        },
+      },
+    },
+  },
 });

@@ -1,56 +1,63 @@
 # Sidekick
 
-A local personal assistant with a quiet web conversation, persistent tasks, a browser, files, a credential vault, and optional Google and messaging connections. Built with TypeScript, React, Pi, Fastify, and PostgreSQL.
+A local personal assistant with a conversation, persistent tasks, a browser, a Linux workspace, secure sign-in, and optional Google and messaging connections. Built with TypeScript, React, Pi, Fastify, and PostgreSQL.
 
-This is a working single-owner prototype. It binds to `127.0.0.1` and has no public signup or user authentication. Do not publish the app or tunnel its full interface.
+This is a single-owner prototype. It binds to `127.0.0.1` and has no public signup or app authentication. Do not publish or tunnel the full application.
 
 ## Run locally
 
-Install Node.js **22.22.3 or newer** and start Docker Desktop. From this directory:
+Install Node.js **22.22.3 or newer** and start Docker Desktop:
 
 ```sh
 npm run dev
 ```
 
-The launcher installs missing dependencies, creates `.env`, starts PostgreSQL and the Linux workspace, installs the browser, and starts the app at [localhost:4310](http://localhost:4310). The first run downloads images and browser binaries.
+The launcher installs missing dependencies, creates `.env`, starts PostgreSQL and the Linux workspace with its network guard, installs the browser, and opens the server at [localhost:4310](http://localhost:4310). The first run downloads container images and browser binaries.
 
-Add your provider keys to the ignored `.env`, then restart. Keep keys out of chat, source files, and screenshots.
+Add provider keys to the ignored `.env`, then restart. Keep keys out of chat, source files, and screenshots.
 
-| Environment                                      | Purpose                                                          |
-| ------------------------------------------------ | ---------------------------------------------------------------- |
-| `LLM_PROVIDER=openai` and `OPENAI_API_KEY`       | OpenAI conversation and tools; the same key enables speech       |
-| `LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY` | Anthropic conversation and tools                                 |
-| `LLM_MODEL`                                      | Optional model override from the installed Pi catalog            |
-| `COMPOSIO_API_KEY`                               | Optional Google consent and API connections                      |
-| `COMPOSIO_WEBHOOK_SECRET`                        | Optional signed Google event forwarding                          |
-| `TYPESAFE_API_KEY`                               | Optional Jev browser decisions and notification relevance checks |
-| `DATABASE_URL`, `PORT`                           | Local service configuration; defaults are in `.env.example`      |
-| `DEV_INSPECTOR=false`                            | Hide the developer inspector                                     |
+| Configuration                                 | Purpose                                                                          |
+| --------------------------------------------- | -------------------------------------------------------------------------------- |
+| `LLM_PROVIDER=openai`, `OPENAI_API_KEY`       | OpenAI conversation and tools; also enables speech and fallback relevance checks |
+| `LLM_PROVIDER=anthropic`, `ANTHROPIC_API_KEY` | Anthropic conversation and tools                                                 |
+| `LLM_MODEL`                                   | Optional model override from the installed Pi catalog                            |
+| `COMPOSIO_API_KEY`                            | Optional Google consent and tools                                                |
+| `COMPOSIO_WEBHOOK_SECRET`                     | Signed Google event forwarding                                                   |
+| `TYPESAFE_API_KEY`                            | Optional Jev browser choices and relevance checks                                |
+| `DATABASE_URL`, `PORT`                        | Local service settings; defaults are in `.env.example`                           |
+| `DEV_INSPECTOR=false`                         | Disable the inspector                                                            |
 
-On macOS, the vault encryption key uses Keychain. Other hosts need `SIDEKICK_VAULT_KEY`; see [vault setup](docs/vault.md). Telegram and WhatsApp require additional explicit opt-ins and owner bindings in [channel setup](docs/channels.md).
+macOS Keychain supplies the encryption key for the vault and saved channel settings. Other hosts require `SIDEKICK_VAULT_KEY`; see [vault setup](docs/vault.md). Telegram and WhatsApp credentials can be saved through **Channels**, outside chat. Telegram supports local polling without a tunnel; WhatsApp still requires Meta callback setup and an eligibility check.
 
-Ctrl-C stops the app. `docker compose stop` stops its containers while retaining data. PostgreSQL uses a named volume; files, artifacts, task sessions, and browser profiles use `.local/`. Do not delete either if you want to keep the workspace.
+Ctrl-C stops the app. `docker compose stop` stops containers without deleting data. PostgreSQL and installed CLI tools use named volumes; task files, artifacts, transcripts, and browser profiles use `.local/`. Deleting these loses local state.
 
-## What is available
+## Use the app
 
-- Streaming conversation, multiple tasks, cancellation, persistent files, image/file uploads, voice transcription, and speech playback.
-- A separate browser session per task. `/dev` shows browser screenshots and task events, not your whole Mac screen.
-- Secure credential entry that pauses a task and resumes it after the broker fills the login. Passwords are not submitted through chat. Expired forms offer a fresh secure step without reusing an old task revision.
-- Profile and preference editing, saved-memory review/deletion, searchable task history, editable goals, daily/weekly schedules with pause/resume/delete controls, and quiet hourly reviews. Active goals enable reviews; notification preferences separately decide which connected events can start work.
-- Gmail, Calendar, Drive, Sheets, and Docs through Composio. Google writes require review. Automatic change notifications are available only for Gmail and Calendar.
-- Optional Chat SDK Telegram and WhatsApp text messages. Media and secure forms remain in the web app.
+The sidebar contains **Chat, Goals, Schedule, Connections, Channels, and Vault**. Setup and personal context are managed through conversation, with review where required.
 
-The Linux shell has **no network access**. Node, Python, and ffmpeg are preinstalled. Add packages to `Dockerfile.workspace` and rebuild when needed. Task folders share one container for this local owner; they are not a multi-tenant security boundary. The shell does not control native Mac apps or the authenticated browser profile.
+- Chat supports streamed replies, file uploads, pasted images, downloadable artifacts, reactions, timestamps, and task continuation. Markdown and embedded HTML are sanitized. Speech playback is optional; there is no recording control.
+- Each task has a browser session. The inspector opens alongside chat and refreshes its browser image about once a second. Pending secure steps pause observation; a labelled last-known image can remain visible.
+- Secure forms support observed identifier, password, and one-time-code steps. The trusted broker fills the website and resumes inspection; successful entry does not prove the website accepted the login.
+- Explicit personal facts can be remembered from the current user's own quoted message. Profile learning requires an explicit statement or a matching answer. Other proposed personal changes and Google writes require review.
+- Goals and schedules persist locally. Preferences, active goals, recent context, and feedback inform inexpensive hourly reviews before a main-agent task starts.
+- Connections supports multiple accounts for Gmail, Calendar, Drive, Sheets, and Docs. Tools, approvals, disconnect, and watches bind to a specific account. Gmail/Calendar watches are requested by default; the UI reports when signed webhook delivery is unavailable or still pending.
+- Channels supports one allowlisted owner through Telegram or WhatsApp Business Cloud, with text replies. Secure forms, approvals, and attachments remain in the local web app.
 
-## Validation status
+The Linux workspace can access the public IPv4 Internet and install CLI tools with `npm install -g` or `pipx install`. Node, Python, git, curl, and ffmpeg are included. Private/LAN/metadata destinations and external IPv6 are blocked by a separate network guard. The workspace runs without root privileges or Linux capabilities and has no provider keys, Docker socket, or authenticated browser profiles.
 
-As of **2026-09-24**, live checks passed for OpenAI conversation, image understanding, a browser task with a downloadable artifact, the developer browser screen, speech generation and transcription, an audio reply requested in chat, and saving/removing a synthetic credential with the macOS Keychain-backed vault. Gmail consent and a real label-listing action passed. Google Calendar consent passed. The one-command launcher started the database, workspace, browser installation and app successfully.
+This is not native Mac control or a GUI desktop. Task directories and installed tools share one local-owner container; they are not tenant isolation. Public Internet access can transmit workspace content, so these controls do not prevent every prompt-injection or data-disclosure attack.
 
-Google Calendar actions, Drive/Docs/Sheets consent and actions, external Google event delivery, Jev, Anthropic, and recipient delivery on Telegram/WhatsApp remain unverified. These providers need their own account configuration; no new paid plan was purchased. A configured key is not proof of a working provider connection. The [latest validation record](docs/verification.md) separates the 93 passing automated checks from live provider and web-flow checks.
+## Quiet work and current limits
 
-Hourly reviews need either Jev or an OpenAI triage key, including when Anthropic runs the main agent. Quiet hours block automatic task starts, and at most two automatic event/review tasks start per hour. Background tasks suppress streamed prose and automatic final replies; an explicit useful message or necessary question can still be sent. Saved updates can be reconsidered during later reviews, but there is no guaranteed digest delivery. Schedules run while the local machine and app are running.
+Hourly reviews need Jev or an OpenAI relevance key, including when Anthropic runs the main agent. Default notification rules favor time-sensitive requests, meaningful calendar changes, and concrete goal progress. Quiet hours block automatic task starts; an hourly review can still save a decision for later. At most two automatic event/review tasks start per hour. Background work suppresses streamed prose and automatic final replies, with explicit messages reserved for useful results or necessary questions. There is no guaranteed digest delivery.
 
-Deterministic tests cover task dispatch/recovery, runtime boundaries, secure credential handling, OAuth/event ownership, and messaging retries with synthetic data. They do not prove a live account or production deployment.
+Schedules, polling, and reviews require the app and Mac to stay running. Interrupted external actions need review before retry. WhatsApp sends only within the accepted owner's 24-hour reply window; templates and delayed proactive messages are not implemented. Passkeys, hardware-key interaction, remote manual browser control, and payment-card storage are not implemented.
+
+## Validation
+
+The [validation record](docs/verification.md) separates automated fixtures, browser flows, and live providers. Existing live checks include OpenAI conversation/images, a browser task and artifact, inspector screenshots, speech and transcription APIs, a synthetic Keychain-backed vault entry, Gmail consent and label listing, and Calendar consent. Local workspace checks also verified public HTTP, npm/PyPI access, a CLI install, unprivileged writes, and blocked private destinations.
+
+Calendar actions, Drive/Docs/Sheets account flows and actions, external Google event delivery, Jev, Anthropic, and Telegram/WhatsApp recipient delivery still require separate live verification. No new paid plan was purchased. Configuration and passing fixtures do not prove a live connection.
 
 ```sh
 npm run check
@@ -58,8 +65,8 @@ npm run test:integration
 npm run build
 ```
 
-The integration command uses the local PostgreSQL service and creates disposable schemas. Set `TEST_DATABASE_URL` to use another service. `npm test` skips database fixtures unless that variable is set. See [development](docs/development.md), [architecture](docs/architecture.md), [security](docs/security.md), [Google connections](docs/composio.md), and [production requirements](docs/production.md).
+Database fixtures create disposable schemas. See [development](docs/development.md) for focused checks and [production requirements](docs/production.md) before hosting.
 
-## Change or replace a provider
+## Find or replace code
 
-Start with [AGENTS.md](AGENTS.md) for the area guides. [The replacement guide](docs/replacing-modules.md) maps each capability to its interface, composition entry and migration requirements. Vendor SDKs stay in `src/providers`; application behavior uses `src/ports`; `src/server/composition.ts` selects the implementations. Import-boundary checks and full-stack substitute tests keep those seams usable.
+Start with [AGENTS.md](AGENTS.md). [Architecture](docs/architecture.md) explains ownership; [replacing modules](docs/replacing-modules.md) maps capability interfaces and migration limits. Vendor SDKs stay in `src/providers`; `src/server/composition.ts` selects implementations. Read [security](docs/security.md), [Google connections](docs/composio.md), and [channels](docs/channels.md) for their boundaries.

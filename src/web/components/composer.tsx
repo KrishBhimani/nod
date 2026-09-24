@@ -1,15 +1,24 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowUp, Paperclip, Mic, Square, X, FileText, LoaderCircle } from 'lucide-react';
+import {
+  ArrowUp,
+  Paperclip,
+  X,
+  FileText,
+  LoaderCircle,
+  Bold,
+  Italic,
+  Code,
+  List,
+  TextCursorInput,
+  Eye,
+} from 'lucide-react';
 import type { Artifact, Task } from '../../shared/contracts';
 import { api, errorMessage } from '../lib/api';
 import { Button, Notice } from './ui';
-
-const maxAttachments = 5;
-const maxFileBytes = 15 * 1024 * 1024;
+import { MessageText } from './message';
 
 interface ComposerProps {
   ready: boolean;
-  speechReady: boolean;
   sending: boolean;
   text: string;
   setText(value: string): void;
@@ -20,7 +29,6 @@ interface ComposerProps {
 
 export function Composer({
   ready,
-  speechReady,
   sending,
   text,
   setText,
@@ -30,47 +38,42 @@ export function Composer({
 }: ComposerProps) {
   const [attachments, setAttachments] = useState<Artifact[]>([]);
   const [uploading, setUploading] = useState(false);
-  const [recording, setRecording] = useState(false);
-  const [startingRecording, setStartingRecording] = useState(false);
-  const [transcribing, setTranscribing] = useState(false);
+  const [formatting, setFormatting] = useState(false);
+  const [preview, setPreview] = useState(false);
   const [error, setError] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
-  const recorder = useRef<MediaRecorder | null>(null);
-  const mediaStream = useRef<MediaStream | null>(null);
   const mounted = useRef(true);
-
+  const uploadLock = useRef(false);
+  const sendLock = useRef(false);
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
-      if (recorder.current?.state === 'recording') recorder.current.stop();
-      mediaStream.current?.getTracks().forEach((track) => track.stop());
     };
   }, []);
   useEffect(() => {
     if (textarea.current) {
       textarea.current.style.height = 'auto';
-      textarea.current.style.height = `${Math.min(textarea.current.scrollHeight, 180)}px`;
+      textarea.current.style.height = `${Math.min(textarea.current.scrollHeight, 220)}px`;
     }
-  }, [text]);
+  }, [text, preview]);
 
-  async function upload(files: FileList | null) {
-    if (!files?.length || uploading) return;
-    if (files.length + attachments.length > maxAttachments) {
+  async function upload(files: File[]) {
+    if (!files.length || uploadLock.current) return;
+    if (files.length + attachments.length > 5) {
       setError('Attach up to five files per message.');
-      if (fileInput.current) fileInput.current.value = '';
       return;
     }
-    if (Array.from(files).some((file) => file.size > maxFileBytes)) {
+    if (files.some((file) => file.size > 15 * 1024 * 1024)) {
       setError('Each file must be 15 MB or smaller.');
-      if (fileInput.current) fileInput.current.value = '';
       return;
     }
+    uploadLock.current = true;
     setUploading(true);
     setError('');
     try {
-      for (const file of Array.from(files)) {
+      for (const file of files) {
         const body = new FormData();
         body.append('file', file);
         const artifact = await api<Artifact>('/api/uploads', { method: 'POST', body });
@@ -79,113 +82,59 @@ export function Composer({
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
+      uploadLock.current = false;
       setUploading(false);
       if (fileInput.current) fileInput.current.value = '';
+      textarea.current?.focus();
     }
   }
-
-  async function startRecording() {
-    if (startingRecording || recording) return;
-    setError('');
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-      setError('Audio recording is not available in this browser. You can attach an audio file.');
-      return;
-    }
-    setStartingRecording(true);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      if (!mounted.current) {
-        stream.getTracks().forEach((track) => track.stop());
-        return;
-      }
-      mediaStream.current = stream;
-      const mimeType = ['audio/webm', 'audio/mp4', 'audio/ogg'].find((type) =>
-        MediaRecorder.isTypeSupported(type),
-      );
-      const next = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-      const chunks: BlobPart[] = [];
-      let bytes = 0;
-      next.ondataavailable = (event) => {
-        if (event.data.size) {
-          chunks.push(event.data);
-          bytes += event.data.size;
-        }
-        if (bytes > maxFileBytes && next.state === 'recording') next.stop();
-      };
-      next.onstop = async () => {
-        stream.getTracks().forEach((track) => track.stop());
-        if (!mounted.current) return;
-        setRecording(false);
-        if (bytes > maxFileBytes) {
-          setError('This recording is too large. Record a shorter voice message.');
-          return;
-        }
-        setTranscribing(true);
-        try {
-          const type = next.mimeType || 'audio/webm';
-          const body = new FormData();
-          body.append(
-            'audio',
-            new Blob(chunks, { type }),
-            `recording.${type.includes('mp4') ? 'mp4' : type.includes('ogg') ? 'ogg' : 'webm'}`,
-          );
-          const result = await api<{ text: string }>('/api/speech/transcribe', {
-            method: 'POST',
-            body,
-          });
-          if (mounted.current)
-            setText([textarea.current?.value ?? '', result.text].filter(Boolean).join(' '));
-        } catch (cause) {
-          if (mounted.current) setError(errorMessage(cause));
-        } finally {
-          if (mounted.current) setTranscribing(false);
-        }
-      };
-      recorder.current = next;
-      next.start(1000);
-      setRecording(true);
-    } catch {
-      mediaStream.current?.getTracks().forEach((track) => track.stop());
-      setError(
-        'Microphone access is unavailable. Allow it in your browser settings and try again.',
-      );
-    } finally {
-      if (mounted.current) setStartingRecording(false);
-    }
+  function format(before: string, after = before) {
+    const field = textarea.current;
+    if (!field) return;
+    const start = field.selectionStart,
+      end = field.selectionEnd;
+    const selected = text.slice(start, end) || 'text';
+    setText(text.slice(0, start) + before + selected + after + text.slice(end));
+    requestAnimationFrame(() => {
+      field.focus();
+      field.setSelectionRange(start + before.length, start + before.length + selected.length);
+    });
   }
-
   async function submit() {
     if (
       !ready ||
       sending ||
-      uploading ||
-      startingRecording ||
-      recording ||
-      transcribing ||
+      sendLock.current ||
+      uploadLock.current ||
       (!text.trim() && !attachments.length)
     )
       return;
-    if (await onSend(text.trim(), attachments)) {
-      setText('');
-      setAttachments([]);
+    sendLock.current = true;
+    const sentText = text;
+    const sentAttachments = attachments;
+    setText('');
+    setAttachments([]);
+    setPreview(false);
+    textarea.current?.focus();
+    try {
+      if (!(await onSend(sentText.trim(), sentAttachments))) {
+        setText(textarea.current?.value ? `${sentText}\n${textarea.current.value}` : sentText);
+        setAttachments((current) => [...sentAttachments, ...current]);
+      }
+    } finally {
+      sendLock.current = false;
       textarea.current?.focus();
     }
   }
-
   return (
     <div className="composer-wrap">
       {error && <Notice>{error}</Notice>}
       {replyTo && (
         <div className="reply-context">
           <span>
-            Continuing <strong>{replyTo.title}</strong>
+            Replying to <strong>{replyTo.title}</strong>
           </span>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={clearReply}
-            aria-label="Start a separate task"
-          >
+          <Button variant="ghost" size="icon" onClick={clearReply} aria-label="Clear task reply">
             <X size={14} />
           </Button>
         </div>
@@ -195,6 +144,11 @@ export function Composer({
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
+        }}
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={(event) => {
+          event.preventDefault();
+          void upload(Array.from(event.dataTransfer.files));
         }}
       >
         {attachments.length > 0 && (
@@ -220,23 +174,75 @@ export function Composer({
             ))}
           </div>
         )}
-        <textarea
-          ref={textarea}
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-              event.preventDefault();
-              void submit();
-            }
-          }}
-          placeholder={
-            replyTo ? 'Add what this task needs…' : 'Ask anything, or give me something to do…'
-          }
-          aria-label="Message Sidekick"
-          rows={2}
-          disabled={sending}
-        />
+        {formatting && (
+          <div className="format-toolbar" aria-label="Text formatting">
+            {[
+              [Bold, 'Bold', '**', '**'],
+              [Italic, 'Italic', '_', '_'],
+              [Code, 'Code', '`', '`'],
+              [List, 'List', '- ', ''],
+            ].map(([Icon, label, before, after]) => {
+              const Glyph = Icon as typeof Bold;
+              return (
+                <Button
+                  key={String(label)}
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label={String(label)}
+                  onClick={() => format(String(before), String(after))}
+                  disabled={preview}
+                >
+                  <Glyph size={15} />
+                </Button>
+              );
+            })}
+            <Button type="button" variant="ghost" size="sm" onClick={() => setPreview(!preview)}>
+              <Eye size={14} />
+              {preview ? 'Edit' : 'Preview'}
+            </Button>
+          </div>
+        )}
+        {preview ? (
+          <div className="composer-preview">
+            <MessageText text={text || 'Nothing to preview yet.'} />
+          </div>
+        ) : (
+          <textarea
+            ref={textarea}
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            onPaste={(event) => {
+              const images = Array.from(event.clipboardData.items)
+                .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+                .map((item) => item.getAsFile())
+                .filter((file): file is File => Boolean(file));
+              if (images.length) {
+                event.preventDefault();
+                void upload(images);
+              }
+            }}
+            onKeyDown={(event) => {
+              if (
+                (event.metaKey || event.ctrlKey) &&
+                ['b', 'i'].includes(event.key.toLowerCase())
+              ) {
+                event.preventDefault();
+                format(event.key.toLowerCase() === 'b' ? '**' : '_');
+              } else if (
+                event.key === 'Enter' &&
+                !event.shiftKey &&
+                !event.nativeEvent.isComposing
+              ) {
+                event.preventDefault();
+                void submit();
+              }
+            }}
+            placeholder="Message Sidekick…"
+            aria-label="Message Sidekick"
+            rows={1}
+          />
+        )}
         <div className="composer-tools">
           <div className="composer-left">
             <input
@@ -246,17 +252,16 @@ export function Composer({
               multiple
               className="sr-only"
               aria-label="Attach files"
-              disabled={uploading || sending}
-              onChange={(event) => void upload(event.target.files)}
+              onChange={(event) => void upload(Array.from(event.target.files ?? []))}
             />
             <Button
               type="button"
               variant="ghost"
               size="icon"
               aria-label="Attach files"
-              title="Attach files or images"
+              title="Attach files or paste an image"
               onClick={() => fileInput.current?.click()}
-              disabled={uploading || sending || attachments.length >= maxAttachments}
+              disabled={uploading || attachments.length >= 5}
             >
               {uploading ? <LoaderCircle size={18} className="spin" /> : <Paperclip size={18} />}
             </Button>
@@ -264,44 +269,24 @@ export function Composer({
               type="button"
               variant="ghost"
               size="icon"
-              className={recording ? 'recording' : ''}
-              aria-label={recording ? 'Stop recording' : 'Record a voice message'}
-              title={speechReady ? 'Record a voice message' : 'Voice recording is not configured'}
-              disabled={!speechReady || startingRecording || transcribing || sending}
-              onClick={() => (recording ? recorder.current?.stop() : void startRecording())}
+              aria-label="Format message"
+              aria-expanded={formatting}
+              onClick={() => {
+                setFormatting(!formatting);
+                setPreview(false);
+              }}
             >
-              {transcribing ? (
-                <LoaderCircle size={18} className="spin" />
-              ) : recording ? (
-                <Square size={16} fill="currentColor" />
-              ) : (
-                <Mic size={18} />
-              )}
+              <TextCursorInput size={18} />
             </Button>
-            {recording ? (
-              <span className="composer-hint recording">Recording…</span>
-            ) : transcribing ? (
-              <span className="composer-hint">Transcribing…</span>
-            ) : (
-              <span className="composer-hint">Files, images, or a thought</span>
-            )}
           </div>
           <Button
             type="submit"
             size="icon"
             className="send-button"
             aria-label="Send message"
-            disabled={
-              !ready ||
-              sending ||
-              uploading ||
-              startingRecording ||
-              recording ||
-              transcribing ||
-              (!text.trim() && !attachments.length)
-            }
+            disabled={!ready || sending || uploading || (!text.trim() && !attachments.length)}
           >
-            {sending ? <LoaderCircle size={18} className="spin" /> : <ArrowUp size={20} />}
+            {sending ? <LoaderCircle size={18} className="spin" /> : <ArrowUp size={19} />}
           </Button>
         </div>
       </form>

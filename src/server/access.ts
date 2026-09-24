@@ -2,6 +2,16 @@ import type { FastifyInstance } from 'fastify';
 
 export function registerLocalAccess(app: FastifyInstance, port: number) {
   const hosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`]);
+  const pages = new Set([
+    '/',
+    '/goals',
+    '/schedule',
+    '/connections',
+    '/channels',
+    '/vault',
+    '/you',
+    '/dev',
+  ]);
   app.addHook('onRequest', async (request, reply) => {
     reply
       .header('X-Content-Type-Options', 'nosniff')
@@ -27,9 +37,16 @@ export function registerLocalAccess(app: FastifyInstance, port: number) {
       if (origin.protocol !== 'http:' || !hosts.has(origin.host))
         return reply.code(403).send({ error: 'This origin is not permitted.' });
     }
+    const pageNavigation =
+      request.method === 'GET' &&
+      pages.has(path) &&
+      request.headers['sec-fetch-mode'] === 'navigate' &&
+      request.headers['sec-fetch-dest'] === 'document';
+    const connectionCallback = request.method === 'GET' && path === '/api/connections/callback';
     if (
       request.headers['sec-fetch-site'] === 'cross-site' &&
-      request.url.split('?')[0] !== '/api/connections/callback'
+      !connectionCallback &&
+      !pageNavigation
     )
       return reply.code(403).send({ error: 'Cross-site requests are not permitted.' });
   });

@@ -106,8 +106,13 @@ export function channelConfiguration(env: Environment) {
   });
 }
 
-export function createChatSdkTransport(pool: Pool, environment: Environment): MessagingTransport {
+export function createChatSdkTransport(
+  pool: Pool,
+  environment: Environment,
+  options: { fetch?: typeof fetch } = {},
+): MessagingTransport {
   const env = { ...environment };
+  const request = options.fetch ?? fetch;
   const configuration = channelConfiguration(env);
   const configured = (provider: string) =>
     configuration.some(
@@ -164,8 +169,70 @@ export function createChatSdkTransport(pool: Pool, environment: Environment): Me
     messages,
   });
   let closed = false;
-  return {
+  let polling = false;
+  let offsetsReady: Promise<unknown> | undefined;
+  const transport: MessagingTransport = {
     channels,
+    async poll(accept) {
+      if (closed || polling || !telegram || env.TELEGRAM_MODE !== 'polling') return;
+      polling = true;
+      try {
+        offsetsReady ??= pool.query(
+          'CREATE TABLE IF NOT EXISTS channel_poll_offsets(provider text NOT NULL,account_id text NOT NULL,next_offset bigint NOT NULL,PRIMARY KEY(provider,account_id))',
+        );
+        await offsetsReady;
+        const accountId = env.TELEGRAM_BOT_TOKEN!.split(':')[0];
+        const saved = await pool.query<{ next_offset: string }>(
+          "SELECT next_offset FROM channel_poll_offsets WHERE provider='telegram' AND account_id=$1",
+          [accountId],
+        );
+        const response = await request(
+          `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getUpdates`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              offset: Number(saved.rows[0]?.next_offset ?? 0),
+              limit: 100,
+              timeout: 0,
+              allowed_updates: ['message'],
+            }),
+            signal: AbortSignal.timeout(10_000),
+          },
+        );
+        if (!response.ok) throw new Error('Telegram polling is unavailable.');
+        const updates = z
+          .object({
+            ok: z.literal(true),
+            result: z
+              .array(z.object({ update_id: z.number().int().nonnegative() }).passthrough())
+              .max(100),
+          })
+          .parse(await response.json());
+        for (const update of updates.result) {
+          if (closed) break;
+          const parsed = await transport.receive({
+            channelId: 'telegram',
+            method: 'POST',
+            headers: { 'x-telegram-bot-api-secret-token': env.TELEGRAM_WEBHOOK_SECRET_TOKEN },
+            query: {},
+            body: Buffer.from(JSON.stringify(update)),
+          });
+          if (parsed.status < 200 || parsed.status >= 300)
+            throw new Error('Telegram update could not be accepted.');
+          for (const message of parsed.messages ?? []) await accept(message);
+          await pool.query(
+            `INSERT INTO channel_poll_offsets(provider,account_id,next_offset) VALUES('telegram',$1,$2)
+            ON CONFLICT(provider,account_id) DO UPDATE SET next_offset=GREATEST(channel_poll_offsets.next_offset,EXCLUDED.next_offset)`,
+            [accountId, update.update_id + 1],
+          );
+        }
+      } catch {
+        throw new Error('Telegram polling is unavailable. Check the bot configuration.');
+      } finally {
+        polling = false;
+      }
+    },
     async receive(request) {
       if (!configured(request.channelId)) return error(404, 'Channel is not configured.');
       if (request.channelId === 'whatsapp' && request.method === 'GET') {
@@ -274,4 +341,5 @@ export function createChatSdkTransport(pool: Pool, environment: Environment): Me
       }
     },
   };
+  return transport;
 }

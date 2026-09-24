@@ -1,40 +1,51 @@
 # Replacing a capability
 
-Sidekick has one composition file: `src/server/composition.ts`. It selects adapters and connects them to feature factories. The web client consumes HTTP types; feature modules depend on small capability interfaces. Tests substitute these interfaces without starting vendor services.
+`src/server/composition.ts` selects adapters and binds feature factories. The web client consumes HTTP types; server features and the runtime depend on capability interfaces. Replacement tests can use the same routes and durable workers without vendor services.
 
 ## Replacement map
 
-| Replace                              | Implement                                            | Change at composition                                 | State to consider                                                                                    |
-| ------------------------------------ | ---------------------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| OpenAI / Anthropic model             | No new adapter for these two                         | `LLM_PROVIDER`, matching key and optional `LLM_MODEL` | Pi transcripts include prior tool results and model messages                                         |
-| Pi or another agent harness          | `Agent` in `src/ports/agent.ts`                      | `agent`                                               | Migrate transcripts or start an explicitly fresh segment with history; do not replay external writes |
-| Browser engine or remote computer    | `Computer` in `src/ports/computer.ts`                | `computer`                                            | Browser profiles, current page, protected selectors and secret-entry locks                           |
-| Local Docker workspace               | `Workspace` in `src/ports/computer.ts`               | `workspace`                                           | Files, sandbox paths, cancellation and published artifact resolution                                 |
-| Composio / direct Google APIs        | `IntegrationProvider` in `src/ports/integrations.ts` | `integrations`                                        | Provider-tagged connection/session/event references; users normally reconnect OAuth                  |
-| Speech service                       | `SpeechProvider` in `src/ports/speech.ts`            | `speech`                                              | Audio metadata and artifact bytes; no vendor state in the web flow                                   |
-| Cheap event model                    | `RelevanceClassifier` in `src/ports/relevance.ts`    | `relevance`                                           | Existing preferences and notification history remain in PostgreSQL                                   |
-| Jev browser chooser                  | `BrowserChooser` in `src/ports/computer.ts`          | `chooseBrowserAction`                                 | Only proposes actions against the supplied observation; no direct browser access                     |
-| Keychain / cloud key service         | `CredentialKeyStore` in `src/ports/key-store.ts`     | `keyStore`                                            | Preserve the existing key or explicitly re-encrypt stored entries before switching                   |
-| Chat SDK / another messaging service | `MessagingTransport` in `src/ports/messaging.ts`     | `messaging`                                           | Inbox/outbox identities, sender binding and uncertain delivery states                                |
+| Replace                   | Interface                                                 | Composition field                                  | State to preserve or migrate                                                   |
+| ------------------------- | --------------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------ |
+| OpenAI / Anthropic model  | Existing Pi adapter supports both                         | `LLM_PROVIDER`, matching key, optional `LLM_MODEL` | Prior messages and tool results in transcripts                                 |
+| Pi / agent harness        | `Agent` in `src/ports/agent.ts`                           | `agent`                                            | Transcript format, tool IDs, waiting segments, cancellation                    |
+| Browser / remote computer | `Computer` in `src/ports/computer.ts`                     | `computer`                                         | Profiles, pending form inspection, protected fields, screenshot state, locks   |
+| Linux workspace           | `Workspace` in `src/ports/computer.ts`                    | `workspace`                                        | Task paths, installed tools, artifacts, quotas, egress, cancellation           |
+| Composio / Google backend | `IntegrationProvider` in `src/ports/integrations.ts`      | `integrations`                                     | Provider-tagged accounts, consent attempts, sessions, subscriptions, approvals |
+| Speech                    | `SpeechProvider` in `src/ports/speech.ts`                 | `speech`                                           | Audio metadata and artifact bytes                                              |
+| Event/goal classifier     | `RelevanceClassifier` in `src/ports/relevance.ts`         | `relevance`                                        | Preferences, decisions, feedback, pending dispatch                             |
+| Jev browser chooser       | `BrowserChooser` in `src/ports/computer.ts`               | `chooseBrowserAction`                              | No direct browser state; chooses from an observation                           |
+| Keychain / key service    | `CredentialKeyStore` in `src/ports/key-store.ts`          | `keyStore`                                         | Vault and channel-settings key/ciphertext compatibility                        |
+| Messaging transport       | `MessagingTransport` in `src/ports/messaging.ts`          | `messaging` or `messagingSetup.create`             | Account/sender identity, inbox/outbox, polling offsets, uncertain delivery     |
+| Channel account setup     | `ChannelSetupVerifier` in `src/ports/channel-settings.ts` | `messagingSetup.verifier`                          | Encrypted settings, public summaries, provider registration state              |
 
-These interfaces hide transport and SDK details, not migration costs. A different provider cannot necessarily reuse another provider's OAuth account IDs, transcript format or browser profile. Never treat the presence of a new key as a completed migration.
+These interfaces hide SDK and transport details, not migration costs. A new provider key does not migrate OAuth account IDs, browser profiles, or transcript formats. The setup verifier currently covers Telegram/WhatsApp and returns a validated server-only configuration map; another channel requires an explicit setup schema and policy.
 
 ## Add an adapter
 
-1. Read the port and its focused tests. Put the implementation in `src/providers/<provider>/` and accept keys/configuration as factory arguments.
-2. Map vendor data into the port's types. Preserve cancellation, bounded input/output and fixed public errors. Do not expose SDK instances or credentials through the port.
-3. Select it in composition. Keep routes, product policy and React components unchanged when behavior is equivalent.
-4. Test vendor protocol mapping with synthetic transport fixtures, then run the same feature and application tests with the replacement.
-5. Plan existing-data handling and run a bounded live check against a development account. Record what was actually verified.
+1. Read the applicable port and focused tests. Put the implementation under `src/providers/<provider>/`; accept configuration and keys as factory arguments.
+2. Map vendor data to the port. Preserve cancellation, bounded output, and fixed public errors. Do not return SDK objects, credentials, or unrestricted execution handles.
+3. Select it in composition. Keep product policy, routes, and UI unchanged when behavior is equivalent.
+4. Run feature tests with an injected fake and protocol tests with synthetic vendor responses. Then exercise the HTTP-to-worker replacement fixture.
+5. Plan existing-data handling and perform only authorized, bounded live checks. Record unresolved vendor behavior.
 
-Google is the initial integration domain. The current feature catalog defines five service IDs and canonical action IDs. A replacement backend maps those IDs and returned tool schemas into its own API. The read allowlist remains product policy; other actions require review. Adding a new service also requires a catalog entry and explicit event/permission policy.
+The key store returns key bytes only to the trusted vault and channel-settings services. Keep the same key when replacing its source, or re-encrypt both datasets deliberately. Envelope encryption, key rotation, and cross-host recovery are not implemented by the port alone.
 
-The messaging feature stores verified normalized messages, enforces owner binding and reply windows, then submits durable tasks. A transport verifies original webhook bytes and performs outbound delivery. Adding a public webhook route also requires an explicit exception in `src/server/access.ts`; a generic transport must not broaden HTTP access on its own.
+## Keep policy outside providers
 
-## Replacing a product feature
+The integration feature owns the five Google service IDs, read allowlist, account selection, approvals, and watch intent. The adapter implements consent, verified account identity, scoped execution, subscriptions, and signed event normalization. It must honor the explicit provider account supplied for each action.
 
-Feature factories own their routes and persistence. For example, replace `createPersonalService` at composition to change goals or scheduling while preserving its runtime operations and HTTP contract. If the user-visible contract changes, update `src/shared/contracts.ts`, the page and `docs/api-contract.md` together.
+Disconnect/revoke connections under the old provider before switching integration backends. Existing references remain provider-tagged; the replacement must not reuse them. Pending approvals keep their local account binding and must fail when that account is unavailable. OAuth consent normally needs repeating with the replacement provider. Encrypted vault/channel records are independent and must remain intact.
 
-PostgreSQL and pg-boss are deliberate infrastructure choices. Moving to another database or durable workflow engine requires data and execution migration. There is no generic repository layer pretending this is a one-line swap. Local artifact storage similarly needs an ownership-preserving migration before an object-store implementation can replace it.
+The channel feature owns sender access, durable inbox/outbox, reply windows, and task routing. A transport verifies original webhook bytes, normalizes messages, optionally polls, and sends replies. Polling must await inbox acceptance before acknowledging an update. Replacement drains active delivery, then applies the new account/sender binding. Adding public ingress also requires a narrow exception in `src/server/access.ts`; an adapter cannot broaden HTTP access itself.
 
-`npm run check` enforces import directions. `application-adapters.test.ts` exercises the full HTTP-to-worker path with replacement agent, computer, workspace, integration, speech and key-store adapters. Provider protocol tests and live checks answer different questions and remain separate.
+Saved channel setup is decrypted only for the trusted transport factory. Metadata endpoints must not expose its configuration map. A failed provider verification leaves current local settings active; a remote webhook mutation and database commit cannot be made atomic by this interface.
+
+The classifier chooses relevance, but the feature keeps quiet hours, quotas, source identity, and dispatch deduplication. Browser adapters preserve exact-origin credential checks, observation locks, public-web restrictions, and non-navigating screenshot recovery. Workspace replacements preserve the separation from the host, provider environment, and authenticated browser.
+
+## Replace a feature or storage layer
+
+Feature factories own routes and persistence. For example, replacing `createPersonalService` changes personal context and scheduling while its HTTP/runtime contracts stay explicit. A visible contract change also requires `src/shared/contracts.ts`, the affected page, and [API contract](api-contract.md) to change together.
+
+PostgreSQL, pg-boss, and local artifact storage are deliberate infrastructure choices. Replacing them requires a data and execution migration; there is no generic repository layer pretending otherwise. Multiple replicas also need ownership/lease changes beyond swapping an adapter.
+
+`npm run check` enforces import directions. `application-adapters.test.ts` covers replacement agent, computer, workspace, integration, speech, and key services through HTTP and workers. `channel-application.test.ts` covers setup/transport replacement and channel continuation. Provider protocol fixtures and live checks answer different questions.

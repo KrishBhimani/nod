@@ -7,7 +7,9 @@ import type { CredentialKeyStore } from '../ports/key-store.ts';
 import type { RelevanceClassifier } from '../ports/relevance.ts';
 import type { SpeechProvider } from '../ports/speech.ts';
 import type { MessagingTransport } from '../ports/messaging.ts';
+import type { ChannelSetupVerifier } from '../ports/channel-settings.ts';
 import { createChatSdkTransport } from '../providers/chat-sdk/index.ts';
+import { createChatSdkSetupVerifier } from '../providers/chat-sdk/settings.ts';
 import { createAgentBrowserComputer } from '../providers/agent-browser/index.ts';
 import { createComposioProvider } from '../providers/composio/integrations.ts';
 import { createDockerWorkspace } from '../providers/docker/index.ts';
@@ -22,6 +24,7 @@ import { createAgentRuntime } from '../runtime/index.ts';
 import { createApp } from './app.ts';
 import { createApprovals } from './approvals.ts';
 import { createChannels } from './channels.ts';
+import { createChannelSettings } from './channel-settings.ts';
 import { configuration, dataRoot, ownerId, port } from './config.ts';
 import { initializeDatabase, pool } from './db.ts';
 import { events, refresh } from './events.ts';
@@ -32,10 +35,12 @@ import {
   boss,
   initializeTasks,
   resumeTask,
+  restartOnboarding,
   retryTaskCredentials,
   startTaskWorkers,
   stopTasks,
   submitTask,
+  submitUserMessage,
 } from './tasks.ts';
 import { createTriage } from './triage.ts';
 import { createVault } from './vault.ts';
@@ -49,6 +54,10 @@ export interface ApplicationAdapters {
   keyStore: CredentialKeyStore;
   relevance: RelevanceClassifier;
   messaging?: MessagingTransport;
+  messagingSetup?: {
+    verifier: ChannelSetupVerifier;
+    create(environment: Record<string, string>): MessagingTransport;
+  };
   chooseBrowserAction?: BrowserChooser;
   model: { provider: string; name: string; configured: boolean };
 }
@@ -97,7 +106,10 @@ export function createDefaultAdapters(
     chooseBrowserAction: env.TYPESAFE_API_KEY
       ? createJevBrowserChooser({ apiKey: env.TYPESAFE_API_KEY, model: env.TYPESAFE_MODEL })
       : undefined,
-    messaging: createChatSdkTransport(pool, env),
+    messagingSetup: {
+      verifier: createChatSdkSetupVerifier(),
+      create: (environment) => createChatSdkTransport(pool, { ...env, ...environment }),
+    },
     model: { provider, name: model, configured: Boolean(apiKey) },
   };
 }
@@ -133,21 +145,30 @@ export async function createApplication(
     resume: resumeTask,
     retry: retryTaskCredentials,
     inject: adapters.computer.injectCredentials,
+    inspect: adapters.computer.inspectLogin,
+    hold: adapters.computer.hold,
+    selectMethod: adapters.computer.selectLoginMethod,
   });
-  const approvals = await createApprovals((action, args, provenance) =>
-    action.startsWith('SIDEKICK_')
-      ? personal.manage(action.slice(9), args, provenance)
-      : integrations.executeApproved(ownerId, action, args),
+  const approvals = await createApprovals(
+    (action, args, provenance) =>
+      action.startsWith('SIDEKICK_')
+        ? personal.manage(action.slice(9), args, provenance)
+        : integrations.executeApproved(ownerId, action, args),
+    async (action, args) => {
+      if (!action.startsWith('SIDEKICK_'))
+        await integrations.validateApproval(ownerId, action, args);
+    },
   );
   if (options.workers !== false) {
     await triage.initializeHeartbeat();
     await startTaskWorkers({
       runTask: runtime.runTask,
       speech,
-      manage: async (taskId, action, args) => {
+      manage: async (taskId, action, args, provenance) => {
         if (
           [
             'profile_update',
+            'notification_preferences_update',
             'goal_create',
             'goal_update',
             'schedule_create',
@@ -157,7 +178,7 @@ export async function createApplication(
           ].includes(action)
         )
           return approvals.request(taskId, `SIDEKICK_${action}`, args);
-        return personal.manage(action, args);
+        return personal.manage(action, args, provenance);
       },
       requestCredential: async (taskId, input) => {
         if (input.kind === 'password') {
@@ -181,12 +202,22 @@ export async function createApplication(
           'requiresApproval' in result &&
           result.requiresApproval
         )
-          return approvals.request(taskId, action, args);
+          return approvals.request(
+            taskId,
+            action,
+            'args' in result && result.args && typeof result.args === 'object'
+              ? (result.args as Record<string, unknown>)
+              : args,
+          );
         return result;
       },
     });
   }
   const app = await createApp({
+    onboard: async (timeZone) => {
+      if (timeZone) await triage.updatePreferences({ timeZone });
+      return restartOnboarding();
+    },
     speech,
     computer: adapters.computer,
     runtime,
@@ -205,10 +236,27 @@ export async function createApplication(
   approvals.registerRoutes(app);
   personal.registerRoutes(app);
   triage.registerRoutes(app);
-  if (options.channels !== false && adapters.messaging) {
-    const channels = await createChannels(pool, {
+  let channels: Awaited<ReturnType<typeof createChannels>> | undefined;
+  let channelSettings: Awaited<ReturnType<typeof createChannelSettings>> | undefined;
+  if (options.channels !== false && (adapters.messaging || adapters.messagingSetup)) {
+    const setup = adapters.messagingSetup;
+    if (setup) {
+      channelSettings = await createChannelSettings(pool, {
+        keyStore: adapters.keyStore,
+        verifier: setup.verifier,
+        apply: async (environment) => {
+          if (!channels) throw new Error('Messaging is not ready.');
+          await channels.replaceTransport(setup.create(environment));
+        },
+      });
+      channelSettings.registerRoutes(app);
+    }
+    const messaging = setup
+      ? setup.create(await channelSettings!.environment())
+      : adapters.messaging!;
+    channels = await createChannels(pool, {
       ownerId,
-      transport: adapters.messaging,
+      transport: messaging,
       subscribe(listener) {
         const onEvent = (event: { type?: string }) => {
           if (event.type === 'refresh') listener();
@@ -218,8 +266,8 @@ export async function createApplication(
           events.off('event', onEvent);
         };
       },
-      submit: (text, sourceId, client) =>
-        submitTask(text, [], undefined, false, { sourceId, source: 'user', client }),
+      submit: async (text, sourceId, client, channel) =>
+        (await submitUserMessage(text, [], { sourceId, channel, client })).taskId,
     });
     channels.registerRoutes(app);
   }
@@ -227,5 +275,5 @@ export async function createApplication(
     await stopTasks();
     await runtime.dispose();
   });
-  return { app, runtime, personal, triage, integrations, vault };
+  return { app, runtime, personal, triage, integrations, vault, channels, channelSettings };
 }

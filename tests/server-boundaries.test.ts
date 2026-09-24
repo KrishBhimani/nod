@@ -88,6 +88,7 @@ test(
       context: ApprovalExecutionContext;
     }> = [];
     let failExecution = false;
+    let rejectPreflight = false;
     let executionGate: Promise<void> | undefined;
     const directories: string[] = [];
     let approvals: Awaited<ReturnType<typeof createApprovals>>;
@@ -121,12 +122,20 @@ test(
       await db.initializeDatabase();
       await tasks.initializeTasks();
       await personal.initialize({ workers: false });
-      approvals = await createApprovals(async (action, args, context) => {
-        calls.push({ action, args, context });
-        if (executionGate) await executionGate;
-        if (failExecution) throw new Error('Fixture provider detail must not be exposed.');
-        return { successful: true, id: 'fixture-provider-result' };
-      });
+      approvals = await createApprovals(
+        async (action, args, context) => {
+          calls.push({ action, args, context });
+          if (executionGate) await executionGate;
+          if (failExecution) throw new Error('Fixture provider detail must not be exposed.');
+          return { successful: true, id: 'fixture-provider-result' };
+        },
+        async () => {
+          if (rejectPreflight)
+            throw Object.assign(new Error('This approval needs a new account selection.'), {
+              statusCode: 409,
+            });
+        },
+      );
       approvals.registerRoutes(app);
       personal.registerRoutes(app);
       app.get('/api/fixture-error', async () => {
@@ -295,6 +304,42 @@ test(
             [approvalId(first.url)],
           );
           assert.equal(snapshot.rows[0].source_message_id, firstSource);
+        },
+      );
+
+      await t.test(
+        'approval preflight rejects obsolete bindings before any execution or uncertain state',
+        async () => {
+          const taskId = await newTask();
+          const id = approvalId((await approvals.request(taskId, 'GMAIL_SEND_EMAIL', {})).url);
+          const before = calls.length;
+          rejectPreflight = true;
+          try {
+            const rejected = await request('POST', `/api/approvals/${id}`, { approved: true });
+            assert.equal(rejected.statusCode, 409);
+            assert.equal(rejected.json().error, 'This approval needs a new account selection.');
+            assert.equal(calls.length, before);
+            assert.equal((await request('GET', `/api/approvals/${id}`)).json().status, 'pending');
+            assert.equal(
+              (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [taskId])).rows[0]
+                .status,
+              'waiting_user',
+            );
+            assert.equal(
+              (
+                await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [
+                  taskId,
+                ])
+              ).rowCount,
+              0,
+            );
+            assert.equal(
+              (await request('POST', `/api/approvals/${id}`, { approved: false })).statusCode,
+              200,
+            );
+          } finally {
+            rejectPreflight = false;
+          }
         },
       );
 

@@ -1,4 +1,4 @@
-type LinkKind = 'artifact' | 'credential' | 'approval' | 'external';
+type LinkKind = 'artifact' | 'credential' | 'approval' | 'external' | 'navigation';
 interface SafeLink {
   href: string;
   kind: LinkKind;
@@ -6,12 +6,21 @@ interface SafeLink {
 export type MessagePart =
   { type: 'text'; text: string } | ({ type: 'link'; text: string } & SafeLink);
 
+const navigationPaths = new Set([
+  '/',
+  '/connections',
+  '/goals',
+  '/schedule',
+  '/channels',
+  '/vault',
+]);
 const localPath = /^\/(api\/artifacts|credentials|approvals)\/[A-Za-z0-9_-]+\/?$/;
 
 export function safeMessageLink(value: string, origin: string): SafeLink | null {
   if (!value || /[\u0000-\u0020\u007f<>"'\\]/.test(value)) return null;
   const absolute = /^https?:\/\//i.test(value);
-  if (!absolute && !localPath.test(value.split(/[?#]/, 1)[0])) return null;
+  if (!absolute && !localPath.test(value.split(/[?#]/, 1)[0]) && !navigationPaths.has(value))
+    return null;
   try {
     const base = new URL(origin);
     const url = new URL(value, base);
@@ -20,6 +29,12 @@ export function safeMessageLink(value: string, origin: string): SafeLink | null 
       const path = absolute
         ? value.replace(/^https?:\/\/[^/]+/i, '').split(/[?#]/, 1)[0]
         : value.split(/[?#]/, 1)[0];
+      if (
+        url.origin === base.origin &&
+        navigationPaths.has(path) &&
+        navigationPaths.has(url.pathname)
+      )
+        return { href: url.pathname, kind: 'navigation' };
       if (url.origin !== base.origin || !localPath.test(path) || !localPath.test(url.pathname))
         return null;
       return {

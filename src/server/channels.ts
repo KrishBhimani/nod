@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
@@ -6,7 +7,7 @@ import type { InboundMessage, MessagingTransport } from '../ports/messaging.ts';
 interface ChannelOptions {
   ownerId: string;
   transport: MessagingTransport;
-  submit: (text: string, sourceId: string, client: PoolClient) => Promise<string>;
+  submit: (text: string, sourceId: string, client: PoolClient, channel: string) => Promise<string>;
   subscribe: (listener: () => void) => () => void;
   intervalMs?: number;
 }
@@ -48,12 +49,13 @@ export function channelReply(text: string, hasAttachments = false) {
 }
 
 export async function createChannels(pool: Pool, options: ChannelOptions) {
-  const { ownerId, transport } = options;
-  const channels = transport.channels.map((channel) => ({
+  const { ownerId } = options;
+  let transport = options.transport;
+  let channels = transport.channels.map((channel) => ({
     ...channel,
     allowedSenderIds: [...channel.allowedSenderIds],
   }));
-  const configuration = channels.map((channel) => ({
+  let configuration = channels.map((channel) => ({
     provider: channel.id,
     status: channel.status,
     missing: channel.missing,
@@ -75,6 +77,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
     "UPDATE channel_outbox SET state='uncertain',reason='interrupted_send',updated_at=now() WHERE state='sending'",
   );
   let closed = false;
+  let replacing = false;
   let running: Promise<void> | undefined;
   let drainRequested = false;
   let lastError: string | null = null;
@@ -114,7 +117,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
   }
 
   async function drainInbox() {
-    for (let index = 0; index < 25 && !closed; index++) {
+    for (let index = 0; index < 25 && !closed && !replacing; index++) {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
@@ -131,7 +134,16 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
             row.source_id,
           ]);
         } else {
-          const taskId = await options.submit(row.text, row.source_id, client);
+          const identity = createHash('sha256')
+            .update(JSON.stringify([row.account_id, row.sender_id]))
+            .digest('hex')
+            .slice(0, 32);
+          const taskId = await options.submit(
+            row.text,
+            row.source_id,
+            client,
+            `${row.provider}:${identity}`,
+          );
           await client.query(
             "UPDATE channel_inbox SET state='submitted',task_id=$2 WHERE source_id=$1",
             [row.source_id, taskId],
@@ -155,7 +167,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
       ON CONFLICT(message_id) DO NOTHING`,
       [ownerId],
     );
-    for (let index = 0; index < 25 && !closed; index++) {
+    for (let index = 0; index < 25 && !closed && !replacing; index++) {
       const result = await pool.query<OutboxRow>(`WITH claimed AS (
         UPDATE channel_outbox SET state='sending',updated_at=now() WHERE message_id=(
           SELECT message_id FROM channel_outbox WHERE state='pending' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
@@ -206,17 +218,25 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
   }
 
   function drain() {
-    if (closed) return Promise.resolve();
+    if (closed || replacing) return Promise.resolve();
     drainRequested = true;
     if (running) return running;
     running = (async () => {
+      let pollingFailed = false;
       try {
-        while (drainRequested && !closed) {
+        while (drainRequested && !closed && !replacing) {
           drainRequested = false;
+          try {
+            await transport.poll?.((message) => accept(message, message.channelId));
+          } catch {
+            pollingFailed = true;
+          }
           await drainInbox();
           await drainOutbox();
         }
-        lastError = null;
+        lastError = pollingFailed
+          ? 'Telegram could not check for new messages. Check its channel setup.'
+          : null;
       } catch {
         lastError =
           'Channel processing needs attention. Check the local database and task service.';
@@ -243,6 +263,32 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
     await transport.close();
   }
 
+  async function replaceTransport(next: MessagingTransport) {
+    if (closed || replacing) {
+      await next.close();
+      throw new Error('Channel configuration is unavailable.');
+    }
+    replacing = true;
+    try {
+      await running;
+      await transport.close();
+      transport = next;
+      channels = next.channels.map((channel) => ({
+        ...channel,
+        allowedSenderIds: [...channel.allowedSenderIds],
+      }));
+      configuration = channels.map((channel) => ({
+        provider: channel.id,
+        status: channel.status,
+        missing: channel.missing,
+      }));
+      lastError = null;
+    } finally {
+      replacing = false;
+    }
+    void drain();
+  }
+
   function registerRoutes(app: FastifyInstance) {
     app.addHook('onClose', close);
     app.get('/api/channels', async () => ({
@@ -266,18 +312,23 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
         method: ['GET', 'POST'],
         url: '/api/webhooks/:provider',
         async handler(request, reply) {
+          if (replacing || closed)
+            return reply.code(503).send({ error: 'Channel configuration is changing. Try again.' });
           const channelId = request.params.provider;
           if (
             !channels.some((channel) => channel.id === channelId && channel.status === 'configured')
           )
             return reply.code(404).send({ error: 'Channel is not configured.' });
-          const result = await transport.receive({
+          const currentTransport = transport;
+          const result = await currentTransport.receive({
             channelId,
             method: request.method,
             headers: request.headers,
             query: request.query,
             body: Buffer.isBuffer(request.body) ? request.body : new Uint8Array(),
           });
+          if (replacing || currentTransport !== transport)
+            return reply.code(503).send({ error: 'Channel configuration changed. Try again.' });
           if (result.status >= 200 && result.status < 300) {
             for (const message of result.messages ?? []) await accept(message, channelId);
             if (result.messages?.length) void drain();
@@ -289,5 +340,5 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
     });
   }
 
-  return { registerRoutes, drain, close };
+  return { registerRoutes, drain, close, replaceTransport };
 }

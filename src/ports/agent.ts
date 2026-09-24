@@ -1,3 +1,4 @@
+import type { CredentialKind } from './computer.ts';
 import type { Artifact } from '../shared/contracts.ts';
 
 export interface RuntimeContext {
@@ -5,13 +6,21 @@ export interface RuntimeContext {
   ownerId: string;
   prompt: string;
   background?: boolean;
-  history: Array<{ role: string; text: string }>;
+  channel?: string;
+  timeZone?: string;
+  history: Array<{
+    role: string;
+    text: string;
+    createdAt?: string | Date;
+    reaction?: string | null;
+  }>;
   memories: string[];
   workspacePath: string;
   signal: AbortSignal;
   attachments: Array<{ path: string; mimeType: string }>;
   emit(type: string, summary: string): Promise<void>;
   reply(text: string, streamId?: string): Promise<void>;
+  waitForUser?(question: string): Promise<void>;
   delta(text: string, streamId?: string, done?: boolean): void;
   remember(text: string): Promise<void>;
   publish(path: string, name?: string): Promise<Artifact>;
@@ -19,9 +28,9 @@ export interface RuntimeContext {
   requestCredential(input: {
     origin: string;
     label: string;
-    kind: 'password' | 'otp';
+    kind: CredentialKind;
     usernameSelector?: string;
-    passwordSelector: string;
+    passwordSelector?: string;
     submitSelector?: string;
   }): Promise<{ url?: string; filled?: boolean }>;
   integration(action: string, args: Record<string, unknown>): Promise<unknown>;
@@ -29,6 +38,8 @@ export interface RuntimeContext {
 }
 export interface RuntimeResult {
   status: 'succeeded' | 'waiting_credentials' | 'waiting_user';
+  waitingFor?: 'question' | 'approval' | 'credentials';
+  question?: string;
 }
 export interface AgentImage {
   type: 'image';

@@ -11,7 +11,7 @@ export interface IntegrationSession {
     callbackUrl: string,
   ): Promise<{ accountId: string; url: string }>;
   search(query: string): Promise<IntegrationSearch>;
-  execute(action: string, args: Record<string, unknown>): Promise<unknown>;
+  execute(action: string, args: Record<string, unknown>, accountId?: string): Promise<unknown>;
 }
 export interface IntegrationEvent {
   id: string;
@@ -29,11 +29,19 @@ export interface IntegrationProvider {
   supportsSubscriptions: readonly IntegrationService[];
   createSession(
     ownerId: string,
-    accounts: Partial<Record<IntegrationService, string>>,
+    accounts: Partial<Record<IntegrationService, string | string[]>>,
   ): Promise<IntegrationSession>;
   restoreSession(id: string): Promise<IntegrationSession>;
   deleteSession(id: string): Promise<void>;
-  inspectAccount(id: string): Promise<{ active: boolean; service: string }>;
+  inspectAccount(
+    id: string,
+    ownerId: string,
+  ): Promise<{
+    active: boolean;
+    service: string;
+    accountName?: string;
+    accountEmail?: string;
+  }>;
   deleteAccount(id: string): Promise<void>;
   parseCallback(query: unknown): { state: string; accountId: string; success: boolean };
   subscribe(

@@ -15,12 +15,29 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+  network-guard:
+    build:
+      context: .
+      dockerfile: Dockerfile.network
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp, /run]
+    healthcheck:
+      test: [CMD, test, -f, /tmp/network-ready]
+      interval: 2s
+      timeout: 2s
+      retries: 15
   workspace:
     build:
       context: .
       dockerfile: Dockerfile.workspace
     container_name: sidekick-workspace
-    network_mode: none
+    network_mode: service:network-guard
+    depends_on:
+      network-guard:
+        condition: service_healthy
     init: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -29,8 +46,10 @@ services:
     cpus: 2
     volumes:
       - ./.local/workspaces:/workspace
+      - workspace-tools:/home/node
     tmpfs:
       - /tmp:size=256m
     command: ['sleep', 'infinity']
 volumes:
   postgres-data:
+  workspace-tools:

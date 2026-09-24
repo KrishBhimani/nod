@@ -7,7 +7,7 @@ import { pool } from './db.ts';
 import { configuration, ownerId, port } from './config.ts';
 import { events } from './events.ts';
 import { artifactView, maxFileSize, storeArtifact } from './artifacts.ts';
-import { cancelTask, submitTask } from './tasks.ts';
+import { cancelTask, submitUserMessage } from './tasks.ts';
 import { registerLocalAccess } from './access.ts';
 import type { SpeechService } from './speech.ts';
 import type { Computer } from '../ports/computer.ts';
@@ -15,9 +15,10 @@ import type { Configuration } from '../shared/contracts.ts';
 
 export interface AppDependencies {
   speech?: SpeechService;
-  computer?: Pick<Computer, 'screenshot' | 'status'>;
+  computer?: Pick<Computer, 'screenshot' | 'status' | 'screenStatus'>;
   runtime?: { status(): { browser: string; workspace: string; activeTasks?: number } };
   configuration?: () => Configuration;
+  onboard?: (timeZone?: string) => Promise<unknown>;
 }
 
 export async function createApp(dependencies: AppDependencies = {}) {
@@ -41,7 +42,11 @@ export async function createApp(dependencies: AppDependencies = {}) {
   app.setErrorHandler((error, _request, reply) => {
     const known = error instanceof Error ? (error as Error & { statusCode?: number }) : undefined;
     const status = error instanceof z.ZodError ? 400 : known?.statusCode || 500;
+    const routing = known as (Error & { code?: string; choices?: unknown[] }) | undefined;
     reply.code(status).send({
+      ...(status === 409 && routing?.code === 'task_selection_required'
+        ? { code: routing.code, choices: routing.choices }
+        : {}),
       error:
         error instanceof z.ZodError
           ? 'Check the supplied values.'
@@ -58,7 +63,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
   app.get('/api/state', async () => {
     const [messages, tasks] = await Promise.all([
       pool.query(
-        'SELECT id,role,text,task_id AS "taskId",created_at AS "createdAt",attachments,stream_id AS "streamId" FROM (SELECT * FROM messages WHERE owner_id=$1 ORDER BY created_at DESC LIMIT 150) m ORDER BY created_at',
+        `SELECT id,role,text,task_id AS "taskId",created_at AS "createdAt",attachments,stream_id AS "streamId",reaction FROM (SELECT * FROM messages WHERE owner_id=$1 ORDER BY date_trunc('milliseconds',created_at) DESC,id DESC LIMIT 150) m ORDER BY date_trunc('milliseconds',created_at),id`,
         [ownerId],
       ),
       pool.query(
@@ -67,6 +72,50 @@ export async function createApp(dependencies: AppDependencies = {}) {
       ),
     ]);
     return { messages: messages.rows, tasks: tasks.rows, configuration: publicConfiguration() };
+  });
+  app.get('/api/messages', async (request) => {
+    const query = z
+      .object({
+        before: z.iso.datetime({ offset: true }).optional(),
+        beforeId: z.uuid().optional(),
+      })
+      .parse(request.query);
+    const rows = await pool.query(
+      `SELECT id,role,text,task_id AS "taskId",created_at AS "createdAt",attachments,stream_id AS "streamId",reaction FROM messages
+      WHERE owner_id=$1 AND ($2::timestamptz IS NULL OR date_trunc('milliseconds',created_at) < $2 OR (date_trunc('milliseconds',created_at) = $2 AND $3::uuid IS NOT NULL AND id < $3))
+      ORDER BY date_trunc('milliseconds',created_at) DESC,id DESC LIMIT 60`,
+      [ownerId, query.before ?? null, query.beforeId ?? null],
+    );
+    return rows.rows.reverse();
+  });
+  app.post<{ Params: { id: string } }>('/api/messages/:id/reaction', async (request, reply) => {
+    const { reaction } = z
+      .object({ reaction: z.enum(['like', 'dislike', 'heart']).nullable() })
+      .strict()
+      .parse(request.body);
+    const result = await pool.query(
+      "UPDATE messages SET reaction=$1 WHERE id=$2 AND owner_id=$3 AND role='assistant' RETURNING id",
+      [reaction, z.uuid().parse(request.params.id), ownerId],
+    );
+    if (!result.rowCount) return reply.code(404).send({ error: 'Message not found.' });
+    events.emit('event', { type: 'refresh' });
+    return { ok: true, reaction };
+  });
+  app.post('/api/onboarding', async (request) => {
+    const { timeZone } = z
+      .object({ timeZone: z.string().max(100).optional() })
+      .strict()
+      .parse(request.body);
+    if (timeZone) {
+      try {
+        new Intl.DateTimeFormat('en', { timeZone });
+      } catch {
+        throw Object.assign(new Error('Choose a valid time zone.'), { statusCode: 400 });
+      }
+    }
+    if (!dependencies.onboard)
+      throw Object.assign(new Error('Setup is unavailable.'), { statusCode: 503 });
+    return dependencies.onboard(timeZone);
   });
   app.post('/api/messages', async (request) => {
     if (!publicConfiguration().llmReady)
@@ -79,6 +128,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
         text: z.string().trim().max(24000).default(''),
         attachmentIds: z.array(z.uuid()).max(5).default([]),
         taskId: z.uuid().optional(),
+        forceNew: z.boolean().optional(),
       })
       .strict()
       .refine((value) => value.text.length > 0 || value.attachmentIds.length > 0)
@@ -91,7 +141,18 @@ export async function createApp(dependencies: AppDependencies = {}) {
       throw Object.assign(new Error('An attachment is unavailable.'), { statusCode: 400 });
     const prompt =
       input.text || 'Review the attached files and briefly describe what they contain.';
-    return { taskId: await submitTask(prompt, result.rows.map(artifactView), input.taskId) };
+    return submitUserMessage(prompt, result.rows.map(artifactView), {
+      taskId: input.taskId,
+      forceNew: input.forceNew,
+      channel: 'web',
+    });
+  });
+  app.get<{ Params: { id: string } }>('/api/tasks/:id', async (request, reply) => {
+    const result = await pool.query(
+      'SELECT id,title,status,error,created_at AS "createdAt",updated_at AS "updatedAt" FROM tasks WHERE id=$1 AND owner_id=$2',
+      [z.uuid().parse(request.params.id), ownerId],
+    );
+    return result.rows[0] ?? reply.code(404).send({ error: 'Task not found.' });
   });
   app.post<{ Params: { id: string } }>('/api/tasks/:id/cancel', async (request) => {
     await cancelTask(z.uuid().parse(request.params.id));
@@ -178,6 +239,12 @@ export async function createApp(dependencies: AppDependencies = {}) {
     return {
       tasks: tasks.rows,
       events: events.rows,
+      artifacts: (
+        await pool.query(
+          'SELECT * FROM artifacts WHERE owner_id=$1 AND task_id IS NOT NULL ORDER BY created_at DESC LIMIT 50',
+          [ownerId],
+        )
+      ).rows.map((row) => ({ ...artifactView(row), taskId: row.task_id })),
       runtime: { ...runtime, database: 'PostgreSQL connected' },
     };
   });
@@ -192,6 +259,9 @@ export async function createApp(dependencies: AppDependencies = {}) {
     if (!task.rowCount) return reply.code(404).send({ error: 'Task not found.' });
     const screen = await dependencies.computer?.screenshot(id);
     if (!screen) return reply.code(404).send({ error: 'This task has no browser screen yet.' });
+    const screenStatus = dependencies.computer?.screenStatus?.(id);
+    reply.header('X-Screen-State', screenStatus?.state ?? 'live');
+    if (screenStatus?.capturedAt) reply.header('X-Screen-Captured-At', screenStatus.capturedAt);
     return reply.type('image/png').send(screen);
   });
   app.get(

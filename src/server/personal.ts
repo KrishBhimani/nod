@@ -4,6 +4,7 @@ import type { Pool } from 'pg';
 import type { PgBoss } from 'pg-boss';
 import type { FastifyInstance } from 'fastify';
 import type { submitTask } from './tasks.ts';
+import { createPreferencesStore } from './preferences.ts';
 
 const profileSchema = z
   .object({
@@ -56,6 +57,7 @@ interface PersonalDependencies {
 
 export function createPersonalService(dependencies: PersonalDependencies) {
   const { pool, ownerId, scheduler, submitTask, refresh } = dependencies;
+  const preferences = createPreferencesStore(pool, ownerId);
 
   async function initialize(options: { workers?: boolean } = {}) {
     await pool.query(`
@@ -279,11 +281,141 @@ export function createPersonalService(dependencies: PersonalDependencies) {
     }
   }
 
+  async function learnPersonalFact(
+    action: 'memory_remember' | 'profile_learn',
+    args: Record<string, unknown>,
+    provenance?: { sourceMessageId: string | null; taskId?: string },
+  ) {
+    const input =
+      action === 'memory_remember'
+        ? {
+            kind: 'memory' as const,
+            ...z
+              .object({ quote: z.string().trim().min(1).max(2000) })
+              .strict()
+              .parse(args),
+          }
+        : {
+            kind: 'profile' as const,
+            ...z
+              .object({
+                quote: z.string().trim().min(1).max(2000),
+                field: z.enum(['name', 'location', 'phone']),
+                value: z.string().trim().min(1).max(200),
+              })
+              .strict()
+              .parse(args),
+          };
+    const sourceMessageId = z.uuid().parse(provenance?.sourceMessageId);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const source = (
+        await client.query(
+          "SELECT id,text,task_id,created_at FROM messages WHERE id=$1 AND owner_id=$2 AND role='user' FOR SHARE",
+          [sourceMessageId, ownerId],
+        )
+      ).rows[0];
+      const sourceText = String(source?.text ?? '').trim();
+      if (
+        !source ||
+        (provenance?.taskId && source.task_id !== provenance.taskId) ||
+        sourceText !== input.quote ||
+        input.quote.endsWith('?')
+      )
+        throw Object.assign(
+          new Error(
+            'The complete current user statement is required so its qualifications are preserved.',
+          ),
+          { statusCode: 400 },
+        );
+      if (
+        /\b(?:password|passcode|passphrase|otp|pin|2fa|api[ _-]?key|secret|token|bearer|private[ _-]?key|security code|cvv|cvc|verification code|recovery code|palavra-passe|senha|código de verificação)\b|\bsk-[A-Za-z0-9_-]{12,}|\b(?:\d[ -]?){14,19}\b/i.test(
+          input.quote,
+        )
+      )
+        throw Object.assign(
+          new Error('Sign-in details and payment secrets cannot be remembered.'),
+          { statusCode: 400 },
+        );
+      if (input.kind === 'profile') {
+        const statements = {
+          name: /^(?:my name is|call me|o meu nome é|chamo-me)\s+(.+?)\s*[.!]?$/i,
+          location: /^(?:i live in|i am based in|i'm based in|vivo em|moro em)\s+(.+?)\s*[.!]?$/i,
+          phone:
+            /^(?:my (?:phone|mobile)(?: number)? is|o meu (?:número|numero)(?: de (?:telefone|telemóvel))? é)\s+(.+?)\s*[.!]?$/i,
+        };
+        let value = input.quote.match(statements[input.field])?.[1];
+        if (!value && sourceText === input.quote && source.task_id) {
+          const previous =
+            (
+              await client.query(
+                "SELECT text FROM messages WHERE owner_id=$1 AND task_id=$2 AND role='assistant' AND created_at<=$3 ORDER BY created_at DESC,id DESC LIMIT 1",
+                [ownerId, source.task_id, source.created_at],
+              )
+            ).rows[0]?.text ?? '';
+          const questions = {
+            name: /(?:what (?:should|can) i call you|what(?:'s| is) your name|como te chamas|qual é o teu nome)/i,
+            location: /(?:where do you live|where are you based|onde (?:vives|moras))/i,
+            phone:
+              /(?:what(?:'s| is) your (?:phone|mobile)(?: number)?|qual é o teu (?:número|numero)(?: de (?:telefone|telemóvel)))/i,
+          };
+          if (questions[input.field].test(previous)) value = input.quote;
+        }
+        const limit = input.field === 'name' ? 100 : input.field === 'phone' ? 40 : 200;
+        if (
+          value !== input.value ||
+          input.value.length > limit ||
+          (input.field === 'phone' && !/^\+?[\d ()-]{5,40}$/.test(input.value))
+        )
+          throw Object.assign(
+            new Error('This profile value needs an explicit matching user statement.'),
+            { statusCode: 400 },
+          );
+        await client.query(
+          'INSERT INTO profiles(owner_id,data) VALUES($1,$2) ON CONFLICT(owner_id) DO UPDATE SET data=profiles.data || EXCLUDED.data',
+          [ownerId, { [input.field]: input.value }],
+        );
+      } else if (
+        !/^(?:i (?:prefer|like|dislike|do not like|don't like|live in|am based in|work|speak|use)|my name is|call me|prefiro|gosto de|não gosto de|o meu nome é|chamo-me|vivo em|moro em|trabalho|falo)\b/i.test(
+          input.quote,
+        )
+      ) {
+        throw Object.assign(
+          new Error(
+            'Only an explicit personal fact or preference can be remembered automatically.',
+          ),
+          { statusCode: 400 },
+        );
+      }
+      await client.query(
+        'INSERT INTO memory_facts(id,owner_id,text,source_message_id) VALUES($1,$2,$3,$4) ON CONFLICT(owner_id,text) DO NOTHING',
+        [randomUUID(), ownerId, input.quote, sourceMessageId],
+      );
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+    refresh();
+    return { ok: true };
+  }
+
   async function manage(
     action: string,
     args: Record<string, unknown>,
-    provenance?: { sourceMessageId: string | null },
+    provenance?: { sourceMessageId: string | null; taskId?: string },
   ) {
+    if (action === 'memory_remember' || action === 'profile_learn')
+      return learnPersonalFact(action, args, provenance);
+    if (action === 'notification_preferences_get') return preferences.get();
+    if (action === 'notification_preferences_update') {
+      const result = await preferences.update(args);
+      refresh();
+      return result;
+    }
     if (action === 'profile_get') return getProfile();
     if (action === 'profile_update') return setProfile({ ...(await getProfile()), ...args });
     if (action === 'goal_list') return listGoals();

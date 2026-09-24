@@ -1,5 +1,6 @@
+import { BrandMark } from '../components/brand';
 import { useEffect, useState } from 'react';
-import { Check, CircleAlert, LoaderCircle, Send, ShieldCheck, Sparkles } from 'lucide-react';
+import { Check, CircleAlert, LoaderCircle, Send, ShieldCheck } from 'lucide-react';
 import type { Approval } from '../../shared/contracts';
 import { api, post } from '../lib/api';
 import { scheduleLabel } from '../lib/schedules';
@@ -234,7 +235,7 @@ export function ApprovalPage({ id }: { id: string }) {
     <main className="credential-page">
       <a className="brand credential-brand" href="/">
         <span className="brand-mark">
-          <Sparkles size={19} />
+          <BrandMark />
         </span>
         Sidekick
       </a>

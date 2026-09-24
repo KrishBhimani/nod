@@ -34,6 +34,7 @@ export interface MessagingWebhookResult {
 
 export interface MessagingTransport {
   channels: MessagingChannel[];
+  poll?(accept: (message: InboundMessage) => Promise<void>): Promise<void>;
   receive(request: MessagingWebhook): Promise<MessagingWebhookResult>;
   post(input: {
     channelId: string;

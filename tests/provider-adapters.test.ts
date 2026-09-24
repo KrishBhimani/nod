@@ -213,7 +213,11 @@ test('Composio sessions omit absent auth overrides before SDK validation and pre
     };
   });
   t.mock.method(transport, 'execute', async (_id: string, input: Record<string, unknown>) => {
-    assert.deepEqual(input, { tool_slug: 'GMAIL_LIST_LABELS', arguments: { user_id: 'me' } });
+    assert.deepEqual(input, {
+      tool_slug: 'GMAIL_LIST_LABELS',
+      arguments: { user_id: 'me' },
+      account: 'fixture-account',
+    });
     return { data: { labels: [{ id: 'INBOX' }] }, error: null, log_id: 'fixture-log' };
   });
   const authConfigs = {
@@ -237,17 +241,243 @@ test('Composio sessions omit absent auth overrides before SDK validation and pre
     properties: { user_id: { type: 'string' } },
   });
   assert.equal(JSON.stringify(search).includes('private-session-metadata'), false);
-  assert.deepEqual(await session.execute('GMAIL_LIST_LABELS', { user_id: 'me' }), {
-    data: { labels: [{ id: 'INBOX' }] },
-    error: null,
-    logId: 'fixture-log',
-  });
+  assert.deepEqual(
+    await session.execute('GMAIL_LIST_LABELS', { user_id: 'me' }, 'fixture-account'),
+    {
+      data: { labels: [{ id: 'INBOX' }] },
+      error: null,
+      logId: 'fixture-log',
+    },
+  );
   const configured = createComposioProvider({
     client,
     authConfigs: { ...authConfigs, gmail: 'fixture-auth-config', googledocs: '' },
   });
-  await configured.createSession('local-development', {});
+  await configured.createSession('local-development', {
+    gmail: ['first-account', 'second-account'],
+  });
   assert.deepEqual(created[1].auth_configs, { gmail: 'fixture-auth-config' });
+  assert.deepEqual(created[1].connected_accounts, { gmail: ['first-account', 'second-account'] });
+  assert.deepEqual(created[1].multi_account, {
+    enable: true,
+    max_accounts_per_toolkit: 10,
+    require_explicit_selection: true,
+  });
+});
+
+test('Composio execution rejects failure envelopes without exposing provider details', async (t) => {
+  const client = new Composio({
+    apiKey: 'fixture-key-never-live',
+    allowTracking: false,
+    disableVersionCheck: true,
+    fileUploadDirs: false,
+  });
+  let result: Record<string, unknown> = {};
+  t.mock.method(client.sessions, 'create', async () => ({
+    sessionId: 'fixture-session',
+    execute: async () => result,
+  }));
+  const session = await createComposioProvider({ client }).createSession('local-development', {});
+  for (const failure of [
+    { data: {}, error: 'private-provider-error', logId: 'private-log' },
+    { data: {}, error: { message: 'private-provider-error' }, logId: 'private-log' },
+    { data: {}, successful: false },
+    { data: { successful: false, error: 'private-provider-error' }, error: null },
+  ]) {
+    result = failure;
+    await assert.rejects(session.execute('GMAIL_SEND_EMAIL', {}, 'fixture-account'), {
+      message: 'The connection provider could not complete this action.',
+    });
+  }
+  result = { data: { successful: true, id: 'fixture-message' }, error: null };
+  assert.deepEqual(await session.execute('GMAIL_SEND_EMAIL', {}, 'fixture-account'), result);
+});
+
+test('Composio account identity comes from an account-bound Google response and excludes credentials', async (t) => {
+  const client = new Composio({
+    apiKey: 'fixture-key-never-live',
+    allowTracking: false,
+    disableVersionCheck: true,
+    fileUploadDirs: false,
+  });
+  t.mock.method(client.connectedAccounts, 'get', async () => ({
+    status: 'ACTIVE',
+    isDisabled: false,
+    toolkit: { slug: 'gmail' },
+    data: { access_token: 'must-not-expose', email: 'untrusted@example.com' },
+  }));
+  t.mock.method(client.sessions, 'create', async () => {
+    throw new Error('Fixture session is unavailable.');
+  });
+  const endpoints: string[] = [];
+  t.mock.method(
+    client.tools,
+    'proxyExecute',
+    async (input: { connectedAccountId: string; method: string; endpoint: string }) => {
+      assert.equal(input.connectedAccountId, 'verified-account');
+      assert.equal(input.method, 'GET');
+      endpoints.push(input.endpoint);
+      if (input.endpoint.includes('/oauth2/'))
+        return { status: 403, data: { error: 'Missing profile scope' } };
+      assert.equal(input.endpoint, 'https://gmail.googleapis.com/gmail/v1/users/me/profile');
+      return {
+        status: 200,
+        data: {
+          emailAddress: 'verified@example.com',
+          messagesTotal: 999,
+          historyId: 'private-history',
+        },
+      };
+    },
+  );
+  const provider = createComposioProvider({ client });
+  assert.deepEqual(await provider.inspectAccount('verified-account', 'fixture-owner'), {
+    active: true,
+    service: 'gmail',
+    accountEmail: 'verified@example.com',
+  });
+  assert.deepEqual(await provider.inspectAccount('verified-account', 'fixture-owner'), {
+    active: true,
+    service: 'gmail',
+    accountEmail: 'verified@example.com',
+  });
+  assert.equal(endpoints.length, 2);
+});
+
+test('Composio identity uses account-scoped read tools when direct proxy permissions are unavailable', async (t) => {
+  const client = new Composio({
+    apiKey: 'fixture-key-never-live',
+    allowTracking: false,
+    disableVersionCheck: true,
+    fileUploadDirs: false,
+  });
+  const profiles = {
+    gmail: {
+      action: 'GMAIL_GET_PROFILE',
+      args: { user_id: 'me' },
+      data: { emailAddress: 'personal@example.com', historyId: 'private-history' },
+      identity: { accountEmail: 'personal@example.com' },
+    },
+    googlecalendar: {
+      action: 'GOOGLECALENDAR_GET_CURRENT_USER',
+      args: {},
+      data: { data: { email: 'work@example.com', display_name: 'Work calendar' } },
+      identity: { accountEmail: 'work@example.com', accountName: 'Work calendar' },
+    },
+    googledrive: {
+      action: 'GOOGLEDRIVE_GET_ABOUT',
+      args: { fields: 'user(displayName,emailAddress)' },
+      data: {
+        user: { emailAddress: 'drive@example.com', displayName: 'Fixture User' },
+        display_url: 'private-provider-url',
+      },
+      identity: { accountEmail: 'drive@example.com', accountName: 'Fixture User' },
+    },
+  };
+  const created: string[] = [];
+  const deleted: string[] = [];
+  t.mock.method(client.connectedAccounts, 'get', async (id: string) => ({
+    status: 'ACTIVE',
+    isDisabled: false,
+    toolkit: { slug: id },
+    data: { access_token: 'must-not-expose', email: 'unverified@example.com' },
+  }));
+  t.mock.method(client.tools, 'proxyExecute', async () => {
+    assert.fail('Successful identity tools do not require direct proxy permissions.');
+  });
+  t.mock.method(
+    client.sessions,
+    'create',
+    async (
+      owner: string,
+      config: {
+        toolkits: string[];
+        tools: Record<string, string[]>;
+        connectedAccounts: Record<string, string>;
+        manageConnections: boolean;
+        sandbox: { enable: boolean };
+        premiumUsage: boolean;
+      },
+    ) => {
+      assert.equal(owner, 'fixture-owner');
+      const service = config.toolkits[0] as keyof typeof profiles;
+      const profile = profiles[service];
+      assert.deepEqual(config.toolkits, [service]);
+      assert.deepEqual(config.tools, { [service]: [profile.action] });
+      assert.deepEqual(config.connectedAccounts, { [service]: service });
+      assert.equal(config.manageConnections, false);
+      assert.deepEqual(config.sandbox, { enable: false });
+      assert.equal(config.premiumUsage, false);
+      created.push(service);
+      return {
+        sessionId: `identity-${service}`,
+        execute: async (action: string, args: unknown, selection: unknown) => {
+          assert.equal(action, profile.action);
+          assert.deepEqual(args, profile.args);
+          assert.deepEqual(selection, { account: service });
+          return { data: profile.data, error: null, logId: 'private-log' };
+        },
+      };
+    },
+  );
+  t.mock.method(client.sessions, 'delete', async (id: string) => {
+    deleted.push(id);
+  });
+  const provider = createComposioProvider({ client });
+  for (const [service, profile] of Object.entries(profiles)) {
+    const results = await Promise.all([
+      provider.inspectAccount(service, 'fixture-owner'),
+      provider.inspectAccount(service, 'fixture-owner'),
+    ]);
+    for (const result of results)
+      assert.deepEqual(result, { active: true, service, ...profile.identity });
+    assert.deepEqual(await provider.inspectAccount(service, 'fixture-owner'), results[0]);
+  }
+  assert.deepEqual(created.sort(), Object.keys(profiles).sort());
+  assert.deepEqual(
+    deleted.sort(),
+    Object.keys(profiles)
+      .map((service) => `identity-${service}`)
+      .sort(),
+  );
+});
+
+test('Composio failed identity envelopes do not invent account labels or retain inspection sessions', async (t) => {
+  const client = new Composio({
+    apiKey: 'fixture-key-never-live',
+    allowTracking: false,
+    disableVersionCheck: true,
+    fileUploadDirs: false,
+  });
+  t.mock.method(client.connectedAccounts, 'get', async () => ({
+    status: 'ACTIVE',
+    isDisabled: false,
+    toolkit: { slug: 'gmail' },
+  }));
+  t.mock.method(client.sessions, 'create', async () => ({
+    sessionId: 'failed-identity',
+    execute: async () => ({
+      error: null,
+      data: {
+        successful: false,
+        data: { emailAddress: 'must-not-use@example.com' },
+        error: 'private-error',
+      },
+    }),
+  }));
+  const deleted: string[] = [];
+  t.mock.method(client.sessions, 'delete', async (id: string) => {
+    deleted.push(id);
+  });
+  t.mock.method(client.tools, 'proxyExecute', async () => ({
+    status: 403,
+    data: { error: 'private-error' },
+  }));
+  assert.deepEqual(
+    await createComposioProvider({ client }).inspectAccount('failed-account', 'fixture-owner'),
+    { active: true, service: 'gmail' },
+  );
+  assert.deepEqual(deleted, ['failed-identity']);
 });
 
 test('Composio adapter normalizes sessions without exposing SDK metadata and authenticates raw webhooks', async (t) => {

@@ -21,6 +21,7 @@ export interface Message {
   createdAt: string;
   attachments: Artifact[];
   streamId?: string | null;
+  reaction?: 'like' | 'dislike' | 'heart' | null;
 }
 export interface Task {
   id: string;
@@ -49,7 +50,15 @@ export interface CredentialRequest {
   taskId: string;
   origin: string;
   label: string;
-  kind: 'password' | 'otp';
+  kind: 'identifier' | 'password' | 'otp';
+  fields?: { kind: 'identifier' | 'password' | 'otp'; selector: string; label: string }[];
+  methods?: {
+    id: string;
+    label: string;
+    kind: 'credentials' | 'oauth' | 'passkey' | 'manual';
+    supported: boolean;
+    reason?: string;
+  }[];
   status: 'pending' | 'filled' | 'expired';
   expiresAt: string;
 }
@@ -58,6 +67,11 @@ export interface Connection {
   name: string;
   status: 'not_configured' | 'disconnected' | 'connected';
   accountId?: string;
+  connectionId?: string;
+  accountName?: string;
+  accountEmail?: string;
+  triggersActive?: boolean;
+  triggerStatus?: 'active' | 'pending' | 'unavailable' | 'disabled';
   triggersEnabled: boolean;
   description?: string;
   supportsTriggers?: boolean;

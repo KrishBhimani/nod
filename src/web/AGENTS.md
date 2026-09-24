@@ -1,9 +1,15 @@
 # Web interface
 
-`app.tsx` owns navigation; `pages` owns route views; `components` owns controls and the shared shadcn-style primitives in `ui.tsx`. `styles.css` owns the n8n palette and layout. Use `lib/api.ts` for HTTP and `../shared/contracts.ts` for wire types.
+`app.tsx` owns navigation and the inspector layout. `pages` owns views, `components` owns shared controls, and `styles.css` owns the palette/layout. Use `lib/api.ts` for HTTP and `../shared/contracts.ts` for wire types. The browser must not import server, runtime, ports, or provider code.
 
-Keep chat concise and central. Profile, goals, schedules and memory are on `/you`; secure credentials and approvals use separate routes. Development events and browser screenshots belong on `/dev`. Provider setup details do not belong in user conversations.
+The sidebar contains Chat, Goals, Schedule, Connections, Channels, and Vault. `pages/plans.tsx` renders goals/schedules. Personal context and setup are conversational; there is no separate profile page. Credential and approval links open dedicated forms. The inspector opens beside chat; `/dev` opens it directly.
 
-The browser must not import server, runtime, ports or provider code. `hooks/use-app-state.ts` refreshes persisted state and uses `lib/streams.ts` for transient deltas. Reconcile by stream ID, not task ID; stale refreshes must not erase a later message. `lib/schedules.ts` preserves wall-clock time and custom cron expressions during edits.
+Keep conversation central and quiet. Preserve working state, timestamps/date history, reactions, file/image attachments, and task choice for ambiguous replies. `components/message.tsx` renders Markdown with sanitized embedded HTML; keep URL checks and local-link handling in `lib/message-links.ts` and `lib/markdown.ts`. Do not allow raw unsanitized HTML or arbitrary remote image loading. `composer.tsx` handles pasted images and files; there is no microphone recording control. Speech playback is an optional message action.
 
-Read [API contract](../../docs/api-contract.md) for server behavior. Reuse existing controls before adding dependencies. Validate changed flows in the real local app, including error and waiting states. Synthetic browser or reducer fixtures do not prove a live account connection.
+`hooks/use-app-state.ts` refreshes persisted state and `lib/streams.ts` handles deltas. Reconcile by stream ID, not task ID; stale refreshes must not erase a later message. `lib/schedules.ts` preserves wall-clock times and custom cron expressions.
+
+Connections uses local service logos and verified account labels when available. Scope disconnect/watch actions to a connection ID. Show requested watches separately from active delivery. Channels sends setup secrets only through its secure server endpoint and shows honest polling/webhook state. Never restore credentials into a form from status responses.
+
+Secure form values stay out of URLs, local storage, chat, and logs. Clear them after submission. Preserve expired/retry, staged login, and unsupported-method states. Inspector refresh must pause during secure work and distinguish live, last-known, and unavailable images without hiding chat.
+
+Read [API contract](../../docs/api-contract.md) before changing requests. Reuse existing controls. Validate changed flows in the local app at desktop/narrow widths, including waiting/error states. Fixtures and configured labels do not prove live OAuth, login, or channel delivery.

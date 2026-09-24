@@ -67,7 +67,8 @@ test('computer observations retain body text, normalize controls, protect creden
     );
     assert.deepEqual(await computer.screenshot('fixture'), fixture.png);
     await computer.close('fixture');
-    assert.equal(await computer.screenshot('fixture'), null);
+    assert.deepEqual(await computer.screenshot('fixture'), fixture.png);
+    assert.equal(computer.screenStatus?.('fixture').state, 'last_known');
     assert.equal(fixture.commands.filter((command) => command[0] === 'close').length, 1);
   } finally {
     await computer.dispose();
@@ -94,7 +95,8 @@ test('computer factories isolate browser namespaces and dispose idle state', asy
       await setTimeout(10);
     assert.match(computer.status(), /^0 /);
     assert.match(other.status(), /^1 /);
-    assert.equal(await computer.screenshot('same-task'), null);
+    assert.deepEqual(await computer.screenshot('same-task'), first.png);
+    assert.equal(computer.screenStatus?.('same-task').state, 'last_known');
     assert.equal(first.commands.filter((command) => command[0] === 'close').length, 1);
     await other.dispose();
     assert.equal(second.commands.filter((command) => command[0] === 'close').length, 1);
@@ -150,7 +152,8 @@ test('a failed browser close blocks observations until the daemon can be closed'
     await computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/' });
     assert.deepEqual(await computer.screenshot('fixture'), fixture.png);
     await computer.close('fixture');
-    assert.equal(await computer.screenshot('fixture'), null);
+    assert.deepEqual(await computer.screenshot('fixture'), fixture.png);
+    assert.equal(computer.screenStatus?.('fixture').state, 'last_known');
   } finally {
     fail = false;
     await computer.dispose();

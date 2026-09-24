@@ -1,47 +1,34 @@
 import { useEffect, useState } from 'react';
-import {
-  Bell,
-  CalendarDays,
-  Check,
-  ExternalLink,
-  FileText,
-  FolderOpen,
-  Link2,
-  Mail,
-  Table2,
-  Unplug,
-} from 'lucide-react';
-import type { Connection, Preferences } from '../../shared/contracts';
+import { Check, Link2, Plus, RefreshCw, Unplug } from 'lucide-react';
+import type { Connection } from '../../shared/contracts';
 import { api, errorMessage, post } from '../lib/api';
-import { Button, Field, Input, Loading, Notice, Textarea } from '../components/ui';
+import { Button, Loading, Notice } from '../components/ui';
 
-const connectionDetails: Record<string, { icon: typeof Mail; description: string }> = {
-  gmail: { icon: Mail, description: 'Find email and stay on top of replies.' },
-  googlecalendar: { icon: CalendarDays, description: 'Plan your time and follow meeting changes.' },
-  googledrive: { icon: FolderOpen, description: 'Find files and keep documents within reach.' },
-  googlesheets: { icon: Table2, description: 'Read and update your spreadsheets.' },
-  googledocs: { icon: FileText, description: 'Work with your notes and documents.' },
-};
+const logos = new Set(['gmail', 'googlecalendar', 'googledrive', 'googlesheets', 'googledocs']);
+
+function watchDescription(connection: Connection) {
+  if (!connection.triggersEnabled) return 'Watching is off.';
+  if (connection.triggersActive)
+    return 'Watching for changes. Only useful updates need your attention.';
+  if (connection.triggerStatus === 'unavailable')
+    return 'Watching is on. Notification delivery still needs to be set up.';
+  return 'Watching is on, but the subscription has not been confirmed.';
+}
 
 export function Connections() {
   const [connections, setConnections] = useState<Connection[] | null>(null);
-  const [preferences, setPreferences] = useState<Preferences | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
-  const [saved, setSaved] = useState(false);
-  const [connectUrl, setConnectUrl] = useState('');
   async function load() {
     try {
       setConnections(await api<Connection[]>('/api/connections'));
+      setError('');
     } catch (cause) {
       setError(errorMessage(cause));
     }
   }
   useEffect(() => {
     void load();
-    void api<Preferences>('/api/preferences')
-      .then(setPreferences)
-      .catch((cause) => setError(errorMessage(cause)));
     const focus = () => {
       void load();
     };
@@ -49,28 +36,34 @@ export function Connections() {
     return () => window.removeEventListener('focus', focus);
   }, []);
   async function connect(connection: Connection) {
-    setBusy(connection.slug);
+    setBusy(`connect:${connection.slug}`);
     setError('');
-    setConnectUrl('');
     try {
       const result = await post<{ url: string }>(
         `/api/connections/${encodeURIComponent(connection.slug)}/connect`,
       );
       const url = new URL(result.url);
-      if (url.protocol !== 'https:') throw new Error('The sign-in address could not be verified.');
-      setConnectUrl(url.href);
-      window.open(url.href, '_blank', 'noopener,noreferrer');
+      if (url.protocol !== 'https:' || url.username || url.password)
+        throw new Error('The sign-in address could not be verified.');
+      window.location.assign(url.href);
     } catch (cause) {
       setError(errorMessage(cause));
-    } finally {
       setBusy('');
     }
   }
-  async function disconnect(connection: Connection) {
-    setBusy(connection.slug);
+  async function update(
+    connection: Connection,
+    action: 'disconnect' | 'triggers',
+    enabled?: boolean,
+  ) {
+    if (!connection.connectionId) return;
+    setBusy(`${action}:${connection.connectionId}`);
     setError('');
     try {
-      await post(`/api/connections/${encodeURIComponent(connection.slug)}/disconnect`);
+      await post(
+        `/api/connections/${encodeURIComponent(connection.slug)}/accounts/${encodeURIComponent(connection.connectionId)}/${action}`,
+        action === 'triggers' ? { enabled } : {},
+      );
       await load();
     } catch (cause) {
       setError(errorMessage(cause));
@@ -78,197 +71,139 @@ export function Connections() {
       setBusy('');
     }
   }
-  async function toggle(connection: Connection) {
-    setBusy(connection.slug);
-    setError('');
-    try {
-      await post(`/api/connections/${encodeURIComponent(connection.slug)}/triggers`, {
-        enabled: !connection.triggersEnabled,
-      });
-      await load();
-    } catch (cause) {
-      setError(errorMessage(cause));
-    } finally {
-      setBusy('');
-    }
-  }
-  async function savePreferences(event: React.FormEvent) {
-    event.preventDefault();
-    setBusy('preferences');
-    setSaved(false);
-    setError('');
-    try {
-      await api('/api/preferences', { method: 'PUT', body: JSON.stringify(preferences) });
-      setSaved(true);
-    } catch (cause) {
-      setError(errorMessage(cause));
-    } finally {
-      setBusy('');
-    }
-  }
+  const services = new Map<string, Connection[]>();
+  for (const connection of connections ?? [])
+    services.set(connection.slug, [...(services.get(connection.slug) ?? []), connection]);
   return (
     <div className="content-page">
       <header className="page-heading">
         <div>
-          <h1>A little more connected.</h1>
-          <p>Bring your email, calendar, and files into the conversation.</p>
+          <h1>Connections</h1>
+          <p>Your email, calendars, and files, in one conversation.</p>
         </div>
-        <span className="heading-icon">
-          <Link2 size={23} />
-        </span>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={Boolean(busy)}
+          onClick={() => void load()}
+          aria-label="Refresh connections"
+        >
+          <RefreshCw size={16} />
+        </Button>
       </header>
       {error && <Notice>{error}</Notice>}
-      {connectUrl && (
-        <Notice kind="info">
-          Finish connecting in the sign-in window.{' '}
-          <a href={connectUrl} target="_blank" rel="noopener noreferrer">
-            Open sign-in <ExternalLink size={12} />
-          </a>
-        </Notice>
-      )}
       {!connections ? (
-        !error && <Loading label="Checking connections…" />
+        <Loading label="Checking connections…" />
       ) : (
-        <div className="connections-list">
-          {connections.map((connection) => {
-            const details = connectionDetails[connection.slug] ?? {
-              icon: Link2,
-              description: 'Bring this account into your conversation.',
-            };
+        <div className="service-list">
+          {[...services].map(([slug, entries]) => {
+            const service = entries[0];
+            const accounts = entries.filter((entry) => entry.connectionId);
             return (
-              <section key={connection.slug} className="connection-row">
+              <section key={slug} className="service-row">
                 <div className="connection-main">
-                  <div className={`connection-icon ${connection.slug}`}>
-                    <details.icon size={24} />
-                  </div>
-                  <div className="connection-description">
-                    <h2>{connection.name}</h2>
-                    <p>
-                      {connection.status === 'connected'
-                        ? 'Connected to your account'
-                        : (connection.description ?? details.description)}
-                    </p>
-                  </div>
-                  {connection.status === 'connected' ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={Boolean(busy)}
-                      onClick={() => void disconnect(connection)}
-                    >
-                      <Unplug size={14} />
-                      Disconnect
-                    </Button>
+                  {logos.has(slug) ? (
+                    <img
+                      className="service-logo"
+                      src={`/logos/${slug}.svg`}
+                      alt=""
+                      width={32}
+                      height={32}
+                    />
                   ) : (
-                    <Button
-                      variant="outline"
-                      disabled={connection.status === 'not_configured' || Boolean(busy)}
-                      onClick={() => void connect(connection)}
-                    >
-                      {busy === connection.slug ? 'Connecting…' : 'Connect'}
-                    </Button>
+                    <Link2 size={30} aria-hidden="true" />
                   )}
+                  <div className="connection-description">
+                    <h2>{service.name}</h2>
+                    <p>{service.description}</p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={service.status === 'not_configured' || Boolean(busy)}
+                    onClick={() => void connect(service)}
+                  >
+                    <Plus size={14} />
+                    {busy === `connect:${slug}`
+                      ? 'Opening…'
+                      : accounts.length
+                        ? 'Add account'
+                        : 'Connect'}
+                  </Button>
                 </div>
-                {connection.status === 'not_configured' && (
+                {service.status === 'not_configured' && (
                   <p className="connection-setup">
-                    Finish local connection setup to link your account.
+                    Google connections need to be configured locally before you can sign in.
                   </p>
                 )}
-                {connection.status === 'connected' && connection.supportsTriggers && (
-                  <div className="connection-trigger">
-                    <div>
-                      <span>Watch for changes</span>
-                      <small>Use your preferences below to decide what needs attention.</small>
+                {accounts.map((account) => (
+                  <div key={account.connectionId} className="account-row">
+                    <div className="connection-main">
+                      <div className="connection-description">
+                        <h3>
+                          {account.accountName ??
+                            account.accountEmail ??
+                            'Account details unavailable'}
+                        </h3>
+                        {account.accountName && account.accountEmail && (
+                          <p>{account.accountEmail}</p>
+                        )}
+                        <small className="account-status">
+                          {account.status === 'connected' ? (
+                            <>
+                              <Check size={12} /> Connected
+                            </>
+                          ) : (
+                            'Connection needs attention'
+                          )}
+                        </small>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={Boolean(busy)}
+                        onClick={() => void update(account, 'disconnect')}
+                        aria-label={`Disconnect ${account.accountEmail ?? account.accountName ?? service.name}`}
+                      >
+                        <Unplug size={14} />
+                        {busy === `disconnect:${account.connectionId}` ? 'Removing…' : 'Disconnect'}
+                      </Button>
                     </div>
-                    <button
-                      className={`toggle ${connection.triggersEnabled ? 'toggle-on' : ''}`}
-                      role="switch"
-                      aria-checked={connection.triggersEnabled}
-                      aria-label={`Watch for ${connection.name} changes`}
-                      disabled={Boolean(busy)}
-                      onClick={() => void toggle(connection)}
-                    >
-                      <span />
-                    </button>
+                    {account.status === 'connected' && account.supportsTriggers && (
+                      <div className="connection-trigger">
+                        <div>
+                          <span>Watch for changes</span>
+                          <small>{watchDescription(account)}</small>
+                        </div>
+                        {account.triggerStatus === 'pending' && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={Boolean(busy)}
+                            onClick={() => void update(account, 'triggers', true)}
+                          >
+                            Retry
+                          </Button>
+                        )}
+                        <button
+                          className={`toggle ${account.triggersEnabled ? 'toggle-on' : ''}`}
+                          role="switch"
+                          aria-checked={account.triggersEnabled}
+                          aria-label={`Watch ${account.accountEmail ?? account.accountName ?? service.name} for changes`}
+                          disabled={Boolean(busy)}
+                          onClick={() => void update(account, 'triggers', !account.triggersEnabled)}
+                        >
+                          <span />
+                        </button>
+                      </div>
+                    )}
                   </div>
-                )}
+                ))}
               </section>
             );
           })}
         </div>
       )}
-      <section className="preferences-section">
-        <div className="section-heading">
-          <Bell size={19} />
-          <div>
-            <h2>When to interrupt me</h2>
-            <p>Only events matching your preferences can start a task.</p>
-          </div>
-        </div>
-        {preferences ? (
-          <form onSubmit={(event) => void savePreferences(event)} className="form-stack">
-            <Textarea
-              aria-label="Notification preferences"
-              rows={4}
-              value={preferences.notificationRule}
-              onChange={(event) => {
-                setSaved(false);
-                setPreferences({ ...preferences, notificationRule: event.target.value });
-              }}
-              placeholder="For example, tell me about meeting changes today and emails that need a reply from me."
-            />
-            <p className="field-hint">Leave this empty to save updates quietly.</p>
-            <div className="quiet-hours">
-              <Field label="Quiet hours start">
-                <Input
-                  type="time"
-                  required
-                  value={preferences.quietStart}
-                  onChange={(event) => {
-                    setSaved(false);
-                    setPreferences({ ...preferences, quietStart: event.target.value });
-                  }}
-                />
-              </Field>
-              <Field label="Quiet hours end">
-                <Input
-                  type="time"
-                  required
-                  value={preferences.quietEnd}
-                  onChange={(event) => {
-                    setSaved(false);
-                    setPreferences({ ...preferences, quietEnd: event.target.value });
-                  }}
-                />
-              </Field>
-              <Field label="Time zone">
-                <Input
-                  required
-                  value={preferences.timeZone}
-                  onChange={(event) => {
-                    setSaved(false);
-                    setPreferences({ ...preferences, timeZone: event.target.value });
-                  }}
-                  placeholder="Europe/Lisbon"
-                />
-              </Field>
-            </div>
-            <div className="preferences-actions">
-              <Button variant="secondary" type="submit" disabled={busy === 'preferences'}>
-                {busy === 'preferences' ? 'Saving…' : 'Save preferences'}
-              </Button>
-              {saved && (
-                <span className="saved-state" role="status">
-                  <Check size={15} />
-                  Saved
-                </span>
-              )}
-            </div>
-          </form>
-        ) : (
-          <Loading label="Loading your preferences…" />
-        )}
-      </section>
     </div>
   );
 }

@@ -1,48 +1,77 @@
 # Architecture and ownership
 
-The web client, API, agent runtime and workers run locally in one Node process. PostgreSQL stores conversations, task revisions, goals, schedules, preferences, vault ciphertext and durable jobs. Artifact bytes, browser profiles and model transcripts live under ignored `.local/` paths.
+The local Node process serves the React client, Fastify API, agent runtime, four task workers, and schedulers. PostgreSQL stores conversations, task revisions, personal context, approval records, encrypted credentials/channel settings, and durable jobs. Files, masked browser images, profiles, and agent transcripts live under ignored `.local/` paths. Docker supplies the command-line workspace and a separate network guard.
 
 ```mermaid
 flowchart TD
   Web[React web client] --> API[Server features and HTTP contracts]
+  Channels[Verified channel ingress] --> API
   API --> DB[(PostgreSQL and pg-boss)]
   DB --> Workers[Task workers]
-  Workers --> Runtime[Provider-neutral agent runtime]
-  Runtime --> Ports[Agent, computer and workspace interfaces]
+  Workers --> Runtime[Provider-neutral runtime]
+  Runtime --> Agent[Agent interface]
+  Runtime --> Computer[Trusted browser interface]
+  Runtime --> Workspace[Linux workspace interface]
   API --> Services[Integration, speech, relevance and key interfaces]
-  Ports --> Adapters[Provider adapters]
-  Services --> Adapters
   Composition[Server composition] -. constructs .-> API
   Composition -. constructs .-> Runtime
-  Composition -. selects .-> Adapters
+  Composition -. selects .-> Adapters[Provider adapters]
+  Agent --> Adapters
+  Computer --> Adapters
+  Workspace --> Adapters
+  Services --> Adapters
 ```
 
-## Dependency direction
+## Code boundaries
 
-`src/server/composition.ts` is the only application module that selects provider and runtime implementations. `src/ports` describes capabilities without vendor types. `src/providers` contains SDKs, protocol mapping and concrete execution. `src/runtime` owns tool behavior and task-segment lifecycle. `src/server` owns product policy, persistence and HTTP. `src/shared` contains browser-safe types; `src/web` imports only web/shared code.
+`src/server/composition.ts` selects adapters and binds feature factories. `src/ports` defines capabilities without vendor types. `src/providers` contains SDKs, protocol mapping, and concrete execution. `src/runtime` owns tools, budgets, prompts, and task segments. `src/server` owns product policy, authorization, persistence, and HTTP. `src/shared` contains browser-safe types; `src/web` imports only web/shared code.
 
-Factories capture dependencies when constructed. There is no mutable runtime service locator. `scripts/check-architecture.mjs` rejects cross-layer imports and vendor SDKs outside adapters. See [replacement guide](replacing-modules.md) for the exact seams and state migration limits.
+Factories capture dependencies rather than reading a mutable service locator. `scripts/check-architecture.mjs` checks import directions. These are code boundaries within a trusted local process, not separate operating-system identities. See [replacing modules](replacing-modules.md) for state that must migrate with a provider.
 
-## Durable work
+## Conversation and durable tasks
 
-Each user request creates an independent task and durable job in the same transaction. Four workers allow unrelated requests to continue while another waits. Each task has its own transcript, workspace and browser session. PostgreSQL is authoritative; SSE carries transient text and refresh signals. Each model message has a separate stream ID, so delayed refreshes cannot clear a later message.
+A new request creates a task and pg-boss job in the same transaction. A reply can continue the conversation's single task waiting for an ordinary question; the web app asks the user to select a task when several are waiting. Explicit task selection and starting a new task are separate choices. Secure credentials and approvals have their own continuation paths.
 
-Credential and action-review requests end the current execution segment. The trusted form handler performs the accepted step and queues continuation. Task revisions fence late writes and old jobs. Expired credential forms can restart only their current waiting revision; older links never inject into a newer task segment. Interrupted running tasks require review after restart instead of blindly repeating external effects.
+Tasks have separate transcripts, workspaces, and browser sessions. A server-derived channel identity prevents a Telegram answer from continuing an unrelated web or WhatsApp task. Channel inbox identity and task dispatch are durable and deduplicated.
 
-The runtime binds tools to the current task, validates their arguments, limits turns/actions, and propagates cancellation. Agent transcripts persist across segments. Computer and workspace adapters own their resource cleanup. Browser sessions close after an idle period; a later continuation may need to reopen a page and authenticate again.
+PostgreSQL is authoritative. SSE carries transient text and refresh signals; each model message has a stream ID. Credential and approval requests end a segment and release its worker. Task revisions fence stale forms, jobs, and late writes. Cancellation stops further accepted tool work. An action already accepted by an external service may still complete.
 
-## Personal context and quiet work
+After a restart, interrupted running tasks need review before proceeding. Approvals and channel sends with uncertain outcomes are not replayed automatically. Internal transaction deduplication cannot make a browser click or external API request exactly once.
 
-Profile, memories, history, goals and schedules are separate persisted records. Tools retrieve relevant context; phone numbers are not automatically included in prompts. Explicit profile/goal/schedule/memory changes proposed by the agent require review; direct UI actions are the user's instruction.
+## Personal context and background work
 
-Recurring schedules use pg-boss and a saved timezone. Hourly reviews and Google events use a cheap classifier before starting a main-agent task. Preferences, active goals, recent conversation, feedback and weak engagement signals inform that check. Quiet hours and rate limits remain server policy. Background tasks suppress streamed prose and automatic final replies; they send explicit messages only for useful results or necessary questions.
+Bounded profile fields, saved facts, and active goal summaries enter task context as data. Phone numbers are excluded from automatic profile context. Stored facts do not grant tool permissions.
 
-## External capabilities
+The server supplies the current owned user-message ID. Automatic learning requires a matching quote and explicit personal fact; profile fields require a recognized self-statement or an answer to the matching question. Other personal changes use review. This limited source check does not prove all user text is benign or eliminate prompt injection.
 
-Composio implements Google authorization, refresh, API tools and verified event normalization. Sidekick owns connection intent, event deduplication, revocation, approval policy and notification decisions. Provider-tagged references prevent a replacement provider from reusing old credentials or event identities accidentally.
+Preferences and feedback inform a cheap classifier before connected events or hourly reviews start main-agent work. Active goals permit review even with an empty notification rule. The server independently enforces quiet hours, dispatch limits, source identity, and deduplication. Default preferences favor useful, time-sensitive changes; users can change them through conversation.
 
-The Docker shell is offline and has no host secrets or Docker socket. Browser actions use a trusted adapter with public-web egress checks and a separate authenticated profile. The browser broker injects credentials without exposing them to the model. Neither adapter gives the agent native Mac control. Task folders share one local-owner container; production tenant isolation is a separate requirement.
+Background tasks suppress streamed prose and automatic final replies. They may explicitly send a useful result or necessary question. Saved decisions can be reconsidered later; there is no guaranteed digest delivery. Schedules use pg-boss and a saved timezone while the local process is running.
 
-The vault uses an injected key source. macOS Keychain is the local default; another host can supply the same key through the environment for testing. A hosted service should use a separate credential broker and managed key service. An operator controlling the decrypting service can access plaintext; these boundaries do not promise secrecy from that operator.
+## Browser and Linux workspace
 
-See [security](security.md), [API contract](api-contract.md) and [production requirements](production.md) before changing trust or deployment boundaries.
+The browser runs through a trusted adapter with its own public-web proxy, profile, protected fields, and credential broker. The runtime exposes bounded browser actions, not arbitrary JavaScript, CDP, profile files, or vault reads. Secure entry rechecks the origin, current form, and task revision and blocks observation during injection. The website still receives the submitted values.
+
+The inspector stays alongside chat. It requests screenshots about once a second, hides the view during credential injection, and labels retained last-known images. Recovery never opens a URL merely to display a screenshot. A restarted session that previously handled credentials requires explicit reopening before new inspection because its secret-redaction state was in memory.
+
+The shell runs as `node` in a Linux container with all capabilities dropped, no privilege escalation, and CPU/memory/process limits. Only task workspaces and the `workspace-tools` home volume are mounted. Provider environment variables, the Docker socket, and browser profiles are absent.
+
+A separate `network-guard` container owns `NET_ADMIN`. The workspace shares its network namespace but cannot change its firewall. The guard permits public IPv4 and DNS, rejects private/LAN/metadata IPv4 destinations, and blocks external IPv6. CLI tools installed through npm or pipx persist under `/home/node`. Native GUI/OS applications are not implemented.
+
+Tasks share this local-owner container and home volume. Shell commands can access other task folders in that container and send accessible data to public endpoints. The design separates shell access from the trusted browser; it does not promise hostile-code isolation between tasks or complete data-loss prevention.
+
+## Google accounts and messaging
+
+Composio owns OAuth refresh and vendor tool transport. Sidekick owns multiple account records, provider identity, consent attempts, revocation, watch intent, approvals, and event deduplication. Account labels come from provider responses when available.
+
+A Google action resolves an owned local `connectionId` before execution. Proposed writes save that ID in the approval; execution checks it again and supplies the provider account explicitly. Missing, revoked, foreign, or obsolete account references cannot silently choose another account. Old approvals without an account binding require a new request.
+
+Approval preflight rejects invalid account bindings before the action starts. An execution failure, including a provider response that contains an error without throwing, remains uncertain and cannot produce a success continuation. Public errors exclude raw provider details.
+
+Gmail/Calendar watches are desired by default. Subscription state is separate from that preference; unavailable signed-webhook configuration is shown honestly. Verified events must match owner, account, and subscription before they reach relevance checks.
+
+Channel setup accepts credentials only through local forms. `channel-settings.ts` encrypts them with owner/channel-bound AES-GCM; the injected key store keeps the key outside PostgreSQL. Composition creates or replaces the transport after verification. Status routes expose metadata, not secrets. Disconnect removes saved ciphertext and overrides legacy environment enablement, but does not revoke the provider token.
+
+Telegram polling saves inbox data before advancing its durable offset. Webhooks verify raw bytes and the configured sender. Task/job creation and inbox mapping share a transaction; assistant replies enter a durable outbox with account and sender rechecks. WhatsApp applies the 24-hour reply window. Provider setup and local database commit are not atomic; uncertain webhook registration needs provider inspection.
+
+Read [security](security.md), [API contract](api-contract.md), [channel recovery](channels.md), and [production requirements](production.md) before changing these boundaries.

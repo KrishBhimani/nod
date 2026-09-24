@@ -1,21 +1,30 @@
 # Server features
 
-`composition.ts` constructs providers and binds features. `index.ts` serves the web app and owns process signals. Neither provider SDKs nor runtime implementations belong in other server modules; use the types in `../ports` and explicit factory arguments.
+`composition.ts` constructs adapters and binds feature factories. `index.ts` serves the app and owns process signals. Other server modules use `../ports` and explicit dependencies; do not import vendor SDKs or concrete runtime/provider implementations.
 
-| Work                                                       | Entry point       |
-| ---------------------------------------------------------- | ----------------- |
-| Chat, uploads, media, inspector and HTTP errors            | `app.ts`          |
-| Durable dispatch, cancellation, task revisions and workers | `tasks.ts`        |
-| Schema and transaction helper                              | `db.ts`           |
-| Credential encryption, secure forms and continuation       | `vault.ts`        |
-| Google connections, approval policy and event inbox        | `integrations.ts` |
-| Action review and continuation                             | `approvals.ts`    |
-| Profile, goals, history and recurring schedules            | `personal.ts`     |
-| Quiet event checks and hourly reviews                      | `triage.ts`       |
-| Messaging inbox, outbox and delivery policy                | `channels.ts`     |
+| Work                                                          | Entry point           |
+| ------------------------------------------------------------- | --------------------- |
+| Chat, uploads, media, inspector, HTTP errors                  | `app.ts`              |
+| Local Host/Origin checks and narrow webhook exceptions        | `access.ts`           |
+| Dispatch, continuation, cancellation, revisions, workers      | `tasks.ts`            |
+| Shared schema and transactions                                | `db.ts`               |
+| Encrypted credentials, staged forms, retries                  | `vault.ts`            |
+| Google accounts, action policy, subscriptions, event inbox    | `integrations.ts`     |
+| Action review and one-use execution                           | `approvals.ts`        |
+| Profile learning, memory, history, goals, schedules           | `personal.ts`         |
+| Notification preference schema/store                          | `preferences.ts`      |
+| Event classification, hourly review, quiet dispatch           | `triage.ts`           |
+| Messaging inbox, outbox, sender access, transport replacement | `channels.ts`         |
+| Encrypted channel setup and metadata routes                   | `channel-settings.ts` |
 
-Read [API contract](../../docs/api-contract.md) before route changes and [security](../../docs/security.md) before boundary changes. The local owner is fixed; do not infer a public multi-user boundary from owner columns.
+Read [API contract](../../docs/api-contract.md) before route changes and [security](../../docs/security.md) before boundary changes. The fixed local owner is not public authentication.
 
-Create task/job records in the same PostgreSQL transaction. Fence writes and continuation with the task revision. Persist waiting states and release workers. External actions with uncertain outcomes need review; do not auto-replay them. Provider errors returned to clients must be fixed public messages, with no raw payloads or secrets.
+Create tasks/jobs and source mappings in one transaction. Preserve source IDs, channel identity, and revision checks. An ordinary reply can continue a waiting question; credentials, approvals, and ambiguous questions need their specific path. Persist waiting states and release workers. Do not replay uncertain external actions.
 
-Use disposable schemas in the matching `../../tests` fixture. Test duplicate dispatch, cancellation and restart for changes to durable work. Keep schema additions compatible with existing local data and test any table rename or provider reference migration.
+Bind every Google write approval to the selected owned `connectionId`. Recheck it at execution; missing or revoked accounts must fail without fallback. Keep watch intent separate from active subscriptions. Verify event owner, account, subscription, and raw signature before dispatch.
+
+Derive personal-data provenance from persisted owned user messages, never model arguments. Automatic learning accepts only the supported matching quotes/statements; other changes require review. External event text cannot choose its own trust level.
+
+Secure forms and channel setup send values directly to trusted services, never chat or model context. Expose status/metadata only. Polling acknowledges an update after inbox persistence; transport changes drain active delivery and recheck the current owner binding. Provider registration and local commit are separate systems.
+
+Return fixed public errors without provider payloads or secrets. Keep schema additions compatible with existing local data. Use disposable schemas for duplicate dispatch, cancellation, restart, stale forms, account migration, and provider replacement tests; see [development](../../docs/development.md).

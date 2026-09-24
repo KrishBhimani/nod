@@ -141,3 +141,88 @@ test('real Pi sessions persist a credential pause and resume without replaying c
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('Responses commentary and final answer remain separate visible messages', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sidekick-pi-phases-'));
+  const events: Array<import('../src/ports/agent.ts').AgentEvent> = [];
+  const answer = 'Your file is ready. Go, go.';
+  const factory: typeof createAgentSession = async (options) => {
+    const result = await createAgentSession(options);
+    result.session.agent.streamFunction = (model) => {
+      const output: AssistantMessage = {
+        role: 'assistant',
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        timestamp: Date.now(),
+        stopReason: 'stop',
+        content: [],
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+      };
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => {
+        stream.push({ type: 'start', partial: output });
+        for (const [contentIndex, phase] of ['commentary', 'final_answer'].entries()) {
+          output.content.push({ type: 'text', text: '' });
+          stream.push({ type: 'text_start', contentIndex, partial: structuredClone(output) });
+          const block = output.content[contentIndex];
+          if (block.type !== 'text') throw new Error('Unexpected fixture block');
+          block.text = answer;
+          stream.push({
+            type: 'text_delta',
+            contentIndex,
+            delta: answer,
+            partial: structuredClone(output),
+          });
+          block.textSignature = JSON.stringify({ v: 1, id: `msg_${contentIndex}`, phase });
+          stream.push({
+            type: 'text_end',
+            contentIndex,
+            content: answer,
+            partial: structuredClone(output),
+          });
+        }
+        stream.push({ type: 'done', reason: 'stop', message: output });
+      });
+      return stream;
+    };
+    return result;
+  };
+  const agent = createPiAgent({
+    provider: 'openai',
+    apiKey: 'fixture-key',
+    sessionRoot: directory,
+    createSession: factory,
+  });
+  try {
+    const session = await agent.open({
+      taskId: `test-${randomUUID()}`,
+      systemPrompt: 'Fixture',
+      tools: [],
+      onEvent: (event) => events.push(event),
+      shouldStop: () => false,
+    });
+    await session.prompt('Create the fixture file', []);
+    assert.deepEqual(
+      events.filter((event) => event.type === 'final'),
+      [{ type: 'final', text: answer }],
+    );
+    const streamed: string[] = [];
+    for (const event of events) {
+      if (event.type === 'message_start') streamed.push('');
+      if (event.type === 'text_delta') streamed[streamed.length - 1] += event.text;
+    }
+    assert.deepEqual(streamed.filter(Boolean), [answer, answer]);
+    await session.dispose();
+  } finally {
+    await agent.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -14,21 +14,49 @@ export interface BrowserObservation {
   url: string;
   candidates: BrowserCandidate[];
 }
+export type CredentialKind = 'identifier' | 'password' | 'otp';
+export interface LoginField {
+  kind: CredentialKind;
+  selector: string;
+  label: string;
+}
+export interface LoginMethod {
+  id: string;
+  label: string;
+  kind: 'credentials' | 'oauth' | 'passkey' | 'manual';
+  supported: boolean;
+  reason?: string;
+  selector?: string;
+}
+export interface LoginInspection {
+  origin: string;
+  url: string;
+  fields: LoginField[];
+  methods: LoginMethod[];
+  submitSelector?: string;
+}
 export interface CredentialInput {
   taskId: string;
   origin: string;
-  kind?: 'password' | 'otp';
+  kind?: CredentialKind;
   username?: string;
   password?: string;
   code?: string;
   usernameSelector?: string;
-  passwordSelector: string;
+  passwordSelector?: string;
   submitSelector?: string;
 }
 export interface Computer {
   act(taskId: string, input: BrowserAction, signal?: AbortSignal): Promise<BrowserObservation>;
   screenshot(taskId: string, signal?: AbortSignal): Promise<Buffer | null>;
+  screenStatus?(taskId: string): {
+    state: 'live' | 'last_known' | 'unavailable';
+    capturedAt?: string;
+  };
   injectCredentials(input: CredentialInput): Promise<void>;
+  inspectLogin(taskId: string): Promise<LoginInspection>;
+  selectLoginMethod(taskId: string, origin: string, methodId: string): Promise<void>;
+  hold(taskId: string, until: number | null): Promise<void>;
   close(taskId: string): Promise<void>;
   dispose(): Promise<void>;
   status(): string;

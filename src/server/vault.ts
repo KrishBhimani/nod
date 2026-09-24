@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 import type { CredentialRequest, VaultEntry } from '../shared/contracts.ts';
-import type { RuntimeContext } from '../ports/agent.ts';
+import type { CredentialKind, LoginInspection } from '../ports/computer.ts';
 import type { CredentialKeyStore } from '../ports/key-store.ts';
 
 const owner = 'local-development';
@@ -26,13 +26,13 @@ const requestInput = z
   .object({
     origin: z.string().max(2048),
     label: z.string().trim().min(1).max(100),
-    kind: z.enum(['password', 'otp']),
+    kind: z.enum(['identifier', 'password', 'otp']),
     usernameSelector: z.string().min(1).max(2048).optional(),
-    passwordSelector: z.string().min(1).max(2048),
+    passwordSelector: z.string().min(1).max(2048).optional(),
     submitSelector: z.string().min(1).max(2048).optional(),
   })
   .strict();
-type CredentialInput = Parameters<RuntimeContext['requestCredential']>[0];
+type CredentialInput = z.infer<typeof requestInput>;
 export type CredentialInjection = CredentialInput & {
   taskId: string;
   username?: string;
@@ -44,6 +44,9 @@ type VaultOptions = {
   retry(taskId: string, expectedRevision: number): Promise<void>;
   inject(input: CredentialInjection): Promise<unknown>;
   keyStore: CredentialKeyStore;
+  inspect?(taskId: string): Promise<LoginInspection>;
+  hold?(taskId: string, until: number | null): Promise<void>;
+  selectMethod?(taskId: string, origin: string, methodId: string): Promise<void>;
 };
 type EntryRow = {
   id: string;
@@ -60,9 +63,10 @@ type RequestRow = {
   owner_id: string;
   origin: string;
   label: string;
-  kind: 'password' | 'otp';
+  kind: CredentialKind;
   status: 'pending' | 'processing' | 'filled';
   selectors: CredentialInput;
+  inspection: LoginInspection | null;
   expires_at: Date;
   task_revision: number;
 };
@@ -166,9 +170,17 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       END IF;
     END $$;
     ALTER TABLE credential_requests ADD COLUMN IF NOT EXISTS failed_at timestamptz;
+    ALTER TABLE credential_requests ADD COLUMN IF NOT EXISTS inspection jsonb;
+    UPDATE credential_requests SET expires_at=least(expires_at,now()) WHERE inspection IS NULL AND status='pending';
+    ALTER TABLE credential_autofill_attempts ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'password';
+    ALTER TABLE credential_autofill_attempts DROP CONSTRAINT IF EXISTS credential_autofill_attempts_pkey;
+    ALTER TABLE credential_autofill_attempts ADD PRIMARY KEY(task_id,owner_id,origin,kind);
     CREATE INDEX IF NOT EXISTS vault_entries_owner ON vault_entries(owner_id);
     UPDATE credential_requests SET status = 'pending' WHERE status = 'processing';
   `);
+  const identifiers = new Map<string, { value: string; expiresAt: number }>();
+  const identifierKey = (taskId: string, ownerId: string, origin: string) =>
+    JSON.stringify([taskId, ownerId, origin]);
   let keyPromise: Promise<Buffer> | undefined;
   const key = () => {
     keyPromise ??= options.keyStore
@@ -210,6 +222,8 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     }
   }
   const timer = setInterval(() => {
+    for (const [id, value] of identifiers)
+      if (value.expiresAt <= Date.now()) identifiers.delete(id);
     void resumePending().catch(() => {});
   }, 5000);
   timer.unref();
@@ -234,28 +248,96 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     return metadata(rows[0]);
   }
 
+  async function inspectRequest(taskId: string, raw: CredentialInput) {
+    const input = requestInput.parse(raw);
+    const origin = credentialOrigin(input.origin);
+    if (!options.inspect) {
+      const fields: LoginInspection['fields'] = [];
+      if (input.usernameSelector || input.kind === 'identifier')
+        fields.push({
+          kind: 'identifier',
+          selector: input.usernameSelector ?? '',
+          label: 'Email, phone number or username',
+        });
+      if (input.kind !== 'identifier')
+        fields.push({
+          kind: input.kind,
+          selector: input.passwordSelector ?? '',
+          label: input.kind === 'otp' ? 'Verification code' : 'Password',
+        });
+      return {
+        input: { ...input, origin },
+        inspection: {
+          origin,
+          url: origin,
+          fields,
+          methods: [
+            {
+              id: 'credentials',
+              kind: 'credentials' as const,
+              label: 'Use the secure form',
+              supported: true,
+            },
+          ],
+          submitSelector: input.submitSelector,
+        },
+      };
+    }
+    const inspection = await options.inspect(taskId);
+    if (inspection.origin !== origin)
+      throw new VaultError(
+        'The login page origin changed. Request a new secure sign-in step.',
+        409,
+      );
+    const kind =
+      (['otp', 'password', 'identifier'] as const).find((value) =>
+        inspection.fields.some((field) => field.kind === value),
+      ) ?? input.kind;
+    const target = inspection.fields.filter((field) => field.kind === kind);
+    const username = inspection.fields.filter((field) => field.kind === 'identifier');
+    const resolved: CredentialInput = {
+      origin,
+      label: input.label,
+      kind,
+      usernameSelector: username.length === 1 ? username[0].selector : undefined,
+      passwordSelector:
+        kind !== 'identifier' && target.length === 1 ? target[0].selector : undefined,
+      submitSelector: inspection.submitSelector,
+    };
+    return { input: resolved, inspection: { ...inspection, url: origin } };
+  }
+
   async function request(
     taskId: string,
     ownerId: string,
     raw: CredentialInput,
   ): Promise<{ url: string }> {
-    const input = requestInput.parse(raw);
-    const origin = credentialOrigin(input.origin);
+    const task = await pool.query(
+      "SELECT revision FROM tasks WHERE id::text=$1 AND owner_id=$2 AND status IN ('running','waiting_credentials')",
+      [taskId, ownerId],
+    );
+    if (!task.rowCount) throw new VaultError('This task can no longer request credentials.', 409);
+    const { input, inspection } = await inspectRequest(taskId, raw);
     const token = randomBytes(32).toString('base64url');
     const hash = createHash('sha256').update(token).digest('hex');
+    const expiresAt = Date.now() + 10 * 60_000;
+    await options.hold?.(taskId, expiresAt);
     const result = await pool.query(
-      `INSERT INTO credential_requests (id, token_hash, task_id, owner_id, origin, label, kind, selectors, expires_at,task_revision)
-       SELECT $1,$2,$3,$4,$5,$6,$7,$8,now() + interval '10 minutes',revision FROM tasks
-       WHERE id::text=$3 AND owner_id=$4 AND status IN ('running','waiting_credentials')`,
+      `INSERT INTO credential_requests (id,token_hash,task_id,owner_id,origin,label,kind,selectors,expires_at,task_revision,inspection)
+       SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,revision,$10 FROM tasks
+       WHERE id::text=$3 AND owner_id=$4 AND revision=$11 AND status IN ('running','waiting_credentials')`,
       [
         randomUUID(),
         hash,
         taskId,
         ownerId,
-        origin,
+        input.origin,
         input.label,
         input.kind,
-        JSON.stringify({ ...input, origin }),
+        JSON.stringify(input),
+        new Date(expiresAt),
+        JSON.stringify(inspection),
+        task.rows[0].revision,
       ],
     );
     if (!result.rowCount) throw new VaultError('This task can no longer request credentials.', 409);
@@ -282,6 +364,8 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       origin: row.origin,
       label: row.label,
       kind: row.kind,
+      fields: row.inspection?.fields ?? [],
+      methods: (row.inspection?.methods ?? []).map(({ selector: _selector, ...method }) => method),
       status:
         row.status === 'filled'
           ? 'filled'
@@ -292,8 +376,10 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     };
   }
 
-  async function submit(token: string, raw: unknown) {
-    const input = submissionInput.parse(raw);
+  async function consume(
+    token: string,
+    operation: (row: RequestRow, client: PoolClient) => Promise<void>,
+  ) {
     const client = await pool.connect();
     let submittedId: string | undefined;
     try {
@@ -316,30 +402,8 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       );
       const row = rows[0];
       if (!row) throw new VaultError('This request is already being filled.', 409);
-      if (row.kind === 'password' && !input.password) throw new VaultError('Enter the password.');
-      if (row.kind === 'otp' && !input.code) throw new VaultError('Enter the verification code.');
       submittedId = row.id;
-      if (row.kind === 'password') await key();
-      await options.inject({
-        ...row.selectors,
-        origin: row.origin,
-        kind: row.kind,
-        taskId: row.task_id,
-        ...(row.kind === 'otp'
-          ? { code: input.code }
-          : { username: input.username ?? '', password: input.password }),
-      });
-      if (row.kind === 'password')
-        await save(
-          row.owner_id,
-          {
-            label: row.label,
-            origin: row.origin,
-            username: input.username ?? '',
-            password: input.password,
-          },
-          client,
-        );
+      await operation(row, client);
       await client.query(
         "UPDATE credential_requests SET status='filled',resume_pending=true WHERE id=$1",
         [row.id],
@@ -366,6 +430,80 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     return { ok: true };
   }
 
+  async function submit(token: string, raw: unknown) {
+    const values = submissionInput.parse(raw);
+    return consume(token, async (row, client) => {
+      const { input, inspection } = await inspectRequest(row.task_id, row.selectors);
+      if (input.kind !== row.kind)
+        throw new VaultError('The login step changed. Request a fresh secure form.', 409);
+      if (
+        options.inspect &&
+        (!inspection.methods.some((method) => method.id === 'credentials' && method.supported) ||
+          !inspection.fields.some((field) => field.kind === row.kind))
+      )
+        throw new VaultError('The current page does not support this credential step.', 409);
+      const savedIdentifier = identifiers.get(identifierKey(row.task_id, row.owner_id, row.origin));
+      const username =
+        values.username ||
+        (savedIdentifier && savedIdentifier.expiresAt > Date.now() ? savedIdentifier.value : '');
+      if (row.kind === 'identifier' && !username)
+        throw new VaultError('Enter the email, phone number or username.');
+      if (row.kind === 'password' && !values.password) throw new VaultError('Enter the password.');
+      if (row.kind === 'password' && input.usernameSelector && !username)
+        throw new VaultError('Enter the email, phone number or username.');
+      if (row.kind === 'otp' && !values.code) throw new VaultError('Enter the verification code.');
+      if (row.kind === 'password') await key();
+      await options.inject({
+        ...input,
+        taskId: row.task_id,
+        ...(row.kind === 'otp'
+          ? { code: values.code }
+          : row.kind === 'identifier'
+            ? { username }
+            : {
+                username: input.usernameSelector ? username : undefined,
+                password: values.password,
+              }),
+      });
+      if (row.kind === 'identifier')
+        identifiers.set(identifierKey(row.task_id, row.owner_id, row.origin), {
+          value: username,
+          expiresAt: Date.now() + 10 * 60_000,
+        });
+      if (row.kind === 'password') {
+        await save(
+          row.owner_id,
+          { label: row.label, origin: row.origin, username, password: values.password },
+          client,
+        );
+        identifiers.delete(identifierKey(row.task_id, row.owner_id, row.origin));
+      }
+    });
+  }
+
+  async function selectMethod(token: string, raw: unknown) {
+    const { methodId } = z
+      .object({ methodId: z.string().min(1).max(100) })
+      .strict()
+      .parse(raw);
+    return consume(token, async (row) => {
+      if (!options.selectMethod || !options.inspect)
+        throw new VaultError('Sign-in method selection is not available.', 409);
+      const inspection = await options.inspect(row.task_id);
+      const method = inspection.methods.find((item) => item.id === methodId);
+      if (
+        inspection.origin !== row.origin ||
+        !method?.supported ||
+        !(['oauth', 'credentials'].includes(method.kind) && method.id !== 'credentials')
+      )
+        throw new VaultError(
+          'This sign-in method is no longer available on the current page.',
+          409,
+        );
+      await options.selectMethod(row.task_id, row.origin, methodId);
+    });
+  }
+
   async function retry(token: string) {
     const client = await pool.connect();
     let row: RequestRow;
@@ -384,8 +522,8 @@ export async function createVault(pool: Pool, options: VaultOptions) {
           409,
         );
       await client.query(
-        `INSERT INTO credential_autofill_attempts(task_id,owner_id,origin,entry_id) VALUES($1,$2,$3,'manual-retry') ON CONFLICT DO NOTHING`,
-        [row.task_id, row.owner_id, row.origin],
+        `INSERT INTO credential_autofill_attempts(task_id,owner_id,origin,entry_id,kind) VALUES($1,$2,$3,'manual-retry',$4) ON CONFLICT DO NOTHING`,
+        [row.task_id, row.owner_id, row.origin, row.kind],
       );
       await client.query(
         'UPDATE credential_requests SET expires_at=least(expires_at,now()) WHERE task_id=$1 AND owner_id=$2 AND task_revision=$3',
@@ -412,37 +550,68 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     return { ok: true };
   }
 
-  async function fillSaved(taskId: string, ownerId: string, id: string, input: CredentialInput) {
-    const origin = credentialOrigin(input.origin);
-    const { rows } = await pool.query<EntryRow>(
-      'SELECT * FROM vault_entries WHERE id = $1 AND owner_id = $2 AND origin = $3',
-      [id, ownerId, origin],
-    );
-    if (!rows[0] || input.kind !== 'password')
-      throw new VaultError('No saved password is available for this website.', 404);
-    const attempt = await pool.query(
-      `INSERT INTO credential_autofill_attempts (task_id,owner_id,origin,entry_id)
-       SELECT $1,$2,$3,$4 WHERE NOT EXISTS (
-         SELECT 1 FROM credential_requests WHERE task_id = $1 AND owner_id = $2 AND origin = $3
-         AND kind = 'password' AND status = 'filled'
-       ) ON CONFLICT DO NOTHING RETURNING task_id`,
-      [taskId, ownerId, origin, id],
-    );
-    if (!attempt.rowCount)
-      throw new VaultError('Enter fresh credentials to retry this website.', 409);
-    const secret = openCredential(await key(), rows[0]);
-    await options.inject({
-      ...requestInput.parse(input),
-      taskId,
-      origin,
-      username: secret.username,
-      password: secret.password,
-    });
+  async function fillSaved(taskId: string, ownerId: string, id: string, raw: CredentialInput) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const task = await client.query(
+        "SELECT revision FROM tasks WHERE id::text=$1 AND owner_id=$2 AND status IN ('running','waiting_credentials') FOR UPDATE NOWAIT",
+        [taskId, ownerId],
+      );
+      if (!task.rowCount)
+        throw new VaultError('This task can no longer use saved credentials.', 409);
+      const { input, inspection } = await inspectRequest(taskId, raw);
+      const origin = input.origin;
+      const { rows } = await client.query<EntryRow>(
+        'SELECT * FROM vault_entries WHERE id=$1 AND owner_id=$2 AND origin=$3',
+        [id, ownerId, origin],
+      );
+      if (!rows[0] || !['identifier', 'password'].includes(input.kind))
+        throw new VaultError('No saved password is available for this website.', 404);
+      if (
+        options.inspect &&
+        !inspection.methods.some((method) => method.id === 'credentials' && method.supported)
+      )
+        throw new VaultError('The current page does not support saved credentials.', 409);
+      const attempt = await client.query(
+        `INSERT INTO credential_autofill_attempts(task_id,owner_id,origin,entry_id,kind)
+         SELECT $1,$2,$3,$4,$5 WHERE NOT EXISTS(SELECT 1 FROM credential_requests WHERE task_id=$1 AND owner_id=$2 AND origin=$3 AND kind=$5 AND status='filled')
+         ON CONFLICT DO NOTHING RETURNING task_id`,
+        [taskId, ownerId, origin, id, input.kind],
+      );
+      if (!attempt.rowCount)
+        throw new VaultError('Enter fresh credentials to retry this website.', 409);
+      await client.query('COMMIT');
+      const secret = openCredential(await key(), rows[0]);
+      if (input.kind === 'identifier' && !secret.username)
+        throw new VaultError('Enter a username in the secure form.', 409);
+      await client.query('BEGIN');
+      const current = await client.query(
+        "SELECT id FROM tasks WHERE id::text=$1 AND owner_id=$2 AND revision=$3 AND status IN ('running','waiting_credentials') FOR UPDATE NOWAIT",
+        [taskId, ownerId, task.rows[0].revision],
+      );
+      if (!current.rowCount) throw new VaultError('This task step is no longer active.', 409);
+      await options.inject({
+        ...input,
+        taskId,
+        origin,
+        username:
+          input.kind === 'identifier' || input.usernameSelector ? secret.username : undefined,
+        password: input.kind === 'password' ? secret.password : undefined,
+      });
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   function registerRoutes(app: FastifyInstance) {
     app.addHook('onClose', async () => {
       clearInterval(timer);
+      identifiers.clear();
     });
     app.register(async (scope) => {
       scope.addHook('onSend', async (_request, reply, payload) => {
@@ -476,6 +645,10 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       scope.post<{ Params: { id: string } }>(
         '/api/credential-requests/:id/retry',
         async (request) => retry(request.params.id),
+      );
+      scope.post<{ Params: { id: string } }>(
+        '/api/credential-requests/:id/method',
+        async (request) => selectMethod(request.params.id, request.body),
       );
       scope.post<{ Params: { id: string } }>(
         '/api/credential-requests/:id',

@@ -98,8 +98,19 @@ test(
               return;
             }
             if (text.endsWith('Fixture memory task: Remember that I prefer concise replies.')) {
-              await call('remember', { text: 'I prefer concise replies.' });
+              await call('manage_personal_context', {
+                action: 'memory_propose',
+                args: { text: 'I prefer concise replies.' },
+              });
               assert.equal(input.shouldStop(), true);
+              return;
+            }
+            if (text.endsWith('I prefer short messages.')) {
+              await call('remember', { quote: 'I prefer short messages.' });
+              assert.equal(input.shouldStop(), false);
+              input.onEvent({ type: 'message_start' });
+              input.onEvent({ type: 'final', text: 'Understood.' });
+              input.onEvent({ type: 'message_end' });
               return;
             }
             if (text.endsWith('Fixture unrelated message')) {
@@ -315,6 +326,31 @@ test(
       const savedMemory = (await request('GET', '/api/memory')).json();
       assert.equal(savedMemory[0].sourceMessageId, source.id);
       assert.equal(phases.get(memoryTaskId), 2);
+      const learnedRequest = await request('POST', '/api/messages', {
+        text: 'I prefer short messages.',
+      });
+      assert.equal(learnedRequest.statusCode, 200);
+      const learnedTaskId = learnedRequest.json().taskId as string;
+      taskIds.push(learnedTaskId);
+      await waitFor(learnedTaskId, 'succeeded');
+      assert.equal(
+        (await pool.query('SELECT id FROM approvals WHERE task_id=$1', [learnedTaskId])).rowCount,
+        0,
+      );
+      const learnedSource = (
+        await pool.query("SELECT id FROM messages WHERE task_id=$1 AND role='user'", [
+          learnedTaskId,
+        ])
+      ).rows[0];
+      assert.equal(
+        (
+          await pool.query('SELECT source_message_id FROM memory_facts WHERE text=$1', [
+            'I prefer short messages.',
+          ])
+        ).rows[0].source_message_id,
+        learnedSource.id,
+      );
+      assert.equal(phases.get(learnedTaskId), 1);
     } finally {
       events.off('event', onEvent);
       await application.app.close();

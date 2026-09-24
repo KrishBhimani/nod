@@ -15,6 +15,7 @@ export async function initializeDatabase() {
       task_id uuid REFERENCES tasks(id), attachments jsonb NOT NULL DEFAULT '[]', created_at timestamptz NOT NULL DEFAULT now()
     );
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS stream_id text;
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS reaction text;
     CREATE TABLE IF NOT EXISTS task_events (
       id uuid PRIMARY KEY, task_id uuid NOT NULL REFERENCES tasks(id), type text NOT NULL,
       summary text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()

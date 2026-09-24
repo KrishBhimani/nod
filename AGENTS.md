@@ -1,17 +1,21 @@
 # Sidekick
 
-Local personal assistant. Never push, deploy or publish without authorization. Keep secrets and user content out of Git, logs and client code. Do not add code comments or JSDoc.
+A local, single-owner personal assistant. Do not push, deploy, or publish without authorization. Keep keys out of Git, logs, prompts, and client configuration. Keep private user content out of Git and logs. Do not add code comments or JSDoc.
 
-Start with [README.md](README.md) for setup and current capability limits. Read only the guide for the area you change:
+Start with [README](README.md) for setup and current limits. Read the area guide before editing:
 
-| Change                                                      | Guide                                              |
-| ----------------------------------------------------------- | -------------------------------------------------- |
-| Routes, persistence, queues, approvals, personal features   | [src/server/AGENTS.md](src/server/AGENTS.md)       |
-| Agent tools, task segments and provider interfaces          | [src/runtime/AGENTS.md](src/runtime/AGENTS.md)     |
-| Model, browser, integrations, media or credential providers | [src/providers/AGENTS.md](src/providers/AGENTS.md) |
-| Web pages, controls and streaming                           | [src/web/AGENTS.md](src/web/AGENTS.md)             |
-| Fixtures and validation                                     | [tests/AGENTS.md](tests/AGENTS.md)                 |
+| Change                                                            | Guide                                              |
+| ----------------------------------------------------------------- | -------------------------------------------------- |
+| HTTP, persistence, queues, credentials, approvals, personal data  | [src/server/AGENTS.md](src/server/AGENTS.md)       |
+| Agent tools, task segments, context, cancellation                 | [src/runtime/AGENTS.md](src/runtime/AGENTS.md)     |
+| Model, browser, workspace, integrations, speech, channel adapters | [src/providers/AGENTS.md](src/providers/AGENTS.md) |
+| Pages, conversation, inspector, forms, streaming                  | [src/web/AGENTS.md](src/web/AGENTS.md)             |
+| Fixtures and validation                                           | [tests/AGENTS.md](tests/AGENTS.md)                 |
 
-Shared HTTP types live in `src/shared/contracts.ts`. Capability interfaces live in `src/ports`. Providers are selected only in `src/server/composition.ts`. Read [architecture](docs/architecture.md) for ownership and [replacement guide](docs/replacing-modules.md) when swapping a capability. PostgreSQL is an explicit storage choice, not a generic provider interface.
+[Architecture](docs/architecture.md) defines ownership and trust boundaries. [API contract](docs/api-contract.md) describes wire behavior. [Replacing modules](docs/replacing-modules.md) maps ports and state migration. [Security](docs/security.md) and [production requirements](docs/production.md) apply before boundary or hosting changes.
 
-Preserve a quiet conversation, the existing shadcn/Tailwind controls and palette. Keep developer details in `/dev`. Prefer narrow factory interfaces over globals or service locators. Run `npm run check`, `npm run test:integration` and `npm run build`; see [development](docs/development.md). Update the owning guide and affected contract when an entry point changes. Distinguish fixture results from live provider verification.
+Shared HTTP types live in `src/shared/contracts.ts`; capabilities live in `src/ports`. Only `src/server/composition.ts` selects providers and runtime implementations. Keep product policy in features and protocol details in adapters. Prefer narrow factories over mutable globals.
+
+Keep chat central and quiet. Preserve task/channel identity, account-bound approvals, owned-message provenance, and task revisions. The Internet-connected workspace must remain separate from provider keys, host access, and authenticated browser profiles.
+
+Run focused checks while editing, then `npm run check`, `npm run test:integration`, and `npm run build`; see [development](docs/development.md). Use synthetic data and disposable schemas. Update the owning guide when an entry point changes. Report automated fixtures, UI flows, and live account checks separately.

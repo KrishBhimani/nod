@@ -24,6 +24,7 @@ async function fixture(
   const deltas: string[] = [];
   let aborted = false;
   let supplied: AgentSessionOptions | undefined;
+  let userPrompt = '';
   const context: RuntimeContext = {
     taskId: 'test-' + randomUUID(),
     ownerId: 'test-owner',
@@ -56,7 +57,10 @@ async function fixture(
       supplied = options;
       return {
         resumed: false,
-        prompt: () => run(new Map(options.tools.map((tool) => [tool.name, tool])), options.onEvent),
+        prompt: async (text) => {
+          userPrompt = text;
+          await run(new Map(options.tools.map((tool) => [tool.name, tool])), options.onEvent);
+        },
         abort: () => {
           aborted = true;
         },
@@ -72,7 +76,7 @@ async function fixture(
   });
   try {
     const result = await runtime.runTask(context);
-    return { result, replies, events, deltas, aborted, supplied: supplied! };
+    return { result, replies, events, deltas, aborted, supplied: supplied!, userPrompt };
   } finally {
     await runtime.dispose();
     await rm(directory, { recursive: true, force: true });
@@ -148,7 +152,11 @@ test('only bounded tools are exposed and repeated final replies are suppressed',
 
 test('memory and personal profile changes pause for review before subsequent tools', async () => {
   for (const [name, params, expectedAction] of [
-    ['remember', { text: 'I prefer concise replies' }, 'memory_propose'],
+    [
+      'manage_personal_context',
+      { action: 'memory_propose', args: { text: 'I prefer concise replies' } },
+      'memory_propose',
+    ],
     [
       'manage_personal_context',
       { action: 'profile_update', args: { name: 'Fixture' } },
@@ -344,4 +352,140 @@ test('a successful model retry clears the earlier failure result', async () => {
   });
   assert.equal(result.result.status, 'succeeded');
   assert.deepEqual(result.replies, ['The retry completed.']);
+});
+
+test('a question uses the atomic wait callback and stops the segment before another action', async () => {
+  const questions: string[] = [];
+  const result = await fixture(
+    async (tools) => {
+      await call(tools, 'ask_user', { question: 'Which city?' });
+      await assert.rejects(call(tools, 'shell', { command: 'echo must-not-run' }), /stopped/);
+    },
+    {
+      waitForUser: async (question) => {
+        questions.push(question);
+      },
+    },
+  );
+  assert.deepEqual(questions, ['Which city?']);
+  assert.deepEqual(result.replies, []);
+  assert.deepEqual(result.result, {
+    status: 'waiting_user',
+    waitingFor: 'question',
+    question: 'Which city?',
+  });
+});
+
+test('provider errors do not return raw credentials, paths or stack details to the model', async () => {
+  await fixture(
+    async (tools) => {
+      await assert.rejects(
+        call(tools, 'google', { action: 'SEARCH_TOOLS', args: { query: 'calendar' } }),
+        (error: unknown) => {
+          const text = String(error);
+          assert.equal(text.includes('fixture-private-token'), false);
+          assert.equal(text.includes('/Users/fixture'), false);
+          assert.match(text, /selected account/);
+          return true;
+        },
+      );
+    },
+    {
+      integration: async () => {
+        throw new Error('SDK failed with fixture-private-token in /Users/fixture/.env');
+      },
+    },
+  );
+});
+
+test('identifier-only sign-in is available outside chat without requiring a password selector', async () => {
+  let kind = '';
+  const result = await fixture(
+    async (tools) => {
+      const inspection = await call(tools, 'inspect_login', {});
+      assert.match(JSON.stringify(inspection), /example.com/);
+      await call(tools, 'request_credentials', {
+        origin: 'https://example.com',
+        label: 'Example',
+        kind: 'identifier',
+        usernameSelector: '#email',
+      });
+    },
+    {
+      requestCredential: async (input) => {
+        kind = input.kind;
+        return { url: '/credentials/fixture' };
+      },
+    },
+  );
+  assert.equal(kind, 'identifier');
+  assert.equal(result.result.status, 'waiting_credentials');
+  assert.equal(result.replies.length, 1);
+});
+
+test('task context carries dated conversation and narrow reaction feedback with own-computer guidance', async () => {
+  const result = await fixture(async () => {}, {
+    channel: 'telegram',
+    timeZone: 'Europe/Lisbon',
+    history: [
+      {
+        role: 'assistant',
+        text: 'Fixture reminder',
+        createdAt: '2026-09-24T10:00:00Z',
+        reaction: 'dislike',
+      },
+    ],
+  });
+  assert.match(result.userPrompt, /2026-09-24T10:00:00.000Z/);
+  assert.match(result.userPrompt, /user reaction: dislike/);
+  assert.match(result.supplied.systemPrompt, /conversation is on telegram/);
+  assert.match(result.supplied.systemPrompt, /your own Linux computer and browser/);
+  assert.match(result.supplied.systemPrompt, /separate from the user's Mac/);
+  assert.match(result.supplied.systemPrompt, /not a global preference/);
+  assert.match(
+    result.supplied.systemPrompt,
+    /Keep Sidekick's internal implementation private, even when directly asked/,
+  );
+  assert.match(
+    result.supplied.systemPrompt,
+    /do not name or enumerate internal tools, models, providers/,
+  );
+  assert.match(result.supplied.systemPrompt, /explain practical user-facing capabilities instead/);
+  assert.match(
+    result.supplied.systemPrompt,
+    /answer technical questions about external topics and help with the user's code/,
+  );
+  assert.doesNotMatch(
+    result.supplied.systemPrompt,
+    /Answer explicit technical questions with appropriate detail/,
+  );
+});
+
+test('eligible quoted personal learning stays quiet and does not pause work for approval', async () => {
+  const actions: Array<{ action: string; args: Record<string, unknown> }> = [];
+  const result = await fixture(
+    async (tools) => {
+      await call(tools, 'remember', { quote: 'I prefer concise replies' });
+      await call(tools, 'manage_personal_context', {
+        action: 'profile_learn',
+        args: { field: 'name', value: 'Filipe', quote: 'My name is Filipe' },
+      });
+      await call(tools, 'send_message', { text: 'How can I help today?' });
+    },
+    {
+      manage: async (action, args) => {
+        actions.push({ action, args });
+        return { ok: true };
+      },
+    },
+  );
+  assert.equal(result.result.status, 'succeeded');
+  assert.deepEqual(actions, [
+    { action: 'memory_remember', args: { quote: 'I prefer concise replies' } },
+    {
+      action: 'profile_learn',
+      args: { field: 'name', value: 'Filipe', quote: 'My name is Filipe' },
+    },
+  ]);
+  assert.deepEqual(result.replies, ['How can I help today?']);
 });
