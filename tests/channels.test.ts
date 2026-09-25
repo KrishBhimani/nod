@@ -57,6 +57,12 @@ test('channel replies keep secure credential and approval links in the local app
   assert.match(reply, /Open Sidekick on your Mac/);
   assert.match(reply, /https:\/\/example.com\/docs/);
   assert.match(reply, /Attachments are available/);
+  const imageReply = channelReply(
+    '[Image](http://localhost:4310/api/artifacts/private-file)',
+    false,
+    true,
+  );
+  assert.equal(imageReply, 'Attached file.');
 });
 
 test(

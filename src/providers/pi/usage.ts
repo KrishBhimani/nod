@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
 import type { ModelUsageObservation } from '../../ports/agent.ts';
+import type { ProviderUsageEvent } from '../../ports/provider-usage.ts';
+import type { Usage } from '@earendil-works/pi-ai';
 
 function tokenCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
@@ -50,7 +52,7 @@ function identifier(value: string, fallback: string) {
     : fallback;
 }
 
-function usageId(sessionId: string, key: string) {
+export function usageId(sessionId: string, key: string) {
   const bytes = createHash('sha256')
     .update(sessionId + ':' + key)
     .digest()
@@ -59,6 +61,18 @@ function usageId(sessionId: string, key: string) {
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = bytes.toString('hex');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+export function piUsageMetrics(usage?: Usage): Partial<ProviderUsageEvent> {
+  if (!usage) return {};
+  return {
+    ...(tokenCount(usage.input) ? { inputTokens: usage.input } : {}),
+    ...(tokenCount(usage.output) ? { outputTokens: usage.output } : {}),
+    ...(tokenCount(usage.cacheRead) ? { cacheReadTokens: usage.cacheRead } : {}),
+    ...(tokenCount(usage.cacheWrite) ? { cacheWriteTokens: usage.cacheWrite } : {}),
+    costUsd: costEstimate(usage.cost),
+    pricing: costEstimate(usage.cost) === null ? 'unavailable' : 'sdk_estimate',
+  };
 }
 
 export function createPiUsageTracker(options: {
@@ -99,6 +113,12 @@ export function createPiUsageTracker(options: {
         : Date.now();
     return {
       type: 'model_usage',
+      status:
+        message.stopReason === 'error'
+          ? 'failed'
+          : message.stopReason === 'aborted'
+            ? 'cancelled'
+            : 'succeeded',
       id: usageId(options.sessionId, key),
       provider: identifier(message.provider, options.provider),
       model: identifier(message.model, options.model),

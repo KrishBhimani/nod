@@ -25,7 +25,7 @@ The saved settings override existing environment settings for that provider on s
 
 ## Telegram setup
 
-Create a bot with [BotFather](https://t.me/BotFather). In Channels, enter its token and your numeric Telegram user ID. The server checks `getMe` before saving. With no public webhook URL, Sidekick polls for messages locally; no tunnel is needed. Open the verified bot in Telegram, press Start, and send a short message.
+Create a bot with [BotFather](https://t.me/BotFather). In Channels, enter its token and your numeric Telegram user ID. The server checks `getMe` before saving. With no public webhook URL, Sidekick polls for messages locally; no tunnel is needed. Successful setup shows Open Telegram, using only the verified bot handle. It clears the token fields and focuses this next action. Open the bot, press Start if prompted, and send a short message. The saved account keeps the same link. No popup or initial message is sent automatically; the first interaction belongs to the user. See [Telegram bot commands and deep links](https://core.telegram.org/bots/features#deep-linking).
 
 Local polling uses `getUpdates` every two seconds while the app runs, with a bounded request timeout. Each accepted message reaches the durable inbox before its offset advances in PostgreSQL. A failed inbox write leaves the update eligible for retry; duplicate updates cannot create duplicate tasks. Parsing and sending still use the official Chat SDK adapter. Sidekick does not start the SDK's automatic polling dispatcher, which would bypass the durable inbox.
 
@@ -43,7 +43,7 @@ TELEGRAM_MODE=polling
 
 Omit `TELEGRAM_MODE` for the existing webhook mode. The webhook secret must have 16–256 characters from letters, digits, `_`, and `-`. Configure the same secret through `setWebhook` when managing a webhook outside the form.
 
-The configured sender ID and private chat ID must both match the owner. Groups, channels, edits, callbacks, other senders, and messages without text do not start tasks. Voice, uploads, credentials, and approvals remain in the web app. [Chat SDK Telegram adapter](https://chat-sdk.dev/adapters/official/telegram).
+The configured sender ID and private chat ID must both match the owner. Groups, channels, edits, callbacks, other senders, and messages without text do not start tasks. Voice, inbound uploads and credentials remain in the web app. Action confirmations accept yes/no text in the originating owned channel. [Chat SDK Telegram adapter](https://chat-sdk.dev/adapters/official/telegram).
 
 ## WhatsApp setup and eligibility
 

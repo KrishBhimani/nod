@@ -1,166 +1,120 @@
 import { useEffect, useState } from 'react';
-import {
-  ArrowLeft,
-  CalendarClock,
-  KeyRound,
-  Link2,
-  MessageCircle,
-  Monitor,
-  Radio,
-  RotateCcw,
-  Target,
-  PanelLeftClose,
-  PanelLeftOpen,
-} from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 import { Chat } from './pages/chat';
 import { Vault } from './pages/vault';
-import { Connections } from './pages/connections';
+import { Apps } from './pages/apps';
 import { Channels } from './pages/channels';
 import { Credentials } from './pages/credentials';
 import { Inspector } from './pages/inspector';
-import { Plans } from './pages/plans';
-import { ApprovalPage } from './pages/approval';
+import { Goals } from './pages/goals';
+import { SchedulePage } from './pages/schedule';
 import { useAppState } from './hooks/use-app-state';
 import { Button, Loading, Notice } from './components/ui';
-import { BrandMark } from './components/brand';
+import { Sidebar } from './components/sidebar';
+import { navigationItems } from './lib/navigation';
+import { BrowserWindow } from './pages/browser';
+import { usePageData } from './hooks/use-page-data';
+import type { AppState } from '../shared/contracts';
+
+function BrowserRoute() {
+  const { data, error, refresh } = usePageData<AppState>('/api/state');
+  if (!data)
+    return (
+      <main className="initial-loading">
+        {error ? (
+          <>
+            <Notice>{error}</Notice>
+            <Button variant="outline" onClick={() => void refresh()}>
+              Try again
+            </Button>
+          </>
+        ) : (
+          <Loading label="Opening browser…" />
+        )}
+      </main>
+    );
+  return <BrowserWindow />;
+}
 
 function navigate(path: string) {
   window.history.pushState(null, '', path);
   window.dispatchEvent(new PopStateEvent('popstate'));
 }
-function Link({
-  href,
-  children,
-  className,
-  current,
-  label,
-}: {
-  href: string;
-  children: React.ReactNode;
-  className?: string;
-  current?: boolean;
-  label?: string;
-}) {
-  return (
-    <a
-      href={href}
-      className={className}
-      aria-label={label}
-      aria-current={current ? 'page' : undefined}
-      onClick={(event) => {
-        if (
-          !event.metaKey &&
-          !event.ctrlKey &&
-          !event.shiftKey &&
-          !event.altKey &&
-          event.button === 0
-        ) {
-          event.preventDefault();
-          navigate(href);
-        }
-      }}
-    >
-      {children}
-    </a>
-  );
-}
 function Workspace({ path }: { path: string }) {
-  const { state, streams, error, connected, refresh } = useAppState();
+  const { state, streams, error, connected, refresh, resetConversation } = useAppState();
   const [inspector, setInspector] = useState(
-    () => path === '/dev' || localStorage.getItem('sidekick.inspector') === 'open',
+    () =>
+      path === '/dev' ||
+      (window.innerWidth > 720 && localStorage.getItem('sidekick.inspector') === 'open'),
   );
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem('sidekick.sidebar') === 'collapsed',
   );
-  const [onboarding, setOnboarding] = useState(0);
-  const navigation = [
-    { path: '/', label: 'Chat', icon: MessageCircle },
-    { path: '/goals', label: 'Goals', icon: Target },
-    { path: '/schedule', label: 'Schedule', icon: CalendarClock },
-    { path: '/connections', label: 'Connections', icon: Link2 },
-    { path: '/channels', label: 'Channels', icon: Radio },
-    { path: '/vault', label: 'Vault', icon: KeyRound },
-  ];
+  const [composerDraft, setComposerDraft] = useState<{ text: string; nonce: number }>();
+  const [inspectionFocus, setInspectionFocus] = useState<{ messageId: string; taskId: string }>();
+  useEffect(() => {
+    const compose = (event: Event) => {
+      const detail = (event as CustomEvent<{ text: string }>).detail;
+      if (!detail?.text) return;
+      setComposerDraft({ text: detail.text, nonce: Date.now() });
+      navigate('/');
+    };
+    const inspect = (event: Event) => {
+      const detail = (event as CustomEvent<{ messageId: string; taskId: string }>).detail;
+      if (!detail?.taskId) return;
+      setInspectionFocus(detail);
+      setInspector(true);
+    };
+    window.addEventListener('sidekick:compose', compose);
+    window.addEventListener('sidekick:inspect-message', inspect);
+    return () => {
+      window.removeEventListener('sidekick:compose', compose);
+      window.removeEventListener('sidekick:inspect-message', inspect);
+    };
+  }, []);
   const currentPath = path === '/dev' || path === '/you' ? '/' : path;
   useEffect(() => {
     if (path === '/dev') setInspector(true);
   }, [path]);
+  useEffect(() => {
+    const closeOnNavigation = () => {
+      if (window.innerWidth <= 720 && window.location.pathname !== '/dev') setInspector(false);
+    };
+    window.addEventListener('popstate', closeOnNavigation);
+    return () => window.removeEventListener('popstate', closeOnNavigation);
+  }, []);
   useEffect(() => {
     localStorage.setItem('sidekick.inspector', inspector ? 'open' : 'closed');
   }, [inspector]);
   useEffect(() => {
     localStorage.setItem('sidekick.sidebar', collapsed ? 'collapsed' : 'expanded');
   }, [collapsed]);
+  const inspectorOpen = !!state?.configuration.inspectorEnabled && inspector;
   return (
     <div
-      className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''} ${inspector ? 'with-inspector' : ''}`}
+      className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''} ${inspectorOpen ? 'with-inspector' : ''}`}
     >
       <a href="#workspace" className="skip-link">
         Skip to content
       </a>
-      <aside className="sidebar">
-        <Link href="/" className="brand" label="Sidekick">
-          <BrandMark />
-          <span>sidekick</span>
-        </Link>
-        <nav className="main-nav" aria-label="Main navigation">
-          {navigation.map((item) => (
-            <Link
-              key={item.path}
-              href={item.path}
-              label={item.label}
-              current={currentPath === item.path}
-              className={`nav-link ${currentPath === item.path ? 'nav-link-active' : ''}`}
-            >
-              <item.icon size={18} strokeWidth={1.7} />
-              <span>{item.label}</span>
-            </Link>
-          ))}
-        </nav>
-        <div className="sidebar-bottom">
-          <button
-            className="nav-link"
-            aria-label="Restart setup"
-            onClick={() => {
-              setOnboarding((value) => value + 1);
-              navigate('/');
-            }}
-          >
-            <RotateCcw size={17} />
-            <span>Get started</span>
-          </button>
-          <button
-            className="nav-link sidebar-toggle"
-            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            onClick={() => setCollapsed(!collapsed)}
-          >
-            {collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
-            <span>Collapse</span>
-          </button>
-        </div>
-      </aside>
+      <Sidebar
+        path={currentPath}
+        collapsed={collapsed}
+        onToggle={() => setCollapsed((value) => !value)}
+        inspectorEnabled={state?.configuration.inspectorEnabled}
+        inspectorOpen={inspectorOpen}
+        onToggleInspector={() => setInspector((value) => !value)}
+        onNavigate={navigate}
+        onRestart={() => {
+          navigate('/');
+          setComposerDraft(undefined);
+          setInspectionFocus(undefined);
+          window.dispatchEvent(new CustomEvent('sidekick:restart-setup'));
+        }}
+      />
       <div className="workspace-frame">
-        <header className="workspace-header">
-          <span className="workspace-title">
-            {navigation.find((item) => item.path === currentPath)?.label ?? 'Chat'}
-          </span>
-          <div className="workspace-header-actions">
-            {!connected && <span className="reconnecting">Reconnecting…</span>}
-            {state?.configuration.inspectorEnabled && (
-              <Button
-                variant={inspector ? 'secondary' : 'ghost'}
-                size="sm"
-                onClick={() => setInspector(!inspector)}
-                aria-pressed={inspector}
-              >
-                <Monitor size={16} />
-                <span>Inspector</span>
-              </Button>
-            )}
-          </div>
-        </header>
         <div className="workspace-body">
-          <main id="workspace" className="main-workspace">
+          <main id="workspace" className="main-workspace" tabIndex={-1}>
             {!state ? (
               <div className="initial-loading">
                 {error ? (
@@ -181,16 +135,16 @@ function Workspace({ path }: { path: string }) {
                     state={state}
                     streams={streams}
                     refresh={refresh}
-                    onboarding={onboarding}
-                    onOnboarded={() => setOnboarding(0)}
+                    resetConversation={resetConversation}
+                    composerDraft={composerDraft}
                   />
                 </div>
                 {currentPath === '/vault' && <Vault />}
-                {currentPath === '/connections' && <Connections />}
+                {currentPath === '/apps' && <Apps />}
                 {currentPath === '/channels' && <Channels />}
-                {currentPath === '/goals' && <Plans key="goals" type="goals" />}
-                {currentPath === '/schedule' && <Plans key="schedules" type="schedules" />}
-                {!navigation.some((item) => item.path === currentPath) && (
+                {currentPath === '/goals' && <Goals />}
+                {currentPath === '/schedule' && <SchedulePage />}
+                {!navigationItems.some((item) => item.path === currentPath) && (
                   <div className="empty-state">
                     <h1>This page isn’t here.</h1>
                     <Button variant="outline" onClick={() => navigate('/')}>
@@ -201,14 +155,14 @@ function Workspace({ path }: { path: string }) {
                 )}
               </>
             )}
-            {state && error && (
+            {state && (error || !connected) && (
               <div className="connection-notice">
-                <Notice>{error}</Notice>
+                <Notice kind={error ? 'error' : 'info'}>{error || 'Reconnecting…'}</Notice>
               </div>
             )}
           </main>
-          {state?.configuration.inspectorEnabled && inspector && (
-            <Inspector onClose={() => setInspector(false)} />
+          {inspectorOpen && (
+            <Inspector focus={inspectionFocus} onClose={() => setInspector(false)} />
           )}
         </div>
       </div>
@@ -222,9 +176,8 @@ export function App() {
     window.addEventListener('popstate', update);
     return () => window.removeEventListener('popstate', update);
   }, []);
-  const match = /^\/credentials\/([^/]+)\/?$/.exec(path);
+  if (path === '/browser') return <BrowserRoute />;
+  const match = /^\/(?:vault|credentials)\/([^/]+)\/?$/.exec(path);
   if (match) return <Credentials key={match[1]} id={match[1]} />;
-  const approval = /^\/approvals\/([^/]+)\/?$/.exec(path);
-  if (approval) return <ApprovalPage key={approval[1]} id={approval[1]} />;
   return <Workspace path={path} />;
 }

@@ -2,19 +2,73 @@
 
 `npm test` runs deterministic tests and skips PostgreSQL cases without `TEST_DATABASE_URL`. `npm run test:integration` runs every fixture with the local database by default. Each database fixture creates a random schema, sets its own pg-boss schema, and removes only those schemas afterward. Never reset the normal local profile or database.
 
-| Boundary                                                      | Tests                                                              |
-| ------------------------------------------------------------- | ------------------------------------------------------------------ |
-| Runtime, tools, lifecycle and provider replacement            | `runtime-*`, `pi-agent`, `application-adapters`                    |
-| Dispatch, recovery, cancellation and revisions                | `task-durability`                                                  |
-| HTTP ownership, artifacts and approvals                       | `server-boundaries`                                                |
-| Credentials, stale forms and encryption                       | `vault`, `runtime-credentials`                                     |
-| Google consent, events and provider migration                 | `integrations`, `provider-adapters`                                |
-| Messaging authentication, inbox/outbox and uncertain delivery | `channels`                                                         |
-| Goals, schedules and memory                                   | `personal`                                                         |
-| Audio policy and cancellation                                 | `speech`, `provider-adapters`                                      |
-| Streaming, schedule forms and safe links                      | `web-streams`, `personal`, `message-links`                         |
-| Inspector payload masking, ownership, usage and pagination    | `inspector-redaction`, `inspector-store`, `inspector-observations` |
+| Boundary                                                               | Tests                                                                                   |
+| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Runtime, tools, lifecycle and provider replacement                     | `runtime-*`, `pi-agent`, `application-adapters`                                         |
+| Dispatch, recovery, cancellation and revisions                         | `task-durability`, `task-continuation`, `task-progress`, `task-failures`, `outcomes`    |
+| Message replies, shared owner channel context, emoji and reset fencing | `conversation`, `conversation-reset`, `message-idempotency`, `channel-context`, `emoji` |
+| Serialized manual browser control and stale leases                     | `takeover`, `runtime-session`, `task-continuation`                                      |
+| HTTP ownership, artifacts and chat confirmations                       | `server-boundaries`                                                                     |
+| Credentials, stale forms and encryption                                | `vault`, `vault-rejected-login`, `credential-feedback`, `runtime-credentials`           |
+| App consent, events, file downloads and provider migration             | `integrations`, `integration-apps`, `integration-files`, `provider-adapters`            |
+| Messaging authentication, inbox/outbox and uncertain delivery          | `channels`                                                                              |
+| Goals, schedules and memory                                            | `personal`, `schedules`                                                                 |
+| Audio policy and cancellation                                          | `speech`, `provider-adapters`                                                           |
+| Streaming and safe links                                               | `web-streams`, `message-links`                                                          |
+| Markdown composer, inline emoji, preview cards and reset UI            | `chat-composer`, `chat-messages`, `chat-reset`, `web-markdown`                          |
+| Sidebar shortcuts, modifier hints and navigation focus                 | `sidebar`                                                                               |
+| Public metadata, pinned resolution, image proxy and caching            | `link-preview`                                                                          |
+| Compact accounts, channel setup steps, and plan chat drafts            | `secondary-pages`, `secondary-page-layout`                                              |
+| Cached navigation, obsolete reads and account action focus             | `page-data-cache`, `connections-ui`                                                     |
+| One-time timing, schedule tabs and read-only execution history         | `schedule-ui`                                                                           |
+| Inspector payload masking, ownership, usage and pagination             | `inspector-redaction`, `inspector-store`, `inspector-observations`                      |
+| Paired activity, retained tool counts and provider coverage            | `inspector-ui`, `provider-usage`, `pi-agent`                                            |
+| Browser takeover locks, socket input, expiry and task resume           | `browser-manual`, `browser-control`, `takeover`                                         |
 
 Inject fakes through ports and factories. Avoid global transport mocks when testing feature policy. Keep adapter protocol tests separate. No real email, channel delivery, paid action or personal data in fixtures. A passing substitute stack is not a live provider check.
 
+`e2e-harness` covers synthetic authentication, integrations and the Channels UI adapter in `scripts/e2e-channels.ts`. Channel setup accepts only fixed fixture values, returns labelled synthetic summaries and starts disconnected. Keep polling absent, incoming messages rejected and all deliveries disabled even after setup. Use the real Channels forms to configure the acceptance harness; do not seed private accounts or reuse normal channel settings.
+
+Conversation reset fixtures use synthetic owner data and must never reset the live owner's chat. Prove stale state/history/deltas/submissions are fenced while accounts, Vault, personal context, goals, schedules and other channels survive. Emoji tests exercise the real lazy catalog in JSDOM; preview tests preserve ordinary links on failure and never fetch private/secure destinations. Provider usage tests distinguish operations from network requests and unavailable prices from zero, including auxiliary Pi usage and disabled capture.
+
+Secondary-page cache fixtures hold real response promises to prove late reads cannot undo an accepted account removal. Keep cached data visible during navigation and failed background refreshes. UI checks cover menu/tab keys, focus return, lazy history pagination and chat-only plan changes; DOM fixtures do not prove responsive layout or live OAuth.
+
 Run `npm run check` for type, import-boundary and formatting checks; `npm run build` validates the client bundle. Broaden testing only when a change affects another boundary or a failure requires it.
+
+`schedules` uses disposable schemas to verify migration, exact one-off times, Lisbon DST, stale job fencing, atomic task/history creation, redelivery, restart reconciliation and history retained after deletion. Its timed case runs the real pg-boss worker but creates only a synthetic queued execution; it does not call a model, connected account or external recipient.
+
+`outcomes` checks semantic route timeout/validation, active-session queuing, FIFO source provenance, secure/review waits, cancellation/reset and channel preflight without database row locks. Keep approval-source regression in `server-boundaries`: a later queued user message must not become an earlier segment's approval source. These are synthetic callbacks and provider fixtures, not measured live routing accuracy.
+
+`message-idempotency` proves concurrent HTTP retries and queued inputs use one accepted message/execution, preserving attachment order, reply target, ownership and reset fences. `task-failures` covers failures before and after runtime entry, fixed public replies, retry dedupe, cancellation/reset/revision fences, quiet background work and normal channel outbox delivery. Neither fixture calls a model or real recipient.
+
+Inspector privacy fixtures verify embedded and nested JSON secrets through actual prompt/failure persistence, plus disabled-startup deletion and periodic retention with a fake clock. Takeover fixtures hold cleanup across reacquisition and exercise real task cancellation/reset in a disposable schema; they do not control a real account.
+
+`browser-errors` checks fixed typed errors through runtime and the owned screen endpoint, raw/forged error masking and cancellation precedence. `inspector-screen` verifies that navigation failures pause capture, retain actionable text and resume after explicit retry or fresh browser activity. These fixtures do not prove that a remote website permits automated access.
+
+Secure-resume regressions cover stale OTP requests after an accepted code, provider-only method choices, unknown/error pages, final chat solicitations and cancellation after inspection. The runtime must return the fresh masked observation without a new form; the real Vault service independently rejects a page with no fields or methods.
+
+`runtime-vault-default` checks fresh inspection before manual sign-in advice, supported-form redirection to Vault, navigation/inspection failures and explicit manual-help requests. `browser-launch` checks headed macOS startup, headless Linux, protected capture/entry and explicit recovery from an old headless session. `vault-accounts` covers named same-origin records and secure account selection with disposable PostgreSQL. `credentials-ui` and `vault-ui` cover account choices, new names, domain entry, retries and OTP exclusion. Live X page access and synthetic password/OTP completion are separate evidence in the Vault acceptance report.
+
+`attachment-pdf` covers bounded canvas rendering, independent PDF page controls, fixed errors/retry, source filtering, late load/page fencing, cancelled renders and worker destruction. Gallery/composer fixtures preserve native image/audio/video behavior and pending blob previews. Rendering fakes do not prove browser PDF decoding; validate actual files in the local viewer separately.
+
+`vault-details` checks separate owner-bound detail and password reads, readable private-list usernames, no-store headers, restart, invalid IDs, cross-site requests, unavailable keys and corrupted records. Broker lists and secure account choices remain masked. UI coverage must prove no eager password read, explicit Show/Hide and Copy, fixed errors, focus return and stale-response fencing after close or account changes. Use synthetic values and disposable schemas; do not reveal the live owner's saved passwords for validation.
+
+`vault-update` verifies masked edit responses, immutable origin/ID, same-website account separation, optional-password preservation, replacement/restart, invalid and cross-site inputs, corrupt ciphertext and ownership changes during key access. Vault UI edit checks cover direct-edit details, explicit Change password/Change card number/Change security code, empty required replacement inputs, cancellation back to unchanged secrets, custom names, immediate account-metadata cache updates, cancel/blur cleanup, failed saves and late responses after closing or switching accounts. The private cache may retain full login usernames, never passwords, PANs or security codes. Neither fixture uses the normal owner's records or website login.
+
+`vault-identifier-label` checks observed field labels across staged sign-in/restart, bounded plain text, manual defaults, preserved labels on edit, legacy ciphertext and exact-origin separation. Labels must come from trusted browser inspection; client overrides are rejected.
+
+`vault-cards` checks synthetic card normalization/Luhn/expiry and three/four-digit optional security codes, encrypted storage, masked lists, separate explicit reveals, owner/type isolation, key-gap races, optional-number/code preservation, explicit code removal, deletion and legacy login/card ciphertext. Private Vault lists show full usernames; broker lists and secure account choices remain masked. Keep all PANs/passwords/security codes out of page caches and every agent/Inspector path. Card fixtures must use published synthetic numbers only and never contact an issuer or merchant.
+
+`inspector-work` uses disposable PostgreSQL to verify owned current-generation grouping, pending follow-ups, bounded totals, legacy notification rows, saved schedule times and unavailable scheduler status. `inspector-work-ui` checks quiet useful work labels, failed refreshes and late reads. `channel-status-ui` proves an accepted disconnect survives failed and stale status reads while a rejected disconnect preserves the saved account. Explicit successful Telegram setup shows the verified Open Telegram link and initial Start instruction, clears credentials, focuses the next action and never opens an automatic popup. Channel account menus must use the shared outside/keyboard-dismissible menu, while Finish setup preserves callback guidance and polling accounts omit redundant readiness text. `inspector-costs` combines provider models/categories without duplicating ledger totals. `browser-window` and `inspector-screen` exercise the shared screen controller, current-session changes, secure/failed capture, disabled access, same-origin popup fallback and paused embedded polling. These DOM fixtures do not prove actual popup behavior or live provider usage.
+
+`agent-reactions` checks the trusted service with disposable PostgreSQL: owned current-generation web targets, role/context checks, Unicode normalization, concurrent cooldown, restart persistence, removal without repetition, reset and cancellation fences. Runtime and DOM fixtures cover quiet skips, unsupported external channels, useful text responses and accessible user-message badges. No fixture sends a provider reaction.
+
+`scheduled-channels` checks exact verified source-message routing for one-off and recurring work, service-level route inheritance, web destination preservation, reschedule/pause fences, uncertain delivery across restart, revoked sender access and unchanged provider reply windows. One occurrence uses the real pg-boss timer. The inheritance fixture calls the service directly and does not grant background action authority. All delivery uses synthetic inbox/outbox traffic and disposable PostgreSQL; no message reaches a real provider.
+
+`action-policy` and `action-autonomy` cover known ordinary scope, draft-only exclusions, direct-action deduplication, exact chat confirmation across web/Telegram/WhatsApp, verified secure/manual resume provenance and cancellation. `server-boundaries` also checks that a delayed old Vault callback cannot resume a newer credential revision. All provider actions in these checks are synthetic; no live account delivery is implied.
+
+`browser-sign-in` checks matching browser versions, isolated native arguments and owned process cleanup. `browser-sign-in-handoff` checks automation shutdown ordering, observation/input locks, restoration, cancellation, expiry and restart. `takeover` and `browser-control` cover the revision-bound native mode, owner/Host/Origin guards, native input routing, late private-frame rejection, focus/visibility cleanup and continuation. `browser-api` checks core metadata/frame access without Inspector, foreign/missing tasks and ordinary capture locks; `browser-window` checks the standalone route. A fake browser-policy rejection can verify the handoff with synthetic credentials; it is not a live Google or SSO acceptance check.
+
+`workspace-network` checks acceptance-harness reuse of an observed Docker network and rejects malformed, host, none, shared-container or ambiguous attachments. Keep network routing configuration separate from provider-key, file-path, owner and local HTTP access tests. Network changes require a recreated workspace container; configuration and fixtures alone do not prove outbound reachability.
+
+`local-database` uses temporary `.env` files and injected process commands to check generated credentials, 0600 permissions, restart consistency, existing-role SCRAM rotation on stdin, secret-free arguments/errors, explicit integration database selection and missing-configuration startup. It does not rotate the normal database or prove a real PostgreSQL migration. The launcher must preserve data and verify authentication before starting the app.

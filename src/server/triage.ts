@@ -6,6 +6,7 @@ import { boss, submitTask } from './tasks.ts';
 import type { FastifyInstance } from 'fastify';
 import type { PoolClient } from 'pg';
 import { refresh } from './events.ts';
+import { currentConversationSql } from './conversations.ts';
 import type {
   RelevanceClassifier,
   RelevanceDecision,
@@ -117,7 +118,8 @@ export function createTriage(options: {
         options.getProfile(),
         options.listGoals(),
         pool.query(
-          'SELECT role,left(text,800) AS text,reaction,created_at AS "createdAt" FROM messages WHERE owner_id=$1 ORDER BY created_at DESC LIMIT 8',
+          `SELECT m.role,left(m.text,800) AS text,m.reaction,m.created_at AS "createdAt" FROM messages m LEFT JOIN tasks t ON t.id=m.task_id
+           WHERE m.owner_id=$1 AND ((t.owner_id=$1 AND ${currentConversationSql()}) OR (m.task_id IS NULL AND COALESCE((SELECT revision FROM conversations WHERE owner_id=$1 AND channel='web'),0)=0)) ORDER BY m.created_at DESC LIMIT 8`,
           [ownerId],
         ),
         pool.query(

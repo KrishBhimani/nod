@@ -2,6 +2,14 @@ import { Component, StrictMode, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './app';
 import './styles.css';
+import './pages/secondary-pages.css';
+import './pages/apps.css';
+import './pages/channels.css';
+import './pages/goals.css';
+import './components/emoji-picker.css';
+import './components/attachment-images.css';
+import './components/vault-details.css';
+import './pages/inspector.css';
 
 class AppBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };

@@ -2,66 +2,24 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import { z } from 'zod';
-import type { Connection } from '../shared/contracts.ts';
-import type { IntegrationProvider, IntegrationSession } from '../ports/integrations.ts';
+import type { Approval, Connection } from '../shared/contracts.ts';
+import type {
+  IntegrationFile,
+  IntegrationProvider,
+  IntegrationSession,
+} from '../ports/integrations.ts';
+import {
+  integrationDownloadActions,
+  integrationServiceIds,
+  integrationServices,
+} from '../shared/integrations.ts';
+import { integrationActions } from './integration-policy.ts';
+export { integrationActions } from './integration-policy.ts';
 
 const localOwner = 'local-development';
-const slugSchema = z.enum(['gmail', 'googlecalendar', 'googledrive', 'googlesheets', 'googledocs']);
+const slugSchema = z.enum(integrationServiceIds);
 type Slug = z.infer<typeof slugSchema>;
-const catalogs = {
-  gmail: {
-    name: 'Gmail',
-    watch: true,
-    description: 'Find email and stay on top of replies.',
-    tools: ['GMAIL_FETCH_EMAILS', 'GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID', 'GMAIL_LIST_LABELS'],
-  },
-  googlecalendar: {
-    name: 'Google Calendar',
-    watch: true,
-    description: 'Plan your time and follow meeting changes.',
-    tools: [
-      'GOOGLECALENDAR_EVENTS_LIST',
-      'GOOGLECALENDAR_EVENTS_GET',
-      'GOOGLECALENDAR_LIST_CALENDARS',
-      'GOOGLECALENDAR_FIND_FREE_SLOTS',
-    ],
-  },
-  googledrive: {
-    name: 'Google Drive',
-    watch: false,
-    description: 'Find files and keep documents within reach.',
-    tools: [
-      'GOOGLEDRIVE_FIND_FILE',
-      'GOOGLEDRIVE_FIND_FOLDER',
-      'GOOGLEDRIVE_GET_FILE_METADATA',
-      'GOOGLEDRIVE_LIST_CHANGES',
-    ],
-  },
-  googlesheets: {
-    name: 'Google Sheets',
-    watch: false,
-    description: 'Read and update your spreadsheets.',
-    tools: [
-      'GOOGLESHEETS_BATCH_GET',
-      'GOOGLESHEETS_GET_SPREADSHEET_INFO',
-      'GOOGLESHEETS_GET_SHEET_NAMES',
-      'GOOGLESHEETS_SEARCH_SPREADSHEETS',
-    ],
-  },
-  googledocs: {
-    name: 'Google Docs',
-    watch: false,
-    description: 'Work with your notes and documents.',
-    tools: [
-      'GOOGLEDOCS_GET_DOCUMENT_BY_ID',
-      'GOOGLEDOCS_GET_DOCUMENT_PLAINTEXT',
-      'GOOGLEDOCS_SEARCH_DOCUMENTS',
-    ],
-  },
-} as const;
-export const integrationActions: string[] = Object.values(catalogs).flatMap((item) => [
-  ...item.tools,
-]);
+const catalogs = integrationServices;
 type ConnectionRow = {
   id: string;
   owner_id: string;
@@ -104,7 +62,21 @@ function textField(value: unknown, maximum = 300) {
 
 export function eventOverview(toolkit: string, trigger: string, data: Record<string, unknown>) {
   const fields: Record<string, unknown> = {};
-  for (const name of ['subject', 'sender', 'summary', 'status', 'updated', 'message_timestamp']) {
+  for (const name of [
+    'subject',
+    'sender',
+    'summary',
+    'status',
+    'updated',
+    'message_timestamp',
+    'channel',
+    'user',
+    'ts',
+    'event_type',
+    'page_id',
+    'workspace_name',
+    'timestamp',
+  ]) {
     const value = textField(data[name]);
     if (value) fields[name] = value;
   }
@@ -175,6 +147,15 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
   `);
   const sessions = new Map<string, Promise<IntegrationSession>>();
   let draining = false;
+  await pool.query(
+    `UPDATE app_connections SET watch_requested=true,watch_attempted=false,watch_revision=watch_revision+1
+     WHERE owner_id=$1 AND provider_id=$2 AND slug=ANY($3::text[]) AND NOT revoked AND NOT watch_requested`,
+    [
+      localOwner,
+      providerId,
+      (Object.keys(catalogs) as Slug[]).filter((slug) => supportsWatch(slug)),
+    ],
+  );
 
   function requiredProvider() {
     if (!provider.configured)
@@ -206,17 +187,17 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         'SELECT session_id,configuration_version FROM integration_sessions WHERE owner_id = $1 AND provider_id=$2',
         [ownerId, providerId],
       );
-      if (saved.rows[0]?.configuration_version === 2)
+      if (saved.rows[0]?.configuration_version === 3)
         return sdk.restoreSession(saved.rows[0].session_id);
       const rows = await connectionRows(ownerId);
       const connectedAccounts: Partial<Record<Slug, string[]>> = {};
       for (const row of rows) {
-        if (row.account_id && !row.revoked)
+        if (row.account_id && !row.revoked && supportsService(row.slug))
           (connectedAccounts[row.slug] ??= []).push(row.account_id);
       }
       const session = await sdk.createSession(ownerId, connectedAccounts);
       await pool.query(
-        'INSERT INTO integration_sessions (owner_id,session_id,provider_id,configuration_version) VALUES ($1,$2,$3,2) ON CONFLICT(owner_id) DO UPDATE SET session_id=EXCLUDED.session_id,provider_id=EXCLUDED.provider_id,configuration_version=2',
+        'INSERT INTO integration_sessions (owner_id,session_id,provider_id,configuration_version) VALUES ($1,$2,$3,3) ON CONFLICT(owner_id) DO UPDATE SET session_id=EXCLUDED.session_id,provider_id=EXCLUDED.provider_id,configuration_version=3',
         [ownerId, session.id, providerId],
       );
       if (saved.rows[0] && saved.rows[0].session_id !== session.id) {
@@ -246,8 +227,20 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     }
   }
 
+  function supportsService(slug: Slug) {
+    return provider.supportedServices
+      ? provider.supportedServices.includes(slug)
+      : integrationServiceIds.slice(0, 5).includes(slug);
+  }
+
+  function requireService(slug: Slug) {
+    requiredProvider();
+    if (!supportsService(slug))
+      throw new IntegrationError('This app is unavailable with the configured provider.', 503);
+  }
+
   function supportsWatch(slug: Slug) {
-    return catalogs[slug].watch && provider.supportsSubscriptions.includes(slug);
+    return supportsService(slug) && provider.supportsSubscriptions.includes(slug);
   }
 
   async function activateWatch(id: string) {
@@ -322,7 +315,12 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         result.push({
           slug,
           name: catalogs[slug].name,
-          status: !provider.configured ? 'not_configured' : active ? 'connected' : 'disconnected',
+          status:
+            !provider.configured || !supportsService(slug)
+              ? 'not_configured'
+              : active
+                ? 'connected'
+                : 'disconnected',
           ...(row ? { connectionId: row.id, accountId: row.account_id! } : {}),
           ...(accountName ? { accountName } : {}),
           ...(accountEmail ? { accountEmail } : {}),
@@ -362,12 +360,12 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         'Choose an account using connectionId from the connection list.',
         409,
       );
-    if (!rows[0])
-      throw new IntegrationError(`Connect ${catalogs[slug].name} in Connections first.`, 409);
+    if (!rows[0]) throw new IntegrationError(`Connect ${catalogs[slug].name} in Apps first.`, 409);
     return rows[0];
   }
 
   async function connect(slug: Slug) {
+    requireService(slug);
     const prior = await pool.query(
       'SELECT provider_id FROM app_connections WHERE owner_id=$1 AND slug=$2 AND provider_id<>$3',
       [localOwner, slug, providerId],
@@ -383,7 +381,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     if (active.length >= 10)
       throw new IntegrationError('This service supports up to ten connected accounts.', 409);
     const nonce = randomBytes(32).toString('base64url');
-    const callbackUrl = new URL('/api/connections/callback', options.baseUrl);
+    const callbackUrl = new URL('/api/apps/callback', options.baseUrl);
     callbackUrl.searchParams.set('state', nonce);
     const session = await getSession(localOwner);
     const attempt = await session.authorize(slug, callbackUrl.href);
@@ -424,7 +422,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     if (!row) throw new IntegrationError('This connection link is expired or already used.', 409);
     const remote = await requiredProvider().inspectAccount(row.pending_account_id!, localOwner);
     if (!remote.active || remote.service !== row.slug)
-      throw new IntegrationError('Google consent is incomplete. Connect again.', 409);
+      throw new IntegrationError('App sign-in is incomplete. Connect again.', 409);
     const client = await pool.connect();
     let connectedId = row.id;
     try {
@@ -443,7 +441,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         connectedId = existing.rows[0].id;
         await client.query('DELETE FROM app_connections WHERE id=$1', [row.id]);
         await client.query(
-          'UPDATE app_connections SET revoked=false,account_name=$2,account_email=$3 WHERE id=$1',
+          'UPDATE app_connections SET revoked=false,account_name=$2,account_email=$3,watch_requested=true,watch_attempted=CASE WHEN trigger_id IS NULL THEN false ELSE watch_attempted END WHERE id=$1',
           [connectedId, remote.accountName ?? null, remote.accountEmail ?? null],
         );
       } else {
@@ -465,6 +463,11 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
   }
 
   async function setTriggers(slug: Slug, enabled: boolean, connectionId?: string) {
+    if (!enabled)
+      throw new IntegrationError(
+        'Updates are always requested for connected apps. Disconnect the account to stop them.',
+        409,
+      );
     const row = await selectConnection(localOwner, slug, connectionId);
     if (!supportsWatch(slug))
       throw new IntegrationError('Automatic notifications are unavailable for this service.', 409);
@@ -502,10 +505,13 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
   }
 
   function actionToolkit(action: string): Slug {
-    if (!/^(GMAIL|GOOGLECALENDAR|GOOGLEDRIVE|GOOGLESHEETS|GOOGLEDOCS)_[A-Z0-9_]+$/.test(action)) {
-      throw new IntegrationError('This action is outside the connected Google services.', 403);
-    }
-    return slugSchema.parse(action.split('_')[0].toLowerCase());
+    if (!/^[A-Z][A-Z0-9]*_[A-Z0-9_]+$/.test(action))
+      throw new IntegrationError('This action is outside the connected apps.', 403);
+    const slug = slugSchema.safeParse(action.split('_')[0].toLowerCase());
+    if (!slug.success)
+      throw new IntegrationError('This action is outside the connected apps.', 403);
+    requireService(slug.data);
+    return slug.data;
   }
 
   async function approvedConnection(
@@ -531,14 +537,45 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     await approvedConnection(ownerId, action, args);
   }
 
+  async function describeApproval(
+    ownerId: string,
+    action: string,
+    args: Record<string, unknown>,
+  ): Promise<Approval['connection']> {
+    assertOwner(ownerId);
+    const slug = slugSchema.safeParse(action.split('_')[0].toLowerCase());
+    const connectionId = z.uuid().safeParse(args.connectionId);
+    if (!slug.success || !connectionId.success) return undefined;
+    const result = await pool.query<Pick<ConnectionRow, 'account_name' | 'account_email'>>(
+      `SELECT account_name,account_email FROM app_connections
+       WHERE id=$1 AND owner_id=$2 AND provider_id=$3 AND slug=$4
+       AND account_id IS NOT NULL AND NOT revoked`,
+      [connectionId.data, ownerId, providerId, slug.data],
+    );
+    const row = result.rows[0];
+    if (!row) return undefined;
+    return {
+      name: catalogs[slug.data].name,
+      ...(row.account_name ? { accountName: row.account_name } : {}),
+      ...(row.account_email ? { accountEmail: row.account_email } : {}),
+    };
+  }
+
   async function executeApproved(ownerId: string, action: string, args: Record<string, unknown>) {
     const row = await approvedConnection(ownerId, action, args);
+    if ((integrationDownloadActions as readonly string[]).includes(action))
+      return {
+        downloadRequired: true,
+        action,
+        args,
+        message: 'Use download_app_file with this action and account to deliver the file here.',
+      };
     try {
       const { connectionId: _connectionId, ...providerArgs } = args;
       return await (await getSession(ownerId)).execute(action, providerArgs, row.account_id!);
     } catch {
       throw new IntegrationError(
-        'The Google request failed. Check the connection and requested fields.',
+        'The app request failed. Check the connection and requested fields.',
         502,
       );
     }
@@ -563,7 +600,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
           }));
         return { ...search, accounts };
       } catch {
-        throw new IntegrationError('Google tool search is unavailable. Try again later.', 502);
+        throw new IntegrationError('App tool search is unavailable. Try again later.', 502);
       }
     }
     const slug = actionToolkit(action);
@@ -578,6 +615,72 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     if (!integrationActions.includes(action))
       return { requiresApproval: true, action, args: selectedArgs };
     return executeApproved(ownerId, action, selectedArgs);
+  }
+
+  async function download(
+    ownerId: string,
+    action: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<IntegrationFile> {
+    assertOwner(ownerId);
+    signal?.throwIfAborted();
+    if (!(integrationDownloadActions as readonly string[]).includes(action))
+      throw new IntegrationError('This action cannot download a file.', 403);
+    const slug = actionToolkit(action);
+    if (JSON.stringify(args).length > 32_768)
+      throw new IntegrationError('The integration request is too large.');
+    const row = await selectConnection(ownerId, slug, z.uuid().optional().parse(args.connectionId));
+    const deadline = signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(35_000)])
+      : AbortSignal.timeout(35_000);
+    let abort = () => {};
+    const transfer = async (): Promise<IntegrationFile> => {
+      const session = await getSession(ownerId);
+      deadline.throwIfAborted();
+      if (!session.download)
+        throw new IntegrationError('File downloads are unavailable with this app provider.', 503);
+      const { connectionId: _connectionId, ...providerArgs } = args;
+      const file = await session.download(action, providerArgs, row.account_id!, deadline);
+      deadline.throwIfAborted();
+      const current = await selectConnection(ownerId, slug, row.id);
+      deadline.throwIfAborted();
+      if (current.account_id !== row.account_id) throw new Error('The selected account changed.');
+      if (
+        !(file.bytes instanceof Uint8Array) ||
+        !file.bytes.length ||
+        file.bytes.length > 15 * 1024 * 1024
+      )
+        throw new Error('The file size is unsupported.');
+      return {
+        bytes: file.bytes,
+        name: z.string().min(1).max(160).parse(file.name),
+        mimeType: z
+          .string()
+          .regex(/^[a-zA-Z0-9][a-zA-Z0-9!#$&^_.+-]*\/[a-zA-Z0-9][a-zA-Z0-9!#$&^_.+-]*$/)
+          .max(200)
+          .parse(file.mimeType),
+      };
+    };
+    try {
+      deadline.throwIfAborted();
+      return await Promise.race([
+        transfer(),
+        new Promise<never>((_, reject) => {
+          abort = () => reject(new Error('The file transfer stopped.'));
+          deadline.addEventListener('abort', abort, { once: true });
+        }),
+      ]);
+    } catch (error) {
+      if (signal?.aborted) throw new DOMException('File download was cancelled.', 'AbortError');
+      if (error instanceof IntegrationError && error.statusCode === 503) throw error;
+      throw new IntegrationError(
+        'The file could not be downloaded. Check the account and file, then try again.',
+        502,
+      );
+    } finally {
+      deadline.removeEventListener('abort', abort);
+    }
   }
 
   async function drain() {
@@ -645,29 +748,28 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
                 : 'The connection provider could not complete this request.',
         });
       });
-      scope.get('/api/connections', async () => list());
-      scope.post<{ Params: { slug: string } }>('/api/connections/:slug/connect', async (request) =>
+      scope.get('/api/apps', async () => list());
+      scope.post<{ Params: { slug: string } }>('/api/apps/:slug/connect', async (request) =>
         connect(slugSchema.parse(request.params.slug)),
       );
-      scope.get('/api/connections/callback', async (request, reply) => {
+      scope.get('/api/apps/callback', async (request, reply) => {
         await completeConnection(request.query);
         return reply
           .header('Cache-Control', 'no-store')
           .header('Referrer-Policy', 'no-referrer')
-          .redirect('/connections');
+          .redirect('/apps');
       });
-      scope.post<{ Params: { slug: string } }>(
-        '/api/connections/:slug/disconnect',
-        async (request) => disconnect(slugSchema.parse(request.params.slug)),
+      scope.post<{ Params: { slug: string } }>('/api/apps/:slug/disconnect', async (request) =>
+        disconnect(slugSchema.parse(request.params.slug)),
       );
-      scope.post<{ Params: { slug: string } }>('/api/connections/:slug/triggers', async (request) =>
+      scope.post<{ Params: { slug: string } }>('/api/apps/:slug/triggers', async (request) =>
         setTriggers(
           slugSchema.parse(request.params.slug),
           z.object({ enabled: z.boolean() }).strict().parse(request.body).enabled,
         ),
       );
       scope.post<{ Params: { slug: string; connectionId: string } }>(
-        '/api/connections/:slug/accounts/:connectionId/disconnect',
+        '/api/apps/:slug/accounts/:connectionId/disconnect',
         async (request) =>
           disconnect(
             slugSchema.parse(request.params.slug),
@@ -675,7 +777,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
           ),
       );
       scope.post<{ Params: { slug: string; connectionId: string } }>(
-        '/api/connections/:slug/accounts/:connectionId/triggers',
+        '/api/apps/:slug/accounts/:connectionId/triggers',
         async (request) =>
           setTriggers(
             slugSchema.parse(request.params.slug),
@@ -741,8 +843,16 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     registerRoutes,
     execute,
     executeApproved,
+    download,
     validateApproval,
+    describeApproval,
     list,
+    manageConnections: async (action: 'list' | 'connect', service?: string) => {
+      if (action === 'list')
+        return (await list()).map(({ accountId: _accountId, ...connection }) => connection);
+      const slug = slugSchema.parse(service);
+      return { name: catalogs[slug].name, ...(await connect(slug)) };
+    },
     status: list,
     drain,
     syncWatches,

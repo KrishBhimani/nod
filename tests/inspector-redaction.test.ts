@@ -120,3 +120,53 @@ test('oversized JSON and text assignments retain the same secret-key masking rul
       assert.ok(!JSON.stringify(redact(payload)).includes(value), key);
   }
 });
+
+test('Vault bearer links are excluded from inspector payloads', () => {
+  const redact = createInspectorRedactor();
+  assert.equal(
+    redact('Open /vault/private-bearer-token for login'),
+    'Open /vault/[redacted] for login',
+  );
+});
+
+test('framed prompt data and failure text mask nested serialized JSON credentials', () => {
+  const redact = createInspectorRedactor();
+  const secret = 'synthetic-nested-private-value';
+  const currentInstruction = JSON.stringify({
+    password: secret,
+    apiKey: secret,
+    metadata: { title: 'Keep the useful context' },
+  });
+  for (const value of [
+    'Respond to currentInstruction.\nRequest data (JSON):\n' +
+      JSON.stringify({ currentInstruction, recentConversation: [] }),
+    {
+      name: 'ProviderError',
+      message: 'Provider rejected: ' + JSON.stringify({ response: currentInstruction }),
+    },
+    'An unmatched [ prefix before ' + JSON.stringify({ response: currentInstruction }),
+  ]) {
+    const safe = JSON.stringify(redact(value));
+    assert.equal(safe.includes(secret), false);
+    assert.ok(safe.includes('Keep the useful context'));
+    assert.ok(safe.includes('[redacted]'));
+  }
+});
+
+test('embedded JSON inspection is bounded and omits incomplete oversized data', () => {
+  const redact = createInspectorRedactor();
+  const secret = 'synthetic-truncated-private-value';
+  for (const value of [
+    'Request data (JSON):\n' +
+      JSON.stringify({
+        currentInstruction: JSON.stringify({ password: secret }),
+        pad: 'x'.repeat(70_000),
+      }),
+    'Failure data: ' +
+      Array.from({ length: 200 }, () => JSON.stringify({ apiKey: secret })).join(' '),
+  ]) {
+    const safe = JSON.stringify(redact(value));
+    assert.equal(safe.includes(secret), false);
+    assert.ok(Buffer.byteLength(safe) <= inspectorPayloadLimit);
+  }
+});

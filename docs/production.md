@@ -34,7 +34,7 @@ This is a target architecture. The repository does not provision it. `npm run bu
 
 ## Internet and computer access
 
-The local workspace uses a separate firewall sidecar and runs without Linux capabilities or privilege escalation. It can access the public IPv4 Internet and install CLI packages; private/LAN/metadata destinations and external IPv6 are blocked. This is a useful local boundary, not a tenant sandbox or protection against public data exfiltration.
+The local workspace uses normal Docker networking without a Sidekick egress firewall. It can install CLI packages and reach destinations allowed by Docker and host routing, including reachable private networks; IPv6 depends on the Docker and host configuration. It still runs without Linux capabilities or privilege escalation. This is not a tenant sandbox.
 
 A production policy must decide which destinations, package registries, and downloads are allowed, and how to limit cost, malware, and resource use. Public egress can carry files, prompts, or other data the agent can access. The workspace has no provider environment, host Docker socket, or authenticated browser profile, but those exclusions alone do not prevent every prompt-injection outcome.
 
@@ -48,11 +48,11 @@ Before running several replicas, add leases, worker ownership, scheduler coordin
 
 Database idempotency prevents duplicate internal dispatch. It cannot make external API writes or browser actions exactly once. Use provider idempotency keys where available and retain approval/result records. The channel outbox stops retries after uncertain sends; add an operator recovery flow and backoff for failures known to be retryable.
 
-## Google and messaging
+## Apps and messaging
 
 Composio holds managed OAuth tokens. Review its access, retention, scopes, event usage, and actual account plan. Google production consent can require verification or additional assessment for sensitive/restricted scopes. Managed OAuth does not remove those obligations. [Google production OAuth policy](https://developers.google.com/identity/protocols/oauth2/production-readiness/policy-compliance).
 
-Multi-account actions and approvals must preserve a specific account binding throughout review and execution. Provider replacement requires revocation/reconnection and cannot silently adopt old account or subscription IDs. Gmail/Calendar watch preference being enabled does not prove an active subscription or webhook delivery. See [Google connections](composio.md).
+Apps supports Google services, Slack and Notion. Multi-account actions and confirmations must preserve a specific account binding throughout review and execution. Provider replacement requires revocation/reconnection and cannot silently adopt old account or subscription IDs. Gmail/Calendar watch preference being enabled does not prove an active subscription or webhook delivery. See [Apps](composio.md).
 
 Channel setup verifies a bot/business credential and stores it encrypted. It does not prove ownership of the user-entered recipient ID, public webhook reachability, or end-to-end delivery. A public bot needs secure account pairing, tenant routing, consent, revocation, quotas, and abuse controls.
 
@@ -60,7 +60,9 @@ Telegram local polling requires no public ingress. Webhook deployments should ex
 
 WhatsApp needs a current market-specific eligibility and pricing review, approved account configuration, reply-window handling, and templates if proactive messages are required. The prototype accepts text from one configured owner and sends free-form replies only within 24 hours. An operator confirmation checkbox or working SDK is not worldwide eligibility. [Channel setup and limits](channels.md).
 
-Messaging channels have no remote task chooser when several ordinary questions are waiting. Resolve ambiguity in the web app. Secure credentials, approvals, and attachments also remain local. Delivery receipts, media transport, and operator resend tools are not implemented.
+Messaging channels have no task chooser when several ordinary questions are waiting. Ambiguous replies need clarification in the originating conversation. Known ordinary actions can execute from a clear owned request; destructive or unmatched actions use a specific yes/no confirmation in that same chat. Secure credential forms remain in the local app.
+
+Telegram can upload owned task images and files after the server rechecks their owner, task, path and size. WhatsApp retains text replies with a local-app attachment fallback. Partial or uncertain sends are not replayed automatically. Delivery receipts and operator resend tools are not implemented. Synthetic transport checks do not establish delivery to a real recipient.
 
 ## Cost and evidence
 

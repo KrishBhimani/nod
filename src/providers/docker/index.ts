@@ -55,7 +55,7 @@ export function createDockerWorkspace(options: {
   workspaceRoot: string;
 }): Workspace {
   return {
-    status: () => `${options.container}; Linux · public internet enabled`,
+    status: () => `${options.container}; Linux · internet enabled`,
     dispose: () => {},
     open(input) {
       const id = taskId(input.taskId);
@@ -70,7 +70,7 @@ export function createDockerWorkspace(options: {
       return {
         path: base,
         instructions:
-          'This is your own Linux computer, not the user’s personal device. It has public internet access; private networks and host services are blocked. Node, Python, pipx, git, curl, and ffmpeg are installed. Install trusted CLI tools with npm install -g <package> or pipx install <package>; /home/node persists across tasks and restarts. You are an unprivileged user and cannot use sudo. There is no graphical desktop or display, so native GUI applications cannot run here; use a supported CLI or the browser web app. Keep task outputs under this task workspace; do not ask the user to install your tools on their device.',
+          'This is your own Linux computer, not the user’s personal device. It uses normal Docker networking with no Sidekick egress firewall. Internet and other reachable destinations follow the host and Docker network configuration. Node, Python, pipx, git, curl, and ffmpeg are installed. Install trusted CLI tools with npm install -g <package> or pipx install <package>; /home/node persists across tasks and restarts. You are an unprivileged user and cannot use sudo. There is no graphical desktop or display, so native GUI applications cannot run here; use a supported CLI or the browser web app. Keep task outputs under this task workspace; do not ask the user to install your tools on their device.',
         execute: (command, timeoutSeconds = 30) =>
           dockerCommand(options.container, id, ['sh', '-c', command], {
             signal: input.signal,

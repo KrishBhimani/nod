@@ -112,26 +112,35 @@ test(
       assert.equal(
         (
           await app.inject({
-            url: hidden.url.replace('/credentials/', '/api/credential-requests/'),
+            url: hidden.url.replace('/vault/', '/api/credential-requests/'),
           })
         ).statusCode,
         404,
       );
       const result = await vault.request('task-1', 'local-development', input);
-      const url = result.url.replace('/credentials/', '/api/credential-requests/');
+      const url = result.url.replace('/vault/', '/api/credential-requests/');
       const form = await app.inject({ url });
       assert.equal(form.statusCode, 200);
       assert.equal(form.headers['cache-control'], 'no-store');
       const first = app.inject({
         method: 'POST',
         url,
-        payload: { username: 'person@example.com', password: 'secret-password' },
+        payload: {
+          label: 'Fixture login',
+          username: 'person@example.com',
+          password: 'secret-password',
+        },
       });
       await injectionStarted;
       assert.equal(resumed, 0);
       assert.equal(
-        (await app.inject({ method: 'POST', url, payload: { password: 'second-secret' } }))
-          .statusCode,
+        (
+          await app.inject({
+            method: 'POST',
+            url,
+            payload: { label: 'Fixture login', password: 'second-secret' },
+          })
+        ).statusCode,
         409,
       );
       complete();
@@ -139,14 +148,20 @@ test(
       assert.equal(injected, 1);
       assert.equal(resumed, 1);
       assert.equal(
-        (await app.inject({ method: 'POST', url, payload: { password: 'secret-password' } }))
-          .statusCode,
+        (
+          await app.inject({
+            method: 'POST',
+            url,
+            payload: { label: 'Fixture login', password: 'secret-password' },
+          })
+        ).statusCode,
         409,
       );
       const metadata = await app.inject({ url: '/api/vault' });
       assert.equal(metadata.json().length, 1);
       assert.equal(metadata.body.includes('secret-password'), false);
-      assert.equal(metadata.body.includes('person@example.com'), false);
+      assert.equal(metadata.body.includes('person@example.com'), true);
+      assert.equal(JSON.stringify(await vault.list()).includes('person@example.com'), false);
       const stored = await pool.query('SELECT * FROM vault_entries');
       assert.equal(JSON.stringify(stored.rows).includes('secret-password'), false);
       await assert.rejects(vault.fillSaved('task-2', 'another-owner', stored.rows[0].id, input));
@@ -175,14 +190,14 @@ test(
       await pool.query(
         "UPDATE credential_requests SET expires_at = now() - interval '1 second' WHERE task_id = 'expired-task'",
       );
-      const expiredUrl = expired.url.replace('/credentials/', '/api/credential-requests/');
+      const expiredUrl = expired.url.replace('/vault/', '/api/credential-requests/');
       assert.equal((await app.inject({ url: expiredUrl })).json().status, 'expired');
       assert.equal(
         (
           await app.inject({
             method: 'POST',
             url: expiredUrl,
-            payload: { password: 'expired-secret' },
+            payload: { label: 'Fixture login', password: 'expired-secret' },
           })
         ).statusCode,
         409,
@@ -233,7 +248,7 @@ test(
         kind: 'otp',
         passwordSelector: '#code',
       });
-      const url = request.url.replace('/credentials/', '/api/credential-requests/');
+      const url = request.url.replace('/vault/', '/api/credential-requests/');
       const failed = await app.inject({ method: 'POST', url, payload: { code: '123456' } });
       assert.equal(failed.statusCode, 502);
       assert.equal(failed.body.includes('123456'), false);
@@ -324,8 +339,8 @@ test(
       const retry = await vault.request('task-retry', 'local-development', input);
       const response = await app.inject({
         method: 'POST',
-        url: retry.url.replace('/credentials/', '/api/credential-requests/'),
-        payload: { username: 'person', password: 'replacement-password' },
+        url: retry.url.replace('/vault/', '/api/credential-requests/'),
+        payload: { label: 'Fixture login', username: 'person', password: 'replacement-password' },
       });
       assert.equal(response.statusCode, 200);
       assert.equal(attempts, 2);
@@ -337,11 +352,16 @@ test(
       app = Fastify();
       const restarted = await createVault(pool, options);
       restarted.registerRoutes(app);
-      const url = interrupted.url.replace('/credentials/', '/api/credential-requests/');
+      const url = interrupted.url.replace('/vault/', '/api/credential-requests/');
       assert.equal((await app.inject({ url })).json().status, 'pending');
       assert.equal(
-        (await app.inject({ method: 'POST', url, payload: { password: 'fresh-after-restart' } }))
-          .statusCode,
+        (
+          await app.inject({
+            method: 'POST',
+            url,
+            payload: { label: 'Fixture login', password: 'fresh-after-restart' },
+          })
+        ).statusCode,
         200,
       );
       assert.equal(attempts, 3);
@@ -408,7 +428,7 @@ test(
         passwordSelector: '#password',
       };
       const request = await vault.request('task-1', 'local-development', input);
-      const url = request.url.replace('/credentials/', '/api/credential-requests/');
+      const url = request.url.replace('/vault/', '/api/credential-requests/');
       assert.equal((await app.inject({ method: 'POST', url: `${url}/retry` })).statusCode, 409);
       await pool.query(
         "UPDATE credential_requests SET expires_at=now()-interval '1 second' WHERE task_id='task-1'",
@@ -423,21 +443,36 @@ test(
       assert.equal(keyReads, 0);
       assert.equal((await app.inject({ method: 'POST', url: `${url}/retry` })).statusCode, 409);
       assert.equal(
-        (await app.inject({ method: 'POST', url, payload: { password: 'stale-secret' } }))
-          .statusCode,
+        (
+          await app.inject({
+            method: 'POST',
+            url,
+            payload: { label: 'Fixture login', password: 'stale-secret' },
+          })
+        ).statusCode,
         409,
       );
       await pool.query("UPDATE tasks SET status='waiting_credentials' WHERE id='task-1'");
       const fresh = await vault.request('task-1', 'local-development', input);
-      const freshUrl = fresh.url.replace('/credentials/', '/api/credential-requests/');
+      const freshUrl = fresh.url.replace('/vault/', '/api/credential-requests/');
       assert.equal(
-        (await app.inject({ method: 'POST', url, payload: { password: 'stale-secret' } }))
-          .statusCode,
+        (
+          await app.inject({
+            method: 'POST',
+            url,
+            payload: { label: 'Fixture login', password: 'stale-secret' },
+          })
+        ).statusCode,
         409,
       );
       assert.equal(
-        (await app.inject({ method: 'POST', url: freshUrl, payload: { password: 'fresh-secret' } }))
-          .statusCode,
+        (
+          await app.inject({
+            method: 'POST',
+            url: freshUrl,
+            payload: { label: 'Fixture login', password: 'fresh-secret' },
+          })
+        ).statusCode,
         200,
       );
       assert.equal(injected, 1);
@@ -452,13 +487,13 @@ test(
       );
       const cancelled = await vault.request('task-2', 'local-development', input);
       await pool.query("UPDATE tasks SET status='cancelled' WHERE id='task-2'");
-      const cancelledUrl = cancelled.url.replace('/credentials/', '/api/credential-requests/');
+      const cancelledUrl = cancelled.url.replace('/vault/', '/api/credential-requests/');
       assert.equal(
         (
           await app.inject({
             method: 'POST',
             url: cancelledUrl,
-            payload: { password: 'cancelled-secret' },
+            payload: { label: 'Fixture login', password: 'cancelled-secret' },
           })
         ).statusCode,
         409,
@@ -470,13 +505,13 @@ test(
       assert.equal(injected, 1);
       failInjection = true;
       const failed = await vault.request('task-retry', 'local-development', input);
-      const failedUrl = failed.url.replace('/credentials/', '/api/credential-requests/');
+      const failedUrl = failed.url.replace('/vault/', '/api/credential-requests/');
       assert.equal(
         (
           await app.inject({
             method: 'POST',
             url: failedUrl,
-            payload: { password: 'failed-secret' },
+            payload: { label: 'Fixture login', password: 'failed-secret' },
           })
         ).statusCode,
         502,
@@ -499,7 +534,7 @@ test(
 test(
   'legacy credential forms expire for safe retry without changing encrypted saved entries',
   { skip: !process.env.TEST_DATABASE_URL },
-  async () => {
+  async (t) => {
     const schema = `test_vault_${randomUUID().replaceAll('-', '')}`;
     const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
     await admin.query(`CREATE SCHEMA ${schema}`);
@@ -550,13 +585,34 @@ test(
       app = Fastify();
       const migrated = await createVault(pool, options);
       migrated.registerRoutes(app);
-      const url = request.url.replace('/credentials/', '/api/credential-requests/');
-      assert.equal((await app.inject({ url })).json().status, 'expired');
-      assert.equal(
-        (await app.inject({ method: 'POST', url, payload: { password: 'do-not-inject' } }))
-          .statusCode,
-        409,
+      const url = request.url.replace('/vault/', '/api/credential-requests/');
+      const expiry = (
+        await pool.query(
+          'SELECT expires_at,expires_at<=now() AS expired FROM credential_requests WHERE task_id=$1',
+          ['task-1'],
+        )
+      ).rows[0];
+      assert.equal(expiry.expired, true);
+      const clock = t.mock.method(
+        Date,
+        'now',
+        () => new Date(expiry.expires_at).getTime() - 60_000,
       );
+      try {
+        assert.equal((await app.inject({ url })).json().status, 'expired');
+        assert.equal(
+          (
+            await app.inject({
+              method: 'POST',
+              url,
+              payload: { label: 'Fixture login', password: 'do-not-inject' },
+            })
+          ).statusCode,
+          409,
+        );
+      } finally {
+        clock.mock.restore();
+      }
       assert.equal((await app.inject({ method: 'POST', url: `${url}/retry` })).statusCode, 200);
       assert.equal(retriedRevision, 3);
       assert.equal(injected, 0);

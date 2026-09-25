@@ -1,5 +1,7 @@
 import { z } from 'zod';
+import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import type { RelevanceClassifier } from '../../ports/relevance.ts';
+import { relevanceModel } from '../../shared/model-defaults.ts';
 
 export function createOpenAIRelevanceClassifier(options: {
   apiKey?: string;
@@ -7,6 +9,16 @@ export function createOpenAIRelevanceClassifier(options: {
   fetch?: typeof fetch;
 }): RelevanceClassifier {
   const request = options.fetch ?? fetch;
+  const model = options.model || relevanceModel;
+  const capabilities = openaiProvider()
+    .getModels()
+    .find((entry) => entry.id === model);
+  const reasoningOff = capabilities?.reasoning && capabilities.thinkingLevelMap?.off === 'none';
+  const parameters = reasoningOff
+    ? { reasoning_effort: 'none', temperature: 0 }
+    : capabilities?.reasoning === false
+      ? { temperature: 0 }
+      : {};
   return {
     id: 'openai',
     configured: Boolean(options.apiKey),
@@ -18,9 +30,9 @@ export function createOpenAIRelevanceClassifier(options: {
         signal: AbortSignal.any([AbortSignal.timeout(10000), ...(signal ? [signal] : [])]),
         headers: { Authorization: `Bearer ${options.apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: options.model || 'gpt-4.1-nano',
-          temperature: 0,
-          max_tokens: 100,
+          model,
+          ...parameters,
+          max_completion_tokens: 256,
           response_format: { type: 'json_object' },
           messages: [
             {

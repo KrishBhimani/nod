@@ -1,3 +1,12 @@
+import { browserErrorMessage, type BrowserErrorCode } from '../shared/browser-errors.ts';
+
+export class BrowserActionError extends Error {
+  constructor(readonly code: BrowserErrorCode) {
+    super(browserErrorMessage(code));
+    this.name = 'BrowserActionError';
+  }
+}
+
 export interface BrowserAction {
   action: 'open' | 'snapshot' | 'click' | 'fill' | 'scroll';
   url?: string;
@@ -31,6 +40,7 @@ export interface LoginMethod {
 export interface LoginInspection {
   origin: string;
   url: string;
+  issue?: 'browser_not_supported';
   fields: LoginField[];
   methods: LoginMethod[];
   submitSelector?: string;
@@ -46,14 +56,43 @@ export interface CredentialInput {
   passwordSelector?: string;
   submitSelector?: string;
 }
+export interface CredentialSubmission {
+  status: 'submitted' | 'rejected';
+}
+export type ManualBrowserInput =
+  | { action: 'click'; x: number; y: number }
+  | { action: 'type'; text: string }
+  | {
+      action: 'press';
+      key:
+        | 'Enter'
+        | 'Tab'
+        | 'Shift+Tab'
+        | 'Escape'
+        | 'Backspace'
+        | 'ArrowUp'
+        | 'ArrowDown'
+        | 'ArrowLeft'
+        | 'ArrowRight'
+        | 'ControlOrMeta+A';
+    }
+  | { action: 'scroll'; direction: 'up' | 'down' };
 export interface Computer {
+  currentSession?(): { taskId: string; lastActivityAt: string } | undefined;
+  takeControl?(taskId: string): Promise<void>;
+  openSignIn?(taskId: string): Promise<void>;
+  finishSignIn?(taskId: string): Promise<void>;
+  signInScreenshot?(taskId: string, signal?: AbortSignal): Promise<Buffer | null>;
+  signInControl?(taskId: string, input: ManualBrowserInput): Promise<void>;
+  control?(taskId: string, input: ManualBrowserInput): Promise<void>;
+  releaseControl?(taskId: string): Promise<void>;
   act(taskId: string, input: BrowserAction, signal?: AbortSignal): Promise<BrowserObservation>;
   screenshot(taskId: string, signal?: AbortSignal): Promise<Buffer | null>;
   screenStatus?(taskId: string): {
     state: 'live' | 'last_known' | 'unavailable';
     capturedAt?: string;
   };
-  injectCredentials(input: CredentialInput): Promise<void>;
+  injectCredentials(input: CredentialInput): Promise<CredentialSubmission | void>;
   inspectLogin(taskId: string): Promise<LoginInspection>;
   selectLoginMethod(taskId: string, origin: string, methodId: string): Promise<void>;
   hold(taskId: string, until: number | null): Promise<void>;

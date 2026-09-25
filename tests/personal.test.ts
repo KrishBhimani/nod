@@ -69,11 +69,15 @@ test(
           : { headers: { 'content-type': 'application/json' }, payload: JSON.stringify(payload) }),
       });
     const storedSchedule = (id: string) =>
-      pool.query(`SELECT cron,timezone FROM ${bossSchema}.schedule WHERE key=$1`, [id]);
+      pool.query(
+        `SELECT s.cron,s.time_zone AS timezone FROM schedules s JOIN ${bossSchema}.job j ON j.id=s.job_id AND j.name='scheduled-task' WHERE s.id=$1 AND j.state IN ('created','retry','active')`,
+        [id],
+      );
     try {
       await scheduler.start();
       await personal.initialize({ workers: false });
-      await pool.query(`CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text NOT NULL,role text NOT NULL,text text NOT NULL DEFAULT '',task_id uuid,created_at timestamptz NOT NULL DEFAULT now());
+      await pool.query(`CREATE TABLE tasks(id uuid PRIMARY KEY,owner_id text NOT NULL,status text NOT NULL DEFAULT 'queued',error text);
+        CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text NOT NULL,role text NOT NULL,text text NOT NULL DEFAULT '',task_id uuid,created_at timestamptz NOT NULL DEFAULT now());
         CREATE TABLE memory_facts(id uuid PRIMARY KEY,owner_id text NOT NULL,text text NOT NULL,
           source_message_id uuid REFERENCES messages(id),UNIQUE(owner_id,text))`);
       await pool.query(`CREATE TABLE preferences(owner_id text PRIMARY KEY,notification_rule text NOT NULL DEFAULT '',
@@ -214,6 +218,73 @@ test(
             );
             await assert.rejects(
               personal.manage('memory_remember', { quote }, { sourceMessageId: source }),
+            );
+          }
+        },
+      );
+      await t.test(
+        'contextual and corrected preferences retain the complete direct user statement',
+        async () => {
+          const taskId = randomUUID();
+          for (const quote of [
+            'For travel plans, I prefer short bullet lists. Please remember this preference.',
+            'Correction: I prefer short bullet lists only for travel plans.',
+            'Actually, I prefer prose for complex travel plans, not bullet lists.',
+            'For travel plans, I do not prefer long lists unless I ask for every option.',
+            "Actually, for travel plans, I don't like bullet lists except for packing.",
+          ]) {
+            const source = randomUUID();
+            await pool.query(
+              "INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,'fixture-owner','user',$2,$3)",
+              [source, quote, taskId],
+            );
+            assert.deepEqual(
+              await personal.manage(
+                'memory_remember',
+                { quote },
+                { sourceMessageId: source, taskId },
+              ),
+              { ok: true },
+            );
+            assert.deepEqual(
+              (
+                await pool.query(
+                  'SELECT text,source_message_id FROM memory_facts WHERE source_message_id=$1',
+                  [source],
+                )
+              ).rows,
+              [{ text: quote, source_message_id: source }],
+            );
+            await assert.rejects(
+              personal.manage(
+                'memory_remember',
+                { quote: 'I prefer short bullet lists.' },
+                { sourceMessageId: source, taskId },
+              ),
+              /complete current user statement/,
+            );
+          }
+          for (const quote of [
+            'The website says I prefer short bullet lists.',
+            'For travel plans, the website says I prefer short bullet lists.',
+            'Correction: the website says I prefer short bullet lists.',
+            'Actually, the website says I prefer short bullet lists.',
+            'For travel plans, "I prefer short bullet lists" is what the article says.',
+            'Actually, "I prefer short bullet lists" is a quote from the website.',
+          ]) {
+            const source = randomUUID();
+            await pool.query(
+              "INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,'fixture-owner','user',$2,$3)",
+              [source, quote, taskId],
+            );
+            await assert.rejects(
+              personal.manage('memory_remember', { quote }, { sourceMessageId: source, taskId }),
+              /explicit personal fact or preference/,
+            );
+            assert.equal(
+              (await pool.query('SELECT id FROM memory_facts WHERE source_message_id=$1', [source]))
+                .rowCount,
+              0,
             );
           }
         },
@@ -445,6 +516,57 @@ test(
         assert.deepEqual((await request('GET', '/api/goals')).json(), []);
       });
       await t.test(
+        'goal deletion is owned, durable and safe to repeat without deleting conversation history',
+        async () => {
+          const created = [];
+          for (const title of ['Delete this fixture', 'Keep this fixture', 'Foreign fixture']) {
+            const response = await request('POST', '/api/goals', { title });
+            assert.equal(response.statusCode, 200);
+            created.push(response.json());
+          }
+          const [target, survivor, foreign] = created;
+          await pool.query('UPDATE goals SET owner_id=$2 WHERE id=$1', [
+            foreign.id,
+            'another-owner',
+          ]);
+          const messageId = randomUUID();
+          await pool.query(
+            "INSERT INTO messages(id,owner_id,role,text) VALUES($1,'fixture-owner','user','Synthetic goal discussion')",
+            [messageId],
+          );
+          assert.equal((await request('DELETE', '/api/goals/not-a-uuid')).statusCode, 400);
+          assert.equal((await request('DELETE', `/api/goals/${foreign.id}`)).statusCode, 404);
+          assert.equal((await request('DELETE', `/api/goals/${randomUUID()}`)).statusCode, 404);
+          const removed = await Promise.all([
+            request('DELETE', `/api/goals/${target.id}`),
+            request('DELETE', `/api/goals/${target.id}`),
+          ]);
+          assert.deepEqual(removed.map((response) => response.statusCode).sort(), [200, 404]);
+          assert.deepEqual(removed.find((response) => response.statusCode === 200)!.json(), {
+            ok: true,
+          });
+          assert.deepEqual(
+            (await request('GET', '/api/goals')).json().map((goal: { id: string }) => goal.id),
+            [survivor.id],
+          );
+          assert.equal(
+            (await pool.query('SELECT id FROM goals WHERE id=$1', [target.id])).rowCount,
+            0,
+          );
+          assert.equal(
+            (await pool.query('SELECT id FROM goals WHERE id=$1', [foreign.id])).rowCount,
+            1,
+          );
+          assert.equal(
+            (await pool.query('SELECT id FROM messages WHERE id=$1', [messageId])).rowCount,
+            1,
+          );
+          await personal.initialize({ workers: false });
+          assert.equal((await request('DELETE', `/api/goals/${target.id}`)).statusCode, 404);
+          assert.equal((await request('DELETE', `/api/goals/${survivor.id}`)).statusCode, 200);
+        },
+      );
+      await t.test(
         'schedule editing, pause, resume and deletion agree with the recurring queue',
         async () => {
           const created = await request('POST', '/api/schedules', {
@@ -485,6 +607,13 @@ test(
           assert.equal((await storedSchedule(schedule.id)).rowCount, 0);
           assert.equal((await request('GET', '/api/schedules')).json().length, 1);
           await request('PATCH', `/api/schedules/${schedule.id}`, { enabled: true });
+          const cancel = t.mock.method(scheduler, 'cancel', async () => {
+            throw new Error('Synthetic cancellation failure');
+          });
+          assert.equal((await request('DELETE', `/api/schedules/${schedule.id}`)).statusCode, 500);
+          assert.equal((await storedSchedule(schedule.id)).rowCount, 1);
+          assert.equal((await request('GET', '/api/schedules')).json()[0].id, schedule.id);
+          cancel.mock.restore();
           assert.equal((await request('DELETE', `/api/schedules/${schedule.id}`)).statusCode, 200);
           assert.equal((await storedSchedule(schedule.id)).rowCount, 0);
           assert.deepEqual((await request('GET', '/api/schedules')).json(), []);
@@ -521,19 +650,15 @@ test(
             (await request('GET', '/api/schedules')).json()[0].timeZone,
             'Europe/Lisbon',
           );
-          const originalSchedule = scheduler.schedule.bind(scheduler);
+          const originalSend = scheduler.send.bind(scheduler);
           let failOnce = true;
-          t.mock.method(
-            scheduler,
-            'schedule',
-            async (...args: Parameters<typeof scheduler.schedule>) => {
-              if (failOnce) {
-                failOnce = false;
-                throw new Error('Fixture queue write failure');
-              }
-              return originalSchedule(...args);
-            },
-          );
+          t.mock.method(scheduler, 'send', async (...args: Parameters<typeof scheduler.send>) => {
+            if (failOnce) {
+              failOnce = false;
+              throw new Error('Fixture queue write failure');
+            }
+            return originalSend(...args);
+          });
           assert.equal(
             (await request('PATCH', `/api/schedules/${schedule.id}`, { cron: '0 10 1 1 *' }))
               .statusCode,

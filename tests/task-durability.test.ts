@@ -72,8 +72,8 @@ test(
       },
       runTask: async (context) => {
         ran.add(context.taskId);
-        assert.equal(JSON.stringify(context.memories).includes('PRIVATE-PHONE-FIXTURE'), false);
-        assert.equal(JSON.stringify(context.memories).includes('Fixture Person'), true);
+        assert.equal(context.personalContext?.profile.phone, 'PRIVATE-PHONE-FIXTURE');
+        assert.equal(context.personalContext?.profile.name, 'Fixture Person');
         if (context.prompt === 'cancel-fence-fixture') {
           captured = context;
           await gate;
@@ -252,7 +252,11 @@ test(
           "INSERT INTO tasks(id,owner_id,title,prompt,status) VALUES($1,'local-development','Resume fixture','Resume fixture','waiting_credentials')",
           [id],
         );
-        await Promise.all([tasks.resumeTask(id), tasks.resumeTask(id), tasks.resumeTask(id)]);
+        await Promise.all([
+          tasks.resumeTask(id, 0),
+          tasks.resumeTask(id, 0),
+          tasks.resumeTask(id, 0),
+        ]);
         assert.equal(
           (await db.pool.query('SELECT revision FROM tasks WHERE id=$1', [id])).rows[0].revision,
           1,
@@ -504,7 +508,7 @@ test(
               sourceId: 'stale-approval',
             }),
           );
-          await tasks.resumeTask(id);
+          await tasks.resumeTask(id, 0);
           release();
           await delay(30);
           assert.equal(

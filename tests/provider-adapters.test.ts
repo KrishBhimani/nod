@@ -162,6 +162,38 @@ test('relevance adapters validate responses and Jev confidence before returning 
   await assert.rejects(unavailable.classify({}, relevancePolicy));
 });
 
+test('OpenAI relevance requests use catalog capabilities for reasoning and sampling overrides', async () => {
+  for (const [override, expectedModel, parameters] of [
+    [undefined, 'gpt-6-luna', { reasoning_effort: 'none', temperature: 0 }],
+    ['gpt-4.1-nano', 'gpt-4.1-nano', { temperature: 0 }],
+    ['o3-mini', 'o3-mini', {}],
+    ['fixture-unknown-model', 'fixture-unknown-model', {}],
+  ] as const) {
+    const classifier = createOpenAIRelevanceClassifier({
+      apiKey: 'fixture-never-live',
+      model: override,
+      fetch: async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        assert.equal(body.model, expectedModel);
+        assert.deepEqual(
+          Object.fromEntries(
+            Object.entries(body).filter(([key]) =>
+              ['reasoning_effort', 'temperature'].includes(key),
+            ),
+          ),
+          parameters,
+        );
+        assert.equal(body.max_completion_tokens, 256);
+        assert.deepEqual(body.response_format, { type: 'json_object' });
+        return Response.json({
+          choices: [{ message: { content: '{"decision":"digest","confidence":0.9}' } }],
+        });
+      },
+    });
+    assert.equal(await classifier.classify({ event: 'fixture' }, relevancePolicy), 'digest');
+  }
+});
+
 test('Composio sessions omit absent auth overrides before SDK validation and preserve tool schemas', async (t) => {
   const client = new Composio({
     apiKey: 'fixture-key-never-live',
@@ -230,6 +262,17 @@ test('Composio sessions omit absent auth overrides before SDK validation and pre
   const provider = createComposioProvider({ client, authConfigs });
   const session = await provider.createSession('local-development', { gmail: 'fixture-account' });
   assert.equal(created[0].auth_configs, undefined);
+  assert.deepEqual(created[0].toolkits, {
+    enable: [
+      'gmail',
+      'googlecalendar',
+      'googledrive',
+      'googlesheets',
+      'googledocs',
+      'slack',
+      'notion',
+    ],
+  });
   assert.deepEqual(created[0].connected_accounts, { gmail: ['fixture-account'] });
   const search = await session.search('List Gmail labels');
   assert.deepEqual(search.suggestions, [
@@ -251,12 +294,22 @@ test('Composio sessions omit absent auth overrides before SDK validation and pre
   );
   const configured = createComposioProvider({
     client,
-    authConfigs: { ...authConfigs, gmail: 'fixture-auth-config', googledocs: '' },
+    authConfigs: {
+      ...authConfigs,
+      gmail: 'fixture-auth-config',
+      googledocs: '',
+      slack: 'slack-auth',
+      notion: 'notion-auth',
+    },
   });
   await configured.createSession('local-development', {
     gmail: ['first-account', 'second-account'],
   });
-  assert.deepEqual(created[1].auth_configs, { gmail: 'fixture-auth-config' });
+  assert.deepEqual(created[1].auth_configs, {
+    gmail: 'fixture-auth-config',
+    slack: 'slack-auth',
+    notion: 'notion-auth',
+  });
   assert.deepEqual(created[1].connected_accounts, { gmail: ['first-account', 'second-account'] });
   assert.deepEqual(created[1].multi_account, {
     enable: true,
@@ -344,7 +397,7 @@ test('Composio account identity comes from an account-bound Google response and 
   assert.equal(endpoints.length, 2);
 });
 
-test('Composio identity uses account-scoped read tools when direct proxy permissions are unavailable', async (t) => {
+test('Composio identity uses account-scoped Google, Slack and Notion reads without direct proxy access', async (t) => {
   const client = new Composio({
     apiKey: 'fixture-key-never-live',
     allowTracking: false,
@@ -352,6 +405,32 @@ test('Composio identity uses account-scoped read tools when direct proxy permiss
     fileUploadDirs: false,
   });
   const profiles = {
+    slack: {
+      action: 'SLACK_WHO_AM_I',
+      args: {},
+      data: {
+        data: {
+          user: 'fixture-user',
+          team: 'Fixture workspace',
+          user_id: 'U-private',
+          team_id: 'T-private',
+        },
+      },
+      identity: { accountName: 'fixture-user · Fixture workspace' },
+    },
+    notion: {
+      action: 'NOTION_WHO_AM_I',
+      args: {},
+      data: {
+        data: {
+          name: 'Composio integration',
+          type: 'bot',
+          workspace_name: 'Fixture notes',
+          owner_email: 'notes@example.com',
+        },
+      },
+      identity: { accountName: 'Fixture notes', accountEmail: 'notes@example.com' },
+    },
     gmail: {
       action: 'GMAIL_GET_PROFILE',
       args: { user_id: 'me' },
@@ -503,10 +582,10 @@ test('Composio adapter normalizes sessions without exposing SDK metadata and aut
   const provider = createComposioProvider({ client, webhookSecret: 'fixture-signing-secret' });
   const session = await provider.createSession('local-development', {});
   assert.equal(session.id, 'fixture-session');
-  assert.deepEqual(
-    await session.authorize('gmail', 'http://localhost:4310/api/connections/callback'),
-    { accountId: 'fixture-account', url: 'https://connect.composio.dev/link/fixture' },
-  );
+  assert.deepEqual(await session.authorize('gmail', 'http://localhost:4310/api/apps/callback'), {
+    accountId: 'fixture-account',
+    url: 'https://connect.composio.dev/link/fixture',
+  });
   assert.equal(JSON.stringify(await session.search('Find email')).includes('do-not-expose'), false);
   const body = JSON.stringify({
     id: 'event-fixture',
@@ -551,4 +630,75 @@ test('environment key-store adapter accepts only an explicit 32-byte key', async
   assert.equal(createEnvironmentKeyStore().configured, false);
   await assert.rejects(createEnvironmentKeyStore().getKey());
   await assert.rejects(createEnvironmentKeyStore('not-a-key').getKey());
+});
+
+test('Composio Slack and Notion subscriptions use current exact events and preserve setup failures', async (t) => {
+  const client = new Composio({
+    apiKey: 'fixture-key-never-live',
+    allowTracking: false,
+    disableVersionCheck: true,
+    fileUploadDirs: false,
+  });
+  const subscriptions: unknown[] = [];
+  t.mock.method(
+    client.triggers,
+    'create',
+    async (owner: string, trigger: string, config: unknown) => {
+      subscriptions.push({ owner, trigger, config });
+      if (trigger === 'NOTION_PAGE_CONTENT_UPDATED')
+        throw new Error('Fixture ingress is unavailable.');
+      return { triggerId: 'fixture-slack-trigger' };
+    },
+  );
+  const provider = createComposioProvider({ client, webhookSecret: 'fixture-signature' });
+  assert.equal(provider.supportedServices?.includes('slack'), true);
+  assert.equal(provider.supportedServices?.includes('notion'), true);
+  assert.deepEqual(await provider.subscribe('fixture-owner', 'slack', 'slack-account'), {
+    id: 'fixture-slack-trigger',
+  });
+  await assert.rejects(provider.subscribe('fixture-owner', 'notion', 'notion-account'));
+  assert.deepEqual(subscriptions, [
+    {
+      owner: 'fixture-owner',
+      trigger: 'SLACK_DIRECT_MESSAGE_RECEIVED',
+      config: { connectedAccountId: 'slack-account', triggerConfig: {} },
+    },
+    {
+      owner: 'fixture-owner',
+      trigger: 'NOTION_PAGE_CONTENT_UPDATED',
+      config: { connectedAccountId: 'notion-account', triggerConfig: {} },
+    },
+  ]);
+  assert.equal(provider.matchesSubscription('slack', 'SLACK_DIRECT_MESSAGE_RECEIVED'), true);
+  assert.equal(provider.matchesSubscription('slack', 'SLACK_CHANNEL_MESSAGE_RECEIVED'), false);
+  assert.equal(provider.matchesSubscription('notion', 'NOTION_PAGE_CONTENT_UPDATED'), true);
+  assert.equal(provider.matchesSubscription('notion', 'NOTION_PAGE_CREATED'), false);
+});
+
+test('unsupported Slack identity does not send its account through Google profile endpoints', async (t) => {
+  const client = new Composio({
+    apiKey: 'fixture-key-never-live',
+    allowTracking: false,
+    disableVersionCheck: true,
+    fileUploadDirs: false,
+  });
+  t.mock.method(client.connectedAccounts, 'get', async () => ({
+    status: 'ACTIVE',
+    isDisabled: false,
+    toolkit: { slug: 'slack' },
+    data: { email: 'untrusted@example.com' },
+  }));
+  t.mock.method(client.sessions, 'create', async () => {
+    throw new Error('Fixture scope missing');
+  });
+  let proxyCalls = 0;
+  t.mock.method(client.tools, 'proxyExecute', async () => {
+    proxyCalls++;
+    throw new Error('Wrong provider');
+  });
+  assert.deepEqual(
+    await createComposioProvider({ client }).inspectAccount('slack-account', 'fixture-owner'),
+    { active: true, service: 'slack' },
+  );
+  assert.equal(proxyCalls, 0);
 });

@@ -164,7 +164,7 @@ test(
       });
       await assert.rejects(
         integrations.execute('local-development', 'SEARCH_TOOLS', { query: 'List Gmail labels' }),
-        { message: 'Google tool search is unavailable. Try again later.', statusCode: 502 },
+        { message: 'App tool search is unavailable. Try again later.', statusCode: 502 },
       );
       await pool.query(
         "INSERT INTO integration_events (id,owner_id,summary,slug,account_id,trigger_id,provider_id) VALUES ('event-queued-before-disconnect','local-development','Obsolete event','gmail','ca-fixture','ti-fixture','fixture')",
@@ -243,7 +243,7 @@ test(
     integrations.registerRoutes(app);
     try {
       assert.equal(
-        (await app.inject({ method: 'POST', url: '/api/connections/gmail/connect' })).statusCode,
+        (await app.inject({ method: 'POST', url: '/api/apps/gmail/connect' })).statusCode,
         200,
       );
       const url = new URL(callback);
@@ -309,7 +309,7 @@ test(
         "INSERT INTO app_connections(owner_id,slug,account_id,provider_id) VALUES('local-development','gmail','legacy-account','composio')",
       );
       await pool.query(
-        "INSERT INTO integration_sessions(owner_id,session_id,provider_id,configuration_version) VALUES('local-development','legacy-session','composio',2)",
+        "INSERT INTO integration_sessions(owner_id,session_id,provider_id,configuration_version) VALUES('local-development','legacy-session','composio',3)",
       );
       await pool.query(
         "INSERT INTO integration_events(id,owner_id,summary,state,provider_id) VALUES('composio:legacy-event','local-development','Legacy delivered event','delivered','composio')",
@@ -345,7 +345,7 @@ test(
       replacement.registerRoutes(replacementApp);
       await assert.rejects(replacement.execute('local-development', 'GMAIL_FETCH_EMAILS', {}));
       assert.equal(
-        (await replacementApp.inject({ method: 'POST', url: '/api/connections/gmail/connect' }))
+        (await replacementApp.inject({ method: 'POST', url: '/api/apps/gmail/connect' }))
           .statusCode,
         409,
       );
@@ -420,7 +420,7 @@ test(
     integrations.registerRoutes(app);
     async function connect() {
       assert.equal(
-        (await app.inject({ method: 'POST', url: '/api/connections/gmail/connect' })).statusCode,
+        (await app.inject({ method: 'POST', url: '/api/apps/gmail/connect' })).statusCode,
         200,
       );
       const callback = new URL(callbacks.at(-1)!);
@@ -472,14 +472,14 @@ test(
         new Set([first.connectionId, second.connectionId]),
       );
       assert.equal(
-        (await app.inject({ method: 'POST', url: '/api/connections/gmail/disconnect' })).statusCode,
+        (await app.inject({ method: 'POST', url: '/api/apps/gmail/disconnect' })).statusCode,
         409,
       );
       assert.equal(
         (
           await app.inject({
             method: 'POST',
-            url: `/api/connections/googlecalendar/accounts/${second.connectionId}/disconnect`,
+            url: `/api/apps/googlecalendar/accounts/${second.connectionId}/disconnect`,
           })
         ).statusCode,
         404,
@@ -497,7 +497,7 @@ test(
         (
           await app.inject({
             method: 'POST',
-            url: `/api/connections/gmail/accounts/${foreign}/disconnect`,
+            url: `/api/apps/gmail/accounts/${foreign}/disconnect`,
           })
         ).statusCode,
         404,
@@ -506,16 +506,16 @@ test(
         (
           await app.inject({
             method: 'POST',
-            url: `/api/connections/gmail/accounts/${first.connectionId}/triggers`,
+            url: `/api/apps/gmail/accounts/${first.connectionId}/triggers`,
             payload: { enabled: false },
           })
         ).statusCode,
-        200,
+        409,
       );
       const afterToggle = (await integrations.list()).filter((row) => row.slug === 'gmail');
       assert.equal(
         afterToggle.find((row) => row.connectionId === first.connectionId)?.triggerStatus,
-        'disabled',
+        'active',
       );
       assert.equal(
         afterToggle.find((row) => row.connectionId === second.connectionId)?.triggerStatus,
@@ -544,7 +544,7 @@ test(
         (
           await app.inject({
             method: 'POST',
-            url: `/api/connections/gmail/accounts/${first.connectionId}/disconnect`,
+            url: `/api/apps/gmail/accounts/${first.connectionId}/disconnect`,
           })
         ).statusCode,
         200,

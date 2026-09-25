@@ -111,11 +111,58 @@ test('computer factories isolate browser namespaces and dispose idle state', asy
   }
 });
 
+test('current browser changes when an accepted navigation starts and late completion cannot steal focus', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sidekick-current-browser-'));
+  const fixture = browserFixture();
+  let release: () => void = () => {};
+  let started: () => void = () => {};
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const entered = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const computer = createAgentBrowserComputer({
+    dataRoot: directory,
+    run: async (...args) => {
+      const command = args[1].slice(args[1].indexOf('--idle-timeout') + 2);
+      if (command[0] === 'open' && command[1].endsWith('/slow')) {
+        started();
+        await pending;
+      }
+      return fixture.run(...args);
+    },
+  });
+  let navigation: Promise<unknown> | undefined;
+  try {
+    await computer.act('earlier', { action: 'open', url: 'https://1.1.1.1/' });
+    navigation = computer.act('current', { action: 'open', url: 'https://1.1.1.1/slow' });
+    await entered;
+    assert.equal(computer.currentSession?.()?.taskId, 'current');
+    await computer.act('earlier', { action: 'scroll', direction: 'down' });
+    assert.equal(computer.currentSession?.()?.taskId, 'earlier');
+    release();
+    await navigation;
+    assert.equal(computer.currentSession?.()?.taskId, 'earlier');
+    await assert.rejects(computer.act('blocked', { action: 'open', url: 'file:///private' }));
+    assert.equal(computer.currentSession?.()?.taskId, 'earlier');
+    await assert.rejects(
+      computer.act('cancelled', { action: 'open', url: 'https://1.1.1.1/' }, AbortSignal.abort()),
+    );
+    assert.equal(computer.currentSession?.()?.taskId, 'earlier');
+  } finally {
+    release();
+    await navigation?.catch(() => {});
+    await computer.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('browser proxy ownership includes its listener lifecycle', async () => {
   const proxy = createBrowserProxy();
   const endpoint = await proxy.url();
   const response = await fetch(endpoint);
-  assert.equal(response.status, 403);
+  assert.equal(response.status, 400);
   await response.text();
   await proxy.dispose();
   await assert.rejects(proxy.url(), /stopped/);
@@ -320,7 +367,7 @@ test('stalled observations release active tasks on cancellation and disposal', a
             dispose: () => {},
             prompt: async () => {
               await input.tools
-                .find((tool) => tool.name === 'google')!
+                .find((tool) => tool.name === 'apps')!
                 .execute({ action: 'FIXTURE_ACTION', args: {} });
               executed = true;
             },

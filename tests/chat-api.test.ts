@@ -15,11 +15,13 @@ test(
     process.env.DATABASE_URL = url.href;
     const { pool, initializeDatabase } = await import('../src/server/db.ts');
     const { createApp } = await import('../src/server/app.ts');
+    const { initializeTaskSchema } = await import('../src/server/tasks.ts');
     const { ownerId, port } = await import('../src/server/config.ts');
     const app = await createApp();
     const headers = { host: `localhost:${port}`, origin: `http://localhost:${port}` };
     try {
       await initializeDatabase();
+      await initializeTaskSchema();
       const task = randomUUID(),
         otherTask = randomUUID();
       await pool.query(

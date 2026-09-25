@@ -127,3 +127,38 @@ test('reconnecting discards incomplete transient text but retains completed IDs'
   assert.deepEqual(state.active, {});
   assert.deepEqual(state.completed, ['saved']);
 });
+
+test('conversation resets fence old deltas and state while allowing the new onboarding stream', () => {
+  let state = streamReducer(initialStreamState, {
+    type: 'delta',
+    taskId: 'old',
+    streamId: 'old-stream',
+    text: 'Archived',
+    conversationRevision: 2,
+  });
+  state = streamReducer(state, { type: 'conversation', conversationRevision: 3 });
+  assert.deepEqual(state.active, {});
+  for (const action of [
+    {
+      type: 'delta' as const,
+      taskId: 'old',
+      streamId: 'old-stream',
+      text: 'Late',
+      conversationRevision: 2,
+    },
+    { type: 'persisted' as const, streamIds: ['future-stream'], conversationRevision: 2 },
+    { type: 'conversation' as const, conversationRevision: 1 },
+  ])
+    state = streamReducer(state, action);
+  assert.deepEqual(state.active, {});
+  assert.deepEqual(state.completed, []);
+  state = streamReducer(state, {
+    type: 'delta',
+    taskId: 'new',
+    streamId: 'future-stream',
+    text: 'Welcome',
+    conversationRevision: 3,
+  });
+  assert.equal(state.active['future-stream'].text, 'Welcome');
+  assert.equal(state.conversationRevision, 3);
+});

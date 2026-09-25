@@ -1,4 +1,4 @@
-type LinkKind = 'artifact' | 'credential' | 'approval' | 'external' | 'navigation';
+type LinkKind = 'artifact' | 'credential' | 'external' | 'navigation';
 interface SafeLink {
   href: string;
   kind: LinkKind;
@@ -6,15 +6,8 @@ interface SafeLink {
 export type MessagePart =
   { type: 'text'; text: string } | ({ type: 'link'; text: string } & SafeLink);
 
-const navigationPaths = new Set([
-  '/',
-  '/connections',
-  '/goals',
-  '/schedule',
-  '/channels',
-  '/vault',
-]);
-const localPath = /^\/(api\/artifacts|credentials|approvals)\/[A-Za-z0-9_-]+\/?$/;
+const navigationPaths = new Set(['/', '/apps', '/goals', '/schedule', '/channels', '/vault']);
+const localPath = /^\/(api\/artifacts|vault|credentials)\/[A-Za-z0-9_-]+\/?$/;
 
 export function safeMessageLink(value: string, origin: string): SafeLink | null {
   if (!value || /[\u0000-\u0020\u007f<>"'\\]/.test(value)) return null;
@@ -39,10 +32,9 @@ export function safeMessageLink(value: string, origin: string): SafeLink | null 
         return null;
       return {
         href: url.pathname,
-        kind: url.pathname.startsWith('/credentials/')
-          ? 'credential'
-          : url.pathname.startsWith('/approvals/')
-            ? 'approval'
+        kind:
+          url.pathname.startsWith('/credentials/') || url.pathname.startsWith('/vault/')
+            ? 'credential'
             : 'artifact',
       };
     }
@@ -55,7 +47,7 @@ export function safeMessageLink(value: string, origin: string): SafeLink | null 
 export function parseMessageText(text: string, origin: string): MessagePart[] {
   const parts: MessagePart[] = [];
   const pattern =
-    /\[([^\]\n]+)\]\(([^()\s]+)\)|(?<![\w:/])(?:https?:\/\/|\/(?:api\/artifacts|credentials|approvals)\/)[^\s<>"'\[\]()]+/gi;
+    /\[([^\]\n]+)\]\(([^()\s]+)\)|(?<![\w:/])(?:https?:\/\/|\/(?:api\/artifacts|vault|credentials)\/)[^\s<>"'\[\]()]+/gi;
   let cursor = 0;
   for (const match of text.matchAll(pattern)) {
     if (match.index > cursor) parts.push({ type: 'text', text: text.slice(cursor, match.index) });
@@ -66,14 +58,12 @@ export function parseMessageText(text: string, origin: string): MessagePart[] {
     else {
       const label =
         link.kind === 'credential'
-          ? 'Enter credentials securely'
-          : link.kind === 'approval'
-            ? 'Review this action'
-            : markdown
-              ? match[1]
-              : link.kind === 'artifact'
-                ? 'Open file'
-                : destination;
+          ? 'Vault'
+          : markdown
+            ? match[1]
+            : link.kind === 'artifact'
+              ? 'Open file'
+              : destination;
       parts.push({ type: 'link', text: label, ...link });
       if (!markdown && destination.length < match[0].length)
         parts.push({ type: 'text', text: match[0].slice(destination.length) });

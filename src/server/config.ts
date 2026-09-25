@@ -5,8 +5,7 @@ import type { Configuration } from '../shared/contracts.ts';
 export const ownerId = 'local-development';
 export const port = Number(process.env.PORT || 4310);
 export const dataRoot = resolve('.local');
-export const databaseUrl =
-  process.env.DATABASE_URL || 'postgresql://sidekick:sidekick-local@127.0.0.1:54329/sidekick';
+export const databaseUrl = process.env.DATABASE_URL || undefined;
 export function configuration(overrides: Partial<Configuration> = {}): Configuration {
   return {
     provider: 'unconfigured',

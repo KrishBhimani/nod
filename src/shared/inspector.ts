@@ -23,6 +23,10 @@ export interface ToolCall {
   finishedAt: string | null;
   durationMs: number | null;
   error: string | null;
+  providerOperations?: number;
+  pricedOperations?: number;
+  directCostUsd?: number | null;
+  pricing?: 'reported' | 'sdk_estimate' | 'mixed' | 'unavailable';
 }
 
 export interface ModelUsage {
@@ -41,12 +45,44 @@ export interface ModelUsage {
   createdAt: string;
 }
 
+export interface ToolUsage {
+  name: string;
+  calls: number;
+  succeeded: number;
+  failed: number;
+  running: number;
+  cancelled: number;
+  interrupted: number;
+  durationSamples: number;
+  totalDurationMs: number | null;
+  averageDurationMs: number | null;
+  maxDurationMs: number | null;
+  lastStartedAt: string;
+  providerOperations?: number;
+  pricedOperations?: number;
+  directCostUsd?: number | null;
+  pricing?: 'reported' | 'sdk_estimate' | 'mixed' | 'unavailable';
+}
+
+export interface InspectorFailure {
+  id: string;
+  taskId: string;
+  revision: number;
+  occurredAt: string;
+  diagnostic: unknown;
+}
+
 export interface InspectorObservationsResponse {
+  scope?: 'task' | 'owner';
+  taskId?: string;
   calls: ToolCall[];
   usage: ModelUsage[];
+  failures?: InspectorFailure[];
+  toolUsage: ToolUsage[];
   summary: {
     calls: number;
     modelRequests: number;
+    failures?: number;
     inputTokens: number;
     outputTokens: number;
     cacheReadTokens: number;
@@ -54,6 +90,9 @@ export interface InspectorObservationsResponse {
     totalTokens: number;
     knownCostUsd: number | null;
     unpricedRequests: number;
+    providerOperations?: number;
+    pricedProviderOperations?: number;
+    directProviderCostUsd?: number | null;
   };
   hasOlder: boolean;
   nextBefore?: string;

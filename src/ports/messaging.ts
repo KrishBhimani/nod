@@ -5,6 +5,13 @@ export interface MessagingChannel {
   accountId?: string;
   allowedSenderIds: string[];
   replyWindowMs?: number;
+  supportsAttachments?: boolean;
+}
+
+export interface MessagingAttachment {
+  name: string;
+  mimeType: string;
+  bytes: Uint8Array;
 }
 
 export interface InboundMessage {
@@ -34,6 +41,7 @@ export interface MessagingWebhookResult {
 
 export interface MessagingTransport {
   channels: MessagingChannel[];
+  pollingEnabled?: boolean;
   poll?(accept: (message: InboundMessage) => Promise<void>): Promise<void>;
   receive(request: MessagingWebhook): Promise<MessagingWebhookResult>;
   post(input: {
@@ -41,6 +49,7 @@ export interface MessagingTransport {
     accountId: string;
     threadId: string;
     text: string;
+    attachments?: MessagingAttachment[];
   }): Promise<{ id: string }>;
   close(): Promise<void>;
 }

@@ -20,7 +20,19 @@ export const defaultPreferences: Preferences = {
 const columns =
   'notification_rule AS "notificationRule",time_zone AS "timeZone",quiet_start AS "quietStart",quiet_end AS "quietEnd"';
 export function createPreferencesStore(pool: Pool, ownerId: string) {
+  function validate(raw: unknown) {
+    const patch = preferencesSchema.partial().parse(raw);
+    if (patch.timeZone !== undefined) {
+      try {
+        new Intl.DateTimeFormat('en', { timeZone: patch.timeZone });
+      } catch {
+        throw Object.assign(new Error('Choose a valid time zone.'), { statusCode: 400 });
+      }
+    }
+    return patch;
+  }
   return {
+    validate,
     async get(): Promise<Preferences> {
       const result = await pool.query(`SELECT ${columns} FROM preferences WHERE owner_id=$1`, [
         ownerId,
@@ -28,8 +40,7 @@ export function createPreferencesStore(pool: Pool, ownerId: string) {
       return result.rows[0] ?? { ...defaultPreferences };
     },
     async update(raw: unknown): Promise<Preferences> {
-      const patch = preferencesSchema.partial().parse(raw);
-      if (patch.timeZone !== undefined) new Intl.DateTimeFormat('en', { timeZone: patch.timeZone });
+      const patch = validate(raw);
       const result = await pool.query(
         `INSERT INTO preferences(owner_id,notification_rule,time_zone,quiet_start,quiet_end)
         VALUES($1,COALESCE($2,$6),COALESCE($3,$7),COALESCE($4,$8),COALESCE($5,$9))

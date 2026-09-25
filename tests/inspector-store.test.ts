@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import pg from 'pg';
 import { createInspectorStore } from '../src/server/inspector.ts';
+import { createProviderUsageStore } from '../src/server/provider-usage.ts';
 import type { ModelUsageObservation } from '../src/ports/agent.ts';
 
 test(
@@ -66,6 +67,11 @@ test(
     }
     try {
       await initializeDatabase();
+      await createProviderUsageStore(pool, {
+        ownerId,
+        enabled: () => true,
+        coverage: [],
+      }).initialize();
       await t.test(
         'slow inspector queries are cancelled without occupying the task pool',
         async () => {
@@ -113,6 +119,9 @@ test(
             400,
           );
           assert.equal((await store.read(taskId))!.summary.knownCostUsd, null);
+          const all = await request('/api/inspector/observations');
+          assert.equal(all.statusCode, 200);
+          assert.equal(all.json().scope, 'owner');
         },
       );
       await t.test(
@@ -156,6 +165,25 @@ test(
           }
           const read = (await store.read(taskId))!;
           assert.equal(read.summary.calls, 3);
+          assert.equal(read.toolUsage.length, 1);
+          assert.deepEqual(read.toolUsage[0], {
+            name: 'fixture_tool',
+            calls: 3,
+            succeeded: 1,
+            failed: 1,
+            cancelled: 1,
+            running: 0,
+            interrupted: 0,
+            durationSamples: 3,
+            totalDurationMs: 38,
+            averageDurationMs: 38 / 3,
+            maxDurationMs: 13,
+            lastStartedAt: time,
+            providerOperations: 0,
+            pricedOperations: 0,
+            directCostUsd: null,
+            pricing: 'unavailable',
+          });
           const call = read.calls.find((row) => row.id === id)!;
           assert.equal(call.status, 'succeeded');
           assert.equal(call.durationMs, 12);
@@ -268,6 +296,66 @@ test(
             (await pool.query('SELECT id FROM inspector_records WHERE id=$1', [ids[0]])).rowCount,
             0,
           );
+        },
+      );
+      await t.test(
+        'tool drilldown pages only that tool while aggregates include every retained call',
+        async () => {
+          const target = randomUUID();
+          await pool.query(
+            "INSERT INTO tasks(id,owner_id,title,prompt,status) VALUES($1,$2,'aggregate fixture','fixture','running')",
+            [target, ownerId],
+          );
+          await pool.query(
+            `INSERT INTO inspector_records(id,owner_id,task_id,revision,kind,name,status,input,started_at,duration_ms)
+          SELECT gen_random_uuid(),$1,$2,0,'tool',CASE WHEN i<=125 THEN 'browser' ELSE 'shell' END,
+            CASE WHEN i<=120 THEN 'succeeded' WHEN i<=130 THEN 'failed' ELSE 'running' END,
+            jsonb_build_object('index',i),now()-i*interval '1 second',CASE WHEN i<=130 THEN i*10 ELSE NULL END
+          FROM generate_series(1,150) i`,
+            [ownerId, target],
+          );
+          const first = (
+            await request(`/api/inspector/observations?taskId=${target}&tool=browser`)
+          ).json();
+          assert.equal(first.calls.length, 100);
+          assert.equal(first.usage.length, 0);
+          assert.ok(first.calls.every((row: { name: string }) => row.name === 'browser'));
+          assert.equal(first.summary.calls, 150);
+          assert.equal(
+            first.toolUsage.find((row: { name: string }) => row.name === 'browser').calls,
+            125,
+          );
+          assert.equal(
+            first.toolUsage.find((row: { name: string }) => row.name === 'shell').calls,
+            25,
+          );
+          const browser = first.toolUsage[0];
+          assert.equal(browser.failed, 5);
+          assert.equal(browser.succeeded, 120);
+          assert.equal(browser.averageDurationMs, 630);
+          assert.equal(browser.maxDurationMs, 1250);
+          const second = (
+            await request(
+              `/api/inspector/observations?taskId=${target}&tool=browser&before=${encodeURIComponent(first.nextBefore)}&beforeId=${first.nextBeforeId}`,
+            )
+          ).json();
+          assert.equal(second.calls.length, 25);
+          assert.equal(second.hasOlder, false);
+          assert.deepEqual(second.toolUsage, first.toolUsage);
+          assert.deepEqual(second.summary, first.summary);
+          assert.equal(
+            new Set([...first.calls, ...second.calls].map((row: { id: string }) => row.id)).size,
+            125,
+          );
+          const absent = (await store.read(target, { tool: 'unknown_tool' }))!;
+          assert.equal(absent.calls.length, 0);
+          assert.equal(absent.summary.calls, 150);
+          await pool.query("UPDATE tasks SET status='succeeded' WHERE id=$1", [target]);
+          const finished = (await store.read(target, { tool: 'shell' }))!;
+          assert.equal(finished.toolUsage.find((row) => row.name === 'shell')!.running, 0);
+          assert.equal(finished.toolUsage.find((row) => row.name === 'shell')!.interrupted, 20);
+          assert.equal(finished.calls.filter((row) => row.status === 'interrupted').length, 20);
+          assert.equal(await store.read(foreignTaskId, { tool: 'browser' }), null);
         },
       );
     } finally {

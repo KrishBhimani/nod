@@ -1,9 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { mkdir, open, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { basename, extname, join, relative, sep } from 'node:path';
 import { pool } from './db.ts';
 import { dataRoot, ownerId } from './config.ts';
 import type { Artifact } from '../shared/contracts.ts';
+import type { MessagingAttachment } from '../ports/messaging.ts';
+import { z } from 'zod';
 
 const mimeTypes: Record<string, string> = {
   '.txt': 'text/plain',
@@ -15,10 +18,18 @@ const mimeTypes: Record<string, string> = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.avif': 'image/avif',
+  '.bmp': 'image/bmp',
   '.mp3': 'audio/mpeg',
   '.wav': 'audio/wav',
   '.webm': 'audio/webm',
   '.ogg': 'audio/ogg',
+  '.m4a': 'audio/mp4',
+  '.aac': 'audio/aac',
+  '.flac': 'audio/flac',
+  '.mp4': 'video/mp4',
+  '.ogv': 'video/ogg',
   '.html': 'text/html',
 };
 export const maxFileSize = 15 * 1024 * 1024;
@@ -69,4 +80,54 @@ export async function publishArtifact(taskId: string, path: string, name?: strin
     mimeTypes[extname(actual).toLowerCase()] || 'application/octet-stream',
     taskId,
   );
+}
+
+export async function readTaskArtifacts(
+  taskId: string,
+  ids: string[],
+): Promise<MessagingAttachment[]> {
+  z.uuid().parse(taskId);
+  z.array(z.uuid()).min(1).max(10).parse(ids);
+  const unique = [...new Set(ids)];
+  const rows = (
+    await pool.query(
+      'SELECT a.id,a.name,a.mime_type,a.size,a.storage_path FROM artifacts a JOIN tasks t ON t.id=a.task_id WHERE a.id=ANY($1::uuid[]) AND a.owner_id=$2 AND t.owner_id=$2 AND a.task_id=$3',
+      [unique, ownerId, taskId],
+    )
+  ).rows;
+  if (rows.length !== unique.length) throw new Error('An attachment is unavailable.');
+  const total = rows.reduce((sum, row) => sum + Number(row.size), 0);
+  if (!Number.isSafeInteger(total) || total < 1 || total > maxFileSize)
+    throw new Error('Attachments exceed the delivery limit.');
+  const result: MessagingAttachment[] = [];
+  for (const id of unique) {
+    const row = rows.find((item) => item.id === id)!;
+    const path = join(dataRoot, 'artifacts', id);
+    if (
+      row.storage_path !== path ||
+      !Number.isInteger(row.size) ||
+      row.size < 1 ||
+      row.size > maxFileSize
+    )
+      throw new Error('An attachment is unavailable.');
+    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const info = await file.stat();
+      if (!info.isFile() || info.size !== row.size)
+        throw new Error('An attachment is unavailable.');
+      const bytes = Buffer.alloc(info.size);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const read = await file.read(bytes, offset, bytes.length - offset, offset);
+        if (!read.bytesRead) throw new Error('An attachment is unavailable.');
+        offset += read.bytesRead;
+      }
+      const extra = await file.read(Buffer.alloc(1), 0, 1, bytes.length);
+      if (extra.bytesRead) throw new Error('An attachment is unavailable.');
+      result.push({ name: row.name, mimeType: row.mime_type, bytes });
+    } finally {
+      await file.close();
+    }
+  }
+  return result;
 }

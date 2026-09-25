@@ -1,33 +1,50 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import type {
   BrowserAction,
   BrowserObservation,
   Computer,
   CredentialInput,
+  CredentialSubmission,
   LoginInspection,
+  ManualBrowserInput,
 } from '../../ports/computer.ts';
+import { BrowserActionError } from '../../ports/computer.ts';
 import { taskId } from '../../ports/task-identity.ts';
 import { runProcess, serviceEnvironment } from '../process.ts';
-import { createBrowserProxy, publicUrl } from './network.ts';
-import { credentialFields, credentialScript } from './credentials.ts';
+import { createBrowserProxy, browserUrl } from './network.ts';
+import {
+  credentialFeedback,
+  credentialFeedbackScript,
+  credentialFields,
+  credentialScript,
+} from './credentials.ts';
 import { credentialSubmitScript, loginInspectionSchema, loginInspectionScript } from './login.ts';
+import { manualInputSchema, protectFocusedField } from './manual.ts';
 import { createScreenStore, existingDaemonCommand, type StoredScreen } from './screens.ts';
+import { createBrowserSignIn, resolveSignInBrowser, type BrowserSignInHandle } from './sign-in.ts';
 
 interface BrowserState {
   id: string;
   queue: Promise<unknown>;
   injecting: boolean;
+  manualUntil: number;
+  manualAbort?: AbortController;
+  manualTimer?: ReturnType<typeof setTimeout>;
   secrets: Set<string>;
   protectedSelectors: Set<string>;
   started: boolean;
   lastUsed: number;
   busy: number;
   closed: boolean;
+  closing: boolean;
   heldUntil: number;
   socket?: string;
   saved: StoredScreen;
+  signInWindow?: BrowserSignInHandle;
+  browserExecutable?: string;
 }
 export class BrowserLockedError extends Error {
   statusCode = 423;
@@ -41,7 +58,21 @@ export function browserSessionId(id: string): string {
 
 export function redactBrowserText(text: string, secrets: Iterable<string>): string {
   let result = text;
-  for (const secret of secrets) if (secret) result = result.split(secret).join('[redacted]');
+  for (const secret of secrets) {
+    if (!secret) continue;
+    const variants = new Set([secret]);
+    try {
+      variants.add(encodeURIComponent(secret));
+      variants.add(encodeURI(secret));
+      variants.add(new URLSearchParams({ value: secret }).toString().slice(6));
+    } catch {}
+    for (const value of variants) {
+      result = result.split(value).join('[redacted]');
+      result = result
+        .split(value.replace(/%[0-9A-F]{2}/g, (code) => code.toLowerCase()))
+        .join('[redacted]');
+    }
+  }
   return result.replace(/(password[^\n]*?)(?:value=|: )[^\n]*/gi, '$1 [redacted]');
 }
 
@@ -72,10 +103,20 @@ export function browserCandidates(snapshot: string): Array<{ id: string; label: 
 export function createAgentBrowserComputer(options: {
   dataRoot: string;
   executable?: string;
+  browserExecutable?: string;
+  sandbox?: boolean;
+  platform?: NodeJS.Platform;
   idleTimeoutMs?: number;
+  manualTimeoutMs?: number;
   run?: typeof runProcess;
+  signInLauncher?: ReturnType<typeof createBrowserSignIn>;
+  resolveSignInBrowser?: typeof resolveSignInBrowser;
 }): Computer {
   const browsers = new Map<string, BrowserState>();
+  let lastSession: { taskId: string; lastActivityAt: string } | undefined;
+  const markActivity = (id: string) => {
+    lastSession = { taskId: id, lastActivityAt: new Date().toISOString() };
+  };
   const runtimeRoot = resolve(options.dataRoot, 'runtime');
   const screens = createScreenStore(runtimeRoot);
   const screenStatuses = new Map<string, ReturnType<NonNullable<Computer['screenStatus']>>>();
@@ -83,9 +124,18 @@ export function createAgentBrowserComputer(options: {
   const executable =
     options.executable ?? resolve(process.cwd(), 'node_modules/.bin/agent-browser');
   const run = options.run ?? runProcess;
+  const sandbox = options.sandbox !== false;
+  const headed = (options.platform ?? process.platform) === 'darwin';
   const idleTimeoutMs = options.idleTimeoutMs ?? 30 * 60_000;
+  const manualTimeoutMs = Math.min(options.manualTimeoutMs ?? 30 * 60_000, 30 * 60_000);
   const proxy = createBrowserProxy();
+  const signInLauncher =
+    options.signInLauncher ?? createBrowserSignIn({ sandbox: options.sandbox });
+  const signInBrowser = options.browserExecutable
+    ? async () => options.browserExecutable!
+    : (options.resolveSignInBrowser ?? resolveSignInBrowser);
   let disposed = false;
+  let allocationQueue: Promise<void> = Promise.resolve();
   function stateFor(id: string): BrowserState {
     if (disposed) throw new Error('The browser service has stopped.');
     taskId(id);
@@ -95,14 +145,17 @@ export function createAgentBrowserComputer(options: {
         id,
         queue: Promise.resolve(),
         injecting: false,
+        manualUntil: 0,
         secrets: new Set(),
         protectedSelectors: new Set(),
         started: false,
         lastUsed: Date.now(),
         busy: 0,
         closed: false,
+        closing: false,
         heldUntil: 0,
         saved: { version: 1, url: '', sensitive: false, active: false },
+        browserExecutable: options.browserExecutable,
       };
       browsers.set(id, state);
     }
@@ -111,10 +164,11 @@ export function createAgentBrowserComputer(options: {
 
   function serialize<T>(state: BrowserState, operation: () => Promise<T>): Promise<T> {
     state.lastUsed = Date.now();
+    state.busy += 1;
     const execute = async () => {
-      if (state.closed) throw new Error('The browser session has expired. Open the URL again.');
-      state.busy += 1;
       try {
+        if (state.closed || state.closing)
+          throw new Error('The browser session has expired. Open the URL again.');
         return await operation();
       } finally {
         state.busy -= 1;
@@ -129,10 +183,73 @@ export function createAgentBrowserComputer(options: {
     return pending;
   }
 
+  async function reserveBrowser(state: BrowserState): Promise<void> {
+    const pending = allocationQueue.then(async () => {
+      if (state.started || state.saved.navigationFailed || state.saved.signInPending) return;
+      const occupied = () =>
+        [...browsers.values()].filter(
+          (entry) => entry.started || entry.saved.navigationFailed || entry.saved.signInPending,
+        );
+      const attempted = new Set<string>();
+      while (occupied().length >= 4) {
+        const candidate = occupied()
+          .filter(
+            (entry) =>
+              entry !== state &&
+              !attempted.has(entry.id) &&
+              !entry.busy &&
+              !entry.closed &&
+              !entry.closing &&
+              !entry.injecting &&
+              !entry.manualUntil &&
+              !entry.saved.signInPending &&
+              entry.heldUntil <= Date.now(),
+          )
+          .sort((a, b) => a.lastUsed - b.lastUsed)[0];
+        if (!candidate)
+          throw new Error('The browser sessions are busy. Finish an open browser task and retry.');
+        attempted.add(candidate.id);
+        try {
+          await closeBrowser(candidate.id, candidate.lastUsed);
+        } catch {
+          throw new Error('The browser sessions are busy. Finish an open browser task and retry.');
+        }
+      }
+      if (disposed || state.closed || state.closing)
+        throw new Error('The browser session has expired. Open the URL again.');
+      state.started = true;
+    });
+    allocationQueue = pending.catch(() => {});
+    await pending;
+  }
+
   function selector(value: string | undefined): string {
     if (!value || value.length > 500 || /^[\s-]/.test(value) || value.includes('\0'))
       throw new Error('A valid observed selector or element reference is required.');
     return value;
+  }
+
+  async function drainInterruptedCommand<T>(
+    state: BrowserState,
+    action: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (action === 'close') throw error;
+      if (!state.saved.signInPending) state.closing = true;
+      try {
+        await command(state, ['close']);
+        state.started = false;
+        state.closed = !state.saved.signInPending;
+        await saveState(state);
+      } catch {
+        state.closing = true;
+        throw new Error('The browser could not stop safely. Close it before continuing.');
+      }
+      throw error;
+    }
   }
 
   async function command(
@@ -146,86 +263,107 @@ export function createAgentBrowserComputer(options: {
           ? { action: 'evaluate', script: options.input }
           : args[0] === 'get' && args[1] === 'url'
             ? { action: 'url' }
-            : args[0] === 'screenshot'
-              ? { action: 'screenshot', path: args[1], fullPage: false, annotate: false }
-              : args[0] === 'snapshot'
-                ? { action: 'snapshot', compact: true }
-                : args[0] === 'close'
-                  ? { action: 'close' }
-                  : null;
+            : args[0] === 'get' && args[1] === 'attr'
+              ? { action: 'getattribute', selector: args[2], attribute: args[3] }
+              : args[0] === 'click'
+                ? { action: 'click', selector: args[1] }
+                : args[0] === 'fill'
+                  ? { action: 'fill', selector: args[1], value: args[2] }
+                  : args[0] === 'scroll'
+                    ? { action: 'scroll', direction: args[1], amount: Number(args[2]) }
+                    : args[0] === 'screenshot'
+                      ? { action: 'screenshot', path: args[1], fullPage: false, annotate: false }
+                      : args[0] === 'snapshot'
+                        ? { action: 'snapshot', compact: true }
+                        : args[0] === 'close'
+                          ? { action: 'close' }
+                          : null;
       if (!request) throw new Error('Reopen this page before continuing browser actions.');
-      return existingDaemonCommand(state.socket, request, options.signal);
+      return drainInterruptedCommand(state, args[0], () =>
+        existingDaemonCommand(state.socket!, request, options.signal),
+      );
     }
     await mkdir(runtimeRoot, { recursive: true, mode: 0o700 });
     const config = resolve(runtimeRoot, 'browser-config.json');
     await writeFile(config, '{}', { mode: 0o600 });
     const proxyUrl = await proxy.url();
     const profile = resolve(runtimeRoot, 'profiles', state.id);
-    const result = await run(
-      executable,
-      [
-        '--config',
-        config,
-        '--namespace',
-        namespace,
-        '--session',
-        browserSessionId(state.id),
-        '--profile',
-        profile,
-        '--json',
-        '--proxy',
-        proxyUrl,
-        '--proxy-bypass',
-        '<-loopback>',
-        '--args',
-        '--disable-quic,--force-webrtc-ip-handling-policy=disable_non_proxied_udp,--disable-background-networking',
-        '--download-path',
-        resolve(runtimeRoot, 'downloads', state.id),
-        '--idle-timeout',
-        `${Math.ceil((Math.max(idleTimeoutMs, 30 * 60_000) + 15 * 60_000) / 1000)}s`,
-        ...args,
-      ],
-      {
-        cwd: runtimeRoot,
-        env: serviceEnvironment(),
-        input: options.input,
-        signal: options.signal,
-        timeoutMs: 45_000,
-        maxBytes: 256 * 1024,
-      },
+    const result = await drainInterruptedCommand(state, args[0], () =>
+      run(
+        executable,
+        [
+          '--config',
+          config,
+          '--namespace',
+          namespace,
+          '--session',
+          browserSessionId(state.id),
+          '--profile',
+          profile,
+          ...(state.browserExecutable ? ['--executable-path', state.browserExecutable] : []),
+          ...(headed ? ['--headed'] : []),
+          '--json',
+          '--proxy',
+          proxyUrl,
+          '--proxy-bypass',
+          '<-loopback>',
+          '--args',
+          '--disable-quic,--force-webrtc-ip-handling-policy=disable_non_proxied_udp,--disable-background-networking' +
+            (sandbox ? '' : ',--no-sandbox') +
+            (headed ? ',--start-minimized' : '') +
+            (state.saved.restoreSession ? ',--restore-last-session' : ''),
+          '--download-path',
+          resolve(runtimeRoot, 'downloads', state.id),
+          '--idle-timeout',
+          `${Math.ceil((Math.max(idleTimeoutMs, 30 * 60_000) + 15 * 60_000) / 1000)}s`,
+          ...args,
+        ],
+        {
+          cwd: runtimeRoot,
+          env: serviceEnvironment(),
+          input: options.input,
+          signal: options.signal,
+          timeoutMs: 45_000,
+          maxBytes: 256 * 1024,
+        },
+      ),
     );
-    let response: { success?: boolean; data?: Record<string, unknown> };
+    let response: { success?: boolean; data?: Record<string, unknown>; error?: unknown };
     try {
       response = JSON.parse(result.stdout.trim());
     } catch {
       throw new Error(
-        'Browser command failed. Confirm Chrome is installed and restart the browser.',
+        'The workspace browser could not respond. Restart its container and try again.',
       );
     }
+    if (
+      args[0] === 'open' &&
+      response.success === false &&
+      typeof response.error === 'string' &&
+      /^Navigation failed: net::ERR_[A-Z_]+/.test(response.error)
+    )
+      throw new BrowserActionError('browser_navigation_failed');
     if (result.exitCode || response.success === false)
       throw new Error('Browser action could not complete. Observe the page again before retrying.');
     return response.data ?? {};
   }
 
-  async function evaluate(state: BrowserState, script: string): Promise<unknown> {
-    return (await command(state, ['eval', '--stdin'], { input: script })).result;
+  async function evaluate(
+    state: BrowserState,
+    script: string,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    return (await command(state, ['eval', '--stdin'], { input: script, signal })).result;
   }
 
-  async function currentUrl(state: BrowserState): Promise<string> {
-    const data = await command(state, ['get', 'url']);
+  async function currentUrl(state: BrowserState, signal?: AbortSignal): Promise<string> {
+    const data = await command(state, ['get', 'url'], { signal });
     const url = String(data.url ?? data.value ?? '');
-    await publicUrl(url);
+    browserUrl(url);
     const storedUrl = new URL(url);
     storedUrl.search = '';
     storedUrl.hash = '';
-    if (
-      [...state.secrets].some(
-        (secret) =>
-          secret &&
-          (storedUrl.pathname.includes(secret) ||
-            storedUrl.pathname.includes(encodeURIComponent(secret))),
-      )
-    )
+    if (redactBrowserText(storedUrl.pathname, state.secrets) !== storedUrl.pathname)
       storedUrl.pathname = '/';
     state.saved.url = storedUrl.href;
     return url;
@@ -246,7 +384,17 @@ export function createAgentBrowserComputer(options: {
     if (existing) return existing;
     if (disposed) return undefined;
     const saved = await screens.load(id);
-    if (!saved?.active || (saved.sensitive && !allowSensitive)) return undefined;
+    if (saved?.signInPending) {
+      const state = stateFor(id);
+      state.saved = saved;
+      return state;
+    }
+    if (
+      !saved ||
+      (!saved.active && !saved.navigationFailed) ||
+      (saved.sensitive && !allowSensitive)
+    )
+      return undefined;
     try {
       const result = await run(
         executable,
@@ -271,17 +419,326 @@ export function createAgentBrowserComputer(options: {
       const state = stateFor(id);
       state.saved = saved;
       state.socket = resolve(info.socketDir, `${browserSessionId(id)}.sock`);
-      state.started = true;
+      state.started = !saved.navigationFailed;
       return state;
     } catch {
       return undefined;
     }
   }
 
-  async function maskFields(state: BrowserState): Promise<void> {
+  async function manualSocket(state: BrowserState, signal?: AbortSignal): Promise<string> {
+    if (state.socket) return state.socket;
+    const result = await run(
+      executable,
+      [
+        '--namespace',
+        namespace,
+        '--session',
+        browserSessionId(state.id),
+        'session',
+        'info',
+        '--json',
+      ],
+      {
+        env: serviceEnvironment(),
+        timeoutMs: 5000,
+        maxBytes: 16_384,
+        signal,
+      },
+    );
+    const response = JSON.parse(result.stdout);
+    const info = response.data;
+    if (
+      result.exitCode ||
+      !response.success ||
+      !info?.active ||
+      info.namespace !== namespace ||
+      info.session !== browserSessionId(state.id) ||
+      typeof info.socketDir !== 'string'
+    )
+      throw new Error('The browser session is no longer available.');
+    state.socket = resolve(info.socketDir, `${browserSessionId(state.id)}.sock`);
+    return state.socket;
+  }
+
+  function stopManual(state: BrowserState) {
+    state.manualUntil = 0;
+    state.manualAbort?.abort();
+    state.manualAbort = undefined;
+    clearTimeout(state.manualTimer);
+    state.manualTimer = undefined;
+  }
+
+  async function takeControl(id: string): Promise<void> {
+    const state = await recoverBrowser(id);
+    if (state?.saved.signInPending) throw new BrowserLockedError();
+    if (!state?.started || state.injecting)
+      throw new Error('Open a live browser session before taking control.');
+    stopManual(state);
+    const controller = new AbortController();
+    state.manualAbort = controller;
+    state.manualUntil = Date.now() + manualTimeoutMs;
+    state.manualTimer = setTimeout(() => controller.abort(), manualTimeoutMs);
+    state.manualTimer.unref();
+    try {
+      await serialize(state, async () => {
+        controller.signal.throwIfAborted();
+        if (state.injecting) throw new BrowserLockedError();
+        await currentUrl(state, controller.signal);
+        await manualSocket(state, controller.signal);
+        controller.signal.throwIfAborted();
+        state.heldUntil = state.manualUntil;
+        markActivity(id);
+      });
+    } catch {
+      if (state.manualAbort === controller) stopManual(state);
+      throw new Error('The browser session is no longer available for control.');
+    }
+  }
+
+  async function manualControl(id: string, raw: ManualBrowserInput): Promise<void> {
+    const input = manualInputSchema.parse(raw);
+    const state = browsers.get(taskId(id));
+    if (!state?.started) throw new Error('The browser session is no longer available.');
+    const controller = state.manualAbort;
+    const check = () => {
+      if (
+        !controller ||
+        controller !== state.manualAbort ||
+        controller.signal.aborted ||
+        state.manualUntil <= Date.now() ||
+        state.injecting ||
+        state.closed ||
+        state.closing
+      )
+        throw new Error('Take control before interacting with this browser.');
+    };
+    check();
+    await serialize(state, async () => {
+      check();
+      markActivity(id);
+      const signal = controller!.signal;
+      await currentUrl(state, signal);
+      const socket = await manualSocket(state, signal);
+      const send = (command: Record<string, unknown>) => {
+        if (
+          !controller ||
+          controller !== state.manualAbort ||
+          signal.aborted ||
+          state.manualUntil <= Date.now() ||
+          state.closed ||
+          state.closing
+        )
+          throw new Error('Take control before interacting with this browser.');
+        return existingDaemonCommand(socket, command, signal);
+      };
+      if (input.action === 'click') {
+        const viewport = (await evaluate(
+          state,
+          '({width:innerWidth,height:innerHeight})',
+          signal,
+        )) as { width: number; height: number };
+        if (
+          !Number.isFinite(viewport?.width) ||
+          !Number.isFinite(viewport?.height) ||
+          viewport.width < 1 ||
+          viewport.height < 1
+        )
+          throw new Error('The browser viewport is unavailable.');
+        await send({
+          action: 'mousemove',
+          x: Math.min(viewport.width - 1, Math.floor(input.x * viewport.width)),
+          y: Math.min(viewport.height - 1, Math.floor(input.y * viewport.height)),
+        });
+        await send({ action: 'mousedown', button: 'left' });
+        await send({ action: 'mouseup', button: 'left' });
+      } else if (input.action === 'type') {
+        if (!(await evaluate(state, protectFocusedField, signal)))
+          throw new Error('Click a text field in the browser first.');
+        state.secrets.add(input.text);
+        state.protectedSelectors.add('[data-sidekick-manual-field="true"]');
+        await saveState(state);
+        state.injecting = true;
+        try {
+          await maskFields(state, signal);
+          await send({ action: 'keyboard', subaction: 'insertText', text: input.text });
+          await maskFields(state, signal);
+        } finally {
+          state.injecting = false;
+        }
+      } else if (input.action === 'press') {
+        await send({ action: 'press', key: input.key });
+      } else {
+        await send({ action: 'wheel', deltaX: 0, deltaY: input.direction === 'up' ? -500 : 500 });
+      }
+    });
+  }
+
+  async function releaseControl(id: string): Promise<void> {
+    const state = browsers.get(taskId(id));
+    if (!state) return;
+    stopManual(state);
+    await serialize(state, async () => {
+      await state.signInWindow?.close({ force: true });
+      state.signInWindow = undefined;
+      state.heldUntil = 0;
+    });
+  }
+
+  async function openSignIn(id: string): Promise<void> {
+    const state = await recoverBrowser(id, true);
+    if (!state || (!state.started && !state.saved.signInPending) || state.injecting)
+      throw new Error('Open the website before signing in through a browser window.');
+    stopManual(state);
+    const controller = new AbortController();
+    state.manualAbort = controller;
+    state.manualUntil = Date.now() + manualTimeoutMs;
+    try {
+      await serialize(state, async () => {
+        controller.signal.throwIfAborted();
+        if (state.injecting) throw new BrowserLockedError();
+        const profilePath = resolve(runtimeRoot, 'profiles', state.id);
+        const executablePath = await signInBrowser(profilePath);
+        if (state.closing || disposed) throw new BrowserLockedError();
+        if (state.started) await currentUrl(state);
+        const destination = state.saved.resumeUrl || state.saved.url;
+        const url = browserUrl(destination);
+        await state.signInWindow?.close();
+        state.signInWindow = undefined;
+        state.saved.signInPending = true;
+        state.saved.restoreSession = true;
+        state.saved.sensitive = true;
+        await saveState(state);
+        if (state.started) {
+          await command(state, ['close']);
+          state.started = false;
+          state.socket = undefined;
+          await saveState(state);
+        }
+        state.browserExecutable = executablePath;
+        if (state.closing || disposed) throw new BrowserLockedError();
+        state.signInWindow = await signInLauncher.start({
+          profilePath,
+          proxyUrl: await proxy.url(),
+          url: url.href,
+          executablePath,
+        });
+        if (state.closing || disposed || controller.signal.aborted) {
+          await state.signInWindow.close({ force: true });
+          state.signInWindow = undefined;
+          throw new BrowserLockedError();
+        }
+        state.heldUntil = state.manualUntil;
+        state.manualTimer = setTimeout(() => {
+          void releaseControl(id).catch(() => {});
+        }, manualTimeoutMs);
+        state.manualTimer.unref();
+        markActivity(id);
+      });
+    } catch {
+      stopManual(state);
+      throw new Error(
+        'The sign-in window could not open. Close any previous sign-in window and try again.',
+      );
+    }
+  }
+
+  async function withSignIn<T>(
+    id: string,
+    operation: (
+      window: BrowserSignInHandle,
+      signal: AbortSignal,
+      state: BrowserState,
+    ) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const state = browsers.get(taskId(id));
+    const controller = state?.manualAbort;
+    const window = state?.signInWindow;
+    const check = () => {
+      signal?.throwIfAborted();
+      if (
+        !state ||
+        !controller ||
+        !window ||
+        controller !== state.manualAbort ||
+        window !== state.signInWindow ||
+        controller.signal.aborted ||
+        window.closed ||
+        state.closed ||
+        state.closing ||
+        !state.saved.signInPending ||
+        state.manualUntil <= Date.now()
+      )
+        throw new Error('The sign-in session is no longer active.');
+    };
+    check();
+    return serialize(state!, async () => {
+      check();
+      const combined = signal ? AbortSignal.any([signal, controller!.signal]) : controller!.signal;
+      const result = await operation(window!, combined, state!);
+      check();
+      return result;
+    });
+  }
+
+  function signInScreenshot(id: string, signal?: AbortSignal): Promise<Buffer> {
+    return withSignIn(
+      id,
+      (window, combined) => {
+        if (!window.screenshot) throw new Error('The sign-in screen is unavailable.');
+        return window.screenshot(combined);
+      },
+      signal,
+    );
+  }
+
+  async function signInControl(id: string, raw: ManualBrowserInput): Promise<void> {
+    const input = manualInputSchema.parse(raw);
+    await withSignIn(id, async (window, signal, state) => {
+      if (!window.control) throw new Error('Sign-in control is unavailable.');
+      if (input.action === 'type') state.secrets.add(input.text);
+      markActivity(id);
+      await window.control(input, signal);
+    });
+  }
+
+  async function finishSignIn(id: string): Promise<void> {
+    const state = await recoverBrowser(id, true);
+    if (!state?.saved.signInPending) return;
+    await serialize(state, async () => {
+      await state.signInWindow?.close();
+      state.signInWindow = undefined;
+      const url = browserUrl(state.saved.resumeUrl || state.saved.url);
+      state.browserExecutable ??= await signInBrowser(resolve(runtimeRoot, 'profiles', state.id));
+      state.saved.restoreSession = true;
+      if (state.closing || disposed) throw new BrowserLockedError();
+      try {
+        if (state.started) {
+          await command(state, ['close']);
+          state.started = false;
+          state.socket = undefined;
+        }
+        await command(state, ['open', url.href]);
+        state.started = true;
+        if (state.closing || disposed) throw new BrowserLockedError();
+        state.saved.navigationFailed = false;
+        state.saved.signInPending = false;
+        stopManual(state);
+        state.heldUntil = 0;
+        await saveState(state);
+        markActivity(id);
+      } catch {
+        throw new Error('The workspace browser could not resume. Try Continue in Sidekick again.');
+      }
+    });
+  }
+
+  async function maskFields(state: BrowserState, signal?: AbortSignal): Promise<void> {
     const result = await evaluate(
       state,
-      `(() => { const selectors=${JSON.stringify([...state.protectedSelectors])},secrets=${JSON.stringify([...state.secrets])}; const nodes=new Set(document.querySelectorAll('input[type="password"],input[autocomplete="one-time-code"],input[autocomplete="username"],input[data-sidekick-login-field^="identifier"]')); for (const s of selectors) { try { for(const e of document.querySelectorAll(s)) nodes.add(e); } catch {} } for(const e of document.querySelectorAll('input,textarea')) if(secrets.some(s=>s && String(e.value??'').includes(s))) nodes.add(e); if(nodes.size>40) throw new Error('Too many protected fields'); const values=[...nodes].map(e=>String(e.value??'')).filter(Boolean); if(values.some(value=>value.length>8192)) throw new Error('Protected field exceeds limit'); for(const value of values) if(!secrets.includes(value)) secrets.push(value); for(const e of nodes) { e.style.setProperty('color','transparent','important'); e.style.setProperty('text-shadow','none','important'); e.style.setProperty('-webkit-text-security','disc','important'); } if(document.body && secrets.length) { const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT); while(walker.nextNode()) { const node=walker.currentNode,parent=node.parentElement; if(parent && !['SCRIPT','STYLE'].includes(parent.tagName) && secrets.some(s=>s && node.textContent.includes(s))) { parent.style.setProperty('color','transparent','important'); parent.style.setProperty('text-shadow','none','important'); } } } return {masked:true,values}; })()`,
+      `(() => { const selectors=${JSON.stringify([...state.protectedSelectors])},secrets=${JSON.stringify([...state.secrets])}; const nodes=new Set(document.querySelectorAll('input[type="password"],input[autocomplete="one-time-code"],input[autocomplete="username"],input[data-sidekick-login-field^="identifier"]')); for (const s of selectors) { try { for(const e of document.querySelectorAll(s)) nodes.add(e); } catch {} } for(const e of document.querySelectorAll('input,textarea')) if(secrets.some(s=>s && String(e.value??e.textContent??'').includes(s))) nodes.add(e); if(nodes.size>40) throw new Error('Too many protected fields'); const values=[...nodes].map(e=>String(e.value??e.textContent??'')).filter(Boolean); if(values.some(value=>value.length>8192)) throw new Error('Protected field exceeds limit'); for(const value of values) if(!secrets.includes(value)) secrets.push(value); for(const e of nodes) { e.style.setProperty('color','transparent','important'); e.style.setProperty('text-shadow','none','important'); e.style.setProperty('-webkit-text-security','disc','important'); } if(document.body && secrets.length) { const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT); while(walker.nextNode()) { const node=walker.currentNode,parent=node.parentElement; if(parent && !['SCRIPT','STYLE'].includes(parent.tagName) && secrets.some(s=>s && node.textContent.includes(s))) { parent.style.setProperty('color','transparent','important'); parent.style.setProperty('text-shadow','none','important'); } } } return {masked:true,values}; })()`,
+      signal,
     );
     if (
       result &&
@@ -299,7 +756,8 @@ export function createAgentBrowserComputer(options: {
   }
 
   async function observe(state: BrowserState): Promise<BrowserObservation> {
-    if (state.injecting) throw new BrowserLockedError();
+    if (state.injecting || state.manualUntil || state.saved.signInPending)
+      throw new BrowserLockedError();
     const url = await currentUrl(state);
     await maskFields(state);
     const visible = await evaluate(
@@ -327,20 +785,71 @@ export function createAgentBrowserComputer(options: {
     signal?: AbortSignal,
   ): Promise<BrowserObservation> {
     if (disposed) throw new Error('The browser service has stopped.');
+    if ((await recoverBrowser(id))?.saved.signInPending) throw new BrowserLockedError();
+    if (browsers.get(id)?.manualUntil) throw new BrowserLockedError();
     if (input.action === 'open' && !browsers.has(id)) await recoverBrowser(id, true);
     if (input.action === 'open' && browsers.get(id)?.socket) await closeBrowser(id);
     if (input.action === 'open' && browsers.get(id)?.closed) await closeBrowser(id);
+    if (input.action === 'open' && browsers.get(id)?.saved.navigationFailed) await closeBrowser(id);
     const state = stateFor(id);
-    if (state.injecting) throw new BrowserLockedError();
+    if (input.action !== 'open' && !state.started) {
+      const saved = await screens.load(id);
+      if (saved?.navigationFailed) state.saved = saved;
+    }
+    if (state.injecting || state.manualUntil || state.saved.signInPending)
+      throw new BrowserLockedError();
     return serialize(state, async () => {
-      if (state.injecting) throw new BrowserLockedError();
+      if (state.injecting || state.manualUntil || state.saved.signInPending)
+        throw new BrowserLockedError();
       signal?.throwIfAborted();
       if (input.action === 'open') {
-        const { url } = await publicUrl(input.url ?? '');
-        state.started = true;
-        await command(state, ['open', url.href], { signal });
+        const url = browserUrl(input.url ?? '');
+        const previous = state.saved.restoreSession ? state.saved : await screens.load(id);
+        if (previous?.restoreSession) {
+          state.saved.restoreSession = true;
+          state.saved.sensitive = true;
+          state.browserExecutable ??= await signInBrowser(resolve(runtimeRoot, 'profiles', id));
+        }
+        if (state.closing || disposed) throw new BrowserLockedError();
+        signal?.throwIfAborted();
+        const resumeUrl = new URL(url);
+        resumeUrl.search = '';
+        resumeUrl.hash = '';
+        if (redactBrowserText(resumeUrl.pathname, state.secrets) !== resumeUrl.pathname)
+          resumeUrl.pathname = '/';
+        state.saved.resumeUrl = resumeUrl.href;
+        await reserveBrowser(state);
+        markActivity(id);
+        try {
+          await command(state, ['open', url.href], { signal });
+          state.saved.navigationFailed = false;
+        } catch (error) {
+          if (error instanceof BrowserActionError && !signal?.aborted) {
+            state.started = false;
+            state.saved.navigationFailed = true;
+            const destination = new URL(url);
+            destination.search = '';
+            destination.hash = '';
+            if (redactBrowserText(destination.pathname, state.secrets) !== destination.pathname)
+              destination.pathname = '/';
+            state.saved.url = destination.href;
+            await saveState(state);
+          }
+          throw error;
+        }
       } else {
-        if (!state.started) throw new Error('Open a public browser URL first.');
+        if (state.saved.navigationFailed) {
+          if (input.action !== 'snapshot')
+            throw new BrowserActionError('browser_navigation_failed');
+          markActivity(id);
+          return {
+            text: new BrowserActionError('browser_navigation_failed').message,
+            url: state.saved.url,
+            candidates: [],
+          };
+        }
+        if (!state.started) throw new Error('Open a website first.');
+        markActivity(id);
         await currentUrl(state);
         if (input.action === 'click')
           await command(state, ['click', selector(input.selector)], { signal });
@@ -354,9 +863,16 @@ export function createAgentBrowserComputer(options: {
             target,
             'data-sidekick-login-field',
           ]);
+          const manualField = await command(state, [
+            'get',
+            'attr',
+            target,
+            'data-sidekick-manual-field',
+          ]);
           if (
-            /password|one-time-code|username/i.test(JSON.stringify([type, autocomplete])) ||
-            /identifier|password|otp/.test(JSON.stringify(loginField)) ||
+            /password|one-time-code|username/i.test([type.value, autocomplete.value].join(' ')) ||
+            /identifier|password|otp/.test(String(loginField.value ?? '')) ||
+            manualField.value === 'true' ||
             state.protectedSelectors.has(target)
           )
             throw new Error('Use the secure credential request tool for this field.');
@@ -375,11 +891,12 @@ export function createAgentBrowserComputer(options: {
     });
   }
 
-  async function injectCredentials(input: CredentialInput): Promise<void> {
+  async function injectCredentials(input: CredentialInput): Promise<CredentialSubmission> {
     const state = browsers.get(taskId(input.taskId));
+    if (state?.saved.signInPending) throw new BrowserLockedError();
     if (!state?.started) throw new Error('The browser session has expired. Reopen the login page.');
-    if (state.injecting) throw new BrowserLockedError();
-    const { url } = await publicUrl(input.origin);
+    if (state.injecting || state.manualUntil) throw new BrowserLockedError();
+    const url = browserUrl(input.origin);
     if (url.origin !== input.origin) throw new Error('An exact login origin is required.');
     const fields = credentialFields(input);
     for (const field of fields) {
@@ -387,12 +904,23 @@ export function createAgentBrowserComputer(options: {
       state.protectedSelectors.add(field.selector);
     }
     state.injecting = true;
+    markActivity(input.taskId);
     try {
-      await serialize(state, async () => {
+      return await serialize(state, async () => {
+        if (state.manualUntil || state.saved.signInPending) throw new BrowserLockedError();
         try {
           await saveState(state);
           if (new URL(await currentUrl(state)).origin !== input.origin)
             throw new Error('The login page origin changed. Request credentials again.');
+          const attempt = randomUUID();
+          const before = input.submitSelector
+            ? credentialFeedback(
+                await evaluate(
+                  state,
+                  credentialFeedbackScript(input.origin, input.kind ?? 'password', attempt, true),
+                ),
+              )
+            : undefined;
           const result = await evaluate(
             state,
             credentialScript(input.origin, fields, input.submitSelector),
@@ -407,6 +935,26 @@ export function createAgentBrowserComputer(options: {
             if (!(submitted && typeof submitted === 'object' && 'ok' in submitted && submitted.ok))
               throw new Error('The login form could not advance.');
           }
+          if (input.submitSelector && before) {
+            const signal = AbortSignal.timeout(2000);
+            while (!signal.aborted) {
+              const feedback = credentialFeedback(
+                await evaluate(
+                  state,
+                  credentialFeedbackScript(input.origin, input.kind ?? 'password', attempt),
+                  signal,
+                ).catch(() => undefined),
+              );
+              if (feedback?.advanced) break;
+              if (
+                feedback?.rejected &&
+                (!feedback.sameDocument || feedback.fingerprint !== before.fingerprint)
+              )
+                return { status: 'rejected' as const };
+              await delay(80, undefined, { signal }).catch(() => {});
+            }
+          }
+          return { status: 'submitted' as const };
         } catch {
           await evaluate(
             state,
@@ -428,22 +976,32 @@ export function createAgentBrowserComputer(options: {
     const inspection = loginInspectionSchema.parse(await evaluate(state, loginInspectionScript()));
     if (inspection.origin !== new URL(url).origin)
       throw new Error('The login page changed. Inspect it again.');
-    await publicUrl(inspection.url);
+    browserUrl(inspection.url);
     return { ...inspection, url: redactBrowserUrl(inspection.url, state.secrets) };
   }
 
   async function inspectLogin(id: string): Promise<LoginInspection> {
     const state = await recoverBrowser(id);
+    if (state?.saved.signInPending) throw new BrowserLockedError();
+    if (state?.saved.navigationFailed || (!state && (await screens.load(id))?.navigationFailed))
+      throw new BrowserActionError('browser_navigation_failed');
     if (!state?.started) throw new Error('Open the login page in this task browser first.');
-    if (state.injecting) throw new BrowserLockedError();
-    return serialize(state, () => inspectPage(state));
+    if (state.injecting || state.manualUntil) throw new BrowserLockedError();
+    return serialize(state, () => {
+      if (state.injecting || state.manualUntil || state.saved.signInPending)
+        throw new BrowserLockedError();
+      return inspectPage(state);
+    });
   }
 
   async function selectLoginMethod(id: string, origin: string, methodId: string): Promise<void> {
     const state = browsers.get(taskId(id));
+    if (state?.saved.signInPending) throw new BrowserLockedError();
     if (!state?.started) throw new Error('Open the login page in this task browser first.');
-    if (state.injecting) throw new BrowserLockedError();
+    if (state.injecting || state.manualUntil) throw new BrowserLockedError();
     await serialize(state, async () => {
+      if (state.injecting || state.manualUntil || state.saved.signInPending)
+        throw new BrowserLockedError();
       const current = await inspectPage(state);
       const method = current.methods.find((item) => item.id === methodId);
       if (
@@ -472,6 +1030,8 @@ export function createAgentBrowserComputer(options: {
   }
 
   async function captureScreen(state: BrowserState, signal?: AbortSignal): Promise<Buffer> {
+    if (state.saved.signInPending) throw new BrowserLockedError();
+    if (state.saved.navigationFailed) throw new BrowserActionError('browser_navigation_failed');
     if (state.socket && state.saved.sensitive && !state.secrets.size)
       throw new Error('Reopen the login page before continuing this browser session.');
     await currentUrl(state);
@@ -487,6 +1047,8 @@ export function createAgentBrowserComputer(options: {
 
   async function lastKnownScreen(id: string): Promise<Buffer | null> {
     const saved = await screens.load(id);
+    if (saved?.signInPending) throw new BrowserLockedError();
+    if (saved?.navigationFailed) throw new BrowserActionError('browser_navigation_failed');
     const buffer = saved?.capturedAt ? await screens.read(id) : null;
     screenStatuses.set(
       id,
@@ -497,6 +1059,7 @@ export function createAgentBrowserComputer(options: {
 
   async function getScreenshot(id: string, signal?: AbortSignal): Promise<Buffer | null> {
     const state = await recoverBrowser(id);
+    if (state?.saved.signInPending) throw new BrowserLockedError();
     if (!state?.started) return lastKnownScreen(id);
     if (state.injecting) throw new BrowserLockedError();
     return serialize(state, async () => {
@@ -515,16 +1078,28 @@ export function createAgentBrowserComputer(options: {
   async function closeBrowser(id: string, idleAt?: number): Promise<void> {
     const state = browsers.get(taskId(id));
     if (!state) return;
+    if (idleAt === undefined) {
+      state.closing = true;
+      stopManual(state);
+    }
     const close = async () => {
       if (
         idleAt !== undefined &&
-        (state.lastUsed !== idleAt || state.injecting || state.heldUntil > Date.now())
+        (state.lastUsed !== idleAt ||
+          state.busy ||
+          state.injecting ||
+          state.manualUntil > Date.now() ||
+          state.heldUntil > Date.now())
       )
         return;
+      state.closing = true;
+      stopManual(state);
+      await state.signInWindow?.close({ force: true });
+      state.signInWindow = undefined;
       if (state.started && !state.closed && !state.injecting)
         await captureScreen(state).catch(() => {});
       state.closed = true;
-      if (state.started) await command(state, ['close']);
+      if (state.started || state.saved.navigationFailed) await command(state, ['close']);
       state.started = false;
       await saveState(state);
       state.secrets.clear();
@@ -546,7 +1121,10 @@ export function createAgentBrowserComputer(options: {
   }
 
   function browserStatus(): string {
-    return `${browsers.size} task browser session${browsers.size === 1 ? '' : 's'}; public web proxy enabled`;
+    const count = [...browsers.values()].filter(
+      (state) => state.started || state.saved.navigationFailed || state.saved.signInPending,
+    ).length;
+    return `${count} task browser session${count === 1 ? '' : 's'}; workspace browser proxy enabled`;
   }
   const cleanup = setInterval(
     () => {
@@ -564,6 +1142,21 @@ export function createAgentBrowserComputer(options: {
   );
   cleanup.unref();
   return {
+    currentSession: () => {
+      const manual = [...browsers.values()].find(
+        (state) => state.saved.signInPending || state.manualUntil > Date.now(),
+      );
+      return manual
+        ? { taskId: manual.id, lastActivityAt: new Date(manual.lastUsed).toISOString() }
+        : lastSession;
+    },
+    takeControl,
+    openSignIn,
+    finishSignIn,
+    signInScreenshot,
+    signInControl,
+    control: manualControl,
+    releaseControl,
     act: browserAction,
     screenshot: getScreenshot,
     screenStatus: (id) => screenStatuses.get(taskId(id)) ?? { state: 'unavailable' },

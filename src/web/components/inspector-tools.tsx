@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, Search, Wrench } from 'lucide-react';
+import type { TaskEvent } from '../../shared/contracts';
 import type {
   InspectorObservationsResponse,
   InspectorToolsResponse,
   ModelUsage,
   ToolCall,
+  ToolUsage,
+  InspectorTool,
 } from '../../shared/inspector';
 import { api, errorMessage } from '../lib/api';
 import {
@@ -14,16 +17,15 @@ import {
   formatModelCost,
   formatToolDuration,
   mergeObservationPage,
+  groupTaskActivity,
   type ToolStatusFilter,
 } from '../lib/inspector-observations';
 import { Button, Input, Loading, Notice } from './ui';
 
-const statuses: ToolCall['status'][] = [
-  'running',
-  'succeeded',
-  'failed',
-  'cancelled',
-  'interrupted',
+const statuses: Array<{ value: ToolStatusFilter; label: string }> = [
+  { value: 'all', label: 'All' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'running', label: 'Running' },
 ];
 const counts = new Intl.NumberFormat('en-US');
 
@@ -54,6 +56,13 @@ export function ToolCallRecord({ call }: { call: ToolCall }) {
           <small>
             {call.status === 'running' ? 'In progress' : formatToolDuration(call.durationMs)}
           </small>
+          <small className="inspector-tool-cost">
+            {formatModelCost(call.directCostUsd ?? null)}
+            {call.directCostUsd != null &&
+            (call.pricing === 'sdk_estimate' || call.pricing === 'mixed')
+              ? ' estimated'
+              : ''}
+          </small>
         </span>
       </summary>
       <div className="inspector-record-body">
@@ -66,6 +75,11 @@ export function ToolCallRecord({ call }: { call: ToolCall }) {
           <dd>{call.status === 'running' ? 'In progress' : formatToolDuration(call.durationMs)}</dd>
         </dl>
         <p className="inspector-data-note">Private developer data · redacted before storage.</p>
+        <p className="inspector-data-note">
+          Direct provider cost · {counts.format(call.pricedOperations ?? 0)} of{' '}
+          {counts.format(call.providerOperations ?? 0)} operations priced. Assistant model costs are
+          separate.
+        </p>
         <RecordedJson label="Input" value={call.input} />
         {call.output === null && call.status !== 'succeeded' ? (
           <p className="inspector-empty">
@@ -201,33 +215,15 @@ export function ModelUsageRecord({ usage }: { usage: ModelUsage }) {
   );
 }
 
-export function InspectorTools({ taskId }: { taskId?: string }) {
-  const [catalog, setCatalog] = useState<InspectorToolsResponse | null>(null);
+function useInspectorObservations(taskId?: string, tool?: string) {
   const [observations, setObservations] = useState<InspectorObservationsResponse | null>(null);
-  const [catalogError, setCatalogError] = useState('');
-  const [catalogAttempt, setCatalogAttempt] = useState(0);
   const [observationError, setObservationError] = useState('');
-  const [query, setQuery] = useState('');
-  const [status, setStatus] = useState<ToolStatusFilter>('all');
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const busy = useRef(false);
   const observationsRef = useRef<InspectorObservationsResponse | null>(null);
   const loadedEarlier = useRef(false);
   const controller = useRef<AbortController | null>(null);
-
-  useEffect(() => {
-    const request = new AbortController();
-    setCatalogError('');
-    void api<InspectorToolsResponse>('/api/inspector/tools', { signal: request.signal })
-      .then((next) => {
-        if (!request.signal.aborted) setCatalog(next);
-      })
-      .catch((cause) => {
-        if (!request.signal.aborted) setCatalogError(errorMessage(cause));
-      });
-    return () => request.abort();
-  }, [catalogAttempt]);
 
   useEffect(() => {
     const request = new AbortController();
@@ -241,7 +237,7 @@ export function InspectorTools({ taskId }: { taskId?: string }) {
     setLoadingEarlier(false);
     setRefreshing(false);
     async function refresh() {
-      if (!taskId || request.signal.aborted) return;
+      if (request.signal.aborted) return;
       if (document.hidden || busy.current) {
         timer = setTimeout(() => void refresh(), 2500);
         return;
@@ -250,7 +246,7 @@ export function InspectorTools({ taskId }: { taskId?: string }) {
       setRefreshing(true);
       try {
         const next = await api<InspectorObservationsResponse>(
-          `/api/inspector/observations?taskId=${encodeURIComponent(taskId)}`,
+          `/api/inspector/observations?${new URLSearchParams({ ...(taskId ? { taskId } : {}), ...(tool ? { tool } : {}) })}`,
           { signal: request.signal },
         );
         if (request.signal.aborted) return;
@@ -261,7 +257,11 @@ export function InspectorTools({ taskId }: { taskId?: string }) {
                 current,
                 next,
                 async (cursor) => {
-                  const params = new URLSearchParams({ taskId, before: cursor.before });
+                  const params = new URLSearchParams({
+                    ...(taskId ? { taskId } : {}),
+                    before: cursor.before,
+                    ...(tool ? { tool } : {}),
+                  });
                   if (cursor.beforeId) params.set('beforeId', cursor.beforeId);
                   return api<InspectorObservationsResponse>(
                     `/api/inspector/observations?${params}`,
@@ -279,7 +279,7 @@ export function InspectorTools({ taskId }: { taskId?: string }) {
       } catch (cause) {
         if (!request.signal.aborted) setObservationError(errorMessage(cause));
       } finally {
-        if (!request.signal.aborted && taskId) {
+        if (!request.signal.aborted) {
           busy.current = false;
           setRefreshing(false);
           timer = setTimeout(() => void refresh(), 2500);
@@ -291,15 +291,19 @@ export function InspectorTools({ taskId }: { taskId?: string }) {
       request.abort();
       clearTimeout(timer);
     };
-  }, [taskId]);
+  }, [taskId, tool]);
 
   async function loadEarlier() {
-    if (!taskId || !observations?.hasOlder || !observations.nextBefore || busy.current) return;
+    if (!observations?.hasOlder || !observations.nextBefore || busy.current) return;
     const request = controller.current;
     if (!request || request.signal.aborted) return;
     busy.current = true;
     setLoadingEarlier(true);
-    const params = new URLSearchParams({ taskId, before: observations.nextBefore });
+    const params = new URLSearchParams({
+      ...(taskId ? { taskId } : {}),
+      before: observations.nextBefore,
+      ...(tool ? { tool } : {}),
+    });
     if (observations.nextBeforeId) params.set('beforeId', observations.nextBeforeId);
     try {
       const next = await api<InspectorObservationsResponse>(
@@ -323,136 +327,281 @@ export function InspectorTools({ taskId }: { taskId?: string }) {
     }
   }
 
+  return { observations, observationError, loadingEarlier, refreshing, loadEarlier };
+}
+
+function ToolDrilldown({
+  taskId,
+  usage,
+  definition,
+  status,
+}: {
+  taskId?: string;
+  usage: ToolUsage;
+  definition?: InspectorTool;
+  status: ToolStatusFilter;
+}) {
+  const { observations, observationError, loadingEarlier, refreshing, loadEarlier } =
+    useInspectorObservations(taskId, usage.name);
+  const [query, setQuery] = useState('');
   const calls = useMemo(
     () => filterToolCalls(observations?.calls ?? [], query, status),
     [observations, query, status],
   );
+  return (
+    <div className="inspector-tool-drilldown">
+      {definition && <p className="inspector-tool-description">{definition.description}</p>}
+      <label className="inspector-search">
+        <Search size={14} />
+        <Input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search loaded inputs, outputs and errors"
+          aria-label={`Search ${usage.name} calls`}
+        />
+      </label>
+      {observationError && <Notice>{observationError}</Notice>}
+      {!observations && !observationError && <Loading label="Loading calls…" />}
+      {observations && (
+        <>
+          <p className="inspector-data-note">
+            {counts.format(observations.calls.length)} of{' '}
+            {counts.format(
+              observations.toolUsage.find((row) => row.name === usage.name)?.calls ?? usage.calls,
+            )}{' '}
+            calls loaded
+            {calls.length !== observations.calls.length
+              ? ` · ${calls.length} match the filters`
+              : ''}
+            . Search applies to loaded payloads.
+          </p>
+          <div className="inspector-record-list">
+            {calls.map((call) => (
+              <ToolCallRecord key={call.id} call={call} />
+            ))}
+          </div>
+          {!calls.length && <p className="inspector-empty">No loaded calls match the filters.</p>}
+          {observations.hasOlder && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={loadingEarlier || refreshing}
+              onClick={() => void loadEarlier()}
+            >
+              {loadingEarlier ? 'Loading…' : 'Load earlier calls'}
+            </Button>
+          )}
+        </>
+      )}
+      {definition && (
+        <details className="inspector-schema">
+          <summary>Input schema</summary>
+          <RecordedJson label="Input schema" value={definition.parameters} />
+        </details>
+      )}
+    </div>
+  );
+}
+
+export function ToolUsageFacts({ usage }: { usage: ToolUsage }) {
+  return (
+    <div className="inspector-tool-facts">
+      <span>
+        {usage.failed ? `${counts.format(usage.failed)} failed` : 'No failures'}
+        {usage.running ? ` · ${counts.format(usage.running)} running` : ''}
+      </span>
+      <span>
+        {usage.averageDurationMs === null
+          ? 'Duration unavailable'
+          : `${formatToolDuration(usage.averageDurationMs)} average · ${formatToolDuration(usage.maxDurationMs)} longest`}
+      </span>
+      {usage.cancelled + usage.interrupted > 0 && (
+        <span>
+          {usage.cancelled} cancelled · {usage.interrupted} interrupted
+        </span>
+      )}
+      {usage.durationSamples > 0 && usage.durationSamples < usage.calls && (
+        <span>
+          Duration recorded for {counts.format(usage.durationSamples)} of{' '}
+          {counts.format(usage.calls)} calls
+        </span>
+      )}
+      <span className="inspector-tool-cost">
+        {formatModelCost(usage.directCostUsd ?? null)}
+        {usage.directCostUsd != null &&
+        (usage.pricing === 'sdk_estimate' || usage.pricing === 'mixed')
+          ? ' estimated'
+          : ''}
+        {(usage.providerOperations ?? 0) > 0 &&
+          ` · ${counts.format(usage.pricedOperations ?? 0)}/${counts.format(usage.providerOperations ?? 0)} operations priced`}
+      </span>
+    </div>
+  );
+}
+
+export function ToolUsageGroup({
+  taskId,
+  usage,
+  definition,
+  status = 'all',
+}: {
+  taskId?: string;
+  usage: ToolUsage;
+  definition?: InspectorTool;
+  status?: ToolStatusFilter;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details
+      className={`inspector-tool-group${usage.failed ? ' inspector-tool-has-failures' : ''}`}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary>
+        <ChevronDown size={14} className="inspector-disclosure" />
+        <span className="inspector-tool-group-title">
+          <strong>{usage.name}</strong>
+          <ToolUsageFacts usage={usage} />
+        </span>
+        <span className="inspector-tool-call-count">
+          <strong>{counts.format(usage.calls)}</strong>
+          <small>{usage.calls === 1 ? 'call' : 'calls'}</small>
+        </span>
+      </summary>
+      {open && (
+        <ToolDrilldown taskId={taskId} usage={usage} definition={definition} status={status} />
+      )}
+    </details>
+  );
+}
+
+export function InspectorTools({ taskId }: { taskId?: string }) {
+  const [catalog, setCatalog] = useState<InspectorToolsResponse | null>(null);
+  const [catalogError, setCatalogError] = useState('');
+  const [catalogAttempt, setCatalogAttempt] = useState(0);
+  const [query, setQuery] = useState('');
+  const [status, setStatus] = useState<ToolStatusFilter>('all');
+  const { observations, observationError, loadingEarlier, refreshing, loadEarlier } =
+    useInspectorObservations(taskId);
+  useEffect(() => {
+    const request = new AbortController();
+    setCatalogError('');
+    void api<InspectorToolsResponse>('/api/inspector/tools', { signal: request.signal })
+      .then((next) => {
+        if (!request.signal.aborted) setCatalog(next);
+      })
+      .catch((cause) => {
+        if (!request.signal.aborted) setCatalogError(errorMessage(cause));
+      });
+    return () => request.abort();
+  }, [catalogAttempt]);
   const search = query.trim().toLocaleLowerCase();
   const tools =
     catalog?.tools.filter(
       (tool) =>
         !search ||
-        [tool.name, tool.description, formatInspectorJson(tool.parameters)].some((text) =>
-          text.toLocaleLowerCase().includes(search),
-        ),
+        [tool.name, tool.description].some((text) => text.toLocaleLowerCase().includes(search)),
     ) ?? [];
-
+  const usage =
+    observations?.toolUsage.filter(
+      (tool) =>
+        (!search ||
+          tool.name.toLocaleLowerCase().includes(search) ||
+          tools.some((definition) => definition.name === tool.name)) &&
+        (status === 'all' || tool[status] > 0),
+    ) ?? [];
   return (
     <div className="inspector-tools">
-      {catalog && (
-        <p className="inspector-data-note">
-          {catalog.captureEnabled ? 'Capture enabled' : 'Capture disabled'} · private developer data
-          · {catalog.retentionDays}-day retention ·{' '}
-          {counts.format(catalog.payloadLimitBytes / 1024)} KiB per payload. Payloads are redacted;
-          images are omitted.
-        </p>
-      )}
+      <div className="inspector-section-heading">
+        <h3>Tool usage</h3>
+        <span>{taskId ? 'Message activity' : 'All activity'} · 7 days</span>
+      </div>
+      <p className="inspector-data-note">
+        {observations
+          ? `${counts.format(observations.summary.calls)} calls across ${observations.toolUsage.length} tools. `
+          : ''}
+        Open a tool to inspect its calls and direct provider costs.
+      </p>
       <div className="inspector-tool-filters">
         <label className="inspector-search">
           <Search size={14} />
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search tools and recorded calls"
-            aria-label="Search tools and recorded calls"
+            placeholder="Find a tool"
+            aria-label="Find a tool"
           />
         </label>
-        <label className="inspector-status-filter">
-          <span>Call status</span>
-          <select
-            value={status}
-            onChange={(event) => setStatus(event.target.value as ToolStatusFilter)}
-          >
-            <option value="all">All statuses</option>
-            {statuses.map((value) => (
-              <option key={value} value={value}>
-                {value[0].toUpperCase() + value.slice(1)}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="inspector-scope-toggle" role="group" aria-label="Tool call status">
+          {statuses.map((item) => (
+            <button
+              key={item.value}
+              type="button"
+              aria-pressed={status === item.value}
+              onClick={() => setStatus(item.value)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
       </div>
-      {taskId ? (
-        <>
-          {observationError && <Notice>{observationError}</Notice>}
-          {!observations && !observationError && <Loading label="Loading task recordings…" />}
-          {observations && (
-            <>
-              <ModelUsageSummary summary={observations.summary} />
-              <section className="inspector-section">
-                <h3>
-                  Tool calls{' '}
-                  <span>
-                    {calls.length} shown · {counts.format(observations.summary.calls)} retained
-                  </span>
-                </h3>
-                <div className="inspector-record-list">
-                  {calls.map((call) => (
-                    <ToolCallRecord key={call.id} call={call} />
-                  ))}
-                </div>
-                {!calls.length && (
-                  <p className="inspector-empty">
-                    {observations.calls.length
-                      ? 'No loaded calls match this search and status.'
-                      : 'No tool calls recorded for this task.'}
-                  </p>
-                )}
-              </section>
-              <section className="inspector-section">
-                <h3>
-                  Model requests{' '}
-                  <span>
-                    {observations.usage.length} loaded ·{' '}
-                    {counts.format(observations.summary.modelRequests)} retained
-                  </span>
-                </h3>
-                <p className="inspector-data-note">
-                  Associated with this task and revision. A model request can produce several tool
-                  calls; costs are not assigned to individual tools.
-                </p>
-                <div className="inspector-record-list">
-                  {observations.usage.map((usage) => (
-                    <ModelUsageRecord key={usage.id} usage={usage} />
-                  ))}
-                </div>
-                {!observations.usage.length && (
-                  <p className="inspector-empty">No model usage recorded in this page.</p>
-                )}
-              </section>
+      <>
+        {observationError && <Notice>{observationError}</Notice>}
+        {!observations && !observationError && <Loading label="Loading recordings…" />}
+        {observations && (
+          <>
+            <div className="inspector-tool-groups">
+              {usage.map((row) => (
+                <ToolUsageGroup
+                  key={row.name}
+                  taskId={taskId}
+                  usage={row}
+                  definition={catalog?.tools.find((tool) => tool.name === row.name)}
+                  status={status}
+                />
+              ))}
+            </div>
+            {!usage.length && (
+              <p className="inspector-empty">
+                {observations.summary.calls
+                  ? 'No tools match these filters.'
+                  : 'No calls recorded yet. Older activity is not backfilled.'}
+              </p>
+            )}
+            <details className="inspector-model-details">
+              <summary>
+                Assistant model requests{' '}
+                <span>{counts.format(observations.summary.modelRequests)}</span>
+              </summary>
+              <p className="inspector-data-note">
+                {counts.format(observations.summary.totalTokens)} tokens. Assistant model requests
+                are separate from direct tool charges.
+              </p>
+              <div className="inspector-record-list">
+                {observations.usage.map((row) => (
+                  <ModelUsageRecord key={row.id} usage={row} />
+                ))}
+              </div>
               {observations.hasOlder && (
-                <div className="inspector-pagination">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={loadingEarlier || refreshing}
-                    onClick={() => void loadEarlier()}
-                  >
-                    {loadingEarlier ? 'Loading…' : 'Load earlier recordings'}
-                  </Button>
-                  <p className="inspector-data-note">
-                    Search and status filters apply to loaded calls. Totals cover all retained
-                    records.
-                  </p>
-                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={loadingEarlier || refreshing}
+                  onClick={() => void loadEarlier()}
+                >
+                  {loadingEarlier ? 'Loading…' : 'Load earlier recordings'}
+                </Button>
               )}
-            </>
-          )}
-        </>
-      ) : (
-        <p className="inspector-empty">Choose a task to inspect recorded calls and model usage.</p>
-      )}
-      <section className="inspector-section inspector-catalog">
-        <h3>
+            </details>
+          </>
+        )}
+      </>
+      <details className="inspector-catalog">
+        <summary>
           <Wrench size={14} />
-          Registered tools{' '}
-          <span>
-            {tools.length}
-            {catalog && tools.length !== catalog.tools.length ? ` of ${catalog.tools.length}` : ''}
-          </span>
-        </h3>
+          Registered tools <span>{catalog?.tools.length ?? '…'}</span>
+        </summary>
         <p className="inspector-data-note">
-          Current runtime definitions. Registration does not mean a tool ran for this task.
+          Available tools, including those with no recorded calls.
         </p>
         {catalogError && (
           <>
@@ -484,11 +633,90 @@ export function InspectorTools({ taskId }: { taskId?: string }) {
           ))}
         </div>
         {catalog && !tools.length && (
-          <p className="inspector-empty">
-            {search ? 'No registered tools match this search.' : 'No tools are registered.'}
-          </p>
+          <p className="inspector-empty">No registered tools match this search.</p>
         )}
-      </section>
+      </details>
+      {catalog && (
+        <p className="inspector-data-note inspector-capture-note">
+          {catalog.captureEnabled ? 'Capture enabled' : 'Capture disabled'} · private developer data
+          · {catalog.retentionDays}-day retention ·{' '}
+          {counts.format(catalog.payloadLimitBytes / 1024)} KiB per payload. Payloads are redacted;
+          images are omitted.
+        </p>
+      )}
     </div>
+  );
+}
+
+export function InspectorActivity({ taskId, events }: { taskId?: string; events: TaskEvent[] }) {
+  const { observations, observationError, loadingEarlier, refreshing, loadEarlier } =
+    useInspectorObservations(taskId);
+  const items = groupTaskActivity(
+    events,
+    observations && observations.summary.calls > 0 ? observations.calls : undefined,
+    observations?.failures,
+  );
+  const labels = {
+    running: 'In progress',
+    succeeded: 'Completed',
+    failed: 'Failed',
+    cancelled: 'Cancelled',
+    interrupted: 'Interrupted',
+    info: '',
+  };
+  return (
+    <section className="inspector-section inspector-activity">
+      <div className="inspector-section-heading">
+        <h3>Recent actions</h3>
+        <span>{taskId ? 'Message activity' : 'All activity'}</span>
+      </div>
+      {observationError && (
+        <p className="inspector-data-note">
+          Call recordings are temporarily unavailable. Showing the task timeline.
+        </p>
+      )}
+      {items.length ? (
+        <ol className="event-list">
+          {items.map((item) => (
+            <li key={item.id} className={`activity-${item.status}`}>
+              <span className="event-dot" />
+              <div>
+                <p>{item.title}</p>
+                <small>
+                  <time dateTime={item.startedAt}>
+                    {new Date(item.startedAt).toLocaleTimeString()}
+                  </time>
+                  {labels[item.status] && ` · ${labels[item.status]}`}
+                  {item.durationMs !== null && ` · ${formatToolDuration(item.durationMs)}`}
+                </small>
+                {item.diagnostic !== undefined && (
+                  <details className="inspector-record">
+                    <summary>Private failure details</summary>
+                    <div className="inspector-record-body">
+                      <p className="inspector-data-note">
+                        Redacted developer data · seven-day retention.
+                      </p>
+                      <RecordedJson label="Failure diagnostic" value={item.diagnostic} />
+                    </div>
+                  </details>
+                )}
+              </div>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="inspector-empty">No actions recorded for this task yet.</p>
+      )}
+      {observations?.hasOlder && (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={loadingEarlier || refreshing}
+          onClick={() => void loadEarlier()}
+        >
+          {loadingEarlier ? 'Loading…' : 'Load earlier actions'}
+        </Button>
+      )}
+    </section>
   );
 }

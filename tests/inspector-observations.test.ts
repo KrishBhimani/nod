@@ -6,11 +6,15 @@ import type {
   InspectorObservationsResponse,
   ModelUsage,
   ToolCall,
+  ToolUsage,
 } from '../src/shared/inspector.ts';
+import { ProviderUsageRow } from '../src/web/components/inspector-providers.tsx';
+import type { ProviderUsageSummary } from '../src/shared/provider-usage.ts';
 import {
   ModelUsageRecord,
   ModelUsageSummary,
   ToolCallRecord,
+  ToolUsageGroup,
 } from '../src/web/components/inspector-tools.tsx';
 import {
   completeObservationRefresh,
@@ -18,6 +22,8 @@ import {
   formatModelCost,
   formatToolDuration,
   mergeObservationPage,
+  groupTaskActivity,
+  compactActivityText,
 } from '../src/web/lib/inspector-observations.ts';
 
 function call(id: string, patch: Partial<ToolCall> = {}): ToolCall {
@@ -54,10 +60,28 @@ function usage(id: string, patch: Partial<ModelUsage> = {}): ModelUsage {
     ...patch,
   };
 }
+function toolUsage(patch: Partial<ToolUsage> = {}): ToolUsage {
+  return {
+    name: 'browser',
+    calls: 204,
+    succeeded: 200,
+    failed: 2,
+    running: 1,
+    cancelled: 0,
+    interrupted: 1,
+    durationSamples: 201,
+    totalDurationMs: 603000,
+    averageDurationMs: 3000,
+    maxDurationMs: 10000,
+    lastStartedAt: '2026-09-24T12:00:00.000Z',
+    ...patch,
+  };
+}
 function page(patch: Partial<InspectorObservationsResponse> = {}): InspectorObservationsResponse {
   return {
     calls: [],
     usage: [],
+    toolUsage: [],
     summary: {
       calls: 0,
       modelRequests: 0,
@@ -77,6 +101,7 @@ function page(patch: Partial<InspectorObservationsResponse> = {}): InspectorObse
 test('inspector pagination merges unified pages without duplicate calls, stale outcomes, or page-based cost totals', () => {
   const current = page({
     calls: [call('b')],
+    toolUsage: [toolUsage({ calls: 203 })],
     usage: [usage('m-b')],
     summary: {
       ...page().summary,
@@ -107,11 +132,13 @@ test('inspector pagination merges unified pages without duplicate calls, stale o
   );
   assert.equal(combined.calls[0].status, 'running');
   assert.deepEqual(combined.summary, current.summary);
+  assert.deepEqual(combined.toolUsage, current.toolUsage);
   assert.equal(combined.nextBeforeId, 'older-cursor');
   const refresh = page({
     calls: [call('b', { status: 'succeeded', output: { result: 'ready' }, durationMs: 124 })],
     usage: [usage('m-b', { costSource: 'sdk_estimate', costUsd: 0.001 })],
     summary: { ...current.summary, calls: 204 },
+    toolUsage: [toolUsage()],
     hasOlder: true,
     nextBeforeId: 'newest-page-cursor',
   });
@@ -122,6 +149,7 @@ test('inspector pagination merges unified pages without duplicate calls, stale o
   assert.equal(refreshed.nextBeforeId, 'older-cursor');
   assert.equal(refreshed.nextBefore, older.nextBefore);
   assert.equal(refreshed.summary.calls, 204);
+  assert.equal(refreshed.toolUsage[0].calls, 204);
 });
 
 test('inspector search filters loaded call names, input, output and status', () => {
@@ -346,4 +374,146 @@ test('inspector payloads and tool errors render as escaped text without executin
   assert.match(html, /Output JSON/);
   assert.match(html, /Private developer data/);
   assert.match(html, /revision 1/);
+});
+
+test('tool usage rows show retained totals, failures and measured durations without inventing per-tool cost', () => {
+  const html = renderToStaticMarkup(
+    createElement(ToolUsageGroup, { taskId: 'fixture-task', usage: toolUsage() }),
+  );
+  assert.match(html, /204/);
+  assert.match(html, /2 failed/);
+  assert.match(html, /3.0 s average/);
+  assert.match(html, /10.0 s longest/);
+  assert.match(html, /Duration recorded for 201 of 204 calls/);
+  assert.doesNotMatch(html, /USD|estimate|invoice/);
+  const unknown = renderToStaticMarkup(
+    createElement(ToolUsageGroup, {
+      taskId: 'fixture-task',
+      usage: toolUsage({
+        durationSamples: 0,
+        averageDurationMs: null,
+        totalDurationMs: null,
+        maxDurationMs: null,
+      }),
+    }),
+  );
+  assert.match(unknown, /Duration unavailable/);
+  assert.doesNotMatch(unknown, /0 ms/);
+});
+
+test('activity pairs legacy tool starts and outcomes without duplicate rows or raw kinds', () => {
+  const event = (id: string, type: string, summary: string, second: number, taskId = 'task-a') => ({
+    id,
+    type,
+    summary,
+    taskId,
+    createdAt: new Date(Date.UTC(2026, 8, 25, 10, 0, second)).toISOString(),
+  });
+  const result = groupTaskActivity(
+    [
+      event('1', 'started', 'Task started.', 0),
+      event('2', 'tool_start', 'browse web', 1),
+      event('3', 'tool_start', 'execute code', 2),
+      event('4', 'tool_failed', 'execute code', 4),
+      event('5', 'tool_complete', 'browse web', 5),
+      event('6', 'tool_start', 'browse web', 6),
+      event('7', 'tool_complete', 'browse web', 9, 'task-b'),
+    ].reverse(),
+  );
+  assert.equal(result.length, 5);
+  assert.equal(result.find((item) => item.id === '2')?.durationMs, 4000);
+  assert.equal(result.find((item) => item.id === '3')?.status, 'failed');
+  assert.equal(result.find((item) => item.id === '6')?.status, 'running');
+  assert.equal(result.find((item) => item.id === '7')?.durationMs, null);
+  assert.equal(result.at(-1)?.title, 'Task started');
+});
+
+test('activity prefers exact tool records even when same-name calls overlap', () => {
+  const events = ['tool_start', 'tool_start', 'tool_complete', 'tool_failed'].map(
+    (type, index) => ({
+      id: `event-${index}`,
+      taskId: 'fixture-task',
+      type,
+      summary: 'browser',
+      createdAt: `2026-09-24T12:00:0${index}.000Z`,
+    }),
+  );
+  const exact = [
+    call('a', { status: 'failed', durationMs: 3200 }),
+    call('b', { status: 'succeeded', durationMs: 80 }),
+  ];
+  const result = groupTaskActivity(events, exact);
+  assert.equal(result.length, 2);
+  assert.equal(result.find((item) => item.id === 'a')?.durationMs, 3200);
+  assert.equal(result.find((item) => item.id === 'b')?.durationMs, 80);
+  assert.equal(
+    compactActivityText(
+      'Hourly review of active goals, current context, and saved connection updates. Look for a concrete next action that is due.',
+    ),
+    'Hourly goal and context review',
+  );
+  assert.ok(compactActivityText('A long user task '.repeat(50)).length <= 160);
+});
+
+test('provider usage distinguishes adapter operations, unknown prices and partial SDK subtotals', () => {
+  const usage: ProviderUsageSummary = {
+    provider: 'fixture',
+    category: 'browser',
+    operation: 'act',
+    model: null,
+    requests: 20,
+    failures: 2,
+    cancelled: 1,
+    durationMs: 5000,
+    inputTokens: null,
+    outputTokens: null,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+    audioSeconds: null,
+    characters: null,
+    messages: null,
+    bytes: null,
+    costUsd: null,
+    pricedRequests: 0,
+    pricing: 'unavailable',
+    lastRecordedAt: '2026-09-25T00:00:00.000Z',
+  };
+  const unknown = renderToStaticMarkup(createElement(ProviderUsageRow, { usage }));
+  assert.match(unknown, /20 operations/);
+  assert.match(unknown, /Price unavailable/);
+  assert.match(unknown, /can still incur charges/);
+  assert.doesNotMatch(unknown, /USD 0|Input tokens/);
+  const partial = renderToStaticMarkup(
+    createElement(ProviderUsageRow, {
+      usage: {
+        ...usage,
+        provider: '<img src="https://example.com">',
+        costUsd: 0.032,
+        pricedRequests: 12,
+        pricing: 'sdk_estimate',
+        inputTokens: 1200,
+      },
+    }),
+  );
+  assert.match(partial, /USD 0.0320 estimated/);
+  assert.match(partial, /12 of 20 operations priced · partial subtotal/);
+  assert.match(partial, /Not an invoice total/);
+  assert.match(partial, /Input tokens/);
+  assert.doesNotMatch(partial, /<img/);
+});
+
+test('legacy activity does not invent durations for overlapping same-name calls or leave completed tasks running', () => {
+  const types = ['tool_start', 'tool_start', 'tool_complete', 'failed'];
+  const result = groupTaskActivity(
+    types.map((type, index) => ({
+      id: `event-${index}`,
+      type,
+      taskId: 'task-a',
+      summary: 'browser',
+      createdAt: `2026-09-24T12:00:0${index}.000Z`,
+    })),
+  );
+  assert.equal(result.find((item) => item.id === 'event-0')!.durationMs, null);
+  assert.equal(result.find((item) => item.id === 'event-1')!.status, 'interrupted');
+  assert.ok(result.every((item) => item.status !== 'running'));
 });

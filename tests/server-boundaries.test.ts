@@ -15,7 +15,7 @@ test('localhost access rejects foreign Host, Origin and browser cross-site reque
   registerLocalAccess(app, 4310);
   app.get('/api/fixture', async () => ({ ok: true }));
   app.post('/api/fixture', async () => ({ ok: true }));
-  app.get('/api/connections/callback', async () => ({ ok: true }));
+  app.get('/api/apps/callback', async () => ({ ok: true }));
   try {
     for (const headers of [
       { host: 'attacker.example:4310' },
@@ -43,7 +43,7 @@ test('localhost access rejects foreign Host, Origin and browser cross-site reque
     assert.equal(
       (
         await app.inject({
-          url: '/api/connections/callback?fixture=yes',
+          url: '/api/apps/callback?fixture=yes',
           headers: { host: 'localhost:4310', 'sec-fetch-site': 'cross-site' },
         })
       ).statusCode,
@@ -73,8 +73,13 @@ test(
     const artifacts = await import('../src/server/artifacts.ts');
     const { createApp } = await import('../src/server/app.ts');
     const { createApprovals } = await import('../src/server/approvals.ts');
-    const { dataRoot, ownerId, port } = await import('../src/server/config.ts');
-    const app = await createApp();
+    const { dataRoot, ownerId, port, configuration } = await import('../src/server/config.ts');
+    let userMessages: ReturnType<typeof tasks.createUserMessageService>;
+    const app = await createApp({
+      submitMessage: (text, attachments, options) =>
+        userMessages.submit(text, attachments, options),
+      configuration: () => configuration({ llmReady: true }),
+    });
     const personal = createPersonalService({
       pool: db.pool,
       ownerId,
@@ -111,13 +116,62 @@ test(
       });
     const newTask = async (status = 'running', owner = ownerId) => {
       const id = randomUUID();
+      const source = randomUUID();
       await db.pool.query(
         'INSERT INTO tasks(id,owner_id,title,prompt,status) VALUES($1,$2,$3,$3,$4)',
         [id, owner, 'Synthetic boundary fixture', status],
       );
+      await db.pool.query(
+        "INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,$2,'user','Synthetic boundary fixture',$3)",
+        [source, owner, id],
+      );
+      await db.pool.query('UPDATE tasks SET source_message_id=$2 WHERE id=$1', [id, source]);
       return id;
     };
-    const approvalId = (url: string) => url.split('/').at(-1)!;
+    const stored = async (id: string) =>
+      (await db.pool.query('SELECT * FROM approvals WHERE id=$1', [id])).rows[0];
+    async function propose(taskId: string, action: string, args: Record<string, unknown>) {
+      const revision = (await db.pool.query('SELECT revision FROM tasks WHERE id=$1', [taskId]))
+        .rows[0].revision;
+      const result = await approvals.request(taskId, action, args, { revision });
+      assert.ok(result && typeof result === 'object' && 'requiresConfirmation' in result);
+      assert.equal(result.requiresConfirmation, true);
+      assert.equal('url' in result, false);
+      const record = (
+        await db.pool.query('SELECT * FROM approvals WHERE task_id=$1 AND task_revision=$2', [
+          taskId,
+          revision,
+        ])
+      ).rows[0];
+      assert.ok(record.confirmation_message_id);
+      return record.id as string;
+    }
+    async function confirm(id: string, approved: boolean, extra: Record<string, unknown> = {}) {
+      const record = await stored(id);
+      return db.transaction((client) =>
+        approvals.acceptChat(client, {
+          text: approved ? 'Yes' : 'No',
+          channel: 'web',
+          conversationRevision: 0,
+          replyToMessageId: record.confirmation_message_id,
+          clientMessageId: randomUUID(),
+          ...extra,
+        }),
+      );
+    }
+    async function execute(id: string) {
+      const record = await stored(id);
+      await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1 AND status='queued'", [
+        record.task_id,
+      ]);
+      const task = (await db.pool.query('SELECT revision FROM tasks WHERE id=$1', [record.task_id]))
+        .rows[0];
+      return approvals.executeConfirmed(
+        record.task_id,
+        task.revision,
+        new AbortController().signal,
+      );
+    }
     try {
       await db.initializeDatabase();
       await tasks.initializeTasks();
@@ -136,7 +190,7 @@ test(
             });
         },
       );
-      approvals.registerRoutes(app);
+      userMessages = tasks.createUserMessageService({ confirmAction: approvals.acceptChat });
       personal.registerRoutes(app);
       app.get('/api/fixture-error', async () => {
         throw new Error('fixture-private-key');
@@ -168,6 +222,62 @@ test(
           assert.equal(response.headers['content-security-policy'], "default-src 'none'; sandbox");
           assert.equal(response.headers['x-content-type-options'], 'nosniff');
           assert.match(response.body, /window.fixture/);
+          for (const [name, mime] of [
+            ['preview.pdf', 'application/pdf'],
+            ['preview.mp4', 'video/mp4'],
+            ['preview.m4a', 'audio/mp4'],
+          ]) {
+            await writeFile(join(workspace, name), '0123456789');
+            const media = await artifacts.publishArtifact(id, name);
+            assert.equal(media.mimeType, mime);
+            const full = await request('GET', media.url);
+            assert.match(String(full.headers['content-disposition']), /^inline;/);
+            assert.equal(full.headers['cache-control'], 'private, no-store');
+            assert.equal(full.headers['content-security-policy'], "default-src 'none'; sandbox");
+            const partial = await app.inject({
+              method: 'GET',
+              url: media.url,
+              headers: { ...headers, range: 'bytes=2-5' },
+            });
+            assert.equal(partial.statusCode, 206);
+            assert.equal(partial.body, '2345');
+            assert.equal(partial.headers['content-range'], 'bytes 2-5/10');
+            const suffix = await app.inject({
+              method: 'GET',
+              url: media.url,
+              headers: { ...headers, range: 'bytes=-3' },
+            });
+            assert.equal(suffix.body, '789');
+            for (const range of [
+              'bytes=30-',
+              'bytes=5-2',
+              'bytes=-0',
+              'bytes=0-1,4-5',
+              'bytes=-',
+            ]) {
+              const invalid = await app.inject({
+                method: 'GET',
+                url: media.url,
+                headers: { ...headers, range },
+              });
+              assert.equal(invalid.statusCode, 416);
+              assert.equal(invalid.headers['content-range'], 'bytes */10');
+            }
+            await db.pool.query('UPDATE artifacts SET owner_id=$2 WHERE id=$1', [
+              media.id,
+              'another-owner',
+            ]);
+            assert.equal(
+              (
+                await app.inject({
+                  method: 'GET',
+                  url: media.url,
+                  headers: { ...headers, range: 'bytes=0-1' },
+                })
+              ).statusCode,
+              404,
+            );
+          }
           await db.pool.query('UPDATE artifacts SET owner_id=$2 WHERE id=$1', [
             published.id,
             'another-owner',
@@ -184,65 +294,80 @@ test(
         },
       );
 
-      await t.test('approval executes the stored snapshot only once and resumes once', async () => {
-        const taskId = await newTask();
-        const original = {
-          recipient: 'fixture@example.test',
-          subject: 'Approved snapshot',
-          nested: { text: 'original' },
-        };
-        const result = await approvals.request(taskId, 'GMAIL_SEND_EMAIL', original);
-        const id = approvalId(result.url);
-        original.nested.text = 'changed after request';
+      await t.test('removed approval HTTP routes cannot read or authorize an action', async () => {
+        const id = await propose(await newTask(), 'GMAIL_SEND_EMAIL', {});
+        assert.equal((await request('GET', `/api/approvals/${id}`)).statusCode, 404);
         assert.equal(
-          (await request('GET', `/api/approvals/${id}`)).json().args.nested.text,
-          'original',
+          (await request('POST', `/api/approvals/${id}`, { approved: true })).statusCode,
+          404,
         );
-        assert.equal(
-          (
-            await request('POST', `/api/approvals/${id}`, {
-              approved: true,
-              args: { recipient: 'attacker@example.test' },
-            })
-          ).statusCode,
-          400,
-        );
-        const before = calls.length;
-        const responses = await Promise.all(
-          Array.from({ length: 4 }, () =>
-            request('POST', `/api/approvals/${id}`, { approved: true }),
-          ),
-        );
-        assert.equal(responses.filter((response) => response.statusCode === 200).length, 1);
-        assert.equal(responses.filter((response) => response.statusCode === 409).length, 3);
-        assert.equal(calls.length, before + 1);
-        assert.deepEqual(calls.at(-1), {
-          action: 'GMAIL_SEND_EMAIL',
-          args: {
-            recipient: 'fixture@example.test',
-            subject: 'Approved snapshot',
-            nested: { text: 'original' },
-          },
-          context: { taskId, sourceMessageId: null },
-        });
-        const task = (
-          await db.pool.query('SELECT status,revision,prompt FROM tasks WHERE id=$1', [taskId])
-        ).rows[0];
-        assert.equal(task.status, 'queued');
-        assert.equal(task.revision, 1);
-        assert.match(task.prompt, /Do not repeat it/);
-        assert.equal(
-          (
-            await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [
-              taskId,
-            ])
-          ).rowCount,
-          1,
-        );
+        assert.equal((await stored(id)).status, 'pending');
       });
 
       await t.test(
-        'approval provenance stays within its task and uses the saved user-message snapshot',
+        'chat confirmation executes the stored snapshot once and queues only one continuation',
+        async () => {
+          const taskId = await newTask();
+          const source = (
+            await db.pool.query('SELECT source_message_id FROM tasks WHERE id=$1', [taskId])
+          ).rows[0].source_message_id;
+          const original = {
+            recipient: 'fixture@example.test',
+            subject: 'Confirmed snapshot',
+            nested: { text: 'original' },
+          };
+          const id = await propose(taskId, 'GMAIL_SEND_EMAIL', original);
+          original.nested.text = 'changed after request';
+          assert.equal((await stored(id)).args.nested.text, 'original');
+          assert.equal(
+            (
+              await request('POST', '/api/messages', {
+                text: 'Yes',
+                replyToMessageId: (await stored(id)).confirmation_message_id,
+                args: { recipient: 'attacker@example.test' },
+              })
+            ).statusCode,
+            400,
+          );
+          const before = calls.length;
+          const decisions = await Promise.allSettled(
+            Array.from({ length: 4 }, () => confirm(id, true)),
+          );
+          assert.equal(decisions.filter((result) => result.status === 'fulfilled').length, 1);
+          for (const result of decisions)
+            if (result.status === 'rejected') assert.equal(result.reason.statusCode, 409);
+          assert.equal(calls.length, before);
+          await Promise.all(Array.from({ length: 4 }, () => execute(id)));
+          assert.equal(calls.length, before + 1);
+          assert.deepEqual(calls.at(-1), {
+            action: 'GMAIL_SEND_EMAIL',
+            args: {
+              recipient: 'fixture@example.test',
+              subject: 'Confirmed snapshot',
+              nested: { text: 'original' },
+            },
+            context: { taskId, sourceMessageId: source },
+          });
+          const task = (
+            await db.pool.query('SELECT status,revision,prompt FROM tasks WHERE id=$1', [taskId])
+          ).rows[0];
+          assert.equal(task.status, 'running');
+          assert.equal(task.revision, 1);
+          assert.match(task.prompt, /Do not repeat it/);
+          assert.equal((await stored(id)).status, 'completed');
+          assert.equal(
+            (
+              await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [
+                taskId,
+              ])
+            ).rowCount,
+            1,
+          );
+        },
+      );
+
+      await t.test(
+        'confirmation provenance stays within its task and rejects a foreign or missing user source',
         async () => {
           const [firstTask, secondTask, unownedTask] = await Promise.all([
             newTask(),
@@ -257,36 +382,45 @@ test(
             );
             return id;
           }
-          await message(firstTask, 'user', ownerId, -60);
           const firstSource = await message(firstTask, 'user', ownerId, -30);
           const secondSource = await message(secondTask, 'user', ownerId, -20);
+          const foreignSource = await message(unownedTask, 'user', 'another-owner', 0);
+          for (const [taskId, source] of [
+            [firstTask, firstSource],
+            [secondTask, secondSource],
+            [unownedTask, foreignSource],
+          ])
+            await db.pool.query(
+              "UPDATE tasks SET source_message_id=$2,prompt='Provenance fixture' WHERE id=$1",
+              [taskId, source],
+            );
           await message(firstTask, 'user', 'another-owner', -10);
           await message(firstTask, 'assistant', ownerId, -5);
-          await message(unownedTask, 'user', 'another-owner', 0);
-          await message(unownedTask, 'assistant', ownerId, 1);
-          const [first, second, unowned] = await Promise.all([
-            approvals.request(firstTask, 'SIDEKICK_memory_propose', {
+          const [first, second] = await Promise.all([
+            propose(firstTask, 'SIDEKICK_memory_propose', {
               text: 'First task fact',
               sourceMessageId: secondSource,
             }),
-            approvals.request(secondTask, 'SIDEKICK_memory_propose', { text: 'Second task fact' }),
-            approvals.request(unownedTask, 'SIDEKICK_memory_propose', {
-              text: 'No owned user message',
-            }),
+            propose(secondTask, 'SIDEKICK_memory_propose', { text: 'Second task fact' }),
           ]);
+          await assert.rejects(
+            approvals.request(
+              unownedTask,
+              'SIDEKICK_memory_propose',
+              { text: 'No owned source' },
+              { revision: 0 },
+            ),
+            /direct request/,
+          );
+          await db.pool.query('UPDATE tasks SET source_message_id=NULL WHERE id=$1', [unownedTask]);
+          await assert.rejects(
+            approvals.request(unownedTask, 'SIDEKICK_memory_propose', {}, { revision: 0 }),
+            /direct request/,
+          );
           await message(firstTask, 'user', ownerId, 2);
           await message(secondTask, 'user', ownerId, 3);
-          const responses = await Promise.all(
-            [first, second, unowned].map((item) =>
-              request('POST', item.url.replace('/approvals/', '/api/approvals/'), {
-                approved: true,
-              }),
-            ),
-          );
-          assert.equal(
-            responses.every((response) => response.statusCode === 200),
-            true,
-          );
+          await Promise.all([confirm(first, true), confirm(second, true)]);
+          await Promise.all([execute(first), execute(second)]);
           assert.deepEqual(calls.find((call) => call.context.taskId === firstTask)?.context, {
             taskId: firstTask,
             sourceMessageId: firstSource,
@@ -295,176 +429,204 @@ test(
             taskId: secondTask,
             sourceMessageId: secondSource,
           });
-          assert.deepEqual(calls.find((call) => call.context.taskId === unownedTask)?.context, {
-            taskId: unownedTask,
-            sourceMessageId: null,
-          });
-          const snapshot = await db.pool.query(
-            'SELECT source_message_id FROM approvals WHERE id=$1',
-            [approvalId(first.url)],
+          assert.equal((await stored(first)).source_message_id, firstSource);
+          assert.equal(
+            calls.some((call) => call.context.taskId === unownedTask),
+            false,
           );
-          assert.equal(snapshot.rows[0].source_message_id, firstSource);
         },
       );
 
       await t.test(
-        'approval preflight rejects obsolete bindings before any execution or uncertain state',
+        'a confirmation preserves its original source while later input stays queued',
+        async () => {
+          const taskId = await tasks.submitTask('Review the original synthetic fact');
+          await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1", [taskId]);
+          const source = (
+            await db.pool.query("SELECT id FROM messages WHERE task_id=$1 AND role='user'", [
+              taskId,
+            ])
+          ).rows[0].id;
+          await tasks.submitUserMessage(
+            'This later instruction must not become the earlier confirmation source',
+            [],
+            { replyToMessageId: source },
+          );
+          const pending = (
+            await db.pool.query(
+              "SELECT message_id FROM pending_task_inputs WHERE task_id=$1 AND state='pending'",
+              [taskId],
+            )
+          ).rows[0];
+          assert.ok(pending);
+          const id = await propose(taskId, 'SIDEKICK_memory_propose', {
+            text: 'The original synthetic fact',
+          });
+          await confirm(id, true);
+          await execute(id);
+          assert.equal(
+            calls.find((call) => call.context.taskId === taskId)?.context.sourceMessageId,
+            source,
+          );
+          assert.equal((await stored(id)).source_message_id, source);
+          assert.equal(
+            (
+              await db.pool.query('SELECT state FROM pending_task_inputs WHERE message_id=$1', [
+                pending.message_id,
+              ])
+            ).rows[0].state,
+            'pending',
+          );
+          const revision = (await db.pool.query('SELECT revision FROM tasks WHERE id=$1', [taskId]))
+            .rows[0].revision;
+          await assert.rejects(
+            approvals.request(taskId, 'FIXTURE_SECOND_ACTION', {}, { revision }),
+            /direct request/,
+          );
+          await tasks.cancelTask(taskId);
+        },
+      );
+
+      await t.test(
+        'preflight rejects invalid proposals and confirmed obsolete actions before any uncertain execution',
         async () => {
           const taskId = await newTask();
-          const id = approvalId((await approvals.request(taskId, 'GMAIL_SEND_EMAIL', {})).url);
           const before = calls.length;
           rejectPreflight = true;
           try {
-            const rejected = await request('POST', `/api/approvals/${id}`, { approved: true });
-            assert.equal(rejected.statusCode, 409);
-            assert.equal(rejected.json().error, 'This approval needs a new account selection.');
-            assert.equal(calls.length, before);
-            assert.equal((await request('GET', `/api/approvals/${id}`)).json().status, 'pending');
-            assert.equal(
-              (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [taskId])).rows[0]
-                .status,
-              'waiting_user',
+            await assert.rejects(
+              approvals.request(taskId, 'GMAIL_SEND_EMAIL', {}, { revision: 0 }),
+              { statusCode: 409 },
             );
             assert.equal(
-              (
-                await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [
-                  taskId,
-                ])
-              ).rowCount,
+              (await db.pool.query('SELECT id FROM approvals WHERE task_id=$1', [taskId])).rowCount,
               0,
-            );
-            assert.equal(
-              (await request('POST', `/api/approvals/${id}`, { approved: false })).statusCode,
-              200,
             );
           } finally {
             rejectPreflight = false;
           }
+          const id = await propose(taskId, 'GMAIL_SEND_EMAIL', {});
+          rejectPreflight = true;
+          try {
+            await assert.rejects(confirm(id, true), { statusCode: 409 });
+            assert.equal((await stored(id)).status, 'pending');
+          } finally {
+            rejectPreflight = false;
+          }
+          await confirm(id, true);
+          rejectPreflight = true;
+          try {
+            await assert.rejects(execute(id), { statusCode: 409 });
+            assert.equal((await stored(id)).status, 'confirmed');
+            assert.equal(calls.length, before);
+          } finally {
+            rejectPreflight = false;
+          }
+          await tasks.cancelTask(taskId);
         },
       );
 
-      await t.test('cancelled, expired and other-owner approvals cannot execute', async () => {
-        const before = calls.length;
-        const cancelledTask = await newTask();
-        const cancelled = approvalId(
-          (await approvals.request(cancelledTask, 'GMAIL_SEND_EMAIL', {})).url,
-        );
-        await tasks.cancelTask(cancelledTask);
-        assert.equal(
-          (await request('POST', `/api/approvals/${cancelled}`, { approved: true })).statusCode,
-          409,
-        );
-        const expired = approvalId(
-          (await approvals.request(await newTask(), 'GMAIL_SEND_EMAIL', {})).url,
-        );
-        await db.pool.query(
-          "UPDATE approvals SET expires_at=now()-interval '1 minute' WHERE id=$1",
-          [expired],
-        );
-        assert.equal((await request('GET', `/api/approvals/${expired}`)).json().status, 'expired');
-        assert.equal(
-          (await request('POST', `/api/approvals/${expired}`, { approved: true })).statusCode,
-          409,
-        );
-        const foreign = approvalId(
-          (await approvals.request(await newTask(), 'GMAIL_SEND_EMAIL', {})).url,
-        );
-        await db.pool.query('UPDATE approvals SET owner_id=$2 WHERE id=$1', [
-          foreign,
-          'another-owner',
-        ]);
-        assert.equal((await request('GET', `/api/approvals/${foreign}`)).statusCode, 404);
-        assert.equal(
-          (await request('POST', `/api/approvals/${foreign}`, { approved: true })).statusCode,
-          409,
-        );
-        assert.equal(calls.length, before);
-      });
+      await t.test(
+        'cancelled, expired, wrong-channel and foreign confirmations cannot execute',
+        async () => {
+          const before = calls.length;
+          const cancelledTask = await newTask();
+          const cancelled = await propose(cancelledTask, 'GMAIL_SEND_EMAIL', {});
+          await tasks.cancelTask(cancelledTask);
+          await assert.rejects(confirm(cancelled, true), { statusCode: 409 });
+          const expired = await propose(await newTask(), 'GMAIL_SEND_EMAIL', {});
+          await db.pool.query(
+            "UPDATE approvals SET expires_at=now()-interval '1 minute' WHERE id=$1",
+            [expired],
+          );
+          await assert.rejects(confirm(expired, true), { statusCode: 409 });
+          const foreign = await propose(await newTask(), 'GMAIL_SEND_EMAIL', {});
+          await db.pool.query('UPDATE approvals SET owner_id=$2 WHERE id=$1', [
+            foreign,
+            'another-owner',
+          ]);
+          assert.equal(await confirm(foreign, true), undefined);
+          const otherChannel = await propose(await newTask(), 'GMAIL_SEND_EMAIL', {});
+          assert.equal(await confirm(otherChannel, true, { channel: 'telegram' }), undefined);
+          assert.equal((await stored(otherChannel)).status, 'pending');
+          assert.equal(calls.length, before);
+        },
+      );
 
       await t.test(
-        'approval from an old task revision cannot execute in a later waiting segment',
+        'stale revision, generation and changed consent cannot authorize a snapshot',
         async () => {
           const taskId = await newTask();
-          const id = approvalId(
-            (await approvals.request(taskId, 'GMAIL_SEND_EMAIL', { subject: 'obsolete' })).url,
+          const id = await propose(taskId, 'GMAIL_SEND_EMAIL', { subject: 'obsolete' });
+          assert.equal(
+            await confirm(id, true, { text: 'Yes, but send it to somebody else' }),
+            undefined,
           );
+          await assert.rejects(confirm(id, true, { conversationRevision: 1 }), { statusCode: 409 });
+          await assert.rejects(confirm(id, true, { taskId: randomUUID() }), { statusCode: 409 });
           await db.pool.query(
             "UPDATE tasks SET revision=revision+1,status='waiting_user' WHERE id=$1",
             [taskId],
           );
           const before = calls.length;
-          assert.equal(
-            (await request('POST', `/api/approvals/${id}`, { approved: true })).statusCode,
-            409,
-          );
+          await assert.rejects(confirm(id, true), { statusCode: 409 });
           assert.equal(calls.length, before);
+          await assert.rejects(
+            approvals.request(await newTask(), 'GMAIL_SEND_EMAIL', {}, { revision: 99 }),
+            { statusCode: 409 },
+          );
         },
       );
 
       await t.test(
-        'declining resumes without executing and ambiguous failures cannot retry',
+        'an unbound yes cannot consume an older question after another assistant message',
         async () => {
           const taskId = await newTask();
-          const id = approvalId((await approvals.request(taskId, 'GMAIL_SEND_EMAIL', {})).url);
-          const before = calls.length;
-          assert.equal(
-            (await request('POST', `/api/approvals/${id}`, { approved: false })).statusCode,
-            200,
+          const id = await propose(taskId, 'GMAIL_SEND_EMAIL', {});
+          await db.pool.query(
+            "INSERT INTO messages(id,owner_id,task_id,role,text,created_at) VALUES($1,$2,$3,'assistant','An unrelated question',now()+interval '1 second')",
+            [randomUUID(), ownerId, await newTask()],
           );
-          assert.equal(calls.length, before);
-          const task = (
-            await db.pool.query('SELECT status,prompt FROM tasks WHERE id=$1', [taskId])
+          assert.equal(await confirm(id, true, { replyToMessageId: undefined }), undefined);
+          assert.equal((await stored(id)).status, 'pending');
+          assert.ok(await confirm(id, false));
+        },
+      );
+
+      await t.test(
+        'an old secure-entry callback cannot resume a newer credential wait',
+        async () => {
+          const taskId = await newTask();
+          await db.pool.query(
+            "UPDATE tasks SET status='waiting_credentials',waiting_reason='credentials' WHERE id=$1",
+            [taskId],
+          );
+          const paused = await tasks.pauseOwnedTaskForControl(taskId);
+          await tasks.resumeOwnedTaskFromControl(taskId, paused.revision);
+          await db.pool.query(
+            "UPDATE tasks SET status='waiting_credentials',waiting_reason='credentials' WHERE id=$1",
+            [taskId],
+          );
+          const before = (
+            await db.pool.query(
+              'SELECT status,revision,action_resume_kind,action_resume_revision FROM tasks WHERE id=$1',
+              [taskId],
+            )
           ).rows[0];
-          assert.equal(task.status, 'queued');
-          assert.match(task.prompt, /user declined/);
-          assert.equal(
-            (await request('POST', `/api/approvals/${id}`, { approved: true })).statusCode,
-            409,
-          );
-          const failed = approvalId(
-            (await approvals.request(await newTask(), 'GMAIL_SEND_EMAIL', {})).url,
-          );
-          failExecution = true;
-          const response = await request('POST', `/api/approvals/${failed}`, { approved: true });
-          failExecution = false;
-          assert.equal(response.statusCode, 502);
-          assert.equal(response.body.includes('Fixture provider detail'), false);
-          assert.equal(
-            (await request('GET', `/api/approvals/${failed}`)).json().status,
-            'uncertain',
-          );
-          assert.equal(
-            (await request('POST', `/api/approvals/${failed}`, { approved: true })).statusCode,
-            409,
-          );
-          assert.equal(calls.length, before + 1);
-        },
-      );
-
-      await t.test(
-        'a failed decline enqueue rolls back the decision and can be retried',
-        async () => {
-          const taskId = await newTask();
-          const id = approvalId((await approvals.request(taskId, 'GMAIL_SEND_EMAIL', {})).url);
-          const send = t.mock.method(tasks.boss, 'send', async () => {
-            throw new Error('Injected queue failure');
-          });
-          try {
-            assert.equal(
-              (await request('POST', `/api/approvals/${id}`, { approved: false })).statusCode,
-              500,
-            );
-          } finally {
-            send.mock.restore();
-          }
-          assert.equal((await request('GET', `/api/approvals/${id}`)).json().status, 'pending');
-          assert.equal(
-            (await db.pool.query('SELECT id FROM messages WHERE task_id=$1', [taskId])).rowCount,
-            0,
-          );
-          assert.equal(
-            (await request('POST', `/api/approvals/${id}`, { approved: false })).statusCode,
-            200,
+          const jobsBefore = (
+            await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [
+              taskId,
+            ])
+          ).rowCount;
+          await tasks.resumeTask(taskId, 0);
+          assert.deepEqual(
+            (
+              await db.pool.query(
+                'SELECT status,revision,action_resume_kind,action_resume_revision FROM tasks WHERE id=$1',
+                [taskId],
+              )
+            ).rows[0],
+            before,
           );
           assert.equal(
             (
@@ -472,45 +634,127 @@ test(
                 taskId,
               ])
             ).rowCount,
-            1,
+            jobsBefore,
+          );
+          await tasks.resumeTask(taskId, before.revision);
+          const resumed = (await db.pool.query('SELECT * FROM tasks WHERE id=$1', [taskId]))
+            .rows[0];
+          assert.equal(resumed.status, 'queued');
+          assert.equal(resumed.revision, before.revision + 1);
+          assert.equal(resumed.action_resume_kind, 'credentials');
+          assert.equal(resumed.action_resume_revision, resumed.revision);
+          assert.equal(
+            (
+              await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [
+                taskId,
+              ])
+            ).rowCount,
+            jobsBefore! + 1,
           );
         },
       );
 
       await t.test(
-        'cancellation during approved execution records its outcome without waking the cancelled task',
+        'declining resumes once without executing and uncertain actions cannot replay',
         async () => {
           const taskId = await newTask();
-          const id = approvalId((await approvals.request(taskId, 'GMAIL_SEND_EMAIL', {})).url);
+          const id = await propose(taskId, 'GMAIL_SEND_EMAIL', {});
+          const before = calls.length;
+          assert.ok(await confirm(id, false));
+          assert.equal(calls.length, before);
+          const task = (
+            await db.pool.query('SELECT status,prompt FROM tasks WHERE id=$1', [taskId])
+          ).rows[0];
+          assert.equal(task.status, 'queued');
+          assert.match(task.prompt, /user declined/);
+          assert.equal((await stored(id)).status, 'declined');
+          await assert.rejects(confirm(id, true), { statusCode: 409 });
+          assert.equal(await execute(id), undefined);
+          const failed = await propose(await newTask(), 'GMAIL_SEND_EMAIL', {});
+          await confirm(failed, true);
+          failExecution = true;
+          try {
+            await assert.rejects(execute(failed), (error: unknown) => {
+              assert.ok(error instanceof Error);
+              assert.doesNotMatch(error.message, /Fixture provider detail/);
+              return (error as Error & { statusCode: number }).statusCode === 502;
+            });
+          } finally {
+            failExecution = false;
+          }
+          assert.equal((await stored(failed)).status, 'uncertain');
+          assert.equal(await execute(failed), undefined);
+          await assert.rejects(confirm(failed, true), { statusCode: 409 });
+          assert.equal(calls.length, before + 1);
+        },
+      );
+
+      await t.test('a failed decline enqueue rolls back both the decision and reply', async () => {
+        const taskId = await newTask();
+        const id = await propose(taskId, 'GMAIL_SEND_EMAIL', {});
+        const initialMessages = (
+          await db.pool.query('SELECT id FROM messages WHERE task_id=$1', [taskId])
+        ).rowCount;
+        const send = t.mock.method(tasks.boss, 'send', async () => {
+          throw new Error('Injected queue failure');
+        });
+        try {
+          await assert.rejects(confirm(id, false), /Injected queue failure/);
+        } finally {
+          send.mock.restore();
+        }
+        assert.equal((await stored(id)).status, 'pending');
+        assert.equal(
+          (await db.pool.query('SELECT id FROM messages WHERE task_id=$1', [taskId])).rowCount,
+          initialMessages,
+        );
+        assert.ok(await confirm(id, false));
+        assert.equal(
+          (
+            await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [
+              taskId,
+            ])
+          ).rowCount,
+          1,
+        );
+      });
+
+      await t.test(
+        'cancellation after chat acceptance prevents the worker from executing',
+        async () => {
+          const taskId = await newTask();
+          const id = await propose(taskId, 'GMAIL_SEND_EMAIL', {});
+          await confirm(id, true);
+          const before = calls.length;
+          await tasks.cancelTask(taskId);
+          assert.equal(await execute(id), undefined);
+          assert.equal(calls.length, before);
+          assert.equal((await stored(id)).status, 'confirmed');
+        },
+      );
+
+      await t.test(
+        'cancellation during confirmed execution records its result without waking the task',
+        async () => {
+          const taskId = await newTask();
+          const id = await propose(taskId, 'GMAIL_SEND_EMAIL', {});
+          await confirm(id, true);
           let release = () => {};
           executionGate = new Promise<void>((resolve) => {
             release = resolve;
           });
-          const response = request('POST', `/api/approvals/${id}`, { approved: true }).then(
-            (value) => value,
-          );
+          const pending = execute(id);
+          const completed = assert.rejects(pending, { statusCode: 409 });
           try {
             for (let attempt = 0; attempt < 100; attempt++) {
-              if (
-                (await db.pool.query('SELECT status FROM approvals WHERE id=$1', [id])).rows[0]
-                  .status === 'executing'
-              )
-                break;
+              if ((await stored(id)).status === 'executing') break;
               await delay(5);
             }
-            assert.equal(
-              (await db.pool.query('SELECT status FROM approvals WHERE id=$1', [id])).rows[0]
-                .status,
-              'executing',
-            );
+            assert.equal((await stored(id)).status, 'executing');
             await tasks.cancelTask(taskId);
             release();
-            assert.equal((await response).statusCode, 200);
-            assert.equal(
-              (await db.pool.query('SELECT status FROM approvals WHERE id=$1', [id])).rows[0]
-                .status,
-              'completed',
-            );
+            await completed;
+            assert.equal((await stored(id)).status, 'completed');
             assert.equal(
               (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [taskId])).rows[0]
                 .status,
@@ -522,28 +766,20 @@ test(
                   taskId,
                 ])
               ).rowCount,
-              0,
+              1,
             );
           } finally {
             release();
             executionGate = undefined;
-            await response;
+            await completed;
           }
-          const interrupted = approvalId(
-            (await approvals.request(await newTask(), 'GMAIL_SEND_EMAIL', {})).url,
-          );
+          const interrupted = await propose(await newTask(), 'GMAIL_SEND_EMAIL', {});
           await db.pool.query("UPDATE approvals SET status='executing' WHERE id=$1", [interrupted]);
           await createApprovals(async () => {
             throw new Error('Must not automatically retry');
           });
-          assert.equal(
-            (await request('GET', `/api/approvals/${interrupted}`)).json().status,
-            'uncertain',
-          );
-          assert.equal(
-            (await request('POST', `/api/approvals/${interrupted}`, { approved: true })).statusCode,
-            409,
-          );
+          assert.equal((await stored(interrupted)).status, 'uncertain');
+          await assert.rejects(confirm(interrupted, true), { statusCode: 409 });
         },
       );
 
@@ -621,7 +857,7 @@ test(
       );
 
       await t.test(
-        'schedules persist their timezone and cancellation removes the recurring job',
+        'schedules persist exact timezone-aware delayed jobs and deletion cancels only owned work',
         async () => {
           const result = await request('POST', '/api/schedules', {
             title: 'Future fixture',
@@ -635,23 +871,22 @@ test(
             (await request('GET', '/api/schedules')).json()[0].timeZone,
             'Europe/Lisbon',
           );
-          assert.equal(
-            (
-              await db.pool.query(`SELECT key FROM ${bossSchema}.schedule WHERE key=$1`, [
-                schedule.id,
-              ])
-            ).rowCount,
-            1,
-          );
+          const queued = (
+            await db.pool.query(
+              `SELECT j.id,j.state,j.data,j.start_after FROM schedules s JOIN ${bossSchema}.job j ON j.id=s.job_id WHERE s.id=$1`,
+              [schedule.id],
+            )
+          ).rows[0];
+          assert.equal(queued.state, 'created');
+          assert.equal(queued.data.scheduleId, schedule.id);
+          assert.equal(queued.data.revision, schedule.revision);
+          assert.equal(queued.start_after.toISOString(), schedule.nextRun);
           assert.equal((await request('DELETE', `/api/schedules/${schedule.id}`)).statusCode, 200);
           assert.equal((await request('GET', '/api/schedules')).json().length, 0);
           assert.equal(
-            (
-              await db.pool.query(`SELECT key FROM ${bossSchema}.schedule WHERE key=$1`, [
-                schedule.id,
-              ])
-            ).rowCount,
-            0,
+            (await db.pool.query(`SELECT state FROM ${bossSchema}.job WHERE id=$1`, [queued.id]))
+              .rows[0].state,
+            'cancelled',
           );
           assert.equal(
             (
@@ -679,9 +914,10 @@ test(
           assert.equal((await request('DELETE', `/api/schedules/${foreign.id}`)).statusCode, 404);
           assert.equal(
             (
-              await db.pool.query(`SELECT key FROM ${bossSchema}.schedule WHERE key=$1`, [
-                foreign.id,
-              ])
+              await db.pool.query(
+                `SELECT j.id FROM schedules s JOIN ${bossSchema}.job j ON j.id=s.job_id WHERE s.id=$1 AND j.state='created'`,
+                [foreign.id],
+              )
             ).rowCount,
             1,
           );

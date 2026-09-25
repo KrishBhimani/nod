@@ -1,0 +1,49 @@
+# Sidekick internal brief
+
+Updated 2026-09-25. This describes the repository, not a hosted release or a claim that every provider works. No team announcement has been sent.
+
+## What it does
+
+Sidekick is a local personal assistant built around one chat. It can navigate websites, use connected apps, create and return files, retain personal context, track goals and run scheduled work. Internal execution sessions group related requests; a follow-up can continue the same work instead of becoming a separate visible task. [Product and system guide](system-guide.md).
+
+Implemented surfaces include:
+
+- **Browser and files:** per-task Chromium profiles in a trusted Linux container, screenshots in chat, Linux command execution and owned artifacts. Images, audio, video and PDFs share a compact preview before and after sending. `/browser` supports ordinary manual control and a private desktop for website sign-in without launching Chrome on the user's Mac.
+- **Apps:** Gmail, Calendar, Drive, Sheets, Docs, Slack and Notion through Composio, with multiple accounts per service. Known ordinary actions can use a clear user instruction; destructive or unmatched actions ask a specific question in chat. A draft request does not authorize sending. Account bindings and the original user instruction are checked by the server.
+- **Vault:** named website logins, exact-origin account selection and staged password/one-time-code entry through a private form. The agent can continue the original browser task after submission. Logins and encrypted payment cards open directly for editing; saved passwords, card numbers and optional CVC/CVV use explicit reveal/copy/change controls. Deletion is confirmed inside the modal. Payment autofill is not implemented.
+- **Personal work:** saved facts, preferences, goals and one-off or recurring schedules. Goals has Active and Completed views; Schedule has Upcoming and execution History. Validated local plan changes can run without a second confirmation; the model must distinguish review-only requests from intended changes. Both pages offer confirmed deletion. Each model prompt receives the current local date/time, UTC offset and saved timezone, defaulting to Europe/Lisbon.
+- **Channels:** one allowlisted owner per configured Telegram or WhatsApp channel. Telegram supports owned image/file delivery; WhatsApp supports text in its reply window and a local-app attachment fallback. Secure credential forms remain local.
+- **Inspector:** current browser, active work, tool counts and actual calls, provider-grouped usage/cost estimates and private prompt snapshots. Unknown prices and failed recordings can make totals incomplete; these are not invoices.
+
+The mobile interface uses an icons-only bottom navigation bar. More contains Inspector and Get started. Apps uses a simple service list, and Vault details owns editing and confirmed deletion. [Web implementation](../src/web/AGENTS.md).
+
+## How it works
+
+One Node process serves React/Fastify, four task workers, the scheduler, background reviews and channel processing. PostgreSQL and pg-boss persist messages, execution revisions, waits, jobs and delivery records. Pi runs the model/tool loop. Provider adapters sit behind capability interfaces; server services own credential access, account authorization and durable state. [Architecture](architecture.md), [composition](../src/server/composition.ts).
+
+The trusted browser runs in a separate container from the untrusted Linux shell, with a private `browser-data` volume and no published port. A fixed Docker-exec bridge carries validated operations through stdin to a private Unix socket. The shell and browser use normal Docker networking without a destination deny policy. Browser profile mounts, control sockets, provider keys and the Docker socket remain unavailable to the shell. Other services remain reachable on the shared bridge. PostgreSQL requires a generated local password retained in private server configuration, not browser or shell environments. Native sign-in stays inside the container and uses a transient owner-only screen; ordinary agent observation remains paused. No host browser profiles are migrated. Task folders still share one local-owner workspace, and browser profiles share one trusted browser worker; this is not tenant isolation. Vault and channel secrets use authenticated encryption with a Keychain or supplied key. Other messages, files and transcripts are sensitive local data, not automatically encrypted by Vault. [Security](security.md).
+
+## Local setup
+
+Install Node.js 24.21.0 or newer, start Docker Desktop and run `npm run dev`. The launcher prepares dependencies and three containers: PostgreSQL, workspace and browser. Chromium comes from the browser image, with no host installation. The web app opens on loopback port 4310. Select `LLM_PROVIDER` and add its OpenAI or Anthropic key to ignored `.env`; Composio is optional for Apps. macOS uses Keychain; other hosts need `SIDEKICK_VAULT_KEY`. Channel setup is optional. [Setup](../README.md), [configuration](../.env.example).
+
+The app has no public login or multi-user authorization. Do not publish or tunnel the full application. Schedules, polling and reviews require the machine and app to remain running.
+
+## Priorities and limits
+
+1. **Keep acceptance evidence current.** Expand regression coverage for ambiguous follow-ups, memory corrections and multi-step waits. Routing and action-intent recognition are bounded model/policy decisions, not general reliability guarantees. Automatic outcome completion is not implemented.
+2. **Verify providers individually.** Synthetic consent, app reads and messaging transports do not prove external OAuth, event delivery or recipient delivery. Real website authentication remains provider-dependent; a reachable login page is not a successful login.
+3. **Measure complete behavior and cost.** Track end-to-end time, unknown action outcomes, missing usage records and actual provider bills. Background reviews are limited and do not guarantee a digest. Background agents cannot currently create follow-up schedules without direct user authorization.
+4. **Build hosting boundaries before deployment.** Authentication, tenant execution isolation, key rotation/recovery, private storage, versioned migrations/backups, worker leases, quotas and operational recovery remain required. Current startup recovery assumes one application instance. General desktop control, iMessage and card autofill remain missing; the private container sign-in display is limited to the browser. [Production requirements](production.md).
+
+## Verification
+
+The [verification index](verification.md) separates automated checks, real local app/model/browser runs and live provider checks. Dated reports are snapshots of their listed source versions:
+
+- [Current-model acceptance](testing/results/2026-09-25-current-acceptance.md): browser, screenshots, files, synthetic app reads, task continuity, actual timed schedules and Inspector totals.
+- [Goals, Schedule and secure sign-in](testing/results/2026-09-25-goals-schedules-auth.md): UI changes, persistence, password/fake-2FA retries and continuation, recurring and one-off dispatch, keyboard/narrow-layout and failure recovery.
+- [Named Vault accounts](testing/results/2026-09-25-vault-accounts.md), [saved credential details](testing/results/2026-09-25-vault-details.md) and [Apps/chat](testing/results/2026-09-25-apps-and-chat.md): their own bounded runs and limitations.
+
+Those earlier browser and authentication reports do not establish the new container path. Current transport/desktop fixtures use synthetic data; the verification index records any subsequent container acceptance run. Neither fake 2FA nor a successful synthetic login proves real-provider authentication.
+
+The CI workflow is configured for checks, disposable PostgreSQL tests, build and secret scans. Its first remote run is pending at the time of this brief. Passing local tests or a private repository push is not deployment verification. [Development checks](development.md).

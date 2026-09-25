@@ -1,4 +1,49 @@
-import type { CredentialInput } from '../../ports/computer.ts';
+import type { CredentialInput, CredentialKind } from '../../ports/computer.ts';
+
+export interface CredentialFeedback {
+  advanced: boolean;
+  rejected: boolean;
+  fingerprint: string;
+  sameDocument: boolean;
+}
+
+export function credentialFeedbackScript(
+  origin: string,
+  kind: CredentialKind,
+  attempt: string,
+  mark = false,
+): string {
+  return `(() => {
+    const origin=${JSON.stringify(origin)},kind=${JSON.stringify(kind)},attempt=${JSON.stringify(attempt)},mark=${JSON.stringify(mark)};
+    const root=document.documentElement;
+    if(location.origin!==origin) return {advanced:true,rejected:false,fingerprint:'',sameDocument:false};
+    const visible=e=>e && e.isConnected && e.getClientRects().length>0 && getComputedStyle(e).visibility!=='hidden' && getComputedStyle(e).display!=='none' && !e.closest('[hidden],[aria-hidden="true"],[inert]');
+    const fields=[...document.querySelectorAll('input')].filter(e=>visible(e)&&!e.disabled&&(
+      kind==='password'?e.type==='password':kind==='otp'?/one-time-code|verification.?code|authentication.?code|security.?code|otp|totp/i.test([e.id,e.name,e.autocomplete,e.getAttribute('aria-label')].join(' ')):
+      e.type==='email'||/username|user.?name|identifier|phone|email/i.test([e.id,e.name,e.autocomplete,e.getAttribute('aria-label')].join(' '))));
+    const errors=[...document.querySelectorAll('[role="alert"],[aria-live="assertive"],[data-error],.error,.invalid-feedback')].filter(visible).map(e=>(e.innerText||e.textContent||'').slice(0,2000)).filter(text=>/incorrect|invalid|wrong|rejected|not recognized|not recognised|not match|try again|inválid|incorret|incorrecto|invalide|ungültig|falsch/i.test(text));
+    const invalid=fields.some(e=>e.getAttribute('aria-invalid')==='true');
+    const text=JSON.stringify([errors,invalid]);
+    let hash=2166136261;
+    for(let index=0;index<text.length;index++) hash=Math.imul(hash^text.charCodeAt(index),16777619);
+    if(mark) root?.setAttribute('data-sidekick-entry-attempt',attempt);
+    return {advanced:fields.length===0,rejected:fields.length>0&&(errors.length>0||invalid),fingerprint:(hash>>>0).toString(16),sameDocument:root?.getAttribute('data-sidekick-entry-attempt')===attempt};
+  })()`;
+}
+
+export function credentialFeedback(value: unknown): CredentialFeedback | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const result = value as Record<string, unknown>;
+  if (
+    typeof result.advanced !== 'boolean' ||
+    typeof result.rejected !== 'boolean' ||
+    typeof result.sameDocument !== 'boolean' ||
+    typeof result.fingerprint !== 'string' ||
+    !/^[a-f0-9]{0,8}$/.test(result.fingerprint)
+  )
+    return undefined;
+  return result as unknown as CredentialFeedback;
+}
 
 export interface CredentialField {
   selector: string;

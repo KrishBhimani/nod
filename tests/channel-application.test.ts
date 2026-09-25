@@ -60,6 +60,7 @@ test(
     );
     await seedApp.close();
     const applied: Record<string, string>[] = [];
+    const sent: string[] = [];
     let closed = 0;
     const adapters: ApplicationAdapters = {
       agent: {
@@ -145,8 +146,9 @@ test(
                 ],
               };
             },
-            post: async () => {
-              assert.fail('This fixture sends no messages');
+            post: async (message) => {
+              sent.push(message.text);
+              return { id: 'fixture-sent-' + sent.length };
             },
             close: async () => {
               closed++;
@@ -190,6 +192,12 @@ test(
         "UPDATE tasks SET status='waiting_user',waiting_reason='question',waiting_question='Which city?' WHERE id=$1",
         [first.id],
       );
+      await pool.query(
+        "INSERT INTO messages(id,owner_id,role,text,task_id) SELECT $1,owner_id,'assistant','Which city?',id FROM tasks WHERE id=$2",
+        [randomUUID(), first.id],
+      );
+      await application.channels!.drain();
+      assert.deepEqual(sent, ['Which city?']);
       assert.equal((await send(2, 'Lisbon')).statusCode, 200);
       await application.channels!.drain();
       assert.equal((await pool.query('SELECT * FROM tasks')).rowCount, 1);

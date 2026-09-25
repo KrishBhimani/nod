@@ -1,8 +1,16 @@
+import type { ProviderUsageEvent } from './provider-usage.ts';
 import type { CredentialKind } from './computer.ts';
-import type { Artifact } from '../shared/contracts.ts';
+import type { AgentReactionResult, Artifact, MessageReaction } from '../shared/contracts.ts';
+export interface CredentialInvitation {
+  origin: string;
+  kind: CredentialKind;
+  methodSelection?: boolean;
+  savedLoginAvailable?: boolean;
+}
 
 export interface ModelUsageObservation {
   type: 'model_usage';
+  status?: 'succeeded' | 'failed' | 'cancelled';
   id: string;
   provider: string;
   model: string;
@@ -36,23 +44,45 @@ export interface RuntimeContext {
   background?: boolean;
   channel?: string;
   timeZone?: string;
+  currentMessageId?: string;
+  replyTo?: { id: string; role: string; text: string };
   history: Array<{
+    id?: string;
     role: string;
     text: string;
     createdAt?: string | Date;
     reaction?: string | null;
+    assistantReaction?: MessageReaction | null;
   }>;
+  sharedHistory?: Array<{ role: string; text: string; createdAt: string | Date; channel: string }>;
   memories: string[];
+  personalContext?: {
+    profile: { name: string; location: string; phone: string; preferences: string };
+    activeGoals: Array<{
+      title: string;
+      description: string;
+      progress: number;
+      nextAction: string;
+      targetDate: string | null;
+    }>;
+  };
   workspacePath: string;
   signal: AbortSignal;
   attachments: Array<{ path: string; mimeType: string }>;
   emit(type: string, summary: string): Promise<void>;
   observe?(event: RuntimeObservation): Promise<void>;
-  reply(text: string, streamId?: string): Promise<void>;
+  inspectPrompt?(snapshot: PromptSnapshot): Promise<void>;
+  reply(text: string, streamId?: string, replyToMessageId?: string): Promise<void>;
+  reactToMessage?(
+    messageId: string,
+    reaction: MessageReaction | null,
+  ): Promise<AgentReactionResult>;
+  connections?(action: 'list' | 'connect', service?: string): Promise<unknown>;
   waitForUser?(question: string): Promise<void>;
   delta(text: string, streamId?: string, done?: boolean): void;
   remember(text: string): Promise<void>;
   publish(path: string, name?: string): Promise<Artifact>;
+  publishScreenshot?(bytes: Uint8Array): Promise<Artifact>;
   createAudio?(text: string): Promise<Artifact>;
   requestCredential(input: {
     origin: string;
@@ -61,9 +91,19 @@ export interface RuntimeContext {
     usernameSelector?: string;
     passwordSelector?: string;
     submitSelector?: string;
-  }): Promise<{ url?: string; filled?: boolean }>;
+  }): Promise<{ url?: string; filled?: boolean; invitation?: CredentialInvitation }>;
   integration(action: string, args: Record<string, unknown>): Promise<unknown>;
+  downloadIntegrationFile?(action: string, args: Record<string, unknown>): Promise<Artifact>;
   manage(action: string, args: Record<string, unknown>): Promise<unknown>;
+}
+export interface PromptSnapshot {
+  id: string;
+  system: string;
+  instruction: string;
+  resumed: boolean;
+  imageCount: number;
+  reason: 'user' | 'secure_resume';
+  createdAt: string;
 }
 export interface RuntimeResult {
   status: 'succeeded' | 'waiting_credentials' | 'waiting_user';
@@ -88,6 +128,7 @@ export interface AgentTool extends AgentToolMetadata {
   execute(args: Record<string, unknown>): Promise<AgentToolResult>;
 }
 export type AgentEvent =
+  | { type: 'provider_usage'; usage: ProviderUsageEvent }
   | { type: 'turn_start' }
   | { type: 'message_start' }
   | { type: 'message_end'; status?: 'succeeded' | 'failed' | 'cancelled' }

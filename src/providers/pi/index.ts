@@ -1,5 +1,6 @@
 import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import {
   createAgentSession,
@@ -12,7 +13,8 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import type { Agent } from '../../ports/agent.ts';
 import { taskId } from '../../ports/task-identity.ts';
-import { createPiUsageTracker } from './usage.ts';
+import { createPiUsageTracker, piUsageMetrics, usageId } from './usage.ts';
+import { agentModels } from '../../shared/model-defaults.ts';
 
 function isFinalAnswer(signature: string | undefined) {
   if (!signature?.startsWith('{')) return false;
@@ -63,11 +65,7 @@ export function createPiAgent(options: {
         allowModelNetwork: false,
       });
       await runtime.setRuntimeApiKey(options.provider, options.apiKey);
-      const modelId =
-        options.model ||
-        ({ openai: 'gpt-5.4-mini', anthropic: 'claude-sonnet-4-6' } as Record<string, string>)[
-          options.provider
-        ];
+      const modelId = options.model || agentModels[options.provider as keyof typeof agentModels];
       const model = runtime.getModel(options.provider, modelId);
       if (!model)
         throw new Error('The configured model is not present in the installed Pi catalog.');
@@ -112,6 +110,8 @@ export function createPiAgent(options: {
         return input.shouldStop() ? { action: 'end' as const } : (result ?? undefined);
       };
       let textBlock: number | undefined;
+      let compaction: { id: string; started: number } | undefined;
+      const auxiliarySeen = new Set(manager.getEntries().map((entry) => entry.id));
       const observeUsage = createPiUsageTracker({
         sessionId: manager.getSessionId(),
         provider: model.provider,
@@ -123,6 +123,46 @@ export function createPiAgent(options: {
           ),
       });
       const unsubscribe = session.subscribe((event) => {
+        if (event.type === 'compaction_start')
+          compaction = { id: randomUUID(), started: performance.now() };
+        if (event.type === 'compaction_end') {
+          input.onEvent({
+            type: 'provider_usage',
+            usage: {
+              id: compaction?.id ?? randomUUID(),
+              provider: model.provider,
+              category: 'agent',
+              operation: 'compaction',
+              model: model.id,
+              taskId: input.taskId,
+              status: event.aborted ? 'cancelled' : event.errorMessage ? 'failed' : 'succeeded',
+              durationMs: compaction ? performance.now() - compaction.started : 0,
+              ...piUsageMetrics(event.result?.usage),
+            },
+          });
+          compaction = undefined;
+        }
+        if (
+          event.type === 'entry_appended' &&
+          event.entry.type === 'usage' &&
+          !auxiliarySeen.has(event.entry.id)
+        ) {
+          auxiliarySeen.add(event.entry.id);
+          input.onEvent({
+            type: 'provider_usage',
+            usage: {
+              id: usageId(manager.getSessionId(), event.entry.id),
+              provider: event.entry.provider,
+              category: 'agent',
+              operation: event.entry.kind === 'cache_warm' ? 'cache_warm' : 'auxiliary',
+              model: event.entry.model,
+              taskId: input.taskId,
+              status: 'succeeded',
+              durationMs: 0,
+              ...piUsageMetrics(event.entry.usage),
+            },
+          });
+        }
         if (event.type === 'message_start' && event.message.role === 'assistant') {
           textBlock = undefined;
           input.onEvent({ type: 'message_start' });

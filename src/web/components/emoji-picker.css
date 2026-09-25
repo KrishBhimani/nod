@@ -1,0 +1,41 @@
+.chat-emoji-popover.is-compact {
+  padding: 5px;
+  border-radius: 999px;
+  overflow: visible;
+}
+
+.chat-reaction-strip {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.chat-reaction-strip button {
+  display: grid;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 36px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chat-reaction-strip button:hover,
+.chat-reaction-strip button[aria-pressed='true'] {
+  background: var(--muted);
+}
+
+.chat-reaction-strip button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.chat-reaction-strip .chat-reaction-more {
+  background: var(--muted);
+  color: var(--foreground);
+}

@@ -6,7 +6,8 @@ export function remarkLocalLinks() {
     visit(tree, 'text', (node: Text, index, parent) => {
       if (index === undefined || !parent || ['link', 'linkReference'].includes(parent.type)) return;
       const parts: (Text | Link)[] = [];
-      const pattern = /(?<![\w/:])\/(?:api\/artifacts|credentials|approvals)\/[A-Za-z0-9_-]+/g;
+      const pattern =
+        /(?<![\w/:])\/(?:api\/artifacts|vault|credentials|approvals)\/[A-Za-z0-9_-]+/g;
       let cursor = 0;
       for (const match of node.value.matchAll(pattern)) {
         if (match.index > cursor)

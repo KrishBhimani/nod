@@ -1,0 +1,598 @@
+import { createHash, randomUUID } from 'node:crypto';
+import type { FastifyInstance } from 'fastify';
+import type { Pool, PoolClient } from 'pg';
+import type { Job, PgBoss } from 'pg-boss';
+import { z } from 'zod';
+import type { Schedule, ScheduleRun, TaskStatus } from '../shared/contracts.ts';
+import type { submitTask } from './tasks.ts';
+import { currentConversationSql } from './conversations.ts';
+
+const queue = 'scheduled-task';
+const timingSchema = z.object({
+  kind: z.enum(['once', 'recurring']).default('recurring'),
+  cron: z.string().trim().min(1).max(100).nullable().optional(),
+  runAt: z.iso.datetime({ offset: true }).nullable().optional(),
+  timeZone: z.string().trim().min(1).max(100),
+});
+const createSchema = timingSchema
+  .extend({
+    title: z.string().trim().min(1).max(100),
+    prompt: z.string().trim().min(1).max(6000),
+  })
+  .strict();
+const updateSchema = createSchema
+  .omit({ kind: true })
+  .partial()
+  .extend({ kind: z.enum(['once', 'recurring']).optional(), enabled: z.boolean().optional() })
+  .strict();
+const cursorSchema = z.object({ createdAt: z.iso.datetime(), id: z.uuid() }).strict();
+const historySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    cursor: z.string().min(1).max(500).optional(),
+  })
+  .strict();
+const columns =
+  'id,title,prompt,kind,cron,run_at AS "runAt",time_zone AS "timeZone",enabled,revision,next_run_at AS "nextRun",job_id AS "jobId",delivery_channel AS "deliveryChannel",channel_source_id AS "channelSourceId"';
+
+export interface ScheduleDependencies {
+  pool: Pool;
+  ownerId: string;
+  scheduler: Pick<
+    PgBoss,
+    'createQueue' | 'work' | 'send' | 'cancel' | 'getJobById' | 'unschedule' | 'previewSchedule'
+  >;
+  submitTask: typeof submitTask;
+  refresh(): void;
+  now?: () => Date;
+}
+
+interface ScheduleRow {
+  id: string;
+  title: string;
+  prompt: string;
+  kind: 'once' | 'recurring';
+  cron: string | null;
+  runAt: Date | null;
+  timeZone: string;
+  enabled: boolean;
+  revision: number;
+  nextRun: Date | null;
+  jobId: string | null;
+  deliveryChannel: string;
+  channelSourceId: string | null;
+}
+
+interface ScheduleJob {
+  scheduleId: string;
+  revision: number;
+  scheduledFor: string;
+}
+
+interface RunRow {
+  id: string;
+  scheduleId: string;
+  title: string;
+  taskId: string;
+  scheduledFor: Date;
+  timeZone: string;
+  createdAt: Date;
+  status: TaskStatus;
+  error: string | null;
+  cursorAt: string;
+}
+
+function invalid(message: string) {
+  return Object.assign(new Error(message), { statusCode: 400 });
+}
+
+function runValue(row: RunRow): ScheduleRun {
+  return {
+    id: row.id,
+    scheduleId: row.scheduleId,
+    title: row.title,
+    taskId: row.taskId,
+    scheduledFor: row.scheduledFor.toISOString(),
+    timeZone: row.timeZone,
+    createdAt: row.createdAt.toISOString(),
+    status: row.status,
+    error: row.error,
+  };
+}
+
+export function createSchedules(dependencies: ScheduleDependencies) {
+  const { pool, ownerId, scheduler, submitTask, refresh } = dependencies;
+  const now = dependencies.now ?? (() => new Date());
+  let workerStarted = false;
+
+  async function transaction<T>(operation: (client: PoolClient) => Promise<T>) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await operation(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  function validateTiming(input: z.infer<typeof timingSchema>, enabled: boolean) {
+    try {
+      scheduler.previewSchedule('0 0 * * *', { tz: input.timeZone, count: 1 });
+    } catch {
+      throw invalid('Choose a valid time zone.');
+    }
+    if (input.kind === 'once') {
+      if (!input.runAt || input.cron)
+        throw invalid('A one-off schedule needs one exact date and time, with its UTC offset.');
+      if (enabled && new Date(input.runAt).getTime() <= now().getTime())
+        throw invalid('Choose a future date and time.');
+    } else {
+      if (!input.cron || input.runAt || input.cron.split(/\s+/).length !== 5)
+        throw invalid('Use a five-field cron schedule for recurring work.');
+      try {
+        scheduler.previewSchedule(input.cron, { tz: input.timeZone, count: 1 });
+      } catch {
+        throw invalid('Check the schedule and time zone.');
+      }
+    }
+  }
+
+  function nextOccurrence(schedule: ScheduleRow, after = now()) {
+    if (!schedule.enabled) return null;
+    if (schedule.kind === 'once') return schedule.runAt;
+    return scheduler.previewSchedule(schedule.cron!, {
+      tz: schedule.timeZone,
+      count: 1,
+      from: after,
+    })[0]!;
+  }
+
+  async function enqueue(client: PoolClient, schedule: ScheduleRow, due: Date | null) {
+    let jobId: string | null = null;
+    if (due) {
+      jobId = await scheduler.send(
+        queue,
+        {
+          scheduleId: schedule.id,
+          revision: schedule.revision,
+          scheduledFor: due.toISOString(),
+        },
+        {
+          startAfter: due,
+          retryLimit: 5,
+          retryDelay: 15,
+          retryBackoff: true,
+          expireInSeconds: 60,
+          db: { executeSql: (sql, values) => client.query(sql, values) },
+        },
+      );
+      if (!jobId) throw new Error('The schedule could not be queued.');
+    }
+    await client.query(
+      'UPDATE schedules SET job_id=$3,next_run_at=$4 WHERE id=$1 AND owner_id=$2',
+      [schedule.id, ownerId, jobId, due],
+    );
+    return { ...schedule, jobId, nextRun: due };
+  }
+
+  async function cancelPending(client: PoolClient, schedule: ScheduleRow) {
+    if (schedule.jobId)
+      await scheduler.cancel(queue, schedule.jobId, {
+        db: { executeSql: (sql, values) => client.query(sql, values) },
+      });
+  }
+
+  async function dispatch(job: Job<ScheduleJob>) {
+    job.signal.throwIfAborted();
+    const accepted = await transaction(async (client) => {
+      const row = (
+        await client.query<ScheduleRow>(
+          `SELECT ${columns} FROM schedules WHERE id=$1 AND owner_id=$2 FOR UPDATE`,
+          [job.data.scheduleId, ownerId],
+        )
+      ).rows[0];
+      if (
+        !row?.enabled ||
+        row.jobId !== job.id ||
+        row.revision !== job.data.revision ||
+        row.nextRun?.toISOString() !== job.data.scheduledFor
+      )
+        return false;
+      job.signal.throwIfAborted();
+      const taskId = await submitTask(
+        `Scheduled task: ${row.title}\n${row.prompt}\nOnly send a message if there is a useful result, a problem or a necessary question.`,
+        [],
+        undefined,
+        true,
+        {
+          sourceId: `schedule:${row.id}:${row.revision}:${job.data.scheduledFor}`,
+          source: 'schedule',
+          channel: row.deliveryChannel,
+          client,
+        },
+      );
+      if (row.channelSourceId)
+        await client.query(
+          'INSERT INTO channel_task_routes(task_id,owner_id,source_id) VALUES($1,$2,$3)',
+          [taskId, ownerId, row.channelSourceId],
+        );
+      await client.query(
+        `INSERT INTO schedule_runs(id,owner_id,schedule_id,schedule_revision,job_id,title,task_id,scheduled_for,time_zone)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [
+          randomUUID(),
+          ownerId,
+          row.id,
+          row.revision,
+          job.id,
+          row.title,
+          taskId,
+          row.nextRun,
+          row.timeZone,
+        ],
+      );
+      if (row.kind === 'once') {
+        await client.query('UPDATE schedules SET enabled=false WHERE id=$1 AND owner_id=$2', [
+          row.id,
+          ownerId,
+        ]);
+        await enqueue(client, { ...row, enabled: false }, null);
+      } else {
+        await enqueue(
+          client,
+          row,
+          nextOccurrence(row, new Date(Math.max(now().getTime(), row.nextRun!.getTime()))),
+        );
+      }
+      job.signal.throwIfAborted();
+      return true;
+    });
+    if (accepted) refresh();
+  }
+
+  async function initialize(options: { workers?: boolean } = {}) {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS schedules (
+        id uuid PRIMARY KEY, owner_id text NOT NULL, title text NOT NULL, prompt text NOT NULL,
+        cron text, time_zone text NOT NULL, enabled boolean NOT NULL DEFAULT true,
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+      ALTER TABLE schedules ALTER COLUMN cron DROP NOT NULL;
+      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'recurring';
+      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS run_at timestamptz;
+      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS revision integer NOT NULL DEFAULT 0;
+      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS next_run_at timestamptz;
+      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS job_id uuid;
+      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS delivery_channel text NOT NULL DEFAULT 'web';
+      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS channel_source_id text;
+      CREATE TABLE IF NOT EXISTS schedule_runs (
+        id uuid PRIMARY KEY, owner_id text NOT NULL, schedule_id uuid NOT NULL,
+        schedule_revision integer NOT NULL, job_id uuid UNIQUE NOT NULL,
+        title text NOT NULL, task_id uuid NOT NULL, scheduled_for timestamptz NOT NULL,
+        time_zone text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE(schedule_id,schedule_revision,scheduled_for)
+      );
+      CREATE INDEX IF NOT EXISTS schedule_runs_owner_time ON schedule_runs(owner_id,created_at DESC,id DESC);
+      CREATE INDEX IF NOT EXISTS schedule_runs_schedule ON schedule_runs(owner_id,schedule_id,created_at DESC,id DESC);
+    `);
+    await scheduler.createQueue(queue, { retryLimit: 5, retryDelay: 15, retryBackoff: true });
+    const schedules = await pool.query<{ id: string }>(
+      'SELECT id FROM schedules WHERE owner_id=$1 ORDER BY id',
+      [ownerId],
+    );
+    for (const { id } of schedules.rows) {
+      await scheduler.unschedule(queue, id);
+      await transaction(async (client) => {
+        const row = (
+          await client.query<ScheduleRow>(
+            `SELECT ${columns} FROM schedules WHERE id=$1 AND owner_id=$2 FOR UPDATE`,
+            [id, ownerId],
+          )
+        ).rows[0];
+        if (!row) return;
+        const existing = row.jobId
+          ? await scheduler.getJobById(queue, row.jobId, {
+              db: { executeSql: (sql, values) => client.query(sql, values) },
+            })
+          : null;
+        if (row.enabled && existing && ['created', 'retry', 'active'].includes(existing.state))
+          return;
+        await cancelPending(client, row);
+        await enqueue(client, row, row.enabled ? (row.nextRun ?? nextOccurrence(row)) : null);
+      });
+    }
+    if (options.workers !== false && !workerStarted) {
+      await scheduler.work<ScheduleJob>(queue, async (jobs) => {
+        for (const job of jobs) await dispatch(job);
+      });
+      workerStarted = true;
+    }
+  }
+
+  async function history(raw: unknown = {}, scheduleId?: string) {
+    const input = historySchema.parse(raw);
+    let cursor: z.infer<typeof cursorSchema> | null = null;
+    if (input.cursor) {
+      try {
+        cursor = cursorSchema.parse(
+          JSON.parse(Buffer.from(input.cursor, 'base64url').toString('utf8')),
+        );
+      } catch {
+        throw invalid('This history cursor is invalid.');
+      }
+    }
+    if (scheduleId) {
+      z.uuid().parse(scheduleId);
+      const owned = await pool.query(
+        'SELECT id FROM schedules WHERE id=$1 AND owner_id=$2 UNION ALL SELECT id FROM schedule_runs WHERE schedule_id=$1 AND owner_id=$2 LIMIT 1',
+        [scheduleId, ownerId],
+      );
+      if (!owned.rowCount)
+        throw Object.assign(new Error('Schedule not found.'), { statusCode: 404 });
+    }
+    const rows = (
+      await pool.query<RunRow>(
+        `SELECT r.id,r.schedule_id AS "scheduleId",r.title,r.task_id AS "taskId",
+           r.scheduled_for AS "scheduledFor",r.time_zone AS "timeZone",r.created_at AS "createdAt",
+           t.status,t.error,to_char(r.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "cursorAt"
+         FROM schedule_runs r JOIN tasks t ON t.id=r.task_id AND t.owner_id=r.owner_id
+         WHERE r.owner_id=$1 AND ($2::uuid IS NULL OR r.schedule_id=$2)
+           AND ($3::timestamptz IS NULL OR (r.created_at,r.id)<($3::timestamptz,$4::uuid))
+         ORDER BY r.created_at DESC,r.id DESC LIMIT $5`,
+        [
+          ownerId,
+          scheduleId ?? null,
+          cursor?.createdAt ?? null,
+          cursor?.id ?? null,
+          input.limit + 1,
+        ],
+      )
+    ).rows;
+    const page = rows.slice(0, input.limit);
+    const last = page.at(-1);
+    return {
+      runs: page.map(runValue),
+      nextCursor:
+        rows.length > input.limit && last
+          ? Buffer.from(JSON.stringify({ createdAt: last.cursorAt, id: last.id })).toString(
+              'base64url',
+            )
+          : null,
+    };
+  }
+
+  async function value(row: ScheduleRow): Promise<Schedule> {
+    return {
+      id: row.id,
+      title: row.title,
+      prompt: row.prompt,
+      kind: row.kind,
+      cron: row.cron,
+      runAt: row.runAt?.toISOString() ?? null,
+      timeZone: row.timeZone,
+      enabled: row.enabled,
+      revision: row.revision,
+      nextRun: row.nextRun?.toISOString() ?? null,
+      lastRun: (await history({ limit: 1 }, row.id)).runs[0] ?? null,
+    };
+  }
+
+  async function list() {
+    const rows = (
+      await pool.query<ScheduleRow>(
+        `SELECT ${columns} FROM schedules WHERE owner_id=$1 ORDER BY created_at DESC,id`,
+        [ownerId],
+      )
+    ).rows;
+    return Promise.all(rows.map(value));
+  }
+
+  function validateCreate(raw: unknown) {
+    const input = createSchema.parse(raw);
+    validateTiming(input, true);
+    return input;
+  }
+
+  function updateValue(previous: ScheduleRow, input: z.infer<typeof updateSchema>) {
+    const next = {
+      ...previous,
+      ...(input.kind && input.kind !== previous.kind ? { cron: null, runAt: null } : {}),
+      ...input,
+      runAt:
+        input.runAt === undefined
+          ? input.kind === 'recurring'
+            ? null
+            : previous.runAt?.toISOString()
+          : input.runAt,
+    };
+    validateTiming(next, next.enabled && (input.enabled === true || input.runAt !== undefined));
+    return next;
+  }
+
+  async function validateUpdate(id: string, raw: unknown) {
+    z.uuid().parse(id);
+    const input = updateSchema.parse(raw);
+    if (!Object.keys(input).length) throw invalid('Choose a schedule detail to update.');
+    const previous = (
+      await pool.query<ScheduleRow>(
+        `SELECT ${columns} FROM schedules WHERE id=$1 AND owner_id=$2`,
+        [id, ownerId],
+      )
+    ).rows[0];
+    if (!previous) throw Object.assign(new Error('Schedule not found.'), { statusCode: 404 });
+    updateValue(previous, input);
+    return input;
+  }
+
+  async function deliveryRoute(
+    client: PoolClient,
+    provenance?: { taskId?: string; sourceMessageId: string | null },
+  ) {
+    if (!provenance?.taskId) return { channel: 'web', sourceId: null };
+    const taskId = z.uuid().parse(provenance.taskId);
+    const sourceMessageId = z.uuid().nullable().parse(provenance.sourceMessageId);
+    const task = (
+      await client.query<{ channel: string; source: string }>(
+        `SELECT t.channel,t.source FROM tasks t
+         WHERE t.id=$1 AND t.owner_id=$2 AND ${currentConversationSql()}
+           AND ($3::uuid IS NULL OR EXISTS(SELECT 1 FROM messages m
+             WHERE m.id=$3 AND m.task_id=t.id AND m.owner_id=t.owner_id AND m.role='user'))
+         FOR SHARE OF t`,
+        [taskId, ownerId, sourceMessageId],
+      )
+    ).rows[0];
+    const unavailable = () => invalid('The schedule delivery conversation is unavailable.');
+    if (!task) throw unavailable();
+    if (task.channel === 'web') return { channel: 'web', sourceId: null };
+    if (!sourceMessageId && task.source === 'user') throw unavailable();
+    const route = (
+      await client.query<{
+        source_id: string;
+        provider: string;
+        account_id: string;
+        sender_id: string;
+      }>(
+        `SELECT i.source_id,i.provider,i.account_id,i.sender_id FROM channel_inbox i
+         JOIN tasks origin ON origin.id=i.task_id AND origin.owner_id=$2
+         WHERE i.state='submitted' AND
+           (($3::uuid IS NOT NULL AND i.task_id=$1 AND i.message_id=$3) OR
+            ($3::uuid IS NULL AND EXISTS(SELECT 1 FROM channel_task_routes r
+              WHERE r.task_id=$1 AND r.owner_id=$2 AND r.source_id=i.source_id)))`,
+        [taskId, ownerId, sourceMessageId],
+      )
+    ).rows[0];
+    if (!route) throw unavailable();
+    const identity = createHash('sha256')
+      .update(JSON.stringify([route.account_id, route.sender_id]))
+      .digest('hex')
+      .slice(0, 32);
+    if (task.channel !== `${route.provider}:${identity}`) throw unavailable();
+    return { channel: task.channel, sourceId: route.source_id };
+  }
+
+  async function create(
+    raw: unknown,
+    provenance?: { taskId?: string; sourceMessageId: string | null },
+  ) {
+    const input = validateCreate(raw);
+    const row = await transaction(async (client) => {
+      const route = await deliveryRoute(client, provenance);
+      const saved = (
+        await client.query<ScheduleRow>(
+          `INSERT INTO schedules(id,owner_id,title,prompt,kind,cron,run_at,time_zone,delivery_channel,channel_source_id)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING ${columns}`,
+          [
+            randomUUID(),
+            ownerId,
+            input.title,
+            input.prompt,
+            input.kind,
+            input.cron ?? null,
+            input.runAt ?? null,
+            input.timeZone,
+            route.channel,
+            route.sourceId,
+          ],
+        )
+      ).rows[0]!;
+      return enqueue(client, saved, nextOccurrence(saved));
+    });
+    refresh();
+    return value(row);
+  }
+
+  async function update(id: string, raw: unknown) {
+    z.uuid().parse(id);
+    const input = updateSchema.parse(raw);
+    if (!Object.keys(input).length) throw invalid('Choose a schedule detail to update.');
+    const row = await transaction(async (client) => {
+      const previous = (
+        await client.query<ScheduleRow>(
+          `SELECT ${columns} FROM schedules WHERE id=$1 AND owner_id=$2 FOR UPDATE`,
+          [id, ownerId],
+        )
+      ).rows[0];
+      if (!previous) throw Object.assign(new Error('Schedule not found.'), { statusCode: 404 });
+      const next = updateValue(previous, input);
+      await cancelPending(client, previous);
+      const saved = (
+        await client.query<ScheduleRow>(
+          `UPDATE schedules SET title=$3,prompt=$4,kind=$5,cron=$6,run_at=$7,time_zone=$8,
+             enabled=$9,revision=revision+1 WHERE id=$1 AND owner_id=$2 RETURNING ${columns}`,
+          [
+            id,
+            ownerId,
+            next.title,
+            next.prompt,
+            next.kind,
+            next.cron,
+            next.runAt ?? null,
+            next.timeZone,
+            next.enabled,
+          ],
+        )
+      ).rows[0]!;
+      const timingChanged = ['kind', 'cron', 'runAt', 'timeZone', 'enabled'].some(
+        (key) => key in input,
+      );
+      return enqueue(
+        client,
+        saved,
+        !timingChanged && saved.enabled && previous.nextRun
+          ? previous.nextRun
+          : nextOccurrence(saved),
+      );
+    });
+    refresh();
+    return value(row);
+  }
+
+  async function remove(id: string) {
+    z.uuid().parse(id);
+    await transaction(async (client) => {
+      const row = (
+        await client.query<ScheduleRow>(
+          `SELECT ${columns} FROM schedules WHERE id=$1 AND owner_id=$2 FOR UPDATE`,
+          [id, ownerId],
+        )
+      ).rows[0];
+      if (!row) throw Object.assign(new Error('Schedule not found.'), { statusCode: 404 });
+      await cancelPending(client, row);
+      await client.query('DELETE FROM schedules WHERE id=$1 AND owner_id=$2', [id, ownerId]);
+    });
+    refresh();
+    return { ok: true };
+  }
+
+  function registerRoutes(app: FastifyInstance) {
+    app.get('/api/schedules', list);
+    app.post('/api/schedules', (request) => create(request.body));
+    app.patch<{ Params: { id: string } }>('/api/schedules/:id', (request) =>
+      update(request.params.id, request.body),
+    );
+    app.delete<{ Params: { id: string } }>('/api/schedules/:id', (request) =>
+      remove(request.params.id),
+    );
+    app.get('/api/schedule-runs', (request) => history(request.query));
+    app.get<{ Params: { id: string } }>('/api/schedules/:id/runs', (request) =>
+      history(request.query, request.params.id),
+    );
+  }
+
+  return {
+    initialize,
+    list,
+    create,
+    update,
+    remove,
+    history,
+    registerRoutes,
+    validateCreate,
+    validateUpdate,
+  };
+}

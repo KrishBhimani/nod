@@ -11,7 +11,7 @@ import { createPiUsageTracker } from '../src/providers/pi/usage.ts';
 import { fakeComputer } from './runtime-fixtures.ts';
 
 test(
-  'replacement adapters preserve artifacts, streaming, write approvals and memory provenance through the full application',
+  'replacement adapters preserve artifacts, streaming, chat confirmation and memory provenance through the full application',
   { skip: !process.env.TEST_DATABASE_URL, timeout: 45_000 },
   async () => {
     const suffix = randomUUID().replaceAll('-', '').slice(0, 16);
@@ -88,17 +88,61 @@ test(
           abort: () => {},
           dispose: () => {},
           prompt: async (text) => {
+            const marker = 'Request data (JSON):\n';
+            const markerIndex = text.indexOf(marker);
+            assert.ok(markerIndex >= 0);
+            const { currentInstruction } = JSON.parse(text.slice(markerIndex + marker.length));
+            assert.equal(typeof currentInstruction, 'string');
             const tools = new Map(input.tools.map((tool) => [tool.name, tool]));
             const call = (name: string, args: Record<string, unknown>) =>
               tools.get(name)!.execute(args);
+            if (
+              currentInstruction.endsWith(
+                'Use what you already know about me without repeating setup questions.',
+              )
+            ) {
+              const connections = await call('manage_apps', { action: 'list' });
+              assert.equal(connections.content[0].type, 'text');
+              if (connections.content[0].type === 'text') {
+                const accounts = JSON.parse(connections.content[0].text);
+                assert.ok(
+                  accounts.some(
+                    (account: { slug: string; status: string }) =>
+                      account.slug === 'gmail' && account.status === 'connected',
+                  ),
+                );
+                assert.equal(
+                  accounts.some((account: Record<string, unknown>) => 'accountId' in account),
+                  false,
+                );
+              }
+              await call('apps', { action: 'GMAIL_FETCH_EMAILS', args: { max_results: 2 } });
+              await assert.rejects(
+                call('apps', {
+                  action: 'GMAIL_SEND_EMAIL',
+                  args: {
+                    recipient_email: 'fixture@example.test',
+                    subject: 'Must not send during setup',
+                  },
+                }),
+                /could not be completed/,
+              );
+              input.onEvent({
+                type: 'final',
+                text: 'Your inbox is connected. I can help prepare a reply.',
+              });
+              return;
+            }
             if (phase > 0) {
-              assert.match(text, /Do not repeat/);
+              assert.match(currentInstruction, /Do not repeat/);
               input.onEvent({ type: 'message_start' });
               input.onEvent({ type: 'final', text: 'Approved action completed.' });
               input.onEvent({ type: 'message_end' });
               return;
             }
-            if (text.endsWith('Fixture memory task: Remember that I prefer concise replies.')) {
+            if (
+              currentInstruction === 'Fixture memory task: Review whether I prefer concise replies.'
+            ) {
               await call('manage_personal_context', {
                 action: 'memory_propose',
                 args: { text: 'I prefer concise replies.' },
@@ -106,7 +150,7 @@ test(
               assert.equal(input.shouldStop(), true);
               return;
             }
-            if (text.endsWith('I prefer short messages.')) {
+            if (currentInstruction === 'I prefer short messages.') {
               await call('remember', { quote: 'I prefer short messages.' });
               assert.equal(input.shouldStop(), false);
               input.onEvent({ type: 'message_start' });
@@ -114,14 +158,14 @@ test(
               input.onEvent({ type: 'message_end' });
               return;
             }
-            if (text.endsWith('Fixture unrelated message')) {
+            if (currentInstruction === 'Fixture unrelated message') {
               input.onEvent({ type: 'message_start' });
               input.onEvent({ type: 'final', text: 'Unrelated request completed.' });
               input.onEvent({ type: 'message_end' });
               return;
             }
-            if (text.endsWith('Fixture write task')) {
-              await call('google', {
+            if (currentInstruction === 'Fixture write task') {
+              await call('apps', {
                 action: 'GMAIL_SEND_EMAIL',
                 args: { recipient_email: 'fixture@example.test', subject: 'Approved fixture' },
               });
@@ -130,6 +174,7 @@ test(
             }
             await call('browser', { action: 'open', url: 'https://example.com' });
             await call('browser_screenshot', {});
+            await call('send_screenshot', {});
             const command = await call('shell', { command: 'fixture calculation' });
             assert.equal(command.content[0].type === 'text' && command.content[0].text, '42');
             await call('write_file', {
@@ -137,7 +182,7 @@ test(
               content: 'Replacement workspace output.',
             });
             await call('publish_artifact', { path: 'result.txt' });
-            await call('google', { action: 'GMAIL_FETCH_EMAILS', args: { max_results: 1 } });
+            await call('apps', { action: 'GMAIL_FETCH_EMAILS', args: { max_results: 1 } });
             await call('create_audio', { text: 'Replacement speech output.' });
             input.onEvent({ type: 'message_start' });
             input.onEvent({ type: 'text_delta', text: 'Replacement providers ' });
@@ -241,7 +286,7 @@ test(
     };
     events.on('event', onEvent);
     try {
-      assert.equal((await request('POST', '/api/connections/gmail/connect')).statusCode, 200);
+      assert.equal((await request('POST', '/api/apps/gmail/connect')).statusCode, 200);
       const connected = new URL(callback);
       connected.searchParams.set('account_ref', 'replacement-account');
       connected.searchParams.set('outcome', 'ok');
@@ -261,7 +306,7 @@ test(
       assert.deepEqual(screenResponse.rawPayload, screen);
       const catalog = (await request('GET', '/api/inspector/tools')).json();
       assert.equal(catalog.captureEnabled, true);
-      assert.ok(catalog.tools.some((tool: { name: string }) => tool.name === 'google'));
+      assert.ok(catalog.tools.some((tool: { name: string }) => tool.name === 'apps'));
       const observations = (
         await request('GET', `/api/inspector/observations?taskId=${id}`)
       ).json();
@@ -282,7 +327,13 @@ test(
           message.text === 'Replacement providers completed the request.',
       );
       assert.ok(final.streamId);
-      assert.equal(streams.filter((event) => !event.done).length, 2);
+      assert.equal(
+        streams
+          .filter((event) => !event.done)
+          .map((event) => event.text)
+          .join(''),
+        'Replacement providers completed the request.',
+      );
       assert.ok(streams.every((event) => event.streamId === final.streamId));
       assert.equal(streams.at(-1)?.done, true);
       const artifacts = (
@@ -293,7 +344,16 @@ test(
       ).rows;
       assert.deepEqual(
         artifacts.map((row) => row.name),
-        ['reply.mp3', 'result.txt'],
+        ['reply.mp3', 'result.txt', 'screenshot.png'],
+      );
+      const screenshotArtifact = artifacts.find((row) => row.name === 'screenshot.png');
+      const screenshotResponse = await request('GET', `/api/artifacts/${screenshotArtifact.id}`);
+      assert.equal(screenshotResponse.headers['content-type'], 'image/png');
+      assert.deepEqual(screenshotResponse.rawPayload, screen);
+      assert.ok(
+        state.messages.some((message: { attachments: Array<{ id: string }> }) =>
+          message.attachments.some((attachment) => attachment.id === screenshotArtifact.id),
+        ),
       );
       const artifact = artifacts.find((row) => row.name === 'result.txt');
       assert.equal(
@@ -306,25 +366,33 @@ test(
       taskIds.push(nextId);
       await waitFor(nextId, 'waiting_user');
       assert.equal(integrationCalls.length, 1);
-      const approval = (await pool.query('SELECT id FROM approvals WHERE task_id=$1', [nextId]))
-        .rows[0];
-      assert.equal(
-        (await request('POST', `/api/approvals/${approval.id}`, { approved: true })).statusCode,
-        200,
-      );
+      const approval = (
+        await pool.query('SELECT id,confirmation_message_id FROM approvals WHERE task_id=$1', [
+          nextId,
+        ])
+      ).rows[0];
+      const confirmation = {
+        text: 'Yes',
+        replyToMessageId: approval.confirmation_message_id,
+        clientMessageId: randomUUID(),
+      };
+      assert.equal((await request('POST', '/api/messages', confirmation)).statusCode, 200);
       await waitFor(nextId, 'succeeded');
       assert.deepEqual(integrationCalls.at(-1), {
         action: 'GMAIL_SEND_EMAIL',
         args: { recipient_email: 'fixture@example.test', subject: 'Approved fixture' },
       });
       assert.equal(integrationCalls.length, 2);
+      assert.equal((await request('POST', '/api/messages', confirmation)).json().taskId, nextId);
+      assert.equal(integrationCalls.length, 2);
       assert.equal(
-        (await request('POST', `/api/approvals/${approval.id}`, { approved: true })).statusCode,
-        409,
+        (await pool.query('SELECT status FROM approvals WHERE id=$1', [approval.id])).rows[0]
+          .status,
+        'completed',
       );
       assert.equal(phases.get(nextId), 2);
       const memoryRequest = await request('POST', '/api/messages', {
-        text: 'Fixture memory task: Remember that I prefer concise replies.',
+        text: 'Fixture memory task: Review whether I prefer concise replies.',
       });
       assert.equal(memoryRequest.statusCode, 200);
       const memoryTaskId = memoryRequest.json().taskId as string;
@@ -335,7 +403,7 @@ test(
       ).rows[0];
       const memoryApproval = (
         await pool.query(
-          'SELECT id,action,args,source_message_id FROM approvals WHERE task_id=$1',
+          'SELECT id,action,args,source_message_id,confirmation_message_id FROM approvals WHERE task_id=$1',
           [memoryTaskId],
         )
       ).rows[0];
@@ -357,8 +425,13 @@ test(
       ).rows[0];
       assert.notEqual(latestUser.id, source.id);
       assert.equal(
-        (await request('POST', `/api/approvals/${memoryApproval.id}`, { approved: true }))
-          .statusCode,
+        (
+          await request('POST', '/api/messages', {
+            text: 'Yes',
+            replyToMessageId: memoryApproval.confirmation_message_id,
+            clientMessageId: randomUUID(),
+          })
+        ).statusCode,
         200,
       );
       await waitFor(memoryTaskId, 'succeeded');
@@ -394,6 +467,33 @@ test(
         learnedSource.id,
       );
       assert.equal(phases.get(learnedTaskId), 1);
+      const onboarding = await request('POST', '/api/onboarding', {});
+      assert.equal(onboarding.statusCode, 200);
+      const onboardingId = onboarding.json().taskId as string;
+      taskIds.push(onboardingId);
+      await waitFor(onboardingId, 'succeeded');
+      assert.equal(
+        (
+          await pool.query("SELECT text FROM messages WHERE task_id=$1 AND role='user'", [
+            onboardingId,
+          ])
+        ).rows[0].text,
+        'Help me get started.',
+      );
+      assert.deepEqual(integrationCalls.at(-1), {
+        action: 'GMAIL_FETCH_EMAILS',
+        args: { max_results: 2 },
+      });
+      assert.equal(
+        integrationCalls.some(
+          (call) => 'subject' in call.args && call.args.subject === 'Must not send during setup',
+        ),
+        false,
+      );
+      assert.equal(
+        (await pool.query('SELECT id FROM approvals WHERE task_id=$1', [onboardingId])).rowCount,
+        0,
+      );
     } finally {
       events.off('event', onEvent);
       await application.app.close();

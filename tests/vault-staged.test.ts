@@ -59,7 +59,7 @@ test(
         submitSelector: '#old-button',
       });
       await pool.query("UPDATE tasks SET status='waiting_credentials' WHERE id=$1", [id]);
-      return request.url.replace('/credentials/', '/api/credential-requests/');
+      return request.url.replace('/vault/', '/api/credential-requests/');
     };
     try {
       await computer.act('staged', { action: 'open', url: 'https://1.1.1.1/login' });
@@ -76,9 +76,24 @@ test(
       );
       assert.equal(JSON.stringify(form).includes('data-sidekick-login-method'), false);
       assert.equal(
-        (await app.inject({ method: 'POST', url: first, payload: { password: 'unused-secret' } }))
-          .statusCode,
+        (
+          await app.inject({
+            method: 'POST',
+            url: first,
+            payload: { label: 'Fixture login', password: 'unused-secret' },
+          })
+        ).statusCode,
         400,
+      );
+      await pool.query(
+        'UPDATE credential_requests SET inspection=jsonb_set(inspection,\'{methods}\', \'[{"id":"credentials","label":"Unsupported old scan","kind":"credentials","supported":false}]\'::jsonb) WHERE task_id=\'staged\'',
+      );
+      const refreshed = await app.inject({ method: 'POST', url: first + '/refresh' });
+      assert.equal(refreshed.statusCode, 200);
+      assert.equal(
+        refreshed.json().methods.find((method: { id: string }) => method.id === 'credentials')
+          .supported,
+        true,
       );
       assert.ok(await computer.screenshot('staged'));
       assert.equal(
@@ -92,6 +107,7 @@ test(
         200,
       );
       assert.equal((await pool.query('SELECT * FROM vault_entries')).rowCount, 0);
+      assert.equal((await app.inject({ method: 'POST', url: first + '/refresh' })).statusCode, 409);
       const second = await secureRequest('staged');
       const passwordForm = (await app.inject({ url: second })).json();
       assert.equal(passwordForm.kind, 'password');
@@ -104,7 +120,7 @@ test(
           await app.inject({
             method: 'POST',
             url: second,
-            payload: { password: 'synthetic-password' },
+            payload: { label: 'Fixture login', password: 'synthetic-password' },
           })
         ).statusCode,
         200,
@@ -158,8 +174,11 @@ test(
       );
 
       await computer.act('oauth', { action: 'open', url: 'https://1.1.1.1/login' });
+      fixture.pages.get('oauth')!.stage = 'complete';
+      fixture.pages.get('oauth')!.render();
       const oauthUrl = await secureRequest('oauth');
       const oauthForm = (await app.inject({ url: oauthUrl })).json();
+      assert.deepEqual(oauthForm.fields, []);
       assert.equal(
         (
           await app.inject({

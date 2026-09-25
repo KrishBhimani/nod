@@ -1,67 +1,129 @@
-import { useEffect, useRef, useState } from 'react';
-import {
-  ArrowUp,
-  Paperclip,
-  X,
-  FileText,
-  LoaderCircle,
-  Bold,
-  Italic,
-  Code,
-  List,
-  TextCursorInput,
-  Eye,
-} from 'lucide-react';
-import type { Artifact, Task } from '../../shared/contracts';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { EditorContent, useEditor } from '@tiptap/react';
+import { ArrowUp, Paperclip, X, FileText, LoaderCircle, CornerUpLeft } from 'lucide-react';
+import type { Artifact, Message } from '../../shared/contracts';
 import { api, errorMessage } from '../lib/api';
+import { createComposerExtensions } from '../lib/composer-editor';
 import { Button, Notice } from './ui';
-import { MessageText } from './message';
+import {
+  ImageViewer,
+  AttachmentThumbnail,
+  attachmentKind,
+  ownedArtifactUrl,
+  previewableImage,
+  type ImagePreview,
+} from './attachment-images';
+
+interface DraftAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  previewUrl?: string;
+  artifact?: Artifact;
+  controller?: AbortController;
+}
+
+export interface ComposerHandle {
+  focus(): void;
+}
 
 interface ComposerProps {
   ready: boolean;
   sending: boolean;
   text: string;
   setText(value: string): void;
-  replyTo: Task | null;
+  replyTo: Pick<Message, 'id' | 'role' | 'text'> | null;
   clearReply(): void;
   onSend(text: string, attachments: Artifact[]): Promise<boolean>;
 }
 
-export function Composer({
-  ready,
-  sending,
-  text,
-  setText,
-  replyTo,
-  clearReply,
-  onSend,
-}: ComposerProps) {
-  const [attachments, setAttachments] = useState<Artifact[]>([]);
-  const [uploading, setUploading] = useState(false);
-  const [formatting, setFormatting] = useState(false);
-  const [preview, setPreview] = useState(false);
+export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
+  { ready, sending, text, setText, replyTo, clearReply, onSend },
+  ref,
+) {
+  const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
+  const [previewId, setPreviewId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
-  const textarea = useRef<HTMLTextAreaElement>(null);
+  const form = useRef<HTMLFormElement>(null);
   const mounted = useRef(true);
-  const uploadLock = useRef(false);
+  const attachmentValues = useRef<DraftAttachment[]>([]);
+  const uploads = useRef(new Set<AbortController>());
+  const previewUrls = useRef(new Set<string>());
+  const previewTrigger = useRef<HTMLButtonElement | null>(null);
   const sendLock = useRef(false);
+  const lastText = useRef(text);
+  const actions = useRef({ submit: () => {}, upload: (_files: File[]) => {} });
+  const extensions = useMemo(
+    () =>
+      createComposerExtensions({
+        submit: () => actions.current.submit(),
+        upload: (files) => actions.current.upload(files),
+      }),
+    [],
+  );
+  const editor = useEditor({
+    extensions,
+    content: text,
+    contentType: 'markdown',
+    immediatelyRender: false,
+    editorProps: {
+      attributes: {
+        role: 'textbox',
+        'aria-label': 'Message Sidekick',
+        'aria-multiline': 'true',
+        'aria-describedby': 'composer-keyboard-hint',
+        class: 'composer-editor message-text',
+      },
+    },
+    onUpdate: ({ editor: current }) => {
+      const value = current.getMarkdown();
+      lastText.current = value;
+      setText(value);
+    },
+  });
+  function focus() {
+    if (editor && !editor.isDestroyed) editor.commands.focus(undefined, { scrollIntoView: false });
+  }
+  function restoreFocus() {
+    if (document.activeElement === document.body || form.current?.contains(document.activeElement))
+      focus();
+  }
+  useImperativeHandle(ref, () => ({ focus }), [editor]);
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      for (const controller of uploads.current) controller.abort();
+      uploads.current.clear();
+      for (const url of previewUrls.current) URL.revokeObjectURL(url);
+      previewUrls.current.clear();
     };
   }, []);
   useEffect(() => {
-    if (textarea.current) {
-      textarea.current.style.height = 'auto';
-      textarea.current.style.height = `${Math.min(textarea.current.scrollHeight, 220)}px`;
+    if (editor && text !== lastText.current) {
+      lastText.current = text;
+      editor.commands.setContent(text, { contentType: 'markdown', emitUpdate: false });
     }
-  }, [text, preview]);
-
+  }, [editor, text]);
+  function updateAttachments(values: DraftAttachment[]) {
+    attachmentValues.current = values;
+    setAttachments(values);
+  }
+  function releasePreview(item: DraftAttachment) {
+    if (item.previewUrl && previewUrls.current.delete(item.previewUrl))
+      URL.revokeObjectURL(item.previewUrl);
+  }
+  function removeAttachment(item: DraftAttachment) {
+    item.controller?.abort();
+    if (item.controller) uploads.current.delete(item.controller);
+    releasePreview(item);
+    updateAttachments(attachmentValues.current.filter((value) => value.id !== item.id));
+  }
   async function upload(files: File[]) {
-    if (!files.length || uploadLock.current) return;
-    if (files.length + attachments.length > 5) {
+    if (!files.length) return;
+    if (files.length + attachmentValues.current.length > 5) {
       setError('Attach up to five files per message.');
       return;
     }
@@ -69,180 +131,218 @@ export function Composer({
       setError('Each file must be 15 MB or smaller.');
       return;
     }
-    uploadLock.current = true;
-    setUploading(true);
-    setError('');
-    try {
-      for (const file of files) {
-        const body = new FormData();
-        body.append('file', file);
-        const artifact = await api<Artifact>('/api/uploads', { method: 'POST', body });
-        if (mounted.current) setAttachments((current) => [...current, artifact]);
+    const items: DraftAttachment[] = files.map((file) => {
+      const controller = new AbortController();
+      uploads.current.add(controller);
+      let previewUrl: string | undefined;
+      if (attachmentKind(file.type)) {
+        try {
+          previewUrl = URL.createObjectURL(file);
+          previewUrls.current.add(previewUrl);
+        } catch {}
       }
-    } catch (cause) {
-      setError(errorMessage(cause));
-    } finally {
-      uploadLock.current = false;
-      setUploading(false);
-      if (fileInput.current) fileInput.current.value = '';
-      textarea.current?.focus();
-    }
-  }
-  function format(before: string, after = before) {
-    const field = textarea.current;
-    if (!field) return;
-    const start = field.selectionStart,
-      end = field.selectionEnd;
-    const selected = text.slice(start, end) || 'text';
-    setText(text.slice(0, start) + before + selected + after + text.slice(end));
-    requestAnimationFrame(() => {
-      field.focus();
-      field.setSelectionRange(start + before.length, start + before.length + selected.length);
+      return {
+        id: crypto.randomUUID(),
+        name: file.name,
+        mimeType: file.type,
+        size: file.size,
+        controller,
+        previewUrl,
+      };
     });
+    updateAttachments([...attachmentValues.current, ...items]);
+    setError('');
+    await Promise.all(
+      files.map(async (file, index) => {
+        const item = items[index];
+        const controller = item.controller!;
+        try {
+          const body = new FormData();
+          body.append('file', file);
+          const artifact = await api<Artifact>('/api/uploads', {
+            method: 'POST',
+            body,
+            signal: controller.signal,
+          });
+          if (mounted.current && !controller.signal.aborted)
+            updateAttachments(
+              attachmentValues.current.map((value) =>
+                value.id === item.id ? { ...value, artifact, controller: undefined } : value,
+              ),
+            );
+        } catch (cause) {
+          if (mounted.current && !controller.signal.aborted) {
+            removeAttachment(item);
+            setError(errorMessage(cause));
+          }
+        } finally {
+          uploads.current.delete(controller);
+        }
+      }),
+    );
+    if (mounted.current) {
+      if (fileInput.current) fileInput.current.value = '';
+      restoreFocus();
+    }
   }
   async function submit() {
     if (
+      !editor ||
       !ready ||
       sending ||
       sendLock.current ||
-      uploadLock.current ||
-      (!text.trim() && !attachments.length)
+      attachmentValues.current.some((item) => !item.artifact)
     )
       return;
+    const sentText = editor.getMarkdown().trim();
+    const sentAttachments = attachmentValues.current;
+    if (!sentText && !sentAttachments.length) return;
     sendLock.current = true;
-    const sentText = text;
-    const sentAttachments = attachments;
-    setText('');
-    setAttachments([]);
-    setPreview(false);
-    textarea.current?.focus();
+    setError('');
+    editor.commands.clearContent();
+    updateAttachments([]);
+    focus();
+    let sent = false;
     try {
-      if (!(await onSend(sentText.trim(), sentAttachments))) {
-        setText(textarea.current?.value ? `${sentText}\n${textarea.current.value}` : sentText);
-        setAttachments((current) => [...sentAttachments, ...current]);
-      }
+      sent = await onSend(
+        sentText,
+        sentAttachments.map((item) => item.artifact!),
+      );
+    } catch (cause) {
+      if (mounted.current) setError(errorMessage(cause));
     } finally {
       sendLock.current = false;
-      textarea.current?.focus();
+      if (sent) for (const item of sentAttachments) releasePreview(item);
+      if (mounted.current && !editor.isDestroyed) {
+        if (!sent) {
+          const draft = editor.getMarkdown();
+          editor.commands.setContent([sentText, draft].filter(Boolean).join('\n\n'), {
+            contentType: 'markdown',
+          });
+          updateAttachments([...sentAttachments, ...attachmentValues.current]);
+        }
+        restoreFocus();
+      }
     }
   }
+  actions.current = { submit: () => void submit(), upload: (files) => void upload(files) };
+  const pendingUploads = attachments.filter((item) => !item.artifact).length;
+  const images = attachments.flatMap((item): ImagePreview[] => {
+    const url =
+      item.previewUrl ||
+      (item.artifact && ownedArtifactUrl(item.artifact.url) ? item.artifact.url : undefined);
+    return attachmentKind(item.mimeType) && url
+      ? [
+          {
+            id: item.id,
+            name: item.name,
+            size: item.size,
+            mimeType: item.mimeType,
+            url,
+            downloadUrl: item.artifact?.url,
+          },
+        ]
+      : [];
+  });
+  const previewLabel = images.every((image) => previewableImage(image.mimeType ?? 'image/png'))
+    ? 'image'
+    : 'attachment';
   return (
     <div className="composer-wrap">
       {error && <Notice>{error}</Notice>}
       {replyTo && (
-        <div className="reply-context">
-          <span>
-            Replying to <strong>{replyTo.title}</strong>
-          </span>
-          <Button variant="ghost" size="icon" onClick={clearReply} aria-label="Clear task reply">
+        <div className="reply-context composer-reply">
+          <CornerUpLeft size={15} />
+          <div>
+            <strong>Replying to {replyTo.role === 'assistant' ? 'Sidekick' : 'yourself'}</strong>
+            <span>{replyTo.text || 'Attachment'}</span>
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={clearReply}
+            aria-label="Cancel reply"
+          >
             <X size={14} />
           </Button>
         </div>
       )}
       <form
+        ref={form}
         className="composer"
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
         }}
-        onDragOver={(event) => event.preventDefault()}
-        onDrop={(event) => {
+        onDragOver={(event) => {
+          if (event.dataTransfer.types.includes('Files')) event.preventDefault();
+        }}
+        onDropCapture={(event) => {
+          if (!event.dataTransfer.files.length) return;
           event.preventDefault();
+          event.stopPropagation();
           void upload(Array.from(event.dataTransfer.files));
         }}
       >
-        {attachments.length > 0 && (
-          <div className="pending-attachments">
-            {attachments.map((artifact) => (
-              <div className="pending-attachment" key={artifact.id}>
-                {artifact.mimeType.startsWith('image/') ? (
-                  <img src={artifact.url} alt="" />
-                ) : (
-                  <FileText size={16} />
-                )}
-                <span>{artifact.name}</span>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setAttachments((current) => current.filter((item) => item.id !== artifact.id))
-                  }
-                  aria-label={`Remove ${artifact.name}`}
-                >
-                  <X size={13} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        {formatting && (
-          <div className="format-toolbar" aria-label="Text formatting">
-            {[
-              [Bold, 'Bold', '**', '**'],
-              [Italic, 'Italic', '_', '_'],
-              [Code, 'Code', '`', '`'],
-              [List, 'List', '- ', ''],
-            ].map(([Icon, label, before, after]) => {
-              const Glyph = Icon as typeof Bold;
+        {(attachments.length > 0 || pendingUploads > 0) && (
+          <div className="pending-attachments" aria-label="Message attachments">
+            {attachments.map((item) => {
+              const imageIndex = images.findIndex((image) => image.id === item.id);
+              const image = images[imageIndex];
               return (
-                <Button
-                  key={String(label)}
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  aria-label={String(label)}
-                  onClick={() => format(String(before), String(after))}
-                  disabled={preview}
+                <div
+                  className={`pending-attachment${image ? ` is-preview${previewableImage(item.mimeType) ? ' is-image' : ''}` : ''}`}
+                  key={item.id}
                 >
-                  <Glyph size={15} />
-                </Button>
+                  {image ? (
+                    <>
+                      <button
+                        type="button"
+                        className="pending-image-preview"
+                        aria-label={`Preview ${previewLabel} ${imageIndex + 1} of ${images.length}`}
+                        onClick={(event) => {
+                          previewTrigger.current = event.currentTarget;
+                          setPreviewId(item.id);
+                        }}
+                      >
+                        <AttachmentThumbnail image={image} />
+                      </button>
+                      {!item.artifact && (
+                        <span className="pending-image-uploading" aria-hidden="true">
+                          <LoaderCircle size={14} className="spin" />
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <FileText size={16} />
+                      <span>{item.name}</span>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    className="remove-attachment"
+                    onClick={() => removeAttachment(item)}
+                    aria-label={`Remove ${item.name}`}
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
               );
             })}
-            <Button type="button" variant="ghost" size="sm" onClick={() => setPreview(!preview)}>
-              <Eye size={14} />
-              {preview ? 'Edit' : 'Preview'}
-            </Button>
+            {pendingUploads > 0 && (
+              <span className="attachment-uploading" role="status">
+                <LoaderCircle size={14} className="spin" />
+                Uploading {pendingUploads === 1 ? 'file' : `${pendingUploads} files`}…
+              </span>
+            )}
           </div>
         )}
-        {preview ? (
-          <div className="composer-preview">
-            <MessageText text={text || 'Nothing to preview yet.'} />
-          </div>
-        ) : (
-          <textarea
-            ref={textarea}
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            onPaste={(event) => {
-              const images = Array.from(event.clipboardData.items)
-                .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
-                .map((item) => item.getAsFile())
-                .filter((file): file is File => Boolean(file));
-              if (images.length) {
-                event.preventDefault();
-                void upload(images);
-              }
-            }}
-            onKeyDown={(event) => {
-              if (
-                (event.metaKey || event.ctrlKey) &&
-                ['b', 'i'].includes(event.key.toLowerCase())
-              ) {
-                event.preventDefault();
-                format(event.key.toLowerCase() === 'b' ? '**' : '_');
-              } else if (
-                event.key === 'Enter' &&
-                !event.shiftKey &&
-                !event.nativeEvent.isComposing
-              ) {
-                event.preventDefault();
-                void submit();
-              }
-            }}
-            placeholder="Message Sidekick…"
-            aria-label="Message Sidekick"
-            rows={1}
-          />
-        )}
+        <EditorContent editor={editor} />
+        <span className="sr-only" id="composer-keyboard-hint">
+          Enter to send. Shift plus Enter for a new line or list item.
+        </span>
         <div className="composer-tools">
           <div className="composer-left">
             <input
@@ -251,7 +351,7 @@ export function Composer({
               tabIndex={-1}
               multiple
               className="sr-only"
-              aria-label="Attach files"
+              aria-label="Choose files"
               onChange={(event) => void upload(Array.from(event.target.files ?? []))}
             />
             <Button
@@ -261,22 +361,9 @@ export function Composer({
               aria-label="Attach files"
               title="Attach files or paste an image"
               onClick={() => fileInput.current?.click()}
-              disabled={uploading || attachments.length >= 5}
+              disabled={attachments.length >= 5}
             >
-              {uploading ? <LoaderCircle size={18} className="spin" /> : <Paperclip size={18} />}
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              aria-label="Format message"
-              aria-expanded={formatting}
-              onClick={() => {
-                setFormatting(!formatting);
-                setPreview(false);
-              }}
-            >
-              <TextCursorInput size={18} />
+              <Paperclip size={18} />
             </Button>
           </div>
           <Button
@@ -284,12 +371,24 @@ export function Composer({
             size="icon"
             className="send-button"
             aria-label="Send message"
-            disabled={!ready || sending || uploading || (!text.trim() && !attachments.length)}
+            disabled={
+              !ready || sending || pendingUploads > 0 || (!text.trim() && !attachments.length)
+            }
           >
             {sending ? <LoaderCircle size={18} className="spin" /> : <ArrowUp size={19} />}
           </Button>
         </div>
       </form>
+      <ImageViewer
+        images={images}
+        allowLocalPreviews
+        selectedId={previewId}
+        onSelect={setPreviewId}
+        onClose={() => setPreviewId(null)}
+        restoreFocus={() =>
+          previewTrigger.current?.isConnected ? previewTrigger.current.focus() : focus()
+        }
+      />
     </div>
   );
-}
+});

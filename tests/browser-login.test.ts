@@ -6,9 +6,196 @@ import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import {
   createAgentBrowserComputer,
+  redactBrowserText,
   redactBrowserUrl,
 } from '../src/providers/agent-browser/index.ts';
-import { stagedLoginBrowser } from './login-fixture.ts';
+import {
+  loginInspectionSchema,
+  loginInspectionScript,
+} from '../src/providers/agent-browser/login.ts';
+import { LoginDom, LoginElement, stagedLoginBrowser } from './login-fixture.ts';
+
+function element(tag: string, attributes: Record<string, string> = {}, text = '') {
+  const value = new LoginElement();
+  value.tagName = tag.toUpperCase();
+  value.innerText = text;
+  for (const [name, content] of Object.entries(attributes)) {
+    if (['type', 'id', 'name', 'autocomplete'].includes(name))
+      Object.assign(value, { [name]: content });
+    else value.setAttribute(name, content);
+  }
+  return value;
+}
+
+test('visible browser-security login rejection removes credential fields and OAuth methods', () => {
+  for (const message of [
+    'This browser or app may not be secure.',
+    'Couldn’t sign you in. Your browser is not supported.',
+    "Couldn't sign you in. Try using a supported browser.",
+  ]) {
+    const page = new LoginDom();
+    page.body.append(
+      element('p', {}, message),
+      element('input', { type: 'email' }),
+      element('button', {}, 'Continue with Google'),
+    );
+    const inspection = loginInspectionSchema.parse(page.evaluate(loginInspectionScript()));
+    assert.equal(inspection.issue, 'browser_not_supported');
+    assert.deepEqual(inspection.fields, []);
+    assert.deepEqual(inspection.methods, []);
+    assert.equal(inspection.submitSelector, undefined);
+    assert.equal(page.querySelectorAll('[data-sidekick-login-field]').length, 0);
+  }
+});
+
+test('ordinary sign-in rejection and hidden or background browser warnings do not block secure entry', () => {
+  for (const message of [
+    'Wrong password. Try again.',
+    "Couldn't sign you in. Check your password.",
+    'Use a supported browser for the best experience.',
+  ]) {
+    const page = new LoginDom();
+    page.body.append(
+      element('p', {}, message),
+      element('p', { hidden: '' }, 'This browser or app may not be secure.'),
+      element('p', { 'aria-hidden': 'true' }, 'Your browser is not supported.'),
+      element('input', { type: 'password' }),
+      element('button', {}, 'Sign in'),
+    );
+    const inspection = loginInspectionSchema.parse(page.evaluate(loginInspectionScript()));
+    assert.equal(inspection.issue, undefined);
+    assert.equal(inspection.fields[0].kind, 'password');
+    assert.equal(inspection.methods[0].supported, true);
+  }
+  const page = new LoginDom();
+  page.body.append(element('p', {}, 'This browser or app may not be secure.'));
+  const dialog = element('div', { role: 'dialog' });
+  dialog.append(element('input', { type: 'email' }), element('button', {}, 'Continue'));
+  page.body.append(dialog);
+  const inspection = loginInspectionSchema.parse(page.evaluate(loginInspectionScript()));
+  assert.equal(inspection.issue, undefined);
+  assert.equal(inspection.fields[0].kind, 'identifier');
+});
+
+test('login inspection scopes fields to the active dialog and deduplicates nested Apple controls', () => {
+  const page = new LoginDom();
+  const background = element('form');
+  const oldInput = element('input', { type: 'email', 'data-sidekick-login-field': 'identifier-0' });
+  background.append(oldInput, element('button', {}, 'Continue with Apple'));
+  const modal = element('div', { role: 'dialog' });
+  const form = element('form');
+  const input = element('input', { id: 'login-username', autocomplete: 'username' });
+  form.append(input, element('button', {}, 'Next'));
+  const wrapper = element('div', { role: 'button' }, 'Continue with Apple');
+  const apple = element('button', {}, 'Continue with Apple');
+  wrapper.append(apple);
+  modal.append(form, wrapper, element('button', {}, 'Continue with Apple'));
+  page.body.append(background, modal);
+  page.activeElement = input;
+  const inspection = loginInspectionSchema.parse(page.evaluate(loginInspectionScript()));
+  assert.equal(inspection.fields.length, 1);
+  assert.equal(inspection.fields[0].kind, 'identifier');
+  assert.equal(inspection.methods.find((method) => method.id === 'credentials')?.supported, true);
+  assert.equal(
+    inspection.methods.filter((method) => method.label === 'Continue with Apple').length,
+    1,
+  );
+  assert.equal(
+    inspection.methods.find((method) => method.kind === 'manual'),
+    undefined,
+  );
+  assert.equal(page.querySelectorAll(inspection.fields[0].selector)[0], input);
+  assert.equal(oldInput.getAttribute('data-sidekick-login-field'), null);
+  const oauth = inspection.methods.find((method) => method.kind === 'oauth')!;
+  assert.equal(page.querySelectorAll(oauth.selector!).length, 1);
+  assert.equal(page.querySelectorAll(oauth.selector!)[0], apple);
+});
+
+test('login inspection uses visible labels, IDs and autocomplete without reading entered values', () => {
+  const page = new LoginDom();
+  const form = element('form');
+  const username = element('input', { id: 'account-name' });
+  username.labels = [element('label', {}, 'Phone, email or username')];
+  Object.defineProperty(username, 'value', {
+    get() {
+      throw new Error('Entered values must not be inspected');
+    },
+  });
+  const password = element('input', { type: 'password', autocomplete: 'current-password' });
+  form.append(username, password, element('button', {}, 'Sign in'));
+  page.body.append(form);
+  let inspection = loginInspectionSchema.parse(page.evaluate(loginInspectionScript()));
+  assert.deepEqual(
+    inspection.fields.map((field) => field.kind),
+    ['identifier', 'password'],
+  );
+  assert.equal(inspection.methods[0].supported, true);
+  username.labels = [];
+  username.id = 'verification-code';
+  password.setAttribute('hidden', '');
+  inspection = loginInspectionSchema.parse(page.evaluate(loginInspectionScript()));
+  assert.deepEqual(
+    inspection.fields.map((field) => field.kind),
+    ['otp'],
+  );
+});
+
+test('multiple real identifiers or unfocused forms remain unsupported while the focused form is isolated', () => {
+  const page = new LoginDom();
+  const first = element('form');
+  const firstInput = element('input', { autocomplete: 'username' });
+  first.append(firstInput, element('button', {}, 'Continue'));
+  const second = element('form');
+  second.append(element('input', { type: 'email' }), element('button', {}, 'Sign in'));
+  page.body.append(first, second);
+  let inspection = loginInspectionSchema.parse(page.evaluate(loginInspectionScript()));
+  assert.equal(inspection.methods[0].supported, false);
+  assert.equal(inspection.submitSelector, undefined);
+  page.activeElement = firstInput;
+  inspection = loginInspectionSchema.parse(page.evaluate(loginInspectionScript()));
+  assert.equal(inspection.fields.length, 1);
+  assert.equal(inspection.methods[0].supported, true);
+  first.append(element('input', { type: 'email' }));
+  inspection = loginInspectionSchema.parse(page.evaluate(loginInspectionScript()));
+  assert.equal(inspection.methods[0].supported, false);
+  assert.equal(inspection.submitSelector, undefined);
+});
+
+test('ambiguous dialogs and separate-window OAuth fail closed and inert controls are ignored', () => {
+  const page = new LoginDom();
+  const first = element('div', { role: 'dialog' });
+  first.append(
+    element('input', { autocomplete: 'username' }),
+    element('a', { target: '_blank' }, 'Continue with Google'),
+  );
+  const second = element('dialog', { open: '' });
+  const secondInput = element('input', { type: 'email' });
+  second.append(secondInput);
+  const hidden = element('div', { inert: '' });
+  hidden.append(element('button', {}, 'Continue with Microsoft'));
+  page.body.append(first, second, hidden);
+  let inspection = loginInspectionSchema.parse(page.evaluate(loginInspectionScript()));
+  assert.equal(inspection.methods.find((method) => method.id === 'credentials')?.supported, false);
+  assert.equal(inspection.methods.find((method) => method.id === 'oauth-google')?.supported, false);
+  assert.equal(
+    inspection.methods.find((method) => method.id === 'oauth-microsoft'),
+    undefined,
+  );
+  page.activeElement = secondInput;
+  inspection = loginInspectionSchema.parse(page.evaluate(loginInspectionScript()));
+  assert.equal(inspection.fields.length, 1);
+  assert.equal(inspection.methods.find((method) => method.id === 'credentials')?.supported, true);
+});
+
+test('a nested separate-window OAuth link cannot become supported through its wrapper', () => {
+  const page = new LoginDom();
+  const wrapper = element('div', { role: 'button' }, 'Continue with Apple');
+  wrapper.append(element('a', { target: '_blank' }, 'Continue with Apple'));
+  page.body.append(wrapper);
+  const inspection = loginInspectionSchema.parse(page.evaluate(loginInspectionScript()));
+  assert.equal(inspection.methods.length, 1);
+  assert.equal(inspection.methods[0].supported, false);
+});
 
 test('login observations redact OAuth callback values and identifiers from URLs', () => {
   const url = redactBrowserUrl(
@@ -18,6 +205,30 @@ test('login observations redact OAuth callback values and identifiers from URLs'
   for (const value of ['private-code', 'private-email', 'private-state', 'private-token'])
     assert.equal(url.includes(value), false);
   assert.equal(new URL(url).searchParams.get('view'), 'account');
+});
+
+test('browser observations redact manually typed secrets in encoded paths and unknown query fields', () => {
+  const secret = 'fixture secret/with+symbols';
+  const variants = [
+    encodeURIComponent(secret),
+    encodeURI(secret),
+    new URLSearchParams({ value: secret }).toString().slice(6),
+  ];
+  for (const value of variants) {
+    assert.equal(redactBrowserText(value, [secret]), '[redacted]');
+    assert.equal(
+      redactBrowserText(
+        value.replace(/%[0-9A-F]{2}/g, (code) => code.toLowerCase()),
+        [secret],
+      ),
+      '[redacted]',
+    );
+    assert.equal(
+      redactBrowserUrl(`https://example.com/${value}?other=${value}`, [secret]).includes(value),
+      false,
+    );
+  }
+  assert.doesNotThrow(() => redactBrowserText('fixture', ['\ud800']));
 });
 
 test('staged identifier, password and OTP entry waits for Next and keeps secrets out of observations', async () => {
@@ -33,7 +244,10 @@ test('staged identifier, password and OTP entry waits for Next and keeps secrets
     );
     assert.equal(first.methods.find((method) => method.kind === 'oauth')?.supported, true);
     assert.equal(first.methods.find((method) => method.kind === 'passkey')?.supported, false);
-    assert.equal(first.methods.find((method) => method.kind === 'manual')?.supported, false);
+    assert.equal(
+      first.methods.find((method) => method.kind === 'manual'),
+      undefined,
+    );
     await assert.rejects(
       computer.act('login', {
         action: 'fill',

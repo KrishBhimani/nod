@@ -10,6 +10,10 @@ const storedScreen = z.object({
   url: z.string().max(8192),
   sensitive: z.boolean(),
   active: z.boolean(),
+  navigationFailed: z.boolean().optional(),
+  signInPending: z.boolean().optional(),
+  restoreSession: z.boolean().optional(),
+  resumeUrl: z.string().max(8192).optional(),
   capturedAt: z.iso.datetime().optional(),
 });
 export type StoredScreen = z.infer<typeof storedScreen>;

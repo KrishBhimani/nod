@@ -8,7 +8,7 @@ import pg from 'pg';
 import type { RuntimeContext } from '../src/ports/agent.ts';
 
 test(
-  'short answers continue only an unambiguous question in the same channel',
+  'one conversation routes replies to the latest question or an owned message in the same channel',
   { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
   async (t) => {
     const suffix = randomUUID().replaceAll('-', '').slice(0, 16);
@@ -47,6 +47,10 @@ test(
         await db.pool.query(
           "UPDATE tasks SET status=$2,waiting_reason=$3,waiting_question='Which city?' WHERE id=$1",
           [id, reason === 'credentials' ? 'waiting_credentials' : 'waiting_user', reason],
+        );
+        await db.pool.query(
+          "INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,'local-development','assistant','Which city?',$2)",
+          [randomUUID(), id],
         );
         return id;
       };
@@ -109,30 +113,80 @@ test(
         },
       );
       await t.test(
-        'multiple questions require selection, while explicit selection and new requests remain possible',
+        'multiple internal questions follow the latest visible question without a task picker',
         async () => {
           const a = await waitingTask('Plan lunch');
           const b = await waitingTask('Plan dinner');
-          await assert.rejects(tasks.submitUserMessage('Lisbon'), (error: unknown) => {
-            const value = error as {
-              statusCode: number;
-              code: string;
-              choices: Array<{ id: string; question: string }>;
-            };
-            assert.equal(value.statusCode, 409);
-            assert.equal(value.code, 'task_selection_required');
-            assert.deepEqual(new Set(value.choices.map((item) => item.id)), new Set([a, b]));
-            assert.equal(
-              value.choices.every((item) => item.question === 'Which city?'),
-              true,
-            );
-            return true;
-          });
+          assert.deepEqual(await tasks.submitUserMessage('Lisbon'), { taskId: b, continued: true });
           const fresh = await tasks.submitUserMessage('Find a train to Porto');
           assert.equal(fresh.continued, false);
           const forced = await tasks.submitUserMessage('Lisbon', [], { forceNew: true });
           assert.equal(forced.continued, false);
-          assert.equal((await tasks.submitUserMessage('Lisbon', [], { taskId: b })).taskId, b);
+          const target = (
+            await db.pool.query("SELECT id FROM messages WHERE task_id=$1 AND role='assistant'", [
+              a,
+            ])
+          ).rows[0].id;
+          assert.equal(
+            (await tasks.submitUserMessage('Porto', [], { replyToMessageId: target })).taskId,
+            a,
+          );
+          assert.equal(
+            (
+              await db.pool.query(
+                "SELECT reply_to_message_id FROM messages WHERE text='Porto' AND task_id=$1",
+                [a],
+              )
+            ).rows[0].reply_to_message_id,
+            target,
+          );
+          await clearWaits();
+        },
+      );
+      await t.test(
+        'message replies and manual control preserve owner, channel and revision boundaries',
+        async () => {
+          const id = await waitingTask('Owned browser work');
+          const messageId = (
+            await db.pool.query("SELECT id FROM messages WHERE task_id=$1 AND role='assistant'", [
+              id,
+            ])
+          ).rows[0].id;
+          await assert.rejects(
+            tasks.submitUserMessage('Answer', [], {
+              replyToMessageId: messageId,
+              channel: 'telegram',
+            }),
+            /unavailable/,
+          );
+          await assert.rejects(
+            tasks.submitUserMessage('Answer', [], { replyToMessageId: randomUUID() }),
+            /unavailable/,
+          );
+          const first = await tasks.pauseOwnedTaskForControl(id);
+          assert.deepEqual(await tasks.pauseOwnedTaskForControl(id), first);
+          assert.equal(first.revision, 1);
+          await assert.rejects(
+            tasks.submitUserMessage('Continue', [], { replyToMessageId: messageId }),
+            /browser control/,
+          );
+          await assert.rejects(tasks.resumeOwnedTaskFromControl(id, 0), /no longer active/);
+          await tasks.resumeOwnedTaskFromControl(id, first.revision);
+          await assert.rejects(
+            tasks.resumeOwnedTaskFromControl(id, first.revision),
+            /no longer active/,
+          );
+          assert.deepEqual(
+            (
+              await db.pool.query('SELECT revision,status,waiting_reason FROM tasks WHERE id=$1', [
+                id,
+              ])
+            ).rows[0],
+            { revision: 2, status: 'queued', waiting_reason: null },
+          );
+          const foreign = await waitingTask('Foreign browser');
+          await db.pool.query("UPDATE tasks SET owner_id='foreign-owner' WHERE id=$1", [foreign]);
+          await assert.rejects(tasks.pauseOwnedTaskForControl(foreign), /not found/);
           await clearWaits();
         },
       );
@@ -148,7 +202,10 @@ test(
             "UPDATE tasks SET owner_id='someone-else' WHERE title='Foreign owner lunch'",
           );
           assert.equal((await tasks.submitUserMessage('Lisbon')).continued, false);
-          await assert.rejects(tasks.submitUserMessage('yes', [], { taskId: approval }), /Review/);
+          await assert.rejects(
+            tasks.submitUserMessage('yes', [], { taskId: approval }),
+            /Reply to the pending action question/,
+          );
           await assert.rejects(
             tasks.submitUserMessage('Lisbon', [], { taskId: telegram }),
             /not found/,

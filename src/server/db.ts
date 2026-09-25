@@ -14,6 +14,8 @@ export function createInspectorPool() {
 }
 
 export async function initializeDatabase() {
+  if (!databaseUrl)
+    throw new Error('Run npm run dev to configure the local database, or set DATABASE_URL.');
   await pool.query(`
     CREATE TABLE IF NOT EXISTS tasks (
       id uuid PRIMARY KEY, owner_id text NOT NULL, title text NOT NULL, prompt text NOT NULL,
@@ -24,8 +26,19 @@ export async function initializeDatabase() {
       id uuid PRIMARY KEY, owner_id text NOT NULL, role text NOT NULL, text text NOT NULL,
       task_id uuid REFERENCES tasks(id), attachments jsonb NOT NULL DEFAULT '[]', created_at timestamptz NOT NULL DEFAULT now()
     );
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS conversation_revision integer NOT NULL DEFAULT 0;
+    CREATE TABLE IF NOT EXISTS conversations (
+      owner_id text NOT NULL, channel text NOT NULL, revision integer NOT NULL DEFAULT 0,
+      updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(owner_id,channel)
+    );
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS stream_id text;
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS reaction text;
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS assistant_reaction text;
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS assistant_reacted_at timestamptz;
+    UPDATE messages SET assistant_reacted_at=created_at WHERE assistant_reaction IS NOT NULL AND assistant_reacted_at IS NULL;
+    CREATE INDEX IF NOT EXISTS messages_owner_agent_reaction_time ON messages(owner_id,assistant_reacted_at DESC) WHERE assistant_reacted_at IS NOT NULL;
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS reaction_revision integer NOT NULL DEFAULT 0;
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_message_id uuid REFERENCES messages(id);
     CREATE TABLE IF NOT EXISTS task_events (
       id uuid PRIMARY KEY, task_id uuid NOT NULL REFERENCES tasks(id), type text NOT NULL,
       summary text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()

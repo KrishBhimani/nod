@@ -1,0 +1,103 @@
+.apps-page {
+  container-type: inline-size;
+}
+.apps-page .app-grid {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+}
+.apps-page .app-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px 24px;
+  min-width: 0;
+  padding: 22px 0;
+  border-bottom: 1px solid var(--border);
+}
+.apps-page .app-card-summary {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+}
+.apps-page .app-card-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+}
+.apps-page .app-card-heading > img,
+.apps-page .app-card-heading > svg {
+  flex-shrink: 0;
+}
+.apps-page .app-card-heading h2 {
+  min-width: 0;
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.apps-page .app-card-heading > span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.apps-page .app-card-description {
+  margin: 5px 0 0 34px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.apps-page .app-card-accounts {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  min-width: 0;
+  padding-left: 34px;
+}
+.apps-page .compact-account {
+  align-items: center;
+  padding: 7px 0;
+}
+.apps-page .compact-account-details {
+  padding-top: 0;
+}
+.apps-page .compact-account-name,
+.apps-page .compact-account-email {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.apps-page .app-card-actions {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: flex-end;
+  gap: 6px;
+}
+.apps-page .app-card-actions > span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.apps-page .connection-menu-options {
+  width: min(200px, calc(100vw - 76px));
+}
+@container (max-width: 400px) {
+  .apps-page .app-card {
+    gap: 12px;
+    padding-block: 18px;
+  }
+  .apps-page .app-card-heading > span {
+    flex-basis: 100%;
+    padding-left: 34px;
+  }
+  .apps-page .app-card-description {
+    margin-left: 0;
+  }
+  .apps-page .app-card-accounts {
+    padding-left: 0;
+  }
+  .apps-page .app-card-actions .button {
+    min-height: 38px;
+    padding-inline: 8px;
+  }
+}

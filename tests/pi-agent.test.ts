@@ -123,7 +123,17 @@ test('real Pi sessions persist a credential pause and resume without replaying c
       sessionRoot: join(directory, 'sessions'),
       createSession: factory,
     }),
-    computer: fakeComputer(),
+    computer: fakeComputer({
+      inspectLogin: async () => ({
+        origin: 'https://example.com',
+        url: phase === 0 ? 'https://example.com/login' : 'https://example.com/account',
+        fields: phase === 0 ? [{ kind: 'password', selector: '#password', label: 'Password' }] : [],
+        methods:
+          phase === 0
+            ? [{ id: 'credentials', kind: 'credentials', label: 'Password', supported: true }]
+            : [],
+      }),
+    }),
     workspace: fakeWorkspace(),
   });
   try {
@@ -135,7 +145,7 @@ test('real Pi sessions persist a credential pause and resume without replaying c
         await runtime.runTask({
           ...context,
           prompt: 'Secure entry completed',
-          history: [{ role: 'user', text: 'History must not be appended again' }],
+          history: [{ role: 'user', text: 'New context from the continuous conversation' }],
         })
       ).status,
       'succeeded',
@@ -143,10 +153,21 @@ test('real Pi sessions persist a credential pause and resume without replaying c
     assert.equal(prompts.length, 2);
     assert.equal(prompts[1].includes('Older fixture context'), true);
     assert.equal(prompts[1].includes('Secure entry completed'), true);
-    assert.equal(prompts[1].includes('History must not be appended again'), false);
+    assert.equal(prompts[1].includes('New context from the continuous conversation'), true);
+    assert.equal(
+      prompts[1].includes('Earlier assistant messages asking for them are obsolete'),
+      true,
+    );
+    assert.equal(
+      JSON.parse(prompts[1]).filter(
+        (item: { role: string; content: unknown }) =>
+          item.role === 'user' && JSON.stringify(item.content).includes('Older fixture context'),
+      ).length,
+      1,
+    );
     assert.equal(prompts[1].includes('runtime-fixture-key'), false);
     assert.deepEqual(replies, [
-      'Secure sign-in is needed to continue: /credentials/fixture',
+      'https://example.com needs you to sign in. [Enter login details](/credentials/fixture).',
       'Resumed successfully.',
     ]);
     assert.deepEqual(
@@ -295,6 +316,7 @@ test('Pi usage preserves cache categories without double counting reasoning, cal
     {
       type: 'model_usage',
       id: 'opaque-id',
+      status: 'succeeded',
       provider: 'openai',
       model: 'gpt-5.4-mini',
       inputTokens: 100,
@@ -499,6 +521,82 @@ test('real Pi retry followed by a tool pause reports only new usage despite repe
     assert.ok(events.some((event) => event.type === 'message_end' && event.status === 'succeeded'));
     assert.equal(JSON.stringify(events).includes('private fixture error'), false);
     assert.equal(JSON.stringify(events).includes('private-fixture-key'), false);
+    await session.dispose();
+  } finally {
+    await agent.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('Pi reports compaction and cache warming usage without private summaries or duplicate entries', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sidekick-pi-auxiliary-'));
+  const events: AgentEvent[] = [];
+  let emit!: Parameters<Awaited<ReturnType<typeof createAgentSession>>['session']['subscribe']>[0];
+  const factory: typeof createAgentSession = async (options) => {
+    const result = await createAgentSession(options);
+    result.session.subscribe = (listener) => {
+      emit = listener;
+      return () => {};
+    };
+    return result;
+  };
+  const agent = createPiAgent({
+    provider: 'openai',
+    apiKey: 'fixture-key',
+    sessionRoot: directory,
+    createSession: factory,
+  });
+  try {
+    const session = await agent.open({
+      taskId: randomUUID(),
+      systemPrompt: 'fixture',
+      tools: [],
+      shouldStop: () => false,
+      onEvent: (event) => events.push(event),
+    });
+    const usage = usageMessage().usage;
+    emit({ type: 'compaction_start', reason: 'threshold' });
+    emit({
+      type: 'compaction_end',
+      reason: 'threshold',
+      result: { summary: 'private summary', firstKeptEntryId: 'entry', tokensBefore: 1000, usage },
+      aborted: false,
+      willRetry: false,
+    });
+    const entry = {
+      type: 'usage' as const,
+      id: 'cache-entry',
+      parentId: null,
+      timestamp: new Date().toISOString(),
+      kind: 'cache_warm',
+      provider: 'openai',
+      model: 'fixture',
+      usage,
+      note: 'private note',
+    };
+    emit({ type: 'entry_appended', entry });
+    emit({ type: 'entry_appended', entry });
+    emit({ type: 'compaction_start', reason: 'threshold' });
+    emit({
+      type: 'compaction_end',
+      reason: 'threshold',
+      result: undefined,
+      aborted: false,
+      willRetry: false,
+      errorMessage: 'private provider error',
+    });
+    const captured = events.flatMap((event) =>
+      event.type === 'provider_usage' ? [event.usage] : [],
+    );
+    assert.deepEqual(
+      captured.map((event) => event.operation),
+      ['compaction', 'cache_warm', 'compaction'],
+    );
+    assert.equal(captured[0]?.inputTokens, 100);
+    assert.equal(captured[0]?.costUsd, 0.0037);
+    assert.equal(captured[2]?.status, 'failed');
+    assert.equal(captured[2]?.costUsd, undefined);
+    assert.doesNotMatch(JSON.stringify(captured), /private/);
     await session.dispose();
   } finally {
     await agent.dispose();

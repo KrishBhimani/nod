@@ -157,7 +157,9 @@ export function createChatSdkTransport(
     allowedSenderIds: [
       channel.provider === 'telegram' ? env.TELEGRAM_ALLOWED_USER_ID : env.WHATSAPP_ALLOWED_NUMBER,
     ].filter((value): value is string => Boolean(value)),
-    ...(channel.provider === 'whatsapp' ? { replyWindowMs: 86400000 } : {}),
+    ...(channel.provider === 'whatsapp'
+      ? { replyWindowMs: 86400000 }
+      : { supportsAttachments: true }),
   }));
   const error = (status: number, message: string): MessagingWebhookResult => ({
     status,
@@ -173,6 +175,7 @@ export function createChatSdkTransport(
   let offsetsReady: Promise<unknown> | undefined;
   const transport: MessagingTransport = {
     channels,
+    pollingEnabled: Boolean(telegram && env.TELEGRAM_MODE === 'polling'),
     async poll(accept) {
       if (closed || polling || !telegram || env.TELEGRAM_MODE !== 'polling') return;
       polling = true;
@@ -330,9 +333,41 @@ export function createChatSdkTransport(
         )
       )
         throw new Error('Channel is not configured.');
+      const attachments = input.attachments ?? [];
+      if (attachments.length && input.channelId !== 'telegram')
+        throw new Error('This channel does not support attachment delivery.');
+      if (
+        attachments.length > 10 ||
+        attachments.reduce((total, file) => total + file.bytes.byteLength, 0) > 15 * 1024 * 1024 ||
+        attachments.some((file) => !file.bytes.byteLength)
+      )
+        throw new Error('Attachments exceed the delivery limit.');
       await bot.initialize();
-      const sent = await bot.thread(input.threadId).post({ markdown: input.text });
-      return { id: sent.id };
+      const thread = bot.thread(input.threadId);
+      if (!attachments.length) return { id: (await thread.post({ markdown: input.text })).id };
+      const separateText = input.text.length > 900;
+      if (separateText) await thread.post({ markdown: input.text });
+      let id = '';
+      for (const [index, file] of attachments.entries()) {
+        const sent = await thread.post({
+          markdown: index === 0 && !separateText ? input.text : '',
+          attachments: [
+            {
+              type:
+                ['image/png', 'image/jpeg', 'image/webp'].includes(file.mimeType) &&
+                file.bytes.byteLength <= 10 * 1024 * 1024
+                  ? 'image'
+                  : 'file',
+              data: Buffer.from(file.bytes),
+              name: file.name,
+              mimeType: file.mimeType,
+              size: file.bytes.byteLength,
+            },
+          ],
+        });
+        id ||= sent.id;
+      }
+      return { id };
     },
     async close() {
       if (!closed) {

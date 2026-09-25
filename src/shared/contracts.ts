@@ -13,6 +13,10 @@ export interface Artifact {
   size: number;
   url: string;
 }
+export type MessageReaction = string;
+export type AgentReactionResult =
+  | { status: 'updated' | 'unchanged' }
+  | { status: 'skipped'; reason: 'cooldown' | 'already_reacted' | 'unavailable' };
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
@@ -21,7 +25,15 @@ export interface Message {
   createdAt: string;
   attachments: Artifact[];
   streamId?: string | null;
-  reaction?: 'like' | 'dislike' | 'heart' | null;
+  reaction?: MessageReaction | null;
+  reactions?: Array<{ actor: 'user' | 'assistant'; reaction: MessageReaction }>;
+  replyToMessageId?: string | null;
+  replyTo?: { id: string; role: 'user' | 'assistant'; text: string } | null;
+}
+export interface SubmitMessageResponse {
+  taskId: string;
+  continued: boolean;
+  messageId: string;
 }
 export interface Task {
   id: string;
@@ -30,6 +42,7 @@ export interface Task {
   createdAt: string;
   updatedAt: string;
   error?: string;
+  showTyping?: boolean;
 }
 export interface TaskEvent {
   id: string;
@@ -38,12 +51,58 @@ export interface TaskEvent {
   summary: string;
   createdAt: string;
 }
-export interface VaultEntry {
+export interface VaultLoginEntry {
+  kind: 'login';
   id: string;
   label: string;
   origin: string;
   usernameHint: string;
+  identifierLabel?: string;
   updatedAt: string;
+}
+export interface VaultCardEntry {
+  kind: 'card';
+  id: string;
+  label: string;
+  brand: string;
+  last4: string;
+  expiryMonth: number;
+  expiryYear: number;
+  updatedAt: string;
+}
+export type VaultEntry = VaultLoginEntry | VaultCardEntry;
+export type VaultListEntry = (VaultLoginEntry & { username: string }) | VaultCardEntry;
+export interface VaultLoginDetails extends VaultLoginEntry {
+  username: string;
+}
+export interface VaultCardDetails extends VaultCardEntry {
+  cardholder: string;
+  hasSecurityCode: boolean;
+}
+export type VaultEntryDetails = VaultLoginDetails | VaultCardDetails;
+export interface VaultEntryPassword {
+  password: string;
+}
+export interface VaultCardNumber {
+  cardNumber: string;
+}
+export interface VaultCardSecurityCode {
+  securityCode: string;
+}
+export interface VaultEntryUpdate {
+  kind?: 'login';
+  label: string;
+  username: string;
+  password?: string;
+}
+export interface VaultCardUpdate {
+  kind: 'card';
+  label: string;
+  cardholder: string;
+  cardNumber?: string;
+  securityCode?: string | null;
+  expiryMonth: number;
+  expiryYear: number;
 }
 export interface CredentialRequest {
   id: string;
@@ -61,6 +120,8 @@ export interface CredentialRequest {
   }[];
   status: 'pending' | 'filled' | 'expired';
   expiresAt: string;
+  savedEntries?: VaultLoginEntry[];
+  selectedEntryId?: string;
 }
 export interface Connection {
   slug: string;
@@ -87,6 +148,7 @@ export interface Configuration {
   localOnly: boolean;
 }
 export interface AppState {
+  conversationRevision?: number;
   messages: Message[];
   tasks: Task[];
   configuration: Configuration;
@@ -95,6 +157,7 @@ export interface InspectorState {
   tasks: Task[];
   events: TaskEvent[];
   runtime: { browser: string; workspace: string; database: string };
+  currentBrowser?: { taskId: string; title: string; status: string; lastActivityAt: string };
 }
 export interface MemoryFact {
   id: string;
@@ -122,14 +185,35 @@ export interface Schedule {
   id: string;
   title: string;
   prompt: string;
-  cron: string;
+  kind: 'once' | 'recurring';
+  cron: string | null;
+  runAt: string | null;
   timeZone: string;
   enabled: boolean;
+  revision: number;
+  nextRun: string | null;
+  lastRun: ScheduleRun | null;
+}
+export interface ScheduleRun {
+  id: string;
+  scheduleId: string;
+  title: string;
+  taskId: string;
+  scheduledFor: string;
+  timeZone: string;
+  createdAt: string;
+  status: TaskStatus;
+  error: string | null;
+}
+export interface ScheduleHistory {
+  runs: ScheduleRun[];
+  nextCursor: string | null;
 }
 export interface Approval {
   id: string;
   action: string;
   args: Record<string, unknown>;
+  connection?: Pick<Connection, 'name' | 'accountName' | 'accountEmail'>;
   status: 'pending' | 'executing' | 'completed' | 'declined' | 'uncertain' | 'expired';
 }
 export interface Preferences {

@@ -17,7 +17,7 @@ test('chat renders Markdown, tables, static HTML and secure local links', () => 
   assert.match(result, /<table>/);
   assert.match(result, /<strong>HTML works<\/strong>/);
   assert.match(result, /href="\/credentials\/example-token"/);
-  assert.match(result, /Continue securely/);
+  assert.match(result, />Vault/);
 });
 
 test('chat HTML cannot run scripts, submit forms, load trackers or link to local internals', () => {

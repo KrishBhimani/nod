@@ -1,210 +1,213 @@
-import { useEffect, useState } from 'react';
-import { Globe2, KeyRound, Plus, ShieldCheck, Trash2 } from 'lucide-react';
-import type { VaultEntry } from '../../shared/contracts';
-import { api, errorMessage, post } from '../lib/api';
-import { relativeTime } from '../lib/utils';
+import { PageTitle } from '../components/page-title';
+import { useRef, useState } from 'react';
+import { usePageData } from '../hooks/use-page-data';
+import { ArrowLeft, ChevronRight, CreditCard, Globe2, KeyRound, Plus } from 'lucide-react';
+import type { VaultListEntry } from '../../shared/contracts';
+import { VaultDetails } from '../components/vault-details';
+import { formatCardExpiry, VaultItemForm } from '../components/vault-item-form';
 import {
   Button,
   Dialog,
   DialogContent,
   DialogDescription,
   DialogTitle,
-  Field,
-  Input,
   Loading,
   Notice,
 } from '../components/ui';
 
 export function originLabel(origin: string) {
   try {
-    return new URL(origin).hostname;
+    return new URL(origin).host;
   } catch {
     return 'Website';
   }
 }
 
-function VaultForm({ onSaved }: { onSaved(): void }) {
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  async function submit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const data = new FormData(form);
-    setSaving(true);
-    setError('');
-    try {
-      await post<VaultEntry>('/api/vault', {
-        label: data.get('label'),
-        origin: data.get('origin'),
-        username: data.get('username'),
-        password: data.get('password'),
-      });
-      form.reset();
-      onSaved();
-    } catch {
-      setError('This login could not be saved. Check the website and try again.');
-    } finally {
-      setSaving(false);
-    }
-  }
-  return (
-    <form onSubmit={(event) => void submit(event)} className="form-stack" autoComplete="off">
-      <Field label="Name">
-        <Input name="label" placeholder="For example, my work account" required maxLength={120} />
-      </Field>
-      <Field label="Website" hint="This login will only be used on this website.">
-        <Input name="origin" type="url" placeholder="https://example.com" required />
-      </Field>
-      <Field label="Username or email">
-        <Input name="username" autoComplete="username" required />
-      </Field>
-      <Field label="Password">
-        <Input name="password" type="password" autoComplete="new-password" required />
-      </Field>
-      {error && <Notice>{error}</Notice>}
-      <Button type="submit" disabled={saving}>
-        {saving ? 'Saving…' : 'Save login'}
-      </Button>
-    </form>
-  );
-}
-
 export function Vault() {
-  const [entries, setEntries] = useState<VaultEntry[] | null>(null);
-  const [error, setError] = useState('');
+  const {
+    data: entries,
+    error: loadError,
+    loading,
+    refresh,
+    update,
+  } = usePageData<VaultListEntry[]>('/api/vault');
   const [open, setOpen] = useState(false);
-  const [deleting, setDeleting] = useState<VaultEntry | null>(null);
-  const [busy, setBusy] = useState(false);
-  async function load() {
-    try {
-      setEntries(await api<VaultEntry[]>('/api/vault'));
-      setError('');
-    } catch (cause) {
-      setError(errorMessage(cause));
-    }
+  const [adding, setAdding] = useState<'login' | 'card' | null>(null);
+  const [selected, setSelected] = useState<VaultListEntry | null>(null);
+  const addTrigger = useRef<HTMLButtonElement | null>(null);
+  const detailsTrigger = useRef<HTMLButtonElement | null>(null);
+  const addTitle = useRef<HTMLHeadingElement>(null);
+
+  function save(entry: VaultListEntry) {
+    update((current) => [entry, ...(current ?? []).filter((value) => value.id !== entry.id)]);
+    void refresh();
   }
-  useEffect(() => {
-    void load();
-  }, []);
-  async function remove() {
-    if (!deleting) return;
-    setBusy(true);
-    try {
-      await api(`/api/vault/${encodeURIComponent(deleting.id)}`, { method: 'DELETE' });
-      setDeleting(null);
-      await load();
-    } catch (cause) {
-      setError(errorMessage(cause));
-    } finally {
-      setBusy(false);
-    }
-  }
+
   return (
-    <div className="content-page">
-      <header className="page-heading">
+    <div className="content-page secondary-page">
+      <header className="page-heading secondary-heading">
         <div>
-          <h1>Your vault</h1>
-          <p>Logins, kept out of the conversation.</p>
+          <PageTitle path="/vault" />
+          <p>Your saved logins and payment cards.</p>
         </div>
-        <Button onClick={() => setOpen(true)}>
-          <Plus size={16} />
-          Add login
-        </Button>
+        <span
+          ref={(node) => {
+            addTrigger.current = node?.querySelector('button') ?? null;
+          }}
+        >
+          <Button
+            size="sm"
+            onClick={() => {
+              setAdding(null);
+              setOpen(true);
+            }}
+          >
+            <Plus size={14} />
+            Add item
+          </Button>
+        </span>
       </header>
-      <div className="privacy-note">
-        <ShieldCheck size={18} />
-        <p>
-          Sidekick can fill a login when a task needs it. Passwords stay in the trusted login
-          service.
-        </p>
-      </div>
-      {error && <Notice>{error}</Notice>}
+      {loadError && <Notice>Could not load your vault.</Notice>}
       {!entries ? (
-        !error && <Loading label="Opening your vault…" />
+        loading && <Loading label="Opening your vault…" />
       ) : entries.length ? (
-        <div className="resource-list">
+        <div className="resource-list vault-list">
           {entries.map((entry) => (
-            <div className="resource-row" key={entry.id}>
-              <span className="resource-icon">
-                <Globe2 size={20} />
+            <div className="resource-row vault-row" key={entry.id}>
+              <span className="resource-icon" aria-hidden="true">
+                {entry.kind === 'card' ? <CreditCard size={20} /> : <Globe2 size={20} />}
               </span>
               <div className="resource-description">
-                <h2>{entry.label}</h2>
-                <p>
-                  {originLabel(entry.origin)}
-                  {entry.usernameHint && (
+                <h2>
+                  <button
+                    type="button"
+                    className="vault-entry-trigger"
+                    aria-label={`View ${entry.label}`}
+                    aria-haspopup="dialog"
+                    onClick={(event) => {
+                      detailsTrigger.current = event.currentTarget;
+                      setSelected(entry);
+                    }}
+                  >
+                    {entry.label}
+                  </button>
+                </h2>
+                <p className="vault-entry-meta">
+                  {entry.kind === 'card' ? (
                     <>
-                      <span className="text-separator">/</span>
-                      {entry.usernameHint}
+                      <span>
+                        {entry.brand} · •••• {entry.last4}
+                      </span>
+                      <span>Expires {formatCardExpiry(entry.expiryMonth, entry.expiryYear)}</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>{originLabel(entry.origin)}</span>
+                      {entry.username && (
+                        <span className="vault-entry-username">{entry.username}</span>
+                      )}
                     </>
                   )}
                 </p>
               </div>
-              <span className="resource-date">{relativeTime(entry.updatedAt)}</span>
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={`Delete ${entry.label}`}
-                onClick={() => setDeleting(entry)}
-              >
-                <Trash2 size={16} />
-              </Button>
+              <ChevronRight className="vault-entry-chevron" size={16} aria-hidden="true" />
             </div>
           ))}
         </div>
       ) : (
-        <div className="empty-state">
-          <KeyRound size={31} strokeWidth={1.4} />
-          <h2>A safe place for your logins.</h2>
-          <p>
-            Add a login here, or enter one securely
-            <br />
-            when a task needs it.
-          </p>
-          <Button variant="outline" onClick={() => setOpen(true)}>
-            <Plus size={15} />
-            Add your first login
-          </Button>
+        <div className="secondary-empty">
+          <h2>No saved items</h2>
+          <p>Add a login or payment card to your vault.</p>
         </div>
       )}
+      {selected && (
+        <VaultDetails
+          key={selected.id}
+          entry={selected}
+          returnFocus={detailsTrigger.current}
+          fallbackFocus={addTrigger.current}
+          onClose={() => setSelected(null)}
+          onSaved={(entry) => {
+            save(entry);
+            setSelected(entry);
+          }}
+          onDeleted={(id) => {
+            update((current) => current?.filter((value) => value.id !== id) ?? current);
+            setSelected(null);
+            void refresh();
+          }}
+        />
+      )}
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent>
+        <DialogContent
+          className="vault-details"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            addTitle.current?.focus();
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            addTrigger.current?.focus();
+          }}
+        >
           <div className="dialog-heading">
-            <KeyRound size={22} />
-            <DialogTitle>Add a login</DialogTitle>
-            <DialogDescription>
-              Stored securely and used only for the matching website.
+            {adding === 'card' ? (
+              <CreditCard size={22} aria-hidden="true" />
+            ) : (
+              <KeyRound size={22} aria-hidden="true" />
+            )}
+            <DialogTitle ref={addTitle} tabIndex={-1}>
+              {adding === 'card'
+                ? 'Add a payment card'
+                : adding === 'login'
+                  ? 'Add a login'
+                  : 'Add item'}
+            </DialogTitle>
+            <DialogDescription className="sr-only">
+              Choose what to save in your vault.
             </DialogDescription>
           </div>
-          <VaultForm
-            onSaved={() => {
-              setOpen(false);
-              void load();
-            }}
-          />
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={Boolean(deleting)}
-        onOpenChange={(value) => {
-          if (!value && !busy) setDeleting(null);
-        }}
-      >
-        <DialogContent>
-          <div className="dialog-heading">
-            <DialogTitle>Delete this login?</DialogTitle>
-            <DialogDescription>
-              {deleting?.label} will be removed from your vault. You can add it again later.
-            </DialogDescription>
-          </div>
-          <div className="dialog-actions">
-            <Button variant="ghost" disabled={busy} onClick={() => setDeleting(null)}>
-              Keep login
-            </Button>
-            <Button variant="destructive" disabled={busy} onClick={() => void remove()}>
-              {busy ? 'Deleting…' : 'Delete login'}
-            </Button>
-          </div>
+          {adding ? (
+            <>
+              <Button
+                className="vault-type-back"
+                variant="ghost"
+                size="sm"
+                aria-label="Choose item type"
+                onClick={() => setAdding(null)}
+              >
+                <ArrowLeft size={14} aria-hidden="true" />
+                Back
+              </Button>
+              <VaultItemForm
+                key={adding}
+                kind={adding}
+                onSaved={(entry) => {
+                  save(entry);
+                  setOpen(false);
+                }}
+              />
+            </>
+          ) : (
+            <div className="vault-item-types">
+              <button type="button" aria-label="Login" onClick={() => setAdding('login')}>
+                <KeyRound size={20} aria-hidden="true" />
+                <span>
+                  <strong>Login</strong>
+                  <span>Username and password for a website</span>
+                </span>
+                <ChevronRight size={16} aria-hidden="true" />
+              </button>
+              <button type="button" aria-label="Payment card" onClick={() => setAdding('card')}>
+                <CreditCard size={20} aria-hidden="true" />
+                <span>
+                  <strong>Payment card</strong>
+                  <span>Cardholder, number and expiry date</span>
+                </span>
+                <ChevronRight size={16} aria-hidden="true" />
+              </button>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

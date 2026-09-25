@@ -1,0 +1,129 @@
+import type { Approval } from '../shared/contracts.ts';
+
+const labels: Record<string, string> = {
+  GMAIL_SEND_EMAIL: 'Send this email',
+  GMAIL_CREATE_EMAIL_DRAFT: 'Save this email draft',
+  GMAIL_DELETE_MESSAGE: 'Delete this email',
+  GMAIL_DELETE_EMAIL: 'Delete this email',
+  SLACK_SEND_MESSAGE: 'Send this Slack message',
+  SLACK_POST_MESSAGE: 'Send this Slack message',
+  SLACK_DELETE_MESSAGE: 'Delete this Slack message',
+  GOOGLECALENDAR_DELETE_EVENT: 'Delete this calendar event',
+  GOOGLEDRIVE_DELETE_FILE: 'Delete this file',
+  NOTION_DELETE_BLOCK: 'Delete this Notion block',
+  SIDEKICK_goal_create: 'Add this goal',
+  SIDEKICK_goal_update: 'Update this goal',
+  SIDEKICK_schedule_create: 'Add this schedule',
+  SIDEKICK_schedule_update: 'Update this schedule',
+  SIDEKICK_schedule_cancel: 'Pause this schedule',
+  SIDEKICK_profile_update: 'Save these preferences',
+  SIDEKICK_notification_preferences_update: 'Save these notification preferences',
+  SIDEKICK_memory_propose: 'Remember this',
+};
+
+function plain(value: string) {
+  return value
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '')
+    .replace(/[\\`*_{}\[\]<>()#!|]/g, '\\$&');
+}
+
+function text(value: unknown) {
+  return typeof value === 'string' && value.trim() ? plain(value.trim()) : undefined;
+}
+
+function recipients(value: unknown) {
+  const values = Array.isArray(value) ? value : [value];
+  if (
+    !values.length ||
+    values.some((entry) => typeof entry !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(entry))
+  )
+    return undefined;
+  return values.map((entry) => plain(entry as string)).join(', ');
+}
+
+export function actionConfirmation(
+  action: string,
+  args: Record<string, unknown>,
+  connection?: Approval['connection'],
+  targetTitle?: string,
+) {
+  const fallback = /^[A-Z][A-Z0-9]*(?:_[A-Z]+)+$/.test(action)
+    ? action
+        .split('_')
+        .slice(1)
+        .join(' ')
+        .toLowerCase()
+        .replace(/^./, (letter) => letter.toUpperCase())
+    : 'Make this change';
+  const label = labels[action] ?? fallback;
+  const account = text(connection?.accountEmail) || text(connection?.accountName);
+  const service = text(connection?.name);
+  const using = service ? ` using ${service}${account ? ` (${account})` : ''}` : '';
+  const details: string[] = [];
+  const seen = new Set<string>();
+  const add = (label: string, value: string | undefined) => {
+    if (!value || seen.has(label)) return;
+    seen.add(label);
+    details.push(`${label}: ${value}`);
+  };
+  add('For', text(targetTitle));
+  for (const [key, label] of [
+    ['title', 'Title'],
+    ['subject', 'Subject'],
+    ['recipient_name', 'Recipient'],
+    ['channel_name', 'Channel'],
+    ['name', 'Name'],
+    ['file_name', 'File'],
+    ['filename', 'File'],
+    ['nextAction', 'Next step'],
+    ['description', 'Description'],
+    ['preferences', 'Preferences'],
+    ['location', 'Location'],
+    ['phone', 'Phone'],
+    ['notificationRule', 'Notify me'],
+    ['quietStart', 'Quiet hours start'],
+    ['quietEnd', 'Quiet hours end'],
+    ['timeZone', 'Time zone'],
+  ])
+    add(label!, text(args[key!]));
+  for (const key of ['to', 'recipients', 'recipient_email', 'to_email'])
+    add('To', recipients(args[key]));
+  for (const key of ['cc', 'bcc']) add(key.toUpperCase(), recipients(args[key]));
+  if (typeof args.progress === 'number' && Number.isFinite(args.progress))
+    add('Progress', `${args.progress}%`);
+  if (['active', 'paused', 'completed'].includes(String(args.status)))
+    add('Status', String(args.status));
+  if (typeof args.enabled === 'boolean') add('Schedule', args.enabled ? 'Active' : 'Paused');
+  if (typeof args.targetDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.targetDate))
+    add('Target date', args.targetDate);
+  else if (args.targetDate === null) add('Target date', 'None');
+  if (typeof args.runAt === 'string' && Number.isFinite(Date.parse(args.runAt))) {
+    try {
+      add(
+        'When',
+        new Intl.DateTimeFormat('en-GB', {
+          dateStyle: 'long',
+          timeStyle: 'short',
+          timeZone: typeof args.timeZone === 'string' ? args.timeZone : 'UTC',
+        }).format(new Date(args.runAt)),
+      );
+    } catch {}
+  }
+  if (typeof args.cron === 'string') {
+    const everyMinute = /^\*\/([1-9]\d*) \* \* \* \*$/.exec(args.cron);
+    const daily = /^(\d{1,2}) (\d{1,2}) \* \* \*$/.exec(args.cron);
+    add(
+      'Repeats',
+      args.cron === '* * * * *'
+        ? 'Every minute'
+        : everyMinute
+          ? `Every ${everyMinute[1]} minutes`
+          : daily
+            ? `Daily at ${daily[2]!.padStart(2, '0')}:${daily[1]!.padStart(2, '0')}`
+            : `Custom timing (${plain(args.cron)})`,
+    );
+  }
+  for (const key of ['body', 'text', 'content', 'prompt'])
+    add(action === 'SIDEKICK_memory_propose' ? 'Memory' : 'Message', text(args[key]));
+  return `${label}${using}?${details.length ? `\n\n${details.join('\n\n')}` : ''}\n\nReply yes to confirm or no to leave it unchanged.`;
+}

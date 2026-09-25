@@ -11,7 +11,12 @@ const secretAssignment = new RegExp(
   'gi',
 );
 
-export function createInspectorRedactor(secrets: string[] = []) {
+export function createInspectorRedactor(
+  secrets: string[] = [],
+  limits: { string?: number; payload?: number } = {},
+) {
+  const stringLimit = Math.min(64_000, Math.max(100, limits.string ?? 8000));
+  const payloadLimit = Math.min(160_000, Math.max(1000, limits.payload ?? inspectorPayloadLimit));
   const values = [...new Set(secrets.filter((value) => value.length >= 8))].sort(
     (a, b) => b.length - a.length,
   );
@@ -32,7 +37,7 @@ export function createInspectorRedactor(secrets: string[] = []) {
       )
       .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, hidden)
       .replace(
-        /((?:https?:\/\/[^\s/"'<>]+)?\/(?:credentials|approvals)\/)[^\s"'<>]+/gi,
+        /((?:https?:\/\/[^\s/"'<>]+)?\/(?:vault|credentials|approvals)\/)[^\s"'<>]+/gi,
         '$1[redacted]',
       )
       .replace(
@@ -45,19 +50,67 @@ export function createInspectorRedactor(secrets: string[] = []) {
   }
   return function redact(value: unknown): unknown {
     let nodes = 0;
+    let fragments = 0;
+    let scanned = 0;
     const seen = new WeakSet<object>();
+    function embedded(value: string, depth: number): string {
+      if (scanned + value.length > 512_000) return '[structured data omitted]';
+      scanned += value.length;
+      const bounded = value.slice(0, 64_000);
+      let result = '';
+      let offset = 0;
+      const openings = /\{(?=\s*["}])|\[(?=\s*(?:[\[\]{"\d-]|true\b|false\b|null\b))/g;
+      for (let match = openings.exec(bounded); match; match = openings.exec(bounded)) {
+        const start = match.index;
+        result += text(bounded.slice(offset, start));
+        if (++fragments > 32) return result + '[structured data omitted]';
+        const stack: string[] = [];
+        let quoted = false;
+        let escaped = false;
+        let complete = false;
+        let end = start;
+        for (; end < bounded.length; end++) {
+          const char = bounded[end];
+          if (quoted) {
+            if (escaped) escaped = false;
+            else if (char === '\\') escaped = true;
+            else if (char === '"') quoted = false;
+          } else if (char === '"') quoted = true;
+          else if (char === '{' || char === '[') stack.push(char === '{' ? '}' : ']');
+          else if (char === '}' || char === ']') {
+            if (stack.pop() !== char) break;
+            if (stack.length === 0) {
+              complete = true;
+              end++;
+              break;
+            }
+          }
+        }
+        if (!complete) return result + '[incomplete structured data omitted]';
+        try {
+          result += JSON.stringify(visit(JSON.parse(bounded.slice(start, end)), depth + 1));
+        } catch {
+          result += '[invalid structured data omitted]';
+        }
+        offset = end;
+        openings.lastIndex = end;
+      }
+      return (
+        result + text(bounded.slice(offset)) + (value.length > bounded.length ? ' [truncated]' : '')
+      );
+    }
     function visit(item: unknown, depth: number): unknown {
       if (++nodes > 1200 || depth > 12) return '[truncated]';
       if (typeof item === 'string') {
         const trimmed = item.trim();
-        if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        if (trimmed.startsWith('{') || trimmed.startsWith('[') || trimmed.startsWith('"')) {
           if (trimmed.length >= 64_000) return '[oversized JSON payload omitted]';
           try {
             return visit(JSON.parse(trimmed), depth + 1);
           } catch {}
         }
-        const safe = text(item).slice(0, 64_000);
-        return safe.length > 8000 ? safe.slice(0, 8000) + ' [truncated]' : safe;
+        const safe = embedded(item, depth);
+        return safe.length > stringLimit ? safe.slice(0, stringLimit) + ' [truncated]' : safe;
       }
       if (item === null || typeof item === 'boolean') return item;
       if (typeof item === 'number') return Number.isFinite(item) ? item : null;
@@ -94,9 +147,9 @@ export function createInspectorRedactor(secrets: string[] = []) {
     }
     const safe = visit(value, 0);
     const encoded = JSON.stringify(safe);
-    if (Buffer.byteLength(encoded) <= inspectorPayloadLimit) return safe;
+    if (Buffer.byteLength(encoded) <= payloadLimit) return safe;
     let preview = encoded.slice(0, 8000);
-    while (Buffer.byteLength(JSON.stringify({ preview, truncated: true })) > inspectorPayloadLimit)
+    while (Buffer.byteLength(JSON.stringify({ preview, truncated: true })) > payloadLimit)
       preview = preview.slice(0, Math.floor(preview.length * 0.8));
     return { preview, truncated: true };
   };

@@ -3,15 +3,19 @@ import { basename } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import type { runProcess } from '../src/providers/process.ts';
 
-class Element {
+export class LoginElement {
   isConnected = true;
   disabled = false;
   readOnly = false;
   type = 'text';
   name = '';
+  id = '';
   autocomplete = '';
   innerText = '';
   tagName = 'INPUT';
+  parentElement: LoginElement | null = null;
+  children: LoginElement[] = [];
+  labels: LoginElement[] = [];
   attrs = new Map<string, string>();
   styles = new Map<string, string>();
   style = { setProperty: (name: string, value: string) => this.styles.set(name, value) };
@@ -30,20 +34,93 @@ class Element {
   setAttribute(name: string, value: string) {
     this.attrs.set(name, value);
   }
+  removeAttribute(name: string) {
+    this.attrs.delete(name);
+  }
+  append(...children: LoginElement[]) {
+    for (const child of children) {
+      child.parentElement = this;
+      this.children.push(child);
+    }
+  }
+  contains(element: LoginElement | null | undefined): boolean {
+    return Boolean(
+      element && (element === this || this.children.some((child) => child.contains(element))),
+    );
+  }
   getClientRects() {
     return this.isConnected ? [{}] : [];
   }
   matches(selector: string) {
-    return selector === 'input' && this.tagName === 'INPUT';
+    return selector.split(',').some((part) => {
+      const match = /^([a-z]+)?(?:\[([^=\]]+)(?:="([^"]+)")?\])?$/.exec(part.trim());
+      if (!match || (match[1] && this.tagName !== match[1].toUpperCase())) return false;
+      const value = match[2] === 'type' ? this.type : this.getAttribute(match[2]);
+      return !match[2] || (match[3] === undefined ? value !== null : value === match[3]);
+    });
   }
-  closest() {
-    return null;
+  closest(selector: string): LoginElement | null {
+    return this.matches(selector) ? this : (this.parentElement?.closest(selector) ?? null);
+  }
+  querySelectorAll(selector: string): LoginElement[] {
+    return this.children.flatMap((child) => [
+      ...(child.matches(selector) ? [child] : []),
+      ...child.querySelectorAll(selector),
+    ]);
   }
   dispatchEvent() {
     this.onInput();
   }
   click() {
     this.onClick();
+  }
+}
+
+const Element = LoginElement;
+
+export class LoginDom {
+  body = new LoginElement();
+  activeElement: LoginElement | null = null;
+  location = { origin: 'https://example.com', href: 'https://example.com/login' };
+  constructor() {
+    this.body.tagName = 'BODY';
+    this.body.innerText = 'Sign in';
+  }
+  querySelectorAll(selector: string) {
+    return this.body.querySelectorAll(selector);
+  }
+  getElementById(id: string) {
+    return (
+      this.body
+        .querySelectorAll('input,label,button,div,span')
+        .find((element) => element.id === id) ?? null
+    );
+  }
+  createTreeWalker(root: LoginElement) {
+    const nodes: { textContent: string; parentElement: LoginElement }[] = [];
+    const visit = (element: LoginElement) => {
+      if (element.innerText) nodes.push({ textContent: element.innerText, parentElement: element });
+      element.children.forEach(visit);
+    };
+    visit(root);
+    let index = -1;
+    return {
+      get currentNode() {
+        return nodes[index];
+      },
+      nextNode: () => nodes[++index] ?? null,
+    };
+  }
+  evaluate(script: string) {
+    return runInNewContext(script, {
+      document: this,
+      location: this.location,
+      NodeFilter: { SHOW_TEXT: 4 },
+      getComputedStyle: (element: LoginElement) => ({
+        visibility: element.styles.get('visibility') ?? 'visible',
+        display: element.styles.get('display') ?? 'block',
+      }),
+    });
   }
 }
 
@@ -56,12 +133,15 @@ export class LoginPage {
   passkey = new Element();
   verification = new Element();
   echo = new Element();
+  documentElement = new Element();
   entered: string[] = [];
   closed = false;
+  focused: LoginElement | null = null;
   constructor() {
     this.render();
   }
   render() {
+    this.documentElement = new Element();
     this.input.isConnected = false;
     this.input = new Element();
     this.input.name = this.stage;
@@ -104,20 +184,19 @@ export class LoginPage {
     };
     this.echo.tagName = 'DIV';
   }
-  nodes(selector: string): Element[] {
+  nodes(selector: string): LoginElement[] {
     const inputs = this.stage === 'complete' ? [] : [this.input];
     const controls = [this.next, this.google, this.passkey, this.verification];
     if (selector === 'input' || selector === 'input,textarea') return inputs;
     if (selector === 'button,a,[role="button"],input[type="submit"]') return controls;
+    if (selector.startsWith('[data-sidekick-login-field],'))
+      return [...inputs, ...controls].filter((element) => element.matches(selector));
     if (selector.startsWith('input[type="password"],input[autocomplete='))
       return inputs.filter(
         (input) =>
           input.type === 'password' || ['one-time-code', 'username'].includes(input.autocomplete),
       );
-    const match = selector.match(/^\[([^=]+)="([^"]+)"\]$/);
-    return match
-      ? [...inputs, ...controls].filter((element) => element.getAttribute(match[1]) === match[2])
-      : [];
+    return [...inputs, ...controls, this.echo].filter((element) => element.matches(selector));
   }
   text() {
     return `Sign in ${this.stage} ${this.echo.innerText}`;
@@ -130,6 +209,10 @@ export class LoginPage {
     return runInNewContext(script, {
       location: this.location,
       document: {
+        documentElement: this.documentElement,
+        get activeElement() {
+          return page.focused;
+        },
         body: {
           get innerText() {
             return page.text();
@@ -149,6 +232,8 @@ export class LoginPage {
         },
       },
       HTMLInputElement: Element,
+      innerWidth: 1000,
+      innerHeight: 600,
       NodeFilter: { SHOW_TEXT: 4 },
       getComputedStyle: () => ({ visibility: 'visible', display: 'block' }),
       Event: class {},

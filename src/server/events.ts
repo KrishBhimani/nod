@@ -5,6 +5,12 @@ events.setMaxListeners(50);
 export function refresh() {
   events.emit('event', { type: 'refresh' });
 }
-export function delta(taskId: string, text: string, streamId?: string, done?: boolean) {
-  events.emit('event', { type: 'delta', taskId, text, streamId, done });
+export function delta(
+  taskId: string,
+  text: string,
+  streamId?: string,
+  done?: boolean,
+  conversationRevision?: number,
+) {
+  events.emit('event', { type: 'delta', taskId, text, streamId, done, conversationRevision });
 }

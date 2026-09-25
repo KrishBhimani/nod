@@ -6,11 +6,12 @@ export function registerLocalAccess(app: FastifyInstance, port: number) {
     '/',
     '/goals',
     '/schedule',
-    '/connections',
+    '/apps',
     '/channels',
     '/vault',
     '/you',
     '/dev',
+    '/browser',
   ]);
   app.addHook('onRequest', async (request, reply) => {
     reply
@@ -39,15 +40,11 @@ export function registerLocalAccess(app: FastifyInstance, port: number) {
     }
     const pageNavigation =
       request.method === 'GET' &&
-      pages.has(path) &&
+      (pages.has(path) || /^\/(vault|credentials|approvals)\/[A-Za-z0-9_-]+\/?$/.test(path)) &&
       request.headers['sec-fetch-mode'] === 'navigate' &&
       request.headers['sec-fetch-dest'] === 'document';
-    const connectionCallback = request.method === 'GET' && path === '/api/connections/callback';
-    if (
-      request.headers['sec-fetch-site'] === 'cross-site' &&
-      !connectionCallback &&
-      !pageNavigation
-    )
+    const appCallback = request.method === 'GET' && path === '/api/apps/callback';
+    if (request.headers['sec-fetch-site'] === 'cross-site' && !appCallback && !pageNavigation)
       return reply.code(403).send({ error: 'Cross-site requests are not permitted.' });
   });
 }

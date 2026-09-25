@@ -1,10 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import type { Pool } from 'pg';
-import type { PgBoss } from 'pg-boss';
 import type { FastifyInstance } from 'fastify';
-import type { submitTask } from './tasks.ts';
 import { createPreferencesStore } from './preferences.ts';
+import { currentConversationSql } from './conversations.ts';
+import { createSchedules, type ScheduleDependencies } from './schedules.ts';
 
 const profileSchema = z
   .object({
@@ -14,18 +13,13 @@ const profileSchema = z
     preferences: z.string().max(4000),
   })
   .strict();
-const scheduleSchema = z
-  .object({
-    title: z.string().trim().min(1).max(100),
-    prompt: z.string().trim().min(1).max(6000),
-    cron: z.string().trim().min(1).max(100),
-    timeZone: z.string().trim().min(1).max(100),
-  })
-  .strict();
 const goalSchema = z
   .object({
     title: z.string().trim().min(1).max(150),
     description: z.string().max(6000).default(''),
+    progress: z.number().int().min(0).max(100).default(0),
+    nextAction: z.string().max(2000).default(''),
+    status: z.enum(['active', 'paused', 'completed']).default('active'),
     targetDate: z.iso.date().nullable().optional(),
   })
   .strict();
@@ -38,26 +32,17 @@ const goalUpdateSchema = goalSchema
     status: z.enum(['active', 'paused', 'completed']).optional(),
   })
   .strict();
-const scheduleUpdateSchema = scheduleSchema
-  .partial()
-  .extend({ enabled: z.boolean().optional() })
-  .strict();
+const memoryProposalSchema = z.object({ text: z.string().trim().min(1).max(2000) }).strict();
+const preferenceStatement =
+  /^(?:(?:correction:|actually,)\s+)?(?:for [\p{L}\p{N}][\p{L}\p{N} '’-]{0,79},\s+)?i (?:prefer|like|dislike|(?:do not|don['’]t|no longer) (?:prefer|like))\b/iu;
 const goalColumns =
   'id,title,description,progress,status,next_action AS "nextAction",target_date AS "targetDate",updated_at AS "updatedAt"';
-const scheduleColumns = 'id,title,prompt,cron,time_zone AS "timeZone",enabled';
-const scheduledQueue = 'scheduled-task';
-
-interface PersonalDependencies {
-  pool: Pool;
-  ownerId: string;
-  scheduler: Pick<PgBoss, 'createQueue' | 'work' | 'schedule' | 'unschedule' | 'previewSchedule'>;
-  submitTask: typeof submitTask;
-  refresh(): void;
-}
+type PersonalDependencies = ScheduleDependencies;
 
 export function createPersonalService(dependencies: PersonalDependencies) {
-  const { pool, ownerId, scheduler, submitTask, refresh } = dependencies;
+  const { pool, ownerId, refresh } = dependencies;
   const preferences = createPreferencesStore(pool, ownerId);
+  const schedules = createSchedules(dependencies);
 
   async function initialize(options: { workers?: boolean } = {}) {
     await pool.query(`
@@ -67,31 +52,8 @@ export function createPersonalService(dependencies: PersonalDependencies) {
         progress integer NOT NULL DEFAULT 0, status text NOT NULL DEFAULT 'active', next_action text NOT NULL DEFAULT '',
         target_date text, updated_at timestamptz NOT NULL DEFAULT now()
       );
-      CREATE TABLE IF NOT EXISTS schedules (
-        id uuid PRIMARY KEY, owner_id text NOT NULL, title text NOT NULL, prompt text NOT NULL,
-        cron text NOT NULL, time_zone text NOT NULL, enabled boolean NOT NULL DEFAULT true,
-        created_at timestamptz NOT NULL DEFAULT now()
-      );
     `);
-    await scheduler.createQueue(scheduledQueue, { retryLimit: 0 });
-    if (options.workers !== false)
-      await scheduler.work<{ scheduleId: string }>(scheduledQueue, async (jobs) => {
-        for (const job of jobs) {
-          const result = await pool.query(
-            'SELECT * FROM schedules WHERE id=$1 AND owner_id=$2 AND enabled=true',
-            [job.data.scheduleId, ownerId],
-          );
-          if (result.rowCount)
-            await submitTask(
-              `Scheduled task: ${result.rows[0].title}\n${result.rows[0].prompt}\nOnly send a message if there is a useful result, a problem or a necessary question.`,
-              [],
-              undefined,
-              true,
-              { sourceId: `schedule:${job.id}`, source: 'schedule' },
-            );
-        }
-      });
-    for (const schedule of await listSchedules()) await applySchedule(schedule);
+    await schedules.initialize(options);
   }
 
   async function getProfile() {
@@ -121,8 +83,17 @@ export function createPersonalService(dependencies: PersonalDependencies) {
   async function createGoal(raw: unknown) {
     const input = goalSchema.parse(raw);
     const result = await pool.query(
-      `INSERT INTO goals(id,owner_id,title,description,target_date) VALUES($1,$2,$3,$4,$5) RETURNING ${goalColumns}`,
-      [randomUUID(), ownerId, input.title, input.description, input.targetDate ?? null],
+      `INSERT INTO goals(id,owner_id,title,description,target_date,progress,next_action,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING ${goalColumns}`,
+      [
+        randomUUID(),
+        ownerId,
+        input.title,
+        input.description,
+        input.targetDate ?? null,
+        input.progress,
+        input.nextAction,
+        input.status,
+      ],
     );
     refresh();
     return result.rows[0];
@@ -155,130 +126,15 @@ export function createPersonalService(dependencies: PersonalDependencies) {
     return result.rows[0];
   }
 
-  async function listSchedules() {
-    return (
-      await pool.query(
-        `SELECT ${scheduleColumns} FROM schedules WHERE owner_id=$1 ORDER BY created_at DESC,id`,
-        [ownerId],
-      )
-    ).rows;
-  }
-
-  function validateSchedule(input: z.infer<typeof scheduleSchema>) {
-    if (input.cron.split(/\s+/).length !== 5)
-      throw Object.assign(new Error('Use a five-field cron schedule.'), { statusCode: 400 });
-    try {
-      scheduler.previewSchedule(input.cron, { tz: input.timeZone, count: 1 });
-    } catch {
-      throw Object.assign(new Error('Check the schedule and time zone.'), { statusCode: 400 });
-    }
-  }
-
-  async function applySchedule(schedule: {
-    id: string;
-    enabled: boolean;
-    cron: string;
-    timeZone: string;
-  }) {
-    if (schedule.enabled)
-      await scheduler.schedule(
-        scheduledQueue,
-        schedule.cron,
-        { scheduleId: schedule.id },
-        { key: schedule.id, tz: schedule.timeZone },
-      );
-    else await scheduler.unschedule(scheduledQueue, schedule.id);
-  }
-
-  async function createSchedule(raw: unknown) {
-    const input = scheduleSchema.parse(raw);
-    validateSchedule(input);
-    const id = randomUUID();
-    await scheduler.schedule(
-      scheduledQueue,
-      input.cron,
-      { scheduleId: id },
-      { key: id, tz: input.timeZone },
-    );
-    try {
-      const result = await pool.query(
-        `INSERT INTO schedules(id,owner_id,title,prompt,cron,time_zone) VALUES($1,$2,$3,$4,$5,$6) RETURNING ${scheduleColumns}`,
-        [id, ownerId, input.title, input.prompt, input.cron, input.timeZone],
-      );
-      refresh();
-      return result.rows[0];
-    } catch (error) {
-      await scheduler.unschedule(scheduledQueue, id);
-      throw error;
-    }
-  }
-
-  async function updateSchedule(id: string, raw: unknown) {
+  async function removeGoal(id: string) {
     z.uuid().parse(id);
-    const input = scheduleUpdateSchema.parse(raw);
-    if (!Object.keys(input).length)
-      throw Object.assign(new Error('Choose a schedule detail to update.'), { statusCode: 400 });
-    const client = await pool.connect();
-    let previous: { id: string; enabled: boolean; cron: string; timeZone: string } | undefined;
-    try {
-      await client.query('BEGIN');
-      const found = await client.query(
-        `SELECT ${scheduleColumns} FROM schedules WHERE id=$1 AND owner_id=$2 FOR UPDATE`,
-        [id, ownerId],
-      );
-      if (!found.rowCount)
-        throw Object.assign(new Error('Schedule not found.'), { statusCode: 404 });
-      const next = { ...found.rows[0], ...input };
-      validateSchedule(next);
-      previous = found.rows[0];
-      await applySchedule(next);
-      const result = await client.query(
-        `UPDATE schedules SET title=$3,prompt=$4,cron=$5,time_zone=$6,enabled=$7 WHERE id=$1 AND owner_id=$2 RETURNING ${scheduleColumns}`,
-        [id, ownerId, next.title, next.prompt, next.cron, next.timeZone, next.enabled],
-      );
-      await client.query('COMMIT');
-      refresh();
-      return result.rows[0];
-    } catch (error) {
-      try {
-        if (previous) await applySchedule(previous);
-      } finally {
-        await client.query('ROLLBACK');
-      }
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
-  async function deleteSchedule(id: string) {
-    z.uuid().parse(id);
-    const client = await pool.connect();
-    let previous: { id: string; enabled: boolean; cron: string; timeZone: string } | undefined;
-    try {
-      await client.query('BEGIN');
-      const found = await client.query(
-        `SELECT ${scheduleColumns} FROM schedules WHERE id=$1 AND owner_id=$2 FOR UPDATE`,
-        [id, ownerId],
-      );
-      if (!found.rowCount)
-        throw Object.assign(new Error('Schedule not found.'), { statusCode: 404 });
-      previous = found.rows[0];
-      await scheduler.unschedule(scheduledQueue, id);
-      await client.query('DELETE FROM schedules WHERE id=$1 AND owner_id=$2', [id, ownerId]);
-      await client.query('COMMIT');
-      refresh();
-      return { ok: true };
-    } catch (error) {
-      try {
-        if (previous) await applySchedule(previous);
-      } finally {
-        await client.query('ROLLBACK');
-      }
-      throw error;
-    } finally {
-      client.release();
-    }
+    const result = await pool.query('DELETE FROM goals WHERE id=$1 AND owner_id=$2 RETURNING id', [
+      id,
+      ownerId,
+    ]);
+    if (!result.rowCount) throw Object.assign(new Error('Goal not found.'), { statusCode: 404 });
+    refresh();
+    return { ok: true };
   }
 
   async function learnPersonalFact(
@@ -379,7 +235,8 @@ export function createPersonalService(dependencies: PersonalDependencies) {
       } else if (
         !/^(?:i (?:prefer|like|dislike|do not like|don't like|live in|am based in|work|speak|use)|my name is|call me|prefiro|gosto de|não gosto de|o meu nome é|chamo-me|vivo em|moro em|trabalho|falo)\b/i.test(
           input.quote,
-        )
+        ) &&
+        !preferenceStatement.test(input.quote)
       ) {
         throw Object.assign(
           new Error(
@@ -403,6 +260,46 @@ export function createPersonalService(dependencies: PersonalDependencies) {
     return { ok: true };
   }
 
+  async function validateReview(
+    action: string,
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    function changed<T extends Record<string, unknown>>(input: T) {
+      if (!Object.keys(input).length)
+        throw Object.assign(new Error('Choose a detail to update.'), { statusCode: 400 });
+      return input;
+    }
+    if (action === 'profile_update') return changed(profileSchema.partial().parse(args));
+    if (action === 'notification_preferences_update') return changed(preferences.validate(args));
+    if (action === 'goal_create') return goalSchema.parse(args);
+    if (action === 'goal_update') {
+      const { id: rawId, ...raw } = args;
+      const id = z.uuid().parse(rawId);
+      const input = changed(goalUpdateSchema.parse(raw));
+      if (
+        !(await pool.query('SELECT id FROM goals WHERE id=$1 AND owner_id=$2', [id, ownerId]))
+          .rowCount
+      )
+        throw Object.assign(new Error('Goal not found.'), { statusCode: 404 });
+      return { id, ...input };
+    }
+    if (action === 'schedule_create') return schedules.validateCreate(args);
+    if (action === 'schedule_update') {
+      const { id: rawId, ...raw } = args;
+      const id = z.uuid().parse(rawId);
+      return { id, ...(await schedules.validateUpdate(id, raw)) };
+    }
+    if (action === 'schedule_cancel') {
+      const input = z.object({ id: z.uuid() }).strict().parse(args);
+      await schedules.validateUpdate(input.id, { enabled: false });
+      return input;
+    }
+    if (action === 'memory_propose') return memoryProposalSchema.parse(args);
+    throw Object.assign(new Error('This personal-data action is not available for review.'), {
+      statusCode: 400,
+    });
+  }
+
   async function manage(
     action: string,
     args: Record<string, unknown>,
@@ -424,19 +321,16 @@ export function createPersonalService(dependencies: PersonalDependencies) {
       const { id, ...input } = args;
       return updateGoal(String(id || ''), input);
     }
-    if (action === 'schedule_list') return listSchedules();
-    if (action === 'schedule_create') return createSchedule(args);
+    if (action === 'schedule_list') return schedules.list();
+    if (action === 'schedule_create') return schedules.create(args, provenance);
     if (action === 'schedule_update') {
       const { id, ...input } = args;
-      return updateSchedule(String(id || ''), input);
+      return schedules.update(String(id || ''), input);
     }
     if (action === 'schedule_cancel')
-      return updateSchedule(String(args.id || ''), { enabled: false });
+      return schedules.update(String(args.id || ''), { enabled: false });
     if (action === 'memory_propose') {
-      const { text } = z
-        .object({ text: z.string().trim().min(1).max(2000) })
-        .strict()
-        .parse(args);
+      const { text } = memoryProposalSchema.parse(args);
       const sourceMessageId = z
         .uuid()
         .nullable()
@@ -471,11 +365,11 @@ export function createPersonalService(dependencies: PersonalDependencies) {
     if (action === 'history_search') {
       const query = z.string().min(1).max(200).parse(args.query);
       const tasks = await pool.query(
-        "SELECT id,title,status,created_at FROM tasks WHERE owner_id=$1 AND to_tsvector('simple',title || ' ' || prompt) @@ plainto_tsquery('simple',$2) ORDER BY created_at DESC LIMIT 15",
+        `SELECT id,title,status,created_at,split_part(channel,':',1) AS channel FROM tasks t WHERE owner_id=$1 AND ${currentConversationSql()} AND to_tsvector('simple',title || ' ' || prompt) @@ plainto_tsquery('simple',$2) ORDER BY created_at DESC LIMIT 15`,
         [ownerId, query],
       );
       const messages = await pool.query(
-        "SELECT role,text,task_id FROM messages WHERE owner_id=$1 AND to_tsvector('simple',text) @@ plainto_tsquery('simple',$2) ORDER BY created_at DESC LIMIT 15",
+        `SELECT m.role,m.text,m.task_id,split_part(t.channel,':',1) AS channel FROM messages m JOIN tasks t ON t.id=m.task_id WHERE m.owner_id=$1 AND t.owner_id=$1 AND ${currentConversationSql()} AND to_tsvector('simple',m.text) @@ plainto_tsquery('simple',$2) ORDER BY m.created_at DESC LIMIT 15`,
         [ownerId, query],
       );
       return { tasks: tasks.rows, messages: messages.rows };
@@ -491,15 +385,19 @@ export function createPersonalService(dependencies: PersonalDependencies) {
     app.patch<{ Params: { id: string } }>('/api/goals/:id', (request) =>
       updateGoal(request.params.id, request.body),
     );
-    app.get('/api/schedules', listSchedules);
-    app.post('/api/schedules', (request) => createSchedule(request.body));
-    app.patch<{ Params: { id: string } }>('/api/schedules/:id', (request) =>
-      updateSchedule(request.params.id, request.body),
+    app.delete<{ Params: { id: string } }>('/api/goals/:id', (request) =>
+      removeGoal(request.params.id),
     );
-    app.delete<{ Params: { id: string } }>('/api/schedules/:id', (request) =>
-      deleteSchedule(request.params.id),
-    );
+    schedules.registerRoutes(app);
   }
 
-  return { initialize, getProfile, listGoals, listSchedules, manage, registerRoutes };
+  return {
+    initialize,
+    getProfile,
+    listGoals,
+    listSchedules: schedules.list,
+    manage,
+    validateReview,
+    registerRoutes,
+  };
 }

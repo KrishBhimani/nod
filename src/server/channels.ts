@@ -1,15 +1,29 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
-import type { InboundMessage, MessagingTransport } from '../ports/messaging.ts';
+import type { PreparedUserRoute } from './outcomes.ts';
+import type {
+  InboundMessage,
+  MessagingAttachment,
+  MessagingTransport,
+} from '../ports/messaging.ts';
 
 interface ChannelOptions {
   ownerId: string;
   transport: MessagingTransport;
-  submit: (text: string, sourceId: string, client: PoolClient, channel: string) => Promise<string>;
+  prepare?: (text: string, sourceId: string, channel: string) => Promise<PreparedUserRoute>;
+  submit: (
+    text: string,
+    sourceId: string,
+    client: PoolClient,
+    channel: string,
+    preparedRoute?: PreparedUserRoute,
+    messageId?: string,
+  ) => Promise<string>;
   subscribe: (listener: () => void) => () => void;
   intervalMs?: number;
+  resolveAttachments?: (taskId: string, ids: string[]) => Promise<MessagingAttachment[]>;
 }
 interface ChannelIdentity {
   provider: string;
@@ -19,9 +33,11 @@ interface ChannelIdentity {
 interface InboxRow extends ChannelIdentity {
   source_id: string;
   text: string;
+  message_id: string | null;
 }
 interface OutboxRow extends ChannelIdentity {
   message_id: string;
+  task_id: string;
   thread_id: string;
   text: string;
   attachments: unknown[];
@@ -36,12 +52,17 @@ const messageSchema = z.object({
   sentAt: z.date(),
 });
 
-export function channelReply(text: string, hasAttachments = false) {
-  const securePath = '(?:https?:\\/\\/[^\\s)]+)?\\/(?:credentials|approvals)\\/[^\\s)]+';
-  const safe = text.replace(
-    new RegExp(`\\[[^\\]]*\\]\\(${securePath}\\)|${securePath}`, 'g'),
-    'Open Sidekick on your Mac to continue securely.',
-  );
+export function channelReply(text: string, hasAttachments = false, deliversAttachments = false) {
+  const securePath = '(?:https?:\\/\\/[^\\s)]+)?\\/(?:vault|credentials|approvals)\\/[^\\s)]+';
+  const safe = text
+    .replace(
+      /\[[^\]]*\]\((?:https?:\/\/[^\s)]+)?\/api\/artifacts\/[^\s)]+\)|(?:https?:\/\/[^\s)]+)?\/api\/artifacts\/[^\s)]+/g,
+      deliversAttachments ? 'Attached file.' : 'Open Sidekick on your Mac to view this file.',
+    )
+    .replace(
+      new RegExp(`\\[[^\\]]*\\]\\(${securePath}\\)|${securePath}`, 'g'),
+      'Open Sidekick on your Mac to continue securely.',
+    );
   return (
     `${safe}${hasAttachments ? '\n\nAttachments are available in Sidekick on your Mac.' : ''}`.trim() ||
     'A reply is available in Sidekick on your Mac.'
@@ -72,7 +93,12 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
   );
   CREATE INDEX IF NOT EXISTS channel_inbox_pending ON channel_inbox(state,created_at);
   CREATE INDEX IF NOT EXISTS channel_inbox_task ON channel_inbox(task_id);
-  CREATE INDEX IF NOT EXISTS channel_outbox_pending ON channel_outbox(state,created_at)`);
+  CREATE INDEX IF NOT EXISTS channel_outbox_pending ON channel_outbox(state,created_at);
+  ALTER TABLE channel_inbox ADD COLUMN IF NOT EXISTS message_id uuid;
+  CREATE TABLE IF NOT EXISTS channel_task_routes (
+    task_id uuid PRIMARY KEY,owner_id text NOT NULL,
+    source_id text NOT NULL REFERENCES channel_inbox(source_id)
+  )`);
   await pool.query(
     "UPDATE channel_outbox SET state='uncertain',reason='interrupted_send',updated_at=now() WHERE state='sending'",
   );
@@ -102,8 +128,8 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
     )
       return;
     await pool.query(
-      `INSERT INTO channel_inbox(source_id,provider,account_id,sender_id,thread_id,text,received_at)
-      VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(source_id) DO NOTHING`,
+      `INSERT INTO channel_inbox(source_id,provider,account_id,sender_id,thread_id,text,received_at,message_id)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(source_id) DO NOTHING`,
       [
         `channel:${channelId}:${accountId}:${messageId}`,
         channelId,
@@ -112,41 +138,57 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
         threadId,
         text,
         sentAt,
+        randomUUID(),
       ],
     );
   }
 
   async function drainInbox() {
     for (let index = 0; index < 25 && !closed && !replacing; index++) {
+      const pending = (
+        await pool.query<InboxRow>(
+          "SELECT * FROM channel_inbox WHERE state='pending' ORDER BY created_at LIMIT 1",
+        )
+      ).rows[0];
+      if (!pending) break;
+      const identity = createHash('sha256')
+        .update(JSON.stringify([pending.account_id, pending.sender_id]))
+        .digest('hex')
+        .slice(0, 32);
+      const channel = `${pending.provider}:${identity}`;
+      const preparedRoute = permitted(pending)
+        ? await options.prepare?.(pending.text, pending.source_id, channel)
+        : undefined;
+      if (closed || replacing) break;
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
         const result = await client.query<InboxRow>(
-          "SELECT * FROM channel_inbox WHERE state='pending' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1",
+          "SELECT * FROM channel_inbox WHERE state='pending' AND source_id=$1 FOR UPDATE SKIP LOCKED",
+          [pending.source_id],
         );
         const row = result.rows[0];
         if (!row) {
           await client.query('COMMIT');
-          break;
+          continue;
         }
         if (!permitted(row)) {
           await client.query("UPDATE channel_inbox SET state='discarded' WHERE source_id=$1", [
             row.source_id,
           ]);
         } else {
-          const identity = createHash('sha256')
-            .update(JSON.stringify([row.account_id, row.sender_id]))
-            .digest('hex')
-            .slice(0, 32);
+          const messageId = row.message_id ?? randomUUID();
           const taskId = await options.submit(
             row.text,
             row.source_id,
             client,
-            `${row.provider}:${identity}`,
+            channel,
+            preparedRoute,
+            messageId,
           );
           await client.query(
-            "UPDATE channel_inbox SET state='submitted',task_id=$2 WHERE source_id=$1",
-            [row.source_id, taskId],
+            "UPDATE channel_inbox SET state='submitted',task_id=$2,message_id=$3 WHERE source_id=$1",
+            [row.source_id, taskId, messageId],
           );
         }
         await client.query('COMMIT');
@@ -162,8 +204,11 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
   async function drainOutbox() {
     await pool.query(
       `INSERT INTO channel_outbox(message_id,source_id)
-      SELECT m.id,i.source_id FROM messages m JOIN channel_inbox i ON i.task_id=m.task_id
+      SELECT DISTINCT ON (m.id) m.id,i.source_id FROM messages m
+      LEFT JOIN channel_task_routes r ON r.task_id=m.task_id AND r.owner_id=m.owner_id
+      JOIN channel_inbox i ON i.source_id=r.source_id OR (r.task_id IS NULL AND i.task_id=m.task_id)
       WHERE m.role='assistant' AND m.owner_id=$1 AND i.state='submitted'
+      ORDER BY m.id,i.received_at DESC,i.source_id
       ON CONFLICT(message_id) DO NOTHING`,
       [ownerId],
     );
@@ -172,7 +217,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
         UPDATE channel_outbox SET state='sending',updated_at=now() WHERE message_id=(
           SELECT message_id FROM channel_outbox WHERE state='pending' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
         ) RETURNING message_id,source_id
-      ) SELECT c.message_id,i.provider,i.account_id,i.sender_id,i.thread_id,m.text,m.attachments
+      ) SELECT c.message_id,m.task_id,i.provider,i.account_id,i.sender_id,i.thread_id,m.text,m.attachments
         FROM claimed c JOIN channel_inbox i ON i.source_id=c.source_id JOIN messages m ON m.id=c.message_id`);
       const row = result.rows[0];
       if (!row) break;
@@ -197,12 +242,50 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
         );
         continue;
       }
+      let attachments: MessagingAttachment[] | undefined;
+      const canDeliverAttachments = channels.find(
+        (channel) => channel.id === row.provider,
+      )?.supportsAttachments;
+      if (row.attachments?.length && canDeliverAttachments) {
+        try {
+          const requested = z
+            .array(z.object({ id: z.uuid() }))
+            .min(1)
+            .max(10)
+            .parse(row.attachments);
+          if (!options.resolveAttachments) throw new Error('Attachment delivery is unavailable.');
+          attachments = await options.resolveAttachments(
+            row.task_id,
+            requested.map(({ id }) => id),
+          );
+          if (!attachments.length || attachments.length > 10)
+            throw new Error('Attachment delivery is unavailable.');
+        } catch {
+          await pool.query(
+            "UPDATE channel_outbox SET state='blocked',reason='attachment_unavailable',updated_at=now() WHERE message_id=$1",
+            [row.message_id],
+          );
+          continue;
+        }
+      }
+      if (closed || replacing || !permitted(row)) {
+        await pool.query(
+          "UPDATE channel_outbox SET state='blocked',reason='channel_access_changed',updated_at=now() WHERE message_id=$1",
+          [row.message_id],
+        );
+        continue;
+      }
       try {
         const sent = await transport.post({
           channelId: row.provider,
           accountId: row.account_id,
           threadId: row.thread_id,
-          text: channelReply(row.text, Boolean(row.attachments?.length)),
+          text: channelReply(
+            row.text,
+            Boolean(row.attachments?.length) && !attachments,
+            Boolean(attachments),
+          ),
+          ...(attachments ? { attachments } : {}),
         });
         await pool.query(
           "UPDATE channel_outbox SET state='sent',provider_message_id=$2,updated_at=now() WHERE message_id=$1",

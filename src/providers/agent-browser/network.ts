@@ -55,6 +55,18 @@ export async function publicUrl(
   return { url, address: addresses[0].address };
 }
 
+export function browserUrl(value: string): URL {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('A valid HTTP or HTTPS URL is required.');
+  }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
+    throw new Error('Website addresses must use HTTP or HTTPS without embedded credentials.');
+  return url;
+}
+
 export function createBrowserProxy() {
   let server: ReturnType<typeof createServer> | undefined;
   let pending: Promise<string> | undefined;
@@ -69,14 +81,14 @@ export function createBrowserProxy() {
     pending ??= new Promise((resolve, reject) => {
       server = createServer(async (incoming, outgoing) => {
         try {
-          const { url, address } = await publicUrl(incoming.url ?? '');
+          const url = browserUrl(incoming.url ?? '');
           if (url.protocol !== 'http:') throw new Error('Invalid proxy request.');
           const headers: OutgoingHttpHeaders = { ...incoming.headers, host: url.host };
           delete headers['proxy-authorization'];
           delete headers['proxy-connection'];
           const upstream = request(
             {
-              host: address,
+              host: url.hostname.replace(/^\[|\]$/g, ''),
               port: url.port || 80,
               method: incoming.method,
               path: url.pathname + url.search,
@@ -96,14 +108,18 @@ export function createBrowserProxy() {
           });
           incoming.pipe(upstream);
         } catch {
-          outgoing.writeHead(403);
-          outgoing.end('Destination blocked.');
+          outgoing.writeHead(400);
+          outgoing.end('Invalid browser request.');
         }
       });
       server.on('connect', async (incoming, socket, head) => {
         try {
-          const { url, address } = await publicUrl(`https://${incoming.url}`);
-          const upstream = connect({ host: address, port: Number(url.port || 443) });
+          const url = browserUrl(`https://${incoming.url}`);
+          if (url.pathname !== '/' || url.search || url.hash) throw new Error();
+          const upstream = connect({
+            host: url.hostname.replace(/^\[|\]$/g, ''),
+            port: Number(url.port || 443),
+          });
           track(upstream);
           upstream.setTimeout(60_000, () => upstream.destroy());
           upstream.on('connect', () => {
@@ -116,11 +132,55 @@ export function createBrowserProxy() {
           socket.on('error', () => upstream.destroy());
           socket.on('close', () => upstream.destroy());
         } catch {
-          socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+          socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
         }
       });
       server.on('connection', track);
-      server.on('upgrade', (_request, socket) => socket.destroy());
+      server.on('upgrade', (incoming, socket, head) => {
+        try {
+          const url = browserUrl(incoming.url ?? '');
+          if (url.protocol !== 'http:') throw new Error();
+          const headers: OutgoingHttpHeaders = { ...incoming.headers, host: url.host };
+          delete headers['proxy-authorization'];
+          delete headers['proxy-connection'];
+          const upstream = request({
+            host: url.hostname.replace(/^\[|\]$/g, ''),
+            port: url.port || 80,
+            method: incoming.method,
+            path: url.pathname + url.search,
+            headers,
+            timeout: 30_000,
+          });
+          upstream.on('socket', track);
+          upstream.on('timeout', () => upstream.destroy());
+          upstream.on('error', () => socket.destroy());
+          upstream.on('response', (response) => {
+            socket.end(
+              `HTTP/1.1 ${response.statusCode ?? 502} ${response.statusMessage ?? 'Bad Gateway'}\r\nConnection: close\r\n\r\n`,
+            );
+            response.resume();
+          });
+          upstream.on('upgrade', (response, remote, remoteHead) => {
+            const headers = response.rawHeaders
+              .flatMap((value, index, values) =>
+                index % 2 === 0 ? [`${value}: ${values[index + 1]}\r\n`] : [],
+              )
+              .join('');
+            socket.write(
+              `HTTP/1.1 ${response.statusCode ?? 101} ${response.statusMessage ?? 'Switching Protocols'}\r\n${headers}\r\n`,
+            );
+            if (remoteHead.length) socket.write(remoteHead);
+            if (head.length) remote.write(head);
+            remote.on('error', () => socket.destroy());
+            socket.on('error', () => remote.destroy());
+            socket.on('close', () => remote.destroy());
+            remote.pipe(socket).pipe(remote);
+          });
+          upstream.end();
+        } catch {
+          socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+        }
+      });
       server.once('error', reject);
       server.listen(0, '127.0.0.1', () => {
         const address = server!.address();

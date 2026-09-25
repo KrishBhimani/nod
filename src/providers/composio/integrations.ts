@@ -1,18 +1,14 @@
 import { Composio } from '@composio/core';
 import { z } from 'zod';
+import { integrationServiceIds } from '../../shared/integrations.ts';
+import { createIntegrationFileDownloader, downloadArguments } from './downloads.ts';
 import type {
   IntegrationProvider,
   IntegrationService,
   IntegrationSession,
 } from '../../ports/integrations.ts';
 
-const toolkits: IntegrationService[] = [
-  'gmail',
-  'googlecalendar',
-  'googledrive',
-  'googlesheets',
-  'googledocs',
-];
+const toolkits = [...integrationServiceIds];
 const subscriptions = {
   gmail: {
     trigger: 'GMAIL_NEW_GMAIL_MESSAGE',
@@ -22,11 +18,15 @@ const subscriptions = {
     trigger: 'GOOGLECALENDAR_GOOGLE_CALENDAR_EVENT_SYNC_TRIGGER',
     config: { interval: 15, calendarId: 'primary', showDeleted: true },
   },
+  slack: { trigger: 'SLACK_DIRECT_MESSAGE_RECEIVED', config: {} },
+  notion: { trigger: 'NOTION_PAGE_CONTENT_UPDATED', config: {} },
 } as const;
 type ManagedSession = Awaited<ReturnType<Composio['sessions']['use']>>;
 type AccountIdentity = { expiresAt: number; accountName?: string; accountEmail?: string };
 const identityTools = {
   gmail: { action: 'GMAIL_GET_PROFILE', args: { user_id: 'me' } },
+  slack: { action: 'SLACK_WHO_AM_I', args: {} },
+  notion: { action: 'NOTION_WHO_AM_I', args: {} },
   googlecalendar: { action: 'GOOGLECALENDAR_GET_CURRENT_USER', args: {} },
   googledrive: {
     action: 'GOOGLEDRIVE_GET_ABOUT',
@@ -34,10 +34,28 @@ const identityTools = {
   },
 } as const;
 
-function identityFields(value: unknown): Omit<AccountIdentity, 'expiresAt'> | undefined {
+function identityFields(
+  value: unknown,
+  service?: string,
+): Omit<AccountIdentity, 'expiresAt'> | undefined {
   let data = z.record(z.string(), z.unknown()).parse(value);
   for (let depth = 0; depth < 4; depth++) {
     if (data.error != null || data.successful === false) return;
+    if (service === 'slack' && (typeof data.user === 'string' || typeof data.team === 'string')) {
+      data = {
+        name: [data.user, data.team]
+          .filter((value) => typeof value === 'string' && value.trim())
+          .join(' · '),
+      };
+      break;
+    }
+    if (
+      service === 'notion' &&
+      (typeof data.workspace_name === 'string' || typeof data.owner_email === 'string')
+    ) {
+      data = { name: data.workspace_name ?? data.name, email: data.owner_email };
+      break;
+    }
     if (data.user && typeof data.user === 'object') {
       data = z.record(z.string(), z.unknown()).parse(data.user);
       break;
@@ -68,7 +86,9 @@ export function createComposioProvider(options: {
   webhookSecret?: string;
   authConfigs?: Partial<Record<IntegrationService, string>>;
   client?: Composio;
+  fileDownload?: Parameters<typeof createIntegrationFileDownloader>[0];
 }): IntegrationProvider {
+  const downloadFile = createIntegrationFileDownloader(options.fileDownload);
   const identities = new Map<string, AccountIdentity>();
   const pendingIdentities = new Map<string, Promise<AccountIdentity>>();
   const authConfigs = Object.fromEntries(
@@ -89,6 +109,8 @@ export function createComposioProvider(options: {
             googledrive: '20260921_00',
             googlesheets: '20260915_00',
             googledocs: '20260826_00',
+            slack: '20260915_00',
+            notion: '20260915_00',
           },
         })
       : undefined);
@@ -123,7 +145,7 @@ export function createComposioProvider(options: {
           { signal: AbortSignal.timeout(15_000) },
         );
         const response = await inspection.execute(tool.action, tool.args, { account: id });
-        const fields = identityFields(response);
+        const fields = identityFields(response, service);
         if (fields) return { ...fields, expiresAt: Date.now() + 15 * 60_000 };
       } catch {
       } finally {
@@ -136,7 +158,15 @@ export function createComposioProvider(options: {
         }
       }
     }
-    const endpoints = ['https://www.googleapis.com/oauth2/v2/userinfo'];
+    const endpoints = [
+      'gmail',
+      'googlecalendar',
+      'googledrive',
+      'googledocs',
+      'googlesheets',
+    ].includes(service)
+      ? ['https://www.googleapis.com/oauth2/v2/userinfo']
+      : [];
     if (service === 'gmail')
       endpoints.push('https://gmail.googleapis.com/gmail/v1/users/me/profile');
     else if (service === 'googlecalendar')
@@ -156,7 +186,7 @@ export function createComposioProvider(options: {
           { signal: AbortSignal.timeout(15_000) },
         );
         if (response.status !== 200) continue;
-        const fields = identityFields(response.data);
+        const fields = identityFields(response.data, service);
         if (fields) return { ...fields, expiresAt: Date.now() + 15 * 60_000 };
       } catch {}
     }
@@ -200,6 +230,27 @@ export function createComposioProvider(options: {
           })),
         };
       },
+      async download(action, args, accountId, signal) {
+        const operation = signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(30_000)])
+          : AbortSignal.timeout(30_000);
+        try {
+          operation.throwIfAborted();
+          const input = downloadArguments(action, args);
+          const result = await required()
+            .getClient()
+            .toolRouter.session.execute(
+              value.sessionId,
+              { tool_slug: action, arguments: input, account: accountId },
+              { signal: operation },
+            );
+          operation.throwIfAborted();
+          return await downloadFile(action, result, operation);
+        } catch {
+          if (signal?.aborted) throw new DOMException('File download was cancelled.', 'AbortError');
+          throw new Error('The app file could not be downloaded.');
+        }
+      },
       async execute(action, args, accountId) {
         const result = await value.execute(
           action,
@@ -222,8 +273,9 @@ export function createComposioProvider(options: {
   return {
     id: 'composio',
     configured: Boolean(client),
+    supportedServices: toolkits,
     webhooksConfigured: Boolean(client && options.webhookSecret),
-    supportsSubscriptions: ['gmail', 'googlecalendar'],
+    supportsSubscriptions: ['gmail', 'googlecalendar', 'slack', 'notion'],
     async createSession(ownerId, accounts) {
       return session(
         await required().sessions.create(ownerId, {

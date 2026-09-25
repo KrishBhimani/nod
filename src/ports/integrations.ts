@@ -1,5 +1,10 @@
-export type IntegrationService =
-  'gmail' | 'googlecalendar' | 'googledrive' | 'googlesheets' | 'googledocs';
+import type { IntegrationService } from '../shared/integrations.ts';
+export type { IntegrationService, IntegrationDownloadAction } from '../shared/integrations.ts';
+export interface IntegrationFile {
+  name: string;
+  mimeType: string;
+  bytes: Uint8Array;
+}
 export interface IntegrationSearch {
   tools: unknown;
   suggestions: Array<{ useCase: string; primaryToolSlugs: string[] }>;
@@ -12,6 +17,12 @@ export interface IntegrationSession {
   ): Promise<{ accountId: string; url: string }>;
   search(query: string): Promise<IntegrationSearch>;
   execute(action: string, args: Record<string, unknown>, accountId?: string): Promise<unknown>;
+  download?(
+    action: string,
+    args: Record<string, unknown>,
+    accountId: string,
+    signal?: AbortSignal,
+  ): Promise<IntegrationFile>;
 }
 export interface IntegrationEvent {
   id: string;
@@ -25,6 +36,7 @@ export interface IntegrationEvent {
 export interface IntegrationProvider {
   id: string;
   configured: boolean;
+  supportedServices?: readonly IntegrationService[];
   webhooksConfigured: boolean;
   supportsSubscriptions: readonly IntegrationService[];
   createSession(

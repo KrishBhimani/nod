@@ -12,6 +12,8 @@ Start with [README](README.md) for setup and current limits. Read the area guide
 | Pages, conversation, inspector, forms, streaming                  | [src/web/AGENTS.md](src/web/AGENTS.md)             |
 | Fixtures and validation                                           | [tests/AGENTS.md](tests/AGENTS.md)                 |
 
+[System guide](docs/system-guide.md) is the living product and technical reference. Keep it current whenever behavior, dependencies, model defaults, trust boundaries, or validation status change. Preserve the distinction between implemented code, automated fixtures, live provider checks, and missing features.
+
 [Architecture](docs/architecture.md) defines ownership and trust boundaries. [API contract](docs/api-contract.md) describes wire behavior. [Replacing modules](docs/replacing-modules.md) maps ports and state migration. [Security](docs/security.md) and [production requirements](docs/production.md) apply before boundary or hosting changes.
 
 Shared HTTP types live in `src/shared/contracts.ts`; capabilities live in `src/ports`. Only `src/server/composition.ts` selects providers and runtime implementations. Keep product policy in features and protocol details in adapters. Prefer narrow factories over mutable globals.

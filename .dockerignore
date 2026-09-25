@@ -1,4 +1,7 @@
 *
 !Dockerfile.workspace
-!scripts/
-!scripts/workspace-network.sh
+!Dockerfile.browser
+!package.json
+!package-lock.json
+!src/
+!src/**

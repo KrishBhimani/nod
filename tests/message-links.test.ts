@@ -4,6 +4,14 @@ import { parseMessageText, safeMessageLink } from '../src/web/lib/message-links.
 
 const origin = 'http://localhost:4310';
 
+test('Apps links use the app route without obsolete aliases', () => {
+  for (const path of ['/apps', `${origin}/apps`])
+    assert.deepEqual(safeMessageLink(path, origin), { href: '/apps', kind: 'navigation' });
+  assert.equal(safeMessageLink('/connections', origin), null);
+  assert.equal(safeMessageLink(`${origin}/connections`, origin), null);
+  assert.equal(safeMessageLink('/apps/unknown', origin), null);
+});
+
 test('markdown artifact links show the filename without markdown punctuation', () => {
   const path = '/api/artifacts/cf047140-c98b-496b-96e2-365472458734';
   assert.deepEqual(
@@ -15,9 +23,9 @@ test('markdown artifact links show the filename without markdown punctuation', (
   );
 });
 
-test('credential and approval links use clear labels and omit tokens and fragments', () => {
+test('credential links use clear labels and omit tokens and fragments', () => {
   const parts = parseMessageText(
-    '[Sign in](/credentials/request-id?token=private-token#private-fragment) [Approve](http://localhost:4310/approvals/action-id?token=another-token)',
+    '[Sign in](/credentials/request-id?token=private-token#private-fragment)',
     origin,
   );
   assert.deepEqual(
@@ -25,15 +33,15 @@ test('credential and approval links use clear labels and omit tokens and fragmen
     [
       {
         type: 'link',
-        text: 'Enter credentials securely',
+        text: 'Vault',
         href: '/credentials/request-id',
         kind: 'credential',
       },
-      { type: 'link', text: 'Review this action', href: '/approvals/action-id', kind: 'approval' },
     ],
   );
   assert.equal(JSON.stringify(parts).includes('private-token'), false);
-  assert.equal(JSON.stringify(parts).includes('another-token'), false);
+  assert.equal(safeMessageLink('/approvals/action-id', origin), null);
+  assert.equal(safeMessageLink(`${origin}/approvals/action-id`, origin), null);
 });
 
 test('only intended app paths and credential-free HTTP URLs become links', () => {
@@ -98,4 +106,14 @@ test('plain URLs keep trailing sentence punctuation outside links and HTML stays
   assert.match(plain, /\. <script>alert\(1\)<\/script>/);
   assert.match(plain, /\[unsafe\]\(javascript:alert\)/);
   assert.match(plain, /<img src=x onerror=alert\(1\)>/);
+});
+
+test('Vault request links retain their safe path and use the canonical label', () => {
+  const parts = parseMessageText(
+    '/vault/private-link?token=hidden#fragment',
+    'http://localhost:4310',
+  );
+  assert.deepEqual(parts, [
+    { type: 'link', text: 'Vault', href: '/vault/private-link', kind: 'credential' },
+  ]);
 });
