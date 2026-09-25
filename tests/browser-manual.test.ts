@@ -297,11 +297,12 @@ test('release and cancellation invalidate queued manual clicks before mouse down
     });
 });
 
-test('an expired takeover refuses input and releases its idle hold without resuming the agent', async () => {
-  const f = await fixture({ manualTimeoutMs: 40, idleTimeoutMs: 15 });
+test('an expired takeover refuses input and releases its idle hold without resuming the agent', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  const f = await fixture({ manualTimeoutMs: 60_000, idleTimeoutMs: 15 });
   try {
     await f.computer.takeControl!('fixture');
-    await delay(60);
+    t.mock.timers.setTime(Date.now() + 60_001);
     await assert.rejects(
       f.computer.control!('fixture', { action: 'press', key: 'Enter' }),
       /control|available/,

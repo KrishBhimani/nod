@@ -150,6 +150,7 @@ test(
           .statusCode,
         409,
       );
+      await computer.close('staged');
 
       await computer.act('autofill', { action: 'open', url: 'https://1.1.1.1/login' });
       await computer.hold('autofill', Date.now() + 2000);
@@ -172,6 +173,7 @@ test(
           kind: 'otp',
         }),
       );
+      await computer.close('autofill');
 
       await computer.act('oauth', { action: 'open', url: 'https://1.1.1.1/login' });
       fixture.pages.get('oauth')!.stage = 'complete';
@@ -212,6 +214,7 @@ test(
         409,
       );
       await assert.rejects(secureRequest('oauth'), /origin changed/);
+      await computer.close('oauth');
 
       await computer.act('changed', { action: 'open', url: 'https://1.1.1.1/login' });
       const changed = await secureRequest('changed');
@@ -243,6 +246,7 @@ test(
         409,
       );
       assert.equal(page.location.origin, 'https://1.1.1.1');
+      await computer.close('changed');
 
       await computer.act('split-code', { action: 'open', url: 'https://1.1.1.1/login' });
       const split = fixture.pages.get('split-code')!;
