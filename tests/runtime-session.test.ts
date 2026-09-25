@@ -1215,6 +1215,82 @@ test('the sole provider opens its fresh sign-in flow without a choice-only Vault
   assert.deepEqual(result.replies, []);
 });
 
+test('a sole supported provider bypasses ambiguous credential fields and opens Vault only on its resulting page', async () => {
+  let selected = 0;
+  let requests = 0;
+  const provider: LoginInspection = {
+    origin: 'https://accounts.example.test',
+    url: 'https://accounts.example.test/login',
+    fields: [{ kind: 'identifier', selector: '#email', label: 'Email' }],
+    methods: [{ id: 'credentials', kind: 'credentials', label: 'Email', supported: true }],
+  };
+  const result = await fixture(
+    async (tools) => {
+      const output = await call(tools, 'request_credentials', {
+        origin: 'https://example.com',
+        label: 'Example',
+        kind: 'identifier',
+      });
+      assert.match(JSON.stringify(output), /login_method_selected/);
+      assert.match(JSON.stringify(output), /accounts\.example\.test/);
+      assert.equal(requests, 0);
+      await call(tools, 'request_credentials', {
+        origin: provider.origin,
+        label: 'Provider',
+        kind: 'identifier',
+      });
+    },
+    {
+      requestCredential: async (input) => {
+        assert.equal(input.origin, provider.origin);
+        requests++;
+        return { url: '/credentials/provider-after-selection' };
+      },
+    },
+    {
+      computer: fakeComputer({
+        inspectLogin: async () =>
+          selected
+            ? provider
+            : {
+                origin: 'https://example.com',
+                url: 'https://example.com/login',
+                fields: [
+                  { kind: 'identifier', selector: '#first-email', label: 'Email' },
+                  { kind: 'identifier', selector: '#other-email', label: 'Email' },
+                ],
+                methods: [
+                  {
+                    id: 'credentials',
+                    kind: 'credentials',
+                    label: 'Email',
+                    supported: false,
+                    reason: 'More than one active form matches this step.',
+                  },
+                  {
+                    id: 'oauth-google',
+                    kind: 'oauth',
+                    label: 'Google',
+                    supported: true,
+                    selector: '#google',
+                  },
+                ],
+              },
+        selectLoginMethod: async (_taskId, origin, methodId) => {
+          assert.equal(origin, 'https://example.com');
+          assert.equal(methodId, 'oauth-google');
+          selected++;
+        },
+      }),
+    },
+  );
+  assert.equal(selected, 1);
+  assert.equal(requests, 1);
+  assert.equal(result.result.status, 'waiting_credentials');
+  assert.equal(result.replies.length, 1);
+  assert.match(result.replies[0], /provider-after-selection/);
+});
+
 const loginChoices: LoginInspection = {
   origin: 'https://example.com',
   url: 'https://example.com/login',

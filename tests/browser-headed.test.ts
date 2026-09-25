@@ -5,6 +5,14 @@ import { createAgentBrowserComputer } from '../src/providers/agent-browser/index
 import type { SignInDesktop } from '../src/providers/agent-browser/desktop.ts';
 import { stagedLoginBrowser } from './login-fixture.ts';
 
+function assertEventOrder(events: string[], before: string, after: string) {
+  const first = events.indexOf(before);
+  const second = events.indexOf(after);
+  assert.notEqual(first, -1, `Missing event: ${before}`);
+  assert.notEqual(second, -1, `Missing event: ${after}`);
+  assert.ok(first < second, `${before} must precede ${after}`);
+}
+
 async function fixture() {
   const directory = await mkdtemp('/tmp/sk-headed-');
   const pages = stagedLoginBrowser();
@@ -92,7 +100,7 @@ test('headed workspace sessions use separate private displays and reuse them unt
     await f.open('second');
     assert.deepEqual(f.displays, [':400', ':401']);
     await f.computer.close('fixture');
-    assert.ok(f.events.indexOf('browser:close::400') < f.events.indexOf('display-close::400'));
+    assertEventOrder(f.events, 'browser:close::400', 'display-close::400');
     assert.equal(f.events.includes('display-close::401'), false);
     await f.computer.close('second');
     assert.equal(f.events.includes('display-close::401'), true);
@@ -106,10 +114,10 @@ test('native handoff closes the automated display and continuation creates a fre
   try {
     await f.open();
     await f.computer.openSignIn!('fixture');
-    assert.ok(f.events.indexOf('display-close::400') < f.events.indexOf('native-open'));
+    assertEventOrder(f.events, 'display-close::400', 'native-open');
     await assert.rejects(f.computer.act('fixture', { action: 'snapshot' }), /paused/);
     await f.computer.finishSignIn!('fixture');
-    assert.ok(f.events.indexOf('native-close') < f.events.indexOf('display::401'));
+    assertEventOrder(f.events, 'native-close', 'display::401');
     assert.deepEqual(f.displays, [':400', ':401']);
     assert.equal(
       (await f.computer.act('fixture', { action: 'snapshot' })).url,
@@ -140,7 +148,7 @@ test('an interrupted headed launch drains its browser before closing the private
   try {
     f.interruptOpen();
     await assert.rejects(f.open(), /interrupted launch/);
-    assert.ok(f.events.indexOf('browser:close::400') < f.events.indexOf('display-close::400'));
+    assertEventOrder(f.events, 'browser:close::400', 'display-close::400');
     assert.equal(f.events.filter((event) => event === 'display-close::400').length, 1);
   } finally {
     await f.cleanup();

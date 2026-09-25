@@ -12,75 +12,75 @@ test(
   async (t) => {
     const schema = `test_vault_one_form_${randomUUID().replaceAll('-', '')}`;
     const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
-    await admin.query(`CREATE SCHEMA ${schema}`);
     const pool = new pg.Pool({
       connectionString: process.env.TEST_DATABASE_URL,
       options: `-c search_path=${schema}`,
     });
-    await pool.query(
-      "CREATE TABLE tasks(id text PRIMARY KEY,owner_id text NOT NULL,revision integer NOT NULL DEFAULT 0,status text NOT NULL DEFAULT 'running')",
-    );
-    const key = randomBytes(32);
-    const stages = new Map<string, CredentialKind>();
-    const injections: CredentialInjection[] = [];
-    const origin = 'https://accounts.example.test';
-    let observedOrigin = origin;
-    let rejected = false;
-    let unavailable = false;
     let app = Fastify();
-    const options = {
-      keyStore: { id: 'fixture', configured: true, getKey: async () => key },
-      inspect: async (id: string): Promise<LoginInspection> => ({
-        origin: observedOrigin,
-        url: observedOrigin + '/login',
-        fields: [{ kind: stages.get(id) ?? 'identifier', selector: '#observed', label: 'Email' }],
-        methods: [{ id: 'credentials', kind: 'credentials', label: 'Sign in', supported: true }],
-        submitSelector: '#continue',
-      }),
-      inject: async (input: CredentialInjection) => {
-        injections.push(input);
-        if (unavailable && input.kind === 'password') throw new Error('Synthetic unavailable');
-        if (rejected && input.kind === 'password') return { status: 'rejected' as const };
-        stages.set(input.taskId, input.kind === 'identifier' ? 'password' : 'otp');
-        return { status: 'submitted' as const };
-      },
-      retry: async () => {},
-      resume: async (id: string, revision: number) => {
-        const result = await pool.query(
-          "UPDATE tasks SET status='running',revision=revision+1 WHERE id=$1 AND revision=$2 AND status='waiting_credentials'",
-          [id, revision],
-        );
-        assert.equal(result.rowCount, 1);
-      },
-    };
-    let vault = await createVault(pool, options);
-    vault.registerRoutes(app);
-    const requestInput = (kind: CredentialKind) => ({ origin, label: 'Website login', kind });
-    const begin = async (id: string) => {
-      await pool.query(
-        "INSERT INTO tasks(id,owner_id) VALUES($1,'local-development') ON CONFLICT DO NOTHING",
-        [id],
-      );
-      stages.set(id, 'identifier');
-      const request = await vault.request(id, 'local-development', requestInput('identifier'));
-      await pool.query("UPDATE tasks SET status='waiting_credentials' WHERE id=$1", [id]);
-      const url = request.url.replace('/vault/', '/api/credential-requests/');
-      const submitted = await app.inject({
-        method: 'POST',
-        url,
-        payload: {
-          label: 'My Google account',
-          username: 'synthetic@example.test',
-          password: 'one-form-synthetic-password',
-        },
-      });
-      assert.equal(submitted.statusCode, 200);
-      assert.equal(submitted.json().ok, true);
-      assert.equal(injections.at(-1)?.kind, 'identifier');
-      assert.equal(injections.at(-1)?.password, undefined);
-      return url;
-    };
     try {
+      await admin.query(`CREATE SCHEMA ${schema}`);
+      await pool.query(
+        "CREATE TABLE tasks(id text PRIMARY KEY,owner_id text NOT NULL,revision integer NOT NULL DEFAULT 0,status text NOT NULL DEFAULT 'running')",
+      );
+      const key = randomBytes(32);
+      const stages = new Map<string, CredentialKind>();
+      const injections: CredentialInjection[] = [];
+      const origin = 'https://accounts.example.test';
+      let observedOrigin = origin;
+      let rejected = false;
+      let unavailable = false;
+      const options = {
+        keyStore: { id: 'fixture', configured: true, getKey: async () => key },
+        inspect: async (id: string): Promise<LoginInspection> => ({
+          origin: observedOrigin,
+          url: observedOrigin + '/login',
+          fields: [{ kind: stages.get(id) ?? 'identifier', selector: '#observed', label: 'Email' }],
+          methods: [{ id: 'credentials', kind: 'credentials', label: 'Sign in', supported: true }],
+          submitSelector: '#continue',
+        }),
+        inject: async (input: CredentialInjection) => {
+          injections.push(input);
+          if (unavailable && input.kind === 'password') throw new Error('Synthetic unavailable');
+          if (rejected && input.kind === 'password') return { status: 'rejected' as const };
+          stages.set(input.taskId, input.kind === 'identifier' ? 'password' : 'otp');
+          return { status: 'submitted' as const };
+        },
+        retry: async () => {},
+        resume: async (id: string, revision: number) => {
+          const result = await pool.query(
+            "UPDATE tasks SET status='running',revision=revision+1 WHERE id=$1 AND revision=$2 AND status='waiting_credentials'",
+            [id, revision],
+          );
+          assert.equal(result.rowCount, 1);
+        },
+      };
+      let vault = await createVault(pool, options);
+      vault.registerRoutes(app);
+      const requestInput = (kind: CredentialKind) => ({ origin, label: 'Website login', kind });
+      const begin = async (id: string) => {
+        await pool.query(
+          "INSERT INTO tasks(id,owner_id) VALUES($1,'local-development') ON CONFLICT DO NOTHING",
+          [id],
+        );
+        stages.set(id, 'identifier');
+        const request = await vault.request(id, 'local-development', requestInput('identifier'));
+        await pool.query("UPDATE tasks SET status='waiting_credentials' WHERE id=$1", [id]);
+        const url = request.url.replace('/vault/', '/api/credential-requests/');
+        const submitted = await app.inject({
+          method: 'POST',
+          url,
+          payload: {
+            label: 'My Google account',
+            username: 'synthetic@example.test',
+            password: 'one-form-synthetic-password',
+          },
+        });
+        assert.equal(submitted.statusCode, 200);
+        assert.equal(submitted.json().ok, true);
+        assert.equal(injections.at(-1)?.kind, 'identifier');
+        assert.equal(injections.at(-1)?.password, undefined);
+        return url;
+      };
       await t.test(
         'password uses the next observed stage without another form or secret response',
         async () => {
@@ -243,10 +243,19 @@ test(
         },
       );
     } finally {
-      await app.close();
-      await pool.end();
-      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
-      await admin.end();
+      try {
+        await app.close();
+      } finally {
+        try {
+          await pool.end();
+        } finally {
+          try {
+            await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+          } finally {
+            await admin.end();
+          }
+        }
+      }
     }
   },
 );

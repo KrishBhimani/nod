@@ -184,7 +184,7 @@ export function createAgentRuntime(dependencies: {
           message:
             'The website offers several sign-in methods. No Vault form or link was created. If the user has not already chosen a method, use ask_user to ask which sign-in method they want in chat. Then call select_login_method with their choice. An explicit choice already in the current request or the original task conversation needs no repeated question. Never ask for an email address, password or code in chat.',
         };
-      if (login.fields.length === 0 && methods.length === 1)
+      if (methods.length === 1 && methods[0].id !== 'credentials')
         return selectLoginMethod(login.origin, methods[0].id);
       if (login.fields.length === 0)
         return {
