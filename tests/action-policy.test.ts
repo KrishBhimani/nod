@@ -50,6 +50,34 @@ test('draft-only and explicitly prohibited transmission is rejected, not offered
   assert.equal(forbidsTransmission('GMAIL_CREATE_EMAIL_DRAFT', 'Draft an email.'), false);
 });
 
+test('send verbs do not override explicit draft or unsent qualifiers', () => {
+  for (const [action, text] of [
+    ['GMAIL_SEND_EMAIL', 'Email this to Alex as an unsent draft'],
+    ['GMAIL_SEND_EMAIL', 'Email this to Alex as a draft.'],
+    ['GMAIL_SEND_EMAIL', 'Email this to Alex, but keep it unsent.'],
+    ['GMAIL_SEND_EMAIL', 'Email this to Alex, unsent.'],
+    ['GMAIL_SEND_EMAIL', 'Send this as a draft.'],
+    ['GMAIL_REPLY_TO_THREAD', 'Reply to the Gmail thread as a draft.'],
+    ['SLACK_SEND_MESSAGE', 'Message Alex on Slack as a draft.'],
+    ['SLACK_POST_MESSAGE', 'Post this on Slack as an unsent draft.'],
+  ]) {
+    assert.equal(forbidsTransmission(action!, text!), true, `${action}: ${text}`);
+    assert.equal(explicitlyRequestsAction(action!, text!), false, `${action}: ${text}`);
+  }
+  for (const text of [
+    'Send the email draft.',
+    'Please send the unsent email draft to Alex.',
+    'Forward the unsent email draft to Alex.',
+  ]) {
+    assert.equal(forbidsTransmission('GMAIL_SEND_EMAIL', text), false, text);
+    assert.equal(explicitlyRequestsAction('GMAIL_SEND_EMAIL', text), true, text);
+  }
+  assert.equal(
+    forbidsTransmission('GMAIL_CREATE_EMAIL_DRAFT', 'Email this to Alex as a draft.'),
+    false,
+  );
+});
+
 test('only the five reversible plan operations use the direct local policy', () => {
   for (const action of [
     'SIDEKICK_goal_create',

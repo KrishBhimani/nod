@@ -53,7 +53,10 @@ export function loginInspectionScript(): string {
     const unsupportedBrowser=/(?:this|your) browser(?: or app)? (?:is not|isn't|isn’t|is no longer) supported|(?:try |using |use |a )(?:supported|different|another) browser/i.test(pageText);
     if(!ambiguousDialogs&&(browserWarning||(rejectedSignIn&&unsupportedBrowser))) return {origin:location.origin,url:location.href,issue:'browser_not_supported',fields:[],methods:[]};
     const candidates=[...document.querySelectorAll('input')].filter(e=>inside(scope,e)&&visible(e)&&enabled(e)&&!e.readOnly&&['text','email','tel','password','number'].includes(e.type));
-    const hint=e=>[e.id,e.name,e.autocomplete,e.getAttribute('aria-label'),e.getAttribute('placeholder'),e.getAttribute('inputmode'),...[...(e.labels||[])].map(label=>label.innerText),...(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById?.(id)?.innerText||'')].join(' ').toLowerCase();
+    const labelText=e=>e?.innerText||e?.textContent||'';
+    const observedLabel=e=>[...[...(e.labels||[])].filter(visible).map(labelText),...(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById?.(id)).filter(visible).map(labelText),e.getAttribute('aria-label'),e.getAttribute('placeholder')].map(text=>(text||'').replace(/\\s+/g,' ').trim()).find(Boolean);
+    const hint=e=>[e.id,e.name,e.autocomplete,e.getAttribute('inputmode'),observedLabel(e)].join(' ').toLowerCase();
+    const identifierLabel=e=>(observedLabel(e)||(e.type==='email'||/email/.test(hint(e))?'Email':e.type==='tel'||/phone/.test(hint(e))?'Phone':'Username')).slice(0,80);
     const kindOf=e=>/one-time-code|verification.?code|authentication.?code|security.?code|authenticator|(?:^|[^a-z])(?:otp|totp)(?:[^a-z]|$)/.test(hint(e))?'otp':e.type==='password'?'password':e.type==='email'||/username|user.?name|identifier|phone|email/.test(hint(e))?'identifier':null;
     const forms=[...document.querySelectorAll('form')].filter(e=>inside(scope,e)&&visible(e)&&candidates.some(input=>e.contains(input)&&kindOf(input)));
     const activeForms=forms.filter(e=>e.contains(document.activeElement));
@@ -68,7 +71,7 @@ export function loginInspectionScript(): string {
       if(!kind) continue;
       const marker=kind+'-'+fields.filter(f=>f.kind===kind).length;
       e.setAttribute('data-sidekick-login-field',marker);
-      fields.push({kind,selector:'[data-sidekick-login-field="'+marker+'"]',label:labels[kind]});
+      fields.push({kind,selector:'[data-sidekick-login-field="'+marker+'"]',label:kind==='identifier'?identifierLabel(e):labels[kind]});
     }
     const candidatesByMethod=new Map();
     const controls=[...document.querySelectorAll('button,a,[role="button"],input[type="submit"]')].filter(e=>inside(scope,e)&&visible(e));
@@ -105,7 +108,7 @@ export function loginInspectionScript(): string {
       submit.setAttribute('data-sidekick-login-submit','current');
       submitSelector='[data-sidekick-login-submit="current"]';
     }
-    if(fields.length) methods.unshift({id:'credentials',label:fields.some(field=>field.kind==='otp')?'Enter a verification code securely':'Use the secure form',kind:'credentials',supported:unambiguous,reason:unambiguous?undefined:'More than one credential field or active form matches this step. Choose another method or take over the browser.'});
+    if(fields.length) methods.unshift({id:'credentials',label:(fields.find(field=>field.kind==='identifier')||fields.find(field=>field.kind==='otp')||fields[0]).label,kind:'credentials',supported:unambiguous,reason:unambiguous?undefined:'More than one credential field or active form matches this step. Choose another method or take over the browser.'});
     return {origin:location.origin,url:location.href,fields,methods,submitSelector};
   })()`;
 }
@@ -118,7 +121,7 @@ export function credentialSubmitScript(origin: string, selector: string): string
       const nodes=document.querySelectorAll(selector);
       if(nodes.length!==1) return {ok:false};
       const e=nodes[0];
-      if(e.isConnected && !e.disabled && e.getAttribute('aria-disabled')!=='true' && e.getClientRects().length>0 && getComputedStyle(e).visibility!=='hidden' && getComputedStyle(e).display!=='none') { e.click(); return {ok:true}; }
+      if(e.isConnected && !e.disabled && !e.closest('[hidden],[aria-hidden="true"],[inert],[aria-disabled="true"]') && e.getClientRects().length>0 && getComputedStyle(e).visibility!=='hidden' && getComputedStyle(e).display!=='none') { e.click(); return {ok:true}; }
       await new Promise(resolve=>setTimeout(resolve,50));
     }
     return {ok:false};

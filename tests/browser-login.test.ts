@@ -140,6 +140,25 @@ test('login inspection uses visible labels, IDs and autocomplete without reading
   );
 });
 
+test('credential choices use the observed identifier label with specific field fallbacks', () => {
+  for (const [attributes, observed, expected] of [
+    [{ type: 'email' }, '', 'Email'],
+    [{ type: 'tel' }, '', 'Phone'],
+    [{ autocomplete: 'username' }, '', 'Username'],
+    [{ autocomplete: 'username' }, 'Email or phone', 'Email or phone'],
+    [{ type: 'password' }, '', 'Password'],
+    [{ autocomplete: 'one-time-code' }, '', 'Verification code'],
+  ] as const) {
+    const page = new LoginDom();
+    const input = element('input', attributes);
+    if (observed) input.labels = [element('label', {}, observed)];
+    page.body.append(input, element('button', {}, 'Continue'));
+    const inspection = loginInspectionSchema.parse(page.evaluate(loginInspectionScript()));
+    assert.equal(inspection.fields[0].label, expected);
+    assert.equal(inspection.methods.find((method) => method.id === 'credentials')?.label, expected);
+  }
+});
+
 test('multiple real identifiers or unfocused forms remain unsupported while the focused form is isolated', () => {
   const page = new LoginDom();
   const first = element('form');
@@ -229,6 +248,29 @@ test('browser observations redact manually typed secrets in encoded paths and un
     );
   }
   assert.doesNotThrow(() => redactBrowserText('fixture', ['\ud800']));
+});
+
+test('browser observations redact common API credentials and signed URL query values', () => {
+  for (const name of [
+    'api_key',
+    'apiKey',
+    'X-API-Key',
+    'client_secret',
+    'clientSecret',
+    'signature',
+    'sig',
+    'X-Amz-Signature',
+    'X-Amz-Credential',
+    'X-Goog-Signature',
+    'X-Goog-Credential',
+  ]) {
+    const value = redactBrowserUrl(
+      `https://example.com/download?${name}=synthetic-private-value&view=account`,
+      [],
+    );
+    assert.equal(value.includes('synthetic-private-value'), false, name);
+    assert.equal(new URL(value).searchParams.get('view'), 'account');
+  }
 });
 
 test('staged identifier, password and OTP entry waits for Next and keeps secrets out of observations', async () => {

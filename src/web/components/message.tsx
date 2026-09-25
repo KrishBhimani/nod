@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useEffect, useRef, useState } from 'react';
+import { Children, lazy, memo, Suspense, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   FileText,
@@ -20,7 +20,7 @@ import { reactionEmoji } from '../../shared/emoji';
 import { Button, Loading, Notice } from './ui';
 import { BrandMark } from './brand';
 import { errorMessage, post } from '../lib/api';
-import { safeMessageLink } from '../lib/message-links';
+import { credentialLinkLabel, safeMessageLink } from '../lib/message-links';
 import { remarkLocalLinks } from '../lib/markdown';
 import { nextReaction, reactionName } from '../lib/reactions';
 import { MessageLinkPreviews } from './link-previews';
@@ -49,9 +49,21 @@ export const MessageText = memo(function MessageText({
                 typeof window === 'undefined' ? 'http://localhost:4310' : window.location.origin,
               );
               if (!link) return <span>{children}</span>;
-              const label = link.kind === 'credential' ? 'Vault' : children;
+              const label =
+                link.kind === 'credential'
+                  ? credentialLinkLabel(
+                      Children.toArray(children)
+                        .filter((child) => typeof child === 'string')
+                        .join(''),
+                    )
+                  : children;
               return (
-                <a href={link.href} target="_blank" rel="noopener noreferrer">
+                <a
+                  href={link.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={link.kind === 'credential' ? 'credential-link' : undefined}
+                >
                   {label}
                   {link.kind === 'credential' && <ExternalLink size={12} />}
                 </a>

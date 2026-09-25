@@ -174,6 +174,29 @@ test('another login submits its own name and never changes the trusted website',
   }
 });
 
+test('an identifier stage collects the named login and password in one private submission', async () => {
+  const f = await setup(undefined, {
+    request: { kind: 'identifier', fields: [{ kind: 'identifier', label: 'Email address' }] },
+    ok: true,
+  });
+  try {
+    assert.match(f.element.textContent!, /Email address/);
+    assert.ok(f.element.querySelector('input[name=password]'));
+    assert.ok(f.element.querySelector('input[name=label]'));
+    await f.submit('one-form-secret');
+    assert.deepEqual(f.requests.find((request) => request.body.password)?.body, {
+      label: 'My work account',
+      username: 'synthetic-user',
+      password: 'one-form-secret',
+    });
+    assert.equal(f.requests.filter((request) => request.body.password).length, 1);
+    assert.equal(f.element.querySelector('input[name=password]'), null);
+    assert.doesNotMatch(f.element.textContent!, /one-form-secret/);
+  } finally {
+    await f.close();
+  }
+});
+
 test('rejected saved login opens fresh entry instead of retrying the same account', async () => {
   const f = await setup(undefined, { request: { savedEntries }, rejectSaved: true });
   try {
@@ -339,7 +362,7 @@ test('repeated rejected verification codes keep a fresh usable form and never ec
   }
 });
 
-test('late initial reads and method responses are aborted when the secure form is dismissed', async () => {
+test('late initial reads and credential responses are aborted when the secure form is dismissed', async () => {
   const initial = deferred<Response>();
   const f = await setup(undefined, { response: () => initial.promise });
   assert.match(f.element.textContent!, /Opening your form/);
@@ -349,18 +372,34 @@ test('late initial reads and method responses are aborted when the secure form i
   await act(async () => initial.resolve(json(pending)));
   assert.equal(f.element.textContent, '');
 
-  const method = deferred<Response>();
+  const submission = deferred<Response>();
   const nextForm = await setup(undefined, {
+    response: (_, init) => (init?.method === 'POST' ? submission.promise : undefined),
+  });
+  await nextForm.submit('discarded-secret');
+  const post = nextForm.requests.at(-1)!;
+  await nextForm.close();
+  assert.equal(post.signal?.aborted, true);
+  await act(async () => submission.resolve(json({ ok: true })));
+  assert.equal(nextForm.element.textContent, '');
+});
+
+test('sign-in method choices stay in chat instead of appearing in a Vault form', async () => {
+  const f = await setup(undefined, {
     request: {
       fields: [],
       methods: [{ id: 'oauth', label: 'Continue with fixture', kind: 'oauth', supported: true }],
     },
-    response: (_, init) => (init?.method === 'POST' ? method.promise : undefined),
   });
-  await act(async () => nextForm.element.querySelector('button')!.click());
-  const post = nextForm.requests.at(-1)!;
-  await nextForm.close();
-  assert.equal(post.signal?.aborted, true);
-  await act(async () => method.resolve(json({ ok: true })));
-  assert.equal(nextForm.element.textContent, '');
+  try {
+    assert.doesNotMatch(f.element.textContent!, /Continue with fixture/);
+    assert.match(f.element.textContent!, /Return to chat/);
+    assert.equal(f.element.querySelector('form'), null);
+    assert.equal(
+      f.requests.some((request) => request.path.endsWith('/method')),
+      false,
+    );
+  } finally {
+    await f.close();
+  }
 });

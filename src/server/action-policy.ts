@@ -89,6 +89,9 @@ export function forbidsTransmission(action: string, instruction: string) {
     /\b(?:don't send|do not send|not send|do not publish|don't publish|não envies|não enviar)\b/i.test(
       request,
     ) ||
+    /\b(?:as\s+(?:an?\s+)?(?:unsent\s+)?draft\b|(?:keep|leave|save)(?:\s+(?:it|this|that|the\s+(?:e-?mail|message|reply)))?\s+unsent\b|unsent\s*[.!]?$)/i.test(
+      request,
+    ) ||
     (requestedScope(action, request) && intentWords.draft.test(request))
   );
 }

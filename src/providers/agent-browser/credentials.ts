@@ -18,9 +18,10 @@ export function credentialFeedbackScript(
     const root=document.documentElement;
     if(location.origin!==origin) return {advanced:true,rejected:false,fingerprint:'',sameDocument:false};
     const visible=e=>e && e.isConnected && e.getClientRects().length>0 && getComputedStyle(e).visibility!=='hidden' && getComputedStyle(e).display!=='none' && !e.closest('[hidden],[aria-hidden="true"],[inert]');
+    const hint=e=>[e.id,e.name,e.autocomplete,e.getAttribute('aria-label'),e.getAttribute('placeholder'),...[...(e.labels||[])].map(label=>label.innerText||label.textContent||''),...(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById?.(id)?.textContent||'')].join(' ');
     const fields=[...document.querySelectorAll('input')].filter(e=>visible(e)&&!e.disabled&&(
-      kind==='password'?e.type==='password':kind==='otp'?/one-time-code|verification.?code|authentication.?code|security.?code|otp|totp/i.test([e.id,e.name,e.autocomplete,e.getAttribute('aria-label')].join(' ')):
-      e.type==='email'||/username|user.?name|identifier|phone|email/i.test([e.id,e.name,e.autocomplete,e.getAttribute('aria-label')].join(' '))));
+      kind==='password'?e.type==='password':kind==='otp'?/one-time-code|verification.?code|authentication.?code|security.?code|authenticator|(?:^|[^a-z])(?:otp|totp)(?:[^a-z]|$)/i.test(hint(e))||e.getAttribute('data-sidekick-login-field')?.startsWith('otp-'):
+      e.type==='email'||/username|user.?name|identifier|phone|email/i.test(hint(e))||e.getAttribute('data-sidekick-login-field')?.startsWith('identifier-')));
     const errors=[...document.querySelectorAll('[role="alert"],[aria-live="assertive"],[data-error],.error,.invalid-feedback')].filter(visible).map(e=>(e.innerText||e.textContent||'').slice(0,2000)).filter(text=>/incorrect|invalid|wrong|rejected|not recognized|not recognised|not match|try again|inválid|incorret|incorrecto|invalide|ungültig|falsch/i.test(text));
     const invalid=fields.some(e=>e.getAttribute('aria-invalid')==='true');
     const text=JSON.stringify([errors,invalid]);
@@ -93,11 +94,12 @@ export function credentialScript(
   return `(() => {
     const origin=${JSON.stringify(origin)}, fields=${JSON.stringify(fields)}, submit=${JSON.stringify(submitSelector ?? null)};
     if(location.origin!==origin) return {ok:false};
-    const usable=e=>e && e.isConnected && !e.disabled && !e.readOnly && e.getClientRects().length>0 && getComputedStyle(e).visibility!=='hidden' && getComputedStyle(e).display!=='none';
+    const visible=e=>e && e.isConnected && e.getClientRects().length>0 && getComputedStyle(e).visibility!=='hidden' && getComputedStyle(e).display!=='none' && !e.closest('[hidden],[aria-hidden="true"],[inert]');
+    const usable=e=>visible(e) && !e.disabled && !e.readOnly && !e.closest('[aria-disabled="true"]');
     const targets=fields.map(field=>({field,nodes:document.querySelectorAll(field.selector)}));
     if(targets.some(({field,nodes})=>nodes.length!==1 || !nodes[0].matches('input') || !usable(nodes[0]) || (field.password && nodes[0].type!=='password') || (field.identifier && nodes[0].type==='password'))) return {ok:false};
     const submits=submit?document.querySelectorAll(submit):[];
-    if(submit && (submits.length!==1 || !submits[0].isConnected || submits[0].getClientRects().length===0)) return {ok:false};
+    if(submit && (submits.length!==1 || !visible(submits[0]))) return {ok:false};
     for(const {field,nodes} of targets) {
       if(location.origin!==origin) return {ok:false};
       const e=nodes[0];

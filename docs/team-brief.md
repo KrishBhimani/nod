@@ -46,4 +46,6 @@ The [verification index](verification.md) separates automated checks, real local
 
 Those earlier browser and authentication reports do not establish the new container path. Current transport/desktop fixtures use synthetic data; the verification index records any subsequent container acceptance run. Neither fake 2FA nor a successful synthetic login proves real-provider authentication.
 
-The CI workflow is configured for checks, disposable PostgreSQL tests, build and secret scans. Its first remote run is pending at the time of this brief. Passing local tests or a private repository push is not deployment verification. [Development checks](development.md).
+The first remote CI run passed at commit `8ef9044`: 665 tests, type checks, build and secret scanning. [CI result](https://github.com/n8n-io/sidekick/actions/runs/36154556815). Browser sign-in changes made after that commit need a new run. Passing CI is not deployment or live-provider verification. [Development checks](development.md).
+
+The [recording post in scientists-chat](https://n8nio.slack.com/archives/C0BT5S8CV42/p1790351018250929) contains four playable examples and a downloadable gallery with 29 clips. The gallery separates 12 current walkthroughs from 17 earlier recordings and describes each result and limitation. Authentication uses synthetic accounts and codes; the recordings do not prove Google or X account login.

@@ -84,6 +84,67 @@ test(
         },
       );
       await t.test(
+        'an offered sign-in choice continues the waiting task without semantic routing',
+        async () => {
+          const id = await waitingTask('Sign in to the fixture website');
+          await db.pool.query('UPDATE tasks SET waiting_question=$2 WHERE id=$1', [
+            id,
+            'Which sign-in method would you like to use: email, Google or Apple?',
+          ]);
+          let routes = 0;
+          const service = tasks.createUserMessageService({
+            routeConversation: async () => {
+              routes++;
+              throw new Error('An explicit offered method needs no semantic routing.');
+            },
+          });
+          const first = await service.submit('Use Google, please.');
+          assert.deepEqual(first, { taskId: id, continued: true });
+          assert.equal(routes, 0);
+          assert.deepEqual(
+            (await db.pool.query('SELECT revision,waiting_reason FROM tasks WHERE id=$1', [id]))
+              .rows[0],
+            { revision: 1, waiting_reason: null },
+          );
+          await clearWaits();
+        },
+      );
+      await t.test(
+        'method-like commands cannot borrow unrelated, unoffered or other-channel questions',
+        async () => {
+          const city = await waitingTask('Choose a city');
+          assert.equal((await tasks.submitUserMessage('Use Google')).continued, false);
+          assert.equal(
+            (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [city])).rows[0].status,
+            'waiting_user',
+          );
+          await clearWaits();
+          const id = await waitingTask('Choose a sign-in method');
+          await db.pool.query('UPDATE tasks SET waiting_question=$2 WHERE id=$1', [
+            id,
+            'Which sign-in method would you like to use: email or Apple?',
+          ]);
+          assert.equal((await tasks.submitUserMessage('Use Google')).continued, false);
+          assert.equal(
+            (await tasks.submitUserMessage('Use Apple to research trains')).continued,
+            false,
+          );
+          assert.equal(
+            (await tasks.submitUserMessage('Use Apple', [], { channel: 'telegram' })).continued,
+            false,
+          );
+          assert.equal(
+            (await tasks.submitUserMessage('Use Apple', [], { forceNew: true })).continued,
+            false,
+          );
+          assert.deepEqual(await tasks.submitUserMessage('Use Apple'), {
+            taskId: id,
+            continued: true,
+          });
+          await clearWaits();
+        },
+      );
+      await t.test(
         'standalone commands with conversational introductions never resume a waiting question',
         async () => {
           const id = await waitingTask('Waiting sign-in clarification');

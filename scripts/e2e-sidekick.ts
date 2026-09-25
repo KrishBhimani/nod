@@ -236,6 +236,7 @@ try {
         if (
           [
             'fixture_manual_submit',
+            'fixture_identifier_submit',
             'fixture_password_submit',
             'fixture_otp_submit',
             'fixture_portal_view',

@@ -30,6 +30,9 @@ class Input {
   matches(value: string) {
     return value === 'input';
   }
+  closest() {
+    return null;
+  }
   dispatchEvent() {
     this.afterEvent();
   }

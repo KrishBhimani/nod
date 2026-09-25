@@ -226,6 +226,54 @@ test('synthetic authentication requires the password and OTP, expires no secrets
   }
 });
 
+test('staged sign-in fixture requires identifier, password and OTP in separate forms', async () => {
+  const audit: unknown[] = [];
+  const server = createServer(createAuthFixture((kind, fields) => audit.push({ kind, ...fields })));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}${fixturePrefix}`;
+  try {
+    const initial = await (await fetch(origin + 'staged-login')).text();
+    assert.match(initial, /Continue with Google/);
+    assert.match(initial, /Continue with Apple/);
+    assert.match(initial, /autocomplete="username"/);
+    assert.doesNotMatch(initial, /type="password"/);
+    const identifier = await fetch(origin + 'identifier', {
+      method: 'POST',
+      body: new URLSearchParams({ username: fixtureCredentials.username }),
+    });
+    const passwordPage = await identifier.text();
+    assert.match(passwordPage, /autocomplete="current-password"/);
+    assert.doesNotMatch(passwordPage, /autocomplete="username"/);
+    const cookie = identifier.headers.get('set-cookie')!.split(';')[0];
+    const password = await fetch(origin + 'password', {
+      method: 'POST',
+      headers: { cookie },
+      body: new URLSearchParams({ password: fixtureCredentials.password }),
+    });
+    assert.match(await password.text(), /one-time-code/);
+    const verifiedCookie = password.headers.get('set-cookie')!.split(';')[0];
+    const verified = await fetch(origin + 'otp', {
+      method: 'POST',
+      headers: { cookie: verifiedCookie },
+      body: new URLSearchParams({ code: fixtureCredentials.code }),
+      redirect: 'manual',
+    });
+    assert.equal(verified.status, 303);
+    const portal = await fetch(origin + 'portal', { headers: { cookie: verifiedCookie } });
+    assert.match(await portal.text(), /NS-1043/);
+    for (const secret of Object.values(fixtureCredentials))
+      assert.ok(!JSON.stringify(audit).includes(secret));
+    assert.deepEqual(audit, [
+      { kind: 'fixture_identifier_submit', accepted: true },
+      { kind: 'fixture_password_submit', accepted: true },
+      { kind: 'fixture_otp_submit', accepted: true },
+      { kind: 'fixture_portal_view' },
+    ]);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test('test proxy pins one synthetic HTTPS host and forwards other CONNECT requests to the public guard', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'sidekick-e2e-proxy-test-'));
   const forwarded: string[] = [];

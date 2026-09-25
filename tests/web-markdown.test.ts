@@ -20,6 +20,16 @@ test('chat renders Markdown, tables, static HTML and secure local links', () => 
   assert.match(result, />Vault/);
 });
 
+test('secure chat links keep action labels while hiding raw request tokens', () => {
+  const result = render(
+    '[Add login](/vault/add-token) [Enter verification code](/vault/otp-token) [sensitive-token](/vault/hidden-token)',
+  );
+  assert.match(result, />Add login<svg/);
+  assert.match(result, />Enter verification code<svg/);
+  assert.doesNotMatch(result, />sensitive-token</);
+  assert.match(result, /class="credential-link"/);
+});
+
 test('chat HTML cannot run scripts, submit forms, load trackers or link to local internals', () => {
   const result = render(
     '<script>alert(1)</script><style>body{display:none}</style><iframe src="https://evil.example"></iframe><form action="/api/messages"><input name="text" value="bad"></form><img src="https://evil.example/track" onerror="alert(1)"><a href="javascript:alert(1)">bad</a><a href="/api/state">internal</a>\n\n![picture](https://evil.example/pixel)',

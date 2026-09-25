@@ -18,7 +18,6 @@ function CredentialForm({ id }: { id: string }) {
   const [saving, setSaving] = useState(false);
   const [retried, setRetried] = useState(false);
   const [now, setNow] = useState(Date.now());
-  const [methodStarted, setMethodStarted] = useState(false);
   const [enterNew, setEnterNew] = useState(false);
   const [loginName, setLoginName] = useState('');
   useEffect(() => {
@@ -53,14 +52,11 @@ function CredentialForm({ id }: { id: string }) {
   const fields = request?.fields ?? [];
   const username =
     request?.kind === 'identifier' || fields.some((field) => field.kind === 'identifier');
-  const password = request?.kind === 'password';
+  const password = request?.kind === 'password' || request?.kind === 'identifier';
   const credentialMethod = request?.methods?.find((method) => method.id === 'credentials');
   const canFill = credentialMethod?.supported !== false;
   const savedEntries = request?.kind === 'otp' ? [] : (request?.savedEntries ?? []);
   const choosingSaved = savedEntries.length > 0 && !enterNew;
-  const methods =
-    request?.methods?.filter((method) => method.id !== 'credentials' && method.kind !== 'manual') ??
-    [];
   async function perform<T>(
     suffix: string,
     input: unknown,
@@ -107,17 +103,6 @@ function CredentialForm({ id }: { id: string }) {
       'A new sign-in step could not be requested. Return to chat to check this task.',
     );
   }
-  function choose(methodId: string) {
-    return perform(
-      '/method',
-      { methodId },
-      () => {
-        setMethodStarted(true);
-        setRequest((current) => (current ? { ...current, status: 'filled' } : current));
-      },
-      'This sign-in method could not be opened. Try again or return to chat.',
-    );
-  }
   function submitted(result: { ok: boolean; retryUrl?: string; error?: string }) {
     if (result.ok) {
       setRequest((current) => (current ? { ...current, status: 'filled' } : current));
@@ -138,7 +123,6 @@ function CredentialForm({ id }: { id: string }) {
     }
     window.history.replaceState(null, '', retry.pathname);
     setRequest(null);
-    setMethodStarted(false);
     setRetried(false);
     setEnterNew(true);
     setError(
@@ -165,13 +149,11 @@ function CredentialForm({ id }: { id: string }) {
     const input =
       request.kind === 'otp'
         ? { code: data.get('code') }
-        : request.kind === 'identifier'
-          ? { username: data.get('username') }
-          : {
-              label: data.get('label'),
-              ...(username ? { username: data.get('username') } : {}),
-              password: data.get('password'),
-            };
+        : {
+            label: data.get('label'),
+            ...(username ? { username: data.get('username') } : {}),
+            password: data.get('password'),
+          };
     form.reset();
     return perform(
       '',
@@ -203,12 +185,8 @@ function CredentialForm({ id }: { id: string }) {
             <div className="success-mark">
               <Check size={24} />
             </div>
-            <h1>{methodStarted ? 'Continue in chat' : 'Details submitted'}</h1>
-            <p>
-              {methodStarted
-                ? 'Sidekick is opening the next sign-in step.'
-                : 'Sidekick will continue from the website’s response.'}
-            </p>
+            <h1>Details submitted</h1>
+            <p>Sidekick will continue from the website’s response.</p>
             <Button asChild>
               <a href="/">Back to chat</a>
             </Button>
@@ -292,7 +270,7 @@ function CredentialForm({ id }: { id: string }) {
                 ) : (
                   <>
                     {password && (
-                      <Field label="Login name" hint="A name to find it in Vault.">
+                      <Field label="Item name" hint="A name to find it in Vault.">
                         <Input
                           name="label"
                           defaultValue={loginName}
@@ -347,26 +325,6 @@ function CredentialForm({ id }: { id: string }) {
                 )}
               </form>
             )}
-            {methods.some((method) => method.supported) && fields.length > 0 && canFill && (
-              <div className="login-divider">or</div>
-            )}
-            {methods.length > 0 && (
-              <div className="login-methods">
-                {methods.map((method) => (
-                  <div key={method.id}>
-                    <Button
-                      variant="outline"
-                      disabled={saving || !method.supported}
-                      onClick={() => void choose(method.id)}
-                    >
-                      {method.label}
-                      {method.supported && <ArrowUpRight size={14} />}
-                    </Button>
-                    {!method.supported && method.reason && <small>{method.reason}</small>}
-                  </div>
-                ))}
-              </div>
-            )}
             {credentialMethod?.supported === false && (
               <>
                 <Notice kind="info">
@@ -377,7 +335,7 @@ function CredentialForm({ id }: { id: string }) {
                 </Button>
               </>
             )}
-            {request && fields.length === 0 && !methods.some((method) => method.supported) && (
+            {request && fields.length === 0 && (
               <Notice kind="info">
                 This page needs a different sign-in step. Return to chat to continue.
               </Notice>

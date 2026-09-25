@@ -101,30 +101,26 @@ test(
           await app.inject({
             method: 'POST',
             url: first,
-            payload: { username: 'synthetic-account@example.test' },
+            payload: {
+              label: 'Fixture login',
+              username: 'synthetic-account@example.test',
+              password: 'synthetic-password',
+            },
           })
         ).statusCode,
         200,
       );
       assert.equal((await pool.query('SELECT * FROM vault_entries')).rowCount, 0);
       assert.equal((await app.inject({ method: 'POST', url: first + '/refresh' })).statusCode, 409);
-      const second = await secureRequest('staged');
-      const passwordForm = (await app.inject({ url: second })).json();
-      assert.equal(passwordForm.kind, 'password');
-      assert.deepEqual(
-        passwordForm.fields.map((field: { kind: string }) => field.kind),
-        ['password'],
-      );
       assert.equal(
-        (
-          await app.inject({
-            method: 'POST',
-            url: second,
-            payload: { label: 'Fixture login', password: 'synthetic-password' },
-          })
-        ).statusCode,
-        200,
+        await vault.fillSelected('staged', 'local-development', {
+          origin: 'https://1.1.1.1',
+          label: 'Synthetic login',
+          kind: 'password',
+        }),
+        true,
       );
+      assert.equal((await pool.query('SELECT * FROM credential_requests')).rowCount, 1);
       const third = await secureRequest('staged');
       assert.equal((await app.inject({ url: third })).json().kind, 'otp');
       assert.equal(
@@ -132,7 +128,7 @@ test(
         200,
       );
       assert.equal(fixture.pages.get('staged')?.stage, 'complete');
-      assert.equal(resumed, 3);
+      assert.equal(resumed, 2);
       const entries = (await pool.query('SELECT * FROM vault_entries')).rows;
       assert.equal(entries.length, 1);
       assert.deepEqual(openCredential(key, entries[0]), {

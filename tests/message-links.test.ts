@@ -33,7 +33,7 @@ test('credential links use clear labels and omit tokens and fragments', () => {
     [
       {
         type: 'link',
-        text: 'Vault',
+        text: 'Sign in',
         href: '/credentials/request-id',
         kind: 'credential',
       },

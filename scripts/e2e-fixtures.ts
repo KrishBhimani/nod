@@ -47,11 +47,21 @@ async function form(request: IncomingMessage) {
 }
 
 export function createAuthFixture(audit: Audit = () => {}) {
-  const sessions = new Map<string, { stage: 'otp' | 'portal'; expires: number }>();
+  const sessions = new Map<string, { stage: 'password' | 'otp' | 'portal'; expires: number }>();
   const login = (error = '') =>
     html(
       'Northstar demo sign in',
       `<p>Synthetic test account. No real company or customer data.</p>${error}<form method="post" action="${fixturePrefix}password"><label for="username">Email</label><input id="username" name="username" type="email" autocomplete="username" required><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required><button type="submit">Sign in</button></form>`,
+    );
+  const stagedLogin = (error = '', methods = true) =>
+    html(
+      'Northstar staged sign in',
+      `<p>Synthetic test account. Email and password are entered on separate pages.</p>${error}<form method="post" action="${fixturePrefix}identifier"><label for="username">Email</label><input id="username" name="username" type="email" autocomplete="username" required><button type="submit">Next</button></form>${methods ? `<a href="${fixturePrefix}provider-google">Continue with Google</a><br><a href="${fixturePrefix}provider-apple">Continue with Apple</a>` : ''}`,
+    );
+  const passwordStep = (error = '') =>
+    html(
+      'Enter your password',
+      `${error}<form method="post" action="${fixturePrefix}password"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required><button type="submit">Sign in</button></form>`,
     );
   const otp = (error = '') =>
     html(
@@ -89,15 +99,43 @@ export function createAuthFixture(audit: Audit = () => {}) {
             `<p>${accepted ? 'Manual input accepted: MANUAL-741.' : 'The test note did not match.'}</p>`,
           ),
         );
+      } else if (request.method === 'GET' && url.pathname === fixturePrefix + 'staged-login') {
+        response.end(stagedLogin());
+      } else if (
+        request.method === 'GET' &&
+        [fixturePrefix + 'provider-google', fixturePrefix + 'provider-apple'].includes(url.pathname)
+      ) {
+        audit('fixture_sign_in_method', {
+          provider: url.pathname.endsWith('google') ? 'google' : 'apple',
+        });
+        response.end(stagedLogin('', false));
+      } else if (request.method === 'POST' && url.pathname === fixturePrefix + 'identifier') {
+        const input = await form(request);
+        const accepted = input.get('username') === fixtureCredentials.username;
+        audit('fixture_identifier_submit', { accepted });
+        if (!accepted)
+          return void response.end(
+            stagedLogin('<p role="alert">Email was not found. Try again.</p>', false),
+          );
+        if (sessions.size >= 100) sessions.delete(sessions.keys().next().value!);
+        const id = randomBytes(24).toString('hex');
+        sessions.set(id, { stage: 'password', expires: Date.now() + 30 * 60_000 });
+        response.setHeader(
+          'Set-Cookie',
+          `e2e_session=${id}; HttpOnly; Secure; SameSite=Lax; Path=${fixturePrefix}`,
+        );
+        response.end(passwordStep());
       } else if (request.method === 'POST' && url.pathname === fixturePrefix + 'password') {
         const input = await form(request);
         const accepted =
-          input.get('username') === fixtureCredentials.username &&
+          (input.get('username') === fixtureCredentials.username || active?.stage === 'password') &&
           input.get('password') === fixtureCredentials.password;
         audit('fixture_password_submit', { accepted });
         if (!accepted)
           return void response.end(
-            login('<p role="alert">Email or password was incorrect. Try again.</p>'),
+            active?.stage === 'password'
+              ? passwordStep('<p role="alert">Password was incorrect. Try again.</p>')
+              : login('<p role="alert">Email or password was incorrect. Try again.</p>'),
           );
         if (sessions.size >= 100) sessions.delete(sessions.keys().next().value!);
         const id = randomBytes(24).toString('hex');

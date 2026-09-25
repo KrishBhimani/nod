@@ -11,6 +11,7 @@ export function containerBrowserOptions(
     executable: `/app/node_modules/agent-browser/bin/agent-browser-linux-${architecture}`,
     browserExecutable: '/usr/bin/chromium',
     platform: 'linux',
+    headless: false,
     sandbox: false,
   };
 }

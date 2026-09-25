@@ -8,6 +8,21 @@ export type MessagePart =
 
 const navigationPaths = new Set(['/', '/apps', '/goals', '/schedule', '/channels', '/vault']);
 const localPath = /^\/(api\/artifacts|vault|credentials)\/[A-Za-z0-9_-]+\/?$/;
+const credentialLabels = [
+  'Vault',
+  'Open Vault',
+  'Sign in',
+  'Add login',
+  'Enter login details',
+  'Continue sign-in',
+  'Enter verification code',
+  'Choose a sign-in method',
+];
+
+export function credentialLinkLabel(value: string): string {
+  const label = value.trim().toLowerCase();
+  return credentialLabels.find((candidate) => candidate.toLowerCase() === label) ?? 'Vault';
+}
 
 export function safeMessageLink(value: string, origin: string): SafeLink | null {
   if (!value || /[\u0000-\u0020\u007f<>"'\\]/.test(value)) return null;
@@ -58,7 +73,7 @@ export function parseMessageText(text: string, origin: string): MessagePart[] {
     else {
       const label =
         link.kind === 'credential'
-          ? 'Vault'
+          ? credentialLinkLabel(markdown ? match[1] : '')
           : markdown
             ? match[1]
             : link.kind === 'artifact'

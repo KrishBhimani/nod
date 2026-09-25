@@ -627,6 +627,11 @@ a svg {
   vertical-align: middle;
   margin-left: 5px;
 }
+.message-text .credential-link {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
 .message-text blockquote {
   border-left: 3px solid #e4d5de;
   padding-left: 14px;

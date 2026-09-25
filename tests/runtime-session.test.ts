@@ -14,7 +14,7 @@ import type {
 } from '../src/ports/agent.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
-import type { Computer } from '../src/ports/computer.ts';
+import type { Computer, LoginInspection } from '../src/ports/computer.ts';
 import { requestsLoginDetails, vaultInvitation } from '../src/runtime/communication.ts';
 
 async function fixture(
@@ -1152,42 +1152,366 @@ test('an intercepted credential solicitation on a blocked browser receives hando
   ]);
 });
 
-test('provider-only login choices still create a Vault form without claiming sign-in succeeded', async () => {
+test('the sole provider opens its fresh sign-in flow without a choice-only Vault form', async () => {
   let requests = 0;
+  let selected = false;
   const result = await fixture(
     async (tools) => {
-      await call(tools, 'request_credentials', {
+      const output = await call(tools, 'request_credentials', {
         origin: 'https://example.com',
         label: 'Example',
         kind: 'identifier',
       });
+      assert.match(JSON.stringify(output), /login_method_selected/);
+      assert.match(JSON.stringify(output), /accounts\.example\.test/);
+      assert.match(JSON.stringify(output), /not proof of authentication/);
     },
     {
       requestCredential: async () => {
         requests++;
-        return {
-          url: '/vault/provider-choice',
-          invitation: { origin: 'https://example.com', kind: 'identifier', methodSelection: true },
-        };
+        return { url: '/vault/unnecessary' };
       },
     },
     {
       computer: fakeComputer({
-        inspectLogin: async () => ({
-          origin: 'https://example.com',
-          url: 'https://example.com/login',
-          fields: [],
-          methods: [{ id: 'oauth-google', kind: 'oauth', label: 'Google', supported: true }],
-        }),
+        inspectLogin: async () =>
+          selected
+            ? {
+                origin: 'https://accounts.example.test',
+                url: 'https://accounts.example.test/login',
+                fields: [{ kind: 'identifier', selector: '#email', label: 'Email' }],
+                methods: [
+                  { id: 'credentials', kind: 'credentials', label: 'Email', supported: true },
+                ],
+              }
+            : {
+                origin: 'https://example.com',
+                url: 'https://example.com/login',
+                fields: [],
+                methods: [
+                  {
+                    id: 'oauth-google',
+                    kind: 'oauth',
+                    label: 'Google',
+                    supported: true,
+                    selector: '#google',
+                  },
+                ],
+              },
+        selectLoginMethod: async (_taskId, origin, methodId) => {
+          assert.equal(origin, 'https://example.com');
+          assert.equal(methodId, 'oauth-google');
+          selected = true;
+        },
         act: async () => {
           throw new Error('No snapshot is needed for a present sign-in method.');
         },
       }),
     },
   );
+  assert.equal(requests, 0);
+  assert.equal(selected, true);
+  assert.equal(result.result.status, 'succeeded');
+  assert.deepEqual(result.replies, []);
+});
+
+const loginChoices: LoginInspection = {
+  origin: 'https://example.com',
+  url: 'https://example.com/login',
+  fields: [{ kind: 'identifier', selector: '#email', label: 'Email' }],
+  methods: [
+    { id: 'credentials', kind: 'credentials', label: 'Email', supported: true },
+    { id: 'oauth-google', kind: 'oauth', label: 'Google', supported: true, selector: '#google' },
+    { id: 'oauth-apple', kind: 'oauth', label: 'Apple', supported: true, selector: '#apple' },
+    { id: 'passkey', kind: 'passkey', label: 'Passkey', supported: false },
+  ],
+};
+
+test('several sign-in methods ask one chat question without opening Vault or a provider', async () => {
+  let requests = 0;
+  let selections = 0;
+  const question = 'Which sign-in method would you like to use: email, Google or Apple?';
+  assert.equal(requestsLoginDetails(question), false);
+  const result = await fixture(
+    async (tools) => {
+      const output = await call(tools, 'request_credentials', {
+        origin: loginChoices.origin,
+        label: 'Example',
+        kind: 'identifier',
+      });
+      assert.equal(output.content[0].type, 'text');
+      const choice = JSON.parse(output.content[0].type === 'text' ? output.content[0].text : '{}');
+      assert.equal(choice.outcome, 'choose_sign_in_method');
+      assert.deepEqual(
+        choice.methods.map((method: { id: string }) => method.id),
+        ['credentials', 'oauth-google', 'oauth-apple'],
+      );
+      assert.equal(JSON.stringify(choice).includes('#google'), false);
+      assert.equal(choice.url, undefined);
+      await call(tools, 'ask_user', { question });
+    },
+    {
+      requestCredential: async () => {
+        requests++;
+        return { url: '/vault/unnecessary' };
+      },
+    },
+    {
+      computer: fakeComputer({
+        inspectLogin: async () => loginChoices,
+        selectLoginMethod: async () => {
+          selections++;
+        },
+      }),
+    },
+  );
+  assert.equal(requests, 0);
+  assert.equal(selections, 0);
+  assert.equal(result.result.status, 'waiting_user');
+  assert.equal(result.result.waitingFor, 'question');
+  assert.deepEqual(result.replies, [question]);
+});
+
+test('a resumed explicit email choice creates one secure form without clicking or asking again', async () => {
+  let requests = 0;
+  let selections = 0;
+  const result = await fixture(
+    async (tools) => {
+      const output = await call(tools, 'select_login_method', {
+        origin: loginChoices.origin,
+        methodId: 'credentials',
+      });
+      assert.match(JSON.stringify(output), /login_method_selected/);
+      await call(tools, 'request_credentials', {
+        origin: loginChoices.origin,
+        label: 'Example',
+        kind: 'identifier',
+      });
+    },
+    {
+      prompt: 'Use email',
+      history: [
+        {
+          role: 'assistant',
+          text: 'Which sign-in method would you like to use: email, Google or Apple?',
+        },
+      ],
+      requestCredential: async () => {
+        requests++;
+        return { url: '/credentials/selected-method' };
+      },
+    },
+    {
+      computer: fakeComputer({
+        inspectLogin: async () => loginChoices,
+        selectLoginMethod: async () => {
+          selections++;
+        },
+      }),
+    },
+    true,
+  );
+  assert.equal(requests, 1);
+  assert.equal(selections, 0);
+  assert.equal(result.result.status, 'waiting_credentials');
+  assert.equal(result.replies.length, 1);
+  assert.match(result.replies[0], /selected-method/);
+  assert.match(result.supplied.systemPrompt, /already chose/i);
+});
+
+test('explicit provider selection inspects the resulting origin before secure entry', async () => {
+  let selected = false;
+  let requests = 0;
+  const provider: LoginInspection = {
+    origin: 'https://accounts.example.test',
+    url: 'https://accounts.example.test/login',
+    fields: [{ kind: 'identifier', label: 'Email', selector: '#identifier' }],
+    methods: [{ id: 'credentials', kind: 'credentials', label: 'Email', supported: true }],
+  };
+  const result = await fixture(
+    async (tools) => {
+      const output = await call(tools, 'select_login_method', {
+        origin: loginChoices.origin,
+        methodId: 'oauth-google',
+      });
+      assert.match(JSON.stringify(output), /accounts\.example\.test/);
+      await call(tools, 'request_credentials', {
+        origin: provider.origin,
+        label: 'Provider',
+        kind: 'identifier',
+      });
+    },
+    {
+      prompt: 'Sign in with Google',
+      requestCredential: async (input) => {
+        assert.equal(input.origin, provider.origin);
+        requests++;
+        return { url: '/credentials/provider' };
+      },
+    },
+    {
+      computer: fakeComputer({
+        inspectLogin: async () => (selected ? provider : loginChoices),
+        selectLoginMethod: async (_taskId, origin, methodId) => {
+          assert.equal(origin, loginChoices.origin);
+          assert.equal(methodId, 'oauth-google');
+          selected = true;
+        },
+      }),
+    },
+  );
   assert.equal(requests, 1);
   assert.equal(result.result.status, 'waiting_credentials');
-  assert.match(result.replies[0], /choose.*Vault/i);
+  assert.equal(result.replies.length, 1);
+});
+
+test('a password-stage continuation can reuse the original method choice and held login without another form', async () => {
+  let requests = 0;
+  let selections = 0;
+  const passwordStep: LoginInspection = {
+    ...loginChoices,
+    fields: [{ kind: 'password', selector: '#password', label: 'Password' }],
+  };
+  const result = await fixture(
+    async (tools) => {
+      const input = { origin: passwordStep.origin, label: 'Example', kind: 'password' };
+      const choice = await call(tools, 'request_credentials', input);
+      assert.match(JSON.stringify(choice), /choose_sign_in_method/);
+      assert.match(JSON.stringify(choice), /original task conversation needs no repeated question/);
+      await call(tools, 'select_login_method', {
+        origin: passwordStep.origin,
+        methodId: 'credentials',
+      });
+      const filled = await call(tools, 'request_credentials', input);
+      assert.match(JSON.stringify(filled), /Saved credentials were entered securely/);
+      assert.match(JSON.stringify(filled), /not proof of authentication/);
+    },
+    {
+      prompt:
+        'Secure login details were submitted. Inspect the current page and continue the original task.',
+      history: [
+        {
+          role: 'assistant',
+          text: 'Which sign-in method would you like to use: email, Google or Apple?',
+        },
+        { role: 'user', text: 'Use email' },
+      ],
+      requestCredential: async () => {
+        requests++;
+        return { filled: true };
+      },
+    },
+    {
+      computer: fakeComputer({
+        inspectLogin: async () => passwordStep,
+        selectLoginMethod: async () => {
+          selections++;
+        },
+      }),
+    },
+  );
+  assert.equal(requests, 1);
+  assert.equal(selections, 0);
+  assert.equal(result.result.status, 'succeeded');
+  assert.deepEqual(result.replies, []);
+  assert.match(result.userPrompt, /Use email/);
+});
+
+test('unsupported-only sign-in choices do not create an empty Vault form', async () => {
+  let requests = 0;
+  await fixture(
+    async (tools) => {
+      const output = await call(tools, 'request_credentials', {
+        origin: loginChoices.origin,
+        label: 'Example',
+        kind: 'identifier',
+      });
+      assert.match(JSON.stringify(output), /no_supported_sign_in_method/);
+    },
+    {
+      requestCredential: async () => {
+        requests++;
+        return { url: '/vault/unnecessary' };
+      },
+    },
+    {
+      computer: fakeComputer({
+        inspectLogin: async () => ({
+          ...loginChoices,
+          fields: [],
+          methods: [{ id: 'passkey', kind: 'passkey', label: 'Passkey', supported: false }],
+        }),
+      }),
+    },
+  );
+  assert.equal(requests, 0);
+});
+
+test('method selection rejects changed origins, unavailable options and blocked pages before clicking', async () => {
+  let selections = 0;
+  let login = loginChoices;
+  await fixture(
+    async (tools) => {
+      for (const args of [
+        { origin: 'https://wrong.example.test', methodId: 'oauth-google' },
+        { origin: loginChoices.origin + '/login', methodId: 'oauth-google' },
+        { origin: loginChoices.origin, methodId: 'unknown' },
+        { origin: loginChoices.origin, methodId: 'passkey' },
+      ]) {
+        await assert.rejects(
+          call(tools, 'select_login_method', args),
+          /sign-in step could not be prepared/,
+        );
+      }
+      login = { ...loginChoices, issue: 'browser_not_supported' };
+      await assert.rejects(
+        call(tools, 'select_login_method', {
+          origin: loginChoices.origin,
+          methodId: 'oauth-google',
+        }),
+        /sign-in step could not be prepared/,
+      );
+    },
+    {},
+    {
+      computer: fakeComputer({
+        inspectLogin: async () => login,
+        selectLoginMethod: async () => {
+          selections++;
+        },
+      }),
+    },
+  );
+  assert.equal(selections, 0);
+});
+
+test('cancellation during method inspection prevents provider selection', async () => {
+  const controller = new AbortController();
+  let selections = 0;
+  await assert.rejects(
+    fixture(
+      async (tools) => {
+        await call(tools, 'select_login_method', {
+          origin: loginChoices.origin,
+          methodId: 'oauth-google',
+        });
+      },
+      { signal: controller.signal },
+      {
+        computer: fakeComputer({
+          inspectLogin: async () => {
+            controller.abort();
+            return loginChoices;
+          },
+          selectLoginMethod: async () => {
+            selections++;
+          },
+        }),
+      },
+    ),
+    /cancelled/,
+  );
+  assert.equal(selections, 0);
 });
 
 test('cancellation after fresh login inspection cannot request a form or take a page snapshot', async () => {

@@ -370,6 +370,21 @@ function isShortAnswer(text: string, attachments: Artifact[]) {
     value,
   );
 }
+function isLoginMethodAnswer(text: string, attachments: Artifact[], question?: string) {
+  if (attachments.length || text.length > 80) return false;
+  const method = text
+    .trim()
+    .replace(/(?:,?\s+please)?[.!]?$/i, '')
+    .match(
+      /^(?:use|choose|select|go with|continue with|i(?:'d| would) like|i prefer)\s+([\p{L}\p{N}]+(?:[ -][\p{L}\p{N}]+){0,3})$/iu,
+    )?.[1];
+  if (!method) return false;
+  if (question === undefined) return true;
+  return (
+    /\b(?:sign[ -]?in|log[ -]?in|login)\b/i.test(question) &&
+    new RegExp(`(?:^|[^\\p{L}\\p{N}])${method}(?:$|[^\\p{L}\\p{N}])`, 'iu').test(question)
+  );
+}
 export function createUserMessageService(
   options: {
     routeConversation?: ConversationRouter;
@@ -403,15 +418,18 @@ export function createUserMessageService(
           ])
         ).rowCount,
       );
-    if (!skip && isShortAnswer(text, attachments)) {
+    if (!skip && (isShortAnswer(text, attachments) || isLoginMethodAnswer(text, attachments))) {
       const latest = await pool.query(
-        `SELECT t.status,t.waiting_reason FROM messages m JOIN tasks t ON t.id=m.task_id
+        `SELECT t.status,t.waiting_reason,t.waiting_question FROM messages m JOIN tasks t ON t.id=m.task_id
          WHERE m.owner_id=$1 AND t.owner_id=$1 AND t.channel=$2 AND m.role='assistant' AND ${currentConversationSql()}
          ORDER BY m.created_at DESC,m.id DESC LIMIT 1`,
         [ownerId, input.channel ?? 'web'],
       );
       skip =
-        latest.rows[0]?.status === 'waiting_user' && latest.rows[0].waiting_reason === 'question';
+        latest.rows[0]?.status === 'waiting_user' &&
+        latest.rows[0].waiting_reason === 'question' &&
+        (isShortAnswer(text, attachments) ||
+          isLoginMethodAnswer(text, attachments, latest.rows[0].waiting_question ?? ''));
     }
     return router.prepare(text, attachments, { ...input, skip });
   }
@@ -618,15 +636,20 @@ export async function submitUserMessage(
       !existingId &&
       !options.replyToMessageId &&
       !options.forceNew &&
-      isShortAnswer(text, attachments)
+      (isShortAnswer(text, attachments) || isLoginMethodAnswer(text, attachments))
     ) {
       const latest = await client.query(
-        `SELECT t.id,t.status,t.waiting_reason FROM messages m JOIN tasks t ON t.id=m.task_id
+        `SELECT t.id,t.status,t.waiting_reason,t.waiting_question FROM messages m JOIN tasks t ON t.id=m.task_id
          WHERE m.owner_id=$1 AND t.owner_id=$1 AND t.channel=$2 AND m.role='assistant' AND ${currentConversationSql()}
          ORDER BY m.created_at DESC,m.id DESC LIMIT 1 FOR UPDATE OF t`,
         [ownerId, channel],
       );
-      if (latest.rows[0]?.status === 'waiting_user' && latest.rows[0].waiting_reason === 'question')
+      if (
+        latest.rows[0]?.status === 'waiting_user' &&
+        latest.rows[0].waiting_reason === 'question' &&
+        (isShortAnswer(text, attachments) ||
+          isLoginMethodAnswer(text, attachments, latest.rows[0].waiting_question ?? ''))
+      )
         existingId = latest.rows[0].id;
     }
     if (!existingId && !options.replyToMessageId && !options.forceNew && prepared) {

@@ -25,6 +25,7 @@ import { credentialSubmitScript, loginInspectionSchema, loginInspectionScript } 
 import { manualInputSchema, protectFocusedField } from './manual.ts';
 import { createScreenStore, existingDaemonCommand, type StoredScreen } from './screens.ts';
 import { createBrowserSignIn, resolveSignInBrowser, type BrowserSignInHandle } from './sign-in.ts';
+import { createSignInDesktop, type SignInDesktop } from './desktop.ts';
 
 interface BrowserState {
   id: string;
@@ -45,6 +46,7 @@ interface BrowserState {
   saved: StoredScreen;
   signInWindow?: BrowserSignInHandle;
   browserExecutable?: string;
+  desktop?: SignInDesktop;
 }
 export class BrowserLockedError extends Error {
   statusCode = 423;
@@ -79,9 +81,9 @@ export function redactBrowserText(text: string, secrets: Iterable<string>): stri
 export function redactBrowserUrl(value: string, secrets: Iterable<string>): string {
   const url = new URL(value);
   const sensitive =
-    /^(?:code|state|token|access_token|id_token|refresh_token|password|otp|session|session_id|ticket|assertion|authorization|email|username|identifier|phone)$/i;
+    /^(?:code|state|token|accesstoken|idtoken|refreshtoken|password|otp|session|sessionid|ticket|assertion|authorization|email|username|identifier|phone|apikey|xapikey|clientsecret|signature|sig|xamzsignature|xamzcredential|xgoogsignature|xgoogcredential)$/i;
   for (const name of url.searchParams.keys())
-    if (sensitive.test(name)) url.searchParams.set(name, '[redacted]');
+    if (sensitive.test(name.replace(/[-_]/g, ''))) url.searchParams.set(name, '[redacted]');
   if (url.hash.includes('=')) url.hash = '[redacted]';
   return redactBrowserText(url.href, secrets);
 }
@@ -106,6 +108,8 @@ export function createAgentBrowserComputer(options: {
   browserExecutable?: string;
   sandbox?: boolean;
   platform?: NodeJS.Platform;
+  headless?: boolean;
+  desktop?: (directory: string) => Promise<SignInDesktop>;
   idleTimeoutMs?: number;
   manualTimeoutMs?: number;
   run?: typeof runProcess;
@@ -125,7 +129,10 @@ export function createAgentBrowserComputer(options: {
     options.executable ?? resolve(process.cwd(), 'node_modules/.bin/agent-browser');
   const run = options.run ?? runProcess;
   const sandbox = options.sandbox !== false;
-  const headed = (options.platform ?? process.platform) === 'darwin';
+  const platform = options.platform ?? process.platform;
+  const headed = options.headless === undefined ? platform === 'darwin' : !options.headless;
+  const privateDisplay = headed && platform === 'linux';
+  const createDesktop = options.desktop ?? createSignInDesktop();
   const idleTimeoutMs = options.idleTimeoutMs ?? 30 * 60_000;
   const manualTimeoutMs = Math.min(options.manualTimeoutMs ?? 30 * 60_000, 30 * 60_000);
   const proxy = createBrowserProxy();
@@ -279,15 +286,27 @@ export function createAgentBrowserComputer(options: {
                           ? { action: 'close' }
                           : null;
       if (!request) throw new Error('Reopen this page before continuing browser actions.');
-      return drainInterruptedCommand(state, args[0], () =>
+      const result = await drainInterruptedCommand(state, args[0], () =>
         existingDaemonCommand(state.socket!, request, options.signal),
       );
+      if (args[0] === 'close') await closeDisplay(state);
+      return result;
     }
     await mkdir(runtimeRoot, { recursive: true, mode: 0o700 });
     const config = resolve(runtimeRoot, 'browser-config.json');
     await writeFile(config, '{}', { mode: 0o600 });
     const proxyUrl = await proxy.url();
     const profile = resolve(runtimeRoot, 'profiles', state.id);
+    if (args[0] === 'open' && privateDisplay && !state.desktop) {
+      try {
+        state.desktop = await createDesktop(runtimeRoot);
+      } catch {
+        state.started = false;
+        state.closed = !state.saved.signInPending;
+        await saveState(state);
+        throw new Error('The workspace browser display could not start. Try again.');
+      }
+    }
     const result = await drainInterruptedCommand(state, args[0], () =>
       run(
         executable,
@@ -310,7 +329,7 @@ export function createAgentBrowserComputer(options: {
           '--args',
           '--disable-quic,--force-webrtc-ip-handling-policy=disable_non_proxied_udp,--disable-background-networking' +
             (sandbox ? '' : ',--no-sandbox') +
-            (headed ? ',--start-minimized' : '') +
+            (headed && platform === 'darwin' ? ',--start-minimized' : '') +
             (state.saved.restoreSession ? ',--restore-last-session' : ''),
           '--download-path',
           resolve(runtimeRoot, 'downloads', state.id),
@@ -320,7 +339,7 @@ export function createAgentBrowserComputer(options: {
         ],
         {
           cwd: runtimeRoot,
-          env: serviceEnvironment(),
+          env: { ...serviceEnvironment(), ...state.desktop?.environment },
           input: options.input,
           signal: options.signal,
           timeoutMs: 45_000,
@@ -345,7 +364,13 @@ export function createAgentBrowserComputer(options: {
       throw new BrowserActionError('browser_navigation_failed');
     if (result.exitCode || response.success === false)
       throw new Error('Browser action could not complete. Observe the page again before retrying.');
+    if (args[0] === 'close') await closeDisplay(state);
     return response.data ?? {};
+  }
+
+  async function closeDisplay(state: BrowserState): Promise<void> {
+    await state.desktop?.close();
+    state.desktop = undefined;
   }
 
   async function evaluate(
@@ -1100,6 +1125,7 @@ export function createAgentBrowserComputer(options: {
         await captureScreen(state).catch(() => {});
       state.closed = true;
       if (state.started || state.saved.navigationFailed) await command(state, ['close']);
+      await closeDisplay(state);
       state.started = false;
       await saveState(state);
       state.secrets.clear();

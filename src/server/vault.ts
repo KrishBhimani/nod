@@ -145,6 +145,7 @@ type SelectionRow = {
   origin: string;
   entry_id: string | null;
   identifier_label: string;
+  login_label: string;
   ciphertext: string;
   blocked: boolean;
   task_revision: number;
@@ -371,6 +372,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       PRIMARY KEY(task_id,owner_id,origin)
     );
     ALTER TABLE credential_account_selections ADD COLUMN IF NOT EXISTS identifier_label text NOT NULL DEFAULT '';
+    ALTER TABLE credential_account_selections ADD COLUMN IF NOT EXISTS login_label text NOT NULL DEFAULT '';
     DO $$ BEGIN
       IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='credential_requests' AND column_name='task_revision') THEN
         ALTER TABLE credential_requests ADD COLUMN task_revision integer NOT NULL DEFAULT 0;
@@ -416,6 +418,8 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     if (resuming) return;
     resuming = true;
     try {
+      await pool.query(`UPDATE credential_account_selections SET ciphertext='',blocked=true,login_label=''
+        WHERE login_label<>'' AND expires_at<=now()`);
       await pool.query(`UPDATE credential_requests r SET resume_pending=false FROM tasks t WHERE r.resume_pending=true
         AND t.id::text=r.task_id AND t.owner_id=r.owner_id AND (t.revision<>r.task_revision OR t.status<>'waiting_credentials')`);
       const { rows } =
@@ -689,6 +693,8 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       origin: string;
       entryId: string | null;
       username: string;
+      password?: string;
+      loginLabel?: string;
       identifierLabel?: string;
       revision: number;
       expiresAt: Date;
@@ -698,12 +704,12 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     const entry = { id: randomUUID(), owner_id: value.ownerId, origin: value.origin };
     const ciphertext = sealCredential(await key(), entry, {
       username: value.username,
-      password: '',
+      password: value.password ?? '',
     });
     await database.query(
-      `INSERT INTO credential_account_selections(id,task_id,owner_id,origin,entry_id,ciphertext,blocked,task_revision,expires_at,identifier_label)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(task_id,owner_id,origin) DO UPDATE
-       SET id=excluded.id,entry_id=excluded.entry_id,ciphertext=excluded.ciphertext,blocked=excluded.blocked,task_revision=excluded.task_revision,expires_at=excluded.expires_at,identifier_label=excluded.identifier_label`,
+      `INSERT INTO credential_account_selections(id,task_id,owner_id,origin,entry_id,ciphertext,blocked,task_revision,expires_at,identifier_label,login_label)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(task_id,owner_id,origin) DO UPDATE
+       SET id=excluded.id,entry_id=excluded.entry_id,ciphertext=excluded.ciphertext,blocked=excluded.blocked,task_revision=excluded.task_revision,expires_at=excluded.expires_at,identifier_label=excluded.identifier_label,login_label=excluded.login_label`,
       [
         entry.id,
         value.taskId,
@@ -715,6 +721,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
         value.revision,
         value.expiresAt,
         safeIdentifierLabel(value.identifierLabel) || inferredIdentifierLabel(value.username),
+        value.loginLabel ?? '',
       ],
     );
   }
@@ -1083,10 +1090,12 @@ export async function createVault(pool: Pool, options: VaultOptions) {
         throw new VaultError('Enter the email, phone number or username.');
       if (row.kind === 'password' && !values.password) throw new VaultError('Enter the password.');
       if (row.kind === 'password' && !values.label) throw new VaultError('Give this login a name.');
+      if (row.kind === 'identifier' && values.password && !values.label)
+        throw new VaultError('Give this login a name.');
       if (row.kind === 'password' && input.usernameSelector && !username)
         throw new VaultError('Enter the email, phone number or username.');
       if (row.kind === 'otp' && !values.code) throw new VaultError('Enter the verification code.');
-      if (row.kind === 'password') await key();
+      if (row.kind === 'password' || (row.kind === 'identifier' && values.password)) await key();
       const submission = await options.inject({
         ...input,
         taskId: row.task_id,
@@ -1106,13 +1115,22 @@ export async function createVault(pool: Pool, options: VaultOptions) {
           origin: row.origin,
           entryId: null,
           username,
+          ...(row.kind === 'identifier' && values.password && submission?.status !== 'rejected'
+            ? { password: values.password, loginLabel: values.label }
+            : {}),
           identifierLabel,
           revision: row.task_revision + (submission?.status === 'rejected' ? 0 : 1),
           expiresAt: row.expires_at,
-          blocked: true,
+          blocked:
+            row.kind !== 'identifier' || !values.password || submission?.status === 'rejected',
         });
       if (submission?.status === 'rejected')
         return { retry: await inspectRequest(row.task_id, row.selectors) };
+      if (row.kind === 'identifier' && values.password)
+        await client.query(
+          "DELETE FROM credential_autofill_attempts WHERE task_id=$1 AND owner_id=$2 AND origin=$3 AND kind='password'",
+          [row.task_id, row.owner_id, row.origin],
+        );
       if (row.kind === 'identifier')
         identifiers.set(identifierKey(row.task_id, row.owner_id, row.origin), {
           value: username,
@@ -1392,6 +1410,121 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     }
   }
 
+  async function fillStagedPassword(taskId: string, ownerId: string, raw: CredentialInput) {
+    if (!options.inspect) return false;
+    const origin = credentialOrigin(raw.origin);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const task = await client.query<{ revision: number }>(
+        "SELECT revision FROM tasks WHERE id::text=$1 AND owner_id=$2 AND status IN ('running','waiting_credentials') FOR UPDATE NOWAIT",
+        [taskId, ownerId],
+      );
+      const revision = task.rows[0]?.revision;
+      const selected = await selection(taskId, ownerId, origin, client);
+      if (
+        revision === undefined ||
+        !selected ||
+        selected.entry_id ||
+        selected.blocked ||
+        !selected.login_label ||
+        selected.task_revision !== revision ||
+        new Date(selected.expires_at).getTime() <= Date.now()
+      )
+        throw new VaultError('This saved sign-in step is no longer available.', 409);
+      const fresh = await inspectRequest(taskId, raw);
+      if (
+        fresh.input.kind !== 'password' ||
+        !fresh.inspection.fields.some((field) => field.kind === 'password') ||
+        !fresh.inspection.methods.some((method) => method.id === 'credentials' && method.supported)
+      )
+        throw new VaultError('The password step is not ready.', 409);
+      const encryptionKey = await key();
+      const secret = openCredential(encryptionKey, selected);
+      if (!secret.password) throw new VaultError('Enter the password in Vault.', 409);
+      const attempt = await client.query(
+        `INSERT INTO credential_autofill_attempts(task_id,owner_id,origin,entry_id,kind)
+         VALUES($1,$2,$3,$4,'password') ON CONFLICT DO NOTHING RETURNING task_id`,
+        [taskId, ownerId, origin, selected.id],
+      );
+      if (!attempt.rowCount) throw new VaultError('Enter fresh details in Vault.', 409);
+      await client.query(
+        "UPDATE credential_account_selections SET ciphertext=$4,blocked=true,login_label='' WHERE task_id=$1 AND owner_id=$2 AND origin=$3 AND id=$5",
+        [
+          taskId,
+          ownerId,
+          origin,
+          sealCredential(encryptionKey, selected, { username: secret.username, password: '' }),
+          selected.id,
+        ],
+      );
+      await client.query('COMMIT');
+      await client.query('BEGIN');
+      const current = await client.query(
+        "SELECT id FROM tasks WHERE id::text=$1 AND owner_id=$2 AND revision=$3 AND status IN ('running','waiting_credentials') FOR UPDATE NOWAIT",
+        [taskId, ownerId, revision],
+      );
+      const retained = await selection(taskId, ownerId, origin, client);
+      if (
+        !current.rowCount ||
+        !retained ||
+        retained.id !== selected.id ||
+        retained.task_revision !== revision ||
+        !retained.blocked ||
+        new Date(retained.expires_at).getTime() <= Date.now()
+      )
+        throw new VaultError('This task step is no longer active.', 409);
+      const verified = await inspectRequest(taskId, raw);
+      if (
+        verified.input.kind !== 'password' ||
+        !verified.inspection.fields.some((field) => field.kind === 'password') ||
+        !verified.inspection.methods.some(
+          (method) => method.id === 'credentials' && method.supported,
+        )
+      )
+        throw new VaultError('The password step changed.', 409);
+      const submission = await options.inject({
+        ...verified.input,
+        taskId,
+        username: verified.input.usernameSelector ? secret.username : undefined,
+        password: secret.password,
+      });
+      if (submission?.status === 'rejected') {
+        await client.query('COMMIT');
+        return false;
+      }
+      const entry = await save(
+        ownerId,
+        {
+          label: selected.login_label,
+          origin,
+          username: secret.username,
+          password: secret.password,
+        },
+        client,
+        selected.identifier_label,
+      );
+      await rememberSelection(client, {
+        taskId,
+        ownerId,
+        origin,
+        entryId: entry.id,
+        username: secret.username,
+        identifierLabel: selected.identifier_label,
+        revision,
+        expiresAt: selected.expires_at,
+        blocked: false,
+      });
+      await client.query('COMMIT');
+      return true;
+    } catch {
+      await client.query('ROLLBACK');
+      return false;
+    } finally {
+      client.release();
+    }
+  }
+
   async function fillSelected(taskId: string, ownerId: string, raw: CredentialInput) {
     const origin = credentialOrigin(raw.origin);
     const selected = await selection(taskId, ownerId, origin);
@@ -1403,11 +1536,11 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     if (
       !task.rowCount ||
       selected.blocked ||
-      !selected.entry_id ||
       selected.task_revision !== task.rows[0].revision ||
       new Date(selected.expires_at).getTime() <= Date.now()
     )
       return false;
+    if (!selected.entry_id) return fillStagedPassword(taskId, ownerId, raw);
     try {
       await fillSaved(taskId, ownerId, selected.entry_id, raw);
       return true;

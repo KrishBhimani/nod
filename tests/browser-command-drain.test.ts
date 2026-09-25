@@ -26,6 +26,7 @@ test('container launches the package native CLI directly for both supported imag
     assert.equal(options.platform, 'linux');
     assert.equal(options.dataRoot, '/data/synthetic-task');
     assert.equal(options.sandbox, false);
+    assert.equal(options.headless, false);
   }
   assert.throws(() => containerBrowserOptions('/data/synthetic-task', 'ia32'), /unsupported/);
 });

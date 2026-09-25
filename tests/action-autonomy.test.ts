@@ -288,6 +288,45 @@ test(
       );
 
       await t.test(
+        'send verbs qualified as drafts cannot execute or create a transmission confirmation',
+        async () => {
+          for (const [prompt, action] of [
+            ['Email this to Alex as an unsent draft', 'GMAIL_SEND_EMAIL'],
+            ['Email this to Alex as a draft.', 'GMAIL_SEND_EMAIL'],
+            ['Reply to the Gmail thread, but keep it unsent.', 'GMAIL_REPLY_TO_THREAD'],
+            ['Post this on Slack as a draft.', 'SLACK_POST_MESSAGE'],
+          ]) {
+            const id = await begin(prompt!);
+            const before = calls.length;
+            await assert.rejects(
+              approvals.request(
+                id,
+                action!,
+                {
+                  connectionId: 'owned-fixture-account',
+                  to: 'alex@example.com',
+                  body: 'Synthetic draft.',
+                },
+                { revision: 0 },
+              ),
+              /Keep it unsent/,
+            );
+            assert.equal(calls.length, before);
+            assert.equal(await proposal(id), undefined);
+            assert.equal((await row(id)).status, 'running');
+            assert.equal(
+              (
+                await db.pool.query(
+                  "SELECT id FROM messages WHERE task_id=$1 AND role='assistant'",
+                  [id],
+                )
+              ).rowCount,
+              0,
+            );
+          }
+        },
+      );
+      await t.test(
         'screenshots and local goals do not authorize unrelated external actions',
         async () => {
           for (const [prompt, action] of [
