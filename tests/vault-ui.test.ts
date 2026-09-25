@@ -1124,6 +1124,13 @@ test('Card edits preserve an omitted number and clear replacement input on cance
     assert.equal(cancelledNumber.value, '');
     assert.equal(document.activeElement, cancelledNumber);
     assert.equal(form.checkValidity(), false);
+    cancelledNumber.value = '                ';
+    await submit(form);
+    assert.equal(writes.length, 0);
+    assert.match(
+      document.querySelector('[role="alert"]')?.textContent ?? '',
+      /Enter the new card number/,
+    );
     cancelledNumber.value = syntheticCardNumber;
     await click('Cancel change', form);
     assert.equal(cancelledNumber.value, '');

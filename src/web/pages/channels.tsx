@@ -316,11 +316,17 @@ export function ChannelAccount({
             <>
               {needsDelivery && (
                 <div className="channel-delivery-issue">
-                  <p>Finish the callback in Meta and subscribe to messages.</p>
-                  {setup?.webhookUrl && <code>{setup.webhookUrl}</code>}
                   <p>
-                    Use your saved verification token, or replace the setup if you need a new one.
+                    {setup?.webhookStatus === 'registration_pending'
+                      ? 'Restart Sidekick to retry the saved setup, or replace it below.'
+                      : 'Finish the callback in Meta and subscribe to messages.'}
                   </p>
+                  {setup?.webhookUrl && <code>{setup.webhookUrl}</code>}
+                  {setup?.webhookStatus !== 'registration_pending' && (
+                    <p>
+                      Use your saved verification token, or replace the setup if you need a new one.
+                    </p>
+                  )}
                 </div>
               )}
               {configured && !setup && (
@@ -519,49 +525,60 @@ export function Channels() {
         ) : null
       ) : (
         <div className="channel-options">
-          {providers.map((provider) => {
-            const setup = settings.channels.find((item) => item.provider === provider.id);
-            const configured = data.channels.some(
-              (item) => item.provider === provider.id && item.status === 'configured',
-            );
-            const connected = Boolean(setup?.enabled || configured);
-            return (
-              <section
-                className={`channel-option${connected ? ' is-connected' : ''}`}
-                key={provider.id}
-              >
-                <div className="channel-option-heading">
-                  <img src={`/logos/${provider.id}.svg`} alt="" width={28} height={28} />
-                  <div>
-                    <h2>{provider.name}</h2>
-                    {!connected && <span>{provider.note}</span>}
+          {[...providers]
+            .sort((a, b) => {
+              const connected = (id: ChannelProvider) =>
+                Boolean(
+                  settings.channels.some((item) => item.provider === id && item.enabled) ||
+                  data.channels.some(
+                    (item) => item.provider === id && item.status === 'configured',
+                  ),
+                );
+              return Number(connected(a.id)) - Number(connected(b.id));
+            })
+            .map((provider) => {
+              const setup = settings.channels.find((item) => item.provider === provider.id);
+              const configured = data.channels.some(
+                (item) => item.provider === provider.id && item.status === 'configured',
+              );
+              const connected = Boolean(setup?.enabled || configured);
+              return (
+                <section
+                  className={`channel-option${connected ? ' is-connected' : ''}`}
+                  key={provider.id}
+                >
+                  <div className="channel-option-heading">
+                    <img src={`/logos/${provider.id}.svg`} alt="" width={28} height={28} />
+                    <div>
+                      <h2>{provider.name}</h2>
+                      {!connected && <span>{provider.note}</span>}
+                    </div>
+                    {!connected && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        aria-label={`Connect ${provider.name}`}
+                        disabled={busy || !settings.ready}
+                        onClick={() => open(provider.id)}
+                      >
+                        Connect
+                        <ArrowRight size={13} />
+                      </Button>
+                    )}
                   </div>
-                  {!connected && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      aria-label={`Connect ${provider.name}`}
-                      disabled={busy || !settings.ready}
-                      onClick={() => open(provider.id)}
-                    >
-                      Connect
-                      <ArrowRight size={13} />
-                    </Button>
+                  {!connected && <p className="channel-option-benefit">{provider.description}</p>}
+                  {connected && (
+                    <ChannelAccount
+                      setup={setup}
+                      configured={configured}
+                      onConfigure={() => open(provider.id)}
+                      onDisconnect={() => void disconnect(provider.id)}
+                      busy={busy || !settings.ready}
+                    />
                   )}
-                </div>
-                {!connected && <p className="channel-option-benefit">{provider.description}</p>}
-                {connected && (
-                  <ChannelAccount
-                    setup={setup}
-                    configured={configured}
-                    onConfigure={() => open(provider.id)}
-                    onDisconnect={() => void disconnect(provider.id)}
-                    busy={busy || !settings.ready}
-                  />
-                )}
-              </section>
-            );
-          })}
+                </section>
+              );
+            })}
         </div>
       )}
       <Dialog

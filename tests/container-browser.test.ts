@@ -92,7 +92,7 @@ function fakeComputer() {
   };
 }
 
-async function harness() {
+async function harness(control: { beforeFirstBridge?: Promise<void> } = {}) {
   const root = await mkdtemp('/tmp/sk-browser-');
   const socketPath = join(root, 'control.sock');
   const instances = new Map<string, ReturnType<typeof fakeComputer>>();
@@ -118,13 +118,13 @@ async function harness() {
         return true;
       },
     });
-    void runBrowserBridge({ input: process.stdin, output: process.stdout, socketPath }).then(
-      (code) => {
+    void Promise.resolve(launches.length === 1 ? control.beforeFirstBridge : undefined)
+      .then(() => runBrowserBridge({ input: process.stdin, output: process.stdout, socketPath }))
+      .then((code) => {
         process.stdout.end();
         process.stderr.end();
         process.emit('close', code);
-      },
-    );
+      });
     return process as unknown as ChildProcessWithoutNullStreams;
   };
   const clients: Computer[] = [];
@@ -405,13 +405,22 @@ test('an unacknowledged cancellation fences new actions until namespace cleanup 
   const fixture = await harness();
   const drain = deferred();
   try {
-    const computer = fixture.client('/synthetic/timeout', { timeoutMs: 20, drainTimeoutMs: 20 });
+    const computer = fixture.client('/synthetic/timeout', { drainTimeoutMs: 20 });
     await computer.act('task', { action: 'snapshot' });
+    const entered = deferred();
     fixture.instance('/synthetic/timeout').setAct(async () => {
+      entered.resolve();
       await drain.promise;
       return { text: 'Late', url: 'https://example.com', candidates: [] };
     });
-    await assert.rejects(computer.act('task', { action: 'snapshot' }), /did not finish safely/);
+    const controller = new AbortController();
+    const cancelled = assert.rejects(
+      computer.act('task', { action: 'snapshot' }, controller.signal),
+      /did not finish safely/,
+    );
+    await entered.promise;
+    controller.abort();
+    await cancelled;
     await assert.rejects(computer.takeControl!('task'), /unavailable/);
     assert.match(computer.status(), /needs a restart/);
     drain.resolve();
@@ -584,6 +593,52 @@ test('a restarted host cannot reuse a disconnected namespace until work and disp
   } finally {
     drain.resolve();
     cleaned.resolve();
+    await fixture.close();
+  }
+});
+
+test('a later screenshot reaching the worker first cannot erase accepted browser activity', async () => {
+  const release = deferred();
+  const fixture = await harness({ beforeFirstBridge: release.promise });
+  try {
+    const computer = fixture.client('/synthetic/reordered-activity');
+    const action = computer.act('new-task', { action: 'open', url: 'https://example.com' });
+    await computer.screenshot('old-task');
+    assert.equal(computer.currentSession?.()?.taskId, 'new-task');
+    release.resolve();
+    await action;
+    assert.equal(computer.currentSession?.()?.taskId, 'new-task');
+  } finally {
+    release.resolve();
+    await fixture.close();
+  }
+});
+
+test('dispose drains a first request that has not reached the worker before removing its namespace', async () => {
+  const release = deferred();
+  const fixture = await harness({ beforeFirstBridge: release.promise });
+  try {
+    const root = '/synthetic/delayed-first-request';
+    const computer = fixture.client(root);
+    const action = assert.rejects(
+      computer.act('task', { action: 'open', url: 'https://example.com' }),
+      /cancelled/,
+    );
+    let finished = false;
+    const disposing = computer.dispose().then(() => {
+      finished = true;
+    });
+    await delay(10);
+    assert.equal(finished, false);
+    release.resolve();
+    await Promise.all([action, disposing]);
+    assert.equal(
+      fixture.instance(root).calls.filter((call) => call.method === 'dispose').length,
+      1,
+    );
+    await assert.rejects(computer.act('task', { action: 'snapshot' }), /unavailable/);
+  } finally {
+    release.resolve();
     await fixture.close();
   }
 });

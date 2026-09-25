@@ -91,20 +91,6 @@ export function createChatSdkSetupVerifier(
           if (existing.ok !== true) throw new ChannelSetupFailure('verification_failed');
           if (!endpoint && webhook.url) throw new ChannelSetupFailure('existing_webhook');
           const secret = randomBytes(32).toString('base64url');
-          if (endpoint) {
-            const registered = await json(`${base}/setWebhook`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                url: endpoint,
-                secret_token: secret,
-                allowed_updates: ['message'],
-                drop_pending_updates: false,
-              }),
-            });
-            if (registered.ok !== true || registered.result !== true)
-              throw new ChannelSetupFailure('webhook_failed');
-          }
           return {
             environment: {
               TELEGRAM_ENABLED: 'true',
@@ -119,7 +105,9 @@ export function createChatSdkSetupVerifier(
               accountName: account.first_name,
               accountHandle: `@${account.username}`,
               mode: endpoint ? 'webhook' : 'polling',
-              ...(endpoint ? { webhookUrl: endpoint, webhookStatus: 'registered' as const } : {}),
+              ...(endpoint
+                ? { webhookUrl: endpoint, webhookStatus: 'registration_pending' as const }
+                : {}),
             },
           };
         }
@@ -168,6 +156,37 @@ export function createChatSdkSetupVerifier(
       } catch (error) {
         if (error instanceof ChannelSetupFailure) throw error;
         throw new ChannelSetupFailure('verification_failed');
+      }
+    },
+    async register(provider, { environment, summary }) {
+      try {
+        if (provider !== 'telegram' || summary.mode !== 'webhook')
+          throw new ChannelSetupFailure('invalid_input');
+        const value = telegramInput.parse({
+          botToken: environment.TELEGRAM_BOT_TOKEN,
+          allowedUserId: environment.TELEGRAM_ALLOWED_USER_ID,
+          webhookUrl: summary.webhookUrl,
+        });
+        const endpoint = publicWebhook(value.webhookUrl, provider);
+        const secret = z
+          .string()
+          .regex(/^[A-Za-z0-9_-]{32,256}$/)
+          .parse(environment.TELEGRAM_WEBHOOK_SECRET_TOKEN);
+        if (!endpoint) throw new ChannelSetupFailure('invalid_input');
+        const registered = await json(`https://api.telegram.org/bot${value.botToken}/setWebhook`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: endpoint,
+            secret_token: secret,
+            allowed_updates: ['message'],
+            drop_pending_updates: false,
+          }),
+        });
+        if (registered.ok !== true || registered.result !== true)
+          throw new ChannelSetupFailure('webhook_failed');
+      } catch {
+        throw new ChannelSetupFailure('webhook_failed');
       }
     },
   };

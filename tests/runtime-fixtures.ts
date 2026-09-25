@@ -28,7 +28,6 @@ export function fakeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
       execute: async () => 'Fixture output',
       readFile: async () => 'Fixture content',
       writeFile: async () => 'File saved',
-      resolveArtifact: async (path) => path,
     }),
     status: () => 'fixture workspace',
     dispose: () => {},

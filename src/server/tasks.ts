@@ -47,6 +47,7 @@ type ConfirmAction = (
 ) => Promise<{ taskId: string; continued: boolean; messageId?: string } | undefined>;
 
 export interface TaskDependencies {
+  readArtifact?: (taskId: string, path: string, maxBytes: number) => Promise<Uint8Array>;
   executeConfirmation?: (
     taskId: string,
     revision: number,
@@ -890,7 +891,19 @@ export async function pauseOwnedTaskForControl(taskId: string): Promise<{ revisi
       [taskId, ownerId],
     );
     if (!current.rows[0]) throw Object.assign(new Error('Task not found.'), { statusCode: 404 });
-    if (current.rows[0].status === 'cancelled') throw taskStopped();
+    if (
+      !['running', 'queued'].includes(current.rows[0].status) &&
+      !(
+        current.rows[0].status === 'waiting_user' &&
+        ['manual_control', 'browser'].includes(current.rows[0].waiting_reason)
+      )
+    )
+      throw Object.assign(
+        new Error(
+          'This task is not waiting for browser control. Continue it from the conversation first.',
+        ),
+        { statusCode: 409 },
+      );
     if (current.rows[0].waiting_reason === 'manual_control')
       return { revision: current.rows[0].revision as number };
     const result = await client.query(
@@ -1165,7 +1178,10 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
         );
       },
       publish: async (path, name) => {
-        const artifact = await current(async () => publishArtifact(taskId, path, name));
+        if (!dependencies.readArtifact) throw new Error('Workspace file delivery is unavailable.');
+        const artifact = await current(async () =>
+          publishArtifact(taskId, path, name, dependencies.readArtifact!),
+        );
         await reply(taskId, `Created ${artifact.name}.`, [artifact], revision);
         return artifact;
       },

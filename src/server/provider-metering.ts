@@ -115,6 +115,20 @@ export function meterComputer(computer: Computer, usage: ProviderUsageStore): Co
 export function meterWorkspace(workspace: Workspace, usage: ProviderUsageStore): Workspace {
   return {
     ...workspace,
+    ...(workspace.readArtifact
+      ? {
+          readArtifact: (id: string, path: string, maxBytes: number) =>
+            usage.track(
+              {
+                provider: 'local-workspace',
+                category: 'workspace',
+                taskId: id,
+                operation: 'publish_file',
+              },
+              () => workspace.readArtifact!(id, path, maxBytes),
+            ),
+        }
+      : {}),
     open(input) {
       const session = workspace.open(input);
       const base = {
@@ -130,8 +144,6 @@ export function meterWorkspace(workspace: Workspace, usage: ProviderUsageStore):
           usage.track({ ...base, operation: 'read_file' }, () => session.readFile(path)),
         writeFile: (path, content) =>
           usage.track({ ...base, operation: 'write_file' }, () => session.writeFile(path, content)),
-        resolveArtifact: (path) =>
-          usage.track({ ...base, operation: 'publish_file' }, () => session.resolveArtifact(path)),
       };
     },
   };

@@ -69,6 +69,9 @@ async function fixture(options: { signIn?: boolean } = {}) {
     ownerId: 'owner',
     enabled: () => enabled,
     computer: {
+      close: async () => {
+        calls.push('close');
+      },
       ...(options.signIn
         ? {
             openSignIn: async () => {
@@ -539,6 +542,7 @@ test('cancellation during native opening or restoration cannot resume the task',
       assert.equal((await pending).statusCode, 409);
       assert.equal(f.calls.includes('release'), true);
       assert.equal(f.calls.includes('resume'), false);
+      if (operation === 'finish') assert.equal(f.calls.includes('close'), true);
       assert.equal((await f.request('')).json().active, false);
     } finally {
       await f.app.close();
@@ -677,6 +681,9 @@ test(
       },
       waitForTask: async () => {},
       computer: {
+        async close(id) {
+          if (manualBrowser === id) manualBrowser = undefined;
+        },
         async openSignIn(id) {
           manualBrowser = id;
         },

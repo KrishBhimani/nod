@@ -31,7 +31,12 @@ function localDatabaseUrl(value: string) {
       url.port === '54329' &&
       url.username === 'sidekick' &&
       url.pathname === '/sidekick' &&
-      !url.search &&
+      (!url.searchParams.has('host') ||
+        ['127.0.0.1', 'localhost', '::1'].includes(url.searchParams.get('host')!)) &&
+      (!url.searchParams.has('port') || url.searchParams.get('port') === '54329') &&
+      (!url.searchParams.has('user') || url.searchParams.get('user') === 'sidekick') &&
+      (!url.searchParams.has('dbname') || url.searchParams.get('dbname') === 'sidekick') &&
+      (!url.searchParams.has('database') || url.searchParams.get('database') === 'sidekick') &&
       !url.hash
     );
   } catch {
@@ -83,10 +88,15 @@ async function prepareDatabase(
   const password = configured || randomBytes(32).toString('base64url');
   const databaseUrl = `postgresql://sidekick:${password}@127.0.0.1:54329/sidekick`;
   const currentUrl = environment.DATABASE_URL || saved.DATABASE_URL;
-  const serverDatabaseUrl = !currentUrl || localDatabaseUrl(currentUrl) ? databaseUrl : currentUrl;
+  const local = !currentUrl || localDatabaseUrl(currentUrl);
+  const serverUrl = new URL(databaseUrl);
+  if (currentUrl && local) {
+    serverUrl.search = new URL(currentUrl).search;
+    if (serverUrl.searchParams.has('password')) serverUrl.searchParams.set('password', password);
+  }
+  const serverDatabaseUrl = local ? serverUrl.href : currentUrl!;
   let next = replaceSetting(source, 'SIDEKICK_POSTGRES_PASSWORD', password);
-  if (!currentUrl || localDatabaseUrl(currentUrl))
-    next = replaceSetting(next, 'DATABASE_URL', databaseUrl);
+  if (local) next = replaceSetting(next, 'DATABASE_URL', serverDatabaseUrl);
   if (next !== source) {
     const temporary = join(directory, `.env.${randomUUID()}.tmp`);
     try {

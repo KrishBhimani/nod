@@ -180,9 +180,14 @@ export function createChatSdkTransport(
       if (closed || polling || !telegram || env.TELEGRAM_MODE !== 'polling') return;
       polling = true;
       try {
-        offsetsReady ??= pool.query(
-          'CREATE TABLE IF NOT EXISTS channel_poll_offsets(provider text NOT NULL,account_id text NOT NULL,next_offset bigint NOT NULL,PRIMARY KEY(provider,account_id))',
-        );
+        offsetsReady ??= pool
+          .query(
+            'CREATE TABLE IF NOT EXISTS channel_poll_offsets(provider text NOT NULL,account_id text NOT NULL,next_offset bigint NOT NULL,PRIMARY KEY(provider,account_id))',
+          )
+          .catch((error) => {
+            offsetsReady = undefined;
+            throw error;
+          });
         await offsetsReady;
         const accountId = env.TELEGRAM_BOT_TOKEN!.split(':')[0];
         const saved = await pool.query<{ next_offset: string }>(

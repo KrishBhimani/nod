@@ -7,7 +7,7 @@ const secretAssignment = new RegExp(
   String.raw`((["']?)\b(?:${secretNames
     .split('|')
     .map((name) => name.split('').join('[-_]?'))
-    .join('|')})\2\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^\s,;}&]+)`,
+    .join('|')})\2\s*[:=]\s*)(?:"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|[^\s,;}&]+)`,
   'gi',
 );
 

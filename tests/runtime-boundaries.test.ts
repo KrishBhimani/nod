@@ -70,7 +70,7 @@ test('workspace paths cannot address host files or other task directories', () =
   assert.throws(() => taskId('../escape'));
 });
 
-test('artifact publication rejects a symlink leaving the verified workspace', async () => {
+test('workspace artifact reads reject paths outside the container task', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'sidekick-runtime-'));
   try {
     const workspace = join(directory, 'task-a');
@@ -81,12 +81,12 @@ test('artifact publication rejects a symlink leaving the verified workspace', as
       container: 'sidekick-workspace',
       workspaceRoot: directory,
     });
-    const session = runner.open({
+    runner.open({
       taskId: 'task-a',
       workspacePath: workspace,
       signal: new AbortController().signal,
     });
-    await assert.rejects(session.resolveArtifact('escape.txt'));
+    await assert.rejects(runner.readArtifact!('task-a', '../private.txt', 1024));
     assert.throws(() =>
       runner.open({
         taskId: 'task-b',

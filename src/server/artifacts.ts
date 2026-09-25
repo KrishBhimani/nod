@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { mkdir, open, readFile, realpath, stat, writeFile } from 'node:fs/promises';
-import { basename, extname, join, relative, sep } from 'node:path';
+import { mkdir, open, rm, writeFile } from 'node:fs/promises';
+import { basename, extname, join, posix } from 'node:path';
 import { pool } from './db.ts';
 import { dataRoot, ownerId } from './config.ts';
 import type { Artifact } from '../shared/contracts.ts';
@@ -59,24 +59,34 @@ export async function storeArtifact(
     basename(name)
       .replace(/[\r\n\x00-\x1f]/g, '')
       .slice(0, 160) || 'file';
-  const result = await pool.query(
-    'INSERT INTO artifacts(id,owner_id,task_id,name,mime_type,size,storage_path) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',
-    [id, ownerId, taskId || null, safeName, mimeType, bytes.length, path],
-  );
-  return artifactView(result.rows[0]);
+  try {
+    const result = await pool.query(
+      'INSERT INTO artifacts(id,owner_id,task_id,name,mime_type,size,storage_path) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',
+      [id, ownerId, taskId || null, safeName, mimeType, bytes.length, path],
+    );
+    return artifactView(result.rows[0]);
+  } catch (error) {
+    await rm(path, { force: true }).catch(() => {});
+    throw error;
+  }
 }
-export async function publishArtifact(taskId: string, path: string, name?: string) {
-  const root = await realpath(join(dataRoot, 'workspaces', taskId));
-  const actual = await realpath(path.startsWith('/') ? path : join(root, path));
-  const rel = relative(root, actual);
-  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || rel.startsWith('/'))
+
+export async function publishArtifact(
+  taskId: string,
+  path: string,
+  name: string | undefined,
+  read: (taskId: string, path: string, maxBytes: number) => Promise<Uint8Array>,
+) {
+  z.uuid().parse(taskId);
+  if (!path || path.length > 4096 || path.includes('\0') || path.includes('\\'))
+    throw new Error('A workspace file path is required.');
+  const base = `/workspace/${taskId}`;
+  const actual = posix.resolve(base, path);
+  if (!actual.startsWith(base + '/'))
     throw new Error('Only files inside this task workspace can be published.');
-  const info = await stat(actual);
-  if (!info.isFile() || info.size > maxFileSize)
-    throw new Error('The artifact is not a regular file under 15 MB.');
   return storeArtifact(
-    await readFile(actual),
-    name || basename(actual),
+    Buffer.from(await read(taskId, posix.relative(base, actual), maxFileSize)),
+    name || posix.basename(actual),
     mimeTypes[extname(actual).toLowerCase()] || 'application/octet-stream',
     taskId,
   );

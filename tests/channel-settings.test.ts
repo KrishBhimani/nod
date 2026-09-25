@@ -62,7 +62,13 @@ test('channel verifier checks the selected accounts and requires an explicit cha
     allowedUserId: '123',
     webhookUrl: 'https://webhook.example.com/api/webhooks/telegram',
   });
-  assert.equal(webhook.summary.webhookStatus, 'registered');
+  assert.equal(webhook.summary.webhookStatus, 'registration_pending');
+  assert.equal(
+    calls.some((url) => url.endsWith('/setWebhook')),
+    false,
+  );
+  await verifier.register!('telegram', webhook);
+  assert.equal(calls.filter((url) => url.endsWith('/setWebhook')).length, 1);
   await assert.rejects(
     verifier.verify('telegram', {
       botToken: token,
@@ -88,6 +94,153 @@ test('channel verifier checks the selected accounts and requires an explicit cha
     false,
   );
 });
+
+test(
+  'webhook activation persists its secret before remote changes and recovers the same configuration after local or uncertain failures',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async () => {
+    const schema = `test_channel_recovery_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+    });
+    const app = Fastify();
+    const key = randomBytes(32);
+    const registrations: string[] = [];
+    let applied: Record<string, string> = {};
+    let failApply = false;
+    let loseRegistrationResponse = false;
+    let settings: Awaited<ReturnType<typeof createChannelSettings>>;
+    const options = {
+      keyStore: { id: 'fixture', configured: true, getKey: async () => key },
+      verifier: createChatSdkSetupVerifier({
+        fetch: async (url, init) => {
+          const path = String(url);
+          if (path.endsWith('/getMe'))
+            return Response.json({
+              ok: true,
+              result: { id: 987, is_bot: true, first_name: 'Fixture bot', username: 'fixture_bot' },
+            });
+          if (path.endsWith('/getWebhookInfo'))
+            return Response.json({ ok: true, result: { url: '' } });
+          assert.equal(path, `https://api.telegram.org/bot${token}/setWebhook`);
+          const body = JSON.parse(String(init?.body));
+          const persisted = await settings.environment();
+          assert.equal(persisted.TELEGRAM_WEBHOOK_SECRET_TOKEN, body.secret_token);
+          assert.equal(applied.TELEGRAM_WEBHOOK_SECRET_TOKEN, body.secret_token);
+          assert.equal(
+            (await settings.status()).channels[0]?.webhookStatus,
+            'registration_pending',
+          );
+          registrations.push(body.secret_token);
+          if (loseRegistrationResponse) throw new Error('fixture response lost after registration');
+          return Response.json({ ok: true, result: true });
+        },
+      }),
+      apply: async (environment: Record<string, string>) => {
+        if (failApply) throw new Error('fixture local replacement failed');
+        applied = environment;
+      },
+    };
+    const save = (webhook = true) =>
+      app.inject({
+        method: 'PUT',
+        url: '/api/channel-settings/telegram',
+        payload: {
+          botToken: token,
+          allowedUserId: '123',
+          ...(webhook ? { webhookUrl: 'https://webhook.example.com/api/webhooks/telegram' } : {}),
+        },
+      });
+    try {
+      settings = await createChannelSettings(pool, options);
+      settings.registerRoutes(app);
+      assert.equal((await save(false)).statusCode, 200);
+      const original = await settings.environment();
+      await pool.query(
+        `CREATE FUNCTION reject_channel_write() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'fixture persistence failure'; END$$`,
+      );
+      await pool.query(
+        'CREATE TRIGGER reject_channel_write BEFORE INSERT OR UPDATE ON channel_settings FOR EACH ROW EXECUTE FUNCTION reject_channel_write()',
+      );
+      assert.equal((await save()).statusCode, 503);
+      assert.equal(registrations.length, 0);
+      assert.deepEqual(await settings.environment(), original);
+      await pool.query('DROP TRIGGER reject_channel_write ON channel_settings');
+
+      failApply = true;
+      const applyFailure = await save();
+      assert.equal(applyFailure.statusCode, 503);
+      assert.match(applyFailure.json().error, /setup was saved/);
+      assert.equal(registrations.length, 0);
+      assert.deepEqual(applied, original);
+      const pending = await settings.environment();
+      assert.notEqual(
+        pending.TELEGRAM_WEBHOOK_SECRET_TOKEN,
+        original.TELEGRAM_WEBHOOK_SECRET_TOKEN,
+      );
+      failApply = false;
+      settings = await createChannelSettings(pool, options);
+      assert.equal(await settings.recover(), true);
+      assert.deepEqual(registrations, [pending.TELEGRAM_WEBHOOK_SECRET_TOKEN]);
+      assert.equal((await settings.status()).channels[0]?.webhookStatus, 'registered');
+
+      await pool.query(
+        `CREATE TRIGGER reject_channel_write BEFORE UPDATE ON channel_settings FOR EACH ROW WHEN (NEW.summary->>'webhookStatus'='registered') EXECUTE FUNCTION reject_channel_write()`,
+      );
+      assert.equal((await save()).statusCode, 503);
+      assert.equal(registrations.length, 2);
+      assert.equal((await settings.status()).channels[0]?.webhookStatus, 'registration_pending');
+      assert.equal((await settings.environment()).TELEGRAM_WEBHOOK_SECRET_TOKEN, registrations[1]);
+      await pool.query('DROP TRIGGER reject_channel_write ON channel_settings');
+      settings = await createChannelSettings(pool, options);
+      assert.equal(await settings.recover(), true);
+      assert.equal(registrations.length, 3);
+      assert.equal(registrations[2], registrations[1]);
+
+      loseRegistrationResponse = true;
+      const uncertain = await save();
+      assert.equal(uncertain.statusCode, 503);
+      assert.equal(uncertain.body.includes('fixture response lost'), false);
+      settings = await createChannelSettings(pool, options);
+      assert.equal(await settings.recover(), false);
+      assert.equal(registrations[4], registrations[3]);
+      assert.equal((await settings.status()).channels[0]?.webhookStatus, 'registration_pending');
+      loseRegistrationResponse = false;
+      assert.equal(await settings.recover(), true);
+      assert.equal(registrations[5], registrations[3]);
+      const metadata = JSON.stringify(await settings.status());
+      const raw = JSON.stringify((await pool.query('SELECT * FROM channel_settings')).rows);
+      for (const secret of [token, ...registrations]) {
+        assert.equal(metadata.includes(secret), false);
+        assert.equal(raw.includes(secret), false);
+      }
+
+      loseRegistrationResponse = true;
+      assert.equal((await save()).statusCode, 503);
+      assert.equal(
+        (await app.inject({ method: 'DELETE', url: '/api/channel-settings/telegram' })).statusCode,
+        200,
+      );
+      assert.deepEqual(await settings.environment(), { TELEGRAM_ENABLED: 'false' });
+      const attempts = registrations.length;
+      settings = await createChannelSettings(pool, options);
+      assert.equal(await settings.recover(), true);
+      assert.equal(registrations.length, attempts);
+      assert.equal(
+        (await pool.query('SELECT ciphertext FROM channel_settings')).rows[0].ciphertext,
+        null,
+      );
+    } finally {
+      await app.close();
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);
 
 test(
   'channel setup encrypts secrets, returns only metadata, preserves previous configuration on verification failure and disables without retaining ciphertext',

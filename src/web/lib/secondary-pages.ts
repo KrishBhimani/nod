@@ -76,7 +76,7 @@ export type ChannelSetup = {
   accountName?: string;
   accountHandle?: string;
   mode?: 'polling' | 'webhook';
-  webhookStatus?: 'registered' | 'manual_setup';
+  webhookStatus?: 'registered' | 'manual_setup' | 'registration_pending';
   webhookUrl?: string;
 };
 export type ChannelSettings = { ready: boolean; channels: ChannelSetup[] };
@@ -84,6 +84,7 @@ export type ChannelSettings = { ready: boolean; channels: ChannelSetup[] };
 export function channelLabel(setup: ChannelSetup | undefined, configured: boolean) {
   if (!setup?.enabled) return configured ? 'Configuration present' : 'Not connected';
   if (setup.mode === 'polling') return null;
+  if (setup.webhookStatus === 'registration_pending') return 'Setup needs a retry';
   return setup.webhookStatus === 'registered' ? 'Webhook registered' : 'Finish delivery setup';
 }
 

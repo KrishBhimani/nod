@@ -1,7 +1,9 @@
 import { Component, StrictMode, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './app';
+import { initializeTheme } from './lib/theme';
 import './styles.css';
+import './theme.css';
 import './pages/secondary-pages.css';
 import './pages/apps.css';
 import './pages/channels.css';
@@ -33,6 +35,8 @@ class AppBoundary extends Component<{ children: ReactNode }, { failed: boolean }
     return this.props.children;
   }
 }
+
+initializeTheme();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

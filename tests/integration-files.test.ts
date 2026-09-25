@@ -169,7 +169,7 @@ test('the real binary transfer negotiates file responses without changing previe
     assert.equal(Buffer.from(result.body).toString(), 'synthetic-pdf');
     assert.deepEqual(requests, [
       {
-        accept: 'text/html,application/xhtml+xml,image/png,image/jpeg,image/webp,image/gif',
+        accept: 'text/html,application/xhtml+xml,image/png,image/jpeg,image/webp',
         agent: 'Sidekick-LinkPreview/1.0',
       },
       { accept: '*/*', agent: 'Sidekick-FileDownload/1.0' },

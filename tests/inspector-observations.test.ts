@@ -439,8 +439,13 @@ test('activity prefers exact tool records even when same-name calls overlap', ()
     }),
   );
   const exact = [
-    call('a', { status: 'failed', durationMs: 3200 }),
-    call('b', { status: 'succeeded', durationMs: 80 }),
+    call('a', { status: 'failed', durationMs: 3200, finishedAt: '2026-09-24T12:00:03.200Z' }),
+    call('b', {
+      status: 'succeeded',
+      durationMs: 80,
+      startedAt: '2026-09-24T12:00:00.990Z',
+      finishedAt: '2026-09-24T12:00:02.080Z',
+    }),
   ];
   const result = groupTaskActivity(events, exact);
   assert.equal(result.length, 2);
@@ -516,4 +521,36 @@ test('legacy activity does not invent durations for overlapping same-name calls 
   assert.equal(result.find((item) => item.id === 'event-0')!.durationMs, null);
   assert.equal(result.find((item) => item.id === 'event-1')!.status, 'interrupted');
   assert.ok(result.every((item) => item.status !== 'running'));
+});
+
+test('recorded tools do not hide unrecorded tools or older tasks in activity', () => {
+  const events = [
+    {
+      id: 'old',
+      taskId: 'old-task',
+      type: 'tool_complete',
+      summary: 'browser',
+      createdAt: '2026-09-23T12:00:00.000Z',
+    },
+    {
+      id: 'earlier',
+      taskId: 'fixture-task',
+      type: 'tool_complete',
+      summary: 'browser',
+      createdAt: '2026-09-24T11:00:00.000Z',
+    },
+    {
+      id: 'missing',
+      taskId: 'fixture-task',
+      type: 'tool_complete',
+      summary: 'execute code',
+      createdAt: '2026-09-24T12:00:00.000Z',
+    },
+  ];
+  const result = groupTaskActivity(events, [call('recorded')]);
+  assert.deepEqual(
+    new Set(result.map((item) => item.id)),
+    new Set(['old', 'earlier', 'missing', 'recorded']),
+  );
+  assert.equal(groupTaskActivity(events, []).length, 3);
 });

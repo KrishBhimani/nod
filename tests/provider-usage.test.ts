@@ -305,3 +305,28 @@ test('slow recording is bounded and never holds a provider operation', async () 
   release();
   await usage.close();
 });
+
+test('usage retention prunes idle disabled capture on startup and hourly, then stops on close', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: Date.parse('2026-09-25T10:00:00Z') });
+  let deletes = 0;
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.startsWith('DELETE')) deletes++;
+      return { rows: [] };
+    },
+  } as unknown as pg.Pool;
+  const store = createProviderUsageStore(pool, {
+    ownerId: 'owner',
+    enabled: () => false,
+    coverage: [],
+  });
+  await store.initialize();
+  assert.equal(deletes, 1);
+  t.mock.timers.tick(3_600_000);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(deletes, 2);
+  await store.close();
+  t.mock.timers.tick(3_600_000);
+  assert.equal(deletes, 2);
+});

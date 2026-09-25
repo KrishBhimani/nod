@@ -83,7 +83,7 @@ test('sidebar exposes navigation shortcuts, keyboard focus and modifier hints wi
     const more = element.querySelector<HTMLButtonElement>('[aria-label="More navigation"]')!;
     await act(async () => more.click());
     const menu = element.querySelector('[role="menu"]')!;
-    assert.equal(menu.querySelectorAll('[role="menuitem"]').length, 2);
+    assert.equal(menu.querySelectorAll('[role="menuitem"]').length, 3);
     await act(async () => menu.querySelector<HTMLButtonElement>('[role="menuitem"]')!.click());
     assert.equal(inspections, 1);
     assert.equal(element.querySelector('[role="menu"]'), null);
@@ -93,6 +93,24 @@ test('sidebar exposes navigation shortcuts, keyboard focus and modifier hints wi
       element.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')[1]!.click(),
     );
     assert.equal(restarts, 1);
+    const darkTheme = element.querySelector<HTMLButtonElement>(
+      '.sidebar-bottom [aria-label="Switch to dark theme"]',
+    )!;
+    assert.ok(darkTheme);
+    await act(async () => darkTheme.click());
+    assert.equal(document.documentElement.dataset.theme, 'dark');
+    assert.equal(window.localStorage.getItem('sidekick.theme'), 'dark');
+    assert.ok(element.querySelector('.sidebar-bottom [aria-label="Switch to light theme"]'));
+    await act(async () => more.click());
+    const lightTheme = [...element.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
+      (button) => button.textContent?.includes('Switch to light theme'),
+    )!;
+    assert.ok(lightTheme);
+    await act(async () => lightTheme.click());
+    assert.equal(document.documentElement.dataset.theme, 'light');
+    assert.equal(window.localStorage.getItem('sidekick.theme'), 'light');
+    assert.equal(element.querySelector('[role="menu"]'), null);
+    assert.equal(document.activeElement, more);
     inspections = 0;
     const press = async (key: string, extra: KeyboardEventInit = {}) => {
       const event = new KeyboardEvent('keydown', {

@@ -9,6 +9,7 @@ import { currentConversationSql } from './conversations.ts';
 import {
   confirmationAnswer,
   explicitlyRequestsAction,
+  explicitlyRequestsScheduledAction,
   forbidsTransmission,
   isReversiblePlanAction,
 } from './action-policy.ts';
@@ -49,6 +50,7 @@ export async function createApprovals(
     action: string,
     args: Record<string, unknown>,
   ) => Promise<Approval['connection']>,
+  describeTarget?: (action: string, args: Record<string, unknown>) => Promise<string | undefined>,
 ) {
   await pool.query(`CREATE TABLE IF NOT EXISTS approvals (
     id uuid PRIMARY KEY, owner_id text NOT NULL, task_id uuid NOT NULL REFERENCES tasks(id),
@@ -98,6 +100,7 @@ export async function createApprovals(
     if (!encoded || encoded.length > 32768) throw new Error('The action is too large.');
     const snapshot = JSON.parse(encoded) as Record<string, unknown>;
     const connection = await describeConnection?.(action, snapshot);
+    const verifiedTarget = await describeTarget?.(action, snapshot);
     const proposal = await transaction(async (client) => {
       const task = (
         await client.query(
@@ -108,27 +111,53 @@ export async function createApprovals(
         )
       ).rows[0];
       if (!task) throw conflict('This task segment is no longer running.');
-      if (
+      let scheduled = false;
+      if (task.source === 'schedule') {
+        const exists = (await client.query("SELECT to_regclass('schedule_runs') AS table_name"))
+          .rows[0]?.table_name;
+        const grant = exists
+          ? (
+              await client.query(
+                'SELECT authority_instruction,authority_source_message_id,action_prompt FROM schedule_runs WHERE task_id=$1 AND owner_id=$2',
+                [taskId, ownerId],
+              )
+            ).rows[0]
+          : undefined;
+        if (
+          !grant?.authority_instruction ||
+          !grant.action_prompt ||
+          !explicitlyRequestsScheduledAction(
+            action,
+            grant.authority_instruction,
+            grant.action_prompt,
+          )
+        )
+          throw new Error('This scheduled action needs an explicit instruction from the user.');
+        task.author_instruction = grant.authority_instruction;
+        task.author_message_id = grant.authority_source_message_id;
+        scheduled = true;
+      } else if (
         task.source !== 'user' ||
         !task.author_message_id ||
         task.source_id?.startsWith('onboarding:')
-      )
+      ) {
         throw new Error('This action needs a direct request from the user.');
-      const explicit = explicitlyRequestsAction(action, task.author_instruction);
+      }
+      const explicit = scheduled || explicitlyRequestsAction(action, task.author_instruction);
       const currentSource = task.author_instruction === task.prompt;
       const resumedSource =
         !action.startsWith('SIDEKICK_') &&
         explicit &&
         ['credentials', 'manual_control'].includes(task.action_resume_kind) &&
         task.action_resume_revision === expected.revision;
-      if (!currentSource && !resumedSource)
+      if (!scheduled && !currentSource && !resumedSource)
         throw new Error('This action needs a direct request from the user.');
       if (forbidsTransmission(action, task.author_instruction))
         throw new Error('The user asked for a draft or prohibited sending. Keep it unsent.');
       await preflight?.(action, snapshot);
       const previous = (
         await client.query(
-          'SELECT * FROM approvals WHERE task_id=$1 AND owner_id=$2 AND source_message_id=$3 AND action=$4 AND args=$5::jsonb ORDER BY id LIMIT 1',
+          'SELECT * FROM approvals WHERE task_id=$1 AND owner_id=$2 AND source_message_id IS NOT DISTINCT FROM $3 AND action=$4 AND args=$5::jsonb ORDER BY id LIMIT 1',
           [taskId, ownerId, task.author_message_id, action, snapshot],
         )
       ).rows[0];
@@ -139,7 +168,7 @@ export async function createApprovals(
       }
       const direct = isReversiblePlanAction(action) || explicit;
       const id = randomUUID();
-      let targetTitle: string | undefined;
+      let targetTitle: string | undefined = verifiedTarget;
       if (!direct && typeof snapshot.id === 'string') {
         const table =
           action === 'SIDEKICK_goal_update'

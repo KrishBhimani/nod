@@ -21,8 +21,8 @@ test(
       ownerId: 'owner',
       enabled: () => enabled,
       secrets: ['provider-secret-fixture'],
-      provider: 'fixture',
-      model: 'fixture',
+      provider: 'fixture token=provider-label-secret',
+      model: 'fixture password=model-label-secret',
     });
     const app = Fastify();
     store.registerRoutes(app);
@@ -70,8 +70,10 @@ test(
       );
       assert.match(recorded.prompts[0]!.instruction, /Keep this useful instruction/);
       assert.doesNotMatch(
-        JSON.stringify((await pool.query('SELECT payload FROM inspector_prompts')).rows),
-        /synthetic-nested-prompt-secret/,
+        JSON.stringify(
+          (await pool.query('SELECT payload,provider,model FROM inspector_prompts')).rows,
+        ),
+        /synthetic-nested-prompt-secret|provider-label-secret|model-label-secret/,
       );
       assert.match(recorded.prompts[0]!.instruction, /\[truncated\]/);
       assert.ok(recorded.prompts[0]!.instruction.length < 49_000);

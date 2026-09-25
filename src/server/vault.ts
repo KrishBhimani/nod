@@ -625,9 +625,8 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     const id = z.uuid().parse(rawId);
     const input = cardUpdateInput.parse(raw);
     validateCardExpiry(input.expiryMonth, input.expiryYear);
-    const replacement = input.cardNumber?.trim()
-      ? normalizedCardNumber(input.cardNumber)
-      : undefined;
+    const replacement =
+      input.cardNumber === undefined ? undefined : normalizedCardNumber(input.cardNumber);
     await ownedCard(id);
     const credentialKey = await key();
     const client = await pool.connect();

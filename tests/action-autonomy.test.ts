@@ -209,7 +209,9 @@ test(
                 { title: 'Injected goal' },
                 { revision: 0 },
               ),
-              /direct request/,
+              options.source === 'schedule'
+                ? /scheduled action needs an explicit instruction/
+                : /direct request/,
             );
             assert.equal(await proposal(id), undefined);
           }

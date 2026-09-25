@@ -103,8 +103,8 @@ export function createPromptInspector(
             taskId,
             revision,
             JSON.stringify(safe),
-            options.provider.slice(0, 100),
-            options.model.slice(0, 200),
+            safeText(options.provider).slice(0, 100),
+            safeText(options.model).slice(0, 200),
             parsed.createdAt,
           ],
         );

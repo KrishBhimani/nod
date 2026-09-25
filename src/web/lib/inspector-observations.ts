@@ -177,13 +177,31 @@ export function groupTaskActivity(
         })),
     ].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   }
-  if (calls)
+  if (calls) {
+    const represented = new Set<string>();
+    for (const call of [...calls].sort((a, b) => a.startedAt.localeCompare(b.startedAt))) {
+      const candidates = events.filter(
+        (event) =>
+          !represented.has(event.id) &&
+          event.taskId === call.taskId &&
+          event.summary.trim().replaceAll('_', ' ').toLowerCase() ===
+            call.name.replaceAll('_', ' ').toLowerCase() &&
+          event.createdAt >= call.startedAt &&
+          (!call.finishedAt || event.createdAt <= call.finishedAt),
+      );
+      const start = candidates
+        .filter((event) => event.type === 'tool_start')
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+      if (start) represented.add(start.id);
+      if (call.finishedAt) {
+        const end = candidates
+          .filter((event) => ['tool_complete', 'tool_failed'].includes(event.type))
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+        if (end) represented.add(end.id);
+      }
+    }
     return [
-      ...groupTaskActivity(
-        events.filter(
-          (event) => !['tool_start', 'tool_complete', 'tool_failed'].includes(event.type),
-        ),
-      ),
+      ...groupTaskActivity(events.filter((event) => !represented.has(event.id))),
       ...calls.map((call) => ({
         id: call.id,
         title: compactActivityText(call.name.replaceAll('_', ' ')),
@@ -193,6 +211,7 @@ export function groupTaskActivity(
         durationMs: call.durationMs,
       })),
     ].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  }
   const items: ActivityItem[] = [];
   const pending = new Map<string, ActivityItem[]>();
   const ambiguous = new Set<string>();

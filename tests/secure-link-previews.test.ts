@@ -82,3 +82,27 @@ test('secure invitations keep their links without fetching cards while ordinary 
     dom.window.close();
   }
 });
+
+test('a failed link preview retries on the next view and successful requests remain cached', async () => {
+  const { loadLinkPreview } = await import('../src/web/lib/link-previews.ts');
+  const originalFetch = globalThis.fetch;
+  let count = 0;
+  globalThis.fetch = async () => {
+    count++;
+    if (count === 1) throw new Error('Offline');
+    return Response.json({
+      preview: { url: 'https://www.example.com/retry-preview', title: 'Available again' },
+    });
+  };
+  try {
+    assert.equal(await loadLinkPreview('https://www.example.com/retry-preview'), null);
+    assert.equal(
+      (await loadLinkPreview('https://www.example.com/retry-preview'))?.title,
+      'Available again',
+    );
+    await loadLinkPreview('https://www.example.com/retry-preview');
+    assert.equal(count, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

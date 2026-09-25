@@ -37,6 +37,9 @@ export function loadLinkPreview(value: string): Promise<LinkPreview | null> {
     .catch(() => null);
   previews.delete(url);
   previews.set(url, { expiresAt: Date.now() + 5 * 60_000, value: request });
+  void request.then((preview) => {
+    if (!preview && previews.get(url)?.value === request) previews.delete(url);
+  });
   while (previews.size > 64) previews.delete(previews.keys().next().value!);
   return request;
 }

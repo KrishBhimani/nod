@@ -15,7 +15,7 @@
   color: var(--text-secondary);
 }
 .nav-link-active {
-  color: var(--primary-foreground);
+  color: var(--foreground);
   background: var(--accent-soft);
 }
 .sidebar-bottom .nav-link {
@@ -167,6 +167,11 @@
   background: transparent;
   overflow: hidden;
 }
+.screen-preview img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
 .screen-toolbar {
   padding: 10px 12px;
   border-color: var(--border);
@@ -211,7 +216,7 @@
 }
 .manual-controls p {
   font-size: 12px;
-  color: var(--primary-foreground);
+  color: var(--foreground);
 }
 .manual-controls form {
   display: flex;

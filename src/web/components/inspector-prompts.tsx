@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, Copy, Check } from 'lucide-react';
 import type { InspectorPromptsResponse } from '../../shared/inspector-prompts';
 import { api, errorMessage } from '../lib/api';
@@ -32,15 +32,24 @@ function PromptText({ label, text }: { label: string; text: string }) {
 }
 
 export function InspectorPrompts({ taskId }: { taskId?: string }) {
+  return <PromptHistory key={taskId ?? 'all'} taskId={taskId} />;
+}
+
+function PromptHistory({ taskId }: { taskId?: string }) {
   const [data, setData] = useState<InspectorPromptsResponse | null>(null);
   const [error, setError] = useState('');
   const [older, setOlder] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const historyRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => historyRequest.current?.abort(), []);
   useEffect(() => {
     if (older) return;
     let stopped = false;
+    let pending = false;
     const controller = new AbortController();
     async function refresh() {
+      if (pending) return;
+      pending = true;
       try {
         const next = await api<InspectorPromptsResponse>(
           '/api/inspector/prompts' + (taskId ? '?taskId=' + encodeURIComponent(taskId) : ''),
@@ -51,6 +60,8 @@ export function InspectorPrompts({ taskId }: { taskId?: string }) {
         setError('');
       } catch (cause) {
         if (!stopped) setError(errorMessage(cause));
+      } finally {
+        pending = false;
       }
     }
     void refresh();
@@ -65,6 +76,8 @@ export function InspectorPrompts({ taskId }: { taskId?: string }) {
   }, [taskId, older]);
   async function loadEarlier() {
     if (!data?.nextBefore || !data.nextBeforeId || loadingOlder) return;
+    const controller = new AbortController();
+    historyRequest.current = controller;
     setLoadingOlder(true);
     setOlder(true);
     try {
@@ -73,7 +86,10 @@ export function InspectorPrompts({ taskId }: { taskId?: string }) {
         beforeId: data.nextBeforeId,
         ...(taskId ? { taskId } : {}),
       });
-      const next = await api<InspectorPromptsResponse>('/api/inspector/prompts?' + params);
+      const next = await api<InspectorPromptsResponse>('/api/inspector/prompts?' + params, {
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
       setOlder(true);
       setData((current) => ({
         ...next,
@@ -85,9 +101,9 @@ export function InspectorPrompts({ taskId }: { taskId?: string }) {
       }));
       setError('');
     } catch (cause) {
-      setError(errorMessage(cause));
+      if (!controller.signal.aborted) setError(errorMessage(cause));
     } finally {
-      setLoadingOlder(false);
+      if (!controller.signal.aborted) setLoadingOlder(false);
     }
   }
   return (

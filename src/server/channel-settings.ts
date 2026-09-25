@@ -5,6 +5,7 @@ import { z } from 'zod';
 import {
   ChannelSetupFailure,
   type ChannelProvider,
+  type ChannelSetupConfiguration,
   type ChannelSetupSummary,
   type ChannelSetupVerifier,
 } from '../ports/channel-settings.ts';
@@ -18,7 +19,7 @@ const summarySchema = z.object({
   accountName: z.string().max(200).optional(),
   accountHandle: z.string().max(200).optional(),
   mode: z.enum(['polling', 'webhook']).optional(),
-  webhookStatus: z.enum(['registered', 'manual_setup']).optional(),
+  webhookStatus: z.enum(['registered', 'manual_setup', 'registration_pending']).optional(),
   webhookUrl: z.url().max(2048).optional(),
 });
 const fields: Record<ChannelProvider, Set<string>> = {
@@ -119,7 +120,7 @@ export async function createChannelSettings(
       ),
     };
   }
-  async function change(provider: ChannelProvider, input?: unknown) {
+  async function exclusive<T>(action: () => Promise<T>) {
     let resolve: () => void = () => {};
     const previous = pending;
     pending = new Promise<void>((done) => {
@@ -127,6 +128,43 @@ export async function createChannelSettings(
     });
     await previous;
     try {
+      return await action();
+    } finally {
+      resolve();
+    }
+  }
+  async function activate(provider: ChannelProvider, configuration: ChannelSetupConfiguration) {
+    if (!options.verifier.register) throw new ChannelSetupFailure('activation_pending');
+    await options.apply(await environment());
+    await options.verifier.register(provider, configuration);
+    const summary = { ...configuration.summary, webhookStatus: 'registered' as const };
+    await pool.query(
+      'UPDATE channel_settings SET summary=$3,updated_at=now() WHERE owner_id=$1 AND provider=$2',
+      [owner, provider, JSON.stringify(summary)],
+    );
+    return summary;
+  }
+  async function recover() {
+    return exclusive(async () => {
+      const { rows } = await pool.query<SettingsRow>(
+        `SELECT * FROM channel_settings WHERE owner_id=$1 AND enabled=true AND summary->>'webhookStatus'='registration_pending'`,
+        [owner],
+      );
+      for (const row of rows) {
+        try {
+          await activate(providerSchema.parse(row.provider), {
+            environment: open(await encryptionKey(), row),
+            summary: summarySchema.parse(row.summary),
+          });
+        } catch {
+          return false;
+        }
+      }
+      return true;
+    });
+  }
+  async function change(provider: ChannelProvider, input?: unknown) {
+    return exclusive(async () => {
       const oldEnvironment = await environment();
       let ciphertext: string | null = null;
       let summary: ChannelSetupSummary = { provider, enabled: false };
@@ -144,6 +182,21 @@ export async function createChannelSettings(
         Object.entries(oldEnvironment).filter(([key]) => !fields[provider].has(key)),
       );
       Object.assign(nextEnvironment, configured);
+      if (summary.webhookStatus === 'registration_pending') {
+        if (!options.verifier.register || provider !== 'telegram' || summary.mode !== 'webhook')
+          throw new Error('Channel registration is unavailable.');
+        await pool.query(
+          `INSERT INTO channel_settings(owner_id,provider,enabled,ciphertext,summary) VALUES($1,$2,true,$3,$4)
+          ON CONFLICT(owner_id,provider) DO UPDATE SET enabled=true,ciphertext=EXCLUDED.ciphertext,summary=EXCLUDED.summary,updated_at=now()`,
+          [owner, provider, ciphertext, JSON.stringify(summary)],
+        );
+        try {
+          summary = await activate(provider, { environment: configured, summary });
+        } catch {
+          throw new ChannelSetupFailure('activation_pending');
+        }
+        return { ok: true, channel: summary };
+      }
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
@@ -164,9 +217,7 @@ export async function createChannelSettings(
         client.release();
       }
       return { ok: true, channel: summary };
-    } finally {
-      resolve();
-    }
+    });
   }
   function registerRoutes(app: FastifyInstance) {
     app.register(async (scope) => {
@@ -180,9 +231,17 @@ export async function createChannelSettings(
             'This Telegram bot already uses a webhook. Remove that webhook or enter its public URL before switching to local polling.',
           webhook_failed:
             'Telegram did not confirm the webhook registration. Check the public URL and try again.',
+          activation_pending:
+            'The setup was saved, but activation did not finish. Restart Sidekick to retry the saved setup, or replace it.',
         };
         reply
-          .code(error instanceof ChannelSetupFailure || error instanceof z.ZodError ? 400 : 503)
+          .code(
+            error instanceof ChannelSetupFailure && error.reason === 'activation_pending'
+              ? 503
+              : error instanceof ChannelSetupFailure || error instanceof z.ZodError
+                ? 400
+                : 503,
+          )
           .send({
             error:
               error instanceof ChannelSetupFailure
@@ -202,5 +261,5 @@ export async function createChannelSettings(
       );
     });
   }
-  return { registerRoutes, environment, status };
+  return { registerRoutes, environment, status, recover };
 }

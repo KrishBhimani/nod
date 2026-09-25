@@ -170,3 +170,15 @@ test('embedded JSON inspection is bounded and omits incomplete oversized data', 
     assert.ok(Buffer.byteLength(safe) <= inspectorPayloadLimit);
   }
 });
+
+test('inspector masks complete escaped quoted secret assignments', () => {
+  const redact = createInspectorRedactor();
+  for (const text of [
+    String.raw`password="prefix\"private-suffix" safe=visible`,
+    String.raw`secret='prefix\'private-suffix' safe=visible`,
+  ]) {
+    const result = String(redact(text));
+    assert.doesNotMatch(result, /prefix|private-suffix/);
+    assert.match(result, /safe=visible/);
+  }
+});

@@ -67,7 +67,8 @@ test('ready Channels show identity and one next action, without repeating setup 
   try {
     await act(async () => root.render(createElement(Channels)));
     assert.deepEqual(calls.sort(), ['/api/channel-settings', '/api/channels']);
-    const [telegram, whatsapp] = Array.from(container.querySelectorAll('.channel-option'));
+    const [whatsapp, telegram] = Array.from(container.querySelectorAll('.channel-option'));
+    assert.equal(whatsapp.querySelector('h2')?.textContent, 'WhatsApp');
     assert.equal(telegram.querySelector('.channel-option-benefit'), null);
     assert.equal(telegram.querySelector('.channel-option-heading span'), null);
     assert.equal(telegram.querySelector('.channel-account-label')?.textContent, 'FixtureBot');
@@ -160,6 +161,43 @@ test('incomplete webhook setup reveals saved instructions without reconnecting o
     await act(async () => click(menu.querySelector('[role="menuitem"]')!));
     assert.equal(configured, 1);
     assert.equal(disconnected, 0);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
+
+test('pending Telegram registration offers saved recovery instructions without Meta guidance', async () => {
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () =>
+      root.render(
+        createElement(ChannelAccount, {
+          setup: {
+            provider: 'telegram',
+            enabled: true,
+            mode: 'webhook',
+            webhookStatus: 'registration_pending',
+            accountHandle: '@fixture_bot',
+          },
+          configured: true,
+          busy: false,
+          onConfigure: () => assert.fail('No settings should change'),
+          onDisconnect: () => assert.fail('No settings should change'),
+        }),
+      ),
+    );
+    assert.match(container.textContent ?? '', /Setup needs a retry/);
+    assert.equal(container.querySelector('a'), null);
+    const finish = [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.startsWith('Finish setup'),
+    )!;
+    await act(async () => click(finish));
+    const menu = container.querySelector('[role="menu"]')!;
+    assert.match(menu.textContent ?? '', /Restart Sidekick to retry the saved setup/);
+    assert.doesNotMatch(menu.textContent ?? '', /Meta|verification token/);
   } finally {
     await act(async () => root.unmount());
     container.remove();

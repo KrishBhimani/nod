@@ -46,6 +46,7 @@ export function createContainerBrowserComputer(options: {
   let uncertain = false;
   let sequence = 0;
   let activitySequence = 0;
+  let statusSequence = 0;
   let currentSession: ReturnType<NonNullable<Computer['currentSession']>>;
   let status = 'Workspace browser is ready.';
   const screens = new Map<
@@ -53,12 +54,22 @@ export function createContainerBrowserComputer(options: {
     { sequence: number; value: ReturnType<NonNullable<Computer['screenStatus']>> }
   >();
   const pending = new Set<Promise<unknown>>();
+  const cancellations = new Set<() => void>();
   let disposing: Promise<void> | undefined;
 
-  function updateMetadata(value: BrowserMetadata, order: number) {
-    if (order >= activitySequence) {
+  function updateMetadata(value: BrowserMetadata, order: number, input: BrowserCall) {
+    if (
+      (input.method === 'act' ||
+        (input.method === 'close' && input.taskId === currentSession?.taskId)) &&
+      order >= activitySequence
+    ) {
       activitySequence = order;
       currentSession = value.currentSession ?? undefined;
+    } else if (!activitySequence && value.currentSession) {
+      currentSession = value.currentSession;
+    }
+    if (order >= statusSequence) {
+      statusSequence = order;
       status = value.status;
     }
     if (value.screen && order >= (screens.get(value.screen.taskId)?.sequence ?? 0)) {
@@ -118,6 +129,7 @@ export function createContainerBrowserComputer(options: {
         clearTimeout(timer);
         clearTimeout(drainTimer);
         signal?.removeEventListener('abort', cancel);
+        cancellations.delete(cancel);
       };
       const unavailable = () => {
         if (settled) return;
@@ -140,6 +152,7 @@ export function createContainerBrowserComputer(options: {
         drainTimer = setTimeout(unavailable, options.drainTimeoutMs ?? 15_000);
       }
       signal?.addEventListener('abort', cancel, { once: true });
+      cancellations.add(cancel);
       child.stdin.on('error', unavailable);
       child.on('error', unavailable);
       child.stderr.resume();
@@ -164,7 +177,7 @@ export function createContainerBrowserComputer(options: {
         if (code !== 0 || !response) return unavailable();
         settled = true;
         cleanup();
-        updateMetadata(response.metadata, order);
+        updateMetadata(response.metadata, order, input);
         if (cancelling || (!response.ok && response.error === 'cancelled'))
           return reject(new Error('Browser operation cancelled.'));
         if (response.ok) return resolve(response.result);
@@ -284,8 +297,9 @@ export function createContainerBrowserComputer(options: {
     dispose: () => {
       disposing ??= (async () => {
         disposed = true;
-        await call({ method: 'dispose' });
+        for (const cancel of cancellations) cancel();
         await Promise.allSettled([...pending]);
+        await call({ method: 'dispose' });
         currentSession = undefined;
         screens.clear();
         status = 'Workspace browser is stopped.';

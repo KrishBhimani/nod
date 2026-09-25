@@ -41,7 +41,7 @@ export interface Task {
   status: TaskStatus;
   createdAt: string;
   updatedAt: string;
-  error?: string;
+  error?: string | null;
   showTyping?: boolean;
 }
 export interface TaskEvent {

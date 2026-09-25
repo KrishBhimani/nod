@@ -284,7 +284,7 @@ export function Chat({
     };
   }, [state.messages, historyPage, streams, optimistic]);
   async function startOnboarding() {
-    if (resetLock.current) return;
+    if (resetLock.current || !state.configuration.llmReady) return;
     resetLock.current = true;
     setResetting(true);
     setError('');
@@ -451,7 +451,7 @@ export function Chat({
               </div>
               <Button
                 variant="outline"
-                disabled={sending || resetting}
+                disabled={sending || resetting || !state.configuration.llmReady}
                 onClick={() => window.dispatchEvent(new CustomEvent('sidekick:restart-setup'))}
               >
                 Get started

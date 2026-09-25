@@ -659,3 +659,160 @@ test(
     }
   },
 );
+
+test(
+  'Apps lists cached accounts immediately and retains verified state through health failures while watches retry',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async (t) => {
+    const schema = `test_apps_health_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+    });
+    const app = Fastify();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let inspected = 0;
+    let unavailable = true;
+    let subscriptions = 0;
+    const provider = fakeProvider({
+      id: 'health-fixture',
+      authorize: async () => ({ accountId: 'unused', url: 'https://example.test' }),
+      search: async () => ({ tools: {}, suggestions: [] }),
+      execute: async () => ({ data: { id: 'target-message', subject: 'Synthetic invoice' } }),
+    });
+    provider.inspectAccount = async () => {
+      inspected++;
+      await gate;
+      if (unavailable) throw new Error('Temporary outage');
+      return { active: false, service: 'gmail' };
+    };
+    provider.subscribe = async () => {
+      if (++subscriptions === 1) throw new Error('Temporary subscription outage');
+      return { id: 'recovered-watch' };
+    };
+    const integrations = await createIntegrations(pool, {
+      provider,
+      baseUrl: 'http://localhost:4310',
+      wake: async () => {},
+    });
+    integrations.registerRoutes(app);
+    try {
+      for (let index = 0; index < 3; index++)
+        await pool.query(
+          "INSERT INTO app_connections(owner_id,provider_id,slug,account_id,account_name,watch_requested) VALUES('local-development','fixture','gmail',$1,$2,false)",
+          [`account-${index}`, `Saved ${index}`],
+        );
+      const targetConnection = (
+        await pool.query("SELECT id FROM app_connections WHERE account_id='account-0'")
+      ).rows[0].id;
+      await assert.rejects(
+        integrations.describeTarget('local-development', 'GMAIL_DELETE_MESSAGE', {
+          connectionId: targetConnection,
+          message_id: 'target-message',
+        }),
+        /Read the exact item/,
+      );
+      await integrations.execute('local-development', 'GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID', {
+        connectionId: targetConnection,
+        message_id: 'target-message',
+      });
+      assert.equal(
+        await integrations.describeTarget('local-development', 'GMAIL_DELETE_MESSAGE', {
+          connectionId: targetConnection,
+          message_id: 'target-message',
+        }),
+        'Synthetic invoice',
+      );
+      const otherConnection = (
+        await pool.query("SELECT id FROM app_connections WHERE account_id='account-1'")
+      ).rows[0].id;
+      await assert.rejects(
+        integrations.describeTarget('local-development', 'GMAIL_DELETE_MESSAGE', {
+          connectionId: otherConnection,
+          message_id: 'target-message',
+        }),
+        /Read the exact item/,
+      );
+      const startedAt = performance.now();
+      const initial = await Promise.race([
+        integrations.list(),
+        delay(200).then(() => {
+          throw new Error('Account health blocked the list.');
+        }),
+      ]);
+      assert.equal(
+        initial.filter((row) => row.slug === 'gmail' && row.status === 'connected').length,
+        3,
+      );
+      t.diagnostic(
+        `Cached three-account response before any provider completed: ${(performance.now() - startedAt).toFixed(2)} ms`,
+      );
+      assert.equal(inspected, 3);
+      await integrations.list();
+      assert.equal(inspected, 3);
+      release();
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (
+          (await pool.query('SELECT id FROM app_connections WHERE account_checked_at IS NULL'))
+            .rowCount === 0
+        )
+          break;
+        await delay(5);
+      }
+      assert.equal(
+        (await integrations.list()).filter(
+          (row) => row.slug === 'gmail' && row.status === 'connected',
+        ).length,
+        3,
+      );
+      assert.equal(inspected, 3);
+      unavailable = false;
+      await pool.query("UPDATE app_connections SET account_checked_at=now()-interval '2 minutes'");
+      await integrations.list();
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (
+          (await pool.query('SELECT id FROM app_connections WHERE account_active')).rowCount === 0
+        )
+          break;
+        await delay(5);
+      }
+      assert.equal(
+        (await integrations.list()).filter(
+          (row) => row.slug === 'gmail' && row.status === 'disconnected',
+        ).length,
+        3,
+      );
+      const id = (
+        await pool.query(
+          "UPDATE app_connections SET watch_requested=true,watch_attempted=true,watch_attempted_at=NULL WHERE account_id='account-0' RETURNING id",
+        )
+      ).rows[0].id;
+      await integrations.syncWatches();
+      assert.equal(subscriptions, 1);
+      await integrations.syncWatches();
+      assert.equal(subscriptions, 1);
+      await pool.query(
+        "UPDATE app_connections SET watch_retry_at=now()-interval '1 second' WHERE id=$1",
+        [id],
+      );
+      await integrations.syncWatches();
+      assert.equal(subscriptions, 2);
+      assert.equal(
+        (await pool.query('SELECT trigger_id FROM app_connections WHERE id=$1', [id])).rows[0]
+          .trigger_id,
+        'recovered-watch',
+      );
+    } finally {
+      release();
+      await app.close();
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);

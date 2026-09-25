@@ -13,28 +13,6 @@ import { Button, Loading, Notice } from './components/ui';
 import { Sidebar } from './components/sidebar';
 import { navigationItems } from './lib/navigation';
 import { BrowserWindow } from './pages/browser';
-import { usePageData } from './hooks/use-page-data';
-import type { AppState } from '../shared/contracts';
-
-function BrowserRoute() {
-  const { data, error, refresh } = usePageData<AppState>('/api/state');
-  if (!data)
-    return (
-      <main className="initial-loading">
-        {error ? (
-          <>
-            <Notice>{error}</Notice>
-            <Button variant="outline" onClick={() => void refresh()}>
-              Try again
-            </Button>
-          </>
-        ) : (
-          <Loading label="Opening browser…" />
-        )}
-      </main>
-    );
-  return <BrowserWindow />;
-}
 
 function navigate(path: string) {
   window.history.pushState(null, '', path);
@@ -176,7 +154,7 @@ export function App() {
     window.addEventListener('popstate', update);
     return () => window.removeEventListener('popstate', update);
   }, []);
-  if (path === '/browser') return <BrowserRoute />;
+  if (path === '/browser') return <BrowserWindow />;
   const match = /^\/(?:vault|credentials)\/([^/]+)\/?$/.exec(path);
   if (match) return <Credentials key={match[1]} id={match[1]} />;
   return <Workspace path={path} />;

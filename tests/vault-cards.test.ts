@@ -247,7 +247,7 @@ test(
       await t.test(
         'edits preserve an omitted number, replace it explicitly and survive restart',
         async () => {
-          for (const cardNumber of [undefined, '']) {
+          for (const cardNumber of [undefined]) {
             const { cardNumber: _number, ...fields } = input;
             const updated = await update(first.id, {
               ...fields,
@@ -291,6 +291,8 @@ test(
             { cardNumber: '0000000000000000' },
             { cardNumber: '4242.4242.4242.4242' },
             { cardNumber: '42' },
+            { cardNumber: '' },
+            { cardNumber: '   ' },
             { cardNumber: '4'.repeat(41) },
             { expiryMonth: 0 },
             { expiryMonth: 13 },
@@ -429,7 +431,7 @@ test(
                 change === 'number' || change === 'code' || change.endsWith('update')
                   ? update(
                       record.id,
-                      { ...input, cardNumber: '', label: 'Race renamed' },
+                      { ...input, cardNumber: undefined, label: 'Race renamed' },
                       delayed.app,
                     ).then((value) => value)
                   : read(

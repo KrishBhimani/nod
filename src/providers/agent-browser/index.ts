@@ -22,7 +22,7 @@ import {
   credentialScript,
 } from './credentials.ts';
 import { credentialSubmitScript, loginInspectionSchema, loginInspectionScript } from './login.ts';
-import { manualInputSchema, protectFocusedField } from './manual.ts';
+import { manualInputSchema, protectFocusedField, maskPageScript } from './manual.ts';
 import { createScreenStore, existingDaemonCommand, type StoredScreen } from './screens.ts';
 import { createBrowserSignIn, resolveSignInBrowser, type BrowserSignInHandle } from './sign-in.ts';
 import { createSignInDesktop, type SignInDesktop } from './desktop.ts';
@@ -578,8 +578,10 @@ export function createAgentBrowserComputer(options: {
         await send({ action: 'mousedown', button: 'left' });
         await send({ action: 'mouseup', button: 'left' });
       } else if (input.action === 'type') {
-        if (!(await evaluate(state, protectFocusedField, signal)))
-          throw new Error('Click a text field in the browser first.');
+        const field = await evaluate(state, protectFocusedField, signal);
+        if (field === 'unsupported_frame')
+          throw new Error('Use Sign in in browser to type in this embedded field.');
+        if (field !== true) throw new Error('Click a text field in the browser first.');
         state.secrets.add(input.text);
         state.protectedSelectors.add('[data-sidekick-manual-field="true"]');
         await saveState(state);
@@ -762,7 +764,7 @@ export function createAgentBrowserComputer(options: {
   async function maskFields(state: BrowserState, signal?: AbortSignal): Promise<void> {
     const result = await evaluate(
       state,
-      `(() => { const selectors=${JSON.stringify([...state.protectedSelectors])},secrets=${JSON.stringify([...state.secrets])}; const nodes=new Set(document.querySelectorAll('input[type="password"],input[autocomplete="one-time-code"],input[autocomplete="username"],input[data-sidekick-login-field^="identifier"]')); for (const s of selectors) { try { for(const e of document.querySelectorAll(s)) nodes.add(e); } catch {} } for(const e of document.querySelectorAll('input,textarea')) if(secrets.some(s=>s && String(e.value??e.textContent??'').includes(s))) nodes.add(e); if(nodes.size>40) throw new Error('Too many protected fields'); const values=[...nodes].map(e=>String(e.value??e.textContent??'')).filter(Boolean); if(values.some(value=>value.length>8192)) throw new Error('Protected field exceeds limit'); for(const value of values) if(!secrets.includes(value)) secrets.push(value); for(const e of nodes) { e.style.setProperty('color','transparent','important'); e.style.setProperty('text-shadow','none','important'); e.style.setProperty('-webkit-text-security','disc','important'); } if(document.body && secrets.length) { const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT); while(walker.nextNode()) { const node=walker.currentNode,parent=node.parentElement; if(parent && !['SCRIPT','STYLE'].includes(parent.tagName) && secrets.some(s=>s && node.textContent.includes(s))) { parent.style.setProperty('color','transparent','important'); parent.style.setProperty('text-shadow','none','important'); } } } return {masked:true,values}; })()`,
+      maskPageScript([...state.protectedSelectors], [...state.secrets]),
       signal,
     );
     if (

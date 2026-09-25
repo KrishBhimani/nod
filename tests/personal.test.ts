@@ -341,6 +341,57 @@ test(
           );
         },
       );
+      await t.test('personal answers can decline and memory cannot store credentials', async () => {
+        const before = await personal.getProfile();
+        for (const [field, question] of [
+          ['name', 'What should I call you?'],
+          ['location', 'Where do you live?'],
+        ] as const) {
+          for (const text of [
+            'No thanks',
+            'Skip',
+            'I would rather not',
+            "I don't want to share that",
+          ]) {
+            const taskId = randomUUID(),
+              source = randomUUID();
+            await pool.query(
+              "INSERT INTO messages(id,owner_id,role,text,task_id,created_at) VALUES($1,'fixture-owner','assistant',$2,$3,now()-interval '1 second'),($4,'fixture-owner','user',$5,$3,now())",
+              [randomUUID(), question, taskId, source, text],
+            );
+            await assert.rejects(
+              personal.manage(
+                'profile_learn',
+                { field, value: text, quote: text },
+                { sourceMessageId: source, taskId },
+              ),
+            );
+          }
+        }
+        assert.deepEqual(await personal.getProfile(), before);
+        const taskId = randomUUID(),
+          source = randomUUID();
+        await pool.query(
+          "INSERT INTO messages(id,owner_id,role,text,task_id,created_at) VALUES($1,'fixture-owner','assistant','What should I call you?',$2,now()-interval '1 second'),($3,'fixture-owner','user','Noel',$2,now())",
+          [randomUUID(), taskId, source],
+        );
+        await personal.manage(
+          'profile_learn',
+          { field: 'name', value: 'Noel', quote: 'Noel' },
+          { taskId, sourceMessageId: source },
+        );
+        assert.equal((await personal.getProfile()).name, 'Noel');
+        const initial = (await pool.query('SELECT id FROM memory_facts')).rowCount;
+        for (const text of [
+          'My password is fixture-secret',
+          'The recovery code is 123456',
+          'API key: synthetic-token',
+          'My CVV is 123',
+        ]) {
+          await assert.rejects(personal.manage('memory_propose', { text }), z.ZodError);
+        }
+        assert.equal((await pool.query('SELECT id FROM memory_facts')).rowCount, initial);
+      });
       await t.test(
         'memory preserves trusted user-message provenance and rejects spoofed sources',
         async () => {

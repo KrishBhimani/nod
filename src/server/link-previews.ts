@@ -49,7 +49,11 @@ export function createLinkPreviews(
       previews.delete(key);
       if (entry.imageId) images.delete(entry.imageId);
     }
-    while (images.size > 32) images.delete(images.keys().next().value!);
+    while (images.size > 32) {
+      const imageId = images.keys().next().value!;
+      images.delete(imageId);
+      for (const [url, entry] of previews) if (entry.imageId === imageId) previews.delete(url);
+    }
   }
   async function preview(value: string): Promise<LinkPreview | null> {
     const url = previewableUrl(value);

@@ -1,5 +1,11 @@
 import { z } from 'zod';
 
+const currentContextScript = `e=>{
+  const form=e.tagName==='A'?null:e.form||e.closest('form');
+  const target=(e.getAttribute('formtarget')??e.getAttribute('target')??form?.getAttribute('target')??document.querySelector?.('base[target]')?.getAttribute('target')??'').trim().toLowerCase();
+  return !target||target==='_self';
+}`;
+
 export const loginInspectionSchema = z.object({
   origin: z.string().max(2048),
   url: z.string().max(8192),
@@ -58,7 +64,7 @@ export function loginInspectionScript(): string {
     const hint=e=>[e.id,e.name,e.autocomplete,e.getAttribute('inputmode'),observedLabel(e)].join(' ').toLowerCase();
     const identifierLabel=e=>(observedLabel(e)||(e.type==='email'||/email/.test(hint(e))?'Email':e.type==='tel'||/phone/.test(hint(e))?'Phone':'Username')).slice(0,80);
     const kindOf=e=>/one-time-code|verification.?code|authentication.?code|security.?code|authenticator|(?:^|[^a-z])(?:otp|totp)(?:[^a-z]|$)/.test(hint(e))?'otp':e.type==='password'?'password':e.type==='email'||/username|user.?name|identifier|phone|email/.test(hint(e))?'identifier':null;
-    const forms=[...document.querySelectorAll('form')].filter(e=>inside(scope,e)&&visible(e)&&candidates.some(input=>e.contains(input)&&kindOf(input)));
+    const forms=[...document.querySelectorAll('form')].filter(e=>inside(scope,e)&&visible(e)&&candidates.some(input=>e.contains(input)));
     const activeForms=forms.filter(e=>e.contains(document.activeElement));
     const ambiguousForms=forms.length>1&&activeForms.length!==1;
     const fieldScope=activeForms.length===1?activeForms[0]:forms.length===1?forms[0]:scope;
@@ -76,9 +82,10 @@ export function loginInspectionScript(): string {
     const candidatesByMethod=new Map();
     const controls=[...document.querySelectorAll('button,a,[role="button"],input[type="submit"]')].filter(e=>inside(scope,e)&&visible(e));
     let submit;
+    const currentContext=${currentContextScript};
     const add=(id,method,e)=>{
       const current=candidatesByMethod.get(id);
-      const supported=!ambiguousDialogs&&e.getAttribute('target')!=='_blank'&&enabled(e);
+      const supported=!ambiguousDialogs&&currentContext(e)&&enabled(e);
       const native=['BUTTON','A','INPUT'].includes(e.tagName);
       const nestedNative=current&&native&&!current.native&&current.element?.contains(e);
       if(!current||nestedNative||(supported&&!current.method.supported)||(supported===current.method.supported&&native&&!current.native)) candidatesByMethod.set(id,{method:{id,...method,supported},element:e,native});
@@ -102,7 +109,7 @@ export function loginInspectionScript(): string {
       element.setAttribute('data-sidekick-login-method',method.id);
       return {...method,selector:'[data-sidekick-login-method="'+method.id+'"]',reason:method.supported?(method.kind==='oauth'?'Opens this website’s sign-in flow. Further secure steps may be required.':'Chooses this verification method on the website. Enter any resulting code only in the secure form.'):'This option is unavailable, ambiguous, or requires a separate window.'};
     });
-    const unambiguous=!ambiguousDialogs&&!ambiguousForms&&['identifier','password','otp'].every(kind=>fields.filter(field=>field.kind===kind).length<=1);
+    const unambiguous=!ambiguousDialogs&&!ambiguousForms&&(!submit||currentContext(submit))&&['identifier','password','otp'].every(kind=>fields.filter(field=>field.kind===kind).length<=1);
     let submitSelector;
     if(submit&&unambiguous) {
       submit.setAttribute('data-sidekick-login-submit','current');
@@ -116,11 +123,13 @@ export function loginInspectionScript(): string {
 export function credentialSubmitScript(origin: string, selector: string): string {
   return `(async () => {
     const origin=${JSON.stringify(origin)},selector=${JSON.stringify(selector)};
+    const currentContext=${currentContextScript};
     for(let attempt=0;attempt<30;attempt++) {
       if(location.origin!==origin) return {ok:false};
       const nodes=document.querySelectorAll(selector);
       if(nodes.length!==1) return {ok:false};
       const e=nodes[0];
+      if(!currentContext(e)) return {ok:false};
       if(e.isConnected && !e.disabled && !e.closest('[hidden],[aria-hidden="true"],[inert],[aria-disabled="true"]') && e.getClientRects().length>0 && getComputedStyle(e).visibility!=='hidden' && getComputedStyle(e).display!=='none') { e.click(); return {ok:true}; }
       await new Promise(resolve=>setTimeout(resolve,50));
     }

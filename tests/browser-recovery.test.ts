@@ -8,6 +8,7 @@ import {
   createAgentBrowserComputer,
 } from '../src/providers/agent-browser/index.ts';
 import { stagedLoginBrowser } from './login-fixture.ts';
+import { existingDaemonCommand } from '../src/providers/agent-browser/screens.ts';
 
 test('inspector reattaches to an existing daemon without navigation or launching a browser', async () => {
   const directory = await mkdtemp('/tmp/sk-screen-');
@@ -116,6 +117,27 @@ test('a restarted credential session serves only its cached masked image without
   } finally {
     await original.dispose();
     await restored.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('daemon recovery preserves Unicode split across socket chunks', async () => {
+  const directory = await mkdtemp('/tmp/sk-unicode-');
+  const path = join(directory, 'daemon.sock');
+  const text = 'Olá 🌍 and 日本語';
+  const body = Buffer.from(JSON.stringify({ success: true, data: { text } }) + '\n');
+  const split = body.indexOf(Buffer.from('🌍')) + 1;
+  const server = createServer((socket) => {
+    socket.once('data', () => {
+      socket.write(body.subarray(0, split));
+      setTimeout(() => socket.end(body.subarray(split)), 5);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(path, resolve));
+  try {
+    assert.deepEqual(await existingDaemonCommand(path, { action: 'snapshot' }), { text });
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(directory, { recursive: true, force: true });
   }
 });

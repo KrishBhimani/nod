@@ -287,6 +287,7 @@ export async function createApplication(
   const integrations = await createIntegrations(pool, {
     provider: integrationProvider,
     wake: triage.triageEvent,
+    refresh,
     baseUrl: `http://localhost:${port}`,
   });
   const vault = await createVault(pool, {
@@ -310,6 +311,7 @@ export async function createApplication(
       else await integrations.validateApproval(ownerId, action, args);
     },
     (action, args) => integrations.describeApproval(ownerId, action, args),
+    (action, args) => integrations.describeTarget(ownerId, action, args),
   );
   const reactions = createAgentReactionService({ pool, ownerId, refresh });
   const userMessages = createUserMessageService({
@@ -320,6 +322,7 @@ export async function createApplication(
     await inspector.recover().catch(() => {});
     await triage.initializeHeartbeat();
     await startTaskWorkers({
+      readArtifact: workspace.readArtifact?.bind(workspace),
       executeConfirmation: approvals.executeConfirmed,
       reactToMessage: reactions.react,
       downloadIntegrationFile: (_taskId, action, args, signal) =>
@@ -473,6 +476,15 @@ export async function createApplication(
             providerUsage.track({ provider, category: 'channel', operation: 'setup' }, () =>
               setup.verifier.verify(provider, input),
             ),
+          ...(setup.verifier.register
+            ? {
+                register: (provider, configuration) =>
+                  providerUsage.track(
+                    { provider, category: 'channel', operation: 'register' },
+                    () => setup.verifier.register!(provider, configuration),
+                  ),
+              }
+            : {}),
         },
         apply: async (environment) => {
           if (!channels) throw new Error('Messaging is not ready.');
@@ -510,18 +522,26 @@ export async function createApplication(
         ).taskId,
     });
     channels.registerRoutes(app);
+    await channelSettings?.recover();
   }
   app.addHook('onClose', async () => {
-    try {
-      await channels?.close();
-      await stopTasks();
-      await runtime.dispose();
-    } finally {
-      await inspector.close();
-      await promptInspector.close();
-      await providerUsage.close();
-      await inspectorDatabase.end();
+    const failures: unknown[] = [];
+    for (const close of [
+      () => channels?.close(),
+      () => stopTasks(),
+      () => runtime.dispose(),
+      () => inspector.close(),
+      () => promptInspector.close(),
+      () => providerUsage.close(),
+      () => inspectorDatabase.end(),
+    ]) {
+      try {
+        await close();
+      } catch (error) {
+        failures.push(error);
+      }
     }
+    if (failures.length) throw new Error('Some application resources could not close.');
   });
   return { app, runtime, personal, triage, integrations, vault, channels, channelSettings };
 }

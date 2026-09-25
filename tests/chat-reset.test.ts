@@ -299,3 +299,69 @@ test('Get started uses the same restart event and failed reset preserves the exi
     globalThis.fetch = priorFetch;
   }
 });
+
+test('reconnecting preserves the current streamed prefix until its saved message arrives', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json(base);
+  const fixture = await mount();
+  try {
+    await act(async () =>
+      Events.current.emit({
+        type: 'delta',
+        taskId: 'running',
+        streamId: 'stream',
+        text: 'First ',
+        conversationRevision: 0,
+      }),
+    );
+    await act(async () => {
+      Events.current.onerror?.();
+      Events.current.onopen?.();
+      await tick();
+    });
+    await act(async () =>
+      Events.current.emit({
+        type: 'delta',
+        taskId: 'running',
+        streamId: 'stream',
+        text: 'second',
+        conversationRevision: 0,
+      }),
+    );
+    assert.equal(fixture.app().streams.stream, 'First second');
+  } finally {
+    await fixture.dispose();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('setup cannot archive a conversation when its model is unavailable', async () => {
+  const originalFetch = globalThis.fetch;
+  const paths: string[] = [];
+  globalThis.fetch = async (path) => {
+    paths.push(String(path));
+    return Response.json({
+      ...base,
+      messages: [],
+      configuration: { ...base.configuration, llmReady: false },
+    });
+  };
+  const fixture = await mount();
+  try {
+    const button = [...fixture.element.querySelectorAll('button')].find((item) =>
+      item.textContent?.includes('Get started'),
+    )!;
+    assert.equal(button.disabled, true);
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('sidekick:restart-setup'));
+      await tick();
+    });
+    assert.equal(
+      paths.some((path) => path === '/api/conversation/reset' || path === '/api/onboarding'),
+      false,
+    );
+  } finally {
+    await fixture.dispose();
+    globalThis.fetch = originalFetch;
+  }
+});

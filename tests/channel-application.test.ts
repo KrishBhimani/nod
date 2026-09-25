@@ -62,12 +62,16 @@ test(
     const applied: Record<string, string>[] = [];
     const sent: string[] = [];
     let closed = 0;
+    let failClose = false;
+    let agentDisposed = false;
     const adapters: ApplicationAdapters = {
       agent: {
         open: async () => {
           throw new Error('No agent in fixture');
         },
-        dispose: () => {},
+        dispose: () => {
+          agentDisposed = true;
+        },
       },
       computer: fakeComputer(),
       workspace: {
@@ -152,6 +156,7 @@ test(
             },
             close: async () => {
               closed++;
+              if (failClose) throw new Error('Synthetic transport shutdown failure.');
             },
           };
           return transport;
@@ -225,7 +230,9 @@ test(
         null,
       );
     } finally {
-      await application.app.close();
+      failClose = true;
+      await assert.rejects(application.app.close(), /Some application resources could not close/);
+      assert.equal(agentDisposed, true);
       await pool.end();
       await admin.query(`DROP SCHEMA ${schema} CASCADE`);
       await admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`);

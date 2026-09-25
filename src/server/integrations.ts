@@ -35,12 +35,15 @@ type ConnectionRow = {
   watch_revision: number;
   account_name: string | null;
   account_email: string | null;
+  account_active: boolean;
+  account_checked_at: Date | null;
   revoked: boolean;
 };
 type IntegrationOptions = {
   wake(prompt: string, eventId: string): Promise<void>;
   provider: IntegrationProvider;
   baseUrl: string;
+  refresh?(): void;
 };
 class IntegrationError extends Error {
   constructor(
@@ -127,6 +130,11 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS id uuid NOT NULL DEFAULT gen_random_uuid();
     ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS account_name text;
     ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS account_email text;
+    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS account_active boolean NOT NULL DEFAULT true;
+    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS account_checked_at timestamptz;
+    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS watch_retry_at timestamptz;
+    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS watch_attempted_at timestamptz;
+    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS watch_failures integer NOT NULL DEFAULT 0;
     ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS watch_requested boolean NOT NULL DEFAULT true;
     ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS watch_attempted boolean NOT NULL DEFAULT false;
     ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS watch_revision integer NOT NULL DEFAULT 0;
@@ -146,7 +154,10 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     WHERE account_id IS NOT NULL AND pending_account_id IS NOT NULL AND account_id <> pending_account_id;
   `);
   const sessions = new Map<string, Promise<IntegrationSession>>();
+  const targets = new Map<string, { label: string; expires: number }>();
   let draining = false;
+  let closed = false;
+  let refreshing: Promise<void> | undefined;
   await pool.query(
     `UPDATE app_connections SET watch_requested=true,watch_attempted=false,watch_revision=watch_revision+1
      WHERE owner_id=$1 AND provider_id=$2 AND slug=ANY($3::text[]) AND NOT revoked AND NOT watch_requested`,
@@ -246,8 +257,9 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
   async function activateWatch(id: string) {
     if (!provider.configured || !provider.webhooksConfigured) return;
     const claimed = await pool.query<ConnectionRow>(
-      `UPDATE app_connections SET watch_attempted=true WHERE id=$1 AND owner_id=$2 AND provider_id=$3
-       AND watch_requested AND NOT watch_attempted AND NOT revoked AND account_id IS NOT NULL
+      `UPDATE app_connections SET watch_attempted=true,watch_attempted_at=now() WHERE id=$1 AND owner_id=$2 AND provider_id=$3
+       AND watch_requested AND (NOT watch_attempted OR watch_attempted_at IS NULL OR watch_attempted_at < now()-interval '5 minutes')
+       AND (watch_retry_at IS NULL OR watch_retry_at<=now()) AND NOT revoked AND account_id IS NOT NULL
        AND trigger_id IS NULL RETURNING *`,
       [id, localOwner, providerId],
     );
@@ -256,12 +268,19 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     try {
       const trigger = await requiredProvider().subscribe(localOwner, row.slug, row.account_id!);
       const saved = await pool.query(
-        `UPDATE app_connections SET trigger_id=$2,triggers_enabled=true WHERE id=$1 AND owner_id=$3
+        `UPDATE app_connections SET trigger_id=$2,triggers_enabled=true,watch_failures=0,watch_retry_at=NULL WHERE id=$1 AND owner_id=$3
          AND provider_id=$4 AND watch_requested AND NOT revoked AND watch_revision=$5`,
         [row.id, trigger.id, localOwner, providerId, row.watch_revision],
       );
       if (!saved.rowCount) await provider.unsubscribe(trigger.id);
-    } catch {}
+    } catch {
+      await pool.query(
+        `UPDATE app_connections SET watch_attempted=false,watch_failures=watch_failures+1,
+        watch_retry_at=now()+LEAST(3600,5*power(2,LEAST(watch_failures,10)))*interval '1 second'
+        WHERE id=$1 AND owner_id=$2 AND provider_id=$3 AND watch_revision=$4 AND trigger_id IS NULL`,
+        [row.id, localOwner, providerId, row.watch_revision],
+      );
+    }
   }
 
   async function syncWatches() {
@@ -273,7 +292,6 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
           (row) =>
             supportsWatch(row.slug) &&
             row.watch_requested &&
-            !row.watch_attempted &&
             !row.revoked &&
             row.account_id &&
             !row.trigger_id,
@@ -282,31 +300,76 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     );
   }
 
+  async function refreshAccounts(rows: ConnectionRow[]) {
+    const pending = rows.filter(
+      (row) =>
+        row.account_id &&
+        !row.revoked &&
+        (!row.account_checked_at || Date.now() - row.account_checked_at.getTime() > 60_000),
+    );
+    await Promise.all(
+      Array.from({ length: Math.min(4, pending.length) }, async () => {
+        while (pending.length && !closed) {
+          const row = pending.shift()!;
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            const remote = await Promise.race([
+              provider.inspectAccount(row.account_id!, row.owner_id),
+              new Promise<never>((_, reject) => {
+                timer = setTimeout(
+                  () => reject(new Error('Account inspection timed out.')),
+                  10_000,
+                );
+                timer.unref();
+              }),
+            ]);
+            if (closed) return;
+            await pool.query(
+              `UPDATE app_connections SET account_active=$4,account_name=COALESCE($5,account_name),
+            account_email=COALESCE($6,account_email),account_checked_at=now()
+            WHERE id=$1 AND owner_id=$2 AND provider_id=$3 AND account_id=$7 AND NOT revoked`,
+              [
+                row.id,
+                row.owner_id,
+                providerId,
+                remote.active && remote.service === row.slug,
+                remote.accountName ?? null,
+                remote.accountEmail ?? null,
+                row.account_id,
+              ],
+            );
+            options.refresh?.();
+          } catch {
+            if (!closed)
+              await pool.query(
+                'UPDATE app_connections SET account_checked_at=now() WHERE id=$1 AND owner_id=$2 AND provider_id=$3 AND account_id=$4 AND NOT revoked',
+                [row.id, row.owner_id, providerId, row.account_id],
+              );
+          } finally {
+            if (timer) clearTimeout(timer);
+          }
+        }
+      }),
+    );
+  }
+
   async function list(ownerId = localOwner): Promise<Connection[]> {
     const rows = await connectionRows(ownerId);
+    if (provider.configured && !closed && !refreshing) {
+      refreshing = refreshAccounts(rows)
+        .catch(() => {})
+        .finally(() => {
+          refreshing = undefined;
+        });
+    }
     const result: Connection[] = [];
     for (const slug of Object.keys(catalogs) as Slug[]) {
       const accounts = rows.filter((row) => row.slug === slug && row.account_id);
       const entries: Array<ConnectionRow | undefined> = accounts.length ? accounts : [undefined];
       for (const row of entries) {
-        let active = false;
-        let accountName = row?.account_name ?? undefined;
-        let accountEmail = row?.account_email ?? undefined;
-        if (provider.configured && row?.account_id && !row.revoked) {
-          try {
-            const remote = await provider.inspectAccount(row.account_id, ownerId);
-            active = remote.active && remote.service === slug;
-            if (active) {
-              accountName = remote.accountName ?? accountName;
-              accountEmail = remote.accountEmail ?? accountEmail;
-              if (accountName !== row.account_name || accountEmail !== row.account_email)
-                await pool.query(
-                  'UPDATE app_connections SET account_name=$2,account_email=$3 WHERE id=$1 AND owner_id=$4 AND provider_id=$5',
-                  [row.id, accountName ?? null, accountEmail ?? null, ownerId, providerId],
-                );
-            }
-          } catch {}
-        }
+        const active = Boolean(row?.account_id && !row.revoked && row.account_active);
+        const accountName = row?.account_name ?? undefined;
+        const accountEmail = row?.account_email ?? undefined;
         const supported = supportsWatch(slug);
         const requested = Boolean(supported && row?.watch_requested);
         const triggersActive = Boolean(
@@ -441,13 +504,13 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         connectedId = existing.rows[0].id;
         await client.query('DELETE FROM app_connections WHERE id=$1', [row.id]);
         await client.query(
-          'UPDATE app_connections SET revoked=false,account_name=$2,account_email=$3,watch_requested=true,watch_attempted=CASE WHEN trigger_id IS NULL THEN false ELSE watch_attempted END WHERE id=$1',
+          'UPDATE app_connections SET revoked=false,account_active=true,account_checked_at=now(),account_name=$2,account_email=$3,watch_requested=true,watch_attempted=CASE WHEN trigger_id IS NULL THEN false ELSE watch_attempted END WHERE id=$1',
           [connectedId, remote.accountName ?? null, remote.accountEmail ?? null],
         );
       } else {
         await client.query(
           `UPDATE app_connections SET account_id=pending_account_id,pending_account_id=NULL,callback_hash=NULL,
-           callback_expires=NULL,revoked=false,account_name=$2,account_email=$3 WHERE id=$1`,
+           callback_expires=NULL,revoked=false,account_active=true,account_checked_at=now(),account_name=$2,account_email=$3 WHERE id=$1`,
           [row.id, remote.accountName ?? null, remote.accountEmail ?? null],
         );
       }
@@ -561,6 +624,95 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     };
   }
 
+  function targetKey(accountId: string, slug: Slug, id: string) {
+    return JSON.stringify([accountId, slug, id]);
+  }
+
+  function rememberTargets(
+    accountId: string,
+    slug: Slug,
+    result: unknown,
+    args: Record<string, unknown>,
+  ) {
+    const queue: unknown[] = [result];
+    let visited = 0;
+    while (queue.length && visited++ < 512) {
+      const item = queue.shift();
+      if (!item || typeof item !== 'object') continue;
+      if (Array.isArray(item)) {
+        queue.push(...item.slice(0, 100));
+        continue;
+      }
+      const row = item as Record<string, unknown>;
+      let label =
+        row.subject ??
+        row.name ??
+        row.summary ??
+        row.title ??
+        (slug === 'slack' ? row.text : undefined);
+      if (Array.isArray(label))
+        label = label.map((part) => part?.plain_text ?? part?.text?.content ?? '').join('');
+      if (!label && row.payload && typeof row.payload === 'object') {
+        const headers = (row.payload as Record<string, unknown>).headers;
+        if (Array.isArray(headers))
+          label = headers.find((header) => String(header?.name).toLowerCase() === 'subject')?.value;
+      }
+      const id =
+        row.id ??
+        row.messageId ??
+        row.message_id ??
+        row.file_id ??
+        row.event_id ??
+        row.block_id ??
+        (slug === 'slack' && typeof row.ts === 'string'
+          ? `${String(row.channel ?? args.channel ?? '')}:${row.ts}`
+          : undefined);
+      if (typeof id === 'string' && id.length < 500 && typeof label === 'string' && label.trim()) {
+        const key = targetKey(accountId, slug, id);
+        targets.delete(key);
+        targets.set(key, {
+          label: label
+            .replace(/[\u0000-\u001f\u007f]/g, ' ')
+            .trim()
+            .slice(0, 500),
+          expires: Date.now() + 10 * 60_000,
+        });
+        while (targets.size > 256) targets.delete(targets.keys().next().value!);
+      }
+      queue.push(
+        ...Object.values(row)
+          .filter((value) => value && typeof value === 'object')
+          .slice(0, 100),
+      );
+    }
+  }
+
+  async function describeTarget(ownerId: string, action: string, args: Record<string, unknown>) {
+    if (!/_(?:DELETE|TRASH|REMOVE|DESTROY|PURGE)(?:_|$)/.test(action)) return undefined;
+    const row = await approvedConnection(ownerId, action, args);
+    const id =
+      args.message_id ??
+      args.messageId ??
+      args.file_id ??
+      args.fileId ??
+      args.event_id ??
+      args.eventId ??
+      args.block_id ??
+      args.page_id ??
+      args.id ??
+      (row.slug === 'slack' && typeof args.ts === 'string'
+        ? `${String(args.channel ?? '')}:${args.ts}`
+        : undefined);
+    const target =
+      typeof id === 'string' ? targets.get(targetKey(row.account_id!, row.slug, id)) : undefined;
+    if (!target || target.expires <= Date.now())
+      throw new IntegrationError(
+        'Read the exact item in this account first so the confirmation can name what will be deleted.',
+        409,
+      );
+    return target.label;
+  }
+
   async function executeApproved(ownerId: string, action: string, args: Record<string, unknown>) {
     const row = await approvedConnection(ownerId, action, args);
     if ((integrationDownloadActions as readonly string[]).includes(action))
@@ -572,7 +724,12 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       };
     try {
       const { connectionId: _connectionId, ...providerArgs } = args;
-      return await (await getSession(ownerId)).execute(action, providerArgs, row.account_id!);
+      const result = await (
+        await getSession(ownerId)
+      ).execute(action, providerArgs, row.account_id!);
+      if (integrationActions.includes(action))
+        rememberTargets(row.account_id!, row.slug, result, providerArgs);
+      return result;
     } catch {
       throw new IntegrationError(
         'The app request failed. Check the connection and requested fields.',
@@ -729,7 +886,9 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
 
   function registerRoutes(app: FastifyInstance) {
     app.addHook('onClose', async () => {
+      closed = true;
       clearInterval(timer);
+      await refreshing;
     });
     app.register(async (scope) => {
       scope.setErrorHandler((error, _request, reply) => {
@@ -846,6 +1005,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     download,
     validateApproval,
     describeApproval,
+    describeTarget,
     list,
     manageConnections: async (action: 'list' | 'connect', service?: string) => {
       if (action === 'list')

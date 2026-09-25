@@ -296,7 +296,9 @@ export function createComposioProvider(options: {
       await required().sessions.delete(id);
     },
     async inspectAccount(id, ownerId) {
-      const account = await required().connectedAccounts.get(id);
+      const account = await required().connectedAccounts.get(id, {
+        signal: AbortSignal.timeout(10_000),
+      });
       const active = account.status === 'ACTIVE' && !account.isDisabled;
       const service = account.toolkit.slug.toLowerCase();
       const details = active ? await identity(id, service, ownerId) : undefined;

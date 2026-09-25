@@ -1,7 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
-import { Monitor, MoreHorizontal, PanelLeftClose, PanelLeftOpen, RotateCcw } from 'lucide-react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import {
+  Monitor,
+  Moon,
+  MoreHorizontal,
+  PanelLeftClose,
+  PanelLeftOpen,
+  RotateCcw,
+  Sun,
+} from 'lucide-react';
 import { BrandMark } from './brand';
 import { ConnectionMenu } from './connection-menu';
+import { currentTheme, setTheme, subscribeTheme } from '../lib/theme';
 import {
   isEditingTarget,
   navigationItems,
@@ -29,6 +38,10 @@ export function Sidebar({
   onToggleInspector?(): void;
 }) {
   const [hints, setHints] = useState(false);
+  const theme = useSyncExternalStore(subscribeTheme, currentTheme, () => 'light');
+  const ThemeIcon = theme === 'dark' ? Sun : Moon;
+  const themeLabel = theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
+  const toggleTheme = () => setTheme(theme === 'dark' ? 'light' : 'dark');
   const mac = /Mac|iPhone|iPad/.test(navigator.platform);
   const navigate = useRef(onNavigate);
   navigate.current = onNavigate;
@@ -202,11 +215,31 @@ export function Sidebar({
               >
                 <RotateCcw size={18} aria-hidden="true" /> Get started
               </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  toggleTheme();
+                  close();
+                }}
+              >
+                <ThemeIcon size={18} aria-hidden="true" /> {themeLabel}
+              </button>
             </>
           )}
         </ConnectionMenu>
       </div>
       <div className="sidebar-bottom">
+        <button
+          type="button"
+          className="nav-link theme-toggle"
+          aria-label={themeLabel}
+          title={themeLabel}
+          onClick={toggleTheme}
+        >
+          <ThemeIcon size={22} aria-hidden="true" />
+          <span className="nav-label">{theme === 'dark' ? 'Light theme' : 'Dark theme'}</span>
+        </button>
         {inspectorEnabled && (
           <button
             type="button"

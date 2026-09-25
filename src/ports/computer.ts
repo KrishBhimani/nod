@@ -106,9 +106,9 @@ export interface WorkspaceSession {
   execute(command: string, timeoutSeconds?: number): Promise<string>;
   readFile(path: string): Promise<string>;
   writeFile(path: string, content: string): Promise<string>;
-  resolveArtifact(path: string): Promise<string>;
 }
 export interface Workspace {
+  readArtifact?(taskId: string, path: string, maxBytes: number): Promise<Uint8Array>;
   open(input: { taskId: string; workspacePath: string; signal: AbortSignal }): WorkspaceSession;
   status(): string;
   dispose(): void | Promise<void>;

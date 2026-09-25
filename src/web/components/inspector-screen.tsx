@@ -85,7 +85,7 @@ export function InspectorScreen({
           const payload = response.status === 409 ? await response.json().catch(() => null) : null;
           if (stopped || detachedRef.current) return;
           const message = browserErrorMessage(payload?.code);
-          if (message) {
+          if (message || response.status === 423) {
             blockedActivity = requestedActivity;
             setCapturePaused(true);
           }

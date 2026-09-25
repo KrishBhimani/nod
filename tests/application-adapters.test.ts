@@ -236,6 +236,7 @@ test(
         workspace: {
           status: () => 'replacement workspace',
           dispose: () => {},
+          readArtifact: async (id, path) => readFile(join(dataRoot, 'workspaces', id, path)),
           open: (input) => ({
             path: `/replacement/${input.taskId}`,
             instructions: 'Synthetic replacement workspace.',
@@ -245,7 +246,6 @@ test(
               await writeFile(join(input.workspacePath, path), text);
               return 'Saved.';
             },
-            resolveArtifact: async (path) => join(input.workspacePath, path),
           }),
         },
         speech: {

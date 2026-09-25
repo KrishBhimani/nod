@@ -33,7 +33,7 @@ const historySchema = z
   })
   .strict();
 const columns =
-  'id,title,prompt,kind,cron,run_at AS "runAt",time_zone AS "timeZone",enabled,revision,next_run_at AS "nextRun",job_id AS "jobId",delivery_channel AS "deliveryChannel",channel_source_id AS "channelSourceId"';
+  'id,title,prompt,kind,cron,run_at AS "runAt",time_zone AS "timeZone",enabled,revision,next_run_at AS "nextRun",job_id AS "jobId",delivery_channel AS "deliveryChannel",channel_source_id AS "channelSourceId",authority_instruction AS "authorityInstruction",authority_source_message_id AS "authoritySourceMessageId"';
 
 export interface ScheduleDependencies {
   pool: Pool;
@@ -61,6 +61,8 @@ interface ScheduleRow {
   jobId: string | null;
   deliveryChannel: string;
   channelSourceId: string | null;
+  authorityInstruction: string | null;
+  authoritySourceMessageId: string | null;
 }
 
 interface ScheduleJob {
@@ -222,8 +224,8 @@ export function createSchedules(dependencies: ScheduleDependencies) {
           [taskId, ownerId, row.channelSourceId],
         );
       await client.query(
-        `INSERT INTO schedule_runs(id,owner_id,schedule_id,schedule_revision,job_id,title,task_id,scheduled_for,time_zone)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        `INSERT INTO schedule_runs(id,owner_id,schedule_id,schedule_revision,job_id,title,task_id,scheduled_for,time_zone,authority_instruction,authority_source_message_id,action_prompt)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
         [
           randomUUID(),
           ownerId,
@@ -234,6 +236,9 @@ export function createSchedules(dependencies: ScheduleDependencies) {
           taskId,
           row.nextRun,
           row.timeZone,
+          row.authorityInstruction,
+          row.authoritySourceMessageId,
+          row.prompt,
         ],
       );
       if (row.kind === 'once') {
@@ -270,6 +275,8 @@ export function createSchedules(dependencies: ScheduleDependencies) {
       ALTER TABLE schedules ADD COLUMN IF NOT EXISTS job_id uuid;
       ALTER TABLE schedules ADD COLUMN IF NOT EXISTS delivery_channel text NOT NULL DEFAULT 'web';
       ALTER TABLE schedules ADD COLUMN IF NOT EXISTS channel_source_id text;
+      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS authority_instruction text;
+      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS authority_source_message_id uuid;
       CREATE TABLE IF NOT EXISTS schedule_runs (
         id uuid PRIMARY KEY, owner_id text NOT NULL, schedule_id uuid NOT NULL,
         schedule_revision integer NOT NULL, job_id uuid UNIQUE NOT NULL,
@@ -277,6 +284,9 @@ export function createSchedules(dependencies: ScheduleDependencies) {
         time_zone text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
         UNIQUE(schedule_id,schedule_revision,scheduled_for)
       );
+      ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS authority_instruction text;
+      ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS authority_source_message_id uuid;
+      ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS action_prompt text;
       CREATE INDEX IF NOT EXISTS schedule_runs_owner_time ON schedule_runs(owner_id,created_at DESC,id DESC);
       CREATE INDEX IF NOT EXISTS schedule_runs_schedule ON schedule_runs(owner_id,schedule_id,created_at DESC,id DESC);
     `);
@@ -475,6 +485,23 @@ export function createSchedules(dependencies: ScheduleDependencies) {
     return { channel: task.channel, sourceId: route.source_id };
   }
 
+  async function authority(
+    client: PoolClient,
+    prompt: string,
+    provenance?: { taskId?: string; sourceMessageId: string | null },
+  ) {
+    if (!provenance) return { instruction: prompt, sourceMessageId: null };
+    if (!provenance.sourceMessageId) return { instruction: null, sourceMessageId: null };
+    const row = (
+      await client.query<{ text: string }>(
+        "SELECT text FROM messages WHERE id=$1 AND owner_id=$2 AND role='user' AND ($3::uuid IS NULL OR task_id=$3) FOR SHARE",
+        [provenance.sourceMessageId, ownerId, provenance.taskId ?? null],
+      )
+    ).rows[0];
+    if (!row) throw invalid('The schedule instruction is unavailable.');
+    return { instruction: row.text, sourceMessageId: provenance.sourceMessageId };
+  }
+
   async function create(
     raw: unknown,
     provenance?: { taskId?: string; sourceMessageId: string | null },
@@ -482,10 +509,11 @@ export function createSchedules(dependencies: ScheduleDependencies) {
     const input = validateCreate(raw);
     const row = await transaction(async (client) => {
       const route = await deliveryRoute(client, provenance);
+      const authorized = await authority(client, input.prompt, provenance);
       const saved = (
         await client.query<ScheduleRow>(
-          `INSERT INTO schedules(id,owner_id,title,prompt,kind,cron,run_at,time_zone,delivery_channel,channel_source_id)
-           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING ${columns}`,
+          `INSERT INTO schedules(id,owner_id,title,prompt,kind,cron,run_at,time_zone,delivery_channel,channel_source_id,authority_instruction,authority_source_message_id)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING ${columns}`,
           [
             randomUUID(),
             ownerId,
@@ -497,6 +525,8 @@ export function createSchedules(dependencies: ScheduleDependencies) {
             input.timeZone,
             route.channel,
             route.sourceId,
+            authorized.instruction,
+            authorized.sourceMessageId,
           ],
         )
       ).rows[0]!;
@@ -506,7 +536,11 @@ export function createSchedules(dependencies: ScheduleDependencies) {
     return value(row);
   }
 
-  async function update(id: string, raw: unknown) {
+  async function update(
+    id: string,
+    raw: unknown,
+    provenance?: { taskId?: string; sourceMessageId: string | null },
+  ) {
     z.uuid().parse(id);
     const input = updateSchema.parse(raw);
     if (!Object.keys(input).length) throw invalid('Choose a schedule detail to update.');
@@ -519,11 +553,18 @@ export function createSchedules(dependencies: ScheduleDependencies) {
       ).rows[0];
       if (!previous) throw Object.assign(new Error('Schedule not found.'), { statusCode: 404 });
       const next = updateValue(previous, input);
+      const authorized =
+        input.prompt === undefined
+          ? {
+              instruction: previous.authorityInstruction,
+              sourceMessageId: previous.authoritySourceMessageId,
+            }
+          : await authority(client, input.prompt, provenance);
       await cancelPending(client, previous);
       const saved = (
         await client.query<ScheduleRow>(
           `UPDATE schedules SET title=$3,prompt=$4,kind=$5,cron=$6,run_at=$7,time_zone=$8,
-             enabled=$9,revision=revision+1 WHERE id=$1 AND owner_id=$2 RETURNING ${columns}`,
+             enabled=$9,authority_instruction=$10,authority_source_message_id=$11,revision=revision+1 WHERE id=$1 AND owner_id=$2 RETURNING ${columns}`,
           [
             id,
             ownerId,
@@ -534,6 +575,8 @@ export function createSchedules(dependencies: ScheduleDependencies) {
             next.runAt ?? null,
             next.timeZone,
             next.enabled,
+            authorized.instruction,
+            authorized.sourceMessageId,
           ],
         )
       ).rows[0]!;

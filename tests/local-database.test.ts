@@ -366,3 +366,21 @@ test('missing database setup permits module imports but fails before database in
     await local.close();
   }
 });
+
+test('local database options survive password replacement without retaining an obsolete password', async () => {
+  const local = await fixture(
+    'DATABASE_URL=postgresql://sidekick:obsolete@localhost:54329/sidekick?application_name=sidekick&sslmode=disable&password=obsolete\n',
+  );
+  try {
+    const database = await prepareLocalDatabase(local.directory, {});
+    const url = new URL(database.serverDatabaseUrl);
+    assert.equal(url.password, database.password);
+    assert.equal(url.searchParams.get('password'), database.password);
+    assert.equal(url.searchParams.get('application_name'), 'sidekick');
+    assert.equal(url.searchParams.get('sslmode'), 'disable');
+    assert.equal((await local.read()).DATABASE_URL, database.serverDatabaseUrl);
+    assert.deepEqual(await prepareLocalDatabase(local.directory, {}), database);
+  } finally {
+    await local.close();
+  }
+});

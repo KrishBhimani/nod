@@ -8,7 +8,7 @@ export interface PublicLinkMetadata {
 
 export interface PreviewImage {
   bytes: Uint8Array;
-  mimeType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
 }
 
 export interface LinkPreviewProvider {

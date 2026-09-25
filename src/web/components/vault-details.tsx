@@ -186,6 +186,11 @@ export function VaultDetails({
     const username = String(data.get('username') ?? '');
     const cardholder = String(data.get('cardholder') ?? '');
     let replacement = String(data.get(isCard ? 'cardNumber' : 'password') ?? '');
+    if (isCard && data.has('cardNumber') && !replacement.trim()) {
+      setError('Enter the new card number or cancel this change.');
+      event.currentTarget.querySelector<HTMLInputElement>('[name="cardNumber"]')?.focus();
+      return;
+    }
     let securityCode = data.has('removeSecurityCode')
       ? null
       : String(data.get('securityCode') ?? '');

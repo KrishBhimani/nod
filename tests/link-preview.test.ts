@@ -40,6 +40,9 @@ test('preview eligibility blocks local, credential, consent and token URLs befor
     'https://example.com/vault/opaque',
     'https://example.com/%63redentials/opaque',
     'https://example.com/approvals/opaque',
+    'https://example.com/approval/token',
+    'https://example.com/consent/token',
+    'https://example.com/reset/token',
     'https://example.com/api/artifacts/opaque',
     'https://example.com/login',
     'https://example.com/unsubscribe/opaque',
@@ -173,6 +176,7 @@ test('pinned HTTP transport sends no cookies or authorization and stops after bo
     assert.equal(request.headers.authorization, undefined);
     assert.equal(request.headers.referer, undefined);
     assert.equal(request.headers['accept-encoding'], 'identity');
+    assert.ok(!request.headers.accept?.includes('image/gif'));
     const body = `<head><title>Bounded metadata</title></head>${'x'.repeat(400000)}`;
     reply.writeHead(200, {
       'content-type': 'text/html',
@@ -340,5 +344,47 @@ test('a stalled DNS lookup reaches the overall preview deadline without an HTTP 
     assert.equal(requested, false);
   } finally {
     clearTimeout(keepAlive);
+  }
+});
+
+test('image capacity eviction refreshes its paired preview instead of returning a broken cached image', async () => {
+  let calls = 0;
+  const previews = createLinkPreviews({
+    metadata: async (url) => {
+      calls++;
+      return { url, title: 'Fixture', image: 'https://example.com/cover.png' };
+    },
+    image: async () => ({ mimeType: 'image/png', bytes: png }),
+  });
+  const first = await previews.preview('https://example.com/article-0');
+  for (let i = 1; i < 33; i++) await previews.preview(`https://example.com/article-${i}`);
+  const refreshed = await previews.preview('https://example.com/article-0');
+  assert.notEqual(refreshed?.imageUrl, first?.imageUrl);
+  assert.equal(calls, 34);
+  assert.ok(await previews.image(refreshed!.imageUrl!.split('/').at(-1)!));
+});
+
+test('image previews reject PNG animation chunks and truncated chunk lengths', async () => {
+  for (const kind of ['acTL', 'fcTL', 'fdAT']) {
+    const chunk = Buffer.alloc(20);
+    chunk.writeUInt32BE(8, 0);
+    chunk.write(kind, 4, 'ascii');
+    const body = Buffer.concat([png.subarray(0, 33), chunk, png.subarray(33)]);
+    const provider = createPublicLinkPreviewProvider({
+      resolver: addresses,
+      request: async () => ({ status: 200, headers: { 'content-type': 'image/png' }, body }),
+    });
+    assert.equal(await provider.image('https://example.com/image'), null, kind);
+  }
+  for (const body of [
+    png.subarray(0, 24),
+    png.subarray(0, png.length - 1),
+    Buffer.concat([png, Buffer.from('trailing')]),
+  ]) {
+    const provider = createPublicLinkPreviewProvider({
+      resolver: addresses,
+      request: async () => ({ status: 200, headers: { 'content-type': 'image/png' }, body }),
+    });
+    assert.equal(await provider.image('https://example.com/image'), null);
   }
 });

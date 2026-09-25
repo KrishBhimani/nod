@@ -1,8 +1,9 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Plus } from 'lucide-react';
 import { reactionEmoji } from '../../shared/emoji';
 import { reactionName } from '../lib/reactions';
 import { Loading } from './ui';
+import { currentTheme, subscribeTheme } from '../lib/theme';
 
 const commonReactions = ['👍', '❤️', '😂', '🎉', '😮', '🙏'];
 
@@ -11,10 +12,11 @@ const EmojiCatalog = lazy(async () => {
   const EmojiPicker = (Picker as typeof Picker & { default?: typeof Picker }).default ?? Picker;
   return {
     default: function Catalog({ onSelect }: { onSelect(emoji: string, name: string): void }) {
+      const theme = useSyncExternalStore(subscribeTheme, currentTheme, () => 'light');
       return (
         <EmojiPicker
           emojiStyle={EmojiStyle.NATIVE}
-          theme={Theme.LIGHT}
+          theme={theme === 'dark' ? Theme.DARK : Theme.LIGHT}
           width="100%"
           height={360}
           autoFocusSearch

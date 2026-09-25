@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
+import { JSDOM } from 'jsdom';
 import {
   createAgentBrowserComputer,
   redactBrowserText,
@@ -393,4 +394,69 @@ test('waiting holds preserve the page across idle cleanup and OAuth selection re
     await computer.dispose();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('a focused generic identifier is not replaced by an unrelated recognized form', () => {
+  const page = new JSDOM(
+    '<form id="login"><h1>Sign in</h1><input id="generic"><button>Next</button></form><form id="newsletter"><input type="email"><button>Subscribe</button></form>',
+    { url: 'https://example.test/login', runScripts: 'outside-only' },
+  );
+  try {
+    page.window.HTMLElement.prototype.getClientRects = () =>
+      [{ x: 0, y: 0, width: 200, height: 30 }] as unknown as DOMRectList;
+    Object.defineProperty(page.window.HTMLElement.prototype, 'innerText', {
+      get() {
+        return this.textContent;
+      },
+    });
+    const focused = page.window.document.getElementById('generic')!;
+    focused.focus();
+    const result = loginInspectionSchema.parse(page.window.eval(loginInspectionScript()));
+    assert.equal(result.fields.length, 1);
+    assert.equal(page.window.document.querySelector(result.fields[0].selector), focused);
+    assert.equal(result.methods.find((method) => method.id === 'credentials')?.supported, true);
+    focused.blur();
+    const ambiguous = loginInspectionSchema.parse(page.window.eval(loginInspectionScript()));
+    assert.equal(ambiguous.methods.find((method) => method.id === 'credentials')?.supported, false);
+  } finally {
+    page.window.close();
+  }
+});
+
+test('login methods reject named, inherited and non-current browsing targets', () => {
+  for (const html of [
+    '<a target="popup">Continue with Google</a>',
+    '<form target="popup"><button>Continue with Google</button></form>',
+    '<form><button formtarget="popup">Continue with Google</button></form>',
+    '<base target="popup"><a>Continue with Google</a>',
+    '<a target="_top">Continue with Google</a>',
+    '<form target="popup"><input type="password"><button>Sign in</button></form>',
+  ]) {
+    const page = new JSDOM(html, { url: 'https://example.test/login', runScripts: 'outside-only' });
+    try {
+      page.window.HTMLElement.prototype.getClientRects = () =>
+        [{ x: 0, y: 0, width: 200, height: 30 }] as unknown as DOMRectList;
+      Object.defineProperty(page.window.HTMLElement.prototype, 'innerText', {
+        get() {
+          return this.textContent;
+        },
+      });
+      const result = loginInspectionSchema.parse(page.window.eval(loginInspectionScript()));
+      assert.ok(result.methods.length, html);
+      assert.equal(
+        result.methods.some((method) => method.supported),
+        false,
+        html,
+      );
+      assert.equal(result.submitSelector, undefined, html);
+    } finally {
+      page.window.close();
+    }
+  }
+  const page = new LoginDom();
+  page.body.append(element('a', { target: '_self' }, 'Continue with Google'));
+  assert.equal(
+    loginInspectionSchema.parse(page.evaluate(loginInspectionScript())).methods[0].supported,
+    true,
+  );
 });

@@ -55,3 +55,14 @@ test('code examples stay literal and artifact images are allowed', () => {
   assert.match(result, /&lt;strong&gt;example&lt;\/strong&gt;/);
   assert.match(result, /src="\/api\/artifacts\/12345678-1234-1234-1234-123456789abc"/);
 });
+
+test('local links consume private suffixes and do not nest inside formatted links', () => {
+  const result = render(
+    '/vault/request?token=hidden#secret. Next [**/vault/label**](https://example.com/article) and /approvals/retired.',
+  );
+  assert.match(result, /href="\/vault\/request"/);
+  assert.doesNotMatch(result, /hidden|#secret|href="\/vault\/label"|href="\/approvals/);
+  assert.equal((result.match(/<a /g) ?? []).length, 2);
+  assert.match(result, /Next/);
+  assert.match(result, /\/approvals\/retired/);
+});

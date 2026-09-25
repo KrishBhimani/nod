@@ -37,7 +37,7 @@ for (const file of await files(sourceRoot)) {
       node.expression.kind === ts.SyntaxKind.ImportKeyword &&
       node.arguments[0];
     const literal = specifier || dynamic;
-    if (literal && ts.isStringLiteral(literal)) {
+    if (literal && ts.isStringLiteralLike(literal)) {
       const dependency = literal.text;
       if (vendor.test(dependency) && layer !== 'providers')
         problem(`Vendor dependency ${dependency} belongs in providers.`);

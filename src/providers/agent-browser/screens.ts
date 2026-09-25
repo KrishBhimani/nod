@@ -66,6 +66,7 @@ export function existingDaemonCommand(
   signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
     const socket = connect(path);
+    socket.setEncoding('utf8');
     let received = '';
     let settled = false;
     const stop = (error?: Error, data?: Record<string, unknown>) => {
@@ -84,8 +85,8 @@ export function existingDaemonCommand(
     socket.once('connect', () =>
       socket.write(JSON.stringify({ id: randomUUID(), ...command }) + '\n'),
     );
-    socket.on('data', (chunk: Buffer) => {
-      received += chunk.toString('utf8');
+    socket.on('data', (chunk: string) => {
+      received += chunk;
       if (Buffer.byteLength(received) > 256 * 1024)
         return stop(new Error('Browser observation exceeded its limit.'));
       const end = received.indexOf('\n');

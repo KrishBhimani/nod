@@ -1,18 +1,26 @@
 import type { Root, Text, Link, Parent } from 'mdast';
-import { visit } from 'unist-util-visit';
+import { SKIP, visit } from 'unist-util-visit';
 
 export function remarkLocalLinks() {
   return (tree: Root) => {
-    visit(tree, 'text', (node: Text, index, parent) => {
-      if (index === undefined || !parent || ['link', 'linkReference'].includes(parent.type)) return;
+    visit(tree, (node, index, parent) => {
+      if (node.type === 'link' || node.type === 'linkReference') return SKIP;
+      if (node.type !== 'text' || index === undefined || !parent) return;
       const parts: (Text | Link)[] = [];
       const pattern =
-        /(?<![\w/:])\/(?:api\/artifacts|vault|credentials|approvals)\/[A-Za-z0-9_-]+/g;
+        /(?<![\w/:])\/(?:api\/artifacts|vault|credentials)\/[A-Za-z0-9_-]+(?:[?#][^\s<>"'\[\]()]+)?/g;
       let cursor = 0;
       for (const match of node.value.matchAll(pattern)) {
         if (match.index > cursor)
           parts.push({ type: 'text', value: node.value.slice(cursor, match.index) });
-        parts.push({ type: 'link', url: match[0], children: [{ type: 'text', value: match[0] }] });
+        const destination = match[0].replace(/[.,;:!?]+$/, '');
+        parts.push({
+          type: 'link',
+          url: destination,
+          children: [{ type: 'text', value: destination }],
+        });
+        if (destination.length < match[0].length)
+          parts.push({ type: 'text', value: match[0].slice(destination.length) });
         cursor = match.index + match[0].length;
       }
       if (!parts.length) return;

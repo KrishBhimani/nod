@@ -132,6 +132,96 @@ test(
       );
 
       await t.test(
+        'due runs execute only their immutable owned scheduled instruction',
+        async () => {
+          const { createApprovals } = await import('../src/server/approvals.ts');
+          const executed: unknown[] = [];
+          const approvals = await createApprovals(async (action, args, context) => {
+            executed.push({ action, args, context });
+            return { sent: true };
+          });
+          const schedule = await create({
+            kind: 'once',
+            runAt: '2035-10-27T09:05:00+01:00',
+            prompt: 'Send an email to Alex with the weekly update.',
+          });
+          await deliver([await jobFor(schedule.id)]);
+          const run = (await runs(schedule.id))[0]!;
+          await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1", [run.taskId]);
+          assert.deepEqual(
+            await approvals.request(
+              run.taskId,
+              'GMAIL_SEND_EMAIL',
+              { to: 'alex@example.test', body: 'Synthetic fixture' },
+              { revision: 0 },
+            ),
+            { sent: true },
+          );
+          await approvals.request(
+            run.taskId,
+            'GMAIL_SEND_EMAIL',
+            { to: 'alex@example.test', body: 'Synthetic fixture' },
+            { revision: 0 },
+          );
+          assert.equal(executed.length, 1);
+          await assert.rejects(
+            approvals.request(
+              run.taskId,
+              'SLACK_SEND_MESSAGE',
+              { text: 'No authority' },
+              { revision: 0 },
+            ),
+          );
+          await assert.rejects(
+            approvals.request(
+              run.taskId,
+              'GMAIL_DELETE_MESSAGE',
+              { message_id: 'fixture' },
+              { revision: 0 },
+            ),
+          );
+          const edited = await create({ cron: '5 9 * * *', prompt: 'Send an email to Alex.' });
+          const source = randomUUID();
+          await db.pool.query(
+            "INSERT INTO messages(id,owner_id,role,text) VALUES($1,'local-development','user','Change it to draft an email to Alex and keep it unsent.')",
+            [source],
+          );
+          await personal.manage(
+            'schedule_update',
+            { id: edited.id, prompt: 'Draft an email to Alex and keep it unsent.' },
+            { sourceMessageId: source },
+          );
+          await deliver([await jobFor(edited.id)]);
+          const draft = (await runs(edited.id))[0]!;
+          await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1", [draft.taskId]);
+          await assert.rejects(
+            approvals.request(
+              draft.taskId,
+              'GMAIL_SEND_EMAIL',
+              { to: 'alex@example.test' },
+              { revision: 0 },
+            ),
+          );
+          assert.equal(executed.length, 1);
+          const generic = await tasks.submitTask('Send an email to Alex.', [], undefined, true, {
+            source: 'event',
+            sourceId: 'synthetic-event',
+          });
+          await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1", [generic]);
+          await assert.rejects(
+            approvals.request(
+              generic,
+              'GMAIL_SEND_EMAIL',
+              { to: 'alex@example.test' },
+              { revision: 0 },
+            ),
+          );
+          assert.equal(executed.length, 1);
+          await request('DELETE', `/api/schedules/${schedule.id}`);
+          await request('DELETE', `/api/schedules/${edited.id}`);
+        },
+      );
+      await t.test(
         'one-off firing is single-use under concurrent redelivery and restart',
         async () => {
           const schedule = await create({ kind: 'once', runAt: '2035-10-27T09:05:00+01:00' });

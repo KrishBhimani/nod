@@ -42,6 +42,7 @@ export function createTakeover(dependencies: {
     | 'takeControl'
     | 'control'
     | 'releaseControl'
+    | 'close'
     | 'openSignIn'
     | 'finishSignIn'
     | 'signInScreenshot'
@@ -91,7 +92,7 @@ export function createTakeover(dependencies: {
     }
     if (leases.get(taskId) === lease) leases.delete(taskId);
   }
-  async function state(taskId: string) {
+  async function state(taskId: string, acquiring = false) {
     const result = await dependencies.pool.query(
       'SELECT status,revision,waiting_reason FROM tasks WHERE id=$1 AND owner_id=$2',
       [taskId, dependencies.ownerId],
@@ -101,6 +102,12 @@ export function createTakeover(dependencies: {
       throw Object.assign(new Error('Task not found.'), { statusCode: 404 });
     }
     const row = result.rows[0];
+    if (
+      acquiring &&
+      !['running', 'queued'].includes(row.status) &&
+      !(row.status === 'waiting_user' && ['manual_control', 'browser'].includes(row.waiting_reason))
+    )
+      throw stale();
     const paused = row.status === 'waiting_user' && row.waiting_reason === 'manual_control';
     const lease = leases.get(taskId);
     const active = paused && lease && lease.revision === row.revision && lease.until > Date.now();
@@ -159,7 +166,7 @@ export function createTakeover(dependencies: {
               !dependencies.computer.releaseControl
             )
               throw unavailable();
-            await state(taskId);
+            await state(taskId, true);
             const { revision } = await dependencies.pause(taskId);
             await releaseLease(taskId);
             await drain(taskId);
@@ -243,13 +250,23 @@ export function createTakeover(dependencies: {
           if (!dependencies.computer.releaseControl) throw unavailable();
           try {
             await dependencies.computer.finishSignIn?.(taskId);
-            await current(taskId, revision);
+            try {
+              await current(taskId, revision);
+            } catch (error) {
+              await dependencies.computer.close(taskId);
+              throw error;
+            }
             await dependencies.computer.releaseControl(taskId);
           } catch {
             throw unavailable();
           }
           leases.delete(taskId);
-          await current(taskId, revision);
+          try {
+            await current(taskId, revision);
+          } catch (error) {
+            await dependencies.computer.close(taskId);
+            throw error;
+          }
           return dependencies.resume(taskId, revision);
         });
       });

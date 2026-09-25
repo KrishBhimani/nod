@@ -49,7 +49,7 @@ export const requestPublicPreview: PreviewRequest = ({
           Accept:
             purpose === 'download'
               ? '*/*'
-              : 'text/html,application/xhtml+xml,image/png,image/jpeg,image/webp,image/gif',
+              : 'text/html,application/xhtml+xml,image/png,image/jpeg,image/webp',
           'Accept-Encoding': 'identity',
         },
         maxHeaderSize: 16384,
@@ -155,8 +155,19 @@ function imageType(bytes: Uint8Array): PreviewImage['mimeType'] | null {
   if (
     value.length >= 24 &&
     value.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-  )
-    return dimensions(value.readUInt32BE(16), value.readUInt32BE(20)) ? 'image/png' : null;
+  ) {
+    if (!dimensions(value.readUInt32BE(16), value.readUInt32BE(20))) return null;
+    let offset = 8;
+    while (offset + 12 <= value.length) {
+      const length = value.readUInt32BE(offset);
+      if (length > value.length - offset - 12) return null;
+      const kind = value.toString('ascii', offset + 4, offset + 8);
+      if (['acTL', 'fcTL', 'fdAT'].includes(kind)) return null;
+      if (kind === 'IEND') return length === 0 && offset + 12 === value.length ? 'image/png' : null;
+      offset += length + 12;
+    }
+    return null;
+  }
   if (value.length >= 4 && value[0] === 255 && value[1] === 216 && value[2] === 255) {
     let offset = 2;
     while (offset + 4 <= value.length) {

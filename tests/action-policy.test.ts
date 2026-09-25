@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   confirmationAnswer,
   explicitlyRequestsAction,
+  explicitlyRequestsScheduledAction,
   forbidsTransmission,
   isReversiblePlanAction,
 } from '../src/server/action-policy.ts';
@@ -133,10 +134,69 @@ test('chat answers must be unambiguous and the question names the actual action 
       options: { token: 'hidden-token', retain: false },
     },
     { name: 'Gmail', accountEmail: 'fixture@example.com' },
+    'Invoice for September',
   );
+  assert.match(question, /For: Invoice for September/);
   assert.match(question, /Delete this email using Gmail \(fixture@example.com\)/);
   assert.equal(question.includes('email-42'), false);
   assert.equal(question.includes('hidden-connection'), false);
   assert.equal(question.includes('hidden-token'), false);
   assert.equal(question.includes('/approvals/'), false);
+});
+
+test('quoted outgoing content does not revoke an explicit send instruction', () => {
+  for (const text of [
+    'Send an email to Alex saying "Do not send this to anyone else."',
+    'Send a Slack message saying “Do not publish this draft.”',
+    "Send an email with the text 'Keep it unsent' to Alex.",
+  ]) {
+    const action = text.includes('Slack') ? 'SLACK_SEND_MESSAGE' : 'GMAIL_SEND_EMAIL';
+    assert.equal(forbidsTransmission(action, text), false);
+    assert.equal(explicitlyRequestsAction(action, text), true);
+    assert.equal(forbidsTransmission(action, text + ' But do not send it yet.'), true);
+  }
+});
+
+test('scheduled writes require a saved matching user instruction and preserve draft boundaries', () => {
+  const prompt = 'Send an email to Alex with the weekly update.';
+  for (const instruction of [
+    prompt,
+    'Every morning at 9, send an email to Alex with the weekly update.',
+    'Tomorrow at 09:00 Europe/Lisbon send an email to Alex.',
+    'Schedule a task to send an email to Alex.',
+    'Create a recurring schedule to send an email to Alex.',
+  ])
+    assert.equal(
+      explicitlyRequestsScheduledAction('GMAIL_SEND_EMAIL', instruction, prompt),
+      true,
+      instruction,
+    );
+  for (const instruction of [
+    'Check my email every morning.',
+    'Remind me to send an email to Alex.',
+    'Every morning draft an email to Alex.',
+    'Every morning send an email to Alex, but keep it unsent.',
+    'Do not send an email to Alex.',
+  ])
+    assert.equal(
+      explicitlyRequestsScheduledAction('GMAIL_SEND_EMAIL', instruction, prompt),
+      false,
+      instruction,
+    );
+  assert.equal(
+    explicitlyRequestsScheduledAction(
+      'SLACK_SEND_MESSAGE',
+      'Every morning send an email to Alex.',
+      'Send a Slack message to Alex.',
+    ),
+    false,
+  );
+  assert.equal(
+    explicitlyRequestsScheduledAction(
+      'SIDEKICK_goal_create',
+      'Create a goal every day.',
+      'Create a goal.',
+    ),
+    false,
+  );
 });

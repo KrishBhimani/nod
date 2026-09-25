@@ -207,7 +207,7 @@ test(
       await t.test(
         'message replies and manual control preserve owner, channel and revision boundaries',
         async () => {
-          const id = await waitingTask('Owned browser work');
+          const id = await waitingTask('Owned browser work', 'browser');
           const messageId = (
             await db.pool.query("SELECT id FROM messages WHERE task_id=$1 AND role='assistant'", [
               id,
@@ -224,6 +224,37 @@ test(
             tasks.submitUserMessage('Answer', [], { replyToMessageId: randomUUID() }),
             /unavailable/,
           );
+          for (const [status, reason] of [
+            ['succeeded', null],
+            ['failed', null],
+            ['cancelled', null],
+            ['waiting_user', 'question'],
+            ['waiting_user', 'approval'],
+            ['waiting_credentials', 'credentials'],
+          ]) {
+            const protectedId = await waitingTask('Protected browser work');
+            await db.pool.query('UPDATE tasks SET status=$2,waiting_reason=$3 WHERE id=$1', [
+              protectedId,
+              status,
+              reason,
+            ]);
+            await assert.rejects(
+              tasks.pauseOwnedTaskForControl(protectedId),
+              /not waiting for browser control/,
+            );
+            const protectedRow = (
+              await db.pool.query(
+                'SELECT status,waiting_reason,waiting_question,revision FROM tasks WHERE id=$1',
+                [protectedId],
+              )
+            ).rows[0];
+            assert.deepEqual(protectedRow, {
+              status,
+              waiting_reason: reason,
+              waiting_question: 'Which city?',
+              revision: 0,
+            });
+          }
           const first = await tasks.pauseOwnedTaskForControl(id);
           assert.deepEqual(await tasks.pauseOwnedTaskForControl(id), first);
           assert.equal(first.revision, 1);

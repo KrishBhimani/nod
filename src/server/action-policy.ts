@@ -84,7 +84,10 @@ export function forbidsTransmission(action: string, instruction: string) {
     ].includes(action)
   )
     return false;
-  const request = requestedInstruction(instruction);
+  const request = requestedInstruction(instruction).replace(
+    /"(?:\\.|[^"\\])*"|“[^”]*”|(?:^|\s)'(?:\\.|[^'\\])*'(?=\s|[.,!?]|$)/g,
+    ' ',
+  );
   return (
     /\b(?:don't send|do not send|not send|do not publish|don't publish|não envies|não enviar)\b/i.test(
       request,
@@ -114,6 +117,32 @@ export function explicitlyRequestsAction(action: string, instruction: string) {
   )
     return false;
   return intents.some((intent) => intentWords[intent].test(request));
+}
+
+export function explicitlyRequestsScheduledAction(
+  action: string,
+  instruction: string,
+  prompt: string,
+) {
+  if (
+    action.startsWith('SIDEKICK_') ||
+    !explicitlyRequestsAction(action, prompt) ||
+    forbidsTransmission(action, instruction)
+  )
+    return false;
+  const request = requestedInstruction(instruction);
+  if (/^(?:don't|do not|never|remind me|não)\b/i.test(request)) return false;
+  if (explicitlyRequestsAction(action, request)) return true;
+  const scheduled = request.replace(
+    /^(?:schedule(?:\s+(?:a|the))?(?:\s+(?:task|job))?\s+to|create\s+(?:a\s+)?(?:recurring\s+|one-off\s+)?schedule\s+to)\s+/i,
+    '',
+  );
+  if (scheduled !== request && explicitlyRequestsAction(action, scheduled)) return true;
+  const timed = request.replace(
+    /^(?:(?:every|each)\s+(?:day|morning|evening|night|week|weekday|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|tomorrow|today|on\s+\d{4}-\d{2}-\d{2})(?:\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?(?:\s+(?:[A-Za-z_]+\/[A-Za-z_/]+|UTC|GMT))?)?[, :]?\s+/i,
+    '',
+  );
+  return timed !== request && explicitlyRequestsAction(action, timed);
 }
 
 export function confirmationAnswer(text: string) {

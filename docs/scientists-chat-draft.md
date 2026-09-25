@@ -1,6 +1,6 @@
-# Draft for scientists-chat
+# Scientists-chat announcement
 
-Unsent draft, prepared 2026-09-25. Refresh the validation and browser status before sending.
+The original announcement was verified posted on 2026-09-25: https://n8nio.slack.com/archives/C0BT5S8CV42/p1790351646964669. The text below is the refreshed brief; later changes are shared as a follow-up instead of posting the full introduction again.
 
 ---
 
@@ -15,7 +15,7 @@ TL;DR: Sidekick is a local assistant that can do work from one chat: use connect
 
 **What you can try**
 
-Public browsing and screenshots; file creation and attachment previews; named logins and cards in Vault; goals with active/completed views; one-off and recurring schedules; mobile navigation; and Inspector for tool calls, activity and estimated costs. Gmail, Calendar, Drive, Docs, Sheets, Slack and Notion adapters are present, with optional Telegram/WhatsApp channels. Each provider still needs its own live validation.
+Public browsing and screenshots; file creation and attachment previews; named logins and cards in Vault; goals with active/completed views; one-off and recurring schedules; mobile navigation and light/dark themes; and Inspector for tool calls, activity and estimated costs. Gmail, Calendar, Drive, Docs, Sheets, Slack and Notion adapters are present, with optional Telegram/WhatsApp channels. Each provider still needs its own live validation.
 
 **Run it**
 
@@ -23,7 +23,9 @@ The code is in https://github.com/n8n-io/sidekick, currently on branch `feat/sid
 
 **Current state and next work**
 
-CI passed 665 tests, checks, build and secret scanning at commit `8ef9044`. Later browser changes still need their own CI run. The recordings cover real app/model/container runs; the login and 2FA examples use synthetic accounts. They do not prove Google or X login. We reproduced an X navigation failure specific to headless Chromium and are fixing the launch mode. Google can reject automated sign-in. Collecting email and password once, and choosing a sign-in method in chat, are also being improved.
+The current local run passed 741 tests with no skips, checks and build. CI repeats PostgreSQL tests, type/import checks, build and secret scans; the PR has its current result. The review fixed command cancellation, artifact boundaries, scheduled action authority, recovery races and slow Apps reads. Desktop/mobile themes have been visually checked and recorded.
+
+The login and 2FA recordings use synthetic accounts. They do not prove Google or X login. Headed workspace Chromium now reaches the real X sign-in page. Email and password are collected in one form across staged site pages; sign-in method selection happens in chat. Google can still reject automated sign-in, with private container-browser takeover available. Provider authentication remains separate validation.
 
 Next priorities: reliable provider sign-in and recovery, live connection/message-delivery tests, review findings, and better coverage of task continuity, memory and cost reporting. This is a single-owner local app; public authentication, tenant isolation, operational recovery and hosting remain unfinished. Payment-card autofill and general desktop control are not implemented.
 

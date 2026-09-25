@@ -5,22 +5,25 @@ export interface ChannelSetupSummary {
   accountName?: string;
   accountHandle?: string;
   mode?: 'polling' | 'webhook';
-  webhookStatus?: 'registered' | 'manual_setup';
+  webhookStatus?: 'registered' | 'manual_setup' | 'registration_pending';
   webhookUrl?: string;
 }
+export interface ChannelSetupConfiguration {
+  environment: Record<string, string>;
+  summary: ChannelSetupSummary;
+}
 export interface ChannelSetupVerifier {
-  verify(
-    provider: ChannelProvider,
-    input: unknown,
-  ): Promise<{
-    environment: Record<string, string>;
-    summary: ChannelSetupSummary;
-  }>;
+  verify(provider: ChannelProvider, input: unknown): Promise<ChannelSetupConfiguration>;
+  register?(provider: ChannelProvider, configuration: ChannelSetupConfiguration): Promise<void>;
 }
 export class ChannelSetupFailure extends Error {
   constructor(
     readonly reason:
-      'invalid_input' | 'verification_failed' | 'existing_webhook' | 'webhook_failed',
+      | 'invalid_input'
+      | 'verification_failed'
+      | 'existing_webhook'
+      | 'webhook_failed'
+      | 'activation_pending',
   ) {
     super(reason);
   }

@@ -74,7 +74,6 @@ export function useAppState() {
     void refresh();
     const events = new EventSource('/api/events');
     events.onopen = () => {
-      dispatchStream({ type: 'reset' });
       setConnected(true);
       void refresh();
     };

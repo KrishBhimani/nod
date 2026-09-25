@@ -1,6 +1,6 @@
 # Sidekick internal brief
 
-Updated 2026-09-25. This describes the repository, not a hosted release or a claim that every provider works. No team announcement has been sent.
+Updated 2026-09-25. This describes the repository, not a hosted release or a claim that every provider works. The [team announcement](https://n8nio.slack.com/archives/C0BT5S8CV42/p1790351646964669) and [recordings](https://n8nio.slack.com/archives/C0BT5S8CV42/p1790351018250929) are available in scientists-chat.
 
 ## What it does
 
@@ -15,7 +15,7 @@ Implemented surfaces include:
 - **Channels:** one allowlisted owner per configured Telegram or WhatsApp channel. Telegram supports owned image/file delivery; WhatsApp supports text in its reply window and a local-app attachment fallback. Secure credential forms remain local.
 - **Inspector:** current browser, active work, tool counts and actual calls, provider-grouped usage/cost estimates and private prompt snapshots. Unknown prices and failed recordings can make totals incomplete; these are not invoices.
 
-The mobile interface uses an icons-only bottom navigation bar. More contains Inspector and Get started. Apps uses a simple service list, and Vault details owns editing and confirmed deletion. [Web implementation](../src/web/AGENTS.md).
+The mobile interface uses an icons-only bottom navigation bar. More contains Inspector, the light/dark theme switch and Get started. An explicit theme persists across reloads and app windows. Apps uses a simple service list, and Vault details owns editing and confirmed deletion. [Web implementation](../src/web/AGENTS.md).
 
 ## How it works
 
@@ -46,6 +46,6 @@ The [verification index](verification.md) separates automated checks, real local
 
 Those earlier browser and authentication reports do not establish the new container path. Current transport/desktop fixtures use synthetic data; the verification index records any subsequent container acceptance run. Neither fake 2FA nor a successful synthetic login proves real-provider authentication.
 
-The first remote CI run passed at commit `8ef9044`: 665 tests, type checks, build and secret scanning. [CI result](https://github.com/n8n-io/sidekick/actions/runs/36154556815). Browser sign-in changes made after that commit need a new run. Passing CI is not deployment or live-provider verification. [Development checks](development.md).
+The latest local aggregate run passed **741 tests with no skips**, checks and build. The [review report](testing/results/2026-09-25-pr-review.md) records fixes and product-boundary decisions; [theme acceptance](testing/results/2026-09-25-themes.md) records real desktop/mobile color inspection. The prior remote CI checkpoint is `a0a9c8e` ([run](https://github.com/n8n-io/sidekick/actions/runs/36194366276)); current-head publication status is tracked in the [verification record](verification.md). Passing CI is not deployment or live-provider verification. [Development checks](development.md).
 
 The [recording post in scientists-chat](https://n8nio.slack.com/archives/C0BT5S8CV42/p1790351018250929) contains four playable examples and a downloadable gallery with 29 clips. The gallery separates 12 current walkthroughs from 17 earlier recordings and describes each result and limitation. Authentication uses synthetic accounts and codes; the recordings do not prove Google or X account login.

@@ -13,13 +13,15 @@ import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 const manualSignIn =
   'Please use Sign in in browser under the browser controls, sign in to X in that separate window, then choose Continue in Sidekick.';
 
-for (const prompt of [
-  'Get my bookmarks on x.com.',
-  'I want a Vault link instead of Sign in in browser.',
-  'Do not ask me to sign in manually; use Vault.',
-])
+for (const [prompt, solicitation] of [
+  ['Get my bookmarks on x.com.', manualSignIn],
+  ['I want a Vault link instead of Sign in in browser.', manualSignIn],
+  ['Do not ask me to sign in manually; use Vault.', manualSignIn],
+  ['Get my bookmarks on x.com.', 'Please provide your login credentials so I can continue.'],
+  ['Get my bookmarks on x.com.', 'Please share your sign-in details to continue.'],
+] as const)
   for (const method of ['ask_user', 'send_message', 'final'])
-    test(`${method} uses the current Vault step for ${prompt}`, async () => {
+    test(`${method} uses the current Vault step for ${prompt}: ${solicitation}`, async () => {
       const directory = await mkdtemp(join(tmpdir(), 'sidekick-vault-default-'));
       const replies: string[] = [];
       const deltas: string[] = [];
@@ -39,13 +41,13 @@ for (const prompt of [
                 }),
             );
             if (method === 'final') {
-              options.onEvent({ type: 'text_delta', text: manualSignIn });
-              options.onEvent({ type: 'final', text: manualSignIn });
+              options.onEvent({ type: 'text_delta', text: solicitation });
+              options.onEvent({ type: 'final', text: solicitation });
             } else
               await options.tools
                 .find((tool) => tool.name === method)!
                 .execute(
-                  method === 'ask_user' ? { question: manualSignIn } : { text: manualSignIn },
+                  method === 'ask_user' ? { question: solicitation } : { text: solicitation },
                 );
           },
           abort() {},
@@ -119,7 +121,10 @@ for (const prompt of [
         assert.deepEqual(replies, [
           'https://x.com needs you to sign in. [Enter login details](/vault/current-x-login).',
         ]);
-        assert.doesNotMatch(deltas.join(''), /Sign in in browser|Continue in Sidekick/);
+        assert.doesNotMatch(
+          deltas.join(''),
+          /Sign in in browser|Continue in Sidekick|login credentials|sign-in details/,
+        );
       } finally {
         await runtime.dispose();
         await rm(directory, { recursive: true, force: true });

@@ -272,3 +272,18 @@ test('known navigation failure pauses screen capture, supports an explicit retry
     await fixture.close();
   }
 });
+
+test('secure input pauses capture until the browser activity changes', async () => {
+  const fixture = await mounted(async () => new Response('', { status: 423 }));
+  try {
+    assert.match(fixture.element.textContent!, /Screen hidden while sign-in details are entered/);
+    await act(async () => {
+      await delay(1100);
+    });
+    assert.equal(fixture.captures(), 1);
+    assert.equal(fixture.element.querySelector('.screen-preview img'), null);
+    assert.equal(takeControl(fixture.element).disabled, true);
+  } finally {
+    await fixture.close();
+  }
+});

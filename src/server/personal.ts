@@ -32,7 +32,20 @@ const goalUpdateSchema = goalSchema
     status: z.enum(['active', 'paused', 'completed']).optional(),
   })
   .strict();
-const memoryProposalSchema = z.object({ text: z.string().trim().min(1).max(2000) }).strict();
+const personalSecret =
+  /\b(?:password|passcode|passphrase|otp|pin|2fa|api[ _-]?key|secret|token|bearer|private[ _-]?key|security code|cvv|cvc|verification code|recovery code|palavra-passe|senha|código de verificação)\b|\bsk-[A-Za-z0-9_-]{12,}|\b(?:\d[ -]?){14,19}\b/i;
+const memoryText = z
+  .string()
+  .trim()
+  .min(1)
+  .max(2000)
+  .refine(
+    (text) => !personalSecret.test(text),
+    'Sign-in details and payment secrets cannot be remembered.',
+  );
+const memoryProposalSchema = z.object({ text: memoryText }).strict();
+const declinedPersonalAnswer =
+  /^(?:no(?: thanks)?\b|skip\b|pass\b|not now\b|none\b|n\/a\b|(?:i(?:'d| would) rather not|i (?:do not|don't|don’t) want to|prefer not to|let(?:'s| us) not)(?:\b|$)|(?:do not|don't|don’t) (?:save|store|remember|ask)|não\b|prefiro não\b|saltar\b)/i;
 const preferenceStatement =
   /^(?:(?:correction:|actually,)\s+)?(?:for [\p{L}\p{N}][\p{L}\p{N} '’-]{0,79},\s+)?i (?:prefer|like|dislike|(?:do not|don['’]t|no longer) (?:prefer|like))\b/iu;
 const goalColumns =
@@ -185,11 +198,7 @@ export function createPersonalService(dependencies: PersonalDependencies) {
           ),
           { statusCode: 400 },
         );
-      if (
-        /\b(?:password|passcode|passphrase|otp|pin|2fa|api[ _-]?key|secret|token|bearer|private[ _-]?key|security code|cvv|cvc|verification code|recovery code|palavra-passe|senha|código de verificação)\b|\bsk-[A-Za-z0-9_-]{12,}|\b(?:\d[ -]?){14,19}\b/i.test(
-          input.quote,
-        )
-      )
+      if (personalSecret.test(input.quote))
         throw Object.assign(
           new Error('Sign-in details and payment secrets cannot be remembered.'),
           { statusCode: 400 },
@@ -216,7 +225,8 @@ export function createPersonalService(dependencies: PersonalDependencies) {
             phone:
               /(?:what(?:'s| is) your (?:phone|mobile)(?: number)?|qual é o teu (?:número|numero)(?: de (?:telefone|telemóvel)))/i,
           };
-          if (questions[input.field].test(previous)) value = input.quote;
+          if (questions[input.field].test(previous) && !declinedPersonalAnswer.test(input.quote))
+            value = input.quote;
         }
         const limit = input.field === 'name' ? 100 : input.field === 'phone' ? 40 : 200;
         if (
@@ -325,10 +335,10 @@ export function createPersonalService(dependencies: PersonalDependencies) {
     if (action === 'schedule_create') return schedules.create(args, provenance);
     if (action === 'schedule_update') {
       const { id, ...input } = args;
-      return schedules.update(String(id || ''), input);
+      return schedules.update(String(id || ''), input, provenance);
     }
     if (action === 'schedule_cancel')
-      return schedules.update(String(args.id || ''), { enabled: false });
+      return schedules.update(String(args.id || ''), { enabled: false }, provenance);
     if (action === 'memory_propose') {
       const { text } = memoryProposalSchema.parse(args);
       const sourceMessageId = z

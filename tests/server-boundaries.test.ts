@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { mkdir, mkdtemp, open, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -206,13 +207,30 @@ test(
           await mkdir(workspace, { recursive: true });
           await writeFile(join(privateDir, 'private.txt'), 'private fixture');
           await symlink(join(privateDir, 'private.txt'), join(workspace, 'escape.txt'));
-          await assert.rejects(artifacts.publishArtifact(id, join(privateDir, 'private.txt')));
-          await assert.rejects(artifacts.publishArtifact(id, 'escape.txt'));
+          const read = async (taskId: string, path: string, maxBytes: number) => {
+            assert.equal(taskId, id);
+            const handle = await open(
+              join(workspace, path),
+              constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+            );
+            try {
+              const stat = await handle.stat();
+              assert.ok(stat.isFile() && stat.size <= maxBytes);
+              return await handle.readFile();
+            } finally {
+              await handle.close();
+            }
+          };
+          await assert.rejects(
+            artifacts.publishArtifact(id, join(privateDir, 'private.txt'), undefined, read),
+          );
+          await assert.rejects(artifacts.publishArtifact(id, 'escape.txt', undefined, read));
           await writeFile(join(workspace, 'report.html'), '<script>window.fixture=true</script>');
           const published = await artifacts.publishArtifact(
             id,
             'report.html',
             '../../report\r\n.html',
+            read,
           );
           assert.equal(published.name, 'report.html');
           const response = await request('GET', published.url);
@@ -228,7 +246,7 @@ test(
             ['preview.m4a', 'audio/mp4'],
           ]) {
             await writeFile(join(workspace, name), '0123456789');
-            const media = await artifacts.publishArtifact(id, name);
+            const media = await artifacts.publishArtifact(id, name, undefined, read);
             assert.equal(media.mimeType, mime);
             const full = await request('GET', media.url);
             assert.match(String(full.headers['content-disposition']), /^inline;/);
@@ -288,6 +306,17 @@ test(
           await assert.rejects(
             artifacts.storeArtifact(Buffer.alloc(artifacts.maxFileSize + 1), 'large', 'text/plain'),
           );
+          const artifactDirectory = join(dataRoot, 'artifacts');
+          const beforeFailedInsert = await readdir(artifactDirectory);
+          await assert.rejects(
+            artifacts.storeArtifact(
+              Buffer.from('Orphan fixture'),
+              'orphan.txt',
+              'text/plain',
+              randomUUID(),
+            ),
+          );
+          assert.deepEqual(await readdir(artifactDirectory), beforeFailedInsert);
           const error = await request('GET', '/api/fixture-error');
           assert.equal(error.statusCode, 500);
           assert.equal(error.body.includes('fixture-private-key'), false);
@@ -598,7 +627,7 @@ test(
         async () => {
           const taskId = await newTask();
           await db.pool.query(
-            "UPDATE tasks SET status='waiting_credentials',waiting_reason='credentials' WHERE id=$1",
+            "UPDATE tasks SET status='waiting_user',waiting_reason='browser' WHERE id=$1",
             [taskId],
           );
           const paused = await tasks.pauseOwnedTaskForControl(taskId);

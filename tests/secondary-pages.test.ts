@@ -224,6 +224,18 @@ test('channel status separates saved configuration from delivery and limits bot 
   assert.equal(channelLabel(undefined, false), 'Not connected');
   assert.equal(
     channelLabel(
+      {
+        provider: 'telegram',
+        enabled: true,
+        mode: 'webhook',
+        webhookStatus: 'registration_pending',
+      },
+      true,
+    ),
+    'Setup needs a retry',
+  );
+  assert.equal(
+    channelLabel(
       { provider: 'whatsapp', enabled: true, mode: 'webhook', webhookStatus: 'manual_setup' },
       true,
     ),
