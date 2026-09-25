@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { mkdir, mkdtemp, open, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -59,6 +59,15 @@ test(
   'server artifacts, approvals and personal data preserve PostgreSQL ownership and review boundaries',
   { skip: !process.env.TEST_DATABASE_URL, timeout: 45_000 },
   async (t) => {
+    const fixtureRoot = await realpath(
+      await mkdtemp(join(tmpdir(), 'sidekick-server-boundaries-')),
+    );
+    const previousDirectory = process.cwd();
+    process.chdir(fixtureRoot);
+    t.after(async () => {
+      process.chdir(previousDirectory);
+      await rm(fixtureRoot, { recursive: true, force: true });
+    });
     const suffix = randomUUID().replaceAll('-', '').slice(0, 16);
     const schema = `test_server_${suffix}`;
     const bossSchema = `test_server_boss_${suffix}`;
@@ -75,6 +84,7 @@ test(
     const { createApp } = await import('../src/server/app.ts');
     const { createApprovals } = await import('../src/server/approvals.ts');
     const { dataRoot, ownerId, port, configuration } = await import('../src/server/config.ts');
+    assert.equal(dataRoot, join(fixtureRoot, '.local'));
     let userMessages: ReturnType<typeof tasks.createUserMessageService>;
     const app = await createApp({
       submitMessage: (text, attachments, options) =>

@@ -200,3 +200,31 @@ test('scheduled writes require a saved matching user instruction and preserve dr
     false,
   );
 });
+
+test('Portuguese schedule prefixes retain explicit action scope and draft boundaries', () => {
+  const prompt = 'Envia um email à Ana com o resumo.';
+  for (const instruction of [
+    'Amanhã às 09:00, envia um email à Ana com o resumo.',
+    'Hoje às 18:30 Europe/Lisbon, envia um email à Ana.',
+    'Todos os dias às 09:00, envia um email à Ana.',
+    'Todas as segundas-feiras às 09:00, envia um email à Ana.',
+    'No dia 2026-10-01 às 09:00, envia um email à Ana.',
+  ])
+    assert.equal(
+      explicitlyRequestsScheduledAction('GMAIL_SEND_EMAIL', instruction, prompt),
+      true,
+      instruction,
+    );
+  for (const instruction of [
+    'Amanhã às 09:00, não envies um email à Ana.',
+    'Amanhã às 09:00, prepara um rascunho de email para a Ana.',
+    'Todos os dias às 09:00, lembra-me de enviar um email à Ana.',
+    'Amanhã às 09:00, envia uma mensagem no Slack.',
+    'Lembra-me amanhã às 09:00 de enviar um email à Ana.',
+  ])
+    assert.equal(
+      explicitlyRequestsScheduledAction('GMAIL_SEND_EMAIL', instruction, prompt),
+      false,
+      instruction,
+    );
+});

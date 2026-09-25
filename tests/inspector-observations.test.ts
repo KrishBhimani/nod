@@ -530,7 +530,7 @@ test('recorded tools do not hide unrecorded tools or older tasks in activity', (
       taskId: 'old-task',
       type: 'tool_complete',
       summary: 'browser',
-      createdAt: '2026-09-23T12:00:00.000Z',
+      createdAt: '2026-09-24T12:00:01.000Z',
     },
     {
       id: 'earlier',
@@ -546,11 +546,31 @@ test('recorded tools do not hide unrecorded tools or older tasks in activity', (
       summary: 'execute code',
       createdAt: '2026-09-24T12:00:00.000Z',
     },
+    {
+      id: 'matched',
+      taskId: 'fixture-task',
+      type: 'tool_complete',
+      summary: 'browser',
+      createdAt: '2026-09-24T12:00:01.000Z',
+    },
+    {
+      id: 'later',
+      taskId: 'fixture-task',
+      type: 'tool_complete',
+      summary: 'browser',
+      createdAt: '2026-09-24T12:00:03.000Z',
+    },
   ];
-  const result = groupTaskActivity(events, [call('recorded')]);
+  const result = groupTaskActivity(events, [
+    call('recorded', {
+      status: 'succeeded',
+      finishedAt: '2026-09-24T12:00:02.000Z',
+      durationMs: 2000,
+    }),
+  ]);
   assert.deepEqual(
     new Set(result.map((item) => item.id)),
-    new Set(['old', 'earlier', 'missing', 'recorded']),
+    new Set(['old', 'earlier', 'missing', 'later', 'recorded']),
   );
-  assert.equal(groupTaskActivity(events, []).length, 3);
+  assert.equal(groupTaskActivity(events, []).length, 5);
 });

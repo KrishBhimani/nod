@@ -82,7 +82,11 @@ export function createDockerWorkspace(options: {
         );
       return result;
     } catch (error) {
-      if (error instanceof WorkspaceCommandError && error.uncertain) unavailable = true;
+      if (error instanceof WorkspaceCommandError && error.uncertain) {
+        unavailable = true;
+        lifecycle.abort();
+        await Promise.allSettled([...pending]);
+      }
       throw error;
     } finally {
       pending.delete(operation);

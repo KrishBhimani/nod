@@ -54,6 +54,20 @@ test('hidden and inaccessible iframe fields stay blocked with a native sign-in f
   }
 });
 
+test('ordinary unreadable frame content remains available until credentials need protection', () => {
+  const f = fixture();
+  try {
+    Object.defineProperty(f.frame, 'contentDocument', { get: () => null });
+    f.page.window.eval(maskPageScript([], []));
+    assert.equal(f.frame.style.getPropertyValue('visibility'), '');
+    assert.equal(f.page.window.eval(protectFocusedField), 'unsupported_frame');
+    f.page.window.eval(maskPageScript([], ['synthetic entered value']));
+    assert.equal(f.frame.style.getPropertyValue('visibility'), 'hidden');
+  } finally {
+    f.page.window.close();
+  }
+});
+
 test('masking hides unreadable frames after discovering a protected value and bounds frame traversal', () => {
   const page = new JSDOM('<input type="password"><iframe></iframe>'.repeat(17), {
     url: 'https://example.test/',

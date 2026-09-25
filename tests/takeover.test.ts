@@ -411,6 +411,35 @@ test('cancelled, missing and transferred tasks release stale control, with retry
   }
 });
 
+test('reacquisition of a cancelled task releases manual and sign-in leases before rejecting', async () => {
+  for (const initial of ['/start', '/sign-in']) {
+    for (const retry of ['/start', '/sign-in']) {
+      const f = await fixture({ signIn: true });
+      try {
+        assert.equal((await f.coreRequest(initial, {})).statusCode, 200);
+        const row = f.rows.get(f.taskId)!;
+        row.status = 'cancelled';
+        row.revision++;
+        f.setReleaseFailure(true);
+        const failed = await f.coreRequest(retry, {});
+        assert.equal(failed.statusCode, 409);
+        assert.equal(failed.body.includes('private release'), false);
+        assert.equal(f.calls.filter((call) => call === 'release').length, 1);
+        f.setReleaseFailure(false);
+        assert.equal((await f.coreRequest(retry, {})).statusCode, 409);
+        assert.equal(f.calls.filter((call) => call === 'release').length, 2);
+        assert.equal((await f.coreRequest('')).json().active, false);
+        assert.equal(f.calls.filter((call) => call === 'release').length, 2);
+        assert.equal(f.calls.filter((call) => call === 'acquire' || call === 'sign-in').length, 1);
+        assert.equal(f.calls.includes('finish'), false);
+        assert.equal(f.calls.includes('resume'), false);
+      } finally {
+        await f.app.close();
+      }
+    }
+  }
+});
+
 test('browser sign-in drains work, uses private desktop input and restores the browser before resuming', async () => {
   const f = await fixture({ signIn: true });
   try {

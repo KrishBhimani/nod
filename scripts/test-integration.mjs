@@ -21,5 +21,5 @@ child.on('error', (error) => {
   process.exitCode = 1;
 });
 child.on('exit', (code) => {
-  process.exitCode = code || 0;
+  process.exitCode = code ?? 1;
 });

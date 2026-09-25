@@ -207,6 +207,90 @@ test(
   },
 );
 
+for (const operation of ['execute', 'download'] as const)
+  test(
+    `disconnect during session creation prevents ${operation} on the removed account`,
+    { skip: !process.env.TEST_DATABASE_URL },
+    async () => {
+      const schema = `test_composio_${randomUUID().replaceAll('-', '')}`;
+      const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+      await admin.query(`CREATE SCHEMA ${schema}`);
+      const pool = new pg.Pool({
+        connectionString: process.env.TEST_DATABASE_URL,
+        options: `-c search_path=${schema}`,
+      });
+      const app = Fastify();
+      let entered!: () => void;
+      let release!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const blocked = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let executed = 0;
+      const session: IntegrationSession = {
+        id: 'delayed-session',
+        authorize: async () => ({
+          accountId: 'ca-fixture',
+          url: 'https://fixture.example/connect',
+        }),
+        execute: async () => {
+          executed++;
+          return { successful: true };
+        },
+        search: async () => ({ tools: {}, suggestions: [] }),
+        download: async () => {
+          executed++;
+          return { name: 'fixture.csv', mimeType: 'text/csv', bytes: new Uint8Array([65]) };
+        },
+      };
+      const provider = fakeProvider(session);
+      provider.createSession = async () => {
+        entered();
+        await blocked;
+        return session;
+      };
+      const integrations = await createIntegrations(pool, {
+        provider,
+        baseUrl: 'http://localhost:4310',
+        wake: async () => {},
+      });
+      integrations.registerRoutes(app);
+      let action: Promise<unknown> | undefined;
+      try {
+        const { rows } = await pool.query<{ id: string }>(
+          "INSERT INTO app_connections(owner_id,slug,account_id,provider_id) VALUES ('local-development','gmail','ca-fixture','fixture') RETURNING id",
+        );
+        const args = { connectionId: rows[0]!.id, recipient_email: 'fixture@example.test' };
+        action =
+          operation === 'execute'
+            ? integrations.executeApproved('local-development', 'GMAIL_SEND_EMAIL', args)
+            : integrations.download('local-development', 'GMAIL_GET_ATTACHMENT', args);
+        const outcome = action.then(
+          () => 'executed',
+          () => 'rejected',
+        );
+        await started;
+        const response = await app.inject({
+          method: 'POST',
+          url: `/api/apps/gmail/accounts/${rows[0]!.id}/disconnect`,
+        });
+        assert.equal(response.statusCode, 200);
+        release();
+        assert.equal(await outcome, 'rejected');
+        assert.equal(executed, 0);
+      } finally {
+        release();
+        await action?.catch(() => {});
+        await app.close();
+        await pool.end();
+        await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+        await admin.end();
+      }
+    },
+  );
+
 test(
   'connection callback requires its saved attempt and a provider-verified active account',
   { skip: !process.env.TEST_DATABASE_URL },
@@ -661,6 +745,112 @@ test(
 );
 
 test(
+  'reclaimed subscription attempts cannot replace a newer watch or change its retry state',
+  { skip: !process.env.TEST_DATABASE_URL, timeout: 15_000 },
+  async (t) => {
+    const schema = `test_watch_claim_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+    });
+    const provider = fakeProvider({
+      id: 'watch-claims',
+      authorize: async () => ({ accountId: 'unused', url: 'https://example.test' }),
+      search: async () => ({ tools: {}, suggestions: [] }),
+      execute: async () => ({}),
+    });
+    const integrations = await createIntegrations(pool, {
+      provider,
+      baseUrl: 'http://localhost:4310',
+      wake: async () => {},
+    });
+    try {
+      for (const order of ['new-first', 'old-first', 'old-failure']) {
+        await t.test(order, async () => {
+          const gates = Array.from({ length: 2 }, () => {
+            let resolve!: (value: { id: string }) => void;
+            let reject!: (error: Error) => void;
+            let entered!: () => void;
+            const started = new Promise<void>((done) => {
+              entered = done;
+            });
+            const result = new Promise<{ id: string }>((done, fail) => {
+              resolve = done;
+              reject = fail;
+            });
+            return { resolve, reject, entered, started, result };
+          });
+          let calls = 0;
+          const removed: string[] = [];
+          provider.subscribe = async () => {
+            const gate = gates[calls++];
+            assert.ok(gate);
+            gate.entered();
+            return gate.result;
+          };
+          provider.unsubscribe = async (id) => {
+            removed.push(id);
+          };
+          const id = (
+            await pool.query(
+              "INSERT INTO app_connections(owner_id,provider_id,slug,account_id) VALUES('local-development','fixture','gmail',$1) RETURNING id",
+              [`account-${order}`],
+            )
+          ).rows[0].id;
+          const work: Promise<void>[] = [];
+          const stored = async () =>
+            (await pool.query('SELECT * FROM app_connections WHERE id=$1', [id])).rows[0];
+          try {
+            work.push(integrations.syncWatches());
+            await gates[0]!.started;
+            await pool.query(
+              "UPDATE app_connections SET watch_attempted_at=now()-interval '6 minutes' WHERE id=$1",
+              [id],
+            );
+            work.push(integrations.syncWatches());
+            await gates[1]!.started;
+            const reclaimed = await stored();
+            if (order === 'new-first') {
+              gates[1]!.resolve({ id: 'new-watch' });
+              await work[1];
+              gates[0]!.resolve({ id: 'old-watch' });
+              await work[0];
+            } else {
+              if (order === 'old-failure')
+                gates[0]!.reject(new Error('Old fixture request failed'));
+              else gates[0]!.resolve({ id: 'old-watch' });
+              await work[0];
+              const stillPending = await stored();
+              assert.equal(stillPending.watch_attempted, true);
+              assert.equal(stillPending.watch_revision, reclaimed.watch_revision);
+              assert.equal(stillPending.watch_failures, 0);
+              assert.equal(stillPending.watch_retry_at, null);
+              assert.equal(stillPending.trigger_id, null);
+              gates[1]!.resolve({ id: 'new-watch' });
+              await work[1];
+            }
+            assert.equal((await stored()).trigger_id, 'new-watch');
+            assert.equal((await stored()).triggers_enabled, true);
+            assert.deepEqual(removed, order === 'old-failure' ? [] : ['old-watch']);
+            assert.equal(calls, 2);
+          } finally {
+            for (const gate of gates) gate.resolve({ id: 'cleanup-watch' });
+            await Promise.allSettled(work);
+            await pool.query('DELETE FROM app_connections WHERE id=$1', [id]);
+          }
+        });
+      }
+    } finally {
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);
+
+test(
   'Apps lists cached accounts immediately and retains verified state through health failures while watches retry',
   { skip: !process.env.TEST_DATABASE_URL },
   async (t) => {
@@ -741,7 +931,7 @@ test(
       const startedAt = performance.now();
       const initial = await Promise.race([
         integrations.list(),
-        delay(200).then(() => {
+        delay(5000, undefined, { ref: false }).then(() => {
           throw new Error('Account health blocked the list.');
         }),
       ]);

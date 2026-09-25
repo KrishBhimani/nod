@@ -75,7 +75,12 @@ export async function publishArtifact(
   taskId: string,
   path: string,
   name: string | undefined,
-  read: (taskId: string, path: string, maxBytes: number) => Promise<Uint8Array>,
+  read: (
+    taskId: string,
+    path: string,
+    maxBytes: number,
+    purpose?: 'attachment' | 'publication',
+  ) => Promise<Uint8Array>,
 ) {
   z.uuid().parse(taskId);
   if (!path || path.length > 4096 || path.includes('\0') || path.includes('\\'))
@@ -85,7 +90,7 @@ export async function publishArtifact(
   if (!actual.startsWith(base + '/'))
     throw new Error('Only files inside this task workspace can be published.');
   return storeArtifact(
-    Buffer.from(await read(taskId, posix.relative(base, actual), maxFileSize)),
+    Buffer.from(await read(taskId, posix.relative(base, actual), maxFileSize, 'publication')),
     name || posix.basename(actual),
     mimeTypes[extname(actual).toLowerCase()] || 'application/octet-stream',
     taskId,

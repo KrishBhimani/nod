@@ -49,6 +49,42 @@ const accounts: Connection[] = [
 const click = (element: Element) =>
   element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
+test('leaving Apps prevents a late account connection from redirecting the current page', async () => {
+  const priorFetch = globalThis.fetch;
+  let finish!: (response: Response) => void;
+  let signal: AbortSignal | null | undefined;
+  const navigationErrors: Error[] = [];
+  const recordError = (error: Error) => navigationErrors.push(error);
+  dom.virtualConsole.on('jsdomError', recordError);
+  globalThis.fetch = async (_url, options) => {
+    if (options?.method === 'POST') {
+      signal = options.signal;
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    }
+    return Response.json(accounts);
+  };
+  pageDataCache.update('/api/apps', () => accounts);
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(createElement(Apps)));
+    await act(async () => click(container.querySelector('[aria-label="Add Gmail account"]')!));
+    await act(async () => root.render(null));
+    await act(async () => finish(Response.json({ url: 'https://accounts.example.test/connect' })));
+    assert.equal(navigationErrors.length, 0);
+    assert.equal(signal?.aborted, true);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    pageDataCache.update('/api/apps', () => null);
+    globalThis.fetch = priorFetch;
+    dom.virtualConsole.off('jsdomError', recordError);
+  }
+});
+
 test('Apps retains cached accounts and exposes per-service actions with accessible account menus', async () => {
   const priorFetch = globalThis.fetch;
   let complete: (response: Response) => void = () => {};

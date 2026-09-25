@@ -257,7 +257,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
   async function activateWatch(id: string) {
     if (!provider.configured || !provider.webhooksConfigured) return;
     const claimed = await pool.query<ConnectionRow>(
-      `UPDATE app_connections SET watch_attempted=true,watch_attempted_at=now() WHERE id=$1 AND owner_id=$2 AND provider_id=$3
+      `UPDATE app_connections SET watch_attempted=true,watch_attempted_at=now(),watch_revision=watch_revision+1 WHERE id=$1 AND owner_id=$2 AND provider_id=$3
        AND watch_requested AND (NOT watch_attempted OR watch_attempted_at IS NULL OR watch_attempted_at < now()-interval '5 minutes')
        AND (watch_retry_at IS NULL OR watch_retry_at<=now()) AND NOT revoked AND account_id IS NOT NULL
        AND trigger_id IS NULL RETURNING *`,
@@ -269,7 +269,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       const trigger = await requiredProvider().subscribe(localOwner, row.slug, row.account_id!);
       const saved = await pool.query(
         `UPDATE app_connections SET trigger_id=$2,triggers_enabled=true,watch_failures=0,watch_retry_at=NULL WHERE id=$1 AND owner_id=$3
-         AND provider_id=$4 AND watch_requested AND NOT revoked AND watch_revision=$5`,
+         AND provider_id=$4 AND watch_requested AND NOT revoked AND watch_revision=$5 AND trigger_id IS NULL`,
         [row.id, trigger.id, localOwner, providerId, row.watch_revision],
       );
       if (!saved.rowCount) await provider.unsubscribe(trigger.id);
@@ -724,9 +724,10 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       };
     try {
       const { connectionId: _connectionId, ...providerArgs } = args;
-      const result = await (
-        await getSession(ownerId)
-      ).execute(action, providerArgs, row.account_id!);
+      const session = await getSession(ownerId);
+      const current = await approvedConnection(ownerId, action, args);
+      if (current.account_id !== row.account_id) throw new Error('The selected account changed.');
+      const result = await session.execute(action, providerArgs, row.account_id!);
       if (integrationActions.includes(action))
         rememberTargets(row.account_id!, row.slug, result, providerArgs);
       return result;
@@ -798,6 +799,9 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       if (!session.download)
         throw new IntegrationError('File downloads are unavailable with this app provider.', 503);
       const { connectionId: _connectionId, ...providerArgs } = args;
+      const selected = await selectConnection(ownerId, slug, row.id);
+      deadline.throwIfAborted();
+      if (selected.account_id !== row.account_id) throw new Error('The selected account changed.');
       const file = await session.download(action, providerArgs, row.account_id!, deadline);
       deadline.throwIfAborted();
       const current = await selectConnection(ownerId, slug, row.id);

@@ -50,9 +50,16 @@ let stopping = false;
 async function shutdown() {
   if (stopping) return;
   stopping = true;
-  await app.close();
-  await pool.end();
-  process.exit(0);
+  let failed = false;
+  for (const close of [() => app.close(), () => pool.end()]) {
+    try {
+      await close();
+    } catch {
+      failed = true;
+    }
+  }
+  if (failed) console.error('Some application resources could not close.');
+  process.exit(failed ? 1 : 0);
 }
 process.on('SIGINT', () => {
   void shutdown();

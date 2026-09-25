@@ -614,6 +614,38 @@ test('a later screenshot reaching the worker first cannot erase accepted browser
   }
 });
 
+test('failed namespace cleanup stays fenced until an explicit disposal retry succeeds', async () => {
+  const fixture = await harness();
+  const release = deferred();
+  try {
+    const dataRoot = '/synthetic/cleanup-retry';
+    const original = fixture.client(dataRoot);
+    await original.act('task', { action: 'snapshot' });
+    const instance = fixture.instance(dataRoot);
+    let attempts = 0;
+    instance.computer.dispose = async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('synthetic close failure');
+      await release.promise;
+    };
+    await assert.rejects(original.dispose(), /could not complete/);
+    await assert.rejects(original.act('task', { action: 'snapshot' }), /unavailable/);
+    const restarted = fixture.client(dataRoot);
+    await assert.rejects(restarted.act('task', { action: 'snapshot' }), /could not complete/);
+    const retry = original.dispose();
+    await assert.rejects(restarted.act('task', { action: 'snapshot' }), /could not complete/);
+    assert.equal(instance.calls.filter((call) => call.method === 'act').length, 1);
+    release.resolve();
+    await retry;
+    assert.equal(attempts, 2);
+    await restarted.act('task', { action: 'snapshot' });
+    assert.notEqual(fixture.instance(dataRoot), instance);
+  } finally {
+    release.resolve();
+    await fixture.close();
+  }
+});
+
 test('dispose drains a first request that has not reached the worker before removing its namespace', async () => {
   const release = deferred();
   const fixture = await harness({ beforeFirstBridge: release.promise });

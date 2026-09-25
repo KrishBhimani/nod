@@ -138,6 +138,11 @@ export function explicitlyRequestsScheduledAction(
     '',
   );
   if (scheduled !== request && explicitlyRequestsAction(action, scheduled)) return true;
+  const portugueseTimed = request.replace(
+    /^(?:amanhã|amanha|hoje|(?:no dia|em)\s+\d{4}-\d{2}-\d{2}|todos os (?:dias|sábados|sabados|domingos)|todas as (?:manhãs|manhas|noites|semanas|(?:segundas|terças|tercas|quartas|quintas|sextas)(?:-feiras)?))(?:\s+(?:às|as)\s+\d{1,2}(?::\d{2}|h\d{2})?(?:\s+(?:[A-Za-z_]+\/[A-Za-z_/]+|UTC|GMT))?)?[, :]?\s+/i,
+    '',
+  );
+  if (portugueseTimed !== request) return explicitlyRequestsAction(action, portugueseTimed);
   const timed = request.replace(
     /^(?:(?:every|each)\s+(?:day|morning|evening|night|week|weekday|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|tomorrow|today|on\s+\d{4}-\d{2}-\d{2})(?:\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?(?:\s+(?:[A-Za-z_]+\/[A-Za-z_/]+|UTC|GMT))?)?[, :]?\s+/i,
     '',

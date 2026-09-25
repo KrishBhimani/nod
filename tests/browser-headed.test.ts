@@ -20,6 +20,7 @@ async function fixture() {
   const displays: string[] = [];
   let failClose = false;
   let interruptOpen = false;
+  let onClose: ((display: string) => Promise<void>) | undefined;
   const computer = createAgentBrowserComputer({
     dataRoot: directory,
     platform: 'linux',
@@ -57,6 +58,7 @@ async function fixture() {
         if (interruptOpen) throw new Error('Synthetic interrupted launch');
       }
       if (action === 'close' && failClose) throw new Error('Synthetic close failure');
+      if (action === 'close') await onClose?.(String(options?.env?.DISPLAY));
       return pages.run(executable, args, options);
     },
     signInLauncher: {
@@ -83,8 +85,12 @@ async function fixture() {
     interruptOpen() {
       interruptOpen = true;
     },
+    onClose(value: (display: string) => Promise<void>) {
+      onClose = value;
+    },
     async cleanup() {
       failClose = false;
+      onClose = undefined;
       await computer.dispose();
       await rm(directory, { recursive: true, force: true });
     },
@@ -105,6 +111,52 @@ test('headed workspace sessions use separate private displays and reuse them unt
     await f.computer.close('second');
     assert.equal(f.events.includes('display-close::401'), true);
   } finally {
+    await f.cleanup();
+  }
+});
+
+test('browser disposal drains every owned session before reporting a failed close', async () => {
+  const f = await fixture();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered!: () => void;
+  const closing = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  try {
+    await f.open('first');
+    await f.open('second');
+    f.onClose(async (display) => {
+      if (display === ':400') throw new Error('private close failure');
+      entered();
+      await gate;
+    });
+    let finished = false;
+    const stopping = f.computer.dispose().then(
+      () => {
+        finished = true;
+        return null;
+      },
+      (error: unknown) => {
+        finished = true;
+        return error;
+      },
+    );
+    await closing;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(finished, false);
+    assert.equal(f.events.includes('display-close::400'), false);
+    assert.equal(f.events.includes('display-close::401'), false);
+    release();
+    const error = await stopping;
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, 'The browser service could not finish closing its sessions.');
+    assert.equal(f.events.includes('display-close::401'), true);
+    assert.equal(f.events.includes('display-close::400'), false);
+  } finally {
+    release();
     await f.cleanup();
   }
 });

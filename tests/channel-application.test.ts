@@ -230,13 +230,23 @@ test(
         null,
       );
     } finally {
-      failClose = true;
-      await assert.rejects(application.app.close(), /Some application resources could not close/);
-      assert.equal(agentDisposed, true);
-      await pool.end();
-      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
-      await admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`);
-      await admin.end();
+      try {
+        failClose = true;
+        await assert.rejects(application.app.close(), /Some application resources could not close/);
+        assert.equal(agentDisposed, true);
+      } finally {
+        try {
+          await pool.end();
+        } finally {
+          try {
+            await admin.query(
+              `DROP SCHEMA IF EXISTS ${schema} CASCADE; DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`,
+            );
+          } finally {
+            await admin.end();
+          }
+        }
+      }
     }
   },
 );

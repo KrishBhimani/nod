@@ -117,15 +117,25 @@ export function meterWorkspace(workspace: Workspace, usage: ProviderUsageStore):
     ...workspace,
     ...(workspace.readArtifact
       ? {
-          readArtifact: (id: string, path: string, maxBytes: number) =>
+          readArtifact: (
+            id: string,
+            path: string,
+            maxBytes: number,
+            purpose?: 'attachment' | 'publication',
+          ) =>
             usage.track(
               {
                 provider: 'local-workspace',
                 category: 'workspace',
                 taskId: id,
-                operation: 'publish_file',
+                operation:
+                  purpose === 'publication'
+                    ? 'publish_file'
+                    : purpose === 'attachment'
+                      ? 'read_attachment'
+                      : 'read_file',
               },
-              () => workspace.readArtifact!(id, path, maxBytes),
+              () => workspace.readArtifact!(id, path, maxBytes, purpose),
             ),
         }
       : {}),

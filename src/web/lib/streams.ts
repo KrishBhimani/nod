@@ -49,7 +49,6 @@ export function streamReducer(state: StreamState, action: StreamAction): StreamS
   if (current && current.taskId !== action.taskId) return state;
   return {
     ...state,
-    ...state,
     active: {
       ...state.active,
       [id]: { taskId: action.taskId, text: (current?.text ?? '') + action.text },

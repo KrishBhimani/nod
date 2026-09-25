@@ -215,13 +215,18 @@ export function createPiAgent(options: {
     },
     async dispose() {
       disposed = true;
-      await Promise.all(
+      const results = await Promise.allSettled(
         [...active].map(async (session) => {
-          await session.abort();
-          session.dispose();
+          try {
+            await session.abort();
+          } finally {
+            session.dispose();
+            active.delete(session);
+          }
         }),
       );
-      active.clear();
+      if (results.some((result) => result.status === 'rejected'))
+        throw new Error('The agent service could not finish cleaning up its sessions.');
     },
   };
 }

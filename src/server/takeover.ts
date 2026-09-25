@@ -106,8 +106,10 @@ export function createTakeover(dependencies: {
       acquiring &&
       !['running', 'queued'].includes(row.status) &&
       !(row.status === 'waiting_user' && ['manual_control', 'browser'].includes(row.waiting_reason))
-    )
+    ) {
+      await releaseLease(taskId);
       throw stale();
+    }
     const paused = row.status === 'waiting_user' && row.waiting_reason === 'manual_control';
     const lease = leases.get(taskId);
     const active = paused && lease && lease.revision === row.revision && lease.until > Date.now();

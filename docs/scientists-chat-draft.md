@@ -23,7 +23,7 @@ The code is in https://github.com/n8n-io/sidekick, currently on branch `feat/sid
 
 **Current state and next work**
 
-The current local run passed 742 tests with no skips, checks and build. CI repeats PostgreSQL tests, type/import checks, build and secret scans; the PR has its current result. The review fixed command cancellation, artifact boundaries, scheduled action authority, recovery races and slow Apps reads. Desktop/mobile themes have been visually checked and recorded.
+The current local run passed 775 tests with no skips, checks and build. CI repeats PostgreSQL tests, type/import checks, build and secret scans; the PR has its current result. The review fixed command cancellation, artifact boundaries, scheduled action authority, recovery races and slow Apps reads. Desktop/mobile themes have been visually checked and recorded.
 
 The login and 2FA recordings use synthetic accounts. They do not prove Google or X login. Headed workspace Chromium now reaches the real X sign-in page. Email and password are collected in one form across staged site pages; sign-in method selection happens in chat. Google can still reject automated sign-in, with private container-browser takeover available. Provider authentication remains separate validation.
 

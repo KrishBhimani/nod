@@ -413,29 +413,35 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       });
     return keyPromise;
   };
-  let resuming = false;
-  async function resumePending() {
-    if (resuming) return;
-    resuming = true;
-    try {
-      await pool.query(`UPDATE credential_account_selections SET ciphertext='',blocked=true,login_label=''
+  let closed = false;
+  let resuming: Promise<void> | undefined;
+  function resumePending() {
+    if (closed) return Promise.resolve();
+    resuming ??= Promise.resolve()
+      .then(async () => {
+        if (closed) return;
+        await pool.query(`UPDATE credential_account_selections SET ciphertext='',blocked=true,login_label=''
         WHERE login_label<>'' AND expires_at<=now()`);
-      await pool.query(`UPDATE credential_requests r SET resume_pending=false FROM tasks t WHERE r.resume_pending=true
+        await pool.query(`UPDATE credential_requests r SET resume_pending=false FROM tasks t WHERE r.resume_pending=true
         AND t.id::text=r.task_id AND t.owner_id=r.owner_id AND (t.revision<>r.task_revision OR t.status<>'waiting_credentials')`);
-      const { rows } =
-        await pool.query<RequestRow>(`SELECT r.* FROM credential_requests r JOIN tasks t ON t.id::text=r.task_id AND t.owner_id=r.owner_id
+        const { rows } =
+          await pool.query<RequestRow>(`SELECT r.* FROM credential_requests r JOIN tasks t ON t.id::text=r.task_id AND t.owner_id=r.owner_id
         WHERE r.resume_pending=true AND t.revision=r.task_revision AND t.status='waiting_credentials'`);
-      for (const row of rows) {
-        try {
-          await options.resume(row.task_id, row.task_revision);
-          await pool.query('UPDATE credential_requests SET resume_pending = false WHERE id = $1', [
-            row.id,
-          ]);
-        } catch {}
-      }
-    } finally {
-      resuming = false;
-    }
+        for (const row of rows) {
+          if (closed) break;
+          try {
+            await options.resume(row.task_id, row.task_revision);
+            await pool.query(
+              'UPDATE credential_requests SET resume_pending = false WHERE id = $1',
+              [row.id],
+            );
+          } catch {}
+        }
+      })
+      .finally(() => {
+        resuming = undefined;
+      });
+    return resuming;
   }
   const timer = setInterval(() => {
     for (const [id, value] of identifiers)
@@ -1550,8 +1556,13 @@ export async function createVault(pool: Pool, options: VaultOptions) {
 
   function registerRoutes(app: FastifyInstance) {
     app.addHook('onClose', async () => {
+      closed = true;
       clearInterval(timer);
-      identifiers.clear();
+      try {
+        await resuming;
+      } finally {
+        identifiers.clear();
+      }
     });
     app.register(async (scope) => {
       scope.addHook('onSend', async (_request, reply, payload) => {

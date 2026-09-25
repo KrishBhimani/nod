@@ -9,8 +9,10 @@ import {
   meterIntegrations,
   meterRelevance,
   meterSpeech,
+  meterWorkspace,
 } from '../src/server/provider-metering.ts';
 import type { AgentEvent } from '../src/ports/agent.ts';
+import { fakeWorkspace } from './runtime-fixtures.ts';
 import type { IntegrationProvider } from '../src/ports/integrations.ts';
 
 test('usage shutdown drains accepted writes and rejects late records', async () => {
@@ -329,4 +331,35 @@ test('usage retention prunes idle disabled capture on startup and hourly, then s
   await store.close();
   t.mock.timers.tick(3_600_000);
   assert.equal(deletes, 2);
+});
+
+test('workspace attachment reads and publications use distinct usage operations without file data', async () => {
+  const rows: unknown[][] = [];
+  const pool = {
+    query: async (sql: string, values?: unknown[]) => {
+      if (sql.includes('INSERT INTO provider_usage')) rows.push(values!);
+      return { rows: [], rowCount: 1 };
+    },
+  } as unknown as pg.Pool;
+  const usage = createProviderUsageStore(pool, {
+    ownerId: 'owner',
+    enabled: () => true,
+    coverage: [],
+  });
+  const workspace = meterWorkspace(
+    fakeWorkspace({ readArtifact: async () => Buffer.from('private-file-bytes') }),
+    usage,
+  );
+  try {
+    for (const purpose of ['attachment', 'publication', undefined] as const)
+      await workspace.readArtifact!(randomUUID(), 'private-file-path', 50, purpose);
+  } finally {
+    await usage.close();
+  }
+  assert.deepEqual(rows.map((row) => row[5]).sort(), [
+    'publish_file',
+    'read_attachment',
+    'read_file',
+  ]);
+  assert.doesNotMatch(JSON.stringify(rows), /private-file-path|private-file-bytes/);
 });

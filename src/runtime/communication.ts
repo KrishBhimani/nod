@@ -22,7 +22,15 @@ export function vaultInvitation(step: CredentialInvitation, url: string) {
 
 export function requestsLoginDetails(text: string) {
   const detail =
-    '(?:user[ -]?name|password|passcode|passphrase|login identifier|credentials|(?:login|sign[ -]?in) details|recovery code|backup code|authentication code|api[ _-]?key|(?:login|account|X|Twitter) (?:email|e-mail|handle)|one[ -]?time(?: code)?|otp|verification code|security code|nome de utilizador|palavra[ -]passe|código de verificação|codigo de verificacao)';
+    '(?:user[ -]?name|password|passcode|passphrase|login identifier|credentials|(?:login|sign[ -]?in) details|recovery code|backup code|authentication code|(?:login|account|X|Twitter) (?:email|e-mail|handle)|one[ -]?time(?: code)?|otp|verification code|security code|nome de utilizador|palavra[ -]passe|código de verificação|codigo de verificacao)';
+  return requestsPrivateValue(text, detail);
+}
+
+export function requestsApiKey(text: string) {
+  return requestsPrivateValue(text, '(?:api[ _-]?key|chave(?: de| da)? api)');
+}
+
+function requestsPrivateValue(text: string, detail: string) {
   return (
     new RegExp(
       `(?:what(?:'s|’s| is| are)\\s+your|which\\s+username|(?:send|share|provide|enter|type|tell|give).{0,35}(?:your|me)|i\\s+(?:need|require)|(?:qual|envia|partilha|fornece|introduz|escreve|preciso|diz).{0,35}(?:teu|tua|seu|sua|me|de)).{0,100}\\b${detail}\\b`,

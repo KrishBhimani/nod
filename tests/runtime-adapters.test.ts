@@ -418,3 +418,97 @@ test('stalled observations release active tasks on cancellation and disposal', a
     });
   }
 });
+
+test('runtime shutdown drains tasks and releases every capability after adapter failures', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'sidekick-disposal-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let finish!: () => void;
+  const stopped = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const events: string[] = [];
+  const runtime = createAgentRuntime({
+    agent: {
+      open: async () => ({
+        resumed: false,
+        prompt: async () => {
+          entered();
+          await stopped;
+        },
+        abort: () => {
+          events.push('abort');
+          finish();
+        },
+        dispose: () => {
+          events.push('session');
+        },
+      }),
+      dispose: () => {
+        events.push('agent');
+        throw new Error('Synthetic agent cleanup failure');
+      },
+    },
+    computer: fakeComputer({
+      dispose: () => {
+        events.push('computer');
+        throw new Error('Synthetic browser cleanup failure');
+      },
+    }),
+    workspace: fakeWorkspace({
+      dispose: () => {
+        events.push('workspace');
+      },
+    }),
+  });
+  const running = assert.rejects(runtime.runTask(context(directory)), /abort/i);
+  await started;
+  const disposal = runtime.dispose();
+  assert.equal(runtime.dispose(), disposal);
+  await assert.rejects(disposal, /Some runtime resources could not close/);
+  await running;
+  assert.equal(runtime.status().activeTasks, 0);
+  assert.equal(events.filter((value) => value === 'computer').length, 1);
+  assert.equal(events.filter((value) => value === 'workspace').length, 1);
+  assert.ok(events.indexOf('session') < events.indexOf('computer'));
+  assert.ok(events.indexOf('computer') < events.indexOf('workspace'));
+  await assert.rejects(runtime.runTask(context(directory)), /stopped/);
+});
+
+test('runtime retries only failed cleanup stages and coalesces each shutdown attempt', async (t) => {
+  for (const failedStage of ['agent', 'computer', 'workspace'] as const) {
+    await t.test(failedStage, async () => {
+      const attempts = { agent: 0, computer: 0, workspace: 0 };
+      const close = (stage: keyof typeof attempts) => {
+        attempts[stage]++;
+        if (stage === failedStage && attempts[stage] === 1)
+          throw new Error('Synthetic transient cleanup failure');
+      };
+      const runtime = createAgentRuntime({
+        agent: {
+          open: async () => {
+            throw new Error('A closed runtime cannot open a model');
+          },
+          dispose: () => close('agent'),
+        },
+        computer: fakeComputer({ dispose: async () => close('computer') }),
+        workspace: fakeWorkspace({ dispose: () => close('workspace') }),
+      });
+      const first = runtime.dispose();
+      assert.equal(runtime.dispose(), first);
+      await assert.rejects(first, /Some runtime resources could not close/);
+      assert.deepEqual(attempts, { agent: 1, computer: 1, workspace: 1 });
+      await assert.rejects(runtime.runTask(context('/unused')), /stopped/);
+      const second = runtime.dispose();
+      assert.notEqual(second, first);
+      assert.equal(runtime.dispose(), second);
+      await second;
+      assert.deepEqual(attempts, { agent: 1, computer: 1, workspace: 1, [failedStage]: 2 });
+      assert.equal(runtime.dispose(), second);
+      await assert.rejects(runtime.runTask(context('/unused')), /stopped/);
+    });
+  }
+});

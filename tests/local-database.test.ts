@@ -384,3 +384,28 @@ test('local database options survive password replacement without retaining an o
     await local.close();
   }
 });
+
+test('duplicate database routing options cannot receive the generated local password', async () => {
+  for (const [name, localValue, otherValue] of [
+    ['host', 'localhost', 'database.example.test'],
+    ['port', '54329', '5432'],
+    ['user', 'sidekick', 'another-user'],
+    ['dbname', 'sidekick', 'another-database'],
+    ['database', 'sidekick', 'another-database'],
+  ]) {
+    const url = `postgresql://sidekick:synthetic-old@localhost:54329/sidekick?${name}=${localValue}&${name}=${otherValue}`;
+    const local = await fixture(`DATABASE_URL=${url}\n`);
+    try {
+      const database = await prepareLocalDatabase(local.directory, {});
+      assert.equal(database.serverDatabaseUrl, url, name);
+      assert.equal((await local.read()).DATABASE_URL, url, name);
+      assert.equal(database.serverDatabaseUrl.includes(database.password), false, name);
+      await assert.rejects(
+        integrationDatabaseUrl(local.directory, {}),
+        /TEST_DATABASE_URL explicitly/,
+      );
+    } finally {
+      await local.close();
+    }
+  }
+});

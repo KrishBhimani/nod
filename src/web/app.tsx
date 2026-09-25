@@ -13,6 +13,7 @@ import { Button, Loading, Notice } from './components/ui';
 import { Sidebar } from './components/sidebar';
 import { navigationItems } from './lib/navigation';
 import { BrowserWindow } from './pages/browser';
+import { readUiPreference, writeUiPreference } from './lib/ui-preferences';
 
 function navigate(path: string) {
   window.history.pushState(null, '', path);
@@ -23,10 +24,10 @@ function Workspace({ path }: { path: string }) {
   const [inspector, setInspector] = useState(
     () =>
       path === '/dev' ||
-      (window.innerWidth > 720 && localStorage.getItem('sidekick.inspector') === 'open'),
+      (window.innerWidth > 720 && readUiPreference('sidekick.inspector') === 'open'),
   );
   const [collapsed, setCollapsed] = useState(
-    () => localStorage.getItem('sidekick.sidebar') === 'collapsed',
+    () => readUiPreference('sidekick.sidebar') === 'collapsed',
   );
   const [composerDraft, setComposerDraft] = useState<{ text: string; nonce: number }>();
   const [inspectionFocus, setInspectionFocus] = useState<{ messageId: string; taskId: string }>();
@@ -62,10 +63,10 @@ function Workspace({ path }: { path: string }) {
     return () => window.removeEventListener('popstate', closeOnNavigation);
   }, []);
   useEffect(() => {
-    localStorage.setItem('sidekick.inspector', inspector ? 'open' : 'closed');
+    writeUiPreference('sidekick.inspector', inspector ? 'open' : 'closed');
   }, [inspector]);
   useEffect(() => {
-    localStorage.setItem('sidekick.sidebar', collapsed ? 'collapsed' : 'expanded');
+    writeUiPreference('sidekick.sidebar', collapsed ? 'collapsed' : 'expanded');
   }, [collapsed]);
   const inspectorOpen = !!state?.configuration.inspectorEnabled && inspector;
   return (

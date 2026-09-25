@@ -31,12 +31,13 @@ function localDatabaseUrl(value: string) {
       url.port === '54329' &&
       url.username === 'sidekick' &&
       url.pathname === '/sidekick' &&
-      (!url.searchParams.has('host') ||
-        ['127.0.0.1', 'localhost', '::1'].includes(url.searchParams.get('host')!)) &&
-      (!url.searchParams.has('port') || url.searchParams.get('port') === '54329') &&
-      (!url.searchParams.has('user') || url.searchParams.get('user') === 'sidekick') &&
-      (!url.searchParams.has('dbname') || url.searchParams.get('dbname') === 'sidekick') &&
-      (!url.searchParams.has('database') || url.searchParams.get('database') === 'sidekick') &&
+      url.searchParams
+        .getAll('host')
+        .every((host) => ['127.0.0.1', 'localhost', '::1'].includes(host)) &&
+      url.searchParams.getAll('port').every((port) => port === '54329') &&
+      url.searchParams.getAll('user').every((user) => user === 'sidekick') &&
+      url.searchParams.getAll('dbname').every((database) => database === 'sidekick') &&
+      url.searchParams.getAll('database').every((database) => database === 'sidekick') &&
       !url.hash
     );
   } catch {

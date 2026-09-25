@@ -2,7 +2,7 @@ import { PageTitle } from '../components/page-title';
 import { useEffect, useRef, useState } from 'react';
 import { AlertCircle, Check, Link2, MoreHorizontal, Plus, Unplug } from 'lucide-react';
 import type { Connection } from '../../shared/contracts';
-import { errorMessage, post } from '../lib/api';
+import { api, errorMessage, post } from '../lib/api';
 import { connectionUrl } from '../lib/connection-url';
 import {
   connectionGroups,
@@ -99,7 +99,9 @@ export function Apps() {
   const [busy, setBusy] = useState('');
   const page = useRef<HTMLDivElement>(null);
   const restoreFocus = useRef<string | null>(null);
+  const connectionRequest = useRef<AbortController | null>(null);
   const groups = connectionGroups(connections ?? []);
+  useEffect(() => () => connectionRequest.current?.abort(), []);
   useEffect(() => {
     if (busy || !restoreFocus.current) return;
     const service = restoreFocus.current;
@@ -110,16 +112,24 @@ export function Apps() {
         ?.focus();
   }, [busy]);
   async function connect(connection: Connection) {
+    if (connectionRequest.current) return;
+    const request = new AbortController();
+    connectionRequest.current = request;
     setBusy(`connect:${connection.slug}`);
     setError('');
     try {
-      const result = await post<{ url: string }>(
+      const result = await api<{ url: string }>(
         `/api/apps/${encodeURIComponent(connection.slug)}/connect`,
+        { method: 'POST', body: '{}', signal: request.signal },
       );
+      if (request.signal.aborted) return;
       window.location.assign(connectionUrl(result.url, window.location.origin));
     } catch (cause) {
+      if (request.signal.aborted) return;
       setError(errorMessage(cause));
       setBusy('');
+    } finally {
+      if (connectionRequest.current === request) connectionRequest.current = null;
     }
   }
   async function disconnect(connection: Connection) {

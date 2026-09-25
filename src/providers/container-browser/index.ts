@@ -303,7 +303,10 @@ export function createContainerBrowserComputer(options: {
         currentSession = undefined;
         screens.clear();
         status = 'Workspace browser is stopped.';
-      })();
+      })().catch((error) => {
+        disposing = undefined;
+        throw error;
+      });
       return disposing;
     },
   };

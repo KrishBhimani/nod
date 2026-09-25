@@ -13,6 +13,94 @@ import { createPiUsageTracker } from '../src/providers/pi/usage.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 
+test('Pi drains every session before reporting an abort failure and retries failed disposal', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sidekick-pi-disposal-'));
+  const events: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let started!: () => void;
+  const aborting = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let opened = 0;
+  let disposalAttempts = 0;
+  const factory: typeof createAgentSession = async (options) => {
+    const result = await createAgentSession(options);
+    const index = opened++;
+    const abort = result.session.abort.bind(result.session);
+    const dispose = result.session.dispose.bind(result.session);
+    result.session.abort = async () => {
+      events.push(`abort:${index}`);
+      await abort();
+      if (index === 0) throw new Error('private provider abort detail');
+      started();
+      await gate;
+    };
+    result.session.dispose = () => {
+      events.push(`dispose:${index}`);
+      if (index === 1 && disposalAttempts++ === 0)
+        throw new Error('private provider disposal detail');
+      dispose();
+    };
+    return result;
+  };
+  const agent = createPiAgent({
+    provider: 'openai',
+    apiKey: 'fixture-key',
+    sessionRoot: directory,
+    createSession: factory,
+  });
+  try {
+    for (let index = 0; index < 2; index += 1)
+      await agent.open({
+        taskId: randomUUID(),
+        systemPrompt: 'fixture',
+        tools: [],
+        shouldStop: () => false,
+        onEvent: () => {},
+      });
+    let finished = false;
+    const stopping = Promise.resolve(agent.dispose()).then(
+      () => {
+        finished = true;
+        return null;
+      },
+      (error: unknown) => {
+        finished = true;
+        return error;
+      },
+    );
+    await aborting;
+    assert.equal(finished, false);
+    assert.ok(events.includes('dispose:0'));
+    release();
+    const error = await stopping;
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, 'The agent service could not finish cleaning up its sessions.');
+    assert.deepEqual(events, ['abort:0', 'abort:1', 'dispose:0', 'dispose:1']);
+    await agent.dispose();
+    assert.deepEqual(events.slice(4), ['abort:1', 'dispose:1']);
+    await agent.dispose();
+    assert.equal(events.length, 6);
+    await assert.rejects(
+      agent.open({
+        taskId: randomUUID(),
+        systemPrompt: 'fixture',
+        tools: [],
+        shouldStop: () => false,
+        onEvent: () => {},
+      }),
+      /service has stopped/,
+    );
+  } finally {
+    release();
+    await agent.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('real Pi sessions persist a credential pause and resume without replaying chat history', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'sidekick-pi-'));
   const id = 'test-' + randomUUID();

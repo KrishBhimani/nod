@@ -30,7 +30,15 @@ At `2026-09-25T22:09:09.865Z`, the actual Docker workspace adapter ran against a
 
 The proof used synthetic files and commands. Raw local evidence is `/tmp/sidekick-workspace-stop-proof.log`; it is not a shipped application artifact.
 
+The follow-up review confirmed duplicate database routing parameters, pending-command cancellation and normal parent exit with a surviving child. New regressions reproduced all three before the fixes. Every routing value is now validated before inserting the generated local password, and uncertain workspace failure cancels and drains other pending commands. The strengthened traversal test proves that rejection occurs before launch. The focused follow-up set passed all 29 checks, and TypeScript passed.
+
+At `2026-09-25T22:37:10.889Z`, another isolated, network-disabled Docker container confirmed that a normally exited shell waits for its remaining child. A TERM-resistant child hit the one-second deadline, was fully drained in 3,221 ms, produced no delayed write and allowed a subsequent command. This temporary container and its workspace were removed. Raw local evidence is `/tmp/sidekick-workspace-child-proof.log`.
+
 ## Scope and limits
+
+The subsequent whole-provider pass reviewed the browser and container bridges, shell supervisor and artifact reads, Pi sessions and routing, integration downloads, channel adapters, speech and relevance adapters, key stores, public previews, local startup/database scripts, fixture launchers, Docker images/Compose and CI configuration. This was a bounded source audit, not exhaustive state-space or live-provider testing.
+
+Four additional cleanup and validation defects were fixed: Pi now disposes sessions even when abort fails and waits for all sessions; browser shutdown drains all sessions before reporting a failed close and retains the proxy required for cleanup retry; container cleanup can retry a failure while keeping its namespace unavailable; and the integration runner reports signal termination as failure instead of exit code zero. The focused set passed 26 tests using real Pi sessions without model requests, private Unix sockets, fake browser processes and an isolated signal-killed test runner.
 
 The cancellation contract covers the supervised command process group. It is not a new per-task sandbox or a guarantee against a deliberately detached process creating another session. Sidekick retains its documented shared single-owner shell workspace. A missing terminal acknowledgement produces an unavailable state instead of claiming a successful stop.
 

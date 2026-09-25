@@ -1197,11 +1197,10 @@ export function createAgentBrowserComputer(options: {
     dispose: async () => {
       disposed = true;
       clearInterval(cleanup);
-      try {
-        await Promise.all([...browsers.keys()].map((id) => closeBrowser(id)));
-      } finally {
-        await proxy.dispose();
-      }
+      const results = await Promise.allSettled([...browsers.keys()].map((id) => closeBrowser(id)));
+      if (results.some((result) => result.status === 'rejected'))
+        throw new Error('The browser service could not finish closing its sessions.');
+      await proxy.dispose();
     },
   };
 }

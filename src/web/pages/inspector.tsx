@@ -8,6 +8,7 @@ import { compactActivityText } from '../lib/inspector-observations';
 import { InspectorProviders } from '../components/inspector-providers';
 import { InspectorPrompts } from '../components/inspector-prompts';
 import { InspectorWork } from '../components/inspector-work';
+import { readUiPreference, writeUiPreference } from '../lib/ui-preferences';
 
 export function Inspector({
   onClose,
@@ -20,7 +21,7 @@ export function Inspector({
   const [scope, setScope] = useState(focus?.taskId);
   const [scopeSource, setScopeSource] = useState<'message' | 'work'>('message');
   const [width, setWidth] = useState(() =>
-    Math.max(330, Math.min(900, Number(localStorage.getItem('sidekick.inspector.width')) || 480)),
+    Math.max(330, Math.min(900, Number(readUiPreference('sidekick.inspector.width')) || 480)),
   );
   useEffect(() => {
     if (focus?.taskId) {
@@ -30,7 +31,7 @@ export function Inspector({
     }
   }, [focus]);
   useEffect(() => {
-    localStorage.setItem('sidekick.inspector.width', String(width));
+    writeUiPreference('sidekick.inspector.width', String(width));
   }, [width]);
   const [tab, setTab] = useState<'screen' | 'activity' | 'tools' | 'costs' | 'prompts'>('screen');
   const [historyOpen, setHistoryOpen] = useState(false);

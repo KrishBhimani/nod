@@ -119,6 +119,31 @@ test('output overflow and timeout drain the remote command before rejecting', as
   }
 });
 
+test('a shell exit waits for its remaining process group and applies the same deadline', async () => {
+  const f = await local();
+  try {
+    const completed = 'import time;time.sleep(0.25);open("completed","w").close()';
+    const result = await f.run(['sh', '-c', `python3 -c '${completed}' >/dev/null 2>&1 &`]);
+    assert.equal(result.exitCode, 0);
+    assert.equal(await exists(join(f.directory, 'completed')), true);
+    const unfinished =
+      'import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(3);open("late","w").close()';
+    await assert.rejects(
+      f.run(['sh', '-c', `python3 -c '${unfinished}' >/dev/null 2>&1 &`], { timeoutMs: 300 }),
+      (error: unknown) =>
+        error instanceof WorkspaceCommandError && !error.uncertain && /limit/.test(error.message),
+    );
+    await delay(1100);
+    assert.equal(await exists(join(f.directory, 'late')), false);
+    assert.equal(
+      (await f.run(['printf', 'after background child'])).stdout.toString(),
+      'after background child',
+    );
+  } finally {
+    await f.close();
+  }
+});
+
 test('artifact descriptor reads reject symlinks, special files and oversized data', async () => {
   const f = await local();
   try {
@@ -185,5 +210,71 @@ test('a lost acknowledgement fences the workspace instead of accepting another c
     assert.equal(workspace.status(), 'Workspace needs a restart.');
   } finally {
     await workspace.dispose();
+  }
+});
+
+test('an uncertain workspace operation cancels and drains commands already in flight', async () => {
+  const { EventEmitter } = await import('node:events');
+  const { PassThrough } = await import('node:stream');
+  const { createDockerWorkspace } = await import('../src/providers/docker/index.ts');
+  const processes: Array<ReturnType<WorkspaceCommandLauncher>> = [];
+  let signalCancellation: () => void = () => {};
+  const cancelled = new Promise<void>((resolve) => {
+    signalCancellation = resolve;
+  });
+  const launch: WorkspaceCommandLauncher = () => {
+    const child = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      kill() {
+        return true;
+      },
+    });
+    child.stdin.on('data', (data) => {
+      if (data.toString() === '{"type":"cancel"}\n') signalCancellation();
+    });
+    processes.push(child as unknown as ReturnType<WorkspaceCommandLauncher>);
+    return processes.at(-1)!;
+  };
+  const workspace = createDockerWorkspace({
+    container: 'sidekick-workspace-fixture',
+    workspaceRoot: '/synthetic',
+    spawn: launch,
+  });
+  const session = workspace.open({
+    taskId: 'fixture',
+    workspacePath: '/synthetic/fixture',
+    signal: new AbortController().signal,
+  });
+  let failureSettled = false;
+  const failed = assert.rejects(session.execute('first'), /did not stop safely/).finally(() => {
+    failureSettled = true;
+  });
+  const drained = assert.rejects(session.execute('second'), /Task cancelled/);
+  let acknowledged = false;
+  const acknowledge = () => {
+    if (acknowledged) return;
+    acknowledged = true;
+    processes[1].stdout.emit('data', '{"type":"exit","code":-15,"reason":"cancelled"}\n');
+    processes[1].emit('close', 0);
+  };
+  try {
+    processes[0].emit('close', 1);
+    await Promise.race([
+      cancelled,
+      delay(500).then(() => {
+        throw new Error('Existing command was not cancelled.');
+      }),
+    ]);
+    await assert.rejects(session.execute('later'), /Restart Sidekick/);
+    assert.equal(processes.length, 2);
+    assert.equal(failureSettled, false);
+    acknowledge();
+    await Promise.all([failed, drained]);
+  } finally {
+    acknowledge();
+    await workspace.dispose();
+    await Promise.allSettled([failed, drained]);
   }
 });

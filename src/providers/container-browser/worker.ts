@@ -23,6 +23,7 @@ type Namespace = {
   computer: Promise<Computer>;
   pending: Map<string, { controller: AbortController; done: Promise<unknown> }>;
   closing?: Promise<void>;
+  closeFailed?: boolean;
 };
 
 function metadata(computer?: Computer, request?: BrowserRequest): BrowserMetadata {
@@ -144,12 +145,18 @@ export async function startContainerBrowserWorker(
   async function dispose(name: string) {
     const entry = namespaces.get(name);
     if (!entry) return;
-    entry.closing ??= (async () => {
-      for (const pending of entry.pending.values()) pending.controller.abort();
-      await Promise.allSettled([...entry.pending.values()].map((pending) => pending.done));
-      await (await entry.computer).dispose();
-      namespaces.delete(name);
-    })();
+    if (!entry.closing || entry.closeFailed) {
+      entry.closeFailed = false;
+      entry.closing = (async () => {
+        for (const pending of entry.pending.values()) pending.controller.abort();
+        await Promise.allSettled([...entry.pending.values()].map((pending) => pending.done));
+        await (await entry.computer).dispose();
+        namespaces.delete(name);
+      })().catch((error) => {
+        entry.closeFailed = true;
+        throw error;
+      });
+    }
     await entry.closing;
   }
   await prepareSocket(path);

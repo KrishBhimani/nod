@@ -85,7 +85,7 @@ while True:
    elif connected: send({'type':key.data,'data':base64.b64encode(chunk).decode('ascii')})
  code=p.poll()
  streams=any(key.data in ['stdout','stderr'] for key in sel.get_map().values())
- if code is not None and not streams and (not reason or not group_running()): break
+ if code is not None and not streams and not group_running(): break
 p.wait()
 if connected: send({'type':'exit','code':code,'reason':reason})
 `;

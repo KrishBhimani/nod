@@ -77,16 +77,25 @@ test('workspace artifact reads reject paths outside the container task', async (
     await mkdir(workspace);
     await writeFile(join(directory, 'private.txt'), 'fixture');
     await symlink(join(directory, 'private.txt'), join(workspace, 'escape.txt'));
+    let launched = 0;
     const runner = createDockerWorkspace({
       container: 'sidekick-workspace',
       workspaceRoot: directory,
+      spawn: () => {
+        launched++;
+        throw new Error('Unexpected workspace launch.');
+      },
     });
     runner.open({
       taskId: 'task-a',
       workspacePath: workspace,
       signal: new AbortController().signal,
     });
-    await assert.rejects(runner.readArtifact!('task-a', '../private.txt', 1024));
+    await assert.rejects(
+      runner.readArtifact!('task-a', '../private.txt', 1024),
+      /^Error: Files must stay within the task workspace\.$/,
+    );
+    assert.equal(launched, 0);
     assert.throws(() =>
       runner.open({
         taskId: 'task-b',
