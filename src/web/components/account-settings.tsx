@@ -234,7 +234,7 @@ export function AccountSettings({
           }
         }}
       >
-        <DialogTitle>Settings</DialogTitle>
+        <DialogTitle className="sr-only">Settings</DialogTitle>
         <div className="account-settings-layout">
           <nav role="tablist" aria-label="Account settings" aria-orientation="vertical">
             {(['Profile', 'Appearance', 'Preferences'] as const).map((value, index, tabs) => {

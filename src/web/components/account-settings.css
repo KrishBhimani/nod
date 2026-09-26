@@ -146,17 +146,27 @@
   padding: 0;
   overflow: hidden;
 }
-.account-settings.dialog-content > h2 {
-  margin: 0;
-  padding: 22px 24px;
-  border-bottom: 1px solid var(--border);
+.account-settings .dialog-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  top: 18px;
+  right: 18px;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 8px;
+}
+.account-settings .dialog-close:hover {
+  background: var(--hover);
+  color: var(--foreground);
 }
 .account-settings-layout {
   display: grid;
   grid-template-columns: 160px minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr) auto;
   height: 370px;
-  max-height: calc(90dvh - 74px);
+  max-height: calc(90dvh - 2px);
 }
 .account-settings-layout > nav {
   display: flex;
@@ -205,6 +215,7 @@
 }
 .account-settings-body > h3 {
   margin: 0 0 26px;
+  padding-right: 30px;
   font-size: 18px;
   font-weight: 600;
   letter-spacing: -0.4px;
@@ -263,8 +274,6 @@
   align-items: center;
   justify-content: space-between;
   gap: 20px;
-  padding-top: 20px;
-  border-top: 1px solid var(--border);
   font-size: 13px;
 }
 .account-profile-email > div {
@@ -500,8 +509,11 @@
   .account-settings.dialog-content {
     width: calc(100vw - 24px);
   }
-  .account-settings.dialog-content > h2 {
-    padding: 22px 20px;
+  .account-settings .dialog-close {
+    top: 12px;
+    right: 12px;
+    width: 44px;
+    height: 44px;
   }
   .account-settings-layout {
     grid-template-columns: 58px minmax(0, 1fr);
