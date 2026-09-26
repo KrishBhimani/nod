@@ -1,19 +1,25 @@
 import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import { act, createElement } from 'react';
+import { setTimeout as delay } from 'node:timers/promises';
 import { JSDOM } from 'jsdom';
 import type { Connection } from '../src/shared/contracts.ts';
 import { pageDataCache } from '../src/web/lib/page-data-cache.ts';
-import { Apps } from '../src/web/pages/apps.tsx';
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', {
   url: 'http://localhost:4310',
+  pretendToBeVisual: true,
 });
 for (const key of [
   'window',
   'document',
   'navigator',
   'HTMLElement',
+  'HTMLButtonElement',
+  'HTMLInputElement',
+  'NodeFilter',
+  'MutationObserver',
+  'getComputedStyle',
   'Element',
   'Node',
   'Event',
@@ -25,6 +31,7 @@ for (const key of [
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', { configurable: true, value: true });
 after(() => dom.window.close());
 const { createRoot } = await import('react-dom/client');
+const { Apps } = await import('../src/web/pages/apps.tsx');
 const accounts: Connection[] = [
   {
     slug: 'gmail',
@@ -48,6 +55,13 @@ const accounts: Connection[] = [
 ];
 const click = (element: Element) =>
   element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+const dialogButton = (label: string) => {
+  const button = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(
+    (candidate) => candidate.textContent === label,
+  );
+  assert.ok(button, `Expected dialog button: ${label}`);
+  return button;
+};
 
 test('leaving Apps prevents a late account connection from redirecting the current page', async () => {
   const priorFetch = globalThis.fetch;
@@ -85,7 +99,7 @@ test('leaving Apps prevents a late account connection from redirecting the curre
   }
 });
 
-test('Apps retains cached accounts and exposes a direct named disconnect beside each identity', async () => {
+test('Apps retains cached account cards with one add action and named icon disconnects', async () => {
   const priorFetch = globalThis.fetch;
   let complete: (response: Response) => void = () => {};
   globalThis.fetch = async () =>
@@ -99,12 +113,7 @@ test('Apps retains cached accounts and exposes a direct named disconnect beside 
   try {
     await act(async () => root.render(createElement(Apps)));
     assert.equal(container.querySelector('.loading'), null);
-    assert.equal(container.querySelectorAll('.button-primary').length, 0);
-    assert.equal(container.querySelectorAll('.button-outline').length, 2);
-    assert.equal(
-      container.querySelector('[aria-label="Add Gmail account"]')?.textContent,
-      'Add account',
-    );
+    assert.equal(container.querySelector('[aria-label="Add Gmail account"]')?.textContent, '');
     assert.equal(
       container.querySelector('[aria-label="Connect Calendar"]')?.textContent,
       'Connect',
@@ -114,12 +123,22 @@ test('Apps retains cached accounts and exposes a direct named disconnect beside 
     const first = container.querySelector('.compact-account')!;
     assert.equal(first.querySelector('.compact-account-name')?.textContent, 'one@example.com');
     const disconnect = first.querySelector<HTMLButtonElement>('[data-disconnect-account="one"]')!;
-    assert.equal(disconnect.textContent, 'Disconnect');
+    assert.equal(disconnect.textContent, '');
+    assert.equal(disconnect.title, 'Disconnect account');
     assert.equal(disconnect.getAttribute('aria-label'), 'Disconnect one@example.com from Gmail');
     assert.equal(disconnect.disabled, false);
+    assert.equal(container.querySelectorAll('[aria-label="Add Gmail account"]').length, 1);
+    assert.equal(container.querySelectorAll('.app-card').length, 2);
+    assert.match(container.textContent ?? '', /Connected apps/);
+    assert.match(container.textContent ?? '', /More apps/);
+    assert.match(
+      container.querySelector('[data-disconnect-account="two"]')?.parentElement?.textContent ?? '',
+      /two@example.com/,
+    );
+    assert.doesNotMatch(container.textContent ?? '', /Second Person/);
     assert.equal(
-      disconnect.previousElementSibling,
-      first.querySelector('.compact-account-details'),
+      container.querySelector('[data-disconnect-account="two"]')?.getAttribute('aria-label'),
+      'Disconnect two@example.com from Gmail',
     );
     assert.equal(container.querySelector('[aria-label="Connected"]'), null);
     assert.equal(container.querySelector('[aria-haspopup="menu"]'), null);
@@ -160,13 +179,13 @@ test('disconnect removes only the accepted account and a late cached refresh can
       button.focus();
       click(button);
     });
+    assert.deepEqual(writes, []);
+    await act(async () => dialogButton('Disconnect').click());
+    await act(async () => delay(0));
     assert.deepEqual(writes, ['/api/apps/gmail/accounts/one/disconnect']);
     assert.equal(container.querySelector('[data-disconnect-account="one"]'), null);
     assert.ok(container.querySelector('[data-disconnect-account="two"]'));
-    assert.equal(
-      document.activeElement,
-      container.querySelector('[aria-label="Add Gmail account"]'),
-    );
+    assert.equal(document.activeElement?.getAttribute('aria-label'), 'Add Gmail account');
     assert.equal(
       container.querySelector('[aria-label="Add Gmail account"]')?.hasAttribute('disabled'),
       false,
@@ -183,12 +202,17 @@ test('disconnect removes only the accepted account and a late cached refresh can
   }
 });
 
-test('a partial disconnect failure refreshes revoked access without claiming the account was removed', async () => {
+test('a partial disconnect failure keeps the account and dialog available for retry after stale refreshes', async () => {
   const priorFetch = globalThis.fetch;
   const reads: Array<(response: Response) => void> = [];
+  let writes = 0;
   globalThis.fetch = async (_url, options) => {
-    if (options?.method === 'POST')
-      return Response.json({ error: 'Remote disconnect could not finish.' }, { status: 502 });
+    if (options?.method === 'POST') {
+      writes++;
+      return writes === 1
+        ? Response.json({ error: 'Remote disconnect could not finish.' }, { status: 502 })
+        : Response.json({});
+    }
     return new Promise((resolve) => reads.push(resolve));
   };
   pageDataCache.update('/api/apps', () => accounts);
@@ -202,7 +226,13 @@ test('a partial disconnect failure refreshes revoked access without claiming the
       button.focus();
       click(button);
     });
-    assert.match(container.textContent ?? '', /Remote disconnect could not finish/);
+    await act(async () => dialogButton('Disconnect').click());
+    assert.equal(writes, 1);
+    assert.match(
+      document.querySelector('[role="dialog"] [role="alert"]')?.textContent ?? '',
+      /Remote disconnect could not finish/,
+    );
+    assert.equal(dialogButton('Disconnect').disabled, false);
     assert.equal(reads.length, 2);
     await act(async () =>
       reads[1](Response.json([{ ...accounts[0], status: 'disconnected' }, ...accounts.slice(1)])),
@@ -218,6 +248,13 @@ test('a partial disconnect failure refreshes revoked access without claiming the
       /Sign-in required/,
     );
     assert.equal(container.querySelector('.loading'), null);
+    assert.ok(document.querySelector('[role="dialog"]'));
+    await act(async () => dialogButton('Disconnect').click());
+    assert.equal(writes, 2);
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+    assert.equal(container.querySelector('[data-disconnect-account="one"]'), null);
+    assert.ok(container.querySelector('[data-disconnect-account="two"]'));
+    await act(async () => reads[2](Response.json(accounts.slice(1))));
   } finally {
     await act(async () => root.unmount());
     container.remove();
@@ -288,7 +325,8 @@ test('an unavailable account keeps explicit add and disconnect choices without c
     const disconnect = container.querySelector<HTMLButtonElement>(
       '[data-disconnect-account="one"]',
     )!;
-    assert.equal(disconnect.textContent, 'Disconnect');
+    assert.equal(disconnect.textContent, '');
+    assert.equal(disconnect.title, 'Disconnect account');
     assert.equal(disconnect.disabled, false);
     assert.equal(container.querySelector('[role="menu"]'), null);
     assert.doesNotMatch(container.textContent ?? '', /Sign in again|restore access|Reconnect/);
@@ -300,13 +338,11 @@ test('an unavailable account keeps explicit add and disconnect choices without c
   }
 });
 
-test('direct disconnect keeps the selected account visible and disables account actions while pending', async () => {
+test('confirmed disconnect keeps the account visible and prevents duplicate requests while pending', async () => {
   const priorFetch = globalThis.fetch;
-  const priorConfirm = window.confirm;
   let finish!: (response: Response) => void;
   let removed = false;
   const writes: string[] = [];
-  window.confirm = () => assert.fail('Disconnect must not add a confirmation step');
   globalThis.fetch = async (url, options) => {
     if (options?.method === 'POST') {
       writes.push(String(url));
@@ -329,33 +365,250 @@ test('direct disconnect keeps the selected account visible and disables account 
       disconnect.focus();
       disconnect.click();
     });
+    assert.deepEqual(writes, []);
+    await act(async () => dialogButton('Disconnect').click());
     assert.deepEqual(writes, ['/api/apps/gmail/accounts/one/disconnect']);
+    assert.equal(dialogButton('Disconnecting…').disabled, true);
     assert.equal(container.querySelectorAll('.compact-account').length, 2);
     assert.ok(
       [...container.querySelectorAll<HTMLButtonElement>('button')].every(
         (button) => button.disabled,
       ),
     );
-    await act(async () => disconnect.click());
+    await act(async () => {
+      disconnect.click();
+      dialogButton('Disconnecting…').click();
+    });
     assert.equal(writes.length, 1);
     await act(async () => {
       removed = true;
       finish(Response.json({}));
     });
+    await act(async () => delay(0));
     assert.equal(container.querySelectorAll('.compact-account').length, 1);
     assert.equal(
       container.querySelector<HTMLButtonElement>('[data-disconnect-account="two"]')?.disabled,
       false,
     );
+    assert.equal(document.activeElement?.getAttribute('aria-label'), 'Add Gmail account');
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    pageDataCache.update('/api/apps', () => null);
+    globalThis.fetch = priorFetch;
+  }
+});
+
+test('disconnect asks about the selected account and cancellation sends no request', async () => {
+  const priorFetch = globalThis.fetch;
+  const writes: string[] = [];
+  globalThis.fetch = async (url, options) => {
+    if (options?.method === 'POST') writes.push(String(url));
+    return Response.json(accounts);
+  };
+  pageDataCache.update('/api/apps', () => accounts);
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(createElement(Apps)));
+    const disconnect = container.querySelector<HTMLButtonElement>(
+      '[data-disconnect-account="two"]',
+    )!;
+    await act(async () => {
+      disconnect.focus();
+      disconnect.click();
+    });
+    assert.deepEqual(writes, []);
+    const dialog = document.querySelector('[role="dialog"]')!;
+    assert.match(dialog.textContent ?? '', /Disconnect from Gmail\?/);
+    assert.match(dialog.textContent ?? '', /two@example.com/);
+    assert.doesNotMatch(dialog.textContent ?? '', /one@example.com/);
+    assert.equal(document.activeElement?.textContent, 'Keep account');
+    await act(async () => dialogButton('Keep account').click());
+    await act(async () => delay(0));
+    assert.equal(document.querySelector('[role="dialog"]'), null);
     assert.equal(
-      document.activeElement,
-      container.querySelector('[aria-label="Add Gmail account"]'),
+      document.activeElement?.getAttribute('aria-label'),
+      disconnect.getAttribute('aria-label'),
+    );
+    assert.deepEqual(writes, []);
+    assert.equal(container.querySelectorAll('.compact-account').length, 2);
+    await act(async () => disconnect.click());
+    await act(async () =>
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })),
+    );
+    await act(async () => delay(0));
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+    assert.equal(
+      document.activeElement?.getAttribute('aria-label'),
+      disconnect.getAttribute('aria-label'),
+    );
+    assert.deepEqual(writes, []);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    pageDataCache.update('/api/apps', () => null);
+    globalThis.fetch = priorFetch;
+  }
+});
+
+test('removing the final account returns focus to Connect on the available app card', async () => {
+  const priorFetch = globalThis.fetch;
+  let removed = false;
+  globalThis.fetch = async (_url, options) => {
+    if (options?.method === 'POST') {
+      removed = true;
+      return Response.json({});
+    }
+    return Response.json(
+      removed
+        ? [{ slug: 'gmail', name: 'Gmail', status: 'disconnected', triggersEnabled: false }]
+        : [accounts[0]],
+    );
+  };
+  pageDataCache.update('/api/apps', () => [accounts[0]]);
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(createElement(Apps)));
+    await act(async () => {
+      const disconnect = container.querySelector<HTMLButtonElement>(
+        '[data-disconnect-account="one"]',
+      )!;
+      disconnect.focus();
+      disconnect.click();
+    });
+    await act(async () => dialogButton('Disconnect').click());
+    await act(async () => delay(0));
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+    assert.equal(container.querySelectorAll('.compact-account').length, 0);
+    const connect = container.querySelector<HTMLButtonElement>('[aria-label="Connect Gmail"]')!;
+    assert.equal(connect.disabled, false);
+    assert.equal(document.activeElement?.getAttribute('aria-label'), 'Connect Gmail');
+    assert.equal(container.querySelectorAll('.app-card').length, 1);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    pageDataCache.update('/api/apps', () => null);
+    globalThis.fetch = priorFetch;
+  }
+});
+
+test('leaving Apps aborts disconnect and ignores a late response for the previous page', async () => {
+  const priorFetch = globalThis.fetch;
+  let finish!: (response: Response) => void;
+  let signal: AbortSignal | null | undefined;
+  let reads = 0;
+  globalThis.fetch = async (_url, options) => {
+    if (options?.method === 'POST') {
+      signal = options.signal;
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    }
+    reads++;
+    return Response.json(accounts);
+  };
+  pageDataCache.update('/api/apps', () => accounts);
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(createElement(Apps)));
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-disconnect-account="one"]')!.click(),
+    );
+    await act(async () => dialogButton('Disconnect').click());
+    await act(async () => root.render(null));
+    assert.equal(signal?.aborted, true);
+    const readsBeforeResponse = reads;
+    await act(async () => finish(Response.json({})));
+    assert.equal(reads, readsBeforeResponse);
+    assert.deepEqual(pageDataCache.getSnapshot<Connection[]>('/api/apps').data, accounts);
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    pageDataCache.update('/api/apps', () => null);
+    globalThis.fetch = priorFetch;
+  }
+});
+
+test('Notion workspaces with the same owner email remain distinct in account rows and disconnect confirmation', async () => {
+  const priorFetch = globalThis.fetch;
+  const workspaces: Connection[] = [
+    {
+      slug: 'notion',
+      name: 'Notion',
+      status: 'connected',
+      connectionId: 'workspace-team',
+      accountName: 'Team workspace',
+      accountEmail: 'owner@example.com',
+      triggersEnabled: false,
+    },
+    {
+      slug: 'notion',
+      name: 'Notion',
+      status: 'connected',
+      connectionId: 'workspace-personal',
+      accountName: 'Personal workspace',
+      accountEmail: 'owner@example.com',
+      triggersEnabled: false,
+    },
+  ];
+  const writes: string[] = [];
+  let removed = false;
+  globalThis.fetch = async (url, options) => {
+    if (options?.method === 'POST') {
+      writes.push(String(url));
+      removed = true;
+      return Response.json({});
+    }
+    return Response.json(removed ? [workspaces[0]] : workspaces);
+  };
+  pageDataCache.update('/api/apps', () => workspaces);
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(createElement(Apps)));
+    assert.deepEqual(
+      [...container.querySelectorAll('.compact-account-name')].map((label) => label.textContent),
+      ['Team workspace · owner@example.com', 'Personal workspace · owner@example.com'],
+    );
+    const selected = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Disconnect Personal workspace · owner@example.com from Notion"]',
+    )!;
+    assert.ok(selected);
+    assert.ok(
+      container.querySelector(
+        '[aria-label="Disconnect Team workspace · owner@example.com from Notion"]',
+      ),
+    );
+    await act(async () => {
+      selected.focus();
+      selected.click();
+    });
+    const dialog = document.querySelector('[role="dialog"]')!;
+    assert.match(dialog.textContent ?? '', /Disconnect from Notion\?/);
+    assert.match(dialog.textContent ?? '', /Personal workspace · owner@example.com/);
+    assert.doesNotMatch(dialog.textContent ?? '', /Team workspace/);
+    assert.deepEqual(writes, []);
+    await act(async () => dialogButton('Disconnect').click());
+    assert.deepEqual(writes, ['/api/apps/notion/accounts/workspace-personal/disconnect']);
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+    assert.equal(container.querySelector('[data-disconnect-account="workspace-personal"]'), null);
+    assert.ok(container.querySelector('[data-disconnect-account="workspace-team"]'));
+    assert.equal(
+      container.querySelector('.compact-account-name')?.textContent,
+      'Team workspace · owner@example.com',
     );
   } finally {
     await act(async () => root.unmount());
     container.remove();
     pageDataCache.update('/api/apps', () => null);
     globalThis.fetch = priorFetch;
-    window.confirm = priorConfirm;
   }
 });

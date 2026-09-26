@@ -1,126 +1,158 @@
 .apps-page {
   container-type: inline-size;
 }
+.apps-page .secondary-heading {
+  margin-bottom: 32px;
+}
+.apps-page .apps-group + .apps-group {
+  margin-top: 28px;
+}
+.apps-page .apps-group > h2 {
+  margin: 0 0 12px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+}
 .apps-page .app-grid {
-  display: flex;
-  flex-direction: column;
-  border-top: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: start;
+  gap: 14px;
 }
 .apps-page .app-card {
-  display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(160px, 1fr) auto;
-  align-items: center;
-  gap: 8px 24px;
   min-width: 0;
-  padding: 14px 0;
-  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--surface);
 }
 .apps-page .app-card-summary {
-  grid-column: 1 / 3;
-  grid-row: 1;
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
-  min-width: 0;
+  gap: 12px;
+  min-height: 86px;
+  padding: 16px;
+}
+.apps-page .app-card-summary > img,
+.apps-page .app-card-summary > svg {
+  width: 25px;
+  height: 25px;
+  object-fit: contain;
 }
 .apps-page .app-card-copy {
   min-width: 0;
 }
-.apps-page .app-card.has-accounts .app-card-summary {
-  grid-column: 1;
-}
-.apps-page .app-card-heading {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-}
-.apps-page .app-card-summary > img,
-.apps-page .app-card-summary > svg {
-  flex-shrink: 0;
-}
-.apps-page .app-card-heading h2 {
-  min-width: 0;
+.apps-page .app-card-copy h3 {
+  margin: 0;
   color: var(--foreground);
   font-size: 14px;
   font-weight: 600;
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
-.apps-page .app-card-heading > span {
-  color: var(--muted-foreground);
-  font-size: 11px;
-}
 .apps-page .app-card-description {
-  margin: 3px 0 0;
+  margin: 4px 0 0;
   color: var(--muted-foreground);
   font-size: 12px;
   line-height: 1.5;
 }
+.apps-page .app-card-unavailable {
+  margin: 5px 0 0;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.apps-page .app-connect {
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.apps-page .app-add-account,
+.apps-page .account-disconnect {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 6px;
+  color: var(--muted-foreground);
+}
+.apps-page .account-disconnect:hover:not(:disabled) {
+  color: var(--error);
+  background: var(--error-soft);
+}
 .apps-page .app-card-accounts {
-  grid-column: 2;
-  grid-row: 1;
   min-width: 0;
+  margin: 0 16px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
 }
 .apps-page .compact-account {
   align-items: center;
-  padding: 3px 0;
+  gap: 12px;
+  min-height: 34px;
+  padding: 2px 0;
+}
+.apps-page .compact-account + .compact-account {
+  border-top: 1px solid var(--border);
 }
 .apps-page .compact-account-details {
-  flex: 0 1 auto;
+  flex: 1;
   padding-top: 0;
 }
-.apps-page .account-disconnect {
-  flex-shrink: 0;
-  margin-left: 0;
-}
-.apps-page .compact-account-name,
-.apps-page .compact-account-email {
+.apps-page .compact-account-name {
   min-width: 0;
+  font-size: 13px;
+  line-height: 1.5;
   overflow-wrap: anywhere;
 }
-.apps-page .app-card-actions {
-  grid-column: 3;
-  grid-row: 1;
+.app-disconnect-dialog {
+  width: min(400px, calc(100vw - 32px));
+  padding: 24px;
+}
+.app-disconnect-dialog > h2 {
+  padding-right: 24px;
+  font-size: 18px;
+}
+.app-disconnect-dialog > p {
+  overflow-wrap: anywhere;
+}
+.app-disconnect-dialog > p > span {
+  display: block;
+  margin-top: 8px;
+}
+.app-disconnect-actions {
   display: flex;
-  flex-direction: column-reverse;
-  align-items: flex-end;
-  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 22px;
 }
-.apps-page .app-card-actions > span {
-  color: var(--muted-foreground);
-  font-size: 11px;
+.app-disconnect-dialog[aria-busy='true'] > .dialog-close {
+  visibility: hidden;
 }
-@container (max-width: 700px) {
-  .apps-page .app-card {
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 6px 16px;
-  }
-  .apps-page .app-card-summary {
-    grid-column: 1;
-  }
-  .apps-page .app-card-accounts {
-    grid-column: 1 / -1;
-    grid-row: 2;
-    padding-left: 34px;
-  }
-  .apps-page .app-card-actions {
-    grid-column: 2;
+@container (max-width: 1000px) {
+  .apps-page .app-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
-@container (max-width: 400px) {
-  .apps-page .app-card {
-    gap: 6px 10px;
-    padding-block: 12px;
+@container (max-width: 580px) {
+  .apps-page .app-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
-  .apps-page .app-card-heading > span {
-    flex-basis: 100%;
+}
+@media (pointer: coarse) {
+  .apps-page .app-add-account,
+  .apps-page .account-disconnect {
+    width: 40px;
+    height: 40px;
+    min-height: 40px;
   }
-  .apps-page .app-card-accounts {
-    padding-left: 0;
-  }
-  .apps-page .app-card-actions .button {
-    min-height: 38px;
-    padding-inline: 8px;
+  .apps-page .app-connect {
+    min-height: 40px;
   }
 }

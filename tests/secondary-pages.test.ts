@@ -78,7 +78,16 @@ test('connections keep multiple account identities under their service without i
     createElement(ConnectedAccount, { account: second, busy: false, onDisconnect() {} }),
   );
   assert.match(html, /two@example.com/);
+  assert.match(html, /aria-label="Disconnect two@example.com from Gmail"/);
+  assert.match(html, /title="Disconnect account"/);
   assert.doesNotMatch(html, /Fixture Person|Watch|switch|checkbox|triggers/);
+  const named = renderToStaticMarkup(
+    createElement(ConnectedAccount, { account, busy: true, onDisconnect() {} }),
+  );
+  assert.match(named, /fixture@example.com/);
+  assert.match(named, /aria-label="Disconnect fixture@example.com from Gmail"/);
+  assert.match(named, /disabled=""/);
+  assert.doesNotMatch(named, /Fixture Person|>Disconnect</);
   const unknown = renderToStaticMarkup(
     createElement(ConnectedAccount, {
       account: { ...account, accountName: undefined, accountEmail: undefined },
