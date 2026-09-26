@@ -427,31 +427,60 @@ small {
   margin-top: 28px;
 }
 .onboarding-app-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 72px;
   min-width: 0;
+  padding: 16px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  overflow: hidden;
+  border-radius: 10px;
+  text-align: left;
 }
-.onboarding-app-card .service-row {
-  min-height: 100px;
-  gap: 12px;
-  padding: 18px 16px;
+.onboarding-app-card:not(:disabled):hover {
+  background: var(--control-hover);
+  border-color: var(--input);
 }
-.onboarding-app-card .service-row:only-child,
-.onboarding-app-card .service-row:last-child {
-  border-bottom: 0;
+.onboarding-app-card:disabled {
+  opacity: 1;
 }
-.onboarding-app-card .service-copy > p {
+.onboarding-app-card.connected {
+  background: var(--success-soft);
+  border-color: color-mix(in srgb, var(--success) 28%, var(--success-soft));
+}
+.onboarding-app-card .app-icon {
+  width: 32px;
+  height: 32px;
+}
+.onboarding-app-card .app-icon img {
+  width: 26px;
+  height: 26px;
+}
+.onboarding-app-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.onboarding-app-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
-.onboarding-app-card .service-row > .btn {
-  min-height: 34px;
-  padding: 7px 12px;
-  font-size: 11px;
+.onboarding-app-status svg {
+  width: 14px;
+  height: 14px;
 }
-.onboarding-app-card .service-add {
-  padding: 0 16px 16px 65px;
+.onboarding-app-card.connected .onboarding-app-status {
+  color: var(--success);
+}
+.onboarding-app-card.attention .onboarding-app-status {
+  color: var(--warning);
 }
 .onboarding-actions {
   position: sticky;
@@ -646,6 +675,7 @@ small {
   left: 4px;
 }
 .mobile-account-header,
+.mobile-account-theme,
 .mobile-settings-link,
 .mobile-nav-backdrop {
   display: none;
@@ -778,6 +808,54 @@ small {
 }
 .account-menu > button:hover {
   background: var(--surface-subtle);
+}
+.settings-shortcut {
+  margin-left: auto;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 11px;
+}
+.account-theme {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.account-theme-options {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 8px;
+  background: var(--surface-subtle);
+}
+.account-theme-options button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted-foreground);
+}
+.account-theme-options button:hover {
+  color: var(--foreground);
+  background: var(--hover);
+}
+.account-theme-options button[aria-pressed='true'] {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--foreground);
+  box-shadow: 0 1px 3px #0000000a;
+}
+.account-theme-options button svg {
+  width: 15px;
+  height: 15px;
 }
 .main-content {
   flex: 1;
@@ -1004,20 +1082,6 @@ small {
 }
 .app-account-list .connected-account {
   padding: 10px 0;
-  border-bottom: 0;
-}
-.onboarding-app-card:has(.onboarding-account-list) > .service-row {
-  min-height: 76px;
-  padding-bottom: 12px;
-  border-bottom: 0;
-}
-.onboarding-account-list {
-  padding: 0 16px 10px 65px;
-}
-.onboarding-account-list .connected-account {
-  min-height: 0;
-  padding: 0 0 10px;
-  align-items: flex-start;
   border-bottom: 0;
 }
 .connected-account .service-copy > p {
@@ -2017,6 +2081,18 @@ small {
   .mobile-settings-link:hover {
     background: var(--hover);
   }
+  .mobile-account-theme {
+    display: block;
+    padding-bottom: 6px;
+  }
+  .mobile-account-theme .account-theme {
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+  .mobile-account-theme .account-theme-options button {
+    width: 36px;
+    height: 34px;
+  }
   .sidebar-collapsed .computer-link {
     justify-content: flex-start;
     padding-right: 9px;
@@ -2130,22 +2206,10 @@ small {
   .onboarding {
     padding: 23px 20px 94px;
   }
-  .onboarding-app-card .service-row {
-    padding: 17px 14px;
-    min-height: 87px;
-    align-items: center;
-  }
-  .onboarding-app-card .service-copy > p {
-    font-size: 11px;
-  }
-  .onboarding-app-card .service-add,
-  .onboarding-account-list {
-    padding-left: 56px;
-  }
-  .onboarding-account-list .connected-account {
-    min-height: 0;
-    padding: 0 0 10px;
-    align-items: flex-start;
+  .onboarding-app-card {
+    min-height: 68px;
+    padding: 14px;
+    gap: 10px;
   }
   .app-account-list {
     padding-left: 40px;

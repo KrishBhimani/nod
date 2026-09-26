@@ -2,7 +2,7 @@
 
 Question: which signup and account-management flow makes hosted Sidekick easy to start using while preserving its quiet, chat-centered interface?
 
-**Selected on 2026-09-26: A.** Keep ordinary screens concise. The login has no privacy reassurance, login-versus-app-access explanation, host credit or preview label. Connection screens use account identity and actionable states; provider consent contains the permissions review. Event-processing details stay in developer diagnostics.
+**Selected on 2026-09-26: A.** Keep ordinary screens concise. The login has no privacy reassurance, login-versus-app-access explanation, host credit or preview label. Onboarding shows each app and its connection state without connected-account identity or account-management controls. Connect goes straight to provider authorization; provider consent contains the permissions review. Event-processing details stay in developer diagnostics.
 
 This is a disposable, in-memory UI preview on `prototype/cloud-signup`. It is not authentication, an isolation boundary, a running agent, provider consent, webhook processing, or a deployment. All identities and results are synthetic. Do not enter real credentials.
 
@@ -46,19 +46,19 @@ C: login -> chat + optional setup        | side drawer
 
 The computer provider is selected when the server starts, through composition. Ordinary users see the assistant, not a Computer page, desktop stream or provider picker. A developer preview can expose simulated computer diagnostics; its client-side flag is not authorization. Production must authorize these routes server-side. A necessary private credential request is a scoped form, not general browser access.
 
-The sidebar account control uses a portrait, name and email, with an initials fallback. Profile, Appearance and Preferences belong in a simple account dialog. Production will use the verified Google picture claim through normalized, bounded safe image handling; the prototype uses synthetic local portraits and does not exercise Google claims or remote avatar loading.
+The sidebar account control uses a portrait, name and email, with an initials fallback. Profile, Appearance and Preferences belong in a simple account dialog. The account dropdown also offers quick Light, Dark and System theme controls, with equivalent access from the mobile menu. Cmd+, on macOS and Ctrl+, elsewhere open settings from the signed-in app when no other modal is active. Production will use the verified Google picture claim through normalized, bounded safe image handling; the prototype uses synthetic local portraits and does not exercise Google claims or remote avatar loading.
 
-Desktop navigation remains vertically centered with subtle hover animation and a visible collapse/expand control. On mobile, prioritize chat and a menu for navigation and settings. Preserve two independent demo identities to review account-switch UX; this is not a server isolation test.
+Desktop navigation remains vertically centered with subtle hover animation and a visible collapse/expand control. Do not show a connected-app count in the sidebar. On mobile, prioritize chat and a menu for navigation and settings. Preserve two independent demo identities to review account-switch UX; this is not a server isolation test.
 
-Onboarding offers Gmail, Google Calendar, Google Drive, Google Docs, Google Sheets, Slack and Notion on one optional screen. The simulated consent flow returns to that screen with current connection status and preserves the other apps. Production must bind each return to its owned attempt and allowlisted app destination, handling cancellation, expiry and failure without arbitrary redirects. Subscription receipt and processing are independently tracked backend states; ordinary rows do not expose watch configuration or diagnostic timestamps.
+Onboarding offers Gmail, Google Calendar, Google Drive, Google Docs, Google Sheets, Slack and Notion on one optional screen. Compact, single-row cards show Connect, Connecting, a distinct Connected style with a check, or Reconnect. They do not show which account is connected or offer add-account, multiple-account or disconnect controls. Connect immediately starts a simulated provider round trip without a Sidekick permissions modal, then returns to the same screen with current connection status and the other apps preserved. This preview does not open real OAuth or collect permission grants. Production must bind each return to its owned attempt and allowlisted app destination, handling cancellation, expiry and failure without arbitrary redirects. Preserve the existing production Apps page design and account-management behavior; this proposal does not redesign it. Subscription receipt and processing are independently tracked backend states; ordinary rows do not expose watch configuration or diagnostic timestamps.
 
 ## Review route
 
 1. Continue with Google and choose a synthetic account.
 2. Connect any of the seven apps, return to the same setup screen with updated status, then continue or skip.
-3. Try Apps, reconnect/disconnect, and cancelled or failed consent without losing the setup screen.
+3. Review the existing Apps page separately; exercise onboarding reconnect and cancelled or failed consent through the prototype scenarios without losing the setup screen.
 4. Pair the synthetic Telegram bot, confirm identity and simulate a reply.
-5. Open the avatar account control, edit the profile and change appearance.
+5. Change Light, Dark and System from the avatar dropdown, then use Cmd+, on macOS or Ctrl+, elsewhere to open settings and edit the profile. Verify that the shortcut does not conflict with an active modal.
 6. Collapse and expand the desktop sidebar; review navigation hover states.
 7. On a narrow screen, open the menu from chat and reach profile/settings.
 8. Switch demo users and inspect the separate state; exercise session expiry.

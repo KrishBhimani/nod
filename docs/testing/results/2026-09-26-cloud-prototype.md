@@ -62,3 +62,11 @@ Browser checks on the revised prototype confirmed:
 `npm run check`, `npm run build` and the independent prototype build passed again under Node 26.7.0. Existing application dependency-annotation and bundle-size warnings remain. `npm run test:integration` was attempted but stopped before running fixtures because this checkout has no configured local or explicit test database. No database was provisioned for the UI refinement. These checks do not establish live Google OAuth, account isolation, provider connections or production readiness.
 
 The updated desktop screenshots are saved locally as `.local/cloud-prototype/refined-chat.png` and `.local/cloud-prototype/refined-settings.png`; they contain only synthetic data.
+
+## Compact onboarding and account shortcuts
+
+The next refinement replaces onboarding account rows with seven equal-height app buttons. Connected apps have a distinct fill, check and Connected state; onboarding contains no account identity, add-account or disconnect controls. Connect and Reconnect now simulate the direct provider round trip with an inline pending state and no Sidekick permissions modal. The existing production Apps page is unchanged. The sidebar no longer shows a connected-app count.
+
+Browser verification covered direct connection and reconnection returning to the same onboarding screen, Light/Dark/System controls in the desktop account dropdown and mobile menu, and Cmd+, opening Settings. Closing Settings restores the account trigger when opened from the dropdown, or the composer and its unchanged draft when opened there. A review found and fixed focus return to an unmounted dropdown button. At 390×844, all seven onboarding cards measure 68px high and fit without horizontal overflow; mobile quick theme controls remain inside the menu.
+
+`npm run check` and the independent prototype build passed. The earlier database prerequisite limitation still applies; no backend or live OAuth behavior changed or was validated. The final compact onboarding screenshot is `.local/cloud-prototype/compact-onboarding.png`.

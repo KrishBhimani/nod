@@ -89,56 +89,41 @@ const variants: Record<Variant, { title: string; detail: string }> = {
     detail: 'Go straight into a conversation. Setup and account settings open alongside it.',
   },
 };
-const apps: { id: AppId; name: string; description: string; access: string[] }[] = [
+const apps: { id: AppId; name: string; description: string }[] = [
   {
     id: 'gmail',
     name: 'Gmail',
     description: 'Find emails and stay on top of replies.',
-    access: [
-      'Read and search email',
-      'Draft and send replies when you ask',
-      'Notice new messages in the background',
-    ],
   },
   {
     id: 'googlecalendar',
     name: 'Google Calendar',
     description: 'Make time for what is coming up.',
-    access: [
-      'Read your calendars and events',
-      'Create or change events when you ask',
-      'Notice changes in the background',
-    ],
   },
   {
     id: 'googledrive',
     name: 'Google Drive',
     description: 'Bring your files into the conversation.',
-    access: ['Find and read files you grant access to', 'Create and edit files when you ask'],
   },
   {
     id: 'googledocs',
     name: 'Google Docs',
     description: 'Create and edit documents.',
-    access: ['Read documents you grant access to', 'Create and edit documents'],
   },
   {
     id: 'googlesheets',
     name: 'Google Sheets',
     description: 'Work with your spreadsheets.',
-    access: ['Read spreadsheets you grant access to', 'Create and edit spreadsheets'],
   },
   {
     id: 'slack',
     name: 'Slack',
     description: 'Catch up on the conversations that matter.',
-    access: ['Read permitted channels', 'Send messages when you ask'],
   },
   {
     id: 'notion',
     name: 'Notion',
     description: 'Work with the pages you choose to share.',
-    access: ['Read the pages you select', 'Update those pages when you ask'],
   },
 ];
 const nav = [
@@ -353,7 +338,9 @@ function App() {
   ).length;
   const telegramIdentity = account === 'sam' ? 'Sam Rivera' : 'Alex Morgan';
   const telegramHandle = `@${account ?? 'alex'}_sidekick_demo_bot`;
+  const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
   const startConnection = (id: AppId, connectionId: string | null = null) => {
+    if (connecting) return;
     setConnecting(id);
     setReconnecting(connectionId);
     setConnectionError('');
@@ -459,10 +446,14 @@ function App() {
     setAccountMenu(false);
     setAccessDenied(false);
   };
-  const openSettings = (tab: typeof settingsTab) => {
-    settingsTrigger.current = mobileNav
-      ? navigationButton.current
-      : (accountAnchor.current?.querySelector<HTMLButtonElement>('.account-button') ?? null);
+  const openSettings = (tab: typeof settingsTab, trigger?: HTMLElement) => {
+    settingsTrigger.current =
+      (trigger && !trigger.closest('.account-menu,.sidebar.mobile-open,.review-panel')
+        ? trigger
+        : null) ??
+      (mobileNav
+        ? navigationButton.current
+        : (accountAnchor.current?.querySelector<HTMLButtonElement>('.account-button') ?? null));
     setSettingsTab(tab);
     setEditingName(person.name);
     setAccountMenu(false);
@@ -470,6 +461,26 @@ function App() {
     if (variant === 'B') go(tab === 'Profile' ? 'Profile' : 'Settings');
     else setSettingsOpen(true);
   };
+  useEffect(() => {
+    const keyboard = (event: KeyboardEvent) => {
+      if (
+        event.key !== ',' ||
+        !(isMac ? event.metaKey : event.ctrlKey) ||
+        event.altKey ||
+        event.shiftKey ||
+        !account ||
+        screen !== 'app' ||
+        modal
+      )
+        return;
+      event.preventDefault();
+      if (settingsOpen || event.repeat) return;
+      setReview(false);
+      openSettings('Profile', document.activeElement as HTMLElement);
+    };
+    window.addEventListener('keydown', keyboard);
+    return () => window.removeEventListener('keydown', keyboard);
+  }, [account, screen, modal, settingsOpen, variant, mobileNav, person.name, isMac]);
   const signOut = () => {
     setAccount(null);
     setAuthError('');
@@ -487,35 +498,41 @@ function App() {
     setMobileNav(false);
     setAccessDenied(false);
   };
-  const nextIdentity = (id: AppId) => {
-    const used = new Set((person.apps[id] ?? []).map((connection) => connection.identity));
-    if (!used.has(person.email)) return person.email;
-    let index = 1;
-    while (used.has(`${account}.work${index > 1 ? index : ''}@example.test`)) index++;
-    return `${account}.work${index > 1 ? index : ''}@example.test`;
-  };
-  const connect = (id: AppId) => {
-    const existing = person.apps[id] ?? [];
-    const status = id === 'gmail' || id === 'googlecalendar' ? 'pending' : 'ready';
-    const next: Connection[] = reconnecting
-      ? existing.map((connection) =>
-          connection.id === reconnecting ? { ...connection, status, lastEvent: null } : connection,
-        )
-      : [
-          ...existing,
-          {
-            id: `demo-connection-${++connectionSequence.current}`,
-            identity: nextIdentity(id),
-            status,
-            lastEvent: null,
-          },
-        ];
-    patch({ apps: { ...person.apps, [id]: next } });
-    setConnecting(null);
-    setReconnecting(null);
-    setConnectionError('');
-    notice(`${apps.find((a) => a.id === id)?.name} ${reconnecting ? 'reconnected' : 'connected'}.`);
-  };
+  useEffect(() => {
+    if (!connecting || !account) return;
+    const timer = setTimeout(() => {
+      const id = `demo-connection-${++connectionSequence.current}`;
+      setPeople((current) => {
+        const owner = current[account];
+        const existing = owner.apps[connecting] ?? [];
+        const status: Connection['status'] =
+          connecting === 'gmail' || connecting === 'googlecalendar' ? 'pending' : 'ready';
+        const identities = new Set(existing.map((connection) => connection.identity));
+        let identity = owner.email;
+        let index = 1;
+        while (identities.has(identity)) {
+          identity = `${account}.work${index > 1 ? index : ''}@example.test`;
+          index++;
+        }
+        const connections = reconnecting
+          ? existing.map((connection) =>
+              connection.id === reconnecting
+                ? { ...connection, status, lastEvent: null }
+                : connection,
+            )
+          : [...existing, { id, identity, status, lastEvent: null }];
+        return {
+          ...current,
+          [account]: { ...owner, apps: { ...owner.apps, [connecting]: connections } },
+        };
+      });
+      setConnecting(null);
+      setReconnecting(null);
+      setConnectionError('');
+      notice(`${apps.find((app) => app.id === connecting)?.name} connected.`);
+    }, 650);
+    return () => clearTimeout(timer);
+  }, [account, connecting, reconnecting]);
   const advanceAppSetup = () => {
     const next = { ...person.apps };
     let changed = false;
@@ -607,33 +624,64 @@ function App() {
   };
   const appRow = (app: (typeof apps)[number], compact = false) => {
     const connections = person.apps[app.id] ?? [];
+    if (compact) {
+      const connected = connections.some((connection) => connection.status !== 'attention');
+      const attention =
+        !connected && connections.some((connection) => connection.status === 'attention');
+      const pending = connecting === app.id;
+      const status = pending
+        ? 'Connecting…'
+        : connected
+          ? 'Connected'
+          : attention
+            ? 'Reconnect'
+            : 'Connect';
+      return (
+        <button
+          key={app.id}
+          type="button"
+          data-app-id={app.id}
+          className={`onboarding-app-card ${connected ? 'connected' : ''} ${attention ? 'attention' : ''}`}
+          disabled={connected || Boolean(connecting)}
+          aria-label={`${app.name}: ${status}`}
+          aria-busy={pending}
+          onClick={() => startConnection(app.id, attention ? connections[0].id : null)}
+        >
+          <AppIcon id={app.id} />
+          <span className="onboarding-app-name">{app.name}</span>
+          <span className="onboarding-app-status">
+            {connected && <Check size={15} aria-hidden="true" />}
+            {status}
+          </span>
+        </button>
+      );
+    }
     return (
-      <div
-        key={app.id}
-        data-app-id={app.id}
-        className={compact ? 'onboarding-app-card' : 'app-card'}
-      >
-        <div className={`service-row ${compact ? 'compact' : ''}`}>
+      <div key={app.id} data-app-id={app.id} className="app-card">
+        <div className="service-row">
           <AppIcon id={app.id} />
           <div className="service-copy">
             <h3>{app.name}</h3>
-            {!compact && !connections.length && <p>{app.description}</p>}
+            {!connections.length && <p>{app.description}</p>}
           </div>
           {connections.length ? (
             <button
               className="icon-btn"
               aria-label={`Add ${app.name} account`}
               title="Add account"
+              disabled={Boolean(connecting)}
               onClick={() => startConnection(app.id)}
             >
               <Plus size={17} />
             </button>
           ) : (
-            <Button onClick={() => startConnection(app.id)}>Connect</Button>
+            <Button disabled={Boolean(connecting)} onClick={() => startConnection(app.id)}>
+              {connecting === app.id ? 'Opening…' : 'Connect'}
+            </Button>
           )}
         </div>
         {connections.length > 0 && (
-          <div className={compact ? 'onboarding-account-list' : 'app-account-list'}>
+          <div className="app-account-list">
             {connections.map((connection) => (
               <div className="service-row connected-account" key={connection.id}>
                 <div className="service-copy">
@@ -641,6 +689,7 @@ function App() {
                   {connection.status === 'attention' ? (
                     <button
                       className="text-button warning"
+                      disabled={Boolean(connecting)}
                       onClick={() => startConnection(app.id, connection.id)}
                     >
                       Reconnect
@@ -797,6 +846,29 @@ function App() {
       </div>
     </div>
   );
+  const quickTheme = (
+    <div className="account-theme" role="group" aria-label="Theme">
+      <span>Theme</span>
+      <div className="account-theme-options">
+        {(['light', 'dark', 'system'] as Theme[]).map((theme) => {
+          const Icon = theme === 'light' ? Sun : theme === 'dark' ? Moon : Monitor;
+          const label = theme[0].toUpperCase() + theme.slice(1);
+          return (
+            <button
+              key={theme}
+              type="button"
+              title={label}
+              aria-label={`${label} theme`}
+              aria-pressed={person.theme === theme}
+              onClick={() => patch({ theme })}
+            >
+              <Icon size={16} aria-hidden="true" />
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
 
   return (
     <>
@@ -890,6 +962,11 @@ function App() {
                 <Avatar person={person} size="greeting" />
                 <h1>Welcome, {person.name.split(' ')[0]}.</h1>
                 <p className="lead">Connect your apps.</p>
+                {connectionError && (
+                  <div className="error-note" role="alert">
+                    {connectionError}
+                  </div>
+                )}
                 <div className="onboarding-apps">{apps.map((app) => appRow(app, true))}</div>
                 <div className="onboarding-actions">
                   <Button
@@ -1017,9 +1094,6 @@ function App() {
                     <Icon size={19} strokeWidth={1.7} />
                   </span>
                   <span className="nav-label">{name}</span>
-                  {name === 'Apps' && connectedCount > 0 && (
-                    <span className="nav-count">{connectedCount}</span>
-                  )}
                 </button>
               ))}
             </nav>
@@ -1032,6 +1106,7 @@ function App() {
               </span>
               <span className="nav-label">Settings</span>
             </button>
+            <div className="mobile-account-theme">{quickTheme}</div>
             <div className="sidebar-bottom">
               {developer && (
                 <button
@@ -1062,7 +1137,9 @@ function App() {
                     <button onClick={() => openSettings('Profile')}>
                       <Settings size={17} />
                       Settings
+                      <kbd className="settings-shortcut">{isMac ? '⌘,' : 'Ctrl+,'}</kbd>
                     </button>
+                    {quickTheme}
                     <button onClick={signOut}>
                       <LogOut size={17} />
                       Sign out
@@ -1198,6 +1275,11 @@ function App() {
                         <h1>Your apps</h1>
                       </div>
                     </div>
+                    {connectionError && (
+                      <div className="error-note" role="alert">
+                        {connectionError}
+                      </div>
+                    )}
                     <div className="service-list">{apps.map((app) => appRow(app))}</div>
                   </>
                 )}
@@ -1454,7 +1536,12 @@ function App() {
         <Modal
           title="Settings"
           close={() => setSettingsOpen(false)}
-          returnFocus={() => settingsTrigger.current}
+          returnFocus={() =>
+            settingsTrigger.current?.isConnected
+              ? settingsTrigger.current
+              : (accountAnchor.current?.querySelector<HTMLButtonElement>('.account-button') ??
+                navigationButton.current)
+          }
           wide
         >
           {settingsPanel}
@@ -1484,64 +1571,6 @@ function App() {
             >
               Cancel
             </button>
-          </div>
-        </Modal>
-      )}
-      {connecting && (
-        <Modal
-          title={`${reconnecting ? 'Reconnect' : 'Connect'} ${apps.find((a) => a.id === connecting)?.name}`}
-          returnFocus={() =>
-            document.querySelector<HTMLButtonElement>(`[data-app-id="${connecting}"] button`)
-          }
-          close={() => {
-            setConnecting(null);
-            setReconnecting(null);
-            setConnectionError('');
-          }}
-        >
-          <div className="modal-body">
-            <div className="connect-heading">
-              <AppIcon id={connecting} />
-              <div>
-                <h3>{apps.find((app) => app.id === connecting)?.name}</h3>
-                <p>
-                  {(person.apps[connecting] ?? []).find(
-                    (connection) => connection.id === reconnecting,
-                  )?.identity ?? nextIdentity(connecting)}
-                </p>
-              </div>
-            </div>
-            <ul className="permission-list">
-              {apps
-                .find((app) => app.id === connecting)
-                ?.access.map((access) => (
-                  <li key={access}>
-                    <Check size={16} />
-                    {access}
-                  </li>
-                ))}
-            </ul>
-            {connectionError && (
-              <div className="error-note" role="alert">
-                {connectionError}
-              </div>
-            )}
-            <div className="modal-actions">
-              <Button
-                onClick={() => {
-                  setConnecting(null);
-                  setReconnecting(null);
-                  setConnectionError('');
-                  notice('Connection cancelled.');
-                }}
-              >
-                Cancel
-              </Button>
-              <Button primary onClick={() => connect(connecting)}>
-                {connectionError ? 'Try again' : 'Continue'}
-                <ArrowRight size={15} />
-              </Button>
-            </div>
           </div>
         </Modal>
       )}
@@ -1821,16 +1850,38 @@ function App() {
                     <Button onClick={deliverSampleEvent}>Deliver sample event</Button>
                     <Button
                       onClick={() => {
+                        const app = apps.find(
+                          (app) =>
+                            !person.apps[app.id]?.some(
+                              (connection) => connection.status !== 'attention',
+                            ),
+                        );
+                        if (!app) {
+                          notice('All apps are connected.');
+                          return;
+                        }
                         if (screen !== 'welcome') {
                           setScreen('app');
                           go('Apps');
                         }
-                        startConnection('gmail');
-                        setConnectionError('Access declined. Try again.');
+                        setConnecting(null);
+                        setReconnecting(null);
+                        setConnectionError(`${app.name} access declined. Connect to try again.`);
                         setReview(false);
                       }}
                     >
                       Provider denied consent
+                    </Button>
+                    <Button
+                      onClick={() => {
+                        setConnecting(null);
+                        setReconnecting(null);
+                        setConnectionError('');
+                        setReview(false);
+                        notice('Connection cancelled.');
+                      }}
+                    >
+                      Provider cancelled consent
                     </Button>
                     <Button onClick={() => previewTelegram('expired')}>
                       Telegram pairing expired
