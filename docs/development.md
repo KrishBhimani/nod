@@ -55,7 +55,7 @@ COMPOSIO_API_KEY=
 COMPOSIO_WEBHOOK_SECRET=
 ```
 
-The database, both server keys, Google credentials and all three E2B fields are required. Add `http://localhost:4330` to the Google OAuth client's JavaScript origins and `http://localhost:4330/api/auth/callback/google` to its redirect URIs. Google login grants only account identity; app connections use the development Composio project and its separate auth configurations. See [Composio](composio.md) for each `COMPOSIO_*_AUTH_CONFIG_ID` override.
+The database, both server keys, Google credentials and all three E2B fields are required. Create a Web application OAuth client with `http://localhost:4330/api/auth/callback/google` as an authorized redirect URI. This server-side OAuth flow does not require a JavaScript origin. Google login grants only account identity; app connections use the development Composio project and its separate auth configurations. See [Composio](composio.md) for each `COMPOSIO_*_AUTH_CONFIG_ID` override.
 
 ```sh
 node scripts/start-hosted.mjs --check
