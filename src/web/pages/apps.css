@@ -1,0 +1,158 @@
+.apps-page {
+  container-type: inline-size;
+}
+.apps-page .secondary-heading {
+  margin-bottom: 32px;
+}
+.apps-page .apps-group + .apps-group {
+  margin-top: 28px;
+}
+.apps-page .apps-group > h2 {
+  margin: 0 0 12px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.apps-page .app-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: start;
+  gap: 14px;
+}
+.apps-page .app-card {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--surface);
+}
+.apps-page .app-card-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 86px;
+  padding: 16px;
+}
+.apps-page .app-card-summary > img,
+.apps-page .app-card-summary > svg {
+  width: 25px;
+  height: 25px;
+  object-fit: contain;
+}
+.apps-page .app-card-copy {
+  min-width: 0;
+}
+.apps-page .app-card-copy h3 {
+  margin: 0;
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.apps-page .app-card-description {
+  margin: 4px 0 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.apps-page .app-card-unavailable {
+  margin: 5px 0 0;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.apps-page .app-connect {
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.apps-page .app-add-account,
+.apps-page .account-disconnect {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 6px;
+  color: var(--muted-foreground);
+}
+.apps-page .account-disconnect:hover:not(:disabled) {
+  color: var(--error);
+  background: var(--error-soft);
+}
+.apps-page .app-card-accounts {
+  min-width: 0;
+  margin: 0 16px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.apps-page .compact-account {
+  align-items: center;
+  gap: 12px;
+  min-height: 34px;
+  padding: 2px 0;
+}
+.apps-page .compact-account + .compact-account {
+  border-top: 1px solid var(--border);
+}
+.apps-page .compact-account-details {
+  flex: 1;
+  padding-top: 0;
+}
+.apps-page .compact-account-name {
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.app-disconnect-dialog {
+  width: min(400px, calc(100vw - 32px));
+  padding: 24px;
+}
+.app-disconnect-dialog > h2 {
+  padding-right: 24px;
+  font-size: 18px;
+}
+.app-disconnect-dialog > p {
+  overflow-wrap: anywhere;
+}
+.app-disconnect-dialog > p > span {
+  display: block;
+  margin-top: 8px;
+}
+.app-disconnect-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 22px;
+}
+.app-disconnect-dialog[aria-busy='true'] > .dialog-close {
+  visibility: hidden;
+}
+@container (max-width: 1000px) {
+  .apps-page .app-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@container (max-width: 580px) {
+  .apps-page .app-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (pointer: coarse) {
+  .apps-page .app-add-account,
+  .apps-page .account-disconnect {
+    width: 40px;
+    height: 40px;
+    min-height: 40px;
+  }
+  .apps-page .app-connect {
+    min-height: 40px;
+  }
+}

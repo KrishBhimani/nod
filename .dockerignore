@@ -1,0 +1,7 @@
+*
+!Dockerfile.workspace
+!Dockerfile.browser
+!package.json
+!package-lock.json
+!src/
+!src/**

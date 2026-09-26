@@ -1,0 +1,21 @@
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
+import { fileURLToPath } from 'node:url';
+
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+  resolve: { alias: { '@': fileURLToPath(new URL('./src/web', import.meta.url)) } },
+  server: { host: '127.0.0.1', port: 4310, strictPort: true },
+  build: {
+    outDir: 'dist/web',
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          markdown: ['react-markdown', 'remark-gfm', 'rehype-raw', 'rehype-sanitize'],
+        },
+      },
+    },
+  },
+});

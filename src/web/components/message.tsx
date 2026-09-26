@@ -1,0 +1,569 @@
+import { Children, lazy, memo, Suspense, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import {
+  FileText,
+  ExternalLink,
+  Copy,
+  Check,
+  CornerUpLeft,
+  SmilePlus,
+  ScanSearch,
+  MoreHorizontal,
+  X,
+} from 'lucide-react';
+import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
+import rehypeSanitize from 'rehype-sanitize';
+import type { Artifact, Message } from '../../shared/contracts';
+import { reactionEmoji } from '../../shared/emoji';
+import { Button, Loading, Notice } from './ui';
+import { BrandMark } from './brand';
+import { errorMessage, post } from '../lib/api';
+import { credentialLinkLabel, safeMessageLink } from '../lib/message-links';
+import { remarkLocalLinks } from '../lib/markdown';
+import { nextReaction, reactionName } from '../lib/reactions';
+import { MessageLinkPreviews } from './link-previews';
+import { artifactPreview, ImageGallery, ownedArtifactUrl } from './attachment-images';
+
+const ReactionPicker = lazy(() => import('./emoji-picker'));
+
+export const MessageText = memo(function MessageText({
+  text,
+  previews = false,
+}: {
+  text: string;
+  previews?: boolean;
+}) {
+  const content = useRef<HTMLDivElement>(null);
+  return (
+    <>
+      <div className="message-text" ref={content}>
+        <Markdown
+          remarkPlugins={[remarkGfm, remarkLocalLinks]}
+          rehypePlugins={[rehypeRaw, rehypeSanitize]}
+          components={{
+            a: ({ href, children }) => {
+              const link = safeMessageLink(
+                href ?? '',
+                typeof window === 'undefined' ? 'http://localhost:4310' : window.location.origin,
+              );
+              if (!link) return <span>{children}</span>;
+              const label =
+                link.kind === 'credential'
+                  ? credentialLinkLabel(
+                      Children.toArray(children)
+                        .filter((child) => typeof child === 'string')
+                        .join(''),
+                    )
+                  : children;
+              return (
+                <a
+                  href={link.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={link.kind === 'credential' ? 'credential-link' : undefined}
+                >
+                  {label}
+                  {link.kind === 'credential' && <ExternalLink size={12} />}
+                </a>
+              );
+            },
+            img: ({ src, alt }) =>
+              typeof src === 'string' && /^\/api\/artifacts\/[a-f0-9-]+$/.test(src) ? (
+                <img src={src} alt={alt ?? ''} loading="lazy" />
+              ) : (
+                <span>{alt || 'Image'}</span>
+              ),
+            input: ({ checked }) => (
+              <input type="checkbox" checked={checked ?? false} readOnly disabled />
+            ),
+          }}
+        >
+          {text}
+        </Markdown>
+      </div>
+      {previews && <MessageLinkPreviews content={content} text={text} />}
+    </>
+  );
+});
+
+export function Attachment({ artifact }: { artifact: Artifact }) {
+  const url = ownedArtifactUrl(artifact.url) ? artifact.url : '';
+  if (!url) return null;
+  const image = artifactPreview(artifact);
+  if (image) return <ImageGallery images={[image]} />;
+  return (
+    <a className="file-attachment" href={url} download={artifact.name}>
+      <FileText size={18} />
+      <span>
+        {artifact.name}
+        <small>{Math.max(1, Math.round(artifact.size / 1024))} KB</small>
+      </span>
+    </a>
+  );
+}
+
+function ReactionGlyph({ value }: { value: string }) {
+  return (
+    <span className="reaction-emoji" aria-hidden="true">
+      {reactionEmoji(value)}
+    </span>
+  );
+}
+
+export function MessageBubble({
+  message,
+  inspectorEnabled = false,
+  grouped = false,
+  showTimestamp = true,
+  streaming = false,
+  onReply,
+}: {
+  message: Message;
+  inspectorEnabled?: boolean;
+  grouped?: boolean;
+  showTimestamp?: boolean;
+  streaming?: boolean;
+  onReply?(): void;
+}) {
+  const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
+  const [reaction, setReaction] = useState(message.reaction ?? null);
+  const [reacting, setReacting] = useState(false);
+  const [pickingReaction, setPickingReaction] = useState(false);
+  const [pickerExpanded, setPickerExpanded] = useState(false);
+  const [pickerPosition, setPickerPosition] = useState({ left: 8, top: 8, width: 340 });
+  const [selectedName, setSelectedName] = useState('');
+  const [selected, setSelected] = useState(false);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const copyTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const menuElement = useRef<HTMLDivElement>(null);
+  const menuTrigger = useRef<HTMLElement | null>(null);
+  const pickerTrigger = useRef<HTMLElement | null>(null);
+  const pickerElement = useRef<HTMLDivElement>(null);
+  const canInspect = message.role === 'assistant' && inspectorEnabled && Boolean(message.taskId);
+  const agentReaction =
+    message.role === 'user'
+      ? reactionEmoji(message.reactions?.find((item) => item.actor === 'assistant')?.reaction ?? '')
+      : '';
+  const images = message.attachments.flatMap((artifact) => {
+    const image = artifactPreview(artifact);
+    return image ? [image] : [];
+  });
+  useEffect(() => {
+    setSelectedName('');
+    setReaction(
+      message.reaction ??
+        message.reactions?.find((item) => item.actor === 'user')?.reaction ??
+        null,
+    );
+  }, [message.reaction, message.reactions]);
+  useEffect(
+    () => () => {
+      clearTimeout(copyTimeout.current);
+    },
+    [],
+  );
+  useEffect(() => {
+    if (!menu) return;
+    const close = (event: PointerEvent) => {
+      if (!menuElement.current?.contains(event.target as Node)) setMenu(null);
+    };
+    const focusChanged = (event: FocusEvent) => {
+      if (!menuElement.current?.contains(event.target as Node)) setMenu(null);
+    };
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === 'Tab') {
+        setMenu(null);
+        return;
+      }
+      if (event.key === 'Escape') {
+        setMenu(null);
+        menuTrigger.current?.focus();
+      }
+      if (!menuElement.current?.contains(event.target as Node)) return;
+      if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+      const items = Array.from(
+        menuElement.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [],
+      );
+      if (!items.length) return;
+      event.preventDefault();
+      const index = items.indexOf(document.activeElement as HTMLButtonElement);
+      const next =
+        event.key === 'Home'
+          ? 0
+          : event.key === 'End'
+            ? items.length - 1
+            : (index + (event.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length;
+      items[next]?.focus();
+    };
+    menuElement.current?.querySelector<HTMLButtonElement>('button')?.focus();
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('focusin', focusChanged);
+    document.addEventListener('keydown', keydown);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      document.removeEventListener('focusin', focusChanged);
+      document.removeEventListener('keydown', keydown);
+    };
+  }, [menu]);
+  useEffect(() => {
+    if (!pickingReaction) return;
+    if (!pickerElement.current?.contains(document.activeElement)) pickerElement.current?.focus();
+    const outside = (event: PointerEvent) => {
+      if (
+        !pickerElement.current?.contains(event.target as Node) &&
+        !pickerTrigger.current?.contains(event.target as Node)
+      )
+        setPickingReaction(false);
+    };
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      setPickingReaction(false);
+      pickerTrigger.current?.focus();
+    };
+    const moved = (event: Event) => {
+      if (!(event.target instanceof Node) || !pickerElement.current?.contains(event.target))
+        setPickingReaction(false);
+    };
+    document.addEventListener('pointerdown', outside);
+    document.addEventListener('keydown', keydown);
+    document.addEventListener('scroll', moved, true);
+    window.addEventListener('resize', moved);
+    return () => {
+      document.removeEventListener('pointerdown', outside);
+      document.removeEventListener('keydown', keydown);
+      document.removeEventListener('scroll', moved, true);
+      window.removeEventListener('resize', moved);
+    };
+  }, [pickingReaction]);
+  function closePicker() {
+    setPickingReaction(false);
+    pickerTrigger.current?.focus();
+  }
+  async function react(value: string, name = reactionName(value)) {
+    if (reacting) return;
+    const next = nextReaction(reaction, value);
+    setReacting(true);
+    setMenu(null);
+    if (pickingReaction) closePicker();
+    setError('');
+    try {
+      await post(`/api/messages/${message.id}/reaction`, { reaction: next });
+      setReaction(next);
+      setSelectedName(next ? name : '');
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setReacting(false);
+    }
+  }
+  function openPicker(trigger: HTMLElement, expanded = false) {
+    pickerTrigger.current = trigger;
+    const rect = trigger.getBoundingClientRect();
+    const bounds = trigger.closest('.messages')?.getBoundingClientRect();
+    const content = trigger
+      .closest('.message')
+      ?.querySelector('.message-content')
+      ?.getBoundingClientRect();
+    const minLeft = Math.max(8, (bounds?.left ?? 0) + 8);
+    const maxRight = Math.min(window.innerWidth - 8, bounds?.right || window.innerWidth - 8);
+    const width = Math.min(expanded ? 340 : 286, maxRight - minLeft);
+    const height = Math.min(expanded ? 412 : 48, window.innerHeight - 16);
+    setPickerPosition({
+      width,
+      left: Math.max(minLeft, Math.min(content?.left || rect.left, maxRight - width)),
+      top:
+        window.innerHeight - rect.bottom >= height + 14
+          ? rect.bottom + 6
+          : Math.max(8, rect.top - height - 6),
+    });
+    setMenu(null);
+    setPickerExpanded(expanded);
+    setPickingReaction(true);
+  }
+  async function copy() {
+    setMenu(null);
+    try {
+      await navigator.clipboard.writeText(message.text);
+      setCopied(true);
+      clearTimeout(copyTimeout.current);
+      copyTimeout.current = setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setError('The message could not be copied.');
+    }
+  }
+  function inspect() {
+    setMenu(null);
+    window.dispatchEvent(
+      new CustomEvent('sidekick:inspect-message', {
+        detail: { messageId: message.id, taskId: message.taskId },
+      }),
+    );
+  }
+  function reply() {
+    setMenu(null);
+    onReply?.();
+  }
+  function openMenu(x: number, y: number, trigger: HTMLElement) {
+    menuTrigger.current = trigger;
+    setMenu({
+      x: Math.max(8, Math.min(x, window.innerWidth - 212)),
+      y: Math.max(8, Math.min(y, window.innerHeight - 230)),
+    });
+  }
+  const sent = new Date(message.createdAt);
+  const timestamp = showTimestamp && !streaming && (
+    <time dateTime={message.createdAt} title={sent.toLocaleString()}>
+      {sent.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+    </time>
+  );
+  return (
+    <article
+      className={`message message-${message.role}${streaming ? ' streaming-message' : ''}${grouped ? ' message-grouped' : ''}${!showTimestamp ? ' message-continuing' : ''}${selected ? ' message-selected' : ''}`}
+      aria-label={
+        streaming ? 'Sidekick is responding' : message.role === 'user' ? 'You' : 'Sidekick'
+      }
+      data-message-id={streaming ? undefined : message.id}
+      onPointerUp={(event) => {
+        if (!['touch', 'pen'].includes(event.pointerType)) return;
+        if ((event.target as HTMLElement).closest('a,button,audio,video,input')) return;
+        setSelected(true);
+        event.currentTarget.focus();
+      }}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setSelected(false);
+      }}
+      onContextMenu={(event) => {
+        if (streaming) return;
+        if ((event.target as HTMLElement).closest('a,audio,video')) return;
+        event.preventDefault();
+        openMenu(event.clientX, event.clientY, event.currentTarget);
+      }}
+      tabIndex={-1}
+    >
+      {message.role === 'assistant' && (
+        <div className={`assistant-mark${grouped ? ' grouped-mark' : ''}`} aria-hidden="true">
+          <BrandMark small />
+        </div>
+      )}
+      <div className="message-content">
+        <div className="message-body">
+          {message.replyTo && (
+            <blockquote className="message-reply-quote">
+              <strong>{message.replyTo.role === 'assistant' ? 'Sidekick' : 'You'}</strong>
+              <span>{message.replyTo.text || 'Attachment'}</span>
+            </blockquote>
+          )}
+          {message.attachments.length > 0 && (
+            <div className="message-attachments">
+              {images.length > 0 && <ImageGallery images={images} />}
+              {message.attachments
+                .filter((artifact) => !artifactPreview(artifact))
+                .map((artifact) => (
+                  <Attachment key={artifact.id} artifact={artifact} />
+                ))}
+            </div>
+          )}
+          {message.text && <MessageText text={message.text} previews={!streaming} />}
+          {streaming && <span className="stream-cursor" />}
+          {message.role === 'user' && timestamp && (
+            <div className="message-bubble-time">{timestamp}</div>
+          )}
+        </div>
+        <div className="message-footer">
+          {((message.role === 'assistant' && timestamp) || reaction || agentReaction) && (
+            <div className="message-meta">
+              {message.role === 'assistant' && timestamp}
+              {reaction && (
+                <button
+                  className="selected-reaction"
+                  disabled={reacting}
+                  onClick={() => void react(reaction)}
+                  aria-label={`Remove your ${selectedName || reactionName(reaction)} reaction`}
+                  title={selectedName || reactionName(reaction)}
+                >
+                  <ReactionGlyph value={reaction} />
+                </button>
+              )}
+              {agentReaction && (
+                <span
+                  className="selected-reaction agent-reaction"
+                  role="img"
+                  aria-label={`Sidekick reacted: ${reactionName(agentReaction)}`}
+                  title={`Sidekick reacted: ${reactionName(agentReaction)}`}
+                >
+                  <ReactionGlyph value={agentReaction} />
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+        {error && <Notice>{error}</Notice>}
+      </div>
+      {!streaming && (
+        <div className="message-tools">
+          <div className="message-actions" aria-label="Message actions">
+            {onReply && (
+              <Button
+                size="icon"
+                variant="ghost"
+                aria-label="Reply to message"
+                title="Reply"
+                onClick={reply}
+              >
+                <CornerUpLeft size={14} />
+              </Button>
+            )}
+            <Button
+              size="icon"
+              variant="ghost"
+              aria-label={copied ? 'Message copied' : 'Copy message'}
+              title="Copy"
+              onClick={() => void copy()}
+            >
+              {copied ? <Check size={14} /> : <Copy size={14} />}
+            </Button>
+            {message.role === 'assistant' && (
+              <Button
+                size="icon"
+                variant="ghost"
+                aria-label="React to message"
+                title="React"
+                aria-haspopup="dialog"
+                aria-expanded={pickingReaction}
+                onClick={(event) =>
+                  pickingReaction ? closePicker() : openPicker(event.currentTarget)
+                }
+              >
+                <SmilePlus size={14} />
+              </Button>
+            )}
+            {canInspect && (
+              <Button
+                size="icon"
+                variant="ghost"
+                aria-label="Inspect message"
+                title="Inspect"
+                onClick={inspect}
+              >
+                <ScanSearch size={14} />
+              </Button>
+            )}
+          </div>
+          <Button
+            className="message-more-action"
+            size="icon"
+            variant="ghost"
+            aria-label="Message options"
+            aria-haspopup="menu"
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              openMenu(rect.right - 192, rect.bottom + 6, event.currentTarget);
+            }}
+          >
+            <MoreHorizontal size={17} />
+          </Button>
+        </div>
+      )}
+      {menu &&
+        createPortal(
+          <div
+            className="chat-message-menu"
+            ref={menuElement}
+            role="menu"
+            aria-label="Message actions"
+            style={{ left: menu.x, top: menu.y }}
+          >
+            {message.role === 'assistant' && (
+              <div className="message-reaction-options" role="group" aria-label="Reactions">
+                {['👍', '❤️', '😂', '🎉', '😮', '🙏'].map((value) => (
+                  <button
+                    key={value}
+                    role="menuitemradio"
+                    aria-checked={Boolean(reaction && reactionEmoji(reaction) === value)}
+                    aria-label={reactionName(value)}
+                    disabled={reacting}
+                    onClick={() => void react(value)}
+                  >
+                    <ReactionGlyph value={value} />
+                  </button>
+                ))}
+              </div>
+            )}
+            {message.role === 'assistant' && (
+              <button
+                role="menuitem"
+                onClick={() => openPicker(menuTrigger.current ?? document.body, true)}
+              >
+                <SmilePlus size={14} />
+                More emoji
+              </button>
+            )}
+            {onReply && (
+              <button role="menuitem" onClick={reply}>
+                <CornerUpLeft size={14} />
+                Reply
+              </button>
+            )}
+            <button role="menuitem" onClick={() => void copy()}>
+              <Copy size={14} />
+              Copy
+            </button>
+            {canInspect && (
+              <button role="menuitem" onClick={inspect}>
+                <ScanSearch size={14} />
+                Inspect
+              </button>
+            )}
+          </div>,
+          document.body,
+        )}
+      {pickingReaction &&
+        createPortal(
+          <div
+            className={`chat-emoji-popover${pickerExpanded ? '' : ' is-compact'}`}
+            role="dialog"
+            aria-label="Choose a reaction"
+            aria-modal="false"
+            tabIndex={-1}
+            ref={pickerElement}
+            style={pickerPosition}
+            onBlur={(event) => {
+              if (
+                event.relatedTarget &&
+                !event.currentTarget.contains(event.relatedTarget) &&
+                event.relatedTarget !== pickerTrigger.current
+              )
+                setPickingReaction(false);
+            }}
+          >
+            {pickerExpanded && (
+              <div className="chat-emoji-heading">
+                <strong>Add a reaction</strong>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Close emoji picker"
+                  onClick={closePicker}
+                >
+                  <X size={15} />
+                </Button>
+              </div>
+            )}
+            <Suspense fallback={<Loading label="Loading emoji…" />}>
+              <ReactionPicker
+                expanded={pickerExpanded}
+                selected={reaction}
+                onExpand={() => openPicker(pickerTrigger.current ?? document.body, true)}
+                onSelect={(emoji, name) => void react(emoji, name)}
+              />
+            </Suspense>
+          </div>,
+          document.body,
+        )}
+    </article>
+  );
+}

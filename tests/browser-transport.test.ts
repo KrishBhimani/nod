@@ -1,0 +1,214 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer, type Socket } from 'node:net';
+import { join } from 'node:path';
+import test from 'node:test';
+import {
+  browserSessionId,
+  createAgentBrowserComputer,
+} from '../src/providers/agent-browser/index.ts';
+import { existingDaemonCommand } from '../src/providers/agent-browser/screens.ts';
+import { BrowserActionError } from '../src/ports/computer.ts';
+import { stagedLoginBrowser } from './login-fixture.ts';
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function fixture() {
+  const directory = await mkdtemp('/tmp/sk-transport-');
+  const pages = stagedLoginBrowser();
+  const actions: string[] = [];
+  const launches: string[] = [];
+  const sockets = new Set<Socket>();
+  let before = async (_action: string) => {};
+  let failedAction: string | undefined;
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on('error', () => {});
+    socket.on('close', () => sockets.delete(socket));
+    let input = '';
+    socket.on('data', async (chunk) => {
+      input += chunk.toString();
+      if (!input.includes('\n')) return;
+      const command = JSON.parse(input);
+      input = '';
+      actions.push(command.action);
+      await before(command.action);
+      if (command.action === failedAction) {
+        socket.end(
+          JSON.stringify({
+            success: false,
+            error: 'Navigation failed: net::ERR_HTTP_RESPONSE_CODE_FAILURE PRIVATE-UPSTREAM',
+          }) + '\n',
+        );
+        return;
+      }
+      const page = pages.pages.get('fixture')!;
+      let data: Record<string, unknown> = {};
+      if (command.action === 'url') data = { url: page.location.href };
+      if (command.action === 'evaluate') data = { result: await page.evaluate(command.script) };
+      if (command.action === 'snapshot') data = { snapshot: page.text() };
+      if (command.action === 'navigate') page.location.href = command.url;
+      if (command.action === 'screenshot') await writeFile(command.path, page.screen());
+      if (!socket.destroyed) socket.end(JSON.stringify({ success: true, data }) + '\n');
+    });
+  });
+  await new Promise<void>((resolve) =>
+    server.listen(join(directory, `${browserSessionId('fixture')}.sock`), resolve),
+  );
+  const computer = createAgentBrowserComputer({
+    dataRoot: directory,
+    daemonCommand: (path, command, signal) => existingDaemonCommand(path, command, signal, 250),
+    run: async (executable, args, options) => {
+      if (args.includes('info')) {
+        launches.push('info');
+        return {
+          exitCode: 0,
+          stderr: '',
+          stdout: JSON.stringify({
+            success: true,
+            data: {
+              active: true,
+              namespace: args[args.indexOf('--namespace') + 1],
+              session: args[args.indexOf('--session') + 1],
+              socketDir: directory,
+            },
+          }),
+        };
+      }
+      const action = args[args.indexOf('--idle-timeout') + 2];
+      launches.push(action);
+      assert.equal(action, 'open', 'Warm actions must not invoke the retrying CLI');
+      return pages.run(executable, args, options);
+    },
+  });
+  return {
+    computer,
+    actions,
+    launches,
+    fail(action?: string) {
+      failedAction = action;
+    },
+    before(value: typeof before) {
+      before = value;
+    },
+    async cleanup() {
+      before = async () => {};
+      await computer.dispose().catch(() => {});
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(directory, { recursive: true, force: true });
+    },
+  };
+}
+
+test('warm browser commands use one private socket request and reuse the launched profile', async () => {
+  const f = await fixture();
+  try {
+    await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/other' });
+    await f.computer.screenshot('fixture');
+    assert.deepEqual(f.launches, ['open', 'info']);
+    assert.equal(f.actions.filter((action) => action === 'navigate').length, 1);
+    assert.equal(f.actions.filter((action) => action === 'screenshot').length, 1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('a timed out snapshot is not resent and its queue remains fenced until close is acknowledged', async () => {
+  const f = await fixture();
+  const closeStarted = deferred();
+  const releaseClose = deferred();
+  const releaseSnapshot = deferred();
+  let finished = false;
+  try {
+    await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    const before = f.actions.length;
+    f.before(async (action) => {
+      if (action === 'snapshot') await releaseSnapshot.promise;
+      if (action === 'close') {
+        closeStarted.resolve();
+        await releaseClose.promise;
+      }
+    });
+    const failed = assert
+      .rejects(f.computer.act('fixture', { action: 'snapshot' }), /unavailable/)
+      .finally(() => {
+        finished = true;
+      });
+    await closeStarted.promise;
+    assert.equal(finished, false);
+    const queued = assert.rejects(f.computer.act('fixture', { action: 'snapshot' }), /expired/);
+    releaseSnapshot.resolve();
+    releaseClose.resolve();
+    await Promise.all([failed, queued]);
+    assert.equal(f.actions.slice(before).filter((action) => action === 'snapshot').length, 1);
+    assert.equal(f.actions.slice(before).filter((action) => action === 'close').length, 1);
+    assert.deepEqual(f.launches, ['open', 'info']);
+  } finally {
+    releaseSnapshot.resolve();
+    releaseClose.resolve();
+    await f.cleanup();
+  }
+});
+
+test('a completed daemon error keeps the session available and navigation failures retain their typed boundary', async () => {
+  const f = await fixture();
+  try {
+    await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    f.fail('snapshot');
+    await assert.rejects(
+      f.computer.act('fixture', { action: 'snapshot' }),
+      /Browser action could not complete/,
+    );
+    assert.equal(f.actions.includes('close'), false);
+    f.fail();
+    assert.match((await f.computer.act('fixture', { action: 'snapshot' })).text, /Sign in/);
+    f.fail('navigate');
+    await assert.rejects(
+      f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/denied' }),
+      (error: unknown) => {
+        assert.ok(error instanceof BrowserActionError);
+        assert.equal(error.code, 'browser_navigation_failed');
+        assert.doesNotMatch(error.message, /PRIVATE|HTTP_RESPONSE/);
+        return true;
+      },
+    );
+    assert.equal(f.actions.includes('close'), false);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('daemon command deadline stays absolute when a peer drips an unfinished response', async () => {
+  const directory = await mkdtemp('/tmp/sk-deadline-');
+  const path = join(directory, 'daemon.sock');
+  let received = 0;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const server = createServer((socket) => {
+    socket.on('error', () => {});
+    socket.once('data', () => {
+      received++;
+      timer = setInterval(() => socket.write(' '), 5);
+    });
+    socket.on('close', () => clearInterval(timer));
+  });
+  await new Promise<void>((resolve) => server.listen(path, resolve));
+  try {
+    await assert.rejects(
+      existingDaemonCommand(path, { action: 'snapshot' }, undefined, 30),
+      /unavailable/,
+    );
+    assert.equal(received, 1);
+  } finally {
+    clearInterval(timer);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
