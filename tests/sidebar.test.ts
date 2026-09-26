@@ -39,6 +39,7 @@ test('sidebar exposes navigation shortcuts, keyboard focus and modifier hints wi
       root.render(
         createElement(Sidebar, {
           path: '/goals',
+          development: true,
           collapsed: false,
           onToggle() {
             toggles++;
@@ -61,18 +62,16 @@ test('sidebar exposes navigation shortcuts, keyboard focus and modifier hints wi
     assert.equal(links.length, 6);
     assert.equal(links[1]?.getAttribute('aria-current'), 'page');
     assert.ok(
-      links
-        .slice(0, 5)
-        .every(
-          (link) =>
-            link.getAttribute('aria-label') &&
-            link.getAttribute('aria-keyshortcuts') &&
-            link.getAttribute('title'),
-        ),
+      links.every(
+        (link) =>
+          link.getAttribute('aria-label') &&
+          link.getAttribute('aria-keyshortcuts') &&
+          link.getAttribute('title'),
+      ),
     );
-    assert.equal(links[5]?.getAttribute('aria-keyshortcuts'), null);
-    assert.equal(links[5]?.getAttribute('title'), 'Vault');
-    assert.equal(links[5]?.querySelector('kbd'), null);
+    assert.equal(links[5]?.getAttribute('aria-keyshortcuts'), 'Meta+K Control+K');
+    assert.equal(links[5]?.getAttribute('title'), 'Vault (⌘K)');
+    assert.equal(links[5]?.querySelector('kbd')?.textContent, 'K');
     links[0]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
     assert.equal(document.activeElement, links[0]);
     links[0]!.focus();
@@ -95,7 +94,7 @@ test('sidebar exposes navigation shortcuts, keyboard focus and modifier hints wi
     await act(async () => more.click());
     await act(async () =>
       [...element.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')]
-        .find((button) => button.textContent?.includes('Get started'))!
+        .find((button) => button.textContent?.includes('Restart setup'))!
         .click(),
     );
     assert.equal(restarts, 1);
@@ -138,12 +137,12 @@ test('sidebar exposes navigation shortcuts, keyboard focus and modifier hints wi
     await press('j', { metaKey: true });
     assert.equal(element.querySelector('.sidebar')?.classList.contains('show-shortcuts'), false);
     await press('g', { metaKey: true });
-    for (const key of ['s', 'e', 'd']) await press(key, { metaKey: true });
-    for (const key of ['b', 'i', 'k']) {
+    for (const key of ['s', 'e', 'd', 'k']) await press(key, { metaKey: true });
+    for (const key of ['b', 'i']) {
       assert.equal((await press(key, { metaKey: true })).defaultPrevented, false);
       assert.equal((await press(key, { ctrlKey: true })).defaultPrevented, false);
     }
-    assert.deepEqual(navigations, ['/', '/goals', '/schedule', '/apps', '/channels']);
+    assert.deepEqual(navigations, ['/', '/goals', '/schedule', '/apps', '/channels', '/vault']);
     assert.equal(toggles, 0);
     assert.equal(inspections, 0);
     const inspector = element.querySelector<HTMLButtonElement>('[aria-label="Inspector"]')!;
@@ -319,7 +318,7 @@ test('mobile navigation keeps secondary pages in a dismissible menu and preserve
       [...element.querySelectorAll<HTMLButtonElement>('[role="menu"] button[role="menuitem"]')].map(
         (button) => button.textContent?.trim(),
       ),
-      ['Switch to dark theme', 'Get started'],
+      ['Switch to dark theme', 'Restart setupStarts a new chat. Keeps your saved data.'],
     );
     for (const modifier of ['metaKey', 'ctrlKey', 'shiftKey', 'altKey']) {
       const event = new MouseEvent('click', { bubbles: true, cancelable: true, [modifier]: true });
@@ -428,5 +427,69 @@ test('shortcut focus uses only the latest navigation and never runs after sideba
     window.cancelAnimationFrame = cancelFrame;
     element.remove();
     composer.remove();
+  }
+});
+
+test('production keeps developer controls in the app menu with setup context and keyboard dismissal', async () => {
+  const element = document.createElement('div');
+  document.body.append(element);
+  const root = createRoot(element);
+  let inspections = 0;
+  let restarts = 0;
+  const render = async (enabled: boolean) =>
+    act(async () =>
+      root.render(
+        createElement(Sidebar, {
+          path: '/',
+          collapsed: true,
+          development: false,
+          inspectorEnabled: enabled,
+          onNavigate() {},
+          onToggle() {},
+          onRestart() {
+            restarts++;
+          },
+          onToggleInspector() {
+            inspections++;
+          },
+        }),
+      ),
+    );
+  try {
+    await render(true);
+    assert.equal(element.querySelector('.sidebar-bottom [aria-label="Inspector"]'), null);
+    assert.equal(element.querySelector('.sidebar-bottom [aria-label="Get started"]'), null);
+    const trigger = element.querySelector<HTMLButtonElement>('[aria-label="App menu"]')!;
+    assert.ok(trigger);
+    await act(async () => trigger.click());
+    const menu = element.querySelector<HTMLElement>('[role="menu"]')!;
+    const buttons = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+    assert.equal(buttons.length, 2);
+    assert.equal(buttons[0]!.textContent?.trim(), 'Inspector');
+    assert.ok(buttons[1]!.textContent?.includes('Keeps your saved data.'));
+    await act(async () => buttons[0]!.click());
+    assert.equal(inspections, 1);
+    assert.equal(element.querySelector('[role="menu"]'), null);
+    assert.equal(document.activeElement, trigger);
+    await act(async () => trigger.click());
+    await act(async () =>
+      element.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')[1]!.click(),
+    );
+    assert.equal(restarts, 1);
+    await act(async () => trigger.click());
+    await act(async () =>
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+      ),
+    );
+    assert.equal(element.querySelector('[role="menu"]'), null);
+    assert.equal(document.activeElement, trigger);
+    await render(false);
+    await act(async () => trigger.click());
+    assert.equal(element.querySelectorAll('[role="menuitem"]').length, 1);
+    assert.ok(element.querySelector('[role="menuitem"]')?.textContent?.includes('Restart setup'));
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
   }
 });

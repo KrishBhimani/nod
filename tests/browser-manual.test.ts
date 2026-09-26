@@ -4,10 +4,8 @@ import { createServer, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
-import {
-  browserSessionId,
-  createAgentBrowserComputer,
-} from '../src/providers/agent-browser/index.ts';
+import { browserSessionId } from '../src/providers/agent-browser/index.ts';
+import { createBrowserFixture as createAgentBrowserComputer } from './browser-fixture.ts';
 import { manualInputSchema, protectFocusedField } from '../src/providers/agent-browser/manual.ts';
 import { LoginDom, LoginElement, stagedLoginBrowser } from './login-fixture.ts';
 
@@ -84,7 +82,7 @@ async function fixture(options: { manualTimeoutMs?: number; idleTimeoutMs?: numb
       };
     return browser.run(executable, args, input);
   };
-  const computer = createAgentBrowserComputer({ dataRoot: directory, run, ...options });
+  const computer = createAgentBrowserComputer({ dataRoot: directory, run, ...options }, true);
   await computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
   return {
     computer,
@@ -163,6 +161,12 @@ test('manual input uses normalized socket commands, masks typed data, and locks 
     );
     await f.computer.control!('fixture', { action: 'type', text: secret });
     await f.computer.control!('fixture', { action: 'press', key: 'Tab' });
+    await f.computer.control!('fixture', {
+      action: 'press',
+      key: 'ArrowLeft',
+      modifiers: ['Control', 'Shift'],
+    });
+    await f.computer.control!('fixture', { action: 'wheel', deltaX: -70, deltaY: 240 });
     await f.computer.control!('fixture', { action: 'scroll', direction: 'down' });
     assert.equal(f.actions.find((action) => action.action === 'keyboard')?.subaction, 'insertText');
     assert.equal(f.actions.find((action) => action.action === 'keyboard')?.text, secret);
@@ -189,6 +193,16 @@ test('manual input uses normalized socket commands, masks typed data, and locks 
     assert.equal(
       f.actions.some((action) => action.action === 'wheel' && action.deltaY === 500),
       true,
+    );
+    assert.ok(
+      f.actions.some(
+        (action) => action.action === 'press' && action.key === 'Control+Shift+ArrowLeft',
+      ),
+    );
+    assert.ok(
+      f.actions.some(
+        (action) => action.action === 'wheel' && action.deltaX === -70 && action.deltaY === 240,
+      ),
     );
   } finally {
     await f.cleanup();

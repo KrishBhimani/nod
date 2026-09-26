@@ -1,8 +1,8 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowUpRight } from 'lucide-react';
 import type { AppState, Artifact, Message, SubmitMessageResponse } from '../../shared/contracts';
 import { Composer, type ComposerHandle } from '../components/composer';
-import { MessageBubble, MessageText } from '../components/message';
+import { MessageBubble } from '../components/message';
 import { ChatTurnRail } from '../components/chat-turn-rail';
 import { BrandMark } from '../components/brand';
 import { Button, Notice } from '../components/ui';
@@ -25,6 +25,18 @@ function dayLabel(date: string) {
     month: 'long',
     year: value.getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined,
   });
+}
+function verificationFailure(
+  status: SubmitMessageResponse['verificationStatus'],
+  ambiguous: boolean,
+) {
+  if (ambiguous)
+    return 'More than one sign-in needs a code. Reply to the verification request you want to complete.';
+  if (status === 'rejected')
+    return 'That verification code was not accepted. Check the code and try again.';
+  if (status === 'unavailable')
+    return 'That verification request is no longer available. Wait for a new code request.';
+  return 'The verification code could not be confirmed. Check the sign-in request and try again.';
 }
 export function Chat({
   state,
@@ -67,6 +79,7 @@ export function Chat({
   const stickToBottom = useRef(true);
   const resetLock = useRef(false);
   const setupAction = useRef(() => {});
+  const streamTimes = useRef(new Map<string, string>());
   const persistedMessages = [
     ...older.filter((item) => !state.messages.some((message) => message.id === item.id)),
     ...state.messages,
@@ -81,9 +94,30 @@ export function Chat({
       .map((item) => item.message),
   ];
   const working = hasVisibleChatActivity(state.tasks);
-  const streamEntries = Object.entries(streams).filter(([, value]) => value);
+  const persistedStreams = new Set(allMessages.map((message) => message.streamId).filter(Boolean));
+  const streamEntries = Object.entries(streams).filter(
+    ([id, value]) => value && !persistedStreams.has(id),
+  );
+  const streamIds = new Set(streamEntries.map(([id]) => id));
+  for (const id of streamTimes.current.keys())
+    if (!streamIds.has(id)) streamTimes.current.delete(id);
+  const visibleMessages: Message[] = [
+    ...allMessages,
+    ...streamEntries.map(([id, value]): Message => {
+      if (!streamTimes.current.has(id)) streamTimes.current.set(id, new Date().toISOString());
+      return {
+        id,
+        streamId: id,
+        role: 'assistant',
+        text: value,
+        taskId: null,
+        attachments: [],
+        createdAt: streamTimes.current.get(id)!,
+      };
+    }),
+  ];
   const onboardingVisible = allMessages.length === 0 && !working && !resetting;
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (stickToBottom.current)
       bottom.current?.scrollIntoView({ behavior: 'instant', block: 'end' });
   }, [state.messages, streams, sending, resetting, optimistic]);
@@ -137,20 +171,32 @@ export function Chat({
     if (sendLock.current || resetLock.current) return false;
     const sentRevision = revision;
     const reply = replyTo;
-    const signature = JSON.stringify([
-      value,
-      attachments.map((item) => item.id),
-      reply?.id ?? null,
-    ]);
+    const verificationRequests = (state.verificationRequests ?? []).filter(
+      (request) =>
+        Date.parse(request.expiresAt) > Date.now() && (!reply || request.taskId === reply.taskId),
+    );
+    let privateVerification =
+      attachments.length === 0 && /^\d{4,8}$/.test(value.trim()) && verificationRequests.length > 0;
+    const verificationRequestId =
+      privateVerification && verificationRequests.length === 1
+        ? verificationRequests[0].id
+        : undefined;
+    let verificationStatus: SubmitMessageResponse['verificationStatus'];
+    const signature = privateVerification
+      ? null
+      : JSON.stringify([value, attachments.map((item) => item.id), reply?.id ?? null]);
+    if (privateVerification) retry.current = null;
     const id =
-      retry.current?.revision === sentRevision && retry.current.signature === signature
+      signature !== null &&
+      retry.current?.revision === sentRevision &&
+      retry.current.signature === signature
         ? retry.current.id
         : crypto.randomUUID();
     sendLock.current = { id, revision: sentRevision };
     const message: Message = {
       id,
       role: 'user',
-      text: value,
+      text: privateVerification ? 'Verification code sent securely.' : value,
       attachments,
       taskId: null,
       createdAt: new Date().toISOString(),
@@ -169,7 +215,6 @@ export function Chat({
     setLoadingHistory(false);
     setSending(true);
     setError('');
-    setHasEarlier(true);
     stickToBottom.current = true;
     const replyId = reply?.id;
     try {
@@ -183,9 +228,12 @@ export function Chat({
           text: value,
           attachmentIds: attachments.map((item) => item.id),
           ...(replyId ? { replyToMessageId: replyId } : {}),
+          ...(verificationRequestId ? { verificationRequestId } : {}),
         }),
       });
       const result = (await response.json()) as Partial<SubmitMessageResponse> & { error?: string };
+      verificationStatus = result.verificationStatus;
+      privateVerification ||= verificationStatus !== undefined;
       if (!response.ok) {
         throw new Error(result.error || 'The message could not be sent.');
       }
@@ -193,10 +241,25 @@ export function Chat({
       if (result.messageId !== id || typeof result.taskId !== 'string')
         throw new Error('The message could not be confirmed. Try sending it again.');
       const taskId = result.taskId;
+      const messageText =
+        typeof result.messageText === 'string'
+          ? result.messageText
+          : privateVerification
+            ? 'Verification code sent securely.'
+            : message.text;
       retry.current = null;
       setOptimistic((current) =>
         current.map((item) =>
-          item.message.id === id ? { ...item, message: { ...item.message, taskId } } : item,
+          item.message.id === id
+            ? {
+                ...item,
+                message: {
+                  ...item.message,
+                  taskId,
+                  text: messageText,
+                },
+              }
+            : item,
         ),
       );
       setReplyTo((current) => (current?.id === replyId ? null : current));
@@ -209,10 +272,17 @@ export function Chat({
         setReplyTo((current) => (current?.id === replyId ? null : current));
         return true;
       }
-      retry.current = { id, revision: sentRevision, signature };
+      retry.current =
+        !privateVerification && signature !== null
+          ? { id, revision: sentRevision, signature }
+          : null;
       setOptimistic((current) => current.filter((item) => item.message.id !== id));
-      setError(errorMessage(cause));
-      return false;
+      setError(
+        privateVerification
+          ? verificationFailure(verificationStatus, verificationRequests.length > 1)
+          : errorMessage(cause),
+      );
+      return privateVerification;
     } finally {
       if (sendLock.current?.id === id && sendLock.current.revision === sentRevision) {
         sendLock.current = null;
@@ -357,7 +427,7 @@ export function Chat({
               </Button>
             </div>
           )}
-          {allMessages.length === 0 && (
+          {visibleMessages.length === 0 && (
             <div className="welcome">
               <BrandMark />
               <h1>What’s on your mind?</h1>
@@ -384,10 +454,10 @@ export function Chat({
             aria-live="polite"
             aria-relevant="additions"
           >
-            {allMessages.map((message, index) => (
-              <Fragment key={message.id}>
+            {visibleMessages.map((message, index) => (
+              <Fragment key={message.streamId ?? message.id}>
                 {(!index ||
-                  new Date(allMessages[index - 1].createdAt).toDateString() !==
+                  new Date(visibleMessages[index - 1].createdAt).toDateString() !==
                     new Date(message.createdAt).toDateString()) && (
                   <div className="day-divider">
                     <span>{dayLabel(message.createdAt)}</span>
@@ -395,9 +465,13 @@ export function Chat({
                 )}
                 <MessageBubble
                   message={message}
+                  streaming={streamIds.has(message.streamId ?? '')}
                   inspectorEnabled={state.configuration.inspectorEnabled}
-                  grouped={messagesAreGrouped(allMessages[index - 1], message)}
-                  showTimestamp={!messagesAreGrouped(message, allMessages[index + 1])}
+                  grouped={messagesAreGrouped(visibleMessages[index - 1], message)}
+                  showTimestamp={
+                    !streamIds.has(message.streamId ?? '') &&
+                    !messagesAreGrouped(message, visibleMessages[index + 1])
+                  }
                   onReply={
                     message.taskId || persistedIds.has(message.id)
                       ? () => {
@@ -408,21 +482,6 @@ export function Chat({
                   }
                 />
               </Fragment>
-            ))}
-            {streamEntries.map(([id, value]) => (
-              <article
-                className="message message-assistant streaming-message"
-                key={id}
-                aria-label="Sidekick is responding"
-              >
-                <div className="assistant-mark">
-                  <BrandMark small />
-                </div>
-                <div className="message-content">
-                  <MessageText text={value} />
-                  <span className="stream-cursor" />
-                </div>
-              </article>
             ))}
             {(sending || resetting || working) && streamEntries.length === 0 && (
               <div

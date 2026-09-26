@@ -2,6 +2,7 @@ import { Composio } from '@composio/core';
 import { z } from 'zod';
 import { integrationServiceIds } from '../../shared/integrations.ts';
 import { createIntegrationFileDownloader, downloadArguments } from './downloads.ts';
+import { readVerificationEmails } from './verification-email.ts';
 import type {
   IntegrationProvider,
   IntegrationService,
@@ -276,6 +277,8 @@ export function createComposioProvider(options: {
     supportedServices: toolkits,
     webhooksConfigured: Boolean(client && options.webhookSecret),
     supportsSubscriptions: ['gmail', 'googlecalendar', 'slack', 'notion'],
+    verificationEmails: (accountId, query, signal) =>
+      readVerificationEmails(required().tools, accountId, query, signal),
     async createSession(ownerId, accounts) {
       return session(
         await required().sessions.create(ownerId, {
@@ -293,7 +296,7 @@ export function createComposioProvider(options: {
       return session(await required().sessions.use(id));
     },
     async deleteSession(id) {
-      await required().sessions.delete(id);
+      await required().sessions.delete(id, { signal: AbortSignal.timeout(5_000) });
     },
     async inspectAccount(id, ownerId) {
       const account = await required().connectedAccounts.get(id, {

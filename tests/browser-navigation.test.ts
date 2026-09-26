@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 import { BrowserActionError } from '../src/ports/computer.ts';
-import { createAgentBrowserComputer } from '../src/providers/agent-browser/index.ts';
+import { createBrowserFixture as createAgentBrowserComputer } from './browser-fixture.ts';
 import type { runProcess } from '../src/providers/process.ts';
 
 test('failed public navigation stays diagnosable without exposing a browser error page and a new open recovers', async () => {

@@ -40,6 +40,9 @@ export function useAppState() {
         type: 'persisted',
         conversationRevision: revision,
         streamIds: next.messages.flatMap((message) => (message.streamId ? [message.streamId] : [])),
+        discardedTaskIds: next.tasks
+          .filter((task) => task.status === 'failed' || task.status === 'cancelled')
+          .map((task) => task.id),
       });
       setState(next);
       setError('');

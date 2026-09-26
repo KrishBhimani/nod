@@ -51,6 +51,7 @@ export interface CredentialField {
   value: string;
   password: boolean;
   identifier?: boolean;
+  code?: boolean;
 }
 
 export function credentialFields(input: CredentialInput): CredentialField[] {
@@ -74,6 +75,7 @@ export function credentialFields(input: CredentialInput): CredentialField[] {
       value,
       password: kind === 'password',
       identifier: kind === 'identifier',
+      code: kind === 'otp',
     },
   ];
   for (const target of [
@@ -96,19 +98,27 @@ export function credentialScript(
     if(location.origin!==origin) return {ok:false};
     const visible=e=>e && e.isConnected && e.getClientRects().length>0 && getComputedStyle(e).visibility!=='hidden' && getComputedStyle(e).display!=='none' && !e.closest('[hidden],[aria-hidden="true"],[inert]');
     const usable=e=>visible(e) && !e.disabled && !e.readOnly && !e.closest('[aria-disabled="true"]');
-    const targets=fields.map(field=>({field,nodes:document.querySelectorAll(field.selector)}));
-    if(targets.some(({field,nodes})=>nodes.length!==1 || !nodes[0].matches('input') || !usable(nodes[0]) || (field.password && nodes[0].type!=='password') || (field.identifier && nodes[0].type==='password'))) return {ok:false};
+    const targets=fields.map(field=>({field,nodes:[...document.querySelectorAll(field.selector)]}));
+    const split=({field,nodes})=>field.code&&nodes.length>=4&&nodes.length<=8&&nodes.length===field.value.length&&/^\\d+$/.test(field.value)&&nodes.every(e=>e.maxLength===1&&['text','tel','number'].includes(e.type)&&e.parentElement===nodes[0].parentElement)&&[...nodes[0].parentElement.querySelectorAll('input')].filter(usable).length===nodes.length;
+    if(targets.some(target=>{
+      const {field,nodes}=target;
+      return (nodes.length!==1&&!split(target))||nodes.some(e=>!e.matches('input')||!usable(e)||(field.password&&e.type!=='password')||(!field.password&&e.type==='password')||(field.code&&nodes.length===1&&e.maxLength>0&&e.maxLength<field.value.length));
+    })) return {ok:false};
     const submits=submit?document.querySelectorAll(submit):[];
     if(submit && (submits.length!==1 || !visible(submits[0]))) return {ok:false};
     for(const {field,nodes} of targets) {
       if(location.origin!==origin) return {ok:false};
-      const e=nodes[0];
-      e.style.setProperty('color','transparent','important');
-      e.style.setProperty('text-shadow','none','important');
-      e.style.setProperty('-webkit-text-security','disc','important');
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,field.value);
-      e.dispatchEvent(new Event('input',{bubbles:true}));
-      e.dispatchEvent(new Event('change',{bubbles:true}));
+      if(nodes.length>1) for(const e of nodes) Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'');
+      for(let index=0;index<nodes.length;index++) {
+        const e=nodes[index];
+        if(location.origin!==origin||!usable(e)) return {ok:false};
+        e.style.setProperty('color','transparent','important');
+        e.style.setProperty('text-shadow','none','important');
+        e.style.setProperty('-webkit-text-security','disc','important');
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,nodes.length>1?field.value[index]:field.value);
+        e.dispatchEvent(new Event('input',{bubbles:true}));
+        e.dispatchEvent(new Event('change',{bubbles:true}));
+      }
     }
     if(submit) {
       if(location.origin!==origin) return {ok:false};

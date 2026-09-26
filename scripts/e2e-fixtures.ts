@@ -8,7 +8,7 @@ import {
 import { createServer as createHttpsServer } from 'node:https';
 import { readFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { AddressInfo } from 'node:net';
+import type { AddressInfo, Socket } from 'node:net';
 import type { FastifyInstance } from 'fastify';
 import type {
   IntegrationProvider,
@@ -216,7 +216,11 @@ export async function createFixtureProxy(
     { key: await readFile(key), cert: certificate },
     createAuthFixture(audit),
   );
-  const sockets = new Set<import('node:net').Socket>();
+  const sockets = new Set<Socket>();
+  const track = (socket: Socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+  };
   let upstream: URL | undefined;
   const proxy = createServer((request, response) => {
     if (!upstream) return void response.writeHead(503).end();
@@ -231,10 +235,7 @@ export async function createFixtureProxy(
     forward.on('error', () => response.destroy());
     request.pipe(forward);
   });
-  proxy.on('connection', (socket) => {
-    sockets.add(socket);
-    socket.on('close', () => sockets.delete(socket));
-  });
+  proxy.on('connection', track);
   proxy.on('connect', (request, socket, head) => {
     if (request.url === 'example.com:443') {
       socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
@@ -248,6 +249,9 @@ export async function createFixtureProxy(
       path: request.url,
       headers: { host: request.url || '' },
     });
+    forward.on('socket', track);
+    socket.on('close', () => forward.destroy());
+    socket.on('error', () => forward.destroy());
     forward.on('connect', (response, remote, remoteHead) => {
       socket.write(
         `HTTP/1.1 ${response.statusCode || 502} ${response.statusMessage || ''}\r\n\r\n`,
@@ -260,7 +264,11 @@ export async function createFixtureProxy(
       if (remoteHead.length) socket.write(remoteHead);
       if (head.length) remote.write(head);
       remote.on('error', () => socket.destroy());
+      remote.on('close', () => {
+        if (!remote.readableEnded) socket.destroy();
+      });
       socket.on('error', () => remote.destroy());
+      socket.on('close', () => remote.destroy());
       remote.pipe(socket).pipe(remote);
     });
     forward.on('error', () => socket.destroy());

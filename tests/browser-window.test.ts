@@ -521,7 +521,7 @@ test('task adapters without a private desktop keep their live masked frame durin
       takeControl(element).dispatchEvent(new MouseEvent('click', { bubbles: true })),
     );
     assert.equal(element.querySelector('img')?.getAttribute('alt'), 'Browser screen');
-    assert.equal(element.querySelector('input')?.disabled, false);
+    assert.equal(element.querySelector('textarea')?.disabled, false);
     const resume = [...element.querySelectorAll('button')].find(
       (button) => button.textContent === 'Resume agent',
     )!;
@@ -529,7 +529,7 @@ test('task adapters without a private desktop keep their live masked frame durin
     const before = captures;
     await act(async () => resume.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     assert.ok(captures > before);
-    assert.equal(element.querySelector('input'), null);
+    assert.equal(element.querySelector('textarea'), null);
     assert.equal(takeControl(element).disabled, false);
   } finally {
     await act(async () => root.unmount());

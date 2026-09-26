@@ -6,7 +6,15 @@ Local UX and app-action validation: [Apps, chat and Inspector checks](testing/re
 
 This records local prototype checks. Synthetic fixtures, isolated browser flows and live-account checks are distinct. These runs do not establish public deployment or production-provider acceptance; no new paid plan was used.
 
-## Current pass — 2026-09-26
+## Current chat and sign-in pass — 2026-09-26
+
+[Chat and sign-in review](testing/results/2026-09-26-chat-and-login.md) records stable streamed replies, direct container browser input, chat verification codes, a narrow matching-Gmail lookup, staged sign-in and production navigation access. Actual app/model/container checks passed for typing, paste, Cmd+A, Enter, focus return and a complete synthetic login with its code submitted in chat. A read-only audit found no plaintext password or code in that disposable database, agent sessions or timing records. The real TOConline check succeeded separately using the earlier private code form. Live automatic mailbox lookup, Google/X account login and a completed second Gmail grant remain unverified.
+
+The final combined local gate passed **873 tests, zero failures and zero skips**, in 81.753 seconds under Node.js 24.21.0. TypeScript, import boundaries, repository formatting and production build passed. Gitleaks found no secrets in 386 source candidates; the full-history scan and SQL-exception regression passed. CI repeats these checks on the pushed head. The main JavaScript bundle is 1,073.80 kB before gzip (333.98 kB gzip), so the size warning remains.
+
+Logs: `/tmp/sidekick-combined-integration-final.log`, `/tmp/sidekick-combined-check.log`, `/tmp/sidekick-combined-build.log`, `/tmp/sidekick-chat-login-source-scan.log`, `/tmp/sidekick-chat-login-history-scan.log` and `/tmp/sidekick-chat-login-secret-config.log`. Temporary acceptance containers and schemas were removed; only the three normal containers remain. The normal profile was not reset.
+
+## Prior UI pass — 2026-09-26
 
 [UI and browser-control review](testing/results/2026-09-26-ux-polish.md) records compact integrations and channels, aligned empty states, revised dark controls, clearer Inspector tabs and always-available workspace takeover. The final local integration run passed **800 tests with zero failures or skips**, including automatic view recovery after Done and cancellation of stale navigation focus callbacks. Ordinary browser captures pause throughout credential waits and reject obsolete revisions. A fresh synthetic login/verification run reached its account page and saved the custom name. Mobile keeps Chat visible with other controls in a top-right menu; Apps uses centered logos and direct account Disconnect actions. Actual desktop/mobile inspection, 72 contrast pairs and real container browser control support this pass. The PR checks report final-head publication status.
 

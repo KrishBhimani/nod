@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import test from 'node:test';
-import { createAgentBrowserComputer } from '../src/providers/agent-browser/index.ts';
+import { createBrowserFixture as createAgentBrowserComputer } from './browser-fixture.ts';
 import { stagedLoginBrowser } from './login-fixture.ts';
 
 async function fixture() {

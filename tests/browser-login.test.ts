@@ -5,15 +5,12 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import { JSDOM } from 'jsdom';
-import {
-  createAgentBrowserComputer,
-  redactBrowserText,
-  redactBrowserUrl,
-} from '../src/providers/agent-browser/index.ts';
+import { redactBrowserText, redactBrowserUrl } from '../src/providers/agent-browser/index.ts';
 import {
   loginInspectionSchema,
   loginInspectionScript,
 } from '../src/providers/agent-browser/login.ts';
+import { createBrowserFixture as createAgentBrowserComputer } from './browser-fixture.ts';
 import { LoginDom, LoginElement, stagedLoginBrowser } from './login-fixture.ts';
 
 function element(tag: string, attributes: Record<string, string> = {}, text = '') {

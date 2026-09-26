@@ -28,6 +28,7 @@ import { createPiConversationRouter } from '../providers/pi/conversation.ts';
 import { createPublicLinkPreviewProvider } from '../providers/public-web/link-preview.ts';
 import { createAgentRuntime } from '../runtime/index.ts';
 import { createApp } from './app.ts';
+import { createChatVerification } from './chat-verification.ts';
 import { createAgentReactionService } from './agent-reactions.ts';
 import { createApprovals } from './approvals.ts';
 import { readTaskArtifacts } from './artifacts.ts';
@@ -298,6 +299,12 @@ export async function createApplication(
     inspect: computer.inspectLogin,
     hold: computer.hold,
     selectMethod: computer.selectLoginMethod,
+    emailCode: (input, signal) => integrations.emailCode(ownerId, input, signal),
+  });
+  const chatVerification = await createChatVerification(pool, {
+    ownerId,
+    submitCode: vault.submitChatCode,
+    refresh,
   });
   const approvals = await createApprovals(
     (action, args, provenance) =>
@@ -356,6 +363,8 @@ export async function createApplication(
         return personal.manage(action, args, provenance);
       },
       requestCredential: async (taskId, input) => {
+        if (input.kind === 'otp' && (await vault.fillEmailCode(taskId, ownerId, input)))
+          return { filled: true };
         if (input.kind !== 'otp') {
           const selected = await vault.fillSelected(taskId, ownerId, input);
           if (selected) return { filled: true };
@@ -400,6 +409,7 @@ export async function createApplication(
   }
   const app = await createApp({
     submitMessage: userMessages.submit,
+    verification: chatVerification,
     onboard: async (timeZone, conversationRevision) => {
       if (timeZone) await triage.updatePreferences({ timeZone });
       return restartOnboarding(conversationRevision);
@@ -500,6 +510,7 @@ export async function createApplication(
       ownerId,
       resolveAttachments: readTaskArtifacts,
       transport: meterMessaging(messaging, providerUsage),
+      acceptVerification: (text, input) => chatVerification.accept(text, input),
       subscribe(listener) {
         const onEvent = (event: { type?: string }) => {
           if (event.type === 'refresh') listener();

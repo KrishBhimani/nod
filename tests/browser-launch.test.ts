@@ -4,10 +4,8 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import {
-  browserSessionId,
-  createAgentBrowserComputer,
-} from '../src/providers/agent-browser/index.ts';
+import { browserSessionId } from '../src/providers/agent-browser/index.ts';
+import { createBrowserFixture as createAgentBrowserComputer } from './browser-fixture.ts';
 import { stagedLoginBrowser } from './login-fixture.ts';
 
 for (const platform of ['darwin', 'linux'] as const) {

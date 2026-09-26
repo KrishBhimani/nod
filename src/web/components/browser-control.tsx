@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Hand, Maximize2, Monitor, Play } from 'lucide-react';
 import { api, post, errorMessage } from '../lib/api';
 import { Button, Notice } from './ui';
 import { useSignInScreen } from '../hooks/use-sign-in-screen';
+import { useBrowserInput } from '../hooks/use-browser-input';
 
 interface ControlState {
   paused: boolean;
@@ -51,8 +52,9 @@ export function BrowserControl({
     }));
   };
   const [busy, setBusy] = useState(false);
-  const [text, setText] = useState('');
   const [error, setError] = useState('');
+  const controls = useRef<HTMLDivElement>(null);
+  const inputHint = useId();
   const signingIn = state.active && state.mode === 'sign_in';
   const resumable = Boolean(taskId) && state.resumable !== false;
   const operation = useRef(0);
@@ -61,6 +63,13 @@ export function BrowserControl({
   const currentScreen = signingIn ? signIn.screen : screen;
   const currentLive = signingIn ? Boolean(signIn.screen) : live;
   const canInteract = Boolean(currentScreen) && currentLive && !busy;
+  const input = useBrowserInput({
+    path,
+    revision: state.revision,
+    enabled: state.active && canInteract,
+    onError: setError,
+    onExit: () => controls.current?.querySelector('button')?.focus(),
+  });
   const placeholder = signingIn ? signIn.error || 'Opening the workspace browser…' : emptyMessage;
   useEffect(() => {
     onControlChange?.(state.active || busy, signingIn || (busy && !state.active));
@@ -71,7 +80,6 @@ export function BrowserControl({
     busyRef.current = false;
     setBusy(false);
     setState({ paused: false, active: false, revision: null, mode: null, signInAvailable: false });
-    setText('');
     setError('');
     const refresh = () => {
       if (busyRef.current) return;
@@ -90,23 +98,16 @@ export function BrowserControl({
       clearInterval(timer);
     };
   }, [path]);
-  useEffect(() => {
-    const clear = () => setText('');
-    const visibility = () => {
-      if (document.hidden) clear();
-    };
-    window.addEventListener('blur', clear);
-    document.addEventListener('visibilitychange', visibility);
-    return () => {
-      window.removeEventListener('blur', clear);
-      document.removeEventListener('visibilitychange', visibility);
-    };
-  }, []);
-  async function action(kind: 'start' | 'resume' | 'input', input?: unknown) {
+  async function action(kind: 'start' | 'resume') {
     if (busyRef.current) return;
     busyRef.current = true;
-    if (kind === 'start') onControlChange?.(true, true);
     const version = ++operation.current;
+    if (kind === 'resume' && !(await input.flush())) {
+      if (operation.current === version) busyRef.current = false;
+      return;
+    }
+    if (operation.current !== version) return;
+    if (kind === 'start') onControlChange?.(true, true);
     setBusy(true);
     setError('');
     try {
@@ -115,10 +116,7 @@ export function BrowserControl({
         revision?: number;
         mode?: ControlState['mode'];
         resumable?: boolean;
-      }>(
-        `${path}/${kind}`,
-        kind === 'start' ? {} : { revision: state.revision, ...(input ? { input } : {}) },
-      );
+      }>(`${path}/${kind}`, kind === 'start' ? {} : { revision: state.revision });
       if (operation.current !== version) return;
       if (result.ok === false) throw new Error('The browser could not continue. Try again.');
       if (kind === 'start' && typeof result.revision === 'number')
@@ -138,13 +136,17 @@ export function BrowserControl({
       if (operation.current === version) {
         busyRef.current = false;
         setBusy(false);
-        setText('');
       }
     }
   }
   return (
     <div className="browser-control">
-      <div className="browser-control-heading" role="group" aria-label="Browser controls">
+      <div
+        ref={controls}
+        className="browser-control-heading"
+        role="group"
+        aria-label="Browser controls"
+      >
         <Button
           variant={state.active ? 'secondary' : 'outline'}
           size="sm"
@@ -181,92 +183,48 @@ export function BrowserControl({
         {actions}
       </div>
       {currentScreen ? (
-        <button
-          className={`screen-preview ${state.active ? 'screen-interactive' : ''}`}
-          disabled={busy || (state.active && !canInteract)}
-          aria-label={state.active ? 'Click inside the browser' : 'Enlarge browser screen'}
-          onClick={(event) => {
-            if (!state.active) return onEnlarge();
-            const image = event.currentTarget.querySelector('img');
-            if (!image || !currentLive) return;
-            const rect = image.getBoundingClientRect();
-            void action('input', {
-              action: 'click',
-              x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
-              y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
-            });
-          }}
-        >
-          <img
-            src={currentScreen}
-            alt={signingIn ? 'Private workspace browser' : 'Browser screen'}
-            draggable={false}
-          />
-        </button>
+        state.active ? (
+          <div className="screen-preview screen-interactive">
+            <img
+              ref={input.image}
+              src={currentScreen}
+              alt={signingIn ? 'Private workspace browser' : 'Browser screen'}
+              draggable={false}
+            />
+            <textarea
+              ref={input.surface}
+              className="browser-input-surface"
+              aria-label="Control workspace browser"
+              aria-describedby={inputHint}
+              disabled={!canInteract}
+              autoComplete="off"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              inputMode="text"
+              rows={1}
+            />
+          </div>
+        ) : (
+          <button
+            className="screen-preview"
+            disabled={busy}
+            aria-label="Enlarge browser screen"
+            onClick={onEnlarge}
+          >
+            <img src={currentScreen} alt="Browser screen" draggable={false} />
+          </button>
+        )
       ) : placeholder ? (
         <div className="screen-empty">
           <Monitor size={26} />
           <p>{placeholder}</p>
         </div>
       ) : null}
-      {state.active && (
-        <div className="manual-controls">
-          <p>You’re in control. Click the page, then enter text below.</p>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (text && canInteract) void action('input', { action: 'type', text });
-            }}
-          >
-            <input
-              type="password"
-              disabled={!canInteract}
-              aria-label="Private browser text"
-              autoComplete="off"
-              placeholder="Type or paste privately"
-              value={text}
-              maxLength={8192}
-              onChange={(event) => setText(event.target.value)}
-            />
-            <Button type="submit" size="sm" disabled={!canInteract || !text}>
-              Enter text
-            </Button>
-          </form>
-          <div className="manual-keys">
-            {(['Tab', 'Shift+Tab', 'Enter', 'Escape', 'Backspace', 'ControlOrMeta+A'] as const).map(
-              (key) => (
-                <Button
-                  key={key}
-                  variant="outline"
-                  size="sm"
-                  disabled={!canInteract}
-                  onClick={() => void action('input', { action: 'press', key })}
-                >
-                  {key === 'ControlOrMeta+A'
-                    ? 'Select all'
-                    : key === 'Shift+Tab'
-                      ? 'Previous'
-                      : key}
-                </Button>
-              ),
-            )}
-            {(['up', 'down'] as const).map((direction) => (
-              <Button
-                key={direction}
-                variant="outline"
-                size="sm"
-                disabled={!canInteract}
-                onClick={() => void action('input', { action: 'scroll', direction })}
-              >
-                Scroll {direction}
-              </Button>
-            ))}
-          </div>
-          <small>
-            Text stays out of chat and inspector recordings. Choose{' '}
-            {resumable ? 'Resume agent' : 'Done'} when you’re finished.
-          </small>
-        </div>
+      {state.active && currentScreen && (
+        <p id={inputHint} className="browser-input-hint">
+          Click the browser to type. Shift + Esc returns to the controls.
+        </p>
       )}
       {error && <Notice>{error}</Notice>}
     </div>

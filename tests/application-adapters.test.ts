@@ -8,6 +8,7 @@ import pg from 'pg';
 import type { Agent } from '../src/ports/agent.ts';
 import type { IntegrationProvider, IntegrationSession } from '../src/ports/integrations.ts';
 import { createPiUsageTracker } from '../src/providers/pi/usage.ts';
+import { initialStreamState, streamReducer } from '../src/web/lib/streams.ts';
 import { fakeComputer } from './runtime-fixtures.ts';
 
 test(
@@ -335,7 +336,27 @@ test(
         'Replacement providers completed the request.',
       );
       assert.ok(streams.every((event) => event.streamId === final.streamId));
-      assert.equal(streams.at(-1)?.done, true);
+      assert.equal(
+        streams.some((event) => event.done),
+        false,
+      );
+      const transient = streams.reduce(
+        (current, event) => streamReducer(current, { type: 'delta', ...event }),
+        initialStreamState,
+      );
+      assert.equal(transient.active[final.streamId]?.text, final.text);
+      const reconciled = streamReducer(transient, {
+        type: 'persisted',
+        streamIds: [final.streamId],
+      });
+      assert.equal(reconciled.active[final.streamId], undefined);
+      assert.ok(reconciled.completed.includes(final.streamId));
+      assert.equal(
+        state.messages.filter(
+          (message: { streamId?: string }) => message.streamId === final.streamId,
+        ).length,
+        1,
+      );
       const artifacts = (
         await pool.query(
           'SELECT id,name FROM artifacts WHERE owner_id=$1 AND task_id=$2 ORDER BY name',

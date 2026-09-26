@@ -44,7 +44,7 @@ Bounded recent text from the same owner's other verified channels can inform the
 
 Elapsed time does not insert chat messages. The agent sends progress only when it can name a useful finding, a meaningful delay or a required decision. The normal reply boundary preserves cancellation and revision checks. Background runs keep routine progress and completion quiet.
 
-PostgreSQL is authoritative. SSE carries transient text and refresh signals; each model message has a stream ID. Credential and approval requests end a segment and release its worker. Task revisions fence stale forms, jobs, and late writes. Cancellation stops further accepted tool work. An action already accepted by an external service may still complete.
+PostgreSQL is authoritative. SSE carries transient text and refresh signals; each model message has a stream ID. Completed safe foreground updates are persisted before the next tool runs. The web client retains the streaming component until the saved message with that ID arrives, so the handoff does not remove and recreate the reply. Credential and approval requests end a segment and release its worker. Task revisions fence stale forms, jobs, and late writes. Cancellation stops further accepted tool work. An action already accepted by an external service may still complete.
 
 After a restart, interrupted running tasks need review before proceeding. Approvals and channel sends with uncertain outcomes are not replayed automatically. Internal transaction deduplication cannot make a browser click or external API request exactly once.
 

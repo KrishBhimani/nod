@@ -50,10 +50,10 @@ test('a missing live frame disables manual input while keeping the agent resumab
     );
   try {
     await act(async () => render('data:image/png;base64,fixture'));
-    assert.equal(element.querySelector('input')?.disabled, false);
+    assert.equal(element.querySelector('textarea')?.disabled, false);
     await act(async () => render(null));
     assert.match(element.textContent ?? '', /Browser unavailable/);
-    assert.equal(element.querySelector('input')?.disabled, true);
+    assert.equal(element.querySelector('textarea'), null);
     const buttons = Array.from(element.querySelectorAll('button'));
     const resume = buttons.find((button) => button.textContent === 'Resume agent')!;
     assert.ok(resume);
@@ -63,7 +63,7 @@ test('a missing live frame disables manual input while keeping the agent resumab
     assert.deepEqual(writes, [
       { path: '/api/browser/control/task-one/resume', body: { revision: 7 } },
     ]);
-    assert.equal(element.querySelector('input'), null);
+    assert.equal(element.querySelector('textarea'), null);
   } finally {
     await act(async () => root.unmount());
     element.remove();
@@ -153,15 +153,21 @@ test('workspace sign-in uses a private frame and input, then explicitly resumes 
     await act(async () => f.render());
     assert.ok(f.element.querySelector('.screen-preview'));
     await act(async () => f.click('Take control'));
-    assert.match(f.element.textContent ?? '', /You’re in control/);
+    assert.match(f.element.textContent ?? '', /Click the browser to type/);
     const image = f.element.querySelector<HTMLImageElement>('.screen-preview img')!;
     assert.equal(image.src, 'blob:private-sign-in');
     assert.equal(image.alt, 'Private workspace browser');
-    assert.equal(f.element.querySelector('input')?.disabled, false);
+    assert.equal(f.element.querySelector('textarea')?.disabled, false);
     assert.equal(f.button('Take control'), undefined);
     assert.equal(f.button('Sign in in browser'), undefined);
     assert.equal(f.button('Resume agent')?.disabled, false);
-    await act(async () => f.click('Tab'));
+    const surface = f.element.querySelector('textarea')!;
+    surface.focus();
+    await act(async () =>
+      surface.dispatchEvent(
+        new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }),
+      ),
+    );
     await act(async () => f.click('Resume agent'));
     assert.deepEqual(writes, [
       { path: '/api/browser/control/task-one/start', body: {} },
@@ -209,7 +215,7 @@ test('Take control remains available without a screenshot and rejected actions s
     await act(async () => f.render('task-two', null));
     await act(async () => f.click('Resume agent'));
     assert.equal(f.button('Resume agent')?.disabled, false);
-    assert.equal(f.element.querySelector('input')?.disabled, true);
+    assert.equal(f.element.querySelector('textarea'), null);
     status = 200;
     await act(async () => f.click('Resume agent'));
     assert.match(f.element.textContent ?? '', /The browser could not continue/);
@@ -320,7 +326,7 @@ test('private sign-in frames clear on blur and reject delayed bytes from a hidde
     await act(async () => window.dispatchEvent(new Event('blur')));
     assert.equal(pending[1].signal.aborted, true);
     assert.equal(f.element.querySelector('img'), null);
-    assert.equal(f.element.querySelector('input')?.disabled, true);
+    assert.equal(f.element.querySelector('textarea'), null);
     assert.equal(f.button('Resume agent')?.disabled, false);
     assert.ok(revoked.includes('blob:private-1'));
     await act(async () => pending[1].resolve(frame()));

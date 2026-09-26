@@ -16,6 +16,7 @@ import type {
 import type { CredentialKind, CredentialSubmission, LoginInspection } from '../ports/computer.ts';
 import type { CredentialKeyStore } from '../ports/key-store.ts';
 import type { CredentialInvitation } from '../ports/agent.ts';
+import { normalizedEmail, type EmailCodeRequest, type PrivateEmailCode } from './email-code.ts';
 
 const owner = 'local-development';
 const passwordInput = z
@@ -103,6 +104,7 @@ type VaultOptions = {
   inspect?(taskId: string): Promise<LoginInspection>;
   hold?(taskId: string, until: number | null): Promise<void>;
   selectMethod?(taskId: string, origin: string, methodId: string): Promise<void>;
+  emailCode?(input: EmailCodeRequest, signal: AbortSignal): Promise<PrivateEmailCode | undefined>;
 };
 type EntryRow = {
   id: string;
@@ -150,6 +152,7 @@ type SelectionRow = {
   blocked: boolean;
   task_revision: number;
   expires_at: Date;
+  credential_entered_at: Date | null;
 };
 
 class VaultError extends Error {
@@ -167,6 +170,11 @@ function assertSupportedBrowser(inspection: LoginInspection) {
       'This provider has blocked sign-in in the automated browser. Choose "Take control" under browser controls, then "Resume agent" after finishing there.',
       409,
     );
+}
+
+function storedInspection(inspection: LoginInspection) {
+  const { emailCode: _emailCode, ...stored } = inspection;
+  return stored;
 }
 
 export function credentialOrigin(value: string) {
@@ -373,6 +381,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     );
     ALTER TABLE credential_account_selections ADD COLUMN IF NOT EXISTS identifier_label text NOT NULL DEFAULT '';
     ALTER TABLE credential_account_selections ADD COLUMN IF NOT EXISTS login_label text NOT NULL DEFAULT '';
+    ALTER TABLE credential_account_selections ADD COLUMN IF NOT EXISTS credential_entered_at timestamptz;
     DO $$ BEGIN
       IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='credential_requests' AND column_name='task_revision') THEN
         ALTER TABLE credential_requests ADD COLUMN task_revision integer NOT NULL DEFAULT 0;
@@ -704,6 +713,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       revision: number;
       expiresAt: Date;
       blocked: boolean;
+      enteredAt?: number;
     },
   ) {
     const entry = { id: randomUUID(), owner_id: value.ownerId, origin: value.origin };
@@ -712,9 +722,9 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       password: value.password ?? '',
     });
     await database.query(
-      `INSERT INTO credential_account_selections(id,task_id,owner_id,origin,entry_id,ciphertext,blocked,task_revision,expires_at,identifier_label,login_label)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(task_id,owner_id,origin) DO UPDATE
-       SET id=excluded.id,entry_id=excluded.entry_id,ciphertext=excluded.ciphertext,blocked=excluded.blocked,task_revision=excluded.task_revision,expires_at=excluded.expires_at,identifier_label=excluded.identifier_label,login_label=excluded.login_label`,
+      `INSERT INTO credential_account_selections(id,task_id,owner_id,origin,entry_id,ciphertext,blocked,task_revision,expires_at,identifier_label,login_label,credential_entered_at)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(task_id,owner_id,origin) DO UPDATE
+       SET id=excluded.id,entry_id=excluded.entry_id,ciphertext=excluded.ciphertext,blocked=excluded.blocked,task_revision=excluded.task_revision,expires_at=excluded.expires_at,identifier_label=excluded.identifier_label,login_label=excluded.login_label,credential_entered_at=excluded.credential_entered_at`,
       [
         entry.id,
         value.taskId,
@@ -727,6 +737,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
         value.expiresAt,
         safeIdentifierLabel(value.identifierLabel) || inferredIdentifierLabel(value.username),
         value.loginLabel ?? '',
+        value.enteredAt === undefined ? null : new Date(value.enteredAt),
       ],
     );
   }
@@ -846,7 +857,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
         input.kind,
         JSON.stringify(input),
         new Date(expiresAt),
-        JSON.stringify(inspection),
+        JSON.stringify(storedInspection(inspection)),
         task.rows[0].revision,
       ],
     );
@@ -953,7 +964,12 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       const fresh = await inspectRequest(row.task_id, row.selectors);
       await client.query(
         'UPDATE credential_requests SET kind=$2,selectors=$3,inspection=$4 WHERE id=$1',
-        [row.id, fresh.input.kind, JSON.stringify(fresh.input), JSON.stringify(fresh.inspection)],
+        [
+          row.id,
+          fresh.input.kind,
+          JSON.stringify(fresh.input),
+          JSON.stringify(storedInspection(fresh.inspection)),
+        ],
       );
       await client.query('COMMIT');
     } catch (error) {
@@ -975,18 +991,20 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       row: RequestRow,
       client: PoolClient,
     ) => Promise<{ retry: Awaited<ReturnType<typeof inspectRequest>>; error?: string } | void>,
+    hashed = false,
   ) {
     const client = await pool.connect();
     let submittedId: string | undefined;
     let retryUrl: string | undefined;
     let retryError: string | undefined;
+    const hash = hashed ? token : tokenHash(token);
     try {
       await client.query('BEGIN');
       const task = await client.query(
         `SELECT t.id FROM tasks t JOIN credential_requests r ON t.id::text=r.task_id AND t.owner_id=r.owner_id
         WHERE r.token_hash=$1 AND r.owner_id=$2 AND r.task_revision=t.revision AND t.status='waiting_credentials'
         AND r.status='pending' AND r.expires_at>now() FOR UPDATE OF t NOWAIT`,
-        [tokenHash(token), owner],
+        [hash, owner],
       );
       if (!task.rowCount)
         throw new VaultError(
@@ -996,7 +1014,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       const { rows } = await client.query<RequestRow>(
         `UPDATE credential_requests SET status='processing'
         WHERE token_hash=$1 AND owner_id=$2 AND status='pending' AND expires_at>now() RETURNING *`,
-        [tokenHash(token), owner],
+        [hash, owner],
       );
       const row = rows[0];
       if (!row) throw new VaultError('This request is already being filled.', 409);
@@ -1024,7 +1042,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
             JSON.stringify(input),
             row.expires_at,
             row.task_revision,
-            JSON.stringify(inspection),
+            JSON.stringify(storedInspection(inspection)),
           ],
         );
         retryUrl = `/vault/${freshToken}`;
@@ -1057,100 +1075,116 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     return { ok: true };
   }
 
-  async function submit(token: string, raw: unknown) {
+  async function submit(token: string, raw: unknown, hashed = false) {
     const values = submissionInput.parse(raw);
-    return consume(token, async (row, client) => {
-      const { input, inspection } = await inspectRequest(row.task_id, row.selectors);
-      if (input.kind !== row.kind)
-        throw new VaultError('The login step changed. Request a fresh secure form.', 409);
-      if (
-        options.inspect &&
-        (!inspection.methods.some((method) => method.id === 'credentials' && method.supported) ||
-          !inspection.fields.some((field) => field.kind === row.kind))
-      )
-        throw new VaultError('The current page does not support this credential step.', 409);
-      const savedIdentifier = identifiers.get(identifierKey(row.task_id, row.owner_id, row.origin));
-      const selected = await selection(row.task_id, row.owner_id, row.origin, client);
-      const staged = await stagedUsername(selected, row.task_revision);
-      if (
-        row.kind === 'password' &&
-        !input.usernameSelector &&
-        values.username &&
-        staged !== undefined &&
-        values.username !== staged
-      )
-        throw new VaultError('This password step belongs to the login you already chose.', 409);
-      const username =
-        values.username ||
-        staged ||
-        (savedIdentifier && savedIdentifier.expiresAt > Date.now() ? savedIdentifier.value : '');
-      const identifierLabel =
-        (options.inspect && observedIdentifierLabel(inspection)) ||
-        (staged !== undefined && safeIdentifierLabel(selected?.identifier_label)) ||
-        (savedIdentifier &&
-          savedIdentifier.expiresAt > Date.now() &&
-          savedIdentifier.identifierLabel) ||
-        inferredIdentifierLabel(username);
-      if (row.kind === 'identifier' && !username)
-        throw new VaultError('Enter the email, phone number or username.');
-      if (row.kind === 'password' && !values.password) throw new VaultError('Enter the password.');
-      if (row.kind === 'password' && !values.label) throw new VaultError('Give this login a name.');
-      if (row.kind === 'identifier' && values.password && !values.label)
-        throw new VaultError('Give this login a name.');
-      if (row.kind === 'password' && input.usernameSelector && !username)
-        throw new VaultError('Enter the email, phone number or username.');
-      if (row.kind === 'otp' && !values.code) throw new VaultError('Enter the verification code.');
-      if (row.kind === 'password' || (row.kind === 'identifier' && values.password)) await key();
-      const submission = await options.inject({
-        ...input,
-        taskId: row.task_id,
-        ...(row.kind === 'otp'
-          ? { code: values.code }
-          : row.kind === 'identifier'
-            ? { username }
-            : {
-                username: input.usernameSelector ? username : undefined,
-                password: values.password,
-              }),
-      });
-      if (row.kind !== 'otp')
-        await rememberSelection(client, {
+    return consume(
+      token,
+      async (row, client) => {
+        const { input, inspection } = await inspectRequest(row.task_id, row.selectors);
+        if (input.kind !== row.kind)
+          throw new VaultError('The login step changed. Request a fresh secure form.', 409);
+        if (
+          options.inspect &&
+          (!inspection.methods.some((method) => method.id === 'credentials' && method.supported) ||
+            !inspection.fields.some((field) => field.kind === row.kind))
+        )
+          throw new VaultError('The current page does not support this credential step.', 409);
+        const savedIdentifier = identifiers.get(
+          identifierKey(row.task_id, row.owner_id, row.origin),
+        );
+        const selected = await selection(row.task_id, row.owner_id, row.origin, client);
+        const staged = await stagedUsername(selected, row.task_revision);
+        if (
+          row.kind === 'password' &&
+          !input.usernameSelector &&
+          values.username &&
+          staged !== undefined &&
+          values.username !== staged
+        )
+          throw new VaultError('This password step belongs to the login you already chose.', 409);
+        const username =
+          values.username ||
+          staged ||
+          (savedIdentifier && savedIdentifier.expiresAt > Date.now() ? savedIdentifier.value : '');
+        const identifierLabel =
+          (options.inspect && observedIdentifierLabel(inspection)) ||
+          (staged !== undefined && safeIdentifierLabel(selected?.identifier_label)) ||
+          (savedIdentifier &&
+            savedIdentifier.expiresAt > Date.now() &&
+            savedIdentifier.identifierLabel) ||
+          inferredIdentifierLabel(username);
+        if (row.kind === 'identifier' && !username)
+          throw new VaultError('Enter the email, phone number or username.');
+        if (row.kind === 'password' && !values.password)
+          throw new VaultError('Enter the password.');
+        if (row.kind === 'password' && !values.label)
+          throw new VaultError('Give this login a name.');
+        if (row.kind === 'identifier' && values.password && !values.label)
+          throw new VaultError('Give this login a name.');
+        if (row.kind === 'password' && input.usernameSelector && !username)
+          throw new VaultError('Enter the email, phone number or username.');
+        if (row.kind === 'otp' && !values.code)
+          throw new VaultError('Enter the verification code.');
+        if (
+          row.kind === 'otp' &&
+          inspection.emailCode?.length !== undefined &&
+          values.code?.length !== inspection.emailCode.length
+        )
+          throw new VaultError('Enter the complete verification code.');
+        if (row.kind === 'password' || (row.kind === 'identifier' && values.password)) await key();
+        const submission = await options.inject({
+          ...input,
           taskId: row.task_id,
-          ownerId: row.owner_id,
-          origin: row.origin,
-          entryId: null,
-          username,
-          ...(row.kind === 'identifier' && values.password && submission?.status !== 'rejected'
-            ? { password: values.password, loginLabel: values.label }
-            : {}),
-          identifierLabel,
-          revision: row.task_revision + (submission?.status === 'rejected' ? 0 : 1),
-          expiresAt: row.expires_at,
-          blocked:
-            row.kind !== 'identifier' || !values.password || submission?.status === 'rejected',
+          ...(row.kind === 'otp'
+            ? { code: values.code }
+            : row.kind === 'identifier'
+              ? { username }
+              : {
+                  username: input.usernameSelector ? username : undefined,
+                  password: values.password,
+                }),
         });
-      if (submission?.status === 'rejected')
-        return { retry: await inspectRequest(row.task_id, row.selectors) };
-      if (row.kind === 'identifier' && values.password)
-        await client.query(
-          "DELETE FROM credential_autofill_attempts WHERE task_id=$1 AND owner_id=$2 AND origin=$3 AND kind='password'",
-          [row.task_id, row.owner_id, row.origin],
-        );
-      if (row.kind === 'identifier')
-        identifiers.set(identifierKey(row.task_id, row.owner_id, row.origin), {
-          value: username,
-          identifierLabel,
-          expiresAt: Date.now() + 10 * 60_000,
-        });
-      if (row.kind === 'password') {
-        await save(
-          row.owner_id,
-          { label: values.label, origin: row.origin, username, password: values.password },
-          client,
-          identifierLabel,
-        );
-      }
-    });
+        if (row.kind !== 'otp')
+          await rememberSelection(client, {
+            taskId: row.task_id,
+            ownerId: row.owner_id,
+            origin: row.origin,
+            entryId: null,
+            username,
+            ...(row.kind === 'identifier' && values.password && submission?.status !== 'rejected'
+              ? { password: values.password, loginLabel: values.label }
+              : {}),
+            identifierLabel,
+            revision: row.task_revision + (submission?.status === 'rejected' ? 0 : 1),
+            expiresAt: row.expires_at,
+            blocked:
+              row.kind !== 'identifier' || !values.password || submission?.status === 'rejected',
+            enteredAt: submission?.status === 'rejected' ? undefined : Date.now(),
+          });
+        if (submission?.status === 'rejected')
+          return { retry: await inspectRequest(row.task_id, row.selectors) };
+        if (row.kind === 'identifier' && values.password)
+          await client.query(
+            "DELETE FROM credential_autofill_attempts WHERE task_id=$1 AND owner_id=$2 AND origin=$3 AND kind='password'",
+            [row.task_id, row.owner_id, row.origin],
+          );
+        if (row.kind === 'identifier')
+          identifiers.set(identifierKey(row.task_id, row.owner_id, row.origin), {
+            value: username,
+            identifierLabel,
+            expiresAt: Date.now() + 10 * 60_000,
+          });
+        if (row.kind === 'password') {
+          await save(
+            row.owner_id,
+            { label: values.label, origin: row.origin, username, password: values.password },
+            client,
+            identifierLabel,
+          );
+        }
+      },
+      hashed,
+    );
   }
 
   async function selectSaved(token: string, raw: unknown) {
@@ -1232,6 +1266,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
         revision: row.task_revision + (submission?.status === 'rejected' ? 0 : 1),
         expiresAt: row.expires_at,
         blocked: submission?.status === 'rejected',
+        enteredAt: submission?.status === 'rejected' ? undefined : Date.now(),
       });
       if (submission?.status === 'rejected')
         return { retry: await inspectRequest(row.task_id, row.selectors) };
@@ -1394,6 +1429,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
             ? selected.expires_at
             : new Date(Date.now() + 10 * 60_000),
         blocked: submission?.status === 'rejected',
+        enteredAt: submission?.status === 'rejected' ? undefined : Date.now(),
       });
       await client.query('COMMIT');
       if (submission?.status === 'rejected')
@@ -1519,6 +1555,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
         revision,
         expiresAt: selected.expires_at,
         blocked: false,
+        enteredAt: Date.now(),
       });
       await client.query('COMMIT');
       return true;
@@ -1551,6 +1588,152 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  async function fillEmailCode(taskId: string, ownerId: string, raw: CredentialInput) {
+    if (ownerId !== owner || !options.inspect || !options.emailCode || raw.kind !== 'otp')
+      return false;
+    let client: PoolClient | undefined;
+    try {
+      const origin = credentialOrigin(raw.origin);
+      const task = await pool.query<{ revision: number }>(
+        "SELECT revision FROM tasks WHERE id::text=$1 AND owner_id=$2 AND status IN ('running','waiting_credentials')",
+        [taskId, ownerId],
+      );
+      const revision = task.rows[0]?.revision;
+      const selected = await selection(taskId, ownerId, origin);
+      const enteredAt = selected?.credential_entered_at?.getTime();
+      if (
+        revision === undefined ||
+        !selected ||
+        selected.task_revision !== revision ||
+        !enteredAt ||
+        enteredAt < Date.now() - 5 * 60_000 ||
+        enteredAt > Date.now() ||
+        selected.expires_at.getTime() <= Date.now()
+      )
+        return false;
+      const username = normalizedEmail(openCredential(await key(), selected).username);
+      const fresh = await inspectRequest(taskId, raw);
+      const email = fresh.inspection.emailCode;
+      if (
+        !username ||
+        !email ||
+        normalizedEmail(email.recipient) !== username ||
+        fresh.input.kind !== 'otp' ||
+        fresh.inspection.origin !== origin ||
+        !fresh.inspection.fields.some((field) => field.kind === 'otp') ||
+        !fresh.inspection.methods.some((method) => method.id === 'credentials' && method.supported)
+      )
+        return false;
+      const attempt = await pool.query(
+        `INSERT INTO credential_autofill_attempts(task_id,owner_id,origin,entry_id,kind)
+         SELECT $1,$2,$3,$4,'otp' WHERE EXISTS(SELECT 1 FROM tasks WHERE id::text=$1 AND owner_id=$2
+         AND revision=$5 AND status IN ('running','waiting_credentials')) ON CONFLICT(task_id,owner_id,origin,kind)
+         DO UPDATE SET entry_id=excluded.entry_id,attempted_at=now()
+         WHERE credential_autofill_attempts.entry_id<>excluded.entry_id RETURNING task_id`,
+        [taskId, ownerId, origin, selected.id, revision],
+      );
+      if (!attempt.rowCount) return false;
+      const signal = AbortSignal.timeout(8000);
+      let abort = () => {};
+      const found = await Promise.race([
+        options.emailCode(
+          {
+            recipient: username,
+            origin,
+            after: enteredAt - 30_000,
+            before: Date.now(),
+            length: email.length,
+          },
+          signal,
+        ),
+        new Promise<undefined>((resolve) => {
+          abort = () => resolve(undefined);
+          signal.addEventListener('abort', abort, { once: true });
+        }),
+      ]).finally(() => signal.removeEventListener('abort', abort));
+      const code = found?.code;
+      if (
+        signal.aborted ||
+        !code ||
+        !/^\d{4,8}$/.test(code) ||
+        (email.length !== undefined && code.length !== email.length)
+      )
+        return false;
+      client = await pool.connect();
+      await client.query('BEGIN');
+      const current = await client.query(
+        "SELECT id FROM tasks WHERE id::text=$1 AND owner_id=$2 AND revision=$3 AND status IN ('running','waiting_credentials') FOR UPDATE NOWAIT",
+        [taskId, ownerId, revision],
+      );
+      const retained = await selection(taskId, ownerId, origin, client);
+      if (
+        !current.rowCount ||
+        !retained ||
+        retained.id !== selected.id ||
+        retained.task_revision !== revision ||
+        retained.expires_at.getTime() <= Date.now() ||
+        retained.credential_entered_at?.getTime() !== enteredAt
+      )
+        throw new VaultError('This sign-in step changed.', 409);
+      if (
+        retained.entry_id &&
+        !(
+          await client.query(
+            'SELECT id FROM vault_entries WHERE id=$1 AND owner_id=$2 AND origin=$3 FOR SHARE',
+            [retained.entry_id, ownerId, origin],
+          )
+        ).rowCount
+      )
+        throw new VaultError('This saved login is no longer available.', 409);
+      const verified = await inspectRequest(taskId, raw);
+      if (
+        verified.input.kind !== 'otp' ||
+        verified.inspection.origin !== origin ||
+        normalizedEmail(verified.inspection.emailCode?.recipient ?? '') !== username ||
+        verified.inspection.emailCode?.length !== email.length ||
+        !verified.inspection.fields.some((field) => field.kind === 'otp') ||
+        !verified.inspection.methods.some(
+          (method) => method.id === 'credentials' && method.supported,
+        )
+      )
+        throw new VaultError('This verification step changed.', 409);
+      if (!(await found.current(client)))
+        throw new VaultError('This connected mailbox is no longer available.', 409);
+      const submitted = await options.inject({ ...verified.input, taskId, code });
+      await client.query('COMMIT');
+      return submitted?.status !== 'rejected';
+    } catch {
+      await client?.query('ROLLBACK');
+      return false;
+    } finally {
+      client?.release();
+    }
+  }
+
+  async function submitChatCode(
+    ownerId: string,
+    taskId: string,
+    text: string,
+    requestId: string,
+  ): Promise<{ status: 'submitted' | 'rejected' | 'invalid' | 'unavailable' }> {
+    if (ownerId !== owner) return { status: 'unavailable' };
+    const code = text.trim();
+    if (!/^\d{4,8}$/.test(code)) return { status: 'invalid' };
+    try {
+      const { rows } = await pool.query<{ token_hash: string }>(
+        `SELECT r.token_hash FROM credential_requests r JOIN tasks t ON t.id::text=r.task_id AND t.owner_id=r.owner_id
+         WHERE r.id=$1 AND r.task_id=$2 AND r.owner_id=$3 AND r.kind='otp' AND r.status='pending' AND r.expires_at>now()
+         AND t.status='waiting_credentials' AND t.revision=r.task_revision`,
+        [requestId, taskId, ownerId],
+      );
+      if (rows.length !== 1) return { status: 'unavailable' };
+      const result = await submit(rows[0].token_hash, { code }, true);
+      return { status: result.ok ? 'submitted' : 'rejected' };
+    } catch {
+      return { status: 'unavailable' };
     }
   }
 
@@ -1689,5 +1872,14 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     });
   }
 
-  return { registerRoutes, request, list, fillSaved, fillSelected, resumePending };
+  return {
+    registerRoutes,
+    request,
+    list,
+    fillSaved,
+    fillSelected,
+    fillEmailCode,
+    submitChatCode,
+    resumePending,
+  };
 }

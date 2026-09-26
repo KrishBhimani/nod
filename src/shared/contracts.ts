@@ -34,6 +34,13 @@ export interface SubmitMessageResponse {
   taskId: string;
   continued: boolean;
   messageId: string;
+  messageText?: string;
+  verificationStatus?: 'submitted' | 'rejected' | 'unavailable';
+}
+export interface VerificationRequest {
+  id: string;
+  taskId: string;
+  expiresAt: string;
 }
 export interface Task {
   id: string;
@@ -149,6 +156,7 @@ export interface Configuration {
 }
 export interface AppState {
   conversationRevision?: number;
+  verificationRequests?: VerificationRequest[];
   messages: Message[];
   tasks: Task[];
   configuration: Configuration;

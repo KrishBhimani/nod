@@ -44,6 +44,7 @@ export interface LoginInspection {
   fields: LoginField[];
   methods: LoginMethod[];
   submitSelector?: string;
+  emailCode?: { recipient: string; length?: number };
 }
 export interface CredentialInput {
   taskId: string;
@@ -59,24 +60,7 @@ export interface CredentialInput {
 export interface CredentialSubmission {
   status: 'submitted' | 'rejected';
 }
-export type ManualBrowserInput =
-  | { action: 'click'; x: number; y: number }
-  | { action: 'type'; text: string }
-  | {
-      action: 'press';
-      key:
-        | 'Enter'
-        | 'Tab'
-        | 'Shift+Tab'
-        | 'Escape'
-        | 'Backspace'
-        | 'ArrowUp'
-        | 'ArrowDown'
-        | 'ArrowLeft'
-        | 'ArrowRight'
-        | 'ControlOrMeta+A';
-    }
-  | { action: 'scroll'; direction: 'up' | 'down' };
+export type ManualBrowserInput = import('../shared/browser-input.ts').BrowserInput;
 export interface Computer {
   currentSession?(): { taskId: string; lastActivityAt: string } | undefined;
   takeControl?(taskId: string): Promise<void>;

@@ -424,6 +424,33 @@ a svg {
 .sidebar-bottom .nav-link {
   font-size: 12px;
 }
+.sidebar-app-menu .connection-menu {
+  display: block;
+}
+.sidebar-app-menu .connection-menu > .nav-link {
+  width: 100%;
+  height: auto;
+  justify-content: flex-start;
+}
+.sidebar .sidebar-app-menu .connection-menu-options {
+  top: auto;
+  bottom: 0;
+  left: calc(100% + 14px);
+  right: auto;
+  width: 270px;
+  max-width: calc(100vw - 90px);
+}
+.sidebar .connection-menu-options small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: normal;
+}
+.sidebar-collapsed .sidebar-app-menu .connection-menu > .nav-link {
+  justify-content: center;
+}
 .mobile-navigation {
   display: none;
 }
@@ -2078,7 +2105,8 @@ a svg {
   .with-inspector .nav-link > span {
     display: none;
   }
-  .with-inspector .nav-link {
+  .with-inspector .nav-link,
+  .with-inspector .sidebar-app-menu .connection-menu > .nav-link {
     justify-content: center;
     padding-inline: 0;
   }
@@ -2117,7 +2145,8 @@ a svg {
   .nav-link > span {
     display: none;
   }
-  .nav-link {
+  .nav-link,
+  .sidebar-app-menu .connection-menu > .nav-link {
     justify-content: center;
     padding-inline: 0;
   }

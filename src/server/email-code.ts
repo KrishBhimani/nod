@@ -1,0 +1,68 @@
+import { z } from 'zod';
+import type { PoolClient } from 'pg';
+import { getDomain, parse } from 'tldts';
+import type { VerificationEmail } from '../ports/integrations.ts';
+
+export interface EmailCodeRequest {
+  recipient: string;
+  origin: string;
+  after: number;
+  before: number;
+  length?: number;
+}
+
+export interface PrivateEmailCode {
+  code: string;
+  current(database?: Pick<PoolClient, 'query'>): Promise<boolean>;
+}
+
+export function normalizedEmail(value: string) {
+  const result = z.email().max(320).safeParse(value.trim().toLowerCase());
+  return result.success ? result.data : undefined;
+}
+
+export function verificationSenderDomain(origin: string) {
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== 'https:' || url.origin !== origin || url.username || url.password) return;
+    const result = parse(url.hostname, { allowPrivateDomains: true });
+    if (result.isIp || (!result.isIcann && !result.isPrivate)) return;
+    return result.domain ?? undefined;
+  } catch {
+    return;
+  }
+}
+
+export function verificationCode(messages: VerificationEmail[], input: EmailCodeRequest) {
+  const domain = verificationSenderDomain(input.origin);
+  if (!domain || messages.length > 5) return;
+  const matches: string[] = [];
+  for (const message of messages) {
+    if (
+      message.receivedAt < input.after ||
+      message.receivedAt > input.before ||
+      message.authenticatedDomain !== message.sender.split('@')[1] ||
+      getDomain(message.authenticatedDomain, { allowPrivateDomains: true }) !== domain ||
+      !message.recipients.includes(input.recipient) ||
+      message.text.length > 64_000
+    )
+      continue;
+    const codes = new Set<string>();
+    const phrase =
+      /(?:verification|authentication|security|sign[ -]?in|login|one[ -]?time|verify|confirm|verifica[çc][aã]o|autentica[çc][aã]o|seguran[çc]a|acesso|c[oó]digo)/giu;
+    for (const match of message.text.matchAll(phrase)) {
+      const nearby = message.text.slice(
+        Math.max(0, match.index - 30),
+        match.index + match[0].length + 100,
+      );
+      for (const value of nearby.matchAll(/(?<![a-z0-9])\d{4,8}(?![a-z0-9])/gi))
+        if (input.length === undefined || value[0].length === input.length) codes.add(value[0]);
+    }
+    if (codes.size !== 1) {
+      if (codes.size > 1) return;
+      continue;
+    }
+    matches.push([...codes][0]);
+  }
+  return matches.length === 1 ? matches[0] : undefined;
+}

@@ -32,6 +32,9 @@ export const loginInspectionSchema = z.object({
     )
     .max(20),
   submitSelector: z.string().max(500).optional(),
+  emailCode: z
+    .object({ recipient: z.email().max(320), length: z.number().int().min(4).max(8).optional() })
+    .optional(),
 });
 
 export function loginInspectionScript(): string {
@@ -71,7 +74,13 @@ export function loginInspectionScript(): string {
     const inputs=candidates.filter(e=>inside(fieldScope,e));
     const fields=[];
     const labels={identifier:'Email, phone number or username',password:'Password',otp:'Verification code'};
+    const digitGroup=inputs.length>=4&&inputs.length<=8&&inputs.every(e=>e.maxLength===1&&['text','tel','number'].includes(e.type)&&e.parentElement===inputs[0].parentElement)&&inputs.some(e=>/one-time-code|otp|totp|verification|verifica|authenticat|autentica|security.?code/.test([hint(e),e.className,e.parentElement?.id,e.parentElement?.className].join(' ').toLowerCase()));
+    if(digitGroup) {
+      for(const e of inputs) e.setAttribute('data-sidekick-login-field','otp-0');
+      fields.push({kind:'otp',selector:'[data-sidekick-login-field="otp-0"]',label:labels.otp});
+    }
     for(const e of inputs) {
+      if(digitGroup) break;
       let kind=kindOf(e);
       if(!kind&&inputs.length===1&&/log.?in|sign.?in|account/i.test(fieldScope.innerText||scope.innerText||document.body?.innerText||'')&&['text','tel'].includes(e.type)) kind='identifier';
       if(!kind) continue;
@@ -100,14 +109,14 @@ export function loginInspectionScript(): string {
         if(!candidatesByMethod.has('passkey')) candidatesByMethod.set('passkey',{method:{id:'passkey',label:'Use a passkey or security key',kind:'passkey',supported:false,reason:'Device passkeys and hardware security keys are not supported in this browser.'}});
       } else if(factor) {
         add('verification-'+factor.id,{label:factor.label,kind:'credentials'},e);
-      } else if(!submit&&inside(fieldScope,e)&&(/^(next|continue|log in|sign in|login|verify|submit|confirm)(\\s|$)/i.test(label)||e.type==='submit')) {
+      } else if(!submit&&inside(fieldScope,e)&&(/^(next|continue|log in|sign in|login|verify|submit|confirm|entrar|iniciar sess[aã]o|continuar|seguinte|verificar|confirmar)(\\s|$)/i.test(label)||e.type==='submit')) {
         submit=e;
       }
     }
     const methods=[...candidatesByMethod.values()].map(({method,element})=>{
       if(!element) return method;
       element.setAttribute('data-sidekick-login-method',method.id);
-      return {...method,selector:'[data-sidekick-login-method="'+method.id+'"]',reason:method.supported?(method.kind==='oauth'?'Opens this website’s sign-in flow. Further secure steps may be required.':'Chooses this verification method on the website. Enter any resulting code only in the secure form.'):'This option is unavailable, ambiguous, or requires a separate window.'};
+      return {...method,selector:'[data-sidekick-login-method="'+method.id+'"]',reason:method.supported?(method.kind==='oauth'?'Opens this website’s sign-in flow. Further secure steps may be required.':'Chooses this verification method on the website. Sidekick will ask for a code in chat if needed.'):'This option is unavailable, ambiguous, or requires a separate window.'};
     });
     const unambiguous=!ambiguousDialogs&&!ambiguousForms&&(!submit||currentContext(submit))&&['identifier','password','otp'].every(kind=>fields.filter(field=>field.kind===kind).length<=1);
     let submitSelector;
@@ -116,7 +125,24 @@ export function loginInspectionScript(): string {
       submitSelector='[data-sidekick-login-submit="current"]';
     }
     if(fields.length) methods.unshift({id:'credentials',label:(fields.find(field=>field.kind==='identifier')||fields.find(field=>field.kind==='otp')||fields[0]).label,kind:'credentials',supported:unambiguous,reason:unambiguous?undefined:'More than one credential field or active form matches this step. Choose another method or take over the browser.'});
-    return {origin:location.origin,url:location.href,fields,methods,submitSelector};
+    let emailCode;
+    if(unambiguous&&fields.length===1&&fields[0].kind==='otp') {
+      const root=fieldScope===document?document.body:fieldScope;
+      const nodes=root&&document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
+      let text='',count=0;
+      while(nodes&&count++<1000&&text.length<4000&&nodes.nextNode()) {
+        const node=nodes.currentNode,parent=node.parentElement;
+        if(visible(parent)&&!parent.closest('script,style,noscript,textarea')) text+=' '+(node.textContent||'').slice(0,4000-text.length);
+      }
+      text=text.replace(/\\s+/g,' ');
+      const recipients=[...new Set(text.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}/gi)||[])];
+      const sent=/(?:code|código|codigo).{0,100}(?:sent|enviad[oa]|emailed)|(?:sent|enviad[oa]|emailed).{0,100}(?:code|código|codigo)/i.test(text);
+      if(sent&&recipients.length===1&&recipients[0].length<=320) {
+        const length=digitGroup?inputs.length:inputs[0]?.maxLength;
+        emailCode={recipient:recipients[0],...(length>=4&&length<=8?{length}:{})};
+      }
+    }
+    return {origin:location.origin,url:location.href,fields,methods,submitSelector,...(emailCode?{emailCode}:{})};
   })()`;
 }
 

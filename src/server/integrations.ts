@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 import type { Approval, Connection } from '../shared/contracts.ts';
 import type {
@@ -14,6 +14,12 @@ import {
   integrationServices,
 } from '../shared/integrations.ts';
 import { integrationActions } from './integration-policy.ts';
+import {
+  normalizedEmail,
+  verificationCode,
+  verificationSenderDomain,
+  type EmailCodeRequest,
+} from './email-code.ts';
 export { integrationActions } from './integration-policy.ts';
 
 const localOwner = 'local-development';
@@ -446,26 +452,32 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     const nonce = randomBytes(32).toString('base64url');
     const callbackUrl = new URL('/api/apps/callback', options.baseUrl);
     callbackUrl.searchParams.set('state', nonce);
-    const session = await getSession(localOwner);
-    const attempt = await session.authorize(slug, callbackUrl.href);
-    const redirect = new URL(attempt.url);
-    if (redirect.protocol !== 'https:' || redirect.username || redirect.password)
-      throw new IntegrationError(
-        'The connection provider did not return a valid sign-in link.',
-        502,
+    const session = await requiredProvider().createSession(localOwner, {});
+    try {
+      const attempt = await session.authorize(slug, callbackUrl.href);
+      const redirect = new URL(attempt.url);
+      if (redirect.protocol !== 'https:' || redirect.username || redirect.password)
+        throw new IntegrationError(
+          'The connection provider did not return a valid sign-in link.',
+          502,
+        );
+      await pool.query(
+        `INSERT INTO app_connections (owner_id,slug,pending_account_id,callback_hash,callback_expires,provider_id)
+         VALUES ($1,$2,$3,$4,now() + interval '10 minutes',$5)`,
+        [
+          localOwner,
+          slug,
+          attempt.accountId,
+          createHash('sha256').update(nonce).digest('hex'),
+          providerId,
+        ],
       );
-    await pool.query(
-      `INSERT INTO app_connections (owner_id,slug,pending_account_id,callback_hash,callback_expires,provider_id)
-       VALUES ($1,$2,$3,$4,now() + interval '10 minutes',$5)`,
-      [
-        localOwner,
-        slug,
-        attempt.accountId,
-        createHash('sha256').update(nonce).digest('hex'),
-        providerId,
-      ],
-    );
-    return { url: attempt.url };
+      return { url: attempt.url };
+    } finally {
+      try {
+        await provider.deleteSession(session.id);
+      } catch {}
+    }
   }
 
   async function completeConnection(raw: unknown) {
@@ -775,6 +787,73 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     return executeApproved(ownerId, action, selectedArgs);
   }
 
+  async function emailCode(ownerId: string, input: EmailCodeRequest, signal: AbortSignal) {
+    try {
+      assertOwner(ownerId);
+      signal.throwIfAborted();
+      const recipient = normalizedEmail(input.recipient);
+      const senderDomain = verificationSenderDomain(input.origin);
+      const now = Date.now();
+      if (
+        !provider.verificationEmails ||
+        !recipient ||
+        !senderDomain ||
+        !Number.isFinite(input.after) ||
+        !Number.isFinite(input.before) ||
+        input.after < now - 5 * 60_000 - 30_000 ||
+        input.after > now ||
+        input.before < input.after ||
+        input.before > now + 30_000 ||
+        (input.length !== undefined &&
+          (!Number.isInteger(input.length) || input.length < 4 || input.length > 8))
+      )
+        return;
+      const matches = (await connectionRows(ownerId)).filter(
+        (row) =>
+          row.slug === 'gmail' &&
+          row.account_id &&
+          row.account_active &&
+          !row.revoked &&
+          normalizedEmail(row.account_email ?? '') === recipient,
+      );
+      if (matches.length !== 1) return;
+      const row = matches[0];
+      const remote = await provider.inspectAccount(row.account_id!, ownerId);
+      signal.throwIfAborted();
+      if (
+        !remote.active ||
+        remote.service !== 'gmail' ||
+        normalizedEmail(remote.accountEmail ?? '') !== recipient
+      )
+        return;
+      const current = async (database: Pick<PoolClient, 'query'> = pool) =>
+        (
+          await database.query(
+            `SELECT id FROM app_connections WHERE id=$1 AND owner_id=$2 AND provider_id=$3 AND account_id=$4 AND account_active AND NOT revoked AND lower(trim(account_email))=$5 FOR SHARE NOWAIT`,
+            [row.id, ownerId, providerId, row.account_id, recipient],
+          )
+        ).rowCount === 1;
+      if (!(await current())) return;
+      const messages = await provider.verificationEmails(
+        row.account_id!,
+        { recipient, senderDomain, after: input.after, before: input.before },
+        signal,
+      );
+      signal.throwIfAborted();
+      if (!messages || !(await current())) return;
+      const code = verificationCode(messages, { ...input, recipient });
+      return code
+        ? {
+            code,
+            current: async (database?: Pick<PoolClient, 'query'>) =>
+              !signal.aborted && (await current(database)),
+          }
+        : undefined;
+    } catch {
+      return;
+    }
+  }
+
   async function download(
     ownerId: string,
     action: string,
@@ -1006,6 +1085,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     registerRoutes,
     execute,
     executeApproved,
+    emailCode,
     download,
     validateApproval,
     describeApproval,

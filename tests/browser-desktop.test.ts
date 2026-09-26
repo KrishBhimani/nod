@@ -135,11 +135,41 @@ test('Native input uses fixed commands and sends typed credentials only through 
     assert.deepEqual(f.calls.at(-1)!.args, ['mousemove', '--sync', '1279', '799', 'click', '1']);
     await desktop.control({ action: 'press', key: 'ControlOrMeta+A' });
     assert.deepEqual(f.calls.at(-1)!.args, ['key', '--clearmodifiers', 'ctrl+a']);
+    await desktop.control({ action: 'press', key: 'ArrowLeft', modifiers: ['Control', 'Shift'] });
+    assert.deepEqual(f.calls.at(-1)!.args, ['key', '--clearmodifiers', 'ctrl+shift+Left']);
+    await desktop.control({ action: 'press', key: 'PageDown' });
+    assert.deepEqual(f.calls.at(-1)!.args, ['key', '--clearmodifiers', 'Next']);
+    await desktop.control({ action: 'press', key: 'Tab', modifiers: ['Shift'] });
+    assert.deepEqual(f.calls.at(-1)!.args, ['key', '--clearmodifiers', 'shift+Tab']);
+    await desktop.control({ action: 'type', text: 'ç日本語\nSynthetic paste' });
+    assert.equal(f.calls.at(-1)!.input, 'ç日本語\nSynthetic paste');
+    assert.equal(f.calls.at(-1)!.options.env?.LANG, 'C.UTF-8');
+    await desktop.control({ action: 'wheel', deltaX: 60, deltaY: -140 });
+    assert.deepEqual(f.calls.at(-1)!.args, [
+      'click',
+      '--repeat',
+      '2',
+      '--delay',
+      '0',
+      '4',
+      'click',
+      '--repeat',
+      '1',
+      '--delay',
+      '0',
+      '7',
+    ]);
     await desktop.control({ action: 'scroll', direction: 'down' });
     assert.deepEqual(f.calls.at(-1)!.args, ['click', '--repeat', '3', '--delay', '60', '5']);
     const count = f.calls.length;
     await assert.rejects(desktop.control({ action: 'click', x: -1, y: 0 }));
     await assert.rejects(desktop.control({ action: 'type', text: 'bad\0value' }));
+    await assert.rejects(desktop.control({ action: 'type', text: 'x'.repeat(8193) }));
+    await assert.rejects(desktop.control({ action: 'press', key: 'a' }));
+    await assert.rejects(
+      desktop.control({ action: 'press', key: 'a', modifiers: ['Control', 'Control'] }),
+    );
+    await assert.rejects(desktop.control({ action: 'wheel', deltaX: 0, deltaY: 2001 }));
     assert.equal(f.calls.length, count);
   } finally {
     await desktop.close();

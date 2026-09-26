@@ -242,10 +242,11 @@ test('real Pi sessions persist a credential pause and resume without replaying c
     assert.equal(prompts[1].includes('Older fixture context'), true);
     assert.equal(prompts[1].includes('Secure entry completed'), true);
     assert.equal(prompts[1].includes('New context from the continuous conversation'), true);
-    assert.equal(
-      prompts[1].includes('Earlier assistant messages asking for them are obsolete'),
-      true,
+    assert.match(
+      prompts[1],
+      /Earlier assistant messages asking for private values outside that trusted request are obsolete/,
     );
+    assert.match(prompts[1], /The broker handles that reply privately/);
     assert.equal(
       JSON.parse(prompts[1]).filter(
         (item: { role: string; content: unknown }) =>

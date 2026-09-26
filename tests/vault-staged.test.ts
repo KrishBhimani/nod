@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import Fastify from 'fastify';
 import pg from 'pg';
-import { createAgentBrowserComputer } from '../src/providers/agent-browser/index.ts';
+import { createBrowserFixture as createAgentBrowserComputer } from './browser-fixture.ts';
 import { createVault, openCredential } from '../src/server/vault.ts';
 import { LoginPage, stagedLoginBrowser } from './login-fixture.ts';
 

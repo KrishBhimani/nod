@@ -5,6 +5,7 @@ import Fastify from 'fastify';
 import pg from 'pg';
 import { channelReply, createChannels } from '../src/server/channels.ts';
 import { channelConfiguration, createChatSdkTransport } from '../src/providers/chat-sdk/index.ts';
+import type { InboundMessage, MessagingTransport } from '../src/ports/messaging.ts';
 
 const fixtureEnv = {
   TELEGRAM_ENABLED: 'true',
@@ -19,6 +20,453 @@ const fixtureEnv = {
   WHATSAPP_ALLOWED_NUMBER: '351910000000',
   WHATSAPP_POLICY_CONFIRMED: 'true',
 };
+
+test(
+  'channel verification stays private before inbox persistence and fences duplicate delivery across restart',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async () => {
+    const schema = `test_channel_codes_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+    });
+    await pool.query(`CREATE TABLE tasks(id uuid PRIMARY KEY,source_id text UNIQUE);
+      CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text,role text,text text,task_id uuid,attachments jsonb DEFAULT '[]')`);
+    const taskId = randomUUID();
+    await pool.query('INSERT INTO tasks(id) VALUES($1)', [taskId]);
+    const accepted: Array<{ clientMessageId: string; channel: string }> = [];
+    const prepared: string[] = [];
+    const sent: Array<{ channelId: string; accountId: string; threadId: string; text: string }> =
+      [];
+    let injections = 0;
+    let beginHeld!: () => void;
+    let releaseHeld!: () => void;
+    const heldStarted = new Promise<void>((resolve) => {
+      beginHeld = resolve;
+    });
+    const heldReleased = new Promise<void>((resolve) => {
+      releaseHeld = resolve;
+    });
+    function transport(accountId = 'fixture-account'): MessagingTransport {
+      return {
+        channels: ['telegram', 'whatsapp'].map((id) => ({
+          id,
+          status: 'configured',
+          missing: [],
+          accountId,
+          allowedSenderIds: ['fixture-owner'],
+        })),
+        receive: async (request) => {
+          const input = JSON.parse(Buffer.from(request.body).toString('utf8'));
+          return {
+            status: 200,
+            body: 'accepted',
+            messages: [
+              {
+                channelId: request.channelId,
+                accountId: 'fixture-account',
+                senderId: 'fixture-owner',
+                threadId: 'fixture-thread',
+                ...input,
+                sentAt: new Date(),
+              },
+            ],
+          };
+        },
+        post: async (message) => {
+          sent.push(message);
+          return { id: `fixture-reply-${sent.length}` };
+        },
+        close: async () => {},
+      };
+    }
+    async function open() {
+      const app = Fastify();
+      const channels = await createChannels(pool, {
+        ownerId: 'fixture-owner',
+        transport: transport(),
+        intervalMs: 600000,
+        subscribe: () => () => {},
+        acceptVerification: async (text, input) => {
+          accepted.push(input);
+          if (text === '111111')
+            throw Object.assign(new Error('Ambiguous fixture code 111111.'), { statusCode: 409 });
+          if (text === '222222') throw new Error('Provider failed with code 222222.');
+          if (text !== '483729' && text !== '123456') return;
+          if (text === '123456') {
+            beginHeld();
+            await heldReleased;
+          }
+          const stored = await pool.query(
+            "INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,'fixture-owner','user','Verification code sent securely.',$2) ON CONFLICT(id) DO NOTHING",
+            [input.clientMessageId, taskId],
+          );
+          if (stored.rowCount) injections++;
+          return {
+            taskId,
+            messageId: input.clientMessageId,
+            continued: true,
+            messageText: 'Verification code sent securely.',
+            verificationStatus: 'submitted',
+          };
+        },
+        prepare: async (text) => {
+          prepared.push(text);
+          return undefined!;
+        },
+        submit: async (_text, sourceId, client) => {
+          const result = await client.query(
+            'INSERT INTO tasks(id,source_id) VALUES($1,$2) RETURNING id',
+            [randomUUID(), sourceId],
+          );
+          return result.rows[0].id;
+        },
+      });
+      channels.registerRoutes(app);
+      return { app, channels };
+    }
+    let fixture = await open();
+    const send = (messageId: string, text: string, provider = 'telegram', extra = {}) =>
+      fixture.app.inject({
+        method: 'POST',
+        url: `/api/webhooks/${provider}`,
+        headers: { 'content-type': 'application/json' },
+        payload: { messageId, text, ...extra },
+      });
+    try {
+      await send('foreign', '483729', 'telegram', { senderId: 'someone-else' });
+      await send('foreign-account', '483729', 'telegram', { accountId: 'another-account' });
+      assert.equal(accepted.length, 0);
+      assert.equal((await pool.query('SELECT * FROM channel_inbox')).rowCount, 0);
+
+      await pool.query(
+        "ALTER TABLE channel_inbox ADD CONSTRAINT fixture_insert_failure CHECK(provider <> 'telegram')",
+      );
+      const interrupted = await send('private-code', '483729');
+      assert.equal(interrupted.statusCode, 503);
+      assert.doesNotMatch(interrupted.body, /483729/);
+      assert.equal(injections, 1);
+      assert.equal((await pool.query('SELECT * FROM channel_inbox')).rowCount, 0);
+      await fixture.app.close();
+      await pool.query('ALTER TABLE channel_inbox DROP CONSTRAINT fixture_insert_failure');
+      fixture = await open();
+      const retried = await Promise.all([
+        send('private-code', '483729'),
+        send('private-code', '483729'),
+      ]);
+      assert.ok(retried.every((response) => response.statusCode === 200));
+      await fixture.channels.drain();
+      assert.equal(injections, 1);
+      assert.equal(new Set(accepted.map((input) => input.clientMessageId)).size, 1);
+      const row = (await pool.query('SELECT * FROM channel_inbox')).rows[0];
+      assert.equal(row.text, 'Verification code sent securely.');
+      assert.equal(row.state, 'submitted');
+      assert.equal(row.task_id, taskId);
+      assert.equal(row.message_id, accepted[0].clientMessageId);
+      assert.match(accepted[0].channel, /^telegram:[a-f0-9]{32}$/);
+      assert.deepEqual(prepared, []);
+      const calls = accepted.length;
+      await send('private-code', 'changed duplicate body');
+      assert.equal(accepted.length, calls);
+
+      assert.equal((await send('private-code', '483729', 'whatsapp')).statusCode, 200);
+      assert.match(accepted.at(-1)!.channel, /^whatsapp:[a-f0-9]{32}$/);
+      assert.notEqual(accepted.at(-1)!.clientMessageId, accepted[0].clientMessageId);
+      assert.equal(injections, 2);
+
+      const ambiguous = await send('ambiguous-code', '111111');
+      assert.equal(ambiguous.statusCode, 200);
+      assert.doesNotMatch(ambiguous.body, /111111|Ambiguous fixture/);
+      await fixture.channels.drain();
+      assert.deepEqual(sent, [
+        {
+          channelId: 'telegram',
+          accountId: 'fixture-account',
+          threadId: 'fixture-thread',
+          text: 'The code could not be matched to a sign-in. Open the corresponding sign-in conversation in Sidekick web chat to continue.',
+        },
+      ]);
+      const guidance = (
+        await pool.query(
+          "SELECT i.text,i.state,i.task_id,m.role,m.task_id AS reply_task_id FROM channel_inbox i JOIN channel_outbox o USING(source_id) JOIN messages m ON m.id=o.message_id WHERE i.source_id='channel:telegram:fixture-account:ambiguous-code'",
+        )
+      ).rows[0];
+      assert.deepEqual(guidance, {
+        text: 'Verification code not applied.',
+        state: 'discarded',
+        task_id: null,
+        role: 'assistant',
+        reply_task_id: null,
+      });
+      await fixture.app.close();
+      fixture = await open();
+      const acceptedBeforeDuplicate = accepted.length;
+      await Promise.all([
+        send('ambiguous-code', '111111'),
+        send('ambiguous-code', 'changed duplicate body'),
+      ]);
+      await fixture.channels.drain();
+      assert.equal(accepted.length, acceptedBeforeDuplicate);
+      assert.equal(sent.length, 1);
+      const unavailable = await send('unavailable-code', '222222');
+      assert.equal(unavailable.statusCode, 503);
+      assert.doesNotMatch(unavailable.body, /222222|Provider failed/);
+      await fixture.channels.drain();
+      const privateRows = (await pool.query('SELECT text FROM channel_inbox')).rows;
+      assert.equal(privateRows.length, 3);
+      assert.doesNotMatch(JSON.stringify(privateRows), /483729|111111|222222/);
+      assert.deepEqual(prepared, []);
+
+      assert.equal((await send('ordinary-number', '2026')).statusCode, 200);
+      await fixture.channels.drain();
+      assert.deepEqual(prepared, ['2026']);
+      assert.equal(
+        (
+          await pool.query(
+            "SELECT text FROM channel_inbox WHERE source_id='channel:telegram:fixture-account:ordinary-number'",
+          )
+        ).rows[0].text,
+        '2026',
+      );
+
+      const held = send('revoked-code', '123456');
+      await Promise.race([
+        heldStarted,
+        held.then(() => {
+          throw new Error('Expected pending verification.');
+        }),
+      ]);
+      await fixture.channels.replaceTransport(transport('new-account'));
+      releaseHeld();
+      assert.equal((await held).statusCode, 503);
+      assert.equal(
+        (
+          await pool.query(
+            "SELECT * FROM channel_inbox WHERE source_id='channel:telegram:fixture-account:revoked-code'",
+          )
+        ).rowCount,
+        0,
+      );
+    } finally {
+      releaseHeld();
+      await fixture.app.close();
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);
+
+test(
+  'verification guidance is atomic, private, and retains channel delivery guards across restart',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async () => {
+    const schema = `test_channel_guidance_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+    });
+    await pool.query(`CREATE TABLE tasks(id uuid PRIMARY KEY,source_id text UNIQUE);
+      CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text,role text,text text,task_id uuid,attachments jsonb DEFAULT '[]')`);
+    const sent: Array<{ channelId: string; accountId: string; threadId: string; text: string }> =
+      [];
+    const polled: InboundMessage[] = [];
+    let consumed = 0;
+    let verificationCalls = 0;
+    let failSend = false;
+    async function open({
+      ownerId = 'fixture-owner',
+      accountId = 'fixture-account',
+      senderId = 'fixture-sender',
+    } = {}) {
+      const app = Fastify();
+      const channels = await createChannels(pool, {
+        ownerId,
+        transport: {
+          channels: ['telegram', 'whatsapp'].map((id) => ({
+            id,
+            status: 'configured',
+            missing: [],
+            accountId,
+            allowedSenderIds: [senderId],
+            ...(id === 'whatsapp' ? { replyWindowMs: 86400000 } : {}),
+          })),
+          receive: async (request) => {
+            const body = JSON.parse(Buffer.from(request.body).toString('utf8'));
+            return {
+              status: 200,
+              body: 'accepted',
+              messages: [inbound(body.messageId, request.channelId)],
+            };
+          },
+          poll: async (accept) => {
+            while (polled.length) {
+              await accept(polled[0]!);
+              polled.shift();
+              consumed++;
+            }
+          },
+          post: async (message) => {
+            sent.push(message);
+            if (failSend) throw new Error('Uncertain fixture delivery.');
+            return { id: `fixture-message-${sent.length}` };
+          },
+          close: async () => {},
+        },
+        acceptVerification: async () => {
+          verificationCalls++;
+          throw Object.assign(new Error('Private conflict containing 111111.'), {
+            statusCode: 409,
+          });
+        },
+        prepare: async () => {
+          throw new Error('Verification must not reach the router.');
+        },
+        submit: async () => {
+          throw new Error('Verification must not create a task.');
+        },
+        subscribe: () => () => {},
+        intervalMs: 600000,
+      });
+      channels.registerRoutes(app);
+      return { app, channels };
+    }
+    function inbound(messageId: string, channelId = 'telegram'): InboundMessage {
+      return {
+        channelId,
+        accountId: 'fixture-account',
+        senderId: 'fixture-sender',
+        messageId,
+        threadId: `fixture-thread-${messageId}`,
+        text: '111111',
+        sentAt: new Date(),
+      };
+    }
+    let fixture = await open();
+    const send = (messageId: string, provider = 'telegram') =>
+      fixture.app.inject({
+        method: 'POST',
+        url: `/api/webhooks/${provider}`,
+        headers: { 'content-type': 'application/json' },
+        payload: { messageId },
+      });
+    try {
+      await pool.query(
+        'ALTER TABLE channel_outbox ADD CONSTRAINT fixture_outbox_failure CHECK(false)',
+      );
+      const failed = await send('atomic-retry');
+      assert.equal(failed.statusCode, 503);
+      assert.doesNotMatch(failed.body, /111111|Private conflict|fixture_outbox_failure/);
+      assert.equal((await pool.query('SELECT * FROM channel_inbox')).rowCount, 0);
+      assert.equal((await pool.query('SELECT * FROM messages')).rowCount, 0);
+      assert.equal((await pool.query('SELECT * FROM channel_outbox')).rowCount, 0);
+
+      polled.push(inbound('polled-retry'));
+      await fixture.channels.drain();
+      assert.equal(consumed, 0);
+      assert.equal(polled.length, 1);
+      assert.equal(sent.length, 0);
+      await pool.query('ALTER TABLE channel_outbox DROP CONSTRAINT fixture_outbox_failure');
+      await Promise.all([send('atomic-retry'), send('atomic-retry')]);
+      await fixture.channels.drain();
+      assert.equal(consumed, 1);
+      assert.equal(polled.length, 0);
+      assert.equal(sent.length, 2);
+      assert.equal((await pool.query('SELECT * FROM tasks')).rowCount, 0);
+      const persisted = (
+        await pool.query(
+          'SELECT i.text,i.state,i.message_id,m.id,m.task_id,m.owner_id,m.role,o.state AS delivery_state FROM channel_inbox i JOIN channel_outbox o USING(source_id) JOIN messages m ON m.id=o.message_id',
+        )
+      ).rows;
+      assert.equal(persisted.length, 2);
+      assert.ok(persisted.every((row) => row.state === 'discarded' && row.task_id === null));
+      assert.ok(persisted.every((row) => row.delivery_state === 'sent'));
+      assert.doesNotMatch(JSON.stringify(persisted), /111111|Private conflict/);
+      assert.deepEqual(
+        new Set(sent.map((message) => message.threadId)),
+        new Set(['fixture-thread-atomic-retry', 'fixture-thread-polled-retry']),
+      );
+      const calls = verificationCalls;
+      await fixture.app.close();
+      fixture = await open();
+      await send('atomic-retry');
+      polled.push(inbound('polled-retry'));
+      await fixture.channels.drain();
+      assert.equal(verificationCalls, calls);
+      assert.equal(sent.length, 2);
+
+      failSend = true;
+      await send('uncertain');
+      await fixture.channels.drain();
+      assert.equal(sent.length, 3);
+      await fixture.app.close();
+      failSend = false;
+      fixture = await open();
+      await send('uncertain');
+      await fixture.channels.drain();
+      assert.equal(sent.length, 3);
+      assert.deepEqual(
+        (
+          await pool.query(
+            "SELECT state,reason FROM channel_outbox WHERE source_id='channel:telegram:fixture-account:uncertain'",
+          )
+        ).rows[0],
+        { state: 'uncertain', reason: 'send_not_confirmed' },
+      );
+
+      await send('expired', 'whatsapp');
+      await fixture.channels.drain();
+      await fixture.app.close();
+      await pool.query(
+        "UPDATE channel_inbox SET received_at=now()-interval '2 days' WHERE provider='whatsapp'; UPDATE channel_outbox SET state='pending' WHERE source_id='channel:whatsapp:fixture-account:expired'",
+      );
+      fixture = await open();
+      const beforeExpired = sent.length;
+      await fixture.channels.drain();
+      assert.equal(sent.length, beforeExpired);
+      assert.deepEqual(
+        (
+          await pool.query(
+            "SELECT state,reason FROM channel_outbox WHERE source_id='channel:whatsapp:fixture-account:expired'",
+          )
+        ).rows[0],
+        { state: 'blocked', reason: 'reply_window_closed' },
+      );
+
+      for (const change of [
+        { ownerId: 'different-owner', reason: 'message_owner_changed' },
+        { accountId: 'different-account', reason: 'channel_access_changed' },
+        { senderId: 'different-sender', reason: 'channel_access_changed' },
+      ]) {
+        await fixture.app.close();
+        await pool.query(
+          "UPDATE channel_outbox SET state='pending',reason=NULL WHERE source_id='channel:telegram:fixture-account:atomic-retry'",
+        );
+        fixture = await open(change);
+        const beforeGuard: number = sent.length;
+        await fixture.channels.drain();
+        assert.equal(sent.length, beforeGuard);
+        assert.deepEqual(
+          (
+            await pool.query(
+              "SELECT state,reason FROM channel_outbox WHERE source_id='channel:telegram:fixture-account:atomic-retry'",
+            )
+          ).rows[0],
+          { state: 'blocked', reason: change.reason },
+        );
+      }
+    } finally {
+      await fixture.app.close();
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);
 
 test('channels stay disabled without explicit enablement and require a single owner and WhatsApp eligibility review', () => {
   assert.deepEqual(

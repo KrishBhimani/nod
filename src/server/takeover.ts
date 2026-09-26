@@ -3,35 +3,8 @@ import { createHash, randomInt } from 'node:crypto';
 import type { Pool } from 'pg';
 import { z } from 'zod';
 import type { Computer } from '../ports/computer.ts';
+import { browserInputSchema as inputSchema } from '../shared/browser-input.ts';
 
-const inputSchema = z.discriminatedUnion('action', [
-  z
-    .object({
-      action: z.literal('click'),
-      x: z.number().min(0).max(1),
-      y: z.number().min(0).max(1),
-    })
-    .strict(),
-  z.object({ action: z.literal('type'), text: z.string().min(1).max(8192) }).strict(),
-  z
-    .object({
-      action: z.literal('press'),
-      key: z.enum([
-        'Enter',
-        'Tab',
-        'Shift+Tab',
-        'Escape',
-        'Backspace',
-        'ArrowUp',
-        'ArrowDown',
-        'ArrowLeft',
-        'ArrowRight',
-        'ControlOrMeta+A',
-      ]),
-    })
-    .strict(),
-  z.object({ action: z.literal('scroll'), direction: z.enum(['up', 'down']) }).strict(),
-]);
 const revisionSchema = z.number().int().nonnegative();
 const leaseDuration = 30 * 60_000;
 

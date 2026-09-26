@@ -4,6 +4,7 @@ import { connect } from 'node:net';
 import { resolve } from 'node:path';
 import { z } from 'zod';
 import { taskId } from '../../ports/task-identity.ts';
+import { BrowserActionError } from '../../ports/computer.ts';
 
 const storedScreen = z.object({
   version: z.literal(1),
@@ -58,10 +59,17 @@ export function createScreenStore(root: string) {
   };
 }
 
+export class DaemonCommandError extends Error {
+  constructor() {
+    super('Browser action could not complete. Observe the page again before retrying.');
+  }
+}
+
 export function existingDaemonCommand(
   path: string,
   command: Record<string, unknown>,
   signal?: AbortSignal,
+  timeoutMs = 45_000,
 ): Promise<Record<string, unknown>> {
   signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
@@ -69,9 +77,11 @@ export function existingDaemonCommand(
     socket.setEncoding('utf8');
     let received = '';
     let settled = false;
+    let deadline: ReturnType<typeof setTimeout>;
     const stop = (error?: Error, data?: Record<string, unknown>) => {
       if (settled) return;
       settled = true;
+      clearTimeout(deadline);
       signal?.removeEventListener('abort', abort);
       socket.destroy();
       if (error) reject(error);
@@ -79,7 +89,7 @@ export function existingDaemonCommand(
     };
     const abort = () => stop(new Error('Browser observation cancelled.'));
     signal?.addEventListener('abort', abort, { once: true });
-    socket.setTimeout(15_000, () => stop(new Error('The previous browser is unavailable.')));
+    deadline = setTimeout(() => stop(new Error('The previous browser is unavailable.')), timeoutMs);
     socket.once('error', () => stop(new Error('The previous browser is unavailable.')));
     socket.once('end', () => stop(new Error('The previous browser is unavailable.')));
     socket.once('connect', () =>
@@ -93,6 +103,15 @@ export function existingDaemonCommand(
       if (end < 0) return;
       try {
         const response = JSON.parse(received.slice(0, end));
+        if (response.success === false) {
+          if (
+            command.action === 'navigate' &&
+            typeof response.error === 'string' &&
+            /^Navigation failed: net::ERR_[A-Z_]+/.test(response.error)
+          )
+            return stop(new BrowserActionError('browser_navigation_failed'));
+          return stop(new DaemonCommandError());
+        }
         if (response.success !== true) throw new Error();
         stop(undefined, response.data ?? {});
       } catch {

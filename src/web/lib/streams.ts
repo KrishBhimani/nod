@@ -13,7 +13,12 @@ export type StreamAction =
       done?: boolean;
       conversationRevision?: number;
     }
-  | { type: 'persisted'; streamIds: string[]; conversationRevision?: number }
+  | {
+      type: 'persisted';
+      streamIds: string[];
+      discardedTaskIds?: string[];
+      conversationRevision?: number;
+    }
   | { type: 'reset' }
   | { type: 'conversation'; conversationRevision: number };
 
@@ -41,7 +46,15 @@ export function streamReducer(state: StreamState, action: StreamAction): StreamS
   if (revision > state.conversationRevision)
     state = { conversationRevision: revision, active: {}, completed: [] };
   if (action.type === 'conversation') return state;
-  if (action.type === 'persisted') return closeStreams(state, action.streamIds);
+  if (action.type === 'persisted') {
+    const discarded = new Set(action.discardedTaskIds ?? []);
+    return closeStreams(state, [
+      ...action.streamIds,
+      ...Object.entries(state.active)
+        .filter(([, stream]) => discarded.has(stream.taskId))
+        .map(([id]) => id),
+    ]);
+  }
   const id = action.streamId || `task:${action.taskId}`;
   if (action.done) return closeStreams(state, [id]);
   if (!action.text || state.completed.includes(id)) return state;

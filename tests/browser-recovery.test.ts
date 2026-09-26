@@ -3,10 +3,8 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import test from 'node:test';
-import {
-  browserSessionId,
-  createAgentBrowserComputer,
-} from '../src/providers/agent-browser/index.ts';
+import { browserSessionId } from '../src/providers/agent-browser/index.ts';
+import { createBrowserFixture as createAgentBrowserComputer } from './browser-fixture.ts';
 import { stagedLoginBrowser } from './login-fixture.ts';
 import { existingDaemonCommand } from '../src/providers/agent-browser/screens.ts';
 

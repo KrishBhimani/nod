@@ -169,8 +169,25 @@ export function createSignInDesktop(
           text = input.text;
         } else if (input.action === 'scroll')
           args = ['click', '--repeat', '3', '--delay', '60', input.direction === 'up' ? '4' : '5'];
-        else {
-          const keys = {
+        else if (input.action === 'wheel') {
+          args = [];
+          for (const [delta, negative, positive] of [
+            [input.deltaY, '4', '5'],
+            [input.deltaX, '6', '7'],
+          ] as const) {
+            if (delta)
+              args.push(
+                'click',
+                '--repeat',
+                String(Math.max(1, Math.ceil(Math.abs(delta) / 80))),
+                '--delay',
+                '0',
+                delta < 0 ? negative : positive,
+              );
+          }
+          if (!args.length) return;
+        } else {
+          const keys: Record<string, string> = {
             Enter: 'Return',
             Tab: 'Tab',
             'Shift+Tab': 'shift+Tab',
@@ -180,9 +197,22 @@ export function createSignInDesktop(
             ArrowDown: 'Down',
             ArrowLeft: 'Left',
             ArrowRight: 'Right',
+            Delete: 'Delete',
+            Home: 'Home',
+            End: 'End',
+            PageUp: 'Prior',
+            PageDown: 'Next',
+            Space: 'space',
             'ControlOrMeta+A': 'ctrl+a',
           };
-          args = ['key', '--clearmodifiers', keys[input.key]];
+          const modifiers = (input.modifiers ?? []).map(
+            (value) => ({ Control: 'ctrl', Alt: 'alt', Shift: 'shift' })[value],
+          );
+          args = [
+            'key',
+            '--clearmodifiers',
+            [...modifiers, keys[input.key] ?? input.key].join('+'),
+          ];
         }
         const pending = execute('/usr/bin/xdotool', args, text, signal);
         text = '';

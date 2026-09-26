@@ -207,39 +207,28 @@
   text-decoration: none;
 }
 .screen-interactive {
+  position: relative;
   cursor: crosshair;
+}
+.screen-interactive:focus-within {
   outline: 2px solid var(--primary);
   outline-offset: -2px;
 }
-.manual-controls {
-  display: grid;
-  gap: 12px;
-  padding: 12px;
-  background: var(--accent-soft);
-}
-.manual-controls p {
-  font-size: 12px;
-  color: var(--foreground);
-}
-.manual-controls form {
-  display: flex;
-  gap: 6px;
-}
-.manual-controls input {
+.browser-input-surface {
+  position: absolute;
+  inset: 0;
+  display: block;
   width: 100%;
-  min-width: 0;
-  background: var(--surface);
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  font-size: 13px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  resize: none;
+  opacity: 0;
+  cursor: crosshair;
+  font-size: 16px;
 }
-.manual-keys {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-.manual-controls small {
+.browser-input-hint {
+  margin-top: 8px;
   font-size: 12px;
   line-height: 1.5;
   color: var(--text-secondary);

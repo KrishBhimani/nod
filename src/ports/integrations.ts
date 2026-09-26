@@ -33,6 +33,20 @@ export interface IntegrationEvent {
   trigger: string;
   data: Record<string, unknown>;
 }
+export interface VerificationEmailQuery {
+  recipient: string;
+  senderDomain: string;
+  after: number;
+  before: number;
+}
+export interface VerificationEmail {
+  id: string;
+  receivedAt: number;
+  sender: string;
+  recipients: string[];
+  authenticatedDomain: string;
+  text: string;
+}
 export interface IntegrationProvider {
   id: string;
   configured: boolean;
@@ -55,6 +69,11 @@ export interface IntegrationProvider {
     accountEmail?: string;
   }>;
   deleteAccount(id: string): Promise<void>;
+  verificationEmails?(
+    accountId: string,
+    query: VerificationEmailQuery,
+    signal: AbortSignal,
+  ): Promise<VerificationEmail[] | undefined>;
   parseCallback(query: unknown): { state: string; accountId: string; success: boolean };
   subscribe(
     ownerId: string,

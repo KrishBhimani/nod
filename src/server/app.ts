@@ -23,6 +23,7 @@ import { browserErrorMessage } from '../shared/browser-errors.ts';
 import type { Configuration, Message, MessageReaction } from '../shared/contracts.ts';
 import type { AgentToolMetadata } from '../ports/agent.ts';
 import { inspectorPayloadLimit, inspectorRetentionDays, type InspectorStore } from './inspector.ts';
+import type { createChatVerification } from './chat-verification.ts';
 
 const messageFields = `m.id,m.role,m.text,m.task_id AS "taskId",m.created_at AS "createdAt",m.attachments,m.stream_id AS "streamId",m.reaction,m.assistant_reaction AS "assistantReaction",m.reply_to_message_id AS "replyToMessageId",
  CASE WHEN target.id IS NULL THEN NULL ELSE json_build_object('id',target.id,'role',target.role,'text',left(target.text,1000)) END AS "replyTo"`;
@@ -39,6 +40,7 @@ function messageView(row: Message & { assistantReaction?: MessageReaction | null
 
 export interface AppDependencies {
   submitMessage?: typeof submitUserMessage;
+  verification?: Awaited<ReturnType<typeof createChatVerification>>;
   speech?: SpeechService;
   computer?: Pick<Computer, 'screenshot' | 'status' | 'screenStatus' | 'currentSession'>;
   runtime?: {
@@ -87,7 +89,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
   });
   app.get('/api/state', async () => {
     const revision = await conversationRevision(pool, ownerId);
-    const [messages, tasks] = await Promise.all([
+    const [messages, tasks, verificationRequests] = await Promise.all([
       pool.query(
         `SELECT ${messageFields} FROM (SELECT m.* FROM messages m JOIN tasks t ON t.id=m.task_id WHERE m.owner_id=$1 AND t.owner_id=$1 AND t.channel='web' AND ${currentConversationSql()} ORDER BY date_trunc('milliseconds',m.created_at) DESC,m.id DESC LIMIT 150) m
          LEFT JOIN messages target ON target.id=m.reply_to_message_id AND target.owner_id=m.owner_id ORDER BY date_trunc('milliseconds',m.created_at),m.id`,
@@ -97,11 +99,13 @@ export async function createApp(dependencies: AppDependencies = {}) {
         `SELECT id,title,status,error,created_at AS "createdAt",updated_at AS "updatedAt",(channel='web' AND source='user') AS "showTyping" FROM tasks t WHERE owner_id=$1 AND ${currentConversationSql()} ORDER BY created_at DESC LIMIT 50`,
         [ownerId],
       ),
+      dependencies.verification?.pending() ?? [],
     ]);
     return {
       conversationRevision: revision,
       messages: messages.rows.map(messageView),
       tasks: tasks.rows,
+      verificationRequests,
       configuration: publicConfiguration(),
     };
   });
@@ -172,11 +176,6 @@ export async function createApp(dependencies: AppDependencies = {}) {
     return dependencies.onboard(timeZone, conversationRevision);
   });
   app.post('/api/messages', async (request) => {
-    if (!publicConfiguration().llmReady)
-      throw Object.assign(
-        new Error('Configure an agent provider before starting a conversation.'),
-        { statusCode: 503 },
-      );
     const input = z
       .object({
         text: z.string().trim().max(24000).default(''),
@@ -186,10 +185,27 @@ export async function createApp(dependencies: AppDependencies = {}) {
         replyToMessageId: z.uuid().optional(),
         clientMessageId: z.uuid().optional(),
         conversationRevision: z.number().int().nonnegative().optional(),
+        verificationRequestId: z.uuid().optional(),
       })
       .strict()
       .refine((value) => value.text.length > 0 || value.attachmentIds.length > 0)
       .parse(request.body);
+    const clientMessageId = input.clientMessageId ?? randomUUID();
+    const verification = await dependencies.verification?.accept(input.text, {
+      ...input,
+      clientMessageId,
+      channel: 'web',
+    });
+    if (verification) return verification;
+    if (input.verificationRequestId)
+      throw Object.assign(new Error('This verification request is no longer available.'), {
+        statusCode: 409,
+      });
+    if (!publicConfiguration().llmReady)
+      throw Object.assign(
+        new Error('Configure an agent provider before starting a conversation.'),
+        { statusCode: 503 },
+      );
     const result = await pool.query(
       'SELECT * FROM artifacts WHERE id=ANY($1::uuid[]) AND owner_id=$2',
       [input.attachmentIds, ownerId],
@@ -209,7 +225,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
         channel: 'web',
         replyToMessageId: input.replyToMessageId,
         conversationRevision: input.conversationRevision,
-        clientMessageId: input.clientMessageId ?? randomUUID(),
+        clientMessageId,
       },
     );
   });

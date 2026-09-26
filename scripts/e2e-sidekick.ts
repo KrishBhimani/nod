@@ -186,6 +186,8 @@ try {
     'node',
     '--mount',
     `type=bind,source=${fixtureScripts},target=/app/scripts,readonly`,
+    '--mount',
+    `type=bind,source=${join(repository, 'src')},target=/app/src,readonly`,
     '--tmpfs',
     '/data:uid=1000,gid=1000,mode=700,size=536870912',
     '--tmpfs',

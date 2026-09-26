@@ -5,6 +5,7 @@ export function ConnectionMenu({
   label,
   children,
   trigger,
+  triggerClassName,
   compact = false,
   disabled = false,
   open: controlledOpen,
@@ -13,6 +14,7 @@ export function ConnectionMenu({
   label: string;
   children(close: () => void): ReactNode;
   trigger: ReactNode;
+  triggerClassName?: string;
   compact?: boolean;
   disabled?: boolean;
   open?: boolean;
@@ -93,6 +95,7 @@ export function ConnectionMenu({
       }}
     >
       <Button
+        className={triggerClassName}
         variant={compact ? 'ghost' : 'outline'}
         size={compact ? 'icon' : 'sm'}
         aria-label={label}

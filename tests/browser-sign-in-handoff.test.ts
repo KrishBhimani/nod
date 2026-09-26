@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createAgentBrowserComputer } from '../src/providers/agent-browser/index.ts';
+import { redactBrowserText } from '../src/providers/agent-browser/index.ts';
+import { createBrowserFixture as createAgentBrowserComputer } from './browser-fixture.ts';
 import { stagedLoginBrowser } from './login-fixture.ts';
 import type { ManualBrowserInput } from '../src/ports/computer.ts';
 
@@ -94,6 +95,7 @@ async function handoff(
     events,
     launches,
     commands,
+    page: () => fixture.pages.get('fixture')!,
     forcedCloses,
     dependencies,
     screen(value: typeof screen) {
@@ -206,6 +208,54 @@ test('container sign-in uses one fixed browser binary and exposes its display on
     assert.equal(reopened[reopened.indexOf('--executable-path') + 1], '/usr/bin/chromium');
   } finally {
     await fixture.cleanup();
+  }
+});
+
+test('native typing redacts completed values after resume without hiding unrelated text for each key', async () => {
+  const f = await handoff();
+  const identifier = 'synthetic-private@example.test';
+  const password = 'private-synthetic-password';
+  try {
+    await f.computer.openSignIn!('fixture');
+    for (const text of identifier)
+      await f.computer.signInControl!('fixture', { action: 'type', text });
+    await f.computer.signInControl!('fixture', { action: 'press', key: 'Tab' });
+    for (const text of password)
+      await f.computer.signInControl!('fixture', { action: 'type', text });
+    await f.computer.finishSignIn!('fixture');
+    f.page().echo.innerText = `Account preferences ${identifier} ${password}`;
+    const result = await f.computer.act('fixture', { action: 'snapshot' });
+    assert.match(result.text, /Account preferences/);
+    assert.doesNotMatch(result.text, /synthetic-private@example.test|private-synthetic-password/);
+    const stored = await readFile(join(f.directory, 'runtime/screen-fixture.json'), 'utf8');
+    assert.doesNotMatch(stored, /synthetic-private@example.test|private-synthetic-password/);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('short or overlapping private values cannot recursively expand redaction markers', () => {
+  assert.equal(redactBrowserText('redact', ['r', 'e', 'd', 'a', 'c', 't']), '[redacted]'.repeat(6));
+  assert.equal(redactBrowserText('private-value', ['private', 'private-value']), '[redacted]');
+});
+
+test('failed native text retains redaction of the value entered before the failed extension', async () => {
+  const f = await handoff();
+  try {
+    await f.computer.openSignIn!('fixture');
+    await f.computer.signInControl!('fixture', { action: 'type', text: 'kept-private' });
+    f.input(async () => {
+      throw new Error('synthetic failure');
+    });
+    await assert.rejects(f.computer.signInControl!('fixture', { action: 'type', text: '-suffix' }));
+    await f.computer.finishSignIn!('fixture');
+    f.page().echo.innerText = 'kept-private';
+    assert.equal(
+      (await f.computer.act('fixture', { action: 'snapshot' })).text.includes('kept-private'),
+      false,
+    );
+  } finally {
+    await f.cleanup();
   }
 });
 

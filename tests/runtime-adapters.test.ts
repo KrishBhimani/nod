@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 import test from 'node:test';
 import type { Agent, RuntimeContext } from '../src/ports/agent.ts';
-import { createAgentBrowserComputer } from '../src/providers/agent-browser/index.ts';
+import { createBrowserFixture as createAgentBrowserComputer } from './browser-fixture.ts';
 import { createBrowserProxy } from '../src/providers/agent-browser/network.ts';
 import type { runProcess } from '../src/providers/process.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';

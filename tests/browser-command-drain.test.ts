@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { createAgentBrowserComputer } from '../src/providers/agent-browser/index.ts';
+import { createBrowserFixture as createAgentBrowserComputer } from './browser-fixture.ts';
 import { containerBrowserOptions } from '../src/providers/container-browser/config.ts';
 import { stagedLoginBrowser } from './login-fixture.ts';
 
@@ -134,3 +134,98 @@ test('failed interruption cleanup blocks later actions until an explicit close s
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+for (const scenario of [
+  { operation: 'snapshot', command: 'get url', occurrence: 1 },
+  { operation: 'snapshot', command: 'get url', occurrence: 2 },
+  { operation: 'snapshot', command: 'eval', occurrence: 1 },
+  { operation: 'snapshot', command: 'eval', occurrence: 2 },
+  { operation: 'snapshot', command: 'snapshot', occurrence: 1 },
+  { operation: 'screenshot', command: 'get url', occurrence: 1 },
+  { operation: 'screenshot', command: 'eval', occurrence: 1 },
+  { operation: 'fill', command: 'get attr @e1 type', occurrence: 1 },
+  { operation: 'fill', command: 'get attr @e1 autocomplete', occurrence: 1 },
+  { operation: 'fill', command: 'get attr @e1 data-sidekick-login-field', occurrence: 1 },
+  { operation: 'fill', command: 'get attr @e1 data-sidekick-manual-field', occurrence: 1 },
+] as const) {
+  test(`${scenario.operation} cancellation drains ${scenario.command} ${scenario.occurrence} before queued work`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'sidekick-observation-drain-'));
+    const fixture = stagedLoginBrowser();
+    const started = deferred();
+    const releaseCommand = deferred();
+    const releaseClose = deferred();
+    const closeStarted = deferred();
+    const controller = new AbortController();
+    let active = false;
+    let occurrences = 0;
+    let commandCancelled = false;
+    let finished = false;
+    const computer = createAgentBrowserComputer({
+      dataRoot: directory,
+      run: async (executable, args, options) => {
+        const command = args.slice(args.indexOf('--idle-timeout') + 2);
+        const label = command[0] === 'get' ? command.join(' ') : command[0];
+        if (active && label === scenario.command && ++occurrences === scenario.occurrence) {
+          started.resolve();
+          await new Promise<void>((resolve, reject) => {
+            releaseCommand.promise.then(resolve);
+            options?.signal?.addEventListener(
+              'abort',
+              () => {
+                commandCancelled = true;
+                reject(new Error('Task cancelled.'));
+              },
+              { once: true },
+            );
+          });
+        }
+        if (active && label === 'close') {
+          closeStarted.resolve();
+          await releaseClose.promise;
+        }
+        return fixture.run(executable, args, options);
+      },
+    });
+    let outcome: Promise<{ error?: unknown }> | undefined;
+    try {
+      await computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+      fixture.pages.get('fixture')!.input.autocomplete = '';
+      active = true;
+      const operation =
+        scenario.operation === 'screenshot'
+          ? computer.screenshot!('fixture', controller.signal)
+          : computer.act(
+              'fixture',
+              {
+                action: scenario.operation,
+                ...(scenario.operation === 'fill' && { selector: '@e1', text: 'Synthetic search' }),
+              },
+              controller.signal,
+            );
+      outcome = operation
+        .then(
+          () => ({}),
+          (error: unknown) => ({ error }),
+        )
+        .finally(() => {
+          finished = true;
+        });
+      await started.promise;
+      controller.abort();
+      assert.equal(commandCancelled, true, 'Cancellation must reach the accepted browser command');
+      await closeStarted.promise;
+      assert.equal(finished, false, 'Cancellation must still wait for confirmed daemon closure');
+      const queued = assert.rejects(computer.act('fixture', { action: 'snapshot' }), /expired/);
+      releaseClose.resolve();
+      assert.ok((await outcome).error instanceof Error);
+      await queued;
+    } finally {
+      active = false;
+      releaseCommand.resolve();
+      releaseClose.resolve();
+      await outcome;
+      await computer.dispose();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}

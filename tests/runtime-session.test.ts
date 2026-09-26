@@ -316,7 +316,7 @@ test('saved profile and active goals have independent budgets when memory facts 
 test('Vault invitations name the broker-observed site and step without using untrusted labels or links', async () => {
   assert.equal(
     vaultInvitation({ origin: 'https://accounts.example.com', kind: 'otp' }, '/vault/fixture'),
-    'https://accounts.example.com needs a verification code. [Enter verification code](/vault/fixture).',
+    'https://accounts.example.com needs a verification code. Reply here with the code to continue signing in. Sidekick will send it securely to the website.',
   );
   assert.equal(
     vaultInvitation(
@@ -371,6 +371,48 @@ test('Vault invitations name the broker-observed site and step without using unt
   assert.deepEqual(result.replies, [
     'https://example.com needs you to sign in. [Enter login details](/vault/fixture).',
   ]);
+});
+
+test('a trusted code request asks in chat without a Vault link or exposing inbox metadata to tools', async () => {
+  const observations: RuntimeObservation[] = [];
+  const inspection: LoginInspection = {
+    origin: 'https://accounts.example.test',
+    url: 'https://accounts.example.test/verify',
+    fields: [{ kind: 'otp', selector: '#code', label: 'Verification code' }],
+    methods: [
+      { id: 'credentials', label: 'Verification code', kind: 'credentials', supported: true },
+    ],
+    emailCode: { recipient: 'private-inbox@example.test', length: 6 },
+  };
+  const result = await fixture(
+    async (tools) => {
+      for (const [name, args] of [
+        ['inspect_login', {}],
+        ['select_login_method', { origin: inspection.origin, methodId: 'credentials' }],
+      ] as const) {
+        const output = await call(tools, name, args);
+        assert.doesNotMatch(JSON.stringify(output), /emailCode|private-inbox/);
+        assert.match(JSON.stringify(output), /Verification code/);
+      }
+      await call(tools, 'request_credentials', {
+        origin: inspection.origin,
+        label: 'Example',
+        kind: 'otp',
+      });
+    },
+    {
+      requestCredential: async () => ({ invitation: { origin: inspection.origin, kind: 'otp' } }),
+      observe: async (event) => {
+        observations.push(event);
+      },
+    },
+    { computer: fakeComputer({ inspectLogin: async () => inspection }) },
+  );
+  assert.equal(result.result.status, 'waiting_credentials');
+  assert.equal(result.replies.length, 1);
+  assert.match(result.replies[0]!, /Reply here with the code/);
+  assert.doesNotMatch(result.replies[0]!, /vault|credentials\//i);
+  assert.doesNotMatch(JSON.stringify(observations), /emailCode|private-inbox/);
 });
 
 test('agent reactions validate Unicode emoji before invoking the trusted callback', async () => {
@@ -836,14 +878,15 @@ test('create_audio reports unavailable speech without claiming an artifact exist
   assert.ok(result.events.includes('tool_failed'));
 });
 
-test('stream IDs pair each model reply with its deltas and explicitly close intermediate streams', async () => {
+test('completed commentary and a different final reply retain their own streamed identities across a tool', async () => {
   const chunks: Array<{ text: string; id?: string; done?: boolean }> = [];
   const replies: Array<{ text: string; id?: string }> = [];
   await fixture(
-    async (_tools, emit) => {
+    async (tools, emit) => {
       emit({ type: 'message_start' });
       emit({ type: 'text_delta', text: 'Looking it up.' });
       emit({ type: 'message_end' });
+      await call(tools, 'shell', { command: 'fixture lookup' });
       emit({ type: 'message_start' });
       emit({ type: 'text_delta', text: 'The answer ' });
       emit({ type: 'text_delta', text: 'is ready.' });
@@ -859,13 +902,62 @@ test('stream IDs pair each model reply with its deltas and explicitly close inte
       },
     },
   );
-  assert.equal(chunks.length, 4);
+  assert.equal(chunks.length, 2);
   assert.ok(chunks[0].id);
-  assert.deepEqual(chunks[1], { text: '', id: chunks[0].id, done: true });
-  assert.notEqual(chunks[2].id, chunks[0].id);
-  assert.equal(chunks[2].text, 'The answer is ready.');
-  assert.deepEqual(chunks[3], { text: '', id: chunks[2].id, done: true });
-  assert.deepEqual(replies, [{ text: 'The answer is ready.', id: chunks[2].id }]);
+  assert.notEqual(chunks[1].id, chunks[0].id);
+  assert.equal(chunks[1].text, 'The answer is ready.');
+  assert.deepEqual(replies, [
+    { text: 'Looking it up.', id: chunks[0].id },
+    { text: 'The answer is ready.', id: chunks[1].id },
+  ]);
+});
+
+test('failed, cancelled and incomplete model messages never become saved commentary', async () => {
+  for (const status of ['failed', 'cancelled', undefined] as const) {
+    const chunks: Array<{ text: string; done?: boolean }> = [];
+    const result = await fixture(
+      async (_tools, emit) => {
+        emit({ type: 'message_start' });
+        emit({ type: 'text_delta', text: 'An unfinished response.' });
+        if (status) emit({ type: 'message_end', status });
+      },
+      { delta: (text, _id, done) => chunks.push({ text, done }) },
+    );
+    assert.deepEqual(result.replies, []);
+    assert.deepEqual(chunks.at(-1), { text: '', done: true });
+  }
+});
+
+test('a blocked credential solicitation keeps the rest of that message out of chat and saved commentary', async () => {
+  const result = await fixture(async (_tools, emit) => {
+    emit({ type: 'message_start' });
+    emit({ type: 'text_delta', text: 'I found the website. ' });
+    emit({ type: 'text_delta', text: 'Please send me your password. ' });
+    emit({ type: 'text_delta', text: 'Then I can continue.' });
+    emit({ type: 'message_end', status: 'succeeded' });
+  });
+  assert.deepEqual(result.replies, []);
+  assert.deepEqual(result.deltas, ['I found the website. ']);
+});
+
+test('an explicit message waits for completed commentary and avoids saving the same text twice', async () => {
+  const replies: string[] = [];
+  const text = 'The fixture result is ready.';
+  await fixture(
+    async (tools, emit) => {
+      emit({ type: 'message_start' });
+      emit({ type: 'text_delta', text });
+      emit({ type: 'message_end', status: 'succeeded' });
+      await call(tools, 'send_message', { text });
+    },
+    {
+      reply: async (value) => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        replies.push(value);
+      },
+    },
+  );
+  assert.deepEqual(replies, [text]);
 });
 
 test('shared tool validation rejects malformed arguments before provider callbacks', async () => {

@@ -84,6 +84,6 @@ test('Vault absence copy requires an explicit broker result and uses action-spec
     { ...base, kind: 'otp', savedLoginAvailable: false },
     '/vault/fixture',
   );
-  assert.match(code, /\[Enter verification code\]/);
-  assert.doesNotMatch(code, /isn’t|Add login/);
+  assert.match(code, /Reply here with the code/);
+  assert.doesNotMatch(code, /isn’t|Add login|\/vault\//);
 });

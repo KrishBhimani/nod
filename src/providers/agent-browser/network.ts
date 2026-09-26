@@ -122,6 +122,9 @@ export function createBrowserProxy() {
           });
           track(upstream);
           upstream.setTimeout(60_000, () => upstream.destroy());
+          upstream.on('close', () => {
+            if (!upstream.readableEnded) socket.destroy();
+          });
           upstream.on('connect', () => {
             socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
             if (head.length) upstream.write(head);

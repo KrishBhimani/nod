@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import { registerHooks } from 'node:module';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { JSDOM } from 'jsdom';
-import { act, createElement } from 'react';
+import { act, createElement, Profiler } from 'react';
 import type { AppState, Artifact, Message } from '../src/shared/contracts.ts';
+import { createAgentRuntime } from '../src/runtime/index.ts';
+import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 
 const css = registerHooks({
   load(url, context, next) {
@@ -101,7 +106,7 @@ const base: AppState = {
   },
 };
 
-async function mount() {
+async function mount(onCommit: () => void = () => {}) {
   const element = document.createElement('div');
   document.body.append(element);
   const root = createRoot(element);
@@ -109,12 +114,16 @@ async function mount() {
   function Fixture() {
     app = useAppState();
     return app.state
-      ? createElement(Chat, {
-          state: app.state,
-          streams: app.streams,
-          refresh: app.refresh,
-          resetConversation: app.resetConversation,
-        })
+      ? createElement(
+          Profiler,
+          { id: 'chat', onRender: onCommit },
+          createElement(Chat, {
+            state: app.state,
+            streams: app.streams,
+            refresh: app.refresh,
+            resetConversation: app.resetConversation,
+          }),
+        )
       : null;
   }
   await act(async () => {
@@ -137,6 +146,7 @@ type Submission = {
   text: string;
   attachmentIds: string[];
   replyToMessageId?: string;
+  verificationRequestId?: string;
 };
 const image: Artifact = {
   id: '9e7954ee-aa28-49c4-a9fc-7cdc1f5d5bea',
@@ -155,6 +165,249 @@ async function draft(text: string) {
     await tick();
   });
 }
+
+test('a real runtime reply stays visible while persistence is pending and retains its bubble after refresh', async () => {
+  const previousFetch = globalThis.fetch;
+  const directory = await mkdtemp(join(tmpdir(), 'sidekick-chat-stream-'));
+  let current = base;
+  globalThis.fetch = async (path) => {
+    assert.equal(path, '/api/state');
+    return Response.json(current);
+  };
+  let finishModel!: () => void;
+  const modelContinues = new Promise<void>((resolve) => {
+    finishModel = resolve;
+  });
+  let allowPersistence!: () => void;
+  const persistenceContinues = new Promise<void>((resolve) => {
+    allowPersistence = resolve;
+  });
+  let streamed!: () => void;
+  const firstText = new Promise<void>((resolve) => {
+    streamed = resolve;
+  });
+  let saving!: () => void;
+  const savingStarted = new Promise<void>((resolve) => {
+    saving = resolve;
+  });
+  const text = 'The fixture result is ready.';
+  const runtime = createAgentRuntime({
+    agent: {
+      open: async ({ onEvent }) => ({
+        resumed: false,
+        prompt: async () => {
+          onEvent({ type: 'message_start' });
+          onEvent({ type: 'text_delta', text });
+          streamed();
+          await modelContinues;
+          onEvent({ type: 'final', text });
+          onEvent({ type: 'message_end', status: 'succeeded' });
+        },
+        abort() {},
+        dispose() {},
+      }),
+      dispose() {},
+    },
+    computer: fakeComputer(),
+    workspace: fakeWorkspace(),
+  });
+  const fixture = await mount();
+  let running: ReturnType<typeof runtime.runTask> | undefined;
+  try {
+    await act(async () => {
+      running = runtime.runTask({
+        taskId: 'stream-fixture',
+        ownerId: 'fixture-owner',
+        prompt: 'Show the result.',
+        history: [],
+        memories: [],
+        attachments: [],
+        workspacePath: directory,
+        signal: new AbortController().signal,
+        emit: async () => {},
+        remember: async () => {},
+        publish: async () => {
+          throw new Error('Unexpected publication');
+        },
+        requestCredential: async () => {
+          throw new Error('Unexpected credential request');
+        },
+        integration: async () => ({}),
+        manage: async () => ({}),
+        delta: (value, streamId, done) =>
+          Events.current.emit({
+            type: 'delta',
+            taskId: 'stream-fixture',
+            text: value,
+            streamId,
+            done,
+            conversationRevision: 0,
+          }),
+        reply: async (value, streamId) => {
+          saving();
+          await persistenceContinues;
+          current = {
+            ...base,
+            messages: [
+              ...base.messages,
+              {
+                id: 'persisted-reply',
+                taskId: 'stream-fixture',
+                role: 'assistant',
+                text: value,
+                streamId,
+                attachments: [],
+                createdAt: new Date().toISOString(),
+              },
+            ],
+          };
+          Events.current.emit({ type: 'refresh' });
+        },
+      });
+      await firstText;
+      await tick();
+    });
+    const bubble = fixture.element.querySelector('.streaming-message');
+    assert.ok(bubble);
+    assert.match(bubble.textContent ?? '', /The fixture result is ready/);
+    await act(async () => {
+      finishModel();
+      await savingStarted;
+      await tick();
+    });
+    assert.equal(
+      bubble.isConnected,
+      true,
+      'The visible reply must not disappear before it is saved',
+    );
+    assert.match(fixture.element.textContent ?? '', /The fixture result is ready/);
+    await act(async () => {
+      allowPersistence();
+      await running;
+      await tick();
+    });
+    assert.equal(fixture.element.querySelector('[data-message-id="persisted-reply"]'), bubble);
+    assert.equal(fixture.element.querySelectorAll('.message-assistant').length, 2);
+  } finally {
+    await act(async () => {
+      finishModel();
+      allowPersistence();
+      await running;
+    });
+    await fixture.dispose();
+    await runtime.dispose();
+    await rm(directory, { recursive: true, force: true });
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('sending keeps the existing conversation mounted and scrolls the new bubble before paint', async () => {
+  const previousFetch = globalThis.fetch;
+  const previousScroll = dom.window.HTMLElement.prototype.scrollIntoView;
+  let scrolledMessages = 0;
+  const unpositionedCommits: number[] = [];
+  dom.window.HTMLElement.prototype.scrollIntoView = () => {
+    scrolledMessages = document.querySelectorAll('.message-user').length;
+  };
+  let finish!: (response: Response) => void;
+  let sent!: Submission;
+  globalThis.fetch = async (path, init) => {
+    if (path === '/api/state') return Response.json(base);
+    if (path === '/api/messages') {
+      sent = JSON.parse(String(init?.body));
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    }
+    throw new Error('Unexpected fixture request');
+  };
+  const fixture = await mount(() => {
+    const messages = document.querySelectorAll('.message-user').length;
+    if (messages > scrolledMessages) unpositionedCommits.push(messages);
+  });
+  try {
+    const existing = fixture.element.querySelector('.message-assistant');
+    const composer = fixture.element.querySelector('[role="textbox"]');
+    await draft('Keep the conversation steady.');
+    await act(async () => {
+      sendKey(composer!);
+      await tick();
+    });
+    assert.deepEqual(
+      unpositionedCommits,
+      [],
+      'The new message should be positioned before a frame can paint',
+    );
+    assert.equal(fixture.element.querySelector('.message-assistant'), existing);
+    assert.equal(fixture.element.querySelector('[role="textbox"]'), composer);
+    await act(async () => {
+      finish(
+        Response.json({
+          taskId: 'accepted-task',
+          messageId: sent.clientMessageId,
+          continued: false,
+        }),
+      );
+      await tick();
+    });
+  } finally {
+    await fixture.dispose();
+    globalThis.fetch = previousFetch;
+    dom.window.HTMLElement.prototype.scrollIntoView = previousScroll;
+  }
+});
+
+test('a cancelled task discards its unfinished stream even when cancellation fences the final delta', async () => {
+  const previousFetch = globalThis.fetch;
+  let current: AppState = {
+    ...base,
+    tasks: [
+      {
+        id: 'cancelled-task',
+        title: 'Fixture',
+        status: 'running',
+        createdAt: message.createdAt,
+        updatedAt: message.createdAt,
+      },
+    ],
+  };
+  globalThis.fetch = async () => Response.json(current);
+  const fixture = await mount();
+  try {
+    await act(async () => {
+      Events.current.emit({
+        type: 'delta',
+        taskId: 'cancelled-task',
+        streamId: 'unfinished',
+        text: 'An unfinished response.',
+        conversationRevision: 0,
+      });
+    });
+    assert.match(fixture.element.textContent ?? '', /An unfinished response/);
+    current = {
+      ...current,
+      tasks: current.tasks.map((task) => ({ ...task, status: 'cancelled' })),
+    };
+    await act(async () => {
+      Events.current.emit({ type: 'refresh' });
+      await tick();
+    });
+    assert.doesNotMatch(fixture.element.textContent ?? '', /An unfinished response/);
+    await act(async () =>
+      Events.current.emit({
+        type: 'delta',
+        taskId: 'cancelled-task',
+        streamId: 'unfinished',
+        text: 'Late.',
+        conversationRevision: 0,
+      }),
+    );
+    assert.equal(fixture.element.querySelector('.streaming-message'), null);
+  } finally {
+    await fixture.dispose();
+    globalThis.fetch = previousFetch;
+  }
+});
 
 test('a user bubble appears before routing completes and reconciles SSE then response once while preserving focus and a new draft', async () => {
   const priorFetch = globalThis.fetch;
@@ -415,6 +668,279 @@ test('persisted acceptance prevents restoring a duplicate draft when the HTTP re
     assert.equal(document.activeElement, input);
   } finally {
     await fixture.dispose();
+    globalThis.fetch = priorFetch;
+  }
+});
+
+const verificationRequest = {
+  id: '5c301e08-cf53-4b53-94e4-56fcba13eec7',
+  taskId: message.taskId!,
+  expiresAt: '2099-01-01T00:00:00Z',
+};
+const verificationState: AppState = { ...base, verificationRequests: [verificationRequest] };
+
+test('verification sends stay masked before acceptance and use canonical text even when refresh fails', async () => {
+  const priorFetch = globalThis.fetch;
+  let submitted!: Submission;
+  let finish!: (response: Response) => void;
+  let reads = 0;
+  globalThis.fetch = async (path, init) => {
+    if (path === '/api/state') {
+      if (reads++) throw new Error('State refresh unavailable.');
+      return Response.json(verificationState);
+    }
+    if (path === '/api/messages') {
+      submitted = JSON.parse(String(init?.body));
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    }
+    throw new Error('Unexpected fixture request');
+  };
+  const fixture = await mount();
+  try {
+    await draft('483729');
+    const input = fixture.element.querySelector<HTMLElement>('[role="textbox"]')!;
+    await act(async () => {
+      sendKey(input);
+      await tick();
+    });
+    assert.equal(submitted.text, '483729');
+    assert.equal(submitted.verificationRequestId, verificationRequest.id);
+    assert.equal(input.textContent, '');
+    assert.doesNotMatch(fixture.element.innerHTML, /483729/);
+    assert.match(
+      fixture.element.querySelector('.message-user')?.textContent ?? '',
+      /Verification code sent securely/,
+    );
+    await draft('A new draft');
+    await act(async () => {
+      finish(
+        Response.json({
+          taskId: verificationRequest.taskId,
+          messageId: submitted.clientMessageId,
+          continued: true,
+          messageText: 'Verification code received securely.',
+          verificationStatus: 'submitted',
+        }),
+      );
+      await tick();
+    });
+    assert.match(
+      fixture.element.querySelector('.message-user')?.textContent ?? '',
+      /Verification code received securely/,
+    );
+    assert.doesNotMatch(fixture.element.innerHTML, /483729/);
+    assert.equal(input.textContent, 'A new draft');
+    assert.equal(document.activeElement, input);
+  } finally {
+    await fixture.dispose();
+    globalThis.fetch = priorFetch;
+  }
+});
+
+test('a persisted masked verification reply survives a lost HTTP response without restoring the code', async () => {
+  const priorFetch = globalThis.fetch;
+  let current = verificationState;
+  let submitted!: Submission;
+  let reject!: (cause: Error) => void;
+  globalThis.fetch = async (path, init) => {
+    if (path === '/api/state') return Response.json(current);
+    if (path === '/api/messages') {
+      submitted = JSON.parse(String(init?.body));
+      return new Promise((_resolve, fail) => {
+        reject = fail;
+      });
+    }
+    throw new Error('Unexpected fixture request');
+  };
+  const fixture = await mount();
+  try {
+    await draft('483729');
+    const input = fixture.element.querySelector<HTMLElement>('[role="textbox"]')!;
+    await act(async () => {
+      sendKey(input);
+      await tick();
+    });
+    assert.doesNotMatch(fixture.element.innerHTML, /483729/);
+    current = {
+      ...base,
+      messages: [
+        message,
+        {
+          id: submitted.clientMessageId,
+          taskId: verificationRequest.taskId,
+          role: 'user',
+          text: 'Verification code sent securely.',
+          attachments: [],
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    };
+    await act(async () => {
+      Events.current.emit({ type: 'refresh' });
+      await tick();
+    });
+    await act(async () => {
+      reject(new Error('Transport rejected 483729'));
+      await tick();
+    });
+    assert.equal(fixture.element.querySelectorAll('.message-user').length, 1);
+    assert.equal(input.textContent, '');
+    assert.doesNotMatch(fixture.element.innerHTML, /483729|Transport rejected/);
+  } finally {
+    await fixture.dispose();
+    globalThis.fetch = priorFetch;
+  }
+});
+
+test('private verification failures discard codes and retries use a new message identity', async () => {
+  const priorFetch = globalThis.fetch;
+  const submissions: Submission[] = [];
+  globalThis.fetch = async (path, init) => {
+    if (path === '/api/state') return Response.json(verificationState);
+    if (path === '/api/messages') {
+      submissions.push(JSON.parse(String(init?.body)));
+      throw new Error('Transport rejected 483729');
+    }
+    throw new Error('Unexpected fixture request');
+  };
+  const fixture = await mount();
+  try {
+    const input = fixture.element.querySelector<HTMLElement>('[role="textbox"]')!;
+    for (let index = 0; index < 2; index++) {
+      await draft('483729');
+      await act(async () => {
+        sendKey(input);
+        await tick();
+      });
+      assert.equal(input.textContent, '');
+      assert.equal(fixture.element.querySelector('.message-user'), null);
+      assert.doesNotMatch(fixture.element.innerHTML, /483729|Transport rejected/);
+      assert.match(fixture.element.textContent ?? '', /code could not be confirmed/i);
+    }
+    assert.notEqual(submissions[0].clientMessageId, submissions[1].clientMessageId);
+  } finally {
+    await fixture.dispose();
+    globalThis.fetch = priorFetch;
+  }
+});
+
+test('an explicit reply selects its verification request while ambiguous codes stay private', async () => {
+  const priorFetch = globalThis.fetch;
+  const otherRequest = {
+    ...verificationRequest,
+    id: 'cd2e9b95-1e0d-484a-8202-ff16e0154ad9',
+    taskId: 'other-task',
+  };
+  const submissions: Submission[] = [];
+  globalThis.fetch = async (path, init) => {
+    if (path === '/api/state')
+      return Response.json({ ...base, verificationRequests: [otherRequest, verificationRequest] });
+    if (path === '/api/messages') {
+      const sent: Submission = JSON.parse(String(init?.body));
+      submissions.push(sent);
+      return sent.verificationRequestId
+        ? Response.json({
+            taskId: message.taskId,
+            messageId: sent.clientMessageId,
+            continued: true,
+            messageText: 'Verification code sent securely.',
+            verificationStatus: 'submitted',
+          })
+        : Response.json(
+            {
+              error:
+                'More than one sign-in needs a code. Reply to the verification request you want to complete.',
+            },
+            { status: 409 },
+          );
+    }
+    throw new Error('Unexpected fixture request');
+  };
+  const fixture = await mount();
+  try {
+    const input = fixture.element.querySelector<HTMLElement>('[role="textbox"]')!;
+    await draft('483729');
+    await act(async () => {
+      sendKey(input);
+      await tick();
+    });
+    assert.equal(submissions[0].verificationRequestId, undefined);
+    assert.equal(input.textContent, '');
+    assert.doesNotMatch(fixture.element.innerHTML, /483729/);
+    assert.match(fixture.element.textContent ?? '', /More than one sign-in needs a code/);
+    await act(async () =>
+      fixture.element.querySelector<HTMLButtonElement>('[aria-label="Reply to message"]')!.click(),
+    );
+    await draft('483729');
+    await act(async () => {
+      sendKey(input);
+      await tick();
+    });
+    assert.equal(submissions[1].verificationRequestId, verificationRequest.id);
+    assert.equal(submissions[1].replyToMessageId, message.id);
+    assert.equal(input.textContent, '');
+    assert.doesNotMatch(fixture.element.innerHTML, /483729/);
+  } finally {
+    await fixture.dispose();
+    globalThis.fetch = priorFetch;
+  }
+});
+
+test('ordinary numeric messages preserve normal drafts when no matching unexpired verification is pending', async () => {
+  const priorFetch = globalThis.fetch;
+  const states: Array<{ state: AppState; reply?: boolean }> = [
+    { state: base },
+    {
+      state: {
+        ...base,
+        verificationRequests: [{ ...verificationRequest, expiresAt: '2020-01-01T00:00:00Z' }],
+      },
+    },
+    {
+      state: { ...base, verificationRequests: [{ ...verificationRequest, taskId: 'other-task' }] },
+      reply: true,
+    },
+  ];
+  try {
+    for (const entry of states) {
+      const submissions: Submission[] = [];
+      globalThis.fetch = async (path, init) => {
+        if (path === '/api/state') return Response.json(entry.state);
+        if (path === '/api/messages') {
+          submissions.push(JSON.parse(String(init?.body)));
+          return Response.json({ error: 'Message not sent.' }, { status: 503 });
+        }
+        throw new Error('Unexpected fixture request');
+      };
+      const fixture = await mount();
+      try {
+        if (entry.reply)
+          await act(async () =>
+            fixture.element
+              .querySelector<HTMLButtonElement>('[aria-label="Reply to message"]')!
+              .click(),
+          );
+        await draft('483729');
+        const input = fixture.element.querySelector<HTMLElement>('[role="textbox"]')!;
+        await act(async () => {
+          sendKey(input);
+          await tick();
+        });
+        assert.equal(submissions[0].verificationRequestId, undefined);
+        assert.equal(input.textContent, '483729');
+        assert.match(fixture.element.textContent ?? '', /Message not sent/);
+        await act(async () => {
+          sendKey(input);
+          await tick();
+        });
+        assert.equal(submissions[0].clientMessageId, submissions[1].clientMessageId);
+      } finally {
+        await fixture.dispose();
+      }
+    }
+  } finally {
     globalThis.fetch = priorFetch;
   }
 });

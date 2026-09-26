@@ -1,16 +1,16 @@
 import type { CredentialInvitation } from '../ports/agent.ts';
 
-export function vaultInvitation(step: CredentialInvitation, url: string) {
-  if (!/^\/(?:vault|credentials)\/[A-Za-z0-9_-]{1,256}$/.test(url))
-    throw new Error('The Vault link is unavailable.');
+export function vaultInvitation(step: CredentialInvitation, url?: string) {
   const origin = new URL(step.origin);
   if (!['https:', 'http:'].includes(origin.protocol) || origin.username || origin.password)
     throw new Error('The sign-in site is unavailable.');
   const site = origin.origin;
+  if (step.kind === 'otp')
+    return `${site} needs a verification code. Reply here with the code to continue signing in. Sidekick will send it securely to the website.`;
+  if (!url || !/^\/(?:vault|credentials)\/[A-Za-z0-9_-]{1,256}$/.test(url))
+    throw new Error('The Vault link is unavailable.');
   if (step.methodSelection)
     return `${site} needs you to sign in. [Choose a sign-in method](${url}).`;
-  if (step.kind === 'otp')
-    return `${site} needs a verification code. [Enter verification code](${url}).`;
   if (!['identifier', 'password'].includes(step.kind))
     throw new Error('The sign-in step is unavailable.');
   if (step.savedLoginAvailable === false)

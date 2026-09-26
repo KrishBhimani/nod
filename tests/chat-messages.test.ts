@@ -641,6 +641,20 @@ test('message replies render a safe quote and timestamps group only adjacent mes
   assert.equal(messagesAreGrouped(undefined, base), false);
 });
 
+test('user timestamps stay inside their bubble while assistant timestamps remain below the reply', () => {
+  for (const role of ['user', 'assistant'] as const) {
+    const document = new JSDOM(
+      renderToStaticMarkup(createElement(MessageBubble, { message: { ...base, role } })),
+    ).window.document;
+    const time = document.querySelector('time')!;
+    assert.equal(time.getAttribute('datetime'), base.createdAt);
+    assert.equal(Boolean(time.closest('.message-body')), role === 'user');
+    assert.equal(Boolean(time.closest('.message-footer')), role === 'assistant');
+    assert.equal(document.querySelectorAll('time').length, 1);
+    document.defaultView?.close();
+  }
+});
+
 test('chat styles keep user content left aligned and remove the editor native focus ring', async () => {
   const style = document.createElement('style');
   style.textContent =

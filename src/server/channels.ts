@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 import type { PreparedUserRoute } from './outcomes.ts';
+import type { SubmitMessageResponse } from '../shared/contracts.ts';
 import type {
   InboundMessage,
   MessagingAttachment,
@@ -12,6 +13,10 @@ import type {
 interface ChannelOptions {
   ownerId: string;
   transport: MessagingTransport;
+  acceptVerification?: (
+    text: string,
+    input: { clientMessageId: string; channel: string },
+  ) => Promise<SubmitMessageResponse | undefined>;
   prepare?: (text: string, sourceId: string, channel: string) => Promise<PreparedUserRoute>;
   submit: (
     text: string,
@@ -37,7 +42,8 @@ interface InboxRow extends ChannelIdentity {
 }
 interface OutboxRow extends ChannelIdentity {
   message_id: string;
-  task_id: string;
+  owner_id: string;
+  task_id: string | null;
   thread_id: string;
   text: string;
   attachments: unknown[];
@@ -51,6 +57,24 @@ const messageSchema = z.object({
   text: z.string().trim().min(1).max(24000),
   sentAt: z.date(),
 });
+
+function conversationChannel(row: ChannelIdentity) {
+  const identity = createHash('sha256')
+    .update(JSON.stringify([row.account_id, row.sender_id]))
+    .digest('hex')
+    .slice(0, 32);
+  return `${row.provider}:${identity}`;
+}
+
+function inboundMessageId(ownerId: string, sourceId: string) {
+  const bytes = createHash('sha256')
+    .update(JSON.stringify([ownerId, sourceId]))
+    .digest();
+  bytes[6] = (bytes[6] & 0x0f) | 0x80;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const id = bytes.subarray(0, 16).toString('hex');
+  return `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20)}`;
+}
 
 export function channelReply(text: string, hasAttachments = false, deliversAttachments = false) {
   const securePath = '(?:https?:\\/\\/[^\\s)]+)?\\/(?:vault|credentials|approvals)\\/[^\\s)]+';
@@ -122,25 +146,88 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
     const parsed = messageSchema.safeParse(message);
     if (!parsed.success || parsed.data.channelId !== channelId) return;
     const { accountId, senderId, messageId, threadId, text, sentAt } = parsed.data;
-    if (
-      !permitted({ provider: channelId, account_id: accountId, sender_id: senderId }) ||
-      sentAt.getTime() > Date.now() + 300000
-    )
+    const identity = { provider: channelId, account_id: accountId, sender_id: senderId };
+    if (closed || replacing || !permitted(identity) || sentAt.getTime() > Date.now() + 300000)
       return;
-    await pool.query(
-      `INSERT INTO channel_inbox(source_id,provider,account_id,sender_id,thread_id,text,received_at,message_id)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(source_id) DO NOTHING`,
-      [
-        `channel:${channelId}:${accountId}:${messageId}`,
-        channelId,
-        accountId,
-        senderId,
-        threadId,
-        text,
-        sentAt,
-        randomUUID(),
-      ],
-    );
+    try {
+      const sourceId = `channel:${channelId}:${accountId}:${messageId}`;
+      if ((await pool.query('SELECT 1 FROM channel_inbox WHERE source_id=$1', [sourceId])).rowCount)
+        return;
+      const acceptedMessageId = inboundMessageId(ownerId, sourceId);
+      let verification: SubmitMessageResponse | undefined;
+      if (/^\d{4,8}$/.test(text) && options.acceptVerification) {
+        try {
+          verification = await options.acceptVerification(text, {
+            clientMessageId: acceptedMessageId,
+            channel: conversationChannel(identity),
+          });
+        } catch (cause) {
+          const conflict =
+            cause instanceof Error && 'statusCode' in cause && cause.statusCode === 409;
+          if (!conflict) throw cause;
+          const client = await pool.connect();
+          try {
+            await client.query('BEGIN');
+            if (closed || replacing || !permitted(identity))
+              throw new Error('Channel configuration changed.');
+            const receipt = await client.query(
+              `INSERT INTO channel_inbox(source_id,provider,account_id,sender_id,thread_id,text,received_at,message_id,state)
+             VALUES($1,$2,$3,$4,$5,'Verification code not applied.',$6,$7,'discarded')
+             ON CONFLICT(source_id) DO NOTHING`,
+              [sourceId, channelId, accountId, senderId, threadId, sentAt, acceptedMessageId],
+            );
+            if (receipt.rowCount) {
+              const replyId = randomUUID();
+              await client.query(
+                "INSERT INTO messages(id,owner_id,role,text) VALUES($1,$2,'assistant',$3)",
+                [
+                  replyId,
+                  ownerId,
+                  'The code could not be matched to a sign-in. Open the corresponding sign-in conversation in Sidekick web chat to continue.',
+                ],
+              );
+              await client.query('INSERT INTO channel_outbox(message_id,source_id) VALUES($1,$2)', [
+                replyId,
+                sourceId,
+              ]);
+            }
+            if (closed || replacing || !permitted(identity))
+              throw new Error('Channel configuration changed.');
+            await client.query('COMMIT');
+          } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+          } finally {
+            client.release();
+          }
+          return;
+        }
+      }
+      if (closed || replacing || !permitted(identity))
+        throw Object.assign(new Error('Channel configuration changed. Try again.'), {
+          statusCode: 503,
+        });
+      await pool.query(
+        `INSERT INTO channel_inbox(source_id,provider,account_id,sender_id,thread_id,text,received_at,message_id,state,task_id)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(source_id) DO NOTHING`,
+        [
+          sourceId,
+          channelId,
+          accountId,
+          senderId,
+          threadId,
+          verification ? (verification.messageText ?? 'Verification code sent securely.') : text,
+          sentAt,
+          acceptedMessageId,
+          verification ? 'submitted' : 'pending',
+          verification?.taskId ?? null,
+        ],
+      );
+    } catch {
+      throw Object.assign(new Error('Channel processing is temporarily unavailable. Try again.'), {
+        statusCode: 503,
+      });
+    }
   }
 
   async function drainInbox() {
@@ -151,11 +238,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
         )
       ).rows[0];
       if (!pending) break;
-      const identity = createHash('sha256')
-        .update(JSON.stringify([pending.account_id, pending.sender_id]))
-        .digest('hex')
-        .slice(0, 32);
-      const channel = `${pending.provider}:${identity}`;
+      const channel = conversationChannel(pending);
       const preparedRoute = permitted(pending)
         ? await options.prepare?.(pending.text, pending.source_id, channel)
         : undefined;
@@ -217,11 +300,16 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
         UPDATE channel_outbox SET state='sending',updated_at=now() WHERE message_id=(
           SELECT message_id FROM channel_outbox WHERE state='pending' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
         ) RETURNING message_id,source_id
-      ) SELECT c.message_id,m.task_id,i.provider,i.account_id,i.sender_id,i.thread_id,m.text,m.attachments
+      ) SELECT c.message_id,m.owner_id,m.task_id,i.provider,i.account_id,i.sender_id,i.thread_id,m.text,m.attachments
         FROM claimed c JOIN channel_inbox i ON i.source_id=c.source_id JOIN messages m ON m.id=c.message_id`);
       const row = result.rows[0];
       if (!row) break;
-      let reason: string | null = permitted(row) ? null : 'channel_access_changed';
+      let reason: string | null =
+        row.owner_id !== ownerId
+          ? 'message_owner_changed'
+          : permitted(row)
+            ? null
+            : 'channel_access_changed';
       const replyWindowMs = channels.find((channel) => channel.id === row.provider)?.replyWindowMs;
       if (!reason && replyWindowMs !== undefined) {
         const latest = await pool.query(
@@ -253,7 +341,8 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
             .min(1)
             .max(10)
             .parse(row.attachments);
-          if (!options.resolveAttachments) throw new Error('Attachment delivery is unavailable.');
+          if (!options.resolveAttachments || !row.task_id)
+            throw new Error('Attachment delivery is unavailable.');
           attachments = await options.resolveAttachments(
             row.task_id,
             requested.map(({ id }) => id),

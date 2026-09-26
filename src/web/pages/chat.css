@@ -26,6 +26,22 @@
   background: var(--secondary);
   text-align: left;
 }
+.chat-page .message-user {
+  justify-content: flex-end;
+}
+.chat-page .message-user .message-tools {
+  order: -1;
+}
+.chat-page .message-bubble-time {
+  margin-top: 4px;
+  color: var(--muted-foreground);
+  font-size: 10px;
+  line-height: 1.4;
+  text-align: right;
+}
+.chat-page .message-user .message-footer:empty {
+  display: none;
+}
 .chat-page .message-body {
   min-width: 0;
   width: fit-content;

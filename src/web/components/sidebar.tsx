@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { Monitor, Moon, Menu, PanelLeftClose, PanelLeftOpen, RotateCcw, Sun } from 'lucide-react';
+import {
+  Monitor,
+  Moon,
+  Menu,
+  MoreHorizontal,
+  PanelLeftClose,
+  PanelLeftOpen,
+  RotateCcw,
+  Sun,
+} from 'lucide-react';
 import { BrandMark } from './brand';
 import { ConnectionMenu } from './connection-menu';
 import { currentTheme, setTheme, subscribeTheme } from '../lib/theme';
@@ -16,6 +25,7 @@ export function Sidebar({
   onToggle,
   onNavigate,
   onRestart,
+  development = import.meta.env?.DEV === true,
   inspectorEnabled = false,
   inspectorOpen = false,
   onToggleInspector,
@@ -25,12 +35,14 @@ export function Sidebar({
   onToggle(): void;
   onNavigate(path: string): void;
   onRestart(): void;
+  development?: boolean;
   inspectorEnabled?: boolean;
   inspectorOpen?: boolean;
   onToggleInspector?(): void;
 }) {
   const [hints, setHints] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [appMenuOpen, setAppMenuOpen] = useState(false);
   const theme = useSyncExternalStore(subscribeTheme, currentTheme, () => 'light');
   const ThemeIcon = theme === 'dark' ? Sun : Moon;
   const themeLabel = theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
@@ -38,10 +50,14 @@ export function Sidebar({
   const mac = /Mac|iPhone|iPad/.test(navigator.platform);
   const navigate = useRef(onNavigate);
   navigate.current = onNavigate;
-  useEffect(() => setMobileMenuOpen(false), [path]);
+  useEffect(() => {
+    setMobileMenuOpen(false);
+    setAppMenuOpen(false);
+  }, [path]);
   useEffect(() => {
     const resize = () => {
       if (window.innerWidth > 640) setMobileMenuOpen(false);
+      else setAppMenuOpen(false);
     };
     window.addEventListener('resize', resize);
     return () => window.removeEventListener('resize', resize);
@@ -108,6 +124,38 @@ export function Sidebar({
       document.removeEventListener('visibilitychange', clear);
     };
   }, [mac]);
+  const appActions = (close: () => void) => (
+    <>
+      {inspectorEnabled && (
+        <button
+          type="button"
+          role="menuitem"
+          aria-expanded={inspectorOpen}
+          aria-controls="developer-inspector"
+          onClick={() => {
+            close();
+            onToggleInspector?.();
+          }}
+        >
+          <Monitor size={18} aria-hidden="true" /> Inspector
+        </button>
+      )}
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => {
+          close();
+          onRestart();
+        }}
+      >
+        <RotateCcw size={18} aria-hidden="true" />
+        <span>
+          Restart setup
+          <small>Starts a new chat. Keeps your saved data.</small>
+        </span>
+      </button>
+    </>
+  );
   return (
     <aside className={`sidebar ${hints ? 'show-shortcuts' : ''}`} aria-label="Sidebar">
       <a
@@ -258,30 +306,7 @@ export function Sidebar({
               >
                 <ThemeIcon size={18} aria-hidden="true" /> {themeLabel}
               </button>
-              {inspectorEnabled && (
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-expanded={inspectorOpen}
-                  aria-controls="developer-inspector"
-                  onClick={() => {
-                    close();
-                    onToggleInspector?.();
-                  }}
-                >
-                  <Monitor size={18} aria-hidden="true" /> Inspector
-                </button>
-              )}
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  close();
-                  onRestart();
-                }}
-              >
-                <RotateCcw size={18} aria-hidden="true" /> Get started
-              </button>
+              {appActions(close)}
             </>
           )}
         </ConnectionMenu>
@@ -297,7 +322,7 @@ export function Sidebar({
           <ThemeIcon size={22} aria-hidden="true" />
           <span className="nav-label">{theme === 'dark' ? 'Light theme' : 'Dark theme'}</span>
         </button>
-        {inspectorEnabled && (
+        {development && inspectorEnabled && (
           <button
             type="button"
             className={`nav-link ${inspectorOpen ? 'nav-link-active' : ''}`}
@@ -311,16 +336,36 @@ export function Sidebar({
             <span className="nav-label">Inspector</span>
           </button>
         )}
-        <button
-          type="button"
-          className="nav-link"
-          aria-label="Get started"
-          title="Get started"
-          onClick={onRestart}
-        >
-          <RotateCcw size={22} aria-hidden="true" />
-          <span className="nav-label">Get started</span>
-        </button>
+        {development ? (
+          <button
+            type="button"
+            className="nav-link"
+            aria-label="Get started"
+            title="Get started"
+            onClick={onRestart}
+          >
+            <RotateCcw size={22} aria-hidden="true" />
+            <span className="nav-label">Get started</span>
+          </button>
+        ) : (
+          <div className="sidebar-app-menu">
+            <ConnectionMenu
+              label="App menu"
+              triggerClassName="nav-link"
+              compact
+              open={appMenuOpen}
+              onOpenChange={setAppMenuOpen}
+              trigger={
+                <>
+                  <MoreHorizontal size={22} aria-hidden="true" />
+                  <span className="nav-label">More</span>
+                </>
+              }
+            >
+              {appActions}
+            </ConnectionMenu>
+          </div>
+        )}
         <button
           type="button"
           className="nav-link sidebar-toggle"

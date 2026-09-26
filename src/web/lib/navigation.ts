@@ -6,7 +6,7 @@ export const navigationItems = [
   { path: '/schedule', label: 'Schedule', key: 's', icon: CalendarClock },
   { path: '/apps', label: 'Apps', key: 'e', icon: PlugZap },
   { path: '/channels', label: 'Channels', key: 'd', icon: Radio },
-  { path: '/vault', label: 'Vault', key: undefined, icon: KeyRound },
+  { path: '/vault', label: 'Vault', key: 'k', icon: KeyRound },
 ] as const;
 
 export function isEditingTarget(target: EventTarget | null): boolean {

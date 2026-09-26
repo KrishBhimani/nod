@@ -1,33 +1,4 @@
-import { z } from 'zod';
-
-export const manualInputSchema = z.discriminatedUnion('action', [
-  z
-    .object({
-      action: z.literal('click'),
-      x: z.number().min(0).max(1),
-      y: z.number().min(0).max(1),
-    })
-    .strict(),
-  z.object({ action: z.literal('type'), text: z.string().min(1).max(8192) }).strict(),
-  z
-    .object({
-      action: z.literal('press'),
-      key: z.enum([
-        'Enter',
-        'Tab',
-        'Shift+Tab',
-        'Escape',
-        'Backspace',
-        'ArrowUp',
-        'ArrowDown',
-        'ArrowLeft',
-        'ArrowRight',
-        'ControlOrMeta+A',
-      ]),
-    })
-    .strict(),
-  z.object({ action: z.literal('scroll'), direction: z.enum(['up', 'down']) }).strict(),
-]);
+export { browserInputSchema as manualInputSchema } from '../../shared/browser-input.ts';
 
 export const protectFocusedField = `(() => {
   const visible=e=>e&&e.isConnected&&e.getClientRects().length>0&&getComputedStyle(e).visibility!=='hidden'&&getComputedStyle(e).display!=='none'&&!e.closest('[hidden],[aria-hidden="true"],[inert],[aria-disabled="true"]');
@@ -64,8 +35,20 @@ export function maskPageScript(selectors: string[], secrets: string[]): string {
       for(const e of page.querySelectorAll('input,textarea')) if(secrets.some(secret=>secret&&String(e.value??e.textContent??'').includes(secret))) nodes.add(e);
     }
     if(nodes.size>40) throw new Error('Too many protected fields');
-    const values=[...nodes].map(e=>String(e.value??e.textContent??'')).filter(Boolean);
-    if(values.some(value=>value.length>8192)) throw new Error('Protected field exceeds limit');
+    const inputValues=[...nodes].map(e=>String(e.value??e.textContent??'')).filter(Boolean),values=[],grouped=new Set();
+    if(inputValues.some(value=>value.length>8192)) throw new Error('Protected field exceeds limit');
+    for(const e of nodes) {
+      if(grouped.has(e)) continue;
+      const marker=e.getAttribute('data-sidekick-login-field'),siblings=marker?.startsWith('otp-')&&e.parentElement?[...e.parentElement.querySelectorAll('input')].filter(n=>nodes.has(n)&&n.parentElement===e.parentElement&&n.getAttribute('data-sidekick-login-field')===marker):[];
+      if(siblings.length>=4&&siblings.length<=8&&siblings.every(n=>n.maxLength===1)) {
+        siblings.forEach(n=>grouped.add(n));
+        const value=siblings.map(n=>String(n.value??'')).join('');
+        if(value) values.push(value);
+      } else {
+        const value=String(e.value??e.textContent??'');
+        if(value) values.push(value);
+      }
+    }
     for(const value of values) if(!secrets.includes(value)) secrets.push(value);
     if(secrets.length) for(const frame of unreadableFrames) frame.style.setProperty('visibility','hidden','important');
     for(const e of nodes) {
@@ -83,6 +66,26 @@ export function maskPageScript(selectors: string[], secrets: string[]): string {
         }
       }
     }
-    return {masked:true,values};
+    return {masked:true,values,inputValues};
   })()`;
+}
+
+export function maskSnapshotInputValues(snapshot: string, values: string[]): string {
+  const protectedValues = new Set(values);
+  return snapshot
+    .split('\n')
+    .map((line) => {
+      const match =
+        /^(\s*-\s+(?:textbox|searchbox|spinbutton|combobox)\b.*\[[^\]\n]*\]):\s*(.*)$/.exec(line);
+      if (!match) return line;
+      let value = match[2].trim();
+      if (value.startsWith('"')) {
+        try {
+          const decoded: unknown = JSON.parse(value);
+          if (typeof decoded === 'string') value = decoded;
+        } catch {}
+      }
+      return protectedValues.has(value) ? `${match[1]}: [redacted]` : line;
+    })
+    .join('\n');
 }

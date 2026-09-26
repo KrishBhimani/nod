@@ -117,12 +117,14 @@ export function MessageBubble({
   inspectorEnabled = false,
   grouped = false,
   showTimestamp = true,
+  streaming = false,
   onReply,
 }: {
   message: Message;
   inspectorEnabled?: boolean;
   grouped?: boolean;
   showTimestamp?: boolean;
+  streaming?: boolean;
   onReply?(): void;
 }) {
   const [error, setError] = useState('');
@@ -313,11 +315,18 @@ export function MessageBubble({
     });
   }
   const sent = new Date(message.createdAt);
+  const timestamp = showTimestamp && !streaming && (
+    <time dateTime={message.createdAt} title={sent.toLocaleString()}>
+      {sent.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+    </time>
+  );
   return (
     <article
-      className={`message message-${message.role}${grouped ? ' message-grouped' : ''}${!showTimestamp ? ' message-continuing' : ''}${selected ? ' message-selected' : ''}`}
-      aria-label={message.role === 'user' ? 'You' : 'Sidekick'}
-      data-message-id={message.id}
+      className={`message message-${message.role}${streaming ? ' streaming-message' : ''}${grouped ? ' message-grouped' : ''}${!showTimestamp ? ' message-continuing' : ''}${selected ? ' message-selected' : ''}`}
+      aria-label={
+        streaming ? 'Sidekick is responding' : message.role === 'user' ? 'You' : 'Sidekick'
+      }
+      data-message-id={streaming ? undefined : message.id}
       onPointerUp={(event) => {
         if (!['touch', 'pen'].includes(event.pointerType)) return;
         if ((event.target as HTMLElement).closest('a,button,audio,video,input')) return;
@@ -328,6 +337,7 @@ export function MessageBubble({
         if (!event.currentTarget.contains(event.relatedTarget)) setSelected(false);
       }}
       onContextMenu={(event) => {
+        if (streaming) return;
         if ((event.target as HTMLElement).closest('a,audio,video')) return;
         event.preventDefault();
         openMenu(event.clientX, event.clientY, event.currentTarget);
@@ -357,16 +367,16 @@ export function MessageBubble({
                 ))}
             </div>
           )}
-          {message.text && <MessageText text={message.text} previews />}
+          {message.text && <MessageText text={message.text} previews={!streaming} />}
+          {streaming && <span className="stream-cursor" />}
+          {message.role === 'user' && timestamp && (
+            <div className="message-bubble-time">{timestamp}</div>
+          )}
         </div>
         <div className="message-footer">
-          {(showTimestamp || reaction || agentReaction) && (
+          {((message.role === 'assistant' && timestamp) || reaction || agentReaction) && (
             <div className="message-meta">
-              {showTimestamp && (
-                <time dateTime={message.createdAt} title={sent.toLocaleString()}>
-                  {sent.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </time>
-              )}
+              {message.role === 'assistant' && timestamp}
               {reaction && (
                 <button
                   className="selected-reaction"
@@ -393,69 +403,71 @@ export function MessageBubble({
         </div>
         {error && <Notice>{error}</Notice>}
       </div>
-      <div className="message-tools">
-        <div className="message-actions" aria-label="Message actions">
-          {onReply && (
+      {!streaming && (
+        <div className="message-tools">
+          <div className="message-actions" aria-label="Message actions">
+            {onReply && (
+              <Button
+                size="icon"
+                variant="ghost"
+                aria-label="Reply to message"
+                title="Reply"
+                onClick={reply}
+              >
+                <CornerUpLeft size={14} />
+              </Button>
+            )}
             <Button
               size="icon"
               variant="ghost"
-              aria-label="Reply to message"
-              title="Reply"
-              onClick={reply}
+              aria-label={copied ? 'Message copied' : 'Copy message'}
+              title="Copy"
+              onClick={() => void copy()}
             >
-              <CornerUpLeft size={14} />
+              {copied ? <Check size={14} /> : <Copy size={14} />}
             </Button>
-          )}
+            {message.role === 'assistant' && (
+              <Button
+                size="icon"
+                variant="ghost"
+                aria-label="React to message"
+                title="React"
+                aria-haspopup="dialog"
+                aria-expanded={pickingReaction}
+                onClick={(event) =>
+                  pickingReaction ? closePicker() : openPicker(event.currentTarget)
+                }
+              >
+                <SmilePlus size={14} />
+              </Button>
+            )}
+            {canInspect && (
+              <Button
+                size="icon"
+                variant="ghost"
+                aria-label="Inspect message"
+                title="Inspect"
+                onClick={inspect}
+              >
+                <ScanSearch size={14} />
+              </Button>
+            )}
+          </div>
           <Button
+            className="message-more-action"
             size="icon"
             variant="ghost"
-            aria-label={copied ? 'Message copied' : 'Copy message'}
-            title="Copy"
-            onClick={() => void copy()}
+            aria-label="Message options"
+            aria-haspopup="menu"
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              openMenu(rect.right - 192, rect.bottom + 6, event.currentTarget);
+            }}
           >
-            {copied ? <Check size={14} /> : <Copy size={14} />}
+            <MoreHorizontal size={17} />
           </Button>
-          {message.role === 'assistant' && (
-            <Button
-              size="icon"
-              variant="ghost"
-              aria-label="React to message"
-              title="React"
-              aria-haspopup="dialog"
-              aria-expanded={pickingReaction}
-              onClick={(event) =>
-                pickingReaction ? closePicker() : openPicker(event.currentTarget)
-              }
-            >
-              <SmilePlus size={14} />
-            </Button>
-          )}
-          {canInspect && (
-            <Button
-              size="icon"
-              variant="ghost"
-              aria-label="Inspect message"
-              title="Inspect"
-              onClick={inspect}
-            >
-              <ScanSearch size={14} />
-            </Button>
-          )}
         </div>
-        <Button
-          className="message-more-action"
-          size="icon"
-          variant="ghost"
-          aria-label="Message options"
-          aria-haspopup="menu"
-          onClick={(event) => {
-            const rect = event.currentTarget.getBoundingClientRect();
-            openMenu(rect.right - 192, rect.bottom + 6, event.currentTarget);
-          }}
-        >
-          <MoreHorizontal size={17} />
-        </Button>
-      </div>
+      )}
       {menu &&
         createPortal(
           <div
