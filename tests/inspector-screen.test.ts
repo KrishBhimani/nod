@@ -276,16 +276,33 @@ test('known navigation failure pauses screen capture, supports an explicit retry
   }
 });
 
-test('secure input pauses capture until the browser activity changes', async () => {
-  const fixture = await mounted(async () => new Response('', { status: 423 }));
+test('secure input pauses capture without a placeholder and keeps browser controls available', async () => {
+  let secure = true;
+  const fixture = await mounted(async () => (secure ? new Response('', { status: 423 }) : frame()));
   try {
-    assert.match(fixture.element.textContent!, /Screen hidden while sign-in details are entered/);
+    assert.equal(fixture.element.querySelector('.screen-empty'), null);
+    assert.doesNotMatch(
+      fixture.element.textContent!,
+      /Screen hidden while sign-in details are entered/,
+    );
+    assert.doesNotMatch(fixture.element.textContent!, /Retry view/);
     await act(async () => {
       await delay(1100);
     });
     assert.equal(fixture.captures(), 1);
     assert.equal(fixture.element.querySelector('.screen-preview img'), null);
     assert.equal(takeControl(fixture.element).disabled, false);
+    secure = false;
+    fixture.updateActivity(new Date(Date.now() + 1000).toISOString());
+    await act(async () => {
+      await delay(3600);
+    });
+    await act(async () => {
+      await delay(1100);
+    });
+    assert.ok(fixture.captures() >= 2);
+    assert.ok(fixture.element.querySelector('.screen-preview img'));
+    assert.doesNotMatch(fixture.element.textContent!, /Retry view/);
   } finally {
     await fixture.close();
   }

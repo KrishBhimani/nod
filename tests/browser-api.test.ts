@@ -22,9 +22,11 @@ test(
     let currentId: string | undefined = taskId;
     let locked = false;
     let fail = false;
+    let inspectorEnabled = false;
+    let onCapture: (() => Promise<void>) | undefined;
     const captures: string[] = [];
     const app = await createApp({
-      configuration: () => configuration({ inspectorEnabled: false }),
+      configuration: () => configuration({ inspectorEnabled }),
       computer: {
         status: () => 'Ready',
         currentSession: () =>
@@ -35,6 +37,7 @@ test(
           if (locked)
             throw Object.assign(new Error('Screen hidden during sign-in.'), { statusCode: 423 });
           if (fail) throw new Error('synthetic-private-provider-detail');
+          await onCapture?.();
           return Buffer.from('synthetic-public-browser-frame');
         },
       },
@@ -74,6 +77,37 @@ test(
       for (const id of [foreignId, randomUUID()])
         assert.equal((await request(`/api/browser/screen?taskId=${id}`)).statusCode, 404);
       assert.deepEqual(captures, [taskId]);
+      inspectorEnabled = true;
+      await db.pool.query("UPDATE tasks SET status='waiting_credentials' WHERE id=$1", [taskId]);
+      for (const path of ['/api/browser/screen', '/api/inspector/screen']) {
+        const pending = await request(`${path}?taskId=${taskId}`);
+        assert.equal(pending.statusCode, 423);
+        assert.equal(pending.headers['cache-control'], 'no-store');
+        assert.equal(pending.body.includes('synthetic-public-browser-frame'), false);
+      }
+      assert.deepEqual(captures, [taskId]);
+      await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1", [taskId]);
+      onCapture = async () => {
+        await db.pool.query("UPDATE tasks SET status='waiting_credentials' WHERE id=$1", [taskId]);
+      };
+      const becamePrivate = await request(`/api/browser/screen?taskId=${taskId}`);
+      assert.equal(becamePrivate.statusCode, 423);
+      assert.equal(becamePrivate.body.includes('synthetic-public-browser-frame'), false);
+      assert.deepEqual(captures, [taskId, taskId]);
+      await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1", [taskId]);
+      onCapture = async () => {
+        await db.pool.query("UPDATE tasks SET status='waiting_credentials' WHERE id=$1", [taskId]);
+        await db.pool.query("UPDATE tasks SET status='running',revision=revision+1 WHERE id=$1", [
+          taskId,
+        ]);
+      };
+      const obsolete = await request(`/api/browser/screen?taskId=${taskId}`);
+      assert.equal(obsolete.statusCode, 409);
+      assert.equal(obsolete.body.includes('synthetic-public-browser-frame'), false);
+      onCapture = undefined;
+      const resumed = await request(`/api/browser/screen?taskId=${taskId}`);
+      assert.equal(resumed.statusCode, 200);
+      assert.equal(resumed.body, 'synthetic-public-browser-frame');
       locked = true;
       const privateFrame = await request(`/api/browser/screen?taskId=${taskId}`);
       assert.equal(privateFrame.statusCode, 423);

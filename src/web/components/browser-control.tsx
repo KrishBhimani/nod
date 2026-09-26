@@ -27,7 +27,6 @@ export function BrowserControl({
   emptyMessage,
   live,
   onEnlarge,
-  heading,
   actions,
   onControlChange,
 }: {
@@ -36,7 +35,6 @@ export function BrowserControl({
   emptyMessage: string;
   live: boolean;
   onEnlarge(): void;
-  heading?: ReactNode;
   actions?: ReactNode;
   onControlChange?(active: boolean, privateView: boolean): void;
 }) {
@@ -63,6 +61,7 @@ export function BrowserControl({
   const currentScreen = signingIn ? signIn.screen : screen;
   const currentLive = signingIn ? Boolean(signIn.screen) : live;
   const canInteract = Boolean(currentScreen) && currentLive && !busy;
+  const placeholder = signingIn ? signIn.error || 'Opening the workspace browser…' : emptyMessage;
   useEffect(() => {
     onControlChange?.(state.active || busy, signingIn || (busy && !state.active));
   }, [state.active, signingIn, busy, onControlChange]);
@@ -145,9 +144,7 @@ export function BrowserControl({
   }
   return (
     <div className="browser-control">
-      <div className="browser-control-heading">
-        {!signingIn && heading}
-        {actions}
+      <div className="browser-control-heading" role="group" aria-label="Browser controls">
         <Button
           variant={state.active ? 'secondary' : 'outline'}
           size="sm"
@@ -181,6 +178,7 @@ export function BrowserControl({
             <Maximize2 size={15} />
           </Button>
         )}
+        {actions}
       </div>
       {currentScreen ? (
         <button
@@ -205,12 +203,12 @@ export function BrowserControl({
             draggable={false}
           />
         </button>
-      ) : (
+      ) : placeholder ? (
         <div className="screen-empty">
           <Monitor size={26} />
-          <p>{signingIn ? signIn.error || 'Opening the workspace browser…' : emptyMessage}</p>
+          <p>{placeholder}</p>
         </div>
-      )}
+      ) : null}
       {state.active && (
         <div className="manual-controls">
           <p>You’re in control. Click the page, then enter text below.</p>

@@ -106,13 +106,13 @@ export function InspectorScreen({
           const message = browserErrorMessage(payload?.code);
           if (message || response.status === 423) {
             blockedActivity = requestedActivity;
-            setCapturePaused(true);
+            setCapturePaused(Boolean(message));
           }
           setScreenState(
             message
               ? message
               : response.status === 423
-                ? 'Screen hidden while sign-in details are entered.'
+                ? ''
                 : response.status === 404
                   ? 'No browser view is available yet.'
                   : 'The browser view is temporarily unavailable.',
@@ -187,32 +187,42 @@ export function InspectorScreen({
     imageUrl.current = '';
   }
   if (!active) return null;
+  const openWindowAction = allowDetach && (
+    <Button asChild variant="ghost" size="sm" className="browser-window-action">
+      <a
+        href="/browser"
+        target="sidekick-browser"
+        rel="noreferrer"
+        aria-label="Open browser window"
+        title="Open browser window"
+        onClick={openBrowserWindow}
+      >
+        <ExternalLink size={14} />
+        <span>Open browser window</span>
+      </a>
+    </Button>
+  );
   return (
     <>
       {error && <Notice>{error}</Notice>}
-      {allowDetach && (
-        <div className="inspector-screen-toolbar">
-          <a href="/browser" target="sidekick-browser" rel="noreferrer" onClick={openBrowserWindow}>
-            <ExternalLink size={14} />
-            Open browser window
-          </a>
-        </div>
-      )}
       {detached ? (
         <div className="inspector-browser-detached">
           <Monitor size={24} />
           <p>The browser is open in a separate window.</p>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              popup.current?.close();
-              popup.current = null;
-              setDetached(false);
-            }}
-          >
-            Show here
-          </Button>
+          <div className="inspector-browser-detached-actions">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                popup.current?.close();
+                popup.current = null;
+                setDetached(false);
+              }}
+            >
+              Show here
+            </Button>
+            {openWindowAction}
+          </div>
         </div>
       ) : (
         <>
@@ -226,6 +236,7 @@ export function InspectorScreen({
               live={frameKind === 'live'}
               actions={
                 <>
+                  {openWindowAction}
                   {capturePaused && !controlActive && (
                     <Button
                       variant="outline"

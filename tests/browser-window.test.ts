@@ -111,7 +111,9 @@ test('standalone browser follows current sessions, clears mismatched and secure 
     await act(async () => t.mock.timers.tick(1000));
     assert.equal(element.querySelector('.screen-preview img'), null);
     assert.equal(takeControl(element).disabled, false);
-    assert.match(element.textContent!, /Screen hidden while sign-in details are entered/);
+    assert.equal(element.querySelector('.screen-empty'), null);
+    assert.doesNotMatch(element.textContent!, /Screen hidden while sign-in details are entered/);
+    assert.doesNotMatch(element.textContent!, /Retry view/);
     await act(async () => root.render(null));
     const count = calls.length;
     await act(async () => t.mock.timers.tick(5000));
@@ -170,14 +172,20 @@ test('browser popout opens only the app route, pauses embedded captures and rest
         }),
       ),
     );
-    const link = element.querySelector<HTMLAnchorElement>('.inspector-screen-toolbar a')!;
+    const controls = element.querySelector('[role="group"][aria-label="Browser controls"]')!;
+    const link = controls.querySelector<HTMLAnchorElement>('[aria-label="Open browser window"]')!;
+    assert.ok(controls.contains(takeControl(element)));
+    assert.ok(controls.querySelector('[aria-label="Enlarge browser screen"]'));
     const event = new MouseEvent('click', { bubbles: true, cancelable: true });
     await act(async () => link.dispatchEvent(event));
     assert.equal(event.defaultPrevented, true);
     assert.deepEqual(opened, [['/browser', 'sidekick-browser', 'popup,width=1200,height=800']]);
     assert.equal(popup.opener, null);
+    const detachedLink = element.querySelector<HTMLAnchorElement>(
+      '[aria-label="Open browser window"]',
+    )!;
     await act(async () =>
-      link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })),
+      detachedLink.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })),
     );
     assert.equal(opened.length, 1);
     assert.equal(element.querySelector('.screen-preview img'), null);
@@ -192,10 +200,13 @@ test('browser popout opens only the app route, pauses embedded captures and rest
     assert.equal(captures, 2);
     assert.equal(takeControl(element).disabled, false);
     window.open = () => null;
+    const restoredLink = element.querySelector<HTMLAnchorElement>(
+      '[aria-label="Open browser window"]',
+    )!;
     const blocked = new MouseEvent('click', { bubbles: true, cancelable: true });
-    await act(async () => link.dispatchEvent(blocked));
+    await act(async () => restoredLink.dispatchEvent(blocked));
     assert.equal(blocked.defaultPrevented, false);
-    assert.equal(link.getAttribute('href'), '/browser');
+    assert.equal(restoredLink.getAttribute('href'), '/browser');
     assert.equal(element.querySelector('.inspector-browser-detached'), null);
   } finally {
     await act(async () => root.unmount());
@@ -432,8 +443,9 @@ test('finishing private control resets a blocked capture and requests a fresh fr
       ),
     );
     assert.equal(ordinaryCaptures, 1);
-    assert.match(element.textContent!, /Screen hidden while sign-in details are entered/);
-    assert.match(element.textContent!, /Retry view/);
+    assert.equal(element.querySelector('.screen-empty'), null);
+    assert.doesNotMatch(element.textContent!, /Screen hidden while sign-in details are entered/);
+    assert.doesNotMatch(element.textContent!, /Retry view/);
     await act(async () =>
       takeControl(element).dispatchEvent(new MouseEvent('click', { bubbles: true })),
     );

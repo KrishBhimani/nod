@@ -191,7 +191,7 @@ export function VaultFields({
         : 'Username';
   return (
     <>
-      <Field label="Item name">
+      <Field label="Name">
         <Input
           name="label"
           defaultValue={details?.label}

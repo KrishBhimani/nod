@@ -131,6 +131,65 @@ const savedEntries = [
   { id: 'work', label: 'Work account', origin: 'https://example.com', usernameHint: 'wo…' },
 ];
 
+test('a new login offers an editable website name and submits it without another request', async () => {
+  const f = await setup(undefined, { request: { origin: 'https://x.com' }, ok: true });
+  try {
+    const name = f.element.querySelector<HTMLInputElement>('input[name=label]')!;
+    assert.equal(name.value, 'X.com');
+    assert.match(name.labels![0].textContent ?? '', /^Name/);
+    assert.equal(document.activeElement?.getAttribute('name'), 'username');
+    f.element.querySelector<HTMLInputElement>('input[name=username]')!.value = 'synthetic-user';
+    f.element.querySelector<HTMLInputElement>('input[name=password]')!.value = 'synthetic-password';
+    await act(async () =>
+      f.element
+        .querySelector('form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+    );
+    assert.deepEqual(f.requests.find((request) => request.body.password)?.body, {
+      label: 'X.com',
+      username: 'synthetic-user',
+      password: 'synthetic-password',
+    });
+    assert.equal(f.requests.length, 2);
+    assert.match(f.element.textContent!, /Details submitted/);
+  } finally {
+    await f.close();
+  }
+});
+
+test('another login suggests a distinct name and retains edits while switching saved choices', async () => {
+  const f = await setup(undefined, {
+    request: {
+      savedEntries: savedEntries.map((entry, index) => ({
+        ...entry,
+        label: index === 0 ? 'Example.com' : 'example.COM 2',
+      })),
+    },
+  });
+  const click = async (label: string) => {
+    const button = [...f.element.querySelectorAll('button')].find(
+      (candidate) => candidate.textContent === label,
+    )!;
+    await act(async () => button.click());
+  };
+  try {
+    await click('Use another login');
+    const name = f.element.querySelector<HTMLInputElement>('input[name=label]')!;
+    assert.equal(name.value, 'Example.com 3');
+    name.value = 'My personal account';
+    await act(async () => name.dispatchEvent(new Event('input', { bubbles: true })));
+    await click('Choose a saved login');
+    await click('Use another login');
+    assert.equal(
+      f.element.querySelector<HTMLInputElement>('input[name=label]')!.value,
+      'My personal account',
+    );
+    assert.equal(f.requests.length, 1);
+  } finally {
+    await f.close();
+  }
+});
+
 test('multiple saved logins show named choices and submit only the selected entry ID', async () => {
   const f = await setup(undefined, { request: { savedEntries } });
   try {

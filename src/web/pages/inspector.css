@@ -188,20 +188,23 @@
   font-size: 12px;
   color: var(--muted-foreground);
 }
+.browser-control {
+  container-type: inline-size;
+  min-width: 0;
+}
 .browser-control-heading {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 0 12px;
-  flex-wrap: wrap;
+  padding: 4px 4px 12px;
+  overflow-x: auto;
 }
-.browser-live-label {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin-right: auto;
-  font-size: 12px;
-  color: var(--text-secondary);
+.browser-control-heading > .button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.browser-window-action {
+  text-decoration: none;
 }
 .screen-interactive {
   cursor: crosshair;
@@ -790,22 +793,6 @@
   border-bottom: 1px solid var(--border);
 }
 
-.inspector-screen-toolbar {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 10px;
-}
-.inspector-screen-toolbar a {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--muted-foreground);
-  font-size: 11px;
-  text-decoration: none;
-}
-.inspector-screen-toolbar a:hover {
-  color: var(--foreground);
-}
 .inspector-browser-detached {
   display: flex;
   flex-direction: column;
@@ -818,6 +805,13 @@
 .inspector-browser-detached p {
   margin: 0;
   font-size: 13px;
+}
+.inspector-browser-detached-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
 }
 .browser-window {
   min-height: 100dvh;
@@ -947,6 +941,14 @@
   }
 }
 @container (max-width: 440px) {
+  .browser-control-heading > .browser-window-action {
+    width: 34px;
+    height: 34px;
+    padding: 0;
+  }
+  .browser-control-heading > .browser-window-action span {
+    display: none;
+  }
   .inspector-panel .inspector-tabs button {
     padding-inline: 4px;
   }

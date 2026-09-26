@@ -63,7 +63,7 @@ export function Vault() {
             }}
           >
             <Plus size={14} />
-            Add item
+            Add to Vault
           </Button>
         </span>
       </header>
@@ -116,7 +116,7 @@ export function Vault() {
         </div>
       ) : (
         <div className="secondary-empty">
-          <h2>No saved items</h2>
+          <h2>Your vault is empty</h2>
           <p>Add a login or payment card to your vault.</p>
         </div>
       )}
@@ -161,7 +161,7 @@ export function Vault() {
                 ? 'Add a payment card'
                 : adding === 'login'
                   ? 'Add a login'
-                  : 'Add item'}
+                  : 'Add to Vault'}
             </DialogTitle>
             <DialogDescription className="sr-only">
               Choose what to save in your vault.
@@ -173,7 +173,7 @@ export function Vault() {
                 className="vault-type-back"
                 variant="ghost"
                 size="sm"
-                aria-label="Choose item type"
+                aria-label="Choose what to save"
                 onClick={() => setAdding(null)}
               >
                 <ArrowLeft size={14} aria-hidden="true" />

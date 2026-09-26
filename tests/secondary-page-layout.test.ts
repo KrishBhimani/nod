@@ -101,7 +101,7 @@ test('secondary pages share layout, have one add action, and keep plan changes a
       assert.equal(dom.window.getComputedStyle(page.querySelector('header')!).marginBottom, '24px');
     }
     const buttons = Array.from(element.querySelectorAll('button'));
-    for (const label of ['Add goal', 'Add schedule', 'Add item'])
+    for (const label of ['Add goal', 'Add schedule', 'Add to Vault'])
       assert.equal(buttons.filter((button) => button.textContent === label).length, 1);
     assert.equal(element.querySelectorAll('.secondary-empty').length, 3);
     assert.doesNotMatch(element.textContent ?? '', /draft|awake|in chat|Talk about a goal/);

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Check, KeyRound, LockKeyhole, ShieldCheck, ArrowUpRight } from 'lucide-react';
 import type { CredentialRequest } from '../../shared/contracts';
 import { api } from '../lib/api';
+import { suggestLoginName } from '../lib/vault-name';
 import { Button, Field, Input, Loading, Notice } from '../components/ui';
 import { BrandMark } from '../components/brand';
 
@@ -19,7 +20,7 @@ function CredentialForm({ id }: { id: string }) {
   const [retried, setRetried] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [enterNew, setEnterNew] = useState(false);
-  const [loginName, setLoginName] = useState('');
+  const [loginName, setLoginName] = useState<string>();
   useEffect(() => {
     const current = ++generation.current;
     const controller = new AbortController();
@@ -270,10 +271,17 @@ function CredentialForm({ id }: { id: string }) {
                 ) : (
                   <>
                     {password && (
-                      <Field label="Item name" hint="A name to find it in Vault.">
+                      <Field label="Name">
                         <Input
                           name="label"
-                          defaultValue={loginName}
+                          defaultValue={
+                            loginName ??
+                            suggestLoginName(
+                              request.origin,
+                              savedEntries.map((entry) => entry.label),
+                            )
+                          }
+                          onInput={(event) => setLoginName(event.currentTarget.value)}
                           placeholder="For example, my work account"
                           required
                           maxLength={100}

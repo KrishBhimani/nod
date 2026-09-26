@@ -385,11 +385,15 @@ export async function createApp(dependencies: AppDependencies = {}) {
   });
   async function readBrowserScreen(request: FastifyRequest, reply: FastifyReply) {
     const { taskId: id } = z.object({ taskId: z.uuid() }).parse(request.query);
-    const task = await pool.query('SELECT id FROM tasks WHERE id=$1 AND owner_id=$2', [
-      id,
-      ownerId,
-    ]);
+    const task = await pool.query(
+      'SELECT id,status,revision FROM tasks WHERE id=$1 AND owner_id=$2',
+      [id, ownerId],
+    );
     if (!task.rowCount) return reply.code(404).send({ error: 'Task not found.' });
+    if (task.rows[0].status === 'waiting_credentials')
+      return reply
+        .code(423)
+        .send({ error: 'Browser observations are paused during credential entry.' });
     let screen: Buffer | null | undefined;
     try {
       screen = await dependencies.computer?.screenshot(id);
@@ -400,6 +404,17 @@ export async function createApp(dependencies: AppDependencies = {}) {
         return reply.code(409).send({ code: error.code, error: message });
       throw error;
     }
+    const current = await pool.query(
+      'SELECT status,revision FROM tasks WHERE id=$1 AND owner_id=$2',
+      [id, ownerId],
+    );
+    if (!current.rowCount) return reply.code(404).send({ error: 'Task not found.' });
+    if (current.rows[0].status === 'waiting_credentials')
+      return reply
+        .code(423)
+        .send({ error: 'Browser observations are paused during credential entry.' });
+    if (current.rows[0].revision !== task.rows[0].revision)
+      return reply.code(409).send({ error: 'The browser session changed. Request a new view.' });
     if (!screen) return reply.code(404).send({ error: 'This task has no browser screen yet.' });
     const screenStatus = dependencies.computer?.screenStatus?.(id);
     reply.header('X-Screen-State', screenStatus?.state ?? 'live');

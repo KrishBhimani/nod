@@ -149,7 +149,7 @@ test('Vault accepts named bare-domain logins and retains separate accounts for t
     await act(async () => root.render(createElement(Vault)));
     for (const label of ['Personal account', 'Work account']) {
       const trigger = [...container.querySelectorAll('button')].find((button) =>
-        button.textContent?.includes('Add item'),
+        button.textContent?.includes('Add to Vault'),
       )!;
       await act(async () => trigger.dispatchEvent(new MouseEvent('click', { bubbles: true })));
       await click('Login');
@@ -161,7 +161,7 @@ test('Vault accepts named bare-domain logins and retains separate accounts for t
       const password = form.querySelector<HTMLInputElement>('input[name="password"]')!;
       assert.equal(name.maxLength, 100);
       assert.equal(name.required, true);
-      assert.match(name.labels![0].textContent ?? '', /Item name/);
+      assert.match(name.labels![0].textContent ?? '', /Name/);
       assert.match(website.labels![0].textContent ?? '', /Website domain/);
       name.value = label;
       website.value = 'example.com';
@@ -951,7 +951,7 @@ test('Card security code reads and replacement inputs are cleared and fenced acr
   }
 });
 
-test('Add item supports an optional security code and returns only card metadata to the list', async () => {
+test('Add to Vault supports an optional security code and returns only card metadata to the list', async () => {
   const previousFetch = globalThis.fetch;
   let added = false;
   const writes: Record<string, unknown>[] = [];
@@ -968,7 +968,7 @@ test('Add item supports an optional security code and returns only card metadata
   });
   const mounted = await mountVault();
   try {
-    const trigger = await click('Add item');
+    const trigger = await click('Add to Vault');
     assert.equal(document.querySelector('form'), null);
     await click('Payment card');
     const form = document.querySelector<HTMLFormElement>('.vault-add-form')!;
@@ -1247,7 +1247,7 @@ test('Vault deletion is only available in details and requires an explicit confi
     assert.equal(mounted.container.querySelector('[aria-label="View Everyday card"]'), null);
     assert.ok(mounted.container.querySelector('[aria-label="View Personal account"]'));
     await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
-    assert.equal(document.activeElement?.textContent?.trim(), 'Add item');
+    assert.equal(document.activeElement?.textContent?.trim(), 'Add to Vault');
     await click('View Personal account');
     await click('Delete login');
     assert.match(
@@ -1262,7 +1262,7 @@ test('Vault deletion is only available in details and requires an explicit confi
   }
 });
 
-test('Closing Add item aborts a pending card save and fences it from a new login form', async () => {
+test('Closing Add to Vault aborts a pending card save and fences it from a new login form', async () => {
   const previousFetch = globalThis.fetch;
   const pending = deferred<Response>();
   const requests = mockCardRequests((path, options) =>
@@ -1270,7 +1270,7 @@ test('Closing Add item aborts a pending card save and fences it from a new login
   );
   const mounted = await mountVault();
   try {
-    await click('Add item');
+    await click('Add to Vault');
     await click('Payment card');
     let form = document.querySelector<HTMLFormElement>('.vault-add-form')!;
     (form.elements.namedItem('label') as HTMLInputElement).value = 'Pending card';
@@ -1286,7 +1286,7 @@ test('Closing Add item aborts a pending card save and fences it from a new login
     assert.equal(number.value, '');
     await click('Close');
     assert.equal(saving.options.signal?.aborted, true);
-    await click('Add item');
+    await click('Add to Vault');
     await click('Login');
     form = document.querySelector<HTMLFormElement>('.vault-add-form')!;
     assert.equal((form.elements.namedItem('password') as HTMLInputElement).value, '');
