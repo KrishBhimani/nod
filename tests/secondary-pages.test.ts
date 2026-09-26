@@ -269,6 +269,9 @@ test('channel status separates saved configuration from delivery and limits bot 
     }),
   );
   assert.match(html, /Start conversation/);
+  assert.match(html, /aria-label="Remove Telegram channel"/);
+  assert.match(html, /title="Remove channel"/);
+  assert.doesNotMatch(html, />Remove channel</);
   assert.match(html, /https:\/\/t.me\/fixture_bot/);
   assert.doesNotMatch(html, /Ready for messages|Delivered|Connected successfully/);
   assert.equal(channelLabel({ provider: 'telegram', enabled: true, mode: 'polling' }, true), null);

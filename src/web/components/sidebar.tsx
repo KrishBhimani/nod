@@ -43,6 +43,7 @@ export function Sidebar({
   const [hints, setHints] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [appMenuOpen, setAppMenuOpen] = useState(false);
+  const mobileNavigation = useRef<HTMLDivElement>(null);
   const theme = useSyncExternalStore(subscribeTheme, currentTheme, () => 'light');
   const ThemeIcon = theme === 'dark' ? Sun : Moon;
   const themeLabel = theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
@@ -50,6 +51,8 @@ export function Sidebar({
   const mac = /Mac|iPhone|iPad/.test(navigator.platform);
   const navigate = useRef(onNavigate);
   navigate.current = onNavigate;
+  const toggles = useRef({ onToggle, onToggleInspector, inspectorEnabled });
+  toggles.current = { onToggle, onToggleInspector, inspectorEnabled };
   useEffect(() => {
     setMobileMenuOpen(false);
     setAppMenuOpen(false);
@@ -90,8 +93,27 @@ export function Sidebar({
       clear();
       const action = navigationShortcut(event);
       if (!action) return;
+      if (
+        action.type === 'inspector' &&
+        (!toggles.current.inspectorEnabled || !toggles.current.onToggleInspector)
+      )
+        return;
       event.preventDefault();
       event.stopPropagation();
+      if (action.type === 'sidebar') {
+        if (window.innerWidth <= 640) {
+          const trigger = mobileNavigation.current?.querySelector<HTMLButtonElement>(
+            'button[aria-haspopup="menu"]',
+          );
+          trigger?.focus();
+          trigger?.click();
+        } else toggles.current.onToggle();
+        return;
+      }
+      if (action.type === 'inspector') {
+        toggles.current.onToggleInspector?.();
+        return;
+      }
       navigate.current(action.path);
       if (focusFrame !== undefined) window.cancelAnimationFrame(focusFrame);
       focusFrame = window.requestAnimationFrame(() => {
@@ -132,6 +154,8 @@ export function Sidebar({
           role="menuitem"
           aria-expanded={inspectorOpen}
           aria-controls="developer-inspector"
+          aria-keyshortcuts="Meta+I Control+I"
+          title={`Inspector (${shortcutLabel('i', mac)})`}
           onClick={() => {
             close();
             onToggleInspector?.();
@@ -234,7 +258,7 @@ export function Sidebar({
           })}
         </ul>
       </nav>
-      <div className="mobile-navigation">
+      <div className="mobile-navigation" ref={mobileNavigation}>
         <a
           href="/"
           className="mobile-chat-link"
@@ -329,11 +353,15 @@ export function Sidebar({
             aria-label="Inspector"
             aria-expanded={inspectorOpen}
             aria-controls="developer-inspector"
-            title="Inspector"
+            aria-keyshortcuts="Meta+I Control+I"
+            title={`Inspector (${shortcutLabel('i', mac)})`}
             onClick={onToggleInspector}
           >
             <Monitor size={22} aria-hidden="true" />
             <span className="nav-label">Inspector</span>
+            <kbd className="nav-shortcut" aria-hidden="true">
+              I
+            </kbd>
           </button>
         )}
         {development ? (
@@ -372,7 +400,8 @@ export function Sidebar({
           aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           aria-expanded={!collapsed}
           aria-controls="sidebar-navigation"
-          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-keyshortcuts="Meta+B Control+B"
+          title={`${collapsed ? 'Expand sidebar' : 'Collapse sidebar'} (${shortcutLabel('b', mac)})`}
           onClick={onToggle}
         >
           {collapsed ? (
@@ -381,6 +410,9 @@ export function Sidebar({
             <PanelLeftClose size={22} aria-hidden="true" />
           )}
           <span className="nav-label">Collapse</span>
+          <kbd className="nav-shortcut" aria-hidden="true">
+            B
+          </kbd>
         </button>
       </div>
     </aside>

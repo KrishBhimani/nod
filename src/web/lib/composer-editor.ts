@@ -1,4 +1,4 @@
-import { Extension } from '@tiptap/core';
+import { Extension, InputRule } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { Markdown } from '@tiptap/markdown';
 import Placeholder from '@tiptap/extension-placeholder';
@@ -36,6 +36,29 @@ export function createComposerExtensions(callbacks: {
     Extension.create({
       name: 'chatInput',
       priority: 1000,
+      addInputRules() {
+        return [
+          new InputRule({
+            find: /(?<=\n)[\t ]*([-+*])\s$/,
+            handler: ({ state, range, chain }) => {
+              const $start = state.doc.resolve(range.from);
+              if (
+                $start.parent.type.name !== 'paragraph' ||
+                $start.nodeBefore?.type.name !== 'hardBreak'
+              )
+                return null;
+              return chain()
+                .deleteRange({ from: range.from - 1, to: range.to })
+                .setTextSelection(range.from - 1)
+                .splitBlock()
+                .wrapInList('bulletList')
+                .run()
+                ? undefined
+                : null;
+            },
+          }),
+        ];
+      },
       addProseMirrorPlugins() {
         const editor = this.editor;
         return [

@@ -57,14 +57,19 @@ const settings = {
   ],
 };
 const snapshot = (path: string) => (path === '/api/channels' ? status : settings);
+const dialogButton = (label: string) => {
+  const button = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(
+    (candidate) => candidate.textContent === label,
+  );
+  assert.ok(button, `Expected dialog button: ${label}`);
+  return button;
+};
 
 test('accepted channel disconnect survives a failed refresh and an older in-flight read', async () => {
   const priorFetch = globalThis.fetch;
-  const priorConfirm = window.confirm;
   let mode: 'ready' | 'held' | 'failed' = 'ready';
   const pending: Array<{ path: string; finish: (response: Response) => void }> = [];
   const writes: string[] = [];
-  window.confirm = () => true;
   globalThis.fetch = async (input, init) => {
     const path = String(input);
     if (init?.method === 'DELETE') {
@@ -92,11 +97,14 @@ test('accepted channel disconnect survives a failed refresh and an older in-flig
       remove.focus();
       remove.click();
     });
+    assert.deepEqual(writes, []);
+    await act(async () => dialogButton('Remove channel').click());
+    await act(async () => delay(0));
     assert.deepEqual(writes, ['/api/channel-settings/telegram']);
     assert.ok(element.querySelector('[aria-label="Connect Telegram"]'));
-    assert.equal(document.activeElement, element.querySelector('[aria-label="Connect Telegram"]'));
+    assert.equal(document.activeElement?.getAttribute('aria-label'), 'Connect Telegram');
     assert.doesNotMatch(
-      telegram.textContent!,
+      element.querySelector('[aria-labelledby="channel-telegram"]')?.textContent ?? '',
       /Fixture Telegram|Ready for messages|Start conversation/,
     );
     assert.match(element.textContent!, /Fixture status refresh failed/);
@@ -105,41 +113,74 @@ test('accepted channel disconnect survives a failed refresh and an older in-flig
       for (const read of pending) read.finish(Response.json(snapshot(read.path)));
     });
     assert.ok(element.querySelector('[aria-label="Connect Telegram"]'));
-    assert.doesNotMatch(telegram.textContent!, /Fixture Telegram|Ready for messages/);
+    assert.doesNotMatch(
+      element.querySelector('[aria-labelledby="channel-telegram"]')?.textContent ?? '',
+      /Fixture Telegram|Ready for messages/,
+    );
   } finally {
     await act(async () => root.unmount());
     element.remove();
     globalThis.fetch = priorFetch;
-    window.confirm = priorConfirm;
   }
 });
 
-test('a rejected channel disconnect preserves the existing account and exposes the failure', async () => {
+test('a rejected channel removal preserves the saved account and leaves the dialog ready to retry', async () => {
   const priorFetch = globalThis.fetch;
-  const priorConfirm = window.confirm;
-  window.confirm = () => true;
-  globalThis.fetch = async (input, init) =>
-    init?.method === 'DELETE'
-      ? Response.json({ error: 'Fixture disconnect was rejected.' }, { status: 503 })
-      : Response.json(snapshot(String(input)));
+  let removed = false;
+  const writes: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    if (init?.method === 'DELETE') {
+      writes.push(String(input));
+      if (writes.length === 1)
+        return Response.json({ error: 'Fixture disconnect was rejected.' }, { status: 503 });
+      removed = true;
+      return Response.json({ channel: { provider: 'telegram', enabled: false } });
+    }
+    return Response.json(
+      removed
+        ? String(input) === '/api/channels'
+          ? {
+              ...status,
+              channels: [
+                { provider: 'telegram', status: 'disabled', missing: [] },
+                status.channels[1],
+              ],
+            }
+          : { ...settings, channels: [settings.channels[1]] }
+        : snapshot(String(input)),
+    );
+  };
   const element = document.createElement('div');
+  document.body.append(element);
   const root = createRoot(element);
   try {
     await act(async () => root.render(createElement(Channels)));
-    const telegram = element.querySelector<HTMLElement>('.channel-option')!;
     await act(async () => {
-      const remove = telegram.querySelector<HTMLButtonElement>('[data-channel-remove="telegram"]')!;
+      const remove = element.querySelector<HTMLButtonElement>('[data-channel-remove="telegram"]')!;
       remove.focus();
       remove.click();
     });
-    assert.equal(element.querySelector('[aria-label="Connect Telegram"]'), null);
-    assert.match(telegram.textContent!, /Fixture Telegram|Ready for messages/);
-    assert.match(element.textContent!, /Fixture disconnect was rejected/);
+    await act(async () => dialogButton('Remove channel').click());
+    assert.equal(Boolean(element.querySelector('[aria-label="Connect Telegram"]')), false);
+    assert.match(element.textContent ?? '', /Fixture Telegram/);
+    assert.match(
+      document.querySelector('[role="dialog"] [role="alert"]')?.textContent ?? '',
+      /Fixture disconnect was rejected/,
+    );
+    assert.equal(dialogButton('Remove channel').disabled, false);
+    assert.deepEqual(writes, ['/api/channel-settings/telegram']);
+    await act(async () => dialogButton('Remove channel').click());
+    await act(async () => delay(0));
+    assert.deepEqual(writes, ['/api/channel-settings/telegram', '/api/channel-settings/telegram']);
+    assert.equal(Boolean(document.querySelector('[role="dialog"]')), false);
+    assert.ok(element.querySelector('[aria-label="Connect Telegram"]'));
+    assert.equal(Boolean(element.querySelector('[data-channel-remove="telegram"]')), false);
+    assert.ok(element.querySelector('[data-channel-remove="whatsapp"]'));
+    assert.equal(document.activeElement?.getAttribute('aria-label'), 'Connect Telegram');
   } finally {
     await act(async () => root.unmount());
     element.remove();
     globalThis.fetch = priorFetch;
-    window.confirm = priorConfirm;
   }
 });
 
@@ -211,12 +252,12 @@ test('successful explicit Telegram setup offers the verified bot and Start instr
     const dialog = document.querySelector('[role="dialog"]')!;
     assert.match(dialog.textContent!, /Telegram is connected/);
     assert.match(dialog.textContent!, /press Start/);
-    assert.equal(dialog.querySelector('input'), null);
+    assert.equal(Boolean(dialog.querySelector('input')), false);
     const link = dialog.querySelector<HTMLAnchorElement>('a')!;
     assert.equal(link.href, 'https://t.me/fixture_bot');
     assert.equal(link.target, '_blank');
     assert.equal(link.rel, 'noopener noreferrer');
-    assert.equal(document.activeElement, link);
+    assert.equal(document.activeElement?.getAttribute('href'), 'https://t.me/fixture_bot');
     assert.equal(opened, 0);
     assert.equal(writes, 2);
     await act(async () =>
@@ -224,19 +265,98 @@ test('successful explicit Telegram setup offers the verified bot and Start instr
         .find((button) => button.textContent === 'Done')!
         .click(),
     );
-    assert.equal(document.querySelector('[role="dialog"]'), null);
+    assert.equal(Boolean(document.querySelector('[role="dialog"]')), false);
     assert.equal(
       element.querySelector('a[href="https://t.me/fixture_bot"]')?.textContent,
       'Start conversation',
     );
     await act(async () => window.dispatchEvent(new Event('focus')));
-    assert.equal(document.querySelector('[role="dialog"]'), null);
+    assert.equal(Boolean(document.querySelector('[role="dialog"]')), false);
     assert.equal(opened, 0);
   } finally {
     await act(async () => root.unmount());
     element.remove();
     globalThis.fetch = priorFetch;
     window.open = priorOpen;
+  }
+});
+
+test('leaving Channels aborts a single pending setup and ignores its late completion after returning', async () => {
+  const priorFetch = globalThis.fetch;
+  let finish!: (response: Response) => void;
+  let signal: AbortSignal | null | undefined;
+  let reads = 0;
+  const writes: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    if (init?.method === 'PUT') {
+      writes.push(String(input));
+      signal = init.signal;
+      assert.deepEqual(JSON.parse(String(init.body)), {
+        botToken: 'synthetic-fixture-token',
+        allowedUserId: '123456789',
+      });
+      return new Promise<Response>((resolve) => {
+        finish = resolve;
+      });
+    }
+    reads++;
+    return Response.json(
+      String(input) === '/api/channels'
+        ? { channels: [], error: null }
+        : { ready: true, channels: [] },
+    );
+  };
+  const element = document.createElement('div');
+  document.body.append(element);
+  const root = createRoot(element);
+  const submit = () =>
+    document
+      .querySelector('form')!
+      .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  const type = async (value: string) =>
+    act(async () => {
+      const input = document.querySelector<HTMLInputElement>('[role="dialog"] input')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  try {
+    await act(async () => root.render(createElement(Channels)));
+    await act(async () =>
+      element.querySelector<HTMLButtonElement>('[aria-label="Connect Telegram"]')!.click(),
+    );
+    await type('synthetic-fixture-token');
+    await act(async () => {
+      submit();
+    });
+    await type('123456789');
+    await act(async () => {
+      submit();
+    });
+    await act(async () => {
+      submit();
+      submit();
+    });
+    assert.deepEqual(writes, ['/api/channel-settings/telegram']);
+    assert.equal(dialogButton('Verifying…').disabled, true);
+    await act(async () => root.render(null));
+    await act(async () => delay(0));
+    assert.equal(signal?.aborted, true);
+    await act(async () => root.render(createElement(Channels)));
+    const readsBeforeResponse = reads;
+    await act(async () => finish(Response.json({ channel: settings.channels[0] })));
+    assert.equal(reads, readsBeforeResponse);
+    assert.equal(Boolean(document.querySelector('[role="dialog"]')), false);
+    assert.ok(element.querySelector('[aria-label="Connect Telegram"]'));
+    assert.equal(Boolean(element.querySelector('[data-channel-remove="telegram"]')), false);
+    await act(async () =>
+      element.querySelector<HTMLButtonElement>('[aria-label="Connect Telegram"]')!.click(),
+    );
+    assert.equal(document.querySelector<HTMLInputElement>('[role="dialog"] input')?.value, '');
+  } finally {
+    await act(async () => root.unmount());
+    await act(async () => delay(0));
+    element.remove();
+    globalThis.fetch = priorFetch;
   }
 });
 
@@ -264,8 +384,8 @@ test('delivery guidance closes with Escape and returns focus without changing ch
   try {
     await act(async () => root.render(createElement(Channels)));
     const [telegram, whatsapp] = [...element.querySelectorAll<HTMLElement>('.channel-option')];
-    assert.equal(telegram.querySelector('.channel-account-status'), null);
-    assert.equal(telegram.querySelector('[aria-haspopup="menu"]'), null);
+    assert.equal(Boolean(telegram.querySelector('.channel-account-status')), false);
+    assert.equal(Boolean(telegram.querySelector('[aria-haspopup="menu"]')), false);
     assert.match(whatsapp.textContent!, /Finish delivery setup/);
     await act(async () =>
       [...whatsapp.querySelectorAll('button')]
@@ -279,7 +399,7 @@ test('delivery guidance closes with Escape and returns focus without changing ch
     await act(async () =>
       dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })),
     );
-    assert.equal(document.querySelector('[role="dialog"]'), null);
+    assert.equal(Boolean(document.querySelector('[role="dialog"]')), false);
     await act(async () => delay(0));
     assert.equal(document.activeElement?.textContent, 'Finish setup');
   } finally {
@@ -289,15 +409,9 @@ test('delivery guidance closes with Escape and returns focus without changing ch
   }
 });
 
-test('cancelling direct channel removal keeps the saved connection without a request', async () => {
+test('cancelling channel removal returns focus and keeps the saved connection without a request', async () => {
   const priorFetch = globalThis.fetch;
-  const priorConfirm = window.confirm;
   const writes: string[] = [];
-  const confirmations: string[] = [];
-  window.confirm = (message) => {
-    confirmations.push(message ?? '');
-    return false;
-  };
   globalThis.fetch = async (input, init) => {
     if (init?.method) writes.push(String(input));
     return Response.json(snapshot(String(input)));
@@ -313,16 +427,140 @@ test('cancelling direct channel removal keeps the saved connection without a req
       remove.click();
     });
     assert.deepEqual(writes, []);
-    assert.deepEqual(confirmations, [
-      'Remove Telegram from Sidekick? You will need its credentials to connect again.',
-    ]);
-    assert.equal(document.activeElement, remove);
+    assert.match(
+      document.querySelector('[role="dialog"]')?.textContent ?? '',
+      /Remove Telegram channel\?/,
+    );
+    assert.equal(document.activeElement?.textContent, 'Keep channel');
+    await act(async () => dialogButton('Keep channel').click());
+    await act(async () => delay(0));
+    assert.equal(Boolean(document.querySelector('[role="dialog"]')), false);
+    assert.equal(document.activeElement?.getAttribute('aria-label'), 'Remove Telegram channel');
     assert.match(element.textContent!, /Fixture Telegram/);
-    assert.equal(element.querySelector('[aria-label="Connect Telegram"]'), null);
+    assert.equal(Boolean(element.querySelector('[aria-label="Connect Telegram"]')), false);
+    assert.deepEqual(writes, []);
+    await act(async () => remove.click());
+    await act(async () =>
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })),
+    );
+    await act(async () => delay(0));
+    assert.equal(Boolean(document.querySelector('[role="dialog"]')), false);
+    assert.equal(document.activeElement?.getAttribute('aria-label'), 'Remove Telegram channel');
+    assert.deepEqual(writes, []);
   } finally {
     await act(async () => root.unmount());
     element.remove();
     globalThis.fetch = priorFetch;
-    window.confirm = priorConfirm;
+  }
+});
+
+test('pending channel removal blocks dismissal and repeated requests until the selected provider is removed', async () => {
+  const priorFetch = globalThis.fetch;
+  let finish!: (response: Response) => void;
+  let removed = false;
+  const writes: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    if (init?.method === 'DELETE') {
+      writes.push(String(input));
+      return new Promise<Response>((resolve) => {
+        finish = resolve;
+      });
+    }
+    return Response.json(
+      removed
+        ? String(input) === '/api/channels'
+          ? {
+              ...status,
+              channels: [
+                status.channels[0],
+                { provider: 'whatsapp', status: 'disabled', missing: [] },
+              ],
+            }
+          : { ...settings, channels: [settings.channels[0]] }
+        : snapshot(String(input)),
+    );
+  };
+  const element = document.createElement('div');
+  document.body.append(element);
+  const root = createRoot(element);
+  try {
+    await act(async () => root.render(createElement(Channels)));
+    const remove = element.querySelector<HTMLButtonElement>('[data-channel-remove="whatsapp"]')!;
+    await act(async () => {
+      remove.focus();
+      remove.click();
+    });
+    assert.match(
+      document.querySelector('[role="dialog"]')?.textContent ?? '',
+      /Remove WhatsApp channel\?/,
+    );
+    assert.deepEqual(writes, []);
+    const confirm = dialogButton('Remove channel');
+    await act(async () => confirm.click());
+    assert.deepEqual(writes, ['/api/channel-settings/whatsapp']);
+    assert.equal(confirm.disabled, true);
+    assert.equal(dialogButton('Keep channel').disabled, true);
+    assert.match(element.textContent ?? '', /Fixture WhatsApp/);
+    await act(async () => {
+      confirm.click();
+      remove.click();
+      document.querySelector<HTMLButtonElement>('[role="dialog"] [aria-label="Close"]')!.click();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    assert.ok(document.querySelector('[role="dialog"]'));
+    assert.deepEqual(writes, ['/api/channel-settings/whatsapp']);
+    await act(async () => {
+      removed = true;
+      finish(Response.json({ channel: { provider: 'whatsapp', enabled: false } }));
+    });
+    await act(async () => delay(0));
+    assert.equal(Boolean(document.querySelector('[role="dialog"]')), false);
+    assert.equal(Boolean(element.querySelector('[data-channel-remove="whatsapp"]')), false);
+    assert.ok(element.querySelector('[data-channel-remove="telegram"]'));
+    assert.ok(element.querySelector('[aria-label="Connect WhatsApp"]'));
+    assert.equal(document.activeElement?.getAttribute('aria-label'), 'Connect WhatsApp');
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
+    globalThis.fetch = priorFetch;
+  }
+});
+
+test('leaving Channels aborts removal and ignores a late accepted response', async () => {
+  const priorFetch = globalThis.fetch;
+  let finish!: (response: Response) => void;
+  let signal: AbortSignal | null | undefined;
+  let reads = 0;
+  globalThis.fetch = async (input, init) => {
+    if (init?.method === 'DELETE') {
+      signal = init.signal;
+      return new Promise<Response>((resolve) => {
+        finish = resolve;
+      });
+    }
+    reads++;
+    return Response.json(snapshot(String(input)));
+  };
+  const element = document.createElement('div');
+  document.body.append(element);
+  const root = createRoot(element);
+  try {
+    await act(async () => root.render(createElement(Channels)));
+    await act(async () =>
+      element.querySelector<HTMLButtonElement>('[data-channel-remove="telegram"]')!.click(),
+    );
+    await act(async () => dialogButton('Remove channel').click());
+    await act(async () => root.render(null));
+    assert.equal(signal?.aborted, true);
+    const previousReads = reads;
+    await act(async () =>
+      finish(Response.json({ channel: { provider: 'telegram', enabled: false } })),
+    );
+    assert.equal(reads, previousReads);
+    assert.equal(Boolean(document.querySelector('[role="dialog"]')), false);
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
+    globalThis.fetch = priorFetch;
   }
 });

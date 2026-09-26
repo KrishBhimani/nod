@@ -70,35 +70,38 @@ test('ready Channels offer a bot conversation and direct removal without setup m
   try {
     await act(async () => root.render(createElement(Channels)));
     assert.deepEqual(calls.sort(), ['/api/channel-settings', '/api/channels']);
-    const [whatsapp, telegram] = Array.from(container.querySelectorAll('.channel-option'));
-    assert.equal(whatsapp.querySelector('h2')?.textContent, 'WhatsApp');
-    assert.equal(telegram.querySelector('.channel-option-benefit'), null);
-    assert.equal(telegram.querySelector('.channel-option-heading span'), null);
+    const [telegram, whatsapp] = Array.from(container.querySelectorAll('.channel-option'));
+    assert.match(container.textContent ?? '', /Connected channels/);
+    assert.match(container.textContent ?? '', /More channels/);
+    assert.equal(whatsapp.querySelector('[id="channel-whatsapp"]')?.textContent, 'WhatsApp');
+    assert.match(telegram.querySelector('.channel-option-benefit')?.textContent ?? '', /Telegram/);
+    assert.equal(Boolean(telegram.querySelector('.channel-option-heading span')), false);
     assert.equal(telegram.querySelector('.channel-account-label')?.textContent, 'FixtureBot');
-    assert.equal(telegram.querySelector('.channel-account-status'), null);
+    assert.equal(Boolean(telegram.querySelector('.channel-account-status')), false);
     assert.doesNotMatch(telegram.textContent ?? '', /Ready for messages/);
     assert.doesNotMatch(
       telegram.textContent ?? '',
       /press Start|send a message|Simple local|Connect your own bot/,
     );
     assert.equal(telegram.querySelector('a')?.getAttribute('href'), 'https://t.me/FixtureBot');
-    assert.equal(telegram.querySelector('[role="menu"]'), null);
+    assert.equal(Boolean(telegram.querySelector('[role="menu"]')), false);
     assert.match(
       whatsapp.querySelector('.channel-option-benefit')?.textContent ?? '',
-      /WhatsApp Business number/,
+      /Chat with your sidekick in WhatsApp\./,
     );
     assert.ok(whatsapp.querySelector('[aria-label="Connect WhatsApp"]'));
-    assert.equal(container.querySelector('.button-primary'), telegram.querySelector('a'));
-    assert.equal(container.querySelector('select'), null);
+    assert.equal(Boolean(container.querySelector('select')), false);
     assert.equal(telegram.querySelector('a')?.textContent, 'Start conversation');
     assert.doesNotMatch(
       container.textContent ?? '',
       /Requires a Meta business app|Manage|Replace setup/,
     );
     const remove = telegram.querySelector<HTMLButtonElement>('[data-channel-remove="telegram"]')!;
-    assert.equal(remove.textContent, 'Remove channel');
+    assert.equal(remove.textContent, '');
+    assert.equal(remove.getAttribute('aria-label'), 'Remove Telegram channel');
+    assert.equal(remove.title, 'Remove channel');
     assert.equal(remove.disabled, false);
-    assert.equal(telegram.querySelector('[aria-haspopup="menu"]'), null);
+    assert.equal(Boolean(telegram.querySelector('[aria-haspopup="menu"]')), false);
     assert.equal(calls.length, 2);
   } finally {
     await act(async () => root.unmount());
@@ -134,8 +137,8 @@ test('incomplete webhook setup reveals saved instructions without reconnecting o
         }),
       ),
     );
-    assert.equal(container.querySelector('[role="menu"]'), null);
-    assert.equal(container.querySelector('a'), null);
+    assert.equal(Boolean(container.querySelector('[role="menu"]')), false);
+    assert.equal(Boolean(container.querySelector('a')), false);
     assert.match(
       container.querySelector('.channel-account-status')?.textContent ?? '',
       /Finish delivery setup/,
@@ -154,9 +157,9 @@ test('incomplete webhook setup reveals saved instructions without reconnecting o
     assert.doesNotMatch(dialog.textContent ?? '', /Replace setup/);
     assert.equal(disconnected, 0);
     await act(async () => click(dialog.querySelector('[aria-label="Close"]')!));
-    assert.equal(document.querySelector('[role="dialog"]'), null);
+    assert.equal(Boolean(document.querySelector('[role="dialog"]')), false);
     await act(async () => delay(0));
-    assert.equal(document.activeElement, finish);
+    assert.equal(document.activeElement?.textContent, 'Finish setup');
     await act(async () => click(container.querySelector('[data-channel-remove="whatsapp"]')!));
     assert.equal(disconnected, 1);
   } finally {
@@ -188,7 +191,7 @@ test('pending Telegram registration offers saved recovery instructions without M
       ),
     );
     assert.match(container.textContent ?? '', /Setup needs a retry/);
-    assert.equal(container.querySelector('a'), null);
+    assert.equal(Boolean(container.querySelector('a')), false);
     const finish = [...container.querySelectorAll('button')].find((button) =>
       button.textContent?.startsWith('Finish setup'),
     )!;

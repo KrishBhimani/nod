@@ -1,6 +1,6 @@
 import { PageTitle } from '../components/page-title';
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Check, ExternalLink, Trash2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, ExternalLink, X } from 'lucide-react';
 import { api, errorMessage } from '../lib/api';
 import {
   channelLabel,
@@ -28,12 +28,12 @@ const providers = [
   {
     id: 'telegram' as const,
     name: 'Telegram',
-    description: 'Ask questions and receive replies, images and files in Telegram.',
+    description: 'Chat with your sidekick in Telegram.',
   },
   {
     id: 'whatsapp' as const,
     name: 'WhatsApp',
-    description: 'Ask questions and receive replies on your WhatsApp Business number.',
+    description: 'Chat with your sidekick in WhatsApp.',
   },
 ];
 const steps = {
@@ -256,7 +256,7 @@ export function ChannelAccount({
   provider: ChannelProvider;
   setup?: ChannelSetup;
   configured: boolean;
-  onDisconnect(): void;
+  onDisconnect(trigger: HTMLButtonElement): void;
   busy: boolean;
 }) {
   const botUrl = setup?.provider === 'telegram' ? telegramBotUrl(setup.accountHandle) : null;
@@ -272,16 +272,18 @@ export function ChannelAccount({
   const statusLabel = channelLabel(setup, configured);
   return (
     <div className="channel-account">
-      <div className="channel-account-info">
-        <div className="channel-account-label">
-          <strong>{name || handle || 'Saved configuration'}</strong>
-          {distinctHandle && <span>{handle}</span>}
+      <div className="channel-account-row">
+        <div className="channel-account-info">
+          <div className="channel-account-label">
+            <strong>{name || handle || 'Saved configuration'}</strong>
+            {distinctHandle && <span>{handle}</span>}
+          </div>
+          {statusLabel && (
+            <p className={`channel-account-status${needsDelivery ? ' needs-setup' : ''}`}>
+              {statusLabel}
+            </p>
+          )}
         </div>
-        {statusLabel && (
-          <p className={`channel-account-status${needsDelivery ? ' needs-setup' : ''}`}>
-            {statusLabel}
-          </p>
-        )}
       </div>
       <div className="channel-account-actions">
         {needsDelivery ? (
@@ -322,14 +324,15 @@ export function ChannelAccount({
         ) : null}
         <Button
           variant="ghost"
-          size="sm"
+          size="icon"
           className="channel-remove"
           data-channel-remove={provider}
+          aria-label={`Remove ${provider === 'telegram' ? 'Telegram' : 'WhatsApp'} channel`}
+          title="Remove channel"
           disabled={busy}
-          onClick={onDisconnect}
+          onClick={(event) => onDisconnect(event.currentTarget)}
         >
-          <Trash2 size={13} aria-hidden="true" />
-          Remove channel
+          <X size={15} aria-hidden="true" />
         </Button>
       </div>
     </div>
@@ -347,10 +350,23 @@ export function Channels() {
   const [fields, setFields] = useState<Record<string, string>>({});
   const [policy, setPolicy] = useState(false);
   const [telegramStartUrl, setTelegramStartUrl] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<ChannelProvider | null>(null);
+  const [removeError, setRemoveError] = useState('');
   const telegramStartLink = useRef<HTMLAnchorElement>(null);
   const request = useRef<AbortController | null>(null);
+  const actionRequest = useRef<AbortController | null>(null);
   const page = useRef<HTMLDivElement>(null);
-  const restoreFocus = useRef<ChannelProvider | null>(null);
+  const removeTrigger = useRef<HTMLButtonElement | null>(null);
+  const removeProvider = useRef<ChannelProvider | null>(null);
+  const channels = providers.map((provider) => {
+    const setup = settings?.channels.find((item) => item.provider === provider.id);
+    const configured = Boolean(
+      data?.channels.some((item) => item.provider === provider.id && item.status === 'configured'),
+    );
+    return { provider, setup, configured, connected: Boolean(setup?.enabled || configured) };
+  });
+  const connected = channels.filter((channel) => channel.connected);
+  const available = channels.filter((channel) => !channel.connected);
   async function load() {
     request.current?.abort();
     const current = new AbortController();
@@ -378,23 +394,13 @@ export function Channels() {
     window.addEventListener('focus', focus);
     return () => {
       request.current?.abort();
+      actionRequest.current?.abort();
       window.removeEventListener('focus', focus);
     };
   }, []);
   useEffect(() => {
     if (telegramStartUrl) telegramStartLink.current?.focus();
   }, [telegramStartUrl]);
-  useEffect(() => {
-    if (busy || !restoreFocus.current) return;
-    const provider = restoreFocus.current;
-    restoreFocus.current = null;
-    if (document.activeElement === document.body)
-      page.current
-        ?.querySelector<HTMLButtonElement>(
-          `[data-connect-channel="${provider}"], [data-channel-remove="${provider}"]`,
-        )
-        ?.focus();
-  }, [busy]);
   function close() {
     setEditing(null);
     setFields({});
@@ -442,18 +448,22 @@ export function Channels() {
   }
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!editing) return;
+    if (!editing || actionRequest.current || busy) return;
     if (step < steps[editing].length - 1) {
       setStep((value) => value + 1);
       return;
     }
+    const current = new AbortController();
+    actionRequest.current = current;
     setBusy(true);
     setError('');
     try {
       const result = await api<{ channel: ChannelSetup }>(`/api/channel-settings/${editing}`, {
         method: 'PUT',
         body: JSON.stringify(channelSetupBody(editing, fields, policy)),
+        signal: current.signal,
       });
+      if (current.signal.aborted) return;
       acceptedSetup(result.channel);
       const botUrl =
         editing === 'telegram' && result.channel.provider === 'telegram' && result.channel.enabled
@@ -465,38 +475,89 @@ export function Channels() {
       } else close();
       void load();
     } catch (cause) {
-      setError(errorMessage(cause));
+      if (!current.signal.aborted) setError(errorMessage(cause));
     } finally {
-      setBusy(false);
+      if (actionRequest.current === current) actionRequest.current = null;
+      if (!current.signal.aborted) setBusy(false);
     }
   }
-  async function disconnect(provider: ChannelProvider) {
-    if (
-      !window.confirm(
-        `Remove ${provider === 'telegram' ? 'Telegram' : 'WhatsApp'} from Sidekick? You will need its credentials to connect again.`,
-      )
-    )
-      return;
-    restoreFocus.current = page.current?.contains(document.activeElement) ? provider : null;
+  async function disconnect() {
+    const provider = removing;
+    if (!provider || actionRequest.current || busy) return;
+    const current = new AbortController();
+    actionRequest.current = current;
     setBusy(true);
-    setError('');
+    setRemoveError('');
     try {
       const result = await api<{ channel: ChannelSetup }>(`/api/channel-settings/${provider}`, {
         method: 'DELETE',
+        signal: AbortSignal.any([current.signal, AbortSignal.timeout(15000)]),
       });
+      if (current.signal.aborted) return;
       acceptedSetup(result.channel);
+      setRemoving(null);
       void load();
     } catch (cause) {
-      setError(errorMessage(cause));
+      if (!current.signal.aborted) setRemoveError(errorMessage(cause));
     } finally {
-      setBusy(false);
+      if (actionRequest.current === current) actionRequest.current = null;
+      if (!current.signal.aborted) setBusy(false);
     }
+  }
+  function cards(items: typeof channels) {
+    return (
+      <div className="channel-options">
+        {items.map(({ provider, setup, configured, connected: isConnected }) => (
+          <article
+            className={`channel-option${isConnected ? ' is-connected' : ''}`}
+            key={provider.id}
+            aria-labelledby={`channel-${provider.id}`}
+          >
+            <div className="channel-option-heading">
+              <img src={`/logos/${provider.id}.svg`} alt="" width={25} height={25} />
+              <div>
+                <h3 id={`channel-${provider.id}`}>{provider.name}</h3>
+                <p className="channel-option-benefit">{provider.description}</p>
+              </div>
+              {!isConnected && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="channel-connect"
+                  aria-label={`Connect ${provider.name}`}
+                  data-connect-channel={provider.id}
+                  disabled={busy || !settings?.ready}
+                  onClick={() => open(provider.id)}
+                >
+                  Connect
+                </Button>
+              )}
+            </div>
+            {isConnected && (
+              <ChannelAccount
+                provider={provider.id}
+                setup={setup}
+                configured={configured}
+                onDisconnect={(trigger) => {
+                  removeTrigger.current = trigger;
+                  removeProvider.current = provider.id;
+                  setRemoveError('');
+                  setRemoving(provider.id);
+                }}
+                busy={busy || !settings?.ready}
+              />
+            )}
+          </article>
+        ))}
+      </div>
+    );
   }
   return (
     <div className="content-page secondary-page channels-page" ref={page}>
       <header className="page-heading secondary-heading">
         <div>
           <PageTitle path="/channels" />
+          <p>Chat with your sidekick in the apps you use.</p>
         </div>
       </header>
       {error && !editing && <Notice>{error}</Notice>}
@@ -509,66 +570,71 @@ export function Channels() {
           <Loading label="Checking channels…" />
         ) : null
       ) : (
-        <div className="channel-options">
-          {[...providers]
-            .sort((a, b) => {
-              const connected = (id: ChannelProvider) =>
-                Boolean(
-                  settings.channels.some((item) => item.provider === id && item.enabled) ||
-                  data.channels.some(
-                    (item) => item.provider === id && item.status === 'configured',
-                  ),
-                );
-              return Number(connected(a.id)) - Number(connected(b.id));
-            })
-            .map((provider) => {
-              const setup = settings.channels.find((item) => item.provider === provider.id);
-              const configured = data.channels.some(
-                (item) => item.provider === provider.id && item.status === 'configured',
-              );
-              const connected = Boolean(setup?.enabled || configured);
-              return (
-                <section
-                  className={`channel-option${connected ? ' is-connected' : ''}`}
-                  key={provider.id}
-                  aria-labelledby={`channel-${provider.id}`}
-                >
-                  <div className="channel-option-heading">
-                    <img src={`/logos/${provider.id}.svg`} alt="" width={28} height={28} />
-                    <div>
-                      <h2 id={`channel-${provider.id}`}>{provider.name}</h2>
-                      {!connected && (
-                        <p className="channel-option-benefit">{provider.description}</p>
-                      )}
-                    </div>
-                    {!connected && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        aria-label={`Connect ${provider.name}`}
-                        data-connect-channel={provider.id}
-                        disabled={busy || !settings.ready}
-                        onClick={() => open(provider.id)}
-                      >
-                        Connect
-                        <ArrowRight size={13} />
-                      </Button>
-                    )}
-                  </div>
-                  {connected && (
-                    <ChannelAccount
-                      provider={provider.id}
-                      setup={setup}
-                      configured={configured}
-                      onDisconnect={() => void disconnect(provider.id)}
-                      busy={busy || !settings.ready}
-                    />
-                  )}
-                </section>
-              );
-            })}
-        </div>
+        <>
+          {connected.length > 0 && (
+            <section className="channels-group" aria-labelledby="channels-connected">
+              <h2 id="channels-connected">Connected channels</h2>
+              {cards(connected)}
+            </section>
+          )}
+          {available.length > 0 && (
+            <section className="channels-group" aria-labelledby="channels-available">
+              <h2 id="channels-available">
+                {connected.length ? 'More channels' : 'Available channels'}
+              </h2>
+              {cards(available)}
+            </section>
+          )}
+        </>
       )}
+      <Dialog
+        open={Boolean(removing)}
+        onOpenChange={(value) => {
+          if (!value && !busy) setRemoving(null);
+        }}
+      >
+        <DialogContent
+          className="channel-remove-dialog"
+          aria-busy={busy}
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            document.querySelector<HTMLButtonElement>('[data-keep-channel]')?.focus();
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            const trigger = removeTrigger.current;
+            if (trigger?.isConnected) trigger.focus();
+            else
+              page.current
+                ?.querySelector<HTMLButtonElement>(
+                  `[data-connect-channel="${removeProvider.current}"]`,
+                )
+                ?.focus();
+          }}
+        >
+          <DialogTitle>
+            Remove {removing === 'whatsapp' ? 'WhatsApp' : 'Telegram'} channel?
+          </DialogTitle>
+          <DialogDescription>
+            Sidekick will stop receiving messages here. You will need its credentials to connect
+            again.
+          </DialogDescription>
+          {removeError && <Notice>{removeError}</Notice>}
+          <div className="channel-remove-actions">
+            <Button
+              data-keep-channel
+              variant="outline"
+              disabled={busy}
+              onClick={() => setRemoving(null)}
+            >
+              Keep channel
+            </Button>
+            <Button variant="destructive" disabled={busy} onClick={() => void disconnect()}>
+              {busy ? 'Removing…' : 'Remove channel'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
       <Dialog
         open={Boolean(editing)}
         onOpenChange={(value) => {

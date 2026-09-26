@@ -104,6 +104,16 @@ function key(element: HTMLElement, options: KeyboardEventInit = {}) {
     new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...options }),
   );
 }
+function typeText(editor: Editor, text: string) {
+  for (const character of text) {
+    const view = editor.view;
+    const { from, to } = view.state.selection;
+    const handled = view.someProp('handleTextInput', (handler) =>
+      handler(view, from, to, character, () => view.state.tr.insertText(character, from, to)),
+    );
+    if (!handled) view.dispatch(view.state.tr.insertText(character, from, to));
+  }
+}
 async function mountComposer(
   onSend: (text: string, attachments: Artifact[]) => Promise<ComposerSendResult>,
   initial = '',
@@ -152,15 +162,109 @@ test('Tiptap keeps Markdown rendered and round-trips lists, code, tables and tas
     assert.match(fixture.editor.getMarkdown(), /\| Notes\s*\| 2/);
     assert.match(fixture.editor.getMarkdown(), /\[x\] Done/);
     fixture.editor.commands.setContent('', { contentType: 'markdown' });
-    for (const character of '**typed**') {
-      const view = fixture.editor.view;
-      const { from, to } = view.state.selection;
-      const handled = view.someProp('handleTextInput', (handler) =>
-        handler(view, from, to, character, () => view.state.tr.insertText(character, from, to)),
-      );
-      if (!handled) view.dispatch(view.state.tr.insertText(character, from, to));
-    }
+    typeText(fixture.editor, '**typed**');
     assert.match(fixture.editor.getHTML(), /<strong>typed<\/strong>/);
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test('typing a bullet marker starts a list in a new draft', () => {
+  const fixture = editorFixture();
+  try {
+    typeText(fixture.editor, '- ');
+    assert.equal(fixture.editor.isActive('bulletList'), true);
+    typeText(fixture.editor, 'First');
+    assert.match(fixture.editor.getHTML(), /<ul><li><p>First<\/p><\/li><\/ul>/);
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test('typing a bullet marker after Shift Enter preserves the preceding line and starts a list', () => {
+  const submitted: string[] = [];
+  const fixture = editorFixture('Plan', {
+    submit: () => submitted.push(fixture.editor.getMarkdown().trim()),
+  });
+  try {
+    const editor = fixture.editor;
+    editor.commands.setTextSelection(Selection.atEnd(editor.state.doc).from);
+    key(editor.view.dom, { shiftKey: true });
+    typeText(editor, '- ');
+    assert.equal(editor.isActive('bulletList'), true);
+    typeText(editor, 'First');
+    assert.match(editor.getHTML(), /<p>Plan<\/p><ul><li><p>First<\/p><\/li><\/ul>/);
+    key(editor.view.dom, { shiftKey: true });
+    typeText(editor, 'Second');
+    assert.equal(editor.state.doc.child(1).childCount, 2);
+    assert.equal(submitted.length, 0);
+    key(editor.view.dom);
+    assert.deepEqual(submitted, ['Plan\n\n- First\n- Second']);
+    editor.commands.setContent(submitted[0], { contentType: 'markdown' });
+    assert.equal(editor.getMarkdown().trim(), submitted[0]);
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test('Backspace leaves an empty automatically formatted list without changing earlier lines', () => {
+  const fixture = editorFixture('Plan');
+  try {
+    const editor = fixture.editor;
+    editor.commands.setTextSelection(Selection.atEnd(editor.state.doc).from);
+    key(editor.view.dom, { shiftKey: true });
+    typeText(editor, '- ');
+    key(editor.view.dom, { key: 'Backspace' });
+    assert.equal(editor.isActive('bulletList'), false);
+    assert.equal(editor.state.doc.firstChild?.textContent, 'Plan');
+    assert.equal(editor.state.selection.$from.parent.type.name, 'paragraph');
+    assert.equal(editor.state.selection.$from.parent.textContent, '');
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test('bullet input preserves earlier line breaks, inline formatting and following text', () => {
+  const fixture = editorFixture('**Plan**');
+  try {
+    const editor = fixture.editor;
+    editor.commands.setTextSelection(Selection.atEnd(editor.state.doc).from);
+    editor.commands.unsetBold();
+    key(editor.view.dom, { shiftKey: true });
+    typeText(editor, 'Today');
+    key(editor.view.dom, { shiftKey: true });
+    const lineStart = editor.state.selection.from;
+    typeText(editor, 'Task');
+    editor.commands.setTextSelection(lineStart);
+    typeText(editor, '- ');
+    assert.match(
+      editor.getHTML(),
+      /^<p><strong>Plan<\/strong><br>Today<\/p><ul><li><p>Task<\/p><\/li><\/ul>/,
+    );
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test('bullet markers stay literal in text, escaped lines and code', () => {
+  const fixture = editorFixture();
+  try {
+    const editor = fixture.editor;
+    typeText(editor, 'Plan - ');
+    assert.equal(editor.isActive('bulletList'), false);
+    key(editor.view.dom, { shiftKey: true });
+    typeText(editor, '\\- ');
+    assert.equal(editor.isActive('bulletList'), false);
+    key(editor.view.dom, { shiftKey: true });
+    editor.commands.toggleCode();
+    typeText(editor, '- ');
+    assert.equal(editor.isActive('bulletList'), false);
+    assert.match(editor.getHTML(), /<code>- <\/code>/);
+    editor.commands.setContent('```text\nPlan\n```', { contentType: 'markdown' });
+    editor.commands.setTextSelection(editor.state.doc.firstChild!.nodeSize - 1);
+    typeText(editor, '\n- ');
+    assert.equal(editor.isActive('codeBlock'), true);
+    assert.equal(editor.isActive('bulletList'), false);
   } finally {
     fixture.dispose();
   }

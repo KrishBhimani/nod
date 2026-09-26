@@ -139,24 +139,35 @@ test('sidebar exposes navigation shortcuts, keyboard focus and modifier hints wi
     await press('g', { metaKey: true });
     for (const key of ['s', 'e', 'd', 'k']) await press(key, { metaKey: true });
     for (const key of ['b', 'i']) {
-      assert.equal((await press(key, { metaKey: true })).defaultPrevented, false);
-      assert.equal((await press(key, { ctrlKey: true })).defaultPrevented, false);
+      assert.equal((await press(key, { metaKey: true })).defaultPrevented, true);
+      assert.equal((await press(key.toUpperCase(), { ctrlKey: true })).defaultPrevented, true);
+      for (const modifier of [
+        { repeat: true },
+        { shiftKey: true },
+        { altKey: true },
+        { isComposing: true },
+      ])
+        assert.equal((await press(key, { metaKey: true, ...modifier })).defaultPrevented, false);
     }
     assert.deepEqual(navigations, ['/', '/goals', '/schedule', '/apps', '/channels', '/vault']);
-    assert.equal(toggles, 0);
-    assert.equal(inspections, 0);
+    assert.equal(toggles, 2);
+    assert.equal(inspections, 2);
     const inspector = element.querySelector<HTMLButtonElement>('[aria-label="Inspector"]')!;
     const collapse = element.querySelector<HTMLButtonElement>('[aria-label="Collapse sidebar"]')!;
-    for (const button of [inspector, collapse]) {
-      assert.equal(button.getAttribute('aria-keyshortcuts'), null);
-      assert.equal(button.querySelector('kbd'), null);
+    for (const [button, key] of [
+      [inspector, 'I'],
+      [collapse, 'B'],
+    ] as const) {
+      assert.equal(button.getAttribute('aria-keyshortcuts'), `Meta+${key} Control+${key}`);
+      assert.equal(button.querySelector('kbd')?.textContent, key);
+      assert.ok(button.title.includes(`⌘${key}`));
     }
     await act(async () => {
       inspector.click();
       collapse.click();
     });
-    assert.equal(toggles, 1);
-    assert.equal(inspections, 1);
+    assert.equal(toggles, 3);
+    assert.equal(inspections, 3);
     assert.equal(
       element.querySelector('[aria-label="Inspector"]')?.getAttribute('aria-expanded'),
       'false',
@@ -196,7 +207,7 @@ test('sidebar preserves all shortcuts inside editable fields, including nested a
   const element = document.createElement('div');
   const fields = document.createElement('div');
   fields.innerHTML =
-    '<input><textarea></textarea><select><option>One</option></select><div contenteditable="true" tabindex="0"><span>Draft</span></div><div role="textbox" tabindex="0">Text</div>';
+    '<input><textarea></textarea><textarea class="browser-input-surface" aria-label="Control workspace browser"></textarea><select><option>One</option></select><div contenteditable="true" tabindex="0"><span>Draft</span></div><div role="textbox" tabindex="0">Text</div>';
   const shadowHost = document.createElement('div');
   const shadow = shadowHost.attachShadow({ mode: 'open' });
   const shadowInput = document.createElement('input');
@@ -260,11 +271,13 @@ test('sidebar preserves all shortcuts inside editable fields, including nested a
       await new Promise((resolve) => setTimeout(resolve, 700));
     });
     assert.equal(element.querySelector('.sidebar')?.classList.contains('show-shortcuts'), false);
-    const handled = new KeyboardEvent('keydown', { key: 'g', metaKey: true, cancelable: true });
-    handled.preventDefault();
     await act(async () => {
       document.getElementById('workspace')!.focus();
-      window.dispatchEvent(handled);
+      for (const key of ['g', 'b', 'i']) {
+        const handled = new KeyboardEvent('keydown', { key, metaKey: true, cancelable: true });
+        handled.preventDefault();
+        window.dispatchEvent(handled);
+      }
     });
     assert.deepEqual(actions, []);
     await act(async () => {
@@ -358,6 +371,101 @@ test('mobile navigation keeps secondary pages in a dismissible menu and preserve
   } finally {
     await act(async () => root.unmount());
     element.remove();
+  }
+});
+
+test('panel shortcuts use current callbacks and preserve unavailable inspector shortcuts', async () => {
+  const element = document.createElement('div');
+  document.body.append(element);
+  const root = createRoot(element);
+  const actions: string[] = [];
+  const render = async (enabled: boolean, version: number) =>
+    act(async () =>
+      root.render(
+        createElement(Sidebar, {
+          path: '/',
+          collapsed: false,
+          development: false,
+          inspectorEnabled: enabled,
+          onNavigate() {},
+          onRestart() {},
+          onToggle: () => actions.push(`sidebar-${version}`),
+          onToggleInspector: () => actions.push(`inspector-${version}`),
+        }),
+      ),
+    );
+  const press = async (key: string) => {
+    const event = new KeyboardEvent('keydown', {
+      key,
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    await act(async () => window.dispatchEvent(event));
+    return event.defaultPrevented;
+  };
+  try {
+    document.getElementById('workspace')!.focus();
+    await render(false, 1);
+    assert.equal(await press('i'), false);
+    assert.equal(await press('b'), true);
+    await render(true, 2);
+    assert.equal(await press('i'), true);
+    assert.equal(await press('b'), true);
+    await render(false, 3);
+    assert.equal(await press('i'), false);
+    assert.deepEqual(actions, ['sidebar-1', 'inspector-2', 'sidebar-2']);
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
+  }
+});
+
+test('sidebar shortcut opens and closes the mobile menu without changing the desktop rail', async () => {
+  const initialWidth = window.innerWidth;
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+  const element = document.createElement('div');
+  document.body.append(element);
+  const root = createRoot(element);
+  let desktopToggles = 0;
+  const press = async () => {
+    const event = new KeyboardEvent('keydown', {
+      key: 'b',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    await act(async () => window.dispatchEvent(event));
+    assert.equal(event.defaultPrevented, true);
+  };
+  try {
+    await act(async () =>
+      root.render(
+        createElement(Sidebar, {
+          path: '/',
+          collapsed: true,
+          onNavigate() {},
+          onRestart() {},
+          onToggle: () => desktopToggles++,
+        }),
+      ),
+    );
+    document.getElementById('workspace')!.focus();
+    await press();
+    assert.ok(element.querySelector('[role="menu"]'));
+    assert.equal(document.activeElement?.getAttribute('href'), '/goals');
+    await press();
+    assert.equal(element.querySelector('[role="menu"]'), null);
+    assert.equal(document.activeElement?.getAttribute('aria-label'), 'Navigation menu');
+    assert.equal(desktopToggles, 0);
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 });
+    await press();
+    assert.equal(desktopToggles, 1);
+    assert.equal(element.querySelector('[role="menu"]'), null);
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: initialWidth });
   }
 });
 
