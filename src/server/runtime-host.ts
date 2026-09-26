@@ -1,4 +1,5 @@
 import { hkdfSync, randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import { z } from 'zod';
 import type { RuntimeTransport } from '../ports/runtime-transport.ts';
 import type { TenantRuntimeHost } from '../ports/tenant-runtime.ts';
@@ -139,6 +140,11 @@ export function createTenantRuntimeHost(options: {
         const value = options.operatorEnvironment[key];
         if (value) environment[key] = value;
       }
+      if (options.operatorEnvironment.OBJECT_STORAGE_ROOT)
+        environment.OBJECT_STORAGE_ROOT = join(
+          options.operatorEnvironment.OBJECT_STORAGE_ROOT,
+          ownerId,
+        );
       Object.assign(environment, {
         SIDEKICK_MODE: 'tenant',
         SIDEKICK_OWNER_ID: ownerId,

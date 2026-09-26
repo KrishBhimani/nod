@@ -15,6 +15,7 @@ function fixture() {
   const masterKey = randomBytes(32);
   const environment = 'development';
   const leases = new Map<string, TenantLease>();
+  let leaseReads = 0;
   const writes: { action: string; input: ChannelAccountIdentity; lease: TenantLease }[] = [];
   const ownerA = randomUUID();
   const ownerB = randomUUID();
@@ -39,7 +40,10 @@ function fixture() {
   const handle = createTenantControl({
     masterKey,
     environment,
-    currentLease: async (owner) => leases.get(owner),
+    currentLease: async (owner) => {
+      leaseReads++;
+      return leases.get(owner);
+    },
     accounts: {
       async claimWithLease(input, lease) {
         guard(lease);
@@ -68,7 +72,9 @@ function fixture() {
     const method = options.method ?? 'POST';
     const path = options.path ?? '/api/internal/channels/claim';
     const bytes = Buffer.from(
-      JSON.stringify(options.payload ?? { provider: 'telegram', accountId: '12345' }),
+      JSON.stringify(
+        options.payload ?? { provider: 'telegram', accountId: '12345', revision: '1' },
+      ),
     );
     const token = signRuntimeRequest({
       secret: deriveRuntimeSecret(masterKey, environment, ownerId),
@@ -91,7 +97,17 @@ function fixture() {
       ...(!['GET', 'HEAD'].includes(method) ? { body: options.body ?? bytes } : {}),
     });
   }
-  return { handle, request, leases, writes, ownerA, ownerB, masterKey, environment };
+  return {
+    handle,
+    request,
+    leases,
+    writes,
+    ownerA,
+    ownerB,
+    masterKey,
+    environment,
+    leaseReads: () => leaseReads,
+  };
 }
 
 test('control signatures bind the owner and lease while account bodies cannot select an owner', async () => {
@@ -153,23 +169,42 @@ test('control rejects old generations and passes the exact lease to the atomic m
   assert.equal((await f.handle(old)).status, 401);
   assert.equal((await f.handle(f.request())).status, 200);
   assert.equal(f.writes[0].lease.generation, '2');
-  const slow = f.request();
-  const bytes = await slow.arrayBuffer();
+  const signed = f.request();
+  const bytes = new Uint8Array(await signed.arrayBuffer());
   let entered!: () => void;
   const reading = new Promise<void>((resolve) => {
     entered = resolve;
   });
-  let complete!: (value: ArrayBuffer) => void;
-  slow.arrayBuffer = () => {
-    entered();
-    return new Promise((resolve) => {
-      complete = resolve;
-    });
-  };
+  let complete!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    complete = resolve;
+  });
+  const slow = new Request(signed.url, {
+    method: 'POST',
+    headers: signed.headers,
+    body: new ReadableStream(
+      {
+        async pull(controller) {
+          entered();
+          await ready;
+          controller.enqueue(bytes);
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    ),
+    duplex: 'half',
+  } as RequestInit);
   const rejected = assert.rejects(f.handle(slow), { code: 'invalid_lease', statusCode: 401 });
-  await reading;
-  f.leases.set(f.ownerA, { ...f.leases.get(f.ownerA)!, holderId: randomUUID(), generation: '3' });
-  complete(bytes);
+  try {
+    await Promise.race([
+      reading,
+      rejected.then(() => assert.fail('Control did not read the body.')),
+    ]);
+    f.leases.set(f.ownerA, { ...f.leases.get(f.ownerA)!, holderId: randomUUID(), generation: '3' });
+  } finally {
+    complete();
+  }
   await rejected;
   assert.equal(f.writes.length, 1);
   f.leases.get(f.ownerA)!.expiresAt = new Date(0).toISOString();
@@ -195,7 +230,12 @@ test('tenant channel clients sign exact control requests and cannot delegate ano
       return f.handle(request);
     },
   });
-  const input = { ownerId: f.ownerA, provider: 'telegram' as const, accountId: '12345' };
+  const input = {
+    ownerId: f.ownerA,
+    provider: 'telegram' as const,
+    accountId: '12345',
+    revision: '1',
+  };
   assert.equal(await registry.claim(input), true);
   await registry.release(input);
   assert.deepEqual(
@@ -205,7 +245,11 @@ test('tenant channel clients sign exact control requests and cannot delegate ano
   for (const request of requests) {
     assert.equal(request.headers.get('cookie'), null);
     assert.equal(request.headers.get('authorization'), null);
-    assert.deepEqual(await request.json(), { provider: 'telegram', accountId: '12345' });
+    assert.deepEqual(await request.json(), {
+      provider: 'telegram',
+      accountId: '12345',
+      revision: '1',
+    });
   }
   await assert.rejects(registry.claim({ ...input, ownerId: f.ownerB }), /owner is invalid/);
   await assert.rejects(registry.release({ ...input, ownerId: f.ownerB }), /owner is invalid/);
@@ -227,10 +271,65 @@ test('control client failures do not expose redirect targets or provider respons
       }),
   });
   await assert.rejects(
-    registry.claim({ ownerId: f.ownerA, provider: 'telegram', accountId: '12345' }),
+    registry.claim({ ownerId: f.ownerA, provider: 'telegram', accountId: '12345', revision: '1' }),
     (error) => {
       assert.equal((error as Error).message, 'Channel ownership could not be checked.');
       return true;
     },
   );
+});
+
+test('unsigned and altered control signatures cannot query lease state', async () => {
+  const f = fixture();
+  for (const token of [null, 'forged', f.request(f.ownerB).headers.get(runtimeHeader)]) {
+    const request = f.request();
+    if (token === null) request.headers.delete(runtimeHeader);
+    else request.headers.set(runtimeHeader, token);
+    assert.equal((await f.handle(request)).status, 401);
+  }
+  assert.equal(f.leaseReads(), 0);
+  assert.equal(f.writes.length, 0);
+  assert.equal((await f.handle(f.request())).status, 200);
+  assert.equal(f.leaseReads(), 1);
+});
+
+test('control reads stop when streamed input exceeds the authenticated body limit', async () => {
+  const f = fixture();
+  const signed = f.request();
+  let reads = 0;
+  let cancelled = false;
+  const request = new Request(signed.url, {
+    method: 'POST',
+    headers: signed.headers,
+    body: new ReadableStream(
+      {
+        pull(controller) {
+          reads++;
+          controller.enqueue(new Uint8Array(4097));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      },
+      { highWaterMark: 0 },
+    ),
+    duplex: 'half',
+  } as RequestInit);
+  assert.equal((await f.handle(request)).status, 401);
+  assert.equal(reads, 1);
+  assert.equal(cancelled, true);
+  assert.equal(f.writes.length, 0);
+});
+
+test('control rejects missing and out-of-range channel revisions without a registry mutation', async () => {
+  const f = fixture();
+  for (const revision of [undefined, '', '-1', '1.5', '9223372036854775808']) {
+    const response = await f.handle(
+      f.request(f.ownerA, {
+        payload: { provider: 'telegram', accountId: '12345', revision },
+      }),
+    );
+    assert.equal(response.status, 400);
+  }
+  assert.equal(f.writes.length, 0);
 });

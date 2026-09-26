@@ -83,7 +83,7 @@ test('leased channel claims reject malformed and mismatched identities before SQ
   } as unknown as pg.Pool;
   const registry = createChannelAccountRegistry({ admin, environment: 'development' });
   const ownerId = randomUUID();
-  const input = { ownerId, provider: 'telegram' as const, accountId: '12345' };
+  const input = { ownerId, provider: 'telegram' as const, accountId: '12345', revision: '1' };
   const lease = {
     ownerId,
     environment: 'development',
@@ -120,7 +120,7 @@ test(
     const { admin, schema, registry, createLease } = await fixture(t);
     const first = await createLease();
     const second = await createLease();
-    const account = { provider: 'telegram' as const, accountId: '12345' };
+    const account = { provider: 'telegram' as const, accountId: '12345', revision: '1' };
     const identity = { ...account, ownerId: first.ownerId };
     assert.equal(
       await registry.claimWithLease(identity, { ...first, expiresAt: new Date(0).toISOString() }),
@@ -169,7 +169,7 @@ test(
     );
     await registry.releaseWithLease(identity, first);
     assert.equal(
-      await registry.claimWithLease({ ...account, ownerId: second.ownerId }, second),
+      await registry.claimWithLease({ ...account, ownerId: second.ownerId, revision: '2' }, second),
       true,
     );
   },
@@ -181,7 +181,12 @@ test(
   async (t) => {
     const { admin, schema, registry, createLease, waitForLock, connectBlocker } = await fixture(t);
     const lease = await createLease();
-    const identity = { ownerId: lease.ownerId, provider: 'telegram' as const, accountId: '12345' };
+    const identity = {
+      ownerId: lease.ownerId,
+      provider: 'telegram' as const,
+      accountId: '12345',
+      revision: '1',
+    };
     await registry.claimWithLease(identity, lease);
     const blocker = await connectBlocker();
     await blocker.query('BEGIN');
@@ -224,7 +229,7 @@ test(
     ]);
     const claim = assert.rejects(
       registry.claimWithLease(
-        { ownerId: lease.ownerId, provider: 'telegram', accountId: 'expired-claim' },
+        { ownerId: lease.ownerId, provider: 'telegram', accountId: 'expired-claim', revision: '1' },
         lease,
       ),
       { code: 'invalid_lease', statusCode: 401 },

@@ -14,7 +14,7 @@ The launcher prepares PostgreSQL before browser/workspace services. It generates
 
 ## Hosted mode on your computer
 
-Hosted development uses the real Google login, account isolation and per-user runtime processes, with the web app at [localhost:4330](http://localhost:4330). It is separate from ordinary local mode, the app on port 4320, and the design prototype on port 4318. Node.js 24.21.0 or newer is required. Install dependencies with `npm ci` first.
+Hosted development uses the real Google login, account isolation and per-user runtime processes, with the web app at [localhost:4330](http://localhost:4330). It is separate from ordinary local mode on port 4310, the synthetic E2E harness on port 4320, and the design prototype on port 4318. Node.js 24.21.0 or newer is required. Install dependencies with `npm ci` first.
 
 Create a private `.env.hosted.local` in the repository root, or keep it elsewhere and pass `--env /absolute/path/to/file`. The launcher reads only that file; it does not fall back to `.env` or inherit provider credentials from the shell. It creates local state under `.local/hosted`, starts the gateway on loopback, and starts tenant processes on private ephemeral ports as users sign in. It does not start Docker, create a tunnel or deploy anything.
 

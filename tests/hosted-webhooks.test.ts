@@ -187,3 +187,30 @@ test('WhatsApp verification keeps its exact query and read-only method within th
   assert.equal(new URL(f.calls[0].request.url).pathname, '/api/webhooks/whatsapp');
   assert.deepEqual(f.calls[0].access, { developer: false, kind: 'webhook' });
 });
+
+test('webhook reads cancel an oversized stream before consuming later chunks', async () => {
+  const f = fixture();
+  let reads = 0;
+  let cancelled = false;
+  const request = new Request('https://sidekick.example.test/api/webhooks/composio', {
+    method: 'POST',
+    body: new ReadableStream(
+      {
+        pull(controller) {
+          reads++;
+          controller.enqueue(new Uint8Array(262_145));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      },
+      { highWaterMark: 0 },
+    ),
+    duplex: 'half',
+  } as RequestInit);
+  assert.equal((await f.handle(request)).status, 413);
+  assert.equal(reads, 1);
+  assert.equal(cancelled, true);
+  assert.equal(f.verified.length, 0);
+  assert.equal(f.calls.length, 0);
+});

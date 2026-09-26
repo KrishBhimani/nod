@@ -2,7 +2,7 @@ export const maxObjectBytes = 16 * 1024 * 1024;
 
 export function objectKey(key: string) {
   if (
-    !/^(?:artifacts\/[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}|sessions\/[a-zA-Z0-9_-]{1,100}\.jsonl)$/.test(
+    !/^(?:artifacts\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|sessions\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.jsonl)$/.test(
       key,
     )
   )

@@ -116,7 +116,7 @@ test('template contexts reject symlinked source and do not copy unrelated local 
     'export const ready = true;\n',
   );
   await assert.rejects(stat(join(context.path, 'src/providers/container-browser/.env')));
-  assert.equal((await stat(join(context.path, 'src'))).mode & 0o777, 0o755);
+  assert.equal((await stat(join(context.path, 'src'))).mode & 0o777, 0o755 & ~process.umask());
   await rm(join(root, 'src/providers/container-browser/dependency.ts'));
   await symlink(
     join(root, 'src/providers/container-browser/.env'),

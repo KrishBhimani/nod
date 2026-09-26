@@ -4,7 +4,7 @@ import { googleAvatarUrl, loadGoogleAvatar } from '../src/providers/better-auth/
 
 const source = 'https://lh3.googleusercontent.com/synthetic-avatar';
 const png = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZgYQAAAAASUVORK5CYII=',
+  'iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAACXBIWXMAAAABAAAAAQBPJcTWAAAAEElEQVR4nGP8w4AALAxEcQAz1AEKG5dMywAAAABJRU5ErkJggg==',
   'base64',
 );
 

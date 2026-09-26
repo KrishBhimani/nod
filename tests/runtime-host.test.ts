@@ -81,6 +81,7 @@ function fixture(
       DATABASE_URL: 'postgresql://operator:private@db.example.test/control',
       OPENAI_API_KEY: 'synthetic-server-provider-key',
       COMPUTER_PROVIDER: 'e2b',
+      OBJECT_STORAGE_ROOT: '/private/sidekick-files',
     },
     tenants: {
       async provision(ownerId) {
@@ -190,10 +191,13 @@ test('runtime startup is shared per owner while different owners retain separate
     }
   };
   const waiting = Array.from({ length: 8 }, () => f.request(first));
-  await bounded(entered.promise);
-  assert.equal((await f.request(second)).status, 200);
-  assert.equal(f.starts.length, 2);
-  ready.resolve();
+  try {
+    await bounded(entered.promise);
+    assert.equal((await f.request(second)).status, 200);
+    assert.equal(f.starts.length, 2);
+  } finally {
+    ready.resolve();
+  }
   assert.equal(
     (await Promise.all(waiting)).every((response) => response.status === 200),
     true,
@@ -212,6 +216,10 @@ test('runtime startup is shared per owner while different owners retain separate
     assert.equal(configuration.environment.SIDEKICK_CONTROL_URL, 'http://sidekick.control');
     assert.equal(configuration.environment.OPENAI_API_KEY, 'synthetic-server-provider-key');
     assert.equal(configuration.environment.DEV_INSPECTOR, 'false');
+    assert.equal(
+      configuration.environment.OBJECT_STORAGE_ROOT,
+      `/private/sidekick-files/${configuration.ownerId}`,
+    );
     for (const key of ['SIDEKICK_MASTER_KEY', 'AUTH_SECRET', 'GOOGLE_CLIENT_SECRET'])
       assert.equal(configuration.environment[key], undefined);
     assert.ok(configuration.environment.DATABASE_URL.includes(configuration.ownerId));

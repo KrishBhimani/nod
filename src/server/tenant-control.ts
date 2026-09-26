@@ -9,7 +9,9 @@ import {
   runtimeBodyHash,
   runtimeHeader,
   signRuntimeRequest,
+  verifyRuntimeSignature,
 } from './runtime-auth.ts';
+import { readRequestBody } from './request-body.ts';
 
 export function createTenantControl(options: {
   masterKey: Uint8Array;
@@ -36,6 +38,18 @@ export function createTenantControl(options: {
       !['/api/internal/channels/claim', '/api/internal/channels/release'].includes(url.pathname)
     )
       return denied();
+    const context = {
+      secret: deriveRuntimeSecret(options.masterKey, options.environment, owner.data),
+      ownerId: owner.data,
+      environment: options.environment,
+    };
+    const signed = verifyRuntimeSignature(
+      context,
+      request.headers.get(runtimeHeader),
+      request.method,
+      url.pathname,
+    );
+    if (!signed || signed.kind !== 'wake' || signed.developer) return denied();
     const lease = await options.currentLease(owner.data);
     if (!lease || Date.parse(lease.expiresAt) <= Date.now()) return denied();
     let verifier = verifiers.get(owner.data);
@@ -43,9 +57,7 @@ export function createTenantControl(options: {
       verifier = {
         generation: lease.generation,
         verify: createRuntimeVerifier({
-          secret: deriveRuntimeSecret(options.masterKey, options.environment, owner.data),
-          ownerId: owner.data,
-          environment: options.environment,
+          ...context,
           generation: lease.generation,
         }).verify,
       };
@@ -57,9 +69,9 @@ export function createTenantControl(options: {
       url.pathname,
     );
     if (!claims || claims.kind !== 'wake' || claims.developer) return denied();
-    const bytes = new Uint8Array(await request.arrayBuffer());
+    const bytes = await readRequestBody(request, 4096);
     if (
-      bytes.length > 4096 ||
+      !bytes ||
       !timingSafeEqual(Buffer.from(runtimeBodyHash(bytes)), Buffer.from(claims.bodyHash))
     )
       return denied();
@@ -69,6 +81,10 @@ export function createTenantControl(options: {
         .object({
           provider: z.enum(['telegram', 'whatsapp']),
           accountId: z.string().regex(/^[a-zA-Z0-9:_-]{1,200}$/),
+          revision: z
+            .string()
+            .regex(/^(0|[1-9][0-9]{0,18})$/)
+            .refine((value) => BigInt(value) <= 9223372036854775807n),
         })
         .strict()
         .parse(JSON.parse(Buffer.from(bytes).toString('utf8')));
@@ -113,7 +129,11 @@ export function createTenantChannelRegistry(options: {
     if (input.ownerId !== options.ownerId) throw new Error('The channel account owner is invalid.');
     const target = `/api/internal/channels/${action}`;
     const body = Buffer.from(
-      JSON.stringify({ provider: input.provider, accountId: input.accountId }),
+      JSON.stringify({
+        provider: input.provider,
+        accountId: input.accountId,
+        revision: input.revision,
+      }),
     );
     const token = signRuntimeRequest({
       ...options,

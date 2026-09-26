@@ -36,6 +36,7 @@ after(() => dom.window.close());
 const { createRoot } = await import('react-dom/client');
 const { AccountSettings } = await import('../src/web/components/account-settings.tsx');
 const { Onboarding } = await import('../src/web/pages/onboarding.tsx');
+const { SignIn } = await import('../src/web/pages/sign-in.tsx');
 const { AccountAvatar } = await import('../src/web/components/account-avatar.tsx');
 const user = {
   id: 'alex',
@@ -145,6 +146,108 @@ test('avatars only load server-owned sources and fall back when a Google image f
   } finally {
     await act(async () => root.unmount());
     element.remove();
+  }
+});
+
+test('sign-in hides an old callback error while retrying and reports a failed new attempt', async () => {
+  const previous = globalThis.fetch;
+  let reject!: (error: Error) => void;
+  globalThis.fetch = async () =>
+    new Promise((_resolve, fail) => {
+      reject = fail;
+    });
+  const element = document.createElement('div');
+  document.body.append(element);
+  const root = createRoot(element);
+  try {
+    await act(async () =>
+      root.render(
+        createElement(SignIn, {
+          available: true,
+          error: 'Previous sign-in failed.',
+          onRetry() {},
+        }),
+      ),
+    );
+    assert.equal(element.querySelector('[role="alert"]')?.textContent, 'Previous sign-in failed.');
+    await act(async () => element.querySelector<HTMLButtonElement>('.google-sign-in')!.click());
+    assert.equal(element.querySelector('[role="alert"]'), null);
+    assert.ok(element.textContent?.includes('Opening Google…'));
+    await act(async () => reject(new Error('Synthetic retry failure')));
+    assert.equal(
+      element.querySelector('[role="alert"]')?.textContent,
+      'Sign-in could not start. Try again.',
+    );
+    assert.equal(element.querySelector<HTMLButtonElement>('.google-sign-in')!.disabled, false);
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
+    globalThis.fetch = previous;
+  }
+});
+
+test('onboarding distinguishes an initial load from unavailable integrations and can retry', async () => {
+  const previous = globalThis.fetch;
+  const requests: Array<(response: Response) => void> = [];
+  globalThis.fetch = async () =>
+    new Promise((resolve) => {
+      requests.push(resolve);
+    });
+  pageDataCache.clear();
+  const element = document.createElement('div');
+  document.body.append(element);
+  const root = createRoot(element);
+  try {
+    await act(async () =>
+      root.render(
+        createElement(Onboarding, {
+          user,
+          onComplete: async () => {},
+          onLogout() {},
+          canLogout: true,
+        }),
+      ),
+    );
+    assert.ok(element.querySelector('.loading'));
+    assert.equal(element.querySelector('[aria-label^="Connect "]'), null);
+    await act(async () =>
+      requests[0](Response.json({ error: 'Synthetic app load failure' }, { status: 503 })),
+    );
+    assert.equal(element.querySelector('.loading'), null);
+    assert.ok(element.querySelector('[role="alert"]'));
+    await act(async () =>
+      Array.from(element.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Try again')!
+        .click(),
+    );
+    assert.ok(element.querySelector('.loading'));
+    await act(async () =>
+      requests[1](
+        Response.json(
+          integrationServiceIds.map((slug) => ({
+            slug,
+            name: integrationServices[slug].name,
+            status: slug === 'gmail' ? 'not_configured' : 'disconnected',
+            triggersEnabled: false,
+          })),
+        ),
+      ),
+    );
+    assert.equal(element.querySelector('.loading'), null);
+    assert.equal(element.querySelector('[role="alert"]'), null);
+    assert.equal(
+      element.querySelector<HTMLButtonElement>('[aria-label="Connect Gmail"]')!.disabled,
+      true,
+    );
+    assert.equal(
+      element.querySelector<HTMLButtonElement>('[aria-label="Connect Google Calendar"]')!.disabled,
+      false,
+    );
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
+    pageDataCache.clear();
+    globalThis.fetch = previous;
   }
 });
 

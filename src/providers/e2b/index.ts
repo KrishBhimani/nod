@@ -73,6 +73,7 @@ export function createE2BAdapters(options: {
   return {
     computer: {
       ...computer,
+      status: () => (browserDisposed ? 'Workspace browser is stopped.' : computer.status()),
       async dispose() {
         if (browserUsed) await computer.dispose();
         browserDisposed = true;

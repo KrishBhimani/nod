@@ -106,7 +106,7 @@ export type WorkspaceCommandLauncher = (
   options: SpawnOptionsWithoutStdio,
 ) => ChildProcessWithoutNullStreams;
 
-export function runWorkspaceCommand(options: {
+export async function runWorkspaceCommand(options: {
   container: string;
   taskId: string;
   args: string[];

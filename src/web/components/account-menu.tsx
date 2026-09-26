@@ -23,7 +23,7 @@ export function AccountMenuItems({ account, close }: { account: AccountControls;
   };
   return (
     <>
-      <div className="account-menu-identity">
+      <div className="account-menu-identity" role="group" aria-label="Signed-in account">
         <AccountAvatar user={account.user} />
         <div>
           <strong>{account.user.name}</strong>

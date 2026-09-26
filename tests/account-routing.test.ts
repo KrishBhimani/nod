@@ -61,8 +61,11 @@ const account: SessionResponse = {
 };
 const anonymous: SessionResponse = { ...account, user: null, settings: null };
 
-test('private routes do not mount or fetch before authentication, including browser and credentials', async () => {
+test('private routes do not mount or fetch before authentication, including browser and credentials', async (t) => {
   const previous = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = previous;
+  });
   for (const path of ['/', '/browser', '/credentials/private-request']) {
     window.history.replaceState(null, '', path);
     const requests: string[] = [];
@@ -83,11 +86,13 @@ test('private routes do not mount or fetch before authentication, including brow
       element.remove();
     }
   }
-  globalThis.fetch = previous;
 });
 
-test('ordinary accounts cannot mount developer routes or read computer data', async () => {
+test('ordinary accounts cannot mount developer routes or read computer data', async (t) => {
   const previous = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = previous;
+  });
   for (const path of ['/browser', '/dev']) {
     window.history.replaceState(null, '', path);
     const requests: string[] = [];
@@ -108,7 +113,6 @@ test('ordinary accounts cannot mount developer routes or read computer data', as
       element.remove();
     }
   }
-  globalThis.fetch = previous;
 });
 
 test('authenticated workspace binds SSE to its account, supports settings shortcut and closes private work on expiry', async () => {

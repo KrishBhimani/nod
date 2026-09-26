@@ -476,3 +476,56 @@ test('revocation while an actor starts prevents the delayed stream from reaching
     await f.app.close();
   }
 });
+
+test('gateway applies narrow body limits before calling service handlers', async () => {
+  let calls = 0;
+  const handler = async () => {
+    calls++;
+    return Response.json({ ok: true });
+  };
+  const f = await fixture({ internal: handler, webhook: handler });
+  try {
+    for (const [url, limit] of [
+      ['/api/internal/channels/claim', 4096],
+      ['/api/internal/channels/release', 4096],
+      ['/api/webhooks/composio', 262_144],
+      [`/api/webhooks/telegram/${'x'.repeat(43)}`, 262_144],
+      [`/api/webhooks/whatsapp/${'x'.repeat(43)}`, 262_144],
+    ] as const) {
+      const response = await f.app.inject({
+        method: 'POST',
+        url,
+        headers: { host, 'content-type': 'application/json' },
+        payload: Buffer.alloc(limit + 1),
+      });
+      assert.equal(response.statusCode, 413, url);
+    }
+    assert.equal(calls, 0);
+  } finally {
+    await f.app.close();
+  }
+});
+
+test('gateway returns the authentication failure when discarded response cancellation fails', async () => {
+  const f = await fixture();
+  let cancelled = 0;
+  f.reply(async (owner) => {
+    f.sessions.delete(owner);
+    return new Response(
+      new ReadableStream({
+        cancel() {
+          cancelled++;
+          throw new Error('Synthetic private cancellation detail');
+        },
+      }),
+    );
+  });
+  try {
+    const response = await f.app.inject({ url: '/api/state', headers: f.headers() });
+    assert.equal(response.statusCode, 401);
+    assert.deepEqual(response.json(), { error: 'Sign in to continue.' });
+    assert.equal(cancelled, 1);
+  } finally {
+    await f.app.close();
+  }
+});

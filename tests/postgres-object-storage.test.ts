@@ -58,7 +58,7 @@ test(
         /unavailable/,
       );
       await assert.rejects(first.remove(key, { expectedVersion: original }), ObjectStoreConflict);
-      await assert.rejects(first.remove(key, { expectedVersion: '' }), ObjectStoreConflict);
+      await assert.rejects(first.remove(key, { expectedVersion: '' }), /unavailable/);
       await restored.remove(key, { expectedVersion: saved!.version });
       assert.equal(await first.read(key, 100), undefined);
       assert.equal((await second.read(key, 100))?.bytes.toString(), 'foreign');

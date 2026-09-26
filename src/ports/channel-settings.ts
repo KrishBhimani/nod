@@ -34,6 +34,7 @@ export interface ChannelAccountIdentity {
   ownerId: string;
   provider: ChannelProvider;
   accountId: string;
+  revision: string;
 }
 
 export interface ChannelAccountRegistry {

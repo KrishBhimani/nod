@@ -230,13 +230,15 @@ export async function createGateway(options: {
       return sendFetchResponse(reply, privateRuntimeResponse(await handler(input)));
     };
     if (options.internal)
-      for (const path of ['claim', 'release']) app.post(`/api/internal/channels/${path}`, service);
+      for (const path of ['claim', 'release'])
+        app.post(`/api/internal/channels/${path}`, { bodyLimit: 4096 }, service);
     if (options.webhook) {
-      app.post('/api/webhooks/composio', service);
-      app.post('/api/webhooks/telegram/:token', service);
+      app.post('/api/webhooks/composio', { bodyLimit: 262_144 }, service);
+      app.post('/api/webhooks/telegram/:token', { bodyLimit: 262_144 }, service);
       app.route({
         method: ['GET', 'POST'],
         url: '/api/webhooks/whatsapp/:token',
+        bodyLimit: 262_144,
         handler: service,
       });
     }
@@ -284,11 +286,11 @@ export async function createGateway(options: {
         current.user.id !== session.user.id ||
         current.expiresAt <= new Date()
       ) {
-        await result.body?.cancel();
+        await result.body?.cancel().catch(() => {});
         return reply.code(401).send({ error: 'Sign in to continue.' });
       }
     } catch {
-      await result.body?.cancel();
+      await result.body?.cancel().catch(() => {});
       return reply.code(503).send({ error: 'This request could not be completed. Try again.' });
     }
     result = privateRuntimeResponse(result, url.pathname.startsWith('/api/artifacts/'));

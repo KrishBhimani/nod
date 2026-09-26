@@ -6,7 +6,7 @@ import {
   objectLimit,
   objectVersion,
   readObjectBody,
-} from './validation.ts';
+} from '../../ports/object-storage-validation.ts';
 
 export function createHttpObjectStore(
   options: {

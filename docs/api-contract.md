@@ -1,18 +1,18 @@
 # Internal API contract
 
-Local mode uses a fixed development account and accepts only its configured loopback origin. Hosted mode uses the Google-authenticated gateway, which selects an isolated tenant runtime from the verified session. JSON errors have `{error: string}`. Browser mutations require the exact configured `Origin`; public hosted origins require HTTPS. Forwarded-host headers do not change the accepted host or tenant identity.
+Local mode uses a fixed development account. It restricts `Host` and any supplied `Origin` to supported HTTP loopback aliases at the configured port; ordinary local routes allow an absent `Origin`. Account mutations and hosted browser mutations require the exact configured `Origin`. Hosted mode uses the Google-authenticated gateway to select an isolated tenant runtime from the verified session, with HTTPS required for public origins. JSON errors have `{error: string}`. Forwarded-host headers do not change the accepted host or tenant identity.
 
 ## Authentication and account settings
 
-| Method | Path                             | Shape                                                                                        |
-| ------ | -------------------------------- | -------------------------------------------------------------------------------------------- |
-| GET    | /api/health                      | `{ok:true,release?:string}`; public readiness and baked deployment revision                  |
-| GET    | /api/session                     | `SessionResponse`; public, with `user:null` and `settings:null` when signed out              |
-| POST   | /api/login                       | `{}` -> `{url}` with OAuth state cookies; fixed Google login and onboarding callback         |
-| GET    | /api/auth/callback/google        | Provider callback; validated state/PKCE, then an app redirect or `/login?error=sign-in`      |
-| POST   | /api/logout                      | `{}` -> `{ok:true}`; revokes the current session and clears cookies                          |
-| PATCH  | /api/account                     | `{name?,theme?:'light'\|'dark'\|'system',onboardingCompleted?:boolean}` -> `SessionResponse` |
-| GET    | /api/account/avatar?account=UUID | Authenticated, bounded raster avatar; the query must match the current account               |
+| Method | Path                             | Shape                                                                                                        |
+| ------ | -------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| GET    | /api/health                      | `{ok:true,release?:string}`; public readiness and baked deployment revision                                  |
+| GET    | /api/session                     | `SessionResponse`; public, with `user:null` and `settings:null` when signed out                              |
+| POST   | /api/login                       | `{}` -> `{url}` with OAuth state cookies; fixed Google login and onboarding callback                         |
+| GET    | /api/auth/callback/google        | Provider callback; validated state/PKCE, then an app redirect or `/login?error=sign-in`                      |
+| POST   | /api/logout                      | `{}` -> `{ok:true}`; Google mode revokes the session and clears cookies; local mode has no session to revoke |
+| PATCH  | /api/account                     | `{name?,theme?:'light'\|'dark'\|'system',onboardingCompleted?:boolean}` -> `SessionResponse`                 |
+| GET    | /api/account/avatar?account=UUID | Authenticated, bounded raster avatar; the query must match the current account                               |
 
 `SessionResponse` is defined in `src/shared/account.ts`: `{auth:{mode,googleAvailable},user,settings,capabilities:{developer}}`. The public user contains only ID, display name, email and the private avatar route. Google OAuth tokens and upstream avatar URLs remain server-side. `/api/account` edits the app account presentation; `/api/profile` remains the separate personal context the assistant uses. Other authentication-provider routes are not exposed.
 

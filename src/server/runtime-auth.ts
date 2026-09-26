@@ -87,6 +87,44 @@ export function signRuntimeRequest(options: {
   return `${payload}.${signature}`;
 }
 
+export function verifyRuntimeSignature(
+  options: {
+    secret: string;
+    ownerId: string;
+    environment: string;
+    now?: () => number;
+  },
+  token: unknown,
+  method: string,
+  target: string,
+): RuntimeClaims | null {
+  if (typeof token !== 'string' || token.length > 16_384) return null;
+  const [payload, signature, extra] = token.split('.');
+  if (!payload || !signature || extra !== undefined) return null;
+  const expected = createHmac('sha256', Buffer.from(options.secret, 'base64url'))
+    .update(payload)
+    .digest();
+  const actual = Buffer.from(signature, 'base64url');
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return null;
+  let claims: RuntimeClaims;
+  try {
+    claims = envelope.parse(JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')));
+  } catch {
+    return null;
+  }
+  const time = (options.now ?? Date.now)();
+  if (
+    claims.ownerId !== options.ownerId ||
+    claims.environment !== options.environment ||
+    claims.method !== method ||
+    claims.target !== target ||
+    claims.expiresAt <= time ||
+    claims.expiresAt > time + 35_000
+  )
+    return null;
+  return claims;
+}
+
 export function createRuntimeVerifier(options: {
   secret: string;
   ownerId: string;
@@ -102,31 +140,9 @@ export function createRuntimeVerifier(options: {
   const accepted = new Map<string, number>();
   const now = options.now ?? Date.now;
   function verify(token: unknown, method: string, target: string): RuntimeClaims | null {
-    if (typeof token !== 'string' || token.length > 16_384) return null;
-    const [payload, signature, extra] = token.split('.');
-    if (!payload || !signature || extra !== undefined) return null;
-    const expected = createHmac('sha256', Buffer.from(options.secret, 'base64url'))
-      .update(payload)
-      .digest();
-    const actual = Buffer.from(signature, 'base64url');
-    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return null;
-    let claims: RuntimeClaims;
-    try {
-      claims = envelope.parse(JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')));
-    } catch {
-      return null;
-    }
+    const claims = verifyRuntimeSignature(options, token, method, target);
+    if (!claims || claims.generation !== options.generation) return null;
     const time = now();
-    if (
-      claims.ownerId !== options.ownerId ||
-      claims.environment !== options.environment ||
-      claims.generation !== options.generation ||
-      claims.method !== method ||
-      claims.target !== target ||
-      claims.expiresAt <= time ||
-      claims.expiresAt > time + 35_000
-    )
-      return null;
     for (const [nonce, expires] of accepted) if (expires <= time) accepted.delete(nonce);
     if (accepted.has(claims.nonce) || accepted.size >= 20_000) return null;
     accepted.set(claims.nonce, claims.expiresAt);
@@ -141,6 +157,7 @@ export function registerRuntimeAccess(
 ) {
   const verifier = createRuntimeVerifier(options);
   const claims = new WeakMap<FastifyRequest, RuntimeClaims>();
+  const bodies = new WeakMap<FastifyRequest, Buffer>();
   app.addHook('onRequest', async (request, reply) => {
     reply.header('cache-control', 'no-store').header('x-content-type-options', 'nosniff');
     const path = canonicalRequestPath(request.url);
@@ -190,6 +207,14 @@ export function registerRuntimeAccess(
       reply.code(401).send({ error: 'Runtime authentication failed.' });
       return Readable.from([]);
     }
+    bodies.set(request, body);
     return Readable.from([body]);
   });
+  return {
+    takeBody(request: FastifyRequest) {
+      const body = bodies.get(request);
+      bodies.delete(request);
+      return body;
+    },
+  };
 }

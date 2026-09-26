@@ -16,6 +16,7 @@ export function SignIn({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const visibleError = error || (!busy ? sessionError : '');
   const request = useRef<AbortController | null>(null);
   useEffect(() => () => request.current?.abort(), []);
   async function login() {
@@ -59,7 +60,7 @@ export function SignIn({
             <br />
             Sidekick gets it done while you sleep.
           </p>
-          {(error || sessionError) && <Notice>{error || sessionError}</Notice>}
+          {visibleError && <Notice>{visibleError}</Notice>}
           {available ? (
             <Button
               variant="outline"

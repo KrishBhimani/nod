@@ -62,6 +62,8 @@ test('hosted launcher refuses production, shared local database and invalid conf
     ['SIDEKICK_ENVIRONMENT', 'PRODUCTION'],
     ['DATABASE_URL', 'postgresql://fixture:synthetic-private-password@127.0.0.1:54329/old'],
     ['SIDEKICK_MASTER_KEY', 'synthetic-private-invalid-key'],
+    ['SIDEKICK_MASTER_KEY', randomBytes(32).toString('base64').replace(/=+$/, '')],
+    ['SIDEKICK_MASTER_KEY', `${'A'.repeat(42)}B=`],
     ['BETTER_AUTH_SECRET', 'short-private-key'],
     ['PORT', '4320'],
     ['SIDEKICK_PUBLIC_URL', 'https://private.example.test'],

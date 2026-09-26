@@ -5,9 +5,11 @@ import Fastify from 'fastify';
 import pg from 'pg';
 import { createIntegrations } from '../src/server/integrations.ts';
 import { createChannelSettings } from '../src/server/channel-settings.ts';
+import { createChannelAccountRegistry } from '../src/server/channel-account-registry.ts';
 import { createChatSdkSetupVerifier } from '../src/providers/chat-sdk/settings.ts';
 import type { IntegrationProvider } from '../src/ports/integrations.ts';
 import type { ChannelAccountRegistry } from '../src/ports/channel-settings.ts';
+import type { ChannelSetupVerifier } from '../src/ports/channel-settings.ts';
 
 async function database() {
   const schema = 'test_hosted_integrations_' + randomUUID().replaceAll('-', '');
@@ -19,6 +21,7 @@ async function database() {
   });
   return {
     pool,
+    schema,
     async close() {
       await pool.end();
       await admin.query(`DROP SCHEMA ${schema} CASCADE`);
@@ -30,7 +33,8 @@ async function database() {
 test(
   'hosted app consent returns to its owned screen and tenant event workers cannot consume each other',
   { skip: !process.env.TEST_DATABASE_URL },
-  async () => {
+  async (t) => {
+    t.mock.timers.enable({ apis: ['setInterval'] });
     const db = await database();
     const apps = [Fastify(), Fastify()];
     const owners = ['owner-one', 'owner-two'];
@@ -281,6 +285,250 @@ test(
       assert.equal(claims.has('987'), false);
     } finally {
       await Promise.all(apps.map((app) => app.close()));
+      await db.close();
+    }
+  },
+);
+
+test(
+  'channel ownership cleanup survives failed saves, uncertain claims and committed changes',
+  {
+    skip: !process.env.TEST_DATABASE_URL,
+  },
+  async (t) => {
+    const db = await database();
+    try {
+      for (const scenario of ['remove', 'replace', 'failed-save', 'uncertain-claim'] as const) {
+        await t.test(scenario, async () => {
+          const ownerId = randomUUID();
+          const key = randomBytes(32);
+          const claims = new Map<string, string>();
+          let failRelease = false;
+          let failSave = false;
+          let uncertainClaim = false;
+          const registry: ChannelAccountRegistry = {
+            async claim(input) {
+              const current = claims.get(input.accountId);
+              if (current && current !== input.ownerId) return false;
+              claims.set(input.accountId, input.ownerId);
+              if (uncertainClaim && input.accountId === '200')
+                throw new Error('Synthetic lost claim response');
+              return true;
+            },
+            async release(input) {
+              if (failRelease) throw new Error('Synthetic release interruption');
+              if (claims.get(input.accountId) === input.ownerId) claims.delete(input.accountId);
+            },
+          };
+          const verifier: ChannelSetupVerifier = {
+            async verify(provider, input) {
+              return {
+                environment: {
+                  TELEGRAM_ENABLED: 'true',
+                  TELEGRAM_BOT_TOKEN: `${String(input)}:synthetic-never-live`,
+                  TELEGRAM_MODE: 'polling',
+                },
+                summary: { provider, enabled: true, mode: 'polling' },
+              };
+            },
+          };
+          const options = {
+            ownerId,
+            accounts: registry,
+            verifier,
+            keyStore: { id: 'fixture', configured: true, getKey: async () => key },
+            apply: async (environment: Record<string, string>) => {
+              if (failSave && environment.TELEGRAM_BOT_TOKEN?.startsWith('200:'))
+                throw new Error('Synthetic apply failure');
+            },
+          };
+          const app = Fastify();
+          try {
+            const settings = await createChannelSettings(db.pool, options);
+            settings.registerRoutes(app);
+            assert.equal(
+              (
+                await app.inject({
+                  method: 'PUT',
+                  url: '/api/channel-settings/telegram',
+                  payload: '100',
+                  headers: { 'content-type': 'application/json' },
+                })
+              ).statusCode,
+              200,
+            );
+            failRelease = true;
+            failSave = scenario === 'failed-save';
+            uncertainClaim = scenario === 'uncertain-claim';
+            const response = await app.inject(
+              scenario === 'remove'
+                ? {
+                    method: 'DELETE',
+                    url: '/api/channel-settings/telegram',
+                  }
+                : {
+                    method: 'PUT',
+                    url: '/api/channel-settings/telegram',
+                    payload: '200',
+                    headers: { 'content-type': 'application/json' },
+                  },
+            );
+            assert.equal(response.statusCode, failSave || uncertainClaim ? 503 : 200);
+            assert.ok(claims.has(scenario === 'remove' || scenario === 'replace' ? '100' : '200'));
+            assert.equal(await settings.recover(), false);
+          } finally {
+            await app.close();
+          }
+          failRelease = false;
+          failSave = false;
+          uncertainClaim = false;
+          const restarted = await createChannelSettings(db.pool, options);
+          assert.equal(await restarted.recover(), true);
+          const expected = scenario === 'remove' ? [] : [scenario === 'replace' ? '200' : '100'];
+          assert.deepEqual([...claims.keys()], expected);
+          assert.deepEqual(
+            (
+              await db.pool.query(
+                'SELECT account_id FROM channel_account_claims WHERE owner_id=$1 AND pending=true ORDER BY account_id',
+                [ownerId],
+              )
+            ).rows.map((row) => row.account_id),
+            expected,
+          );
+          const environment = await restarted.environment();
+          assert.equal(environment.TELEGRAM_ENABLED, scenario === 'remove' ? 'false' : 'true');
+          if (expected.length)
+            assert.ok(environment.TELEGRAM_BOT_TOKEN.startsWith(`${expected[0]}:`));
+        });
+      }
+    } finally {
+      await db.close();
+    }
+  },
+);
+
+test(
+  'durable channel revisions fence registry operations that finish after their client timed out',
+  {
+    skip: !process.env.TEST_DATABASE_URL,
+  },
+  async (t) => {
+    const db = await database();
+    const registry = createChannelAccountRegistry({
+      admin: db.pool,
+      controlSchema: db.schema,
+      environment: 'development',
+    });
+    try {
+      await registry.initialize();
+      for (const [index, scenario] of ['claim', 'release'].entries()) {
+        await t.test(scenario, async () => {
+          const ownerId = randomUUID();
+          const accountId = String(1000 + index);
+          const key = randomBytes(32);
+          let delay = false;
+          let finish: (() => Promise<unknown>) | undefined;
+          const accounts: ChannelAccountRegistry = {
+            async claim(input) {
+              if (delay && scenario === 'claim') {
+                finish = () => registry.claim(input);
+                throw new Error('Synthetic claim response timeout');
+              }
+              return registry.claim(input);
+            },
+            async release(input) {
+              if (delay && scenario === 'release') {
+                finish = () => registry.release(input);
+                throw new Error('Synthetic release response timeout');
+              }
+              return registry.release(input);
+            },
+          };
+          const options = {
+            ownerId,
+            accounts,
+            keyStore: { id: 'fixture', configured: true, getKey: async () => key },
+            verifier: {
+              async verify(provider: 'telegram' | 'whatsapp') {
+                return {
+                  environment: {
+                    TELEGRAM_ENABLED: 'true',
+                    TELEGRAM_BOT_TOKEN: `${accountId}:synthetic-never-live`,
+                    TELEGRAM_MODE: 'polling',
+                  },
+                  summary: { provider, enabled: true, mode: 'polling' as const },
+                };
+              },
+            },
+            apply: async () => {},
+          };
+          const app = Fastify();
+          const settings = await createChannelSettings(db.pool, options);
+          settings.registerRoutes(app);
+          const save = () =>
+            app.inject({ method: 'PUT', url: '/api/channel-settings/telegram', payload: {} });
+          try {
+            if (scenario === 'claim') {
+              delay = true;
+              assert.equal((await save()).statusCode, 503);
+              assert.equal(await settings.recover(), true);
+              assert.equal(
+                (
+                  await db.pool.query('SELECT 1 FROM channel_accounts WHERE account_id=$1', [
+                    accountId,
+                  ])
+                ).rowCount,
+                0,
+              );
+            } else {
+              assert.equal((await save()).statusCode, 200);
+              delay = true;
+              assert.equal(
+                (await app.inject({ method: 'DELETE', url: '/api/channel-settings/telegram' }))
+                  .statusCode,
+                200,
+              );
+            }
+            assert.ok(finish);
+            delay = false;
+            assert.equal((await save()).statusCode, 200);
+            const before = (
+              await db.pool.query(
+                'SELECT owner_id,revision::text FROM channel_accounts WHERE account_id=$1',
+                [accountId],
+              )
+            ).rows;
+            assert.equal(before[0].owner_id, ownerId);
+            assert.ok(BigInt(before[0].revision) > 1n);
+            const result = await finish();
+            if (scenario === 'claim') assert.equal(result, false);
+            assert.deepEqual(
+              (
+                await db.pool.query(
+                  'SELECT owner_id,revision::text FROM channel_accounts WHERE account_id=$1',
+                  [accountId],
+                )
+              ).rows,
+              before,
+            );
+            const restarted = await createChannelSettings(db.pool, options);
+            assert.equal(await restarted.recover(), true);
+            assert.equal((await restarted.status()).channels[0].enabled, true);
+            assert.equal(
+              await registry.claim({
+                ownerId: randomUUID(),
+                provider: 'telegram',
+                accountId,
+                revision: '1',
+              }),
+              false,
+            );
+          } finally {
+            await app.close();
+          }
+        });
+      }
+    } finally {
       await db.close();
     }
   },

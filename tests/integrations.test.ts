@@ -336,15 +336,13 @@ test(
       const url = new URL(callback);
       url.searchParams.set('outcome', 'ok');
       url.searchParams.set('account_ref', 'ca-other-user');
-      assert.equal(
-        (await app.inject({ url: `${url.pathname}${url.search}` })).headers.location,
-        '/apps?connection=failed',
-      );
+      const foreignAccount = await app.inject({ url: `${url.pathname}${url.search}` });
+      assert.equal(foreignAccount.statusCode, 302, foreignAccount.body);
+      assert.equal(foreignAccount.headers.location, '/apps?connection=failed');
       url.searchParams.set('account_ref', 'ca-fixture');
-      assert.equal(
-        (await app.inject({ url: `${url.pathname}${url.search}` })).headers.location,
-        '/apps?connection=failed',
-      );
+      const inactiveAccount = await app.inject({ url: `${url.pathname}${url.search}` });
+      assert.equal(inactiveAccount.statusCode, 302, inactiveAccount.body);
+      assert.equal(inactiveAccount.headers.location, '/apps?connection=failed');
       providerStatus = 'ACTIVE';
       assert.equal((await app.inject({ url: `${url.pathname}${url.search}` })).statusCode, 302);
       assert.equal(

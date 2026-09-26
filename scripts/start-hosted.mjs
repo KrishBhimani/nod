@@ -37,7 +37,9 @@ export function hostedEnvironment(
   if (values.BETTER_AUTH_SECRET.length < 32) invalid.add('BETTER_AUTH_SECRET');
   if (
     !/^[A-Za-z0-9+/]+={0,2}$/.test(values.SIDEKICK_MASTER_KEY) ||
-    Buffer.from(values.SIDEKICK_MASTER_KEY, 'base64').length !== 32
+    Buffer.from(values.SIDEKICK_MASTER_KEY, 'base64').length !== 32 ||
+    Buffer.from(values.SIDEKICK_MASTER_KEY, 'base64').toString('base64') !==
+      values.SIDEKICK_MASTER_KEY
   )
     invalid.add('SIDEKICK_MASTER_KEY');
   if (values.LLM_PROVIDER && !['openai', 'anthropic'].includes(values.LLM_PROVIDER))

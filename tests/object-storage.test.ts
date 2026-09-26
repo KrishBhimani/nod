@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -14,8 +14,54 @@ import { ObjectStoreConflict } from '../src/ports/object-storage.ts';
 import { createFilesystemObjectStore } from '../src/providers/object-storage/filesystem.ts';
 import { createHttpObjectStore } from '../src/providers/object-storage/http.ts';
 import { createS3ObjectStore } from '../src/providers/object-storage/s3.ts';
+import { objectKey } from '../src/ports/object-storage-validation.ts';
 
 const key = `artifacts/${randomUUID()}`;
+
+test('private object keys use the same canonical UUID grammar as the hosted broker', () => {
+  const id = '01234567-89ab-4cde-8fab-0123456789ab';
+  for (const value of [`artifacts/${id}`, `sessions/${id}.jsonl`])
+    assert.equal(objectKey(value), value);
+  for (const value of [
+    `artifacts/${id.toUpperCase()}`,
+    `sessions/${id.toUpperCase()}.jsonl`,
+    'sessions/task.jsonl',
+    `artifacts/${id.replace('-4cde-', '-0cde-')}`,
+    `sessions/${id.replace('-8fab-', '-7fab-')}.jsonl`,
+    `artifacts/${id}.jsonl`,
+    `sessions/${id}`,
+    `sessions/../${id}.jsonl`,
+  ])
+    assert.throws(() => objectKey(value), /identifier/);
+});
+
+test('filesystem storage validates missing reads before lookup and conceals filesystem failures', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'sidekick-object-errors-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = createFilesystemObjectStore(root);
+  for (const limit of [0, -1, 0.5, NaN, 16 * 1024 * 1024 + 1])
+    await assert.rejects(store.read(key, limit), /size limit is invalid/);
+  await writeFile(join(root, 'artifacts'), 'synthetic private path');
+  for (const operation of [
+    () => store.write(key, Buffer.from('fixture'), { expectedVersion: null }),
+    () => store.remove(key),
+    () => store.read(key, 100),
+  ])
+    await assert.rejects(operation(), {
+      message: 'Private file storage is temporarily unavailable.',
+    });
+  await rm(join(root, 'artifacts'));
+  await mkdir(join(root, key), { recursive: true });
+  await assert.rejects(store.remove(key), {
+    message: 'Private file storage is temporarily unavailable.',
+  });
+  await rm(join(root, key), { recursive: true });
+  await store.write(key, Buffer.from('fixture'), { expectedVersion: null });
+  await assert.rejects(
+    store.write(key, Buffer.from('stale'), { expectedVersion: null }),
+    ObjectStoreConflict,
+  );
+});
 test('private filesystem objects survive factory restart and preserve conditional writes and path bounds', async () => {
   const root = await mkdtemp(join(tmpdir(), 'sidekick-objects-'));
   const outside = await mkdtemp(join(tmpdir(), 'sidekick-outside-'));

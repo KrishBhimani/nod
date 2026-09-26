@@ -12,7 +12,7 @@ import {
   objectLimit,
   objectVersion,
   readObjectBody,
-} from './validation.ts';
+} from '../../ports/object-storage-validation.ts';
 
 export function createS3ObjectStore(options: {
   client: S3Client;

@@ -3,7 +3,12 @@ import { mkdir, open, realpath, rename, rm } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { ObjectStoreConflict, type PrivateObjectStore } from '../../ports/object-storage.ts';
-import { maxObjectBytes, objectFailure, objectKey, objectLimit } from './validation.ts';
+import {
+  maxObjectBytes,
+  objectFailure,
+  objectKey,
+  objectLimit,
+} from '../../ports/object-storage-validation.ts';
 
 export function createFilesystemObjectStore(root: string): PrivateObjectStore {
   const directory = resolve(root);
@@ -16,6 +21,7 @@ export function createFilesystemObjectStore(root: string): PrivateObjectStore {
   const version = (bytes: Uint8Array) =>
     '"' + createHash('sha256').update(bytes).digest('hex') + '"';
   async function read(key: string, maximum: number) {
+    objectLimit(maximum);
     const target = path(key);
     let file;
     try {
@@ -27,7 +33,7 @@ export function createFilesystemObjectStore(root: string): PrivateObjectStore {
     }
     try {
       const stat = await file.stat();
-      if (!stat.isFile() || stat.size > objectLimit(maximum)) throw objectFailure();
+      if (!stat.isFile() || stat.size > maximum) throw objectFailure();
       const bytes = Buffer.alloc(stat.size);
       let offset = 0;
       while (offset < bytes.length) {
@@ -37,25 +43,32 @@ export function createFilesystemObjectStore(root: string): PrivateObjectStore {
       }
       if ((await file.read(Buffer.alloc(1), 0, 1, bytes.length)).bytesRead) throw objectFailure();
       return { bytes, version: version(bytes) };
+    } catch {
+      throw objectFailure();
     } finally {
-      await file.close();
+      await file.close().catch(() => {
+        throw objectFailure();
+      });
     }
   }
   async function exclusive<T>(key: string, action: () => Promise<T>) {
     const target = path(key);
-    await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-    await verifyDirectory(key);
-    let lock;
     try {
-      lock = await open(target + '.lock', 'wx', 0o600);
-    } catch {
+      await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+      await verifyDirectory(key);
+      const lock = await open(target + '.lock', 'wx', 0o600);
+      try {
+        return await action();
+      } finally {
+        try {
+          await lock.close();
+        } finally {
+          await rm(target + '.lock', { force: true });
+        }
+      }
+    } catch (error) {
+      if (error instanceof ObjectStoreConflict) throw error;
       throw objectFailure();
-    }
-    try {
-      return await action();
-    } finally {
-      await lock.close();
-      await rm(target + '.lock', { force: true });
     }
   }
   return {

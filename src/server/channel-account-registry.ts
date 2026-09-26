@@ -39,23 +39,25 @@ export function createChannelAccountRegistry(options: {
   )
     throw new ChannelAccountRegistryError('invalid_configuration');
   const table = `"${schema}".channel_accounts`;
-  const activeLease = `WITH locked_tenant AS MATERIALIZED (
-    SELECT owner_id,lease_holder,lease_generation,lease_expires
-    FROM "${schema}".tenants WHERE environment=$1 AND owner_id=$4 FOR UPDATE
-  ), active_lease AS MATERIALIZED (
-    SELECT owner_id FROM locked_tenant
-    WHERE lease_holder=$5::uuid AND lease_generation=$6::bigint AND lease_expires>clock_timestamp()
-  )`;
+  const revisions = `"${schema}".channel_account_revisions`;
 
   function identity(input: ChannelAccountIdentity) {
     const ownerId = z.uuid().safeParse(input.ownerId);
     if (
       !ownerId.success ||
       !['telegram', 'whatsapp'].includes(input.provider) ||
-      !/^[a-zA-Z0-9:_-]{1,200}$/.test(input.accountId)
+      !/^[a-zA-Z0-9:_-]{1,200}$/.test(input.accountId) ||
+      !/^(0|[1-9][0-9]{0,18})$/.test(input.revision) ||
+      BigInt(input.revision) > 9223372036854775807n
     )
       throw new ChannelAccountRegistryError('invalid_identity');
-    return [options.environment, input.provider, input.accountId, ownerId.data.toLowerCase()];
+    return [
+      options.environment,
+      input.provider,
+      input.accountId,
+      ownerId.data.toLowerCase(),
+      input.revision,
+    ];
   }
 
   function leasedIdentity(input: ChannelAccountIdentity, lease: TenantLease) {
@@ -81,6 +83,76 @@ export function createChannelAccountRegistry(options: {
     }
   }
 
+  async function mutate(input: ChannelAccountIdentity, release: boolean, lease?: TenantLease) {
+    return protect(async () => {
+      const values = lease ? leasedIdentity(input, lease) : identity(input);
+      const client = await options.admin.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query("SET LOCAL lock_timeout='5s'");
+        await client.query("SET LOCAL statement_timeout='5s'");
+        await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
+          JSON.stringify(['sidekick-channel-account', schema, ...values.slice(0, 3)]),
+        ]);
+        if (lease) {
+          const checked = await client.query<{ valid: boolean }>(
+            `WITH locked_tenant AS MATERIALIZED (
+              SELECT lease_holder,lease_generation,lease_expires FROM "${schema}".tenants
+              WHERE environment=$1 AND owner_id=$2 FOR UPDATE
+            ) SELECT EXISTS(SELECT 1 FROM locked_tenant
+              WHERE lease_holder=$3::uuid AND lease_generation=$4::bigint
+              AND lease_expires>clock_timestamp()) AS valid`,
+            [values[0], values[3], values[5], values[6]],
+          );
+          if (!checked.rows[0]?.valid) throw new ChannelAccountRegistryError('invalid_lease');
+        }
+        const advanced = await client.query(
+          `INSERT INTO ${revisions} AS revisions(environment,provider,account_id,owner_id,revision,released)
+           VALUES($1,$2,$3,$4,$5,$6)
+           ON CONFLICT(environment,provider,account_id,owner_id) DO UPDATE SET
+             revision=EXCLUDED.revision,released=EXCLUDED.released
+           WHERE revisions.revision<EXCLUDED.revision
+             OR (revisions.revision=EXCLUDED.revision AND NOT revisions.released)
+           RETURNING revision`,
+          [...values.slice(0, 5), release],
+        );
+        let claimed = false;
+        if (advanced.rowCount === 1) {
+          if (release) {
+            await client.query(
+              `DELETE FROM ${table} WHERE environment=$1 AND provider=$2 AND account_id=$3
+               AND owner_id=$4 AND revision<=$5`,
+              values.slice(0, 5),
+            );
+          } else {
+            const result = await client.query(
+              `INSERT INTO ${table} AS accounts(environment,provider,account_id,owner_id,revision)
+               VALUES($1,$2,$3,$4,$5)
+               ON CONFLICT(environment,provider,account_id) DO UPDATE SET revision=EXCLUDED.revision
+               WHERE accounts.owner_id=EXCLUDED.owner_id AND accounts.revision<=EXCLUDED.revision
+               RETURNING owner_id`,
+              values.slice(0, 5),
+            );
+            claimed = result.rowCount === 1;
+            if (!claimed)
+              await client.query(
+                `UPDATE ${revisions} SET released=true WHERE environment=$1 AND provider=$2
+                 AND account_id=$3 AND owner_id=$4 AND revision=$5`,
+                values.slice(0, 5),
+              );
+          }
+        }
+        await client.query('COMMIT');
+        return claimed;
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      } finally {
+        client.release();
+      }
+    });
+  }
+
   return {
     initialize: () =>
       protect(async () => {
@@ -91,14 +163,30 @@ export function createChannelAccountRegistry(options: {
             `sidekick:channel-account-registry:${schema}`,
           ]);
           await client.query(`CREATE TABLE IF NOT EXISTS ${table} (
-          environment text NOT NULL,
-          provider text NOT NULL CHECK (provider IN ('telegram','whatsapp')),
-          account_id text NOT NULL,
-          owner_id uuid NOT NULL,
-          created_at timestamptz NOT NULL DEFAULT now(),
-          PRIMARY KEY (environment,provider,account_id)
-        )`);
-          await client.query(`REVOKE ALL ON TABLE ${table} FROM PUBLIC`);
+            environment text NOT NULL,
+            provider text NOT NULL CHECK (provider IN ('telegram','whatsapp')),
+            account_id text NOT NULL,
+            owner_id uuid NOT NULL,
+            revision bigint NOT NULL DEFAULT 0,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (environment,provider,account_id)
+          )`);
+          await client.query(
+            `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS revision bigint NOT NULL DEFAULT 0`,
+          );
+          await client.query(`CREATE TABLE IF NOT EXISTS ${revisions} (
+            environment text NOT NULL,
+            provider text NOT NULL CHECK (provider IN ('telegram','whatsapp')),
+            account_id text NOT NULL,
+            owner_id uuid NOT NULL,
+            revision bigint NOT NULL CHECK (revision>=0),
+            released boolean NOT NULL,
+            PRIMARY KEY(environment,provider,account_id,owner_id)
+          )`);
+          await client.query(`INSERT INTO ${revisions}(environment,provider,account_id,owner_id,revision,released)
+            SELECT environment,provider,account_id,owner_id,revision,false FROM ${table}
+            ON CONFLICT DO NOTHING`);
+          await client.query(`REVOKE ALL ON TABLE ${table},${revisions} FROM PUBLIC`);
           await client.query('COMMIT');
         } catch (error) {
           await client.query('ROLLBACK').catch(() => {});
@@ -107,56 +195,13 @@ export function createChannelAccountRegistry(options: {
           client.release();
         }
       }),
-    claim: (input) =>
-      protect(async () => {
-        const result = await options.admin.query(
-          `INSERT INTO ${table} AS accounts (environment,provider,account_id,owner_id)
-           VALUES ($1,$2,$3,$4)
-           ON CONFLICT (environment,provider,account_id)
-           DO UPDATE SET owner_id=EXCLUDED.owner_id
-           WHERE accounts.owner_id=EXCLUDED.owner_id
-           RETURNING owner_id`,
-          identity(input),
-        );
-        return result.rowCount === 1;
-      }),
-    release: (input) =>
-      protect(async () => {
-        await options.admin.query(
-          `DELETE FROM ${table}
-           WHERE environment=$1 AND provider=$2 AND account_id=$3 AND owner_id=$4`,
-          identity(input),
-        );
-      }),
-    claimWithLease: (input, lease) =>
-      protect(async () => {
-        const result = await options.admin.query<{ valid: boolean; claimed: boolean }>(
-          `${activeLease}, changed AS (
-            INSERT INTO ${table} AS accounts (environment,provider,account_id,owner_id)
-            SELECT $1,$2,$3,owner_id FROM active_lease
-            ON CONFLICT (environment,provider,account_id)
-            DO UPDATE SET owner_id=EXCLUDED.owner_id
-            WHERE accounts.owner_id=EXCLUDED.owner_id
-            RETURNING owner_id
-          ) SELECT EXISTS(SELECT 1 FROM active_lease) AS valid,
-                   EXISTS(SELECT 1 FROM changed) AS claimed`,
-          leasedIdentity(input, lease),
-        );
-        if (!result.rows[0]?.valid) throw new ChannelAccountRegistryError('invalid_lease');
-        return result.rows[0].claimed;
-      }),
-    releaseWithLease: (input, lease) =>
-      protect(async () => {
-        const result = await options.admin.query<{ valid: boolean }>(
-          `${activeLease}, changed AS (
-            DELETE FROM ${table} AS accounts USING active_lease
-            WHERE accounts.environment=$1 AND accounts.provider=$2 AND accounts.account_id=$3
-              AND accounts.owner_id=active_lease.owner_id
-            RETURNING accounts.owner_id
-          ) SELECT EXISTS(SELECT 1 FROM active_lease) AS valid`,
-          leasedIdentity(input, lease),
-        );
-        if (!result.rows[0]?.valid) throw new ChannelAccountRegistryError('invalid_lease');
-      }),
+    claim: (input) => mutate(input, false),
+    release: async (input) => {
+      await mutate(input, true);
+    },
+    claimWithLease: (input, lease) => mutate(input, false, lease),
+    releaseWithLease: async (input, lease) => {
+      await mutate(input, true, lease);
+    },
   };
 }

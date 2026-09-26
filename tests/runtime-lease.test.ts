@@ -14,8 +14,8 @@ test('runtime lease tolerates bounded clock skew but fences expired work and can
     },
   });
   const app = Fastify();
-  lease.register(app);
   app.get('/api/fixture', async () => ({ ok: true }));
+  lease.register(app);
   t.after(async () => {
     lease.close();
     await app.close();

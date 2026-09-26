@@ -48,6 +48,22 @@ async function ready(path: string) {
   throw new Error('The synthetic process did not start.');
 }
 
+test('invalid workspace task identifiers reject asynchronously without launching a process', async () => {
+  let launches = 0;
+  const result = runWorkspaceCommand({
+    container: 'sidekick-workspace-fixture',
+    taskId: '../foreign',
+    args: ['printf', 'never'],
+    spawn: () => {
+      launches++;
+      throw new Error('unexpected launch');
+    },
+  });
+  assert.ok(result instanceof Promise);
+  await assert.rejects(result, /Invalid task identifier/);
+  assert.equal(launches, 0);
+});
+
 test('workspace transport returns binary output and sends command and input only over stdin', async () => {
   const f = await local();
   try {
@@ -286,11 +302,13 @@ test('an uncertain workspace operation cancels and drains commands already in fl
 test('workspace uploads transfer binary chunks atomically and reject symlink directories', async () => {
   const f = await local();
   const outside = await mkdtemp('/tmp/sidekick-upload-outside-');
+  let launches = 0;
   const workspace = createCommandWorkspace({
     workspaceRoot: f.directory,
     status: 'fixture',
     instructions: 'fixture',
     runCommand: async (_id, args, input) => {
+      launches++;
       const request = JSON.parse(input.input!);
       assert.ok([artifactWriteProgram, artifactReadProgram].includes(args[2]));
       request.base = f.directory;
@@ -311,10 +329,12 @@ test('workspace uploads transfer binary chunks atomically and reject symlink dir
       /Workspace command failed/,
     );
     assert.equal(await exists(join(outside, 'private.bin')), false);
+    const before = launches;
     await assert.rejects(
       workspace.writeArtifact!('fixture', '../foreign/file', bytes),
       /stay within/,
     );
+    assert.equal(launches, before);
     await assert.rejects(
       workspace.writeArtifact!('fixture', 'too-large', Buffer.alloc(15 * 1024 * 1024 + 1)),
       /15 MB/,

@@ -270,7 +270,11 @@ test('E2B browser cancellation waits for terminal worker acknowledgement', async
     });
   const rejected = assert.rejects(operation, /cancelled/);
   try {
-    while (!f.calls.length) await delay(5);
+    for (let attempt = 0; attempt < 400 && !f.calls.length && !finished; attempt++) await delay(5);
+    assert.ok(
+      f.calls.some((call) => call.method === 'act'),
+      'The browser action reached the worker.',
+    );
     abort.abort();
     await delay(20);
     assert.equal(finished, false);
@@ -303,6 +307,24 @@ test('E2B pause and resume retain allocation generation while unused roles alloc
     await second.computer.dispose();
     await second.workspace.dispose();
   } finally {
+    await f.close();
+  }
+});
+
+test('disposing an unused E2B browser stops its status without allocating a sandbox', async () => {
+  const f = await fixture();
+  const adapter = f.create('unused-owner');
+  try {
+    await adapter.computer.dispose();
+    assert.equal(adapter.computer.status(), 'Workspace browser is stopped.');
+    assert.equal(adapter.computer.currentSession?.(), undefined);
+    await assert.rejects(adapter.computer.act('task', { action: 'snapshot' }), /unavailable/);
+    assert.equal(adapter.computer.status(), 'Workspace browser is stopped.');
+    assert.equal(f.state.records.size, 0);
+    assert.equal(f.requests.length, 0);
+    await adapter.computer.dispose();
+  } finally {
+    await adapter.workspace.dispose();
     await f.close();
   }
 });

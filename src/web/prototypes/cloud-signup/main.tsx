@@ -67,6 +67,7 @@ type Person = {
   theme: Theme;
   timezone: string;
   quiet: boolean;
+  onboardingCompleted: boolean;
   apps: Partial<Record<AppId, Connection[]>>;
   telegram: 'none' | 'paired' | 'tested';
   computer: 'asleep' | 'running' | 'manual' | 'unavailable';
@@ -142,6 +143,7 @@ const freshPeople = (): Record<AccountId, Person> => ({
     theme: 'system',
     timezone: 'Europe/Lisbon',
     quiet: true,
+    onboardingCompleted: false,
     apps: {},
     telegram: 'none',
     computer: 'asleep',
@@ -154,6 +156,7 @@ const freshPeople = (): Record<AccountId, Person> => ({
     theme: 'system',
     timezone: 'Europe/London',
     quiet: true,
+    onboardingCompleted: false,
     apps: {},
     telegram: 'none',
     computer: 'asleep',
@@ -412,22 +415,24 @@ function App() {
       if (e.key === 'ArrowLeft') cycle(-1);
       if (e.key === 'ArrowRight') cycle(1);
       if (e.key === 'Escape') {
+        if (mobileNav) closeMobileNav();
+        else if (accountMenu)
+          accountAnchor.current?.querySelector<HTMLButtonElement>('.account-button')?.focus();
         setAccountMenu(false);
         setSettingsOpen(false);
         setReview(false);
-        closeMobileNav();
       }
     };
     window.addEventListener('keydown', keyboard);
     return () => window.removeEventListener('keydown', keyboard);
-  }, [variant]);
+  }, [variant, accountMenu, mobileNav]);
   const enter = (id: AccountId) => {
     setAccount(id);
     setEditingName(people[id].name);
     setModal(null);
     setAuthError('');
     setAccessDenied(false);
-    setScreen(people[id].messages.length || variant === 'C' ? 'app' : 'welcome');
+    setScreen(people[id].onboardingCompleted || variant === 'C' ? 'app' : 'welcome');
     setPage('Chat');
     setAccountMenu(false);
     setDraft('');
@@ -444,10 +449,16 @@ function App() {
   };
   const go = (next: Page) => {
     if (next === 'Computer' && !developer) return;
+    if (mobileNav) navigationButton.current?.focus();
     setPage(next);
     setMobileNav(false);
     setAccountMenu(false);
     setAccessDenied(false);
+  };
+  const finishOnboarding = () => {
+    patch({ onboardingCompleted: true });
+    setScreen('app');
+    setPage('Chat');
   };
   const openSettings = (tab: typeof settingsTab, trigger?: HTMLElement) => {
     settingsTrigger.current =
@@ -707,6 +718,7 @@ function App() {
                 <button
                   className="icon-btn"
                   aria-label={`Disconnect ${app.name} account ${connection.identity}`}
+                  data-connection-id={connection.id}
                   onClick={() => {
                     setDisconnecting({ app: app.id, connection });
                     setModal('disconnect');
@@ -1024,20 +1036,14 @@ function App() {
                   <Button
                     primary
                     onClick={() => {
-                      setScreen(variant === 'B' ? 'preferences' : 'app');
-                      setPage('Chat');
+                      if (variant === 'B') setScreen('preferences');
+                      else finishOnboarding();
                     }}
                   >
                     Continue{variant === 'B' ? '' : ' to Sidekick'}
                     <ArrowRight size={16} />
                   </Button>
-                  <button
-                    className="text-button"
-                    onClick={() => {
-                      setScreen('app');
-                      setPage('Chat');
-                    }}
-                  >
+                  <button className="text-button" onClick={finishOnboarding}>
                     I’ll do this later
                   </button>
                 </div>
@@ -1073,7 +1079,7 @@ function App() {
                     </button>
                   </div>
                 </div>
-                <Button primary onClick={() => setScreen('app')}>
+                <Button primary onClick={finishOnboarding}>
                   Start a conversation
                   <ArrowRight size={16} />
                 </Button>
@@ -1631,6 +1637,9 @@ function App() {
         <Modal
           title={`Disconnect ${apps.find((a) => a.id === disconnecting.app)?.name}?`}
           returnFocus={() =>
+            document.querySelector<HTMLButtonElement>(
+              `[data-connection-id="${disconnecting.connection.id}"]`,
+            ) ??
             document.querySelector<HTMLButtonElement>(`[data-app-id="${disconnecting.app}"] button`)
           }
           close={() => {

@@ -9,7 +9,7 @@ import {
 } from '../../shared/integrations';
 import { AccountAvatar } from '../components/account-avatar';
 import { BrandMark } from '../components/brand';
-import { Button, Notice } from '../components/ui';
+import { Button, Loading, Notice } from '../components/ui';
 import { usePageData } from '../hooks/use-page-data';
 import { api, errorMessage } from '../lib/api';
 import { connectionUrl } from '../lib/connection-url';
@@ -101,52 +101,52 @@ export function Onboarding({
             Try again
           </Button>
         )}
+        {loading && !data && <Loading />}
         <div className="onboarding-integrations" aria-busy={loading}>
-          {integrationServiceIds.map((slug) => {
-            const service = integrationServices[slug];
-            const rows = data?.filter((connection) => connection.slug === slug) ?? [];
-            const connected = rows.some((connection) => connection.status === 'connected');
-            const unavailable =
-              !data ||
-              !rows.length ||
-              rows.every((connection) => connection.status === 'not_configured');
-            const reconnect = rows.some((connection) => connection.connectionId) && !connected;
-            return (
-              <article
-                key={slug}
-                className={`onboarding-integration${connected ? ' connected' : ''}`}
-                aria-labelledby={`onboarding-${slug}`}
-              >
-                <img src={`/logos/${slug}.svg`} alt="" width={27} height={27} />
-                <h2 id={`onboarding-${slug}`}>{service.name}</h2>
-                {connected ? (
-                  <span className="onboarding-connected">
-                    <Check size={16} aria-hidden="true" />
-                    Connected
-                  </span>
-                ) : (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    aria-label={`${reconnect ? 'Reconnect' : 'Connect'} ${service.name}`}
-                    disabled={unavailable || Boolean(connecting) || saving}
-                    onClick={() => void connect(slug)}
-                  >
-                    {connecting === slug ? (
-                      <>
-                        <LoaderCircle className="spin" size={14} aria-hidden="true" />
-                        Opening…
-                      </>
-                    ) : reconnect ? (
-                      'Reconnect'
-                    ) : (
-                      'Connect'
-                    )}
-                  </Button>
-                )}
-              </article>
-            );
-          })}
+          {data &&
+            integrationServiceIds.map((slug) => {
+              const service = integrationServices[slug];
+              const rows = data.filter((connection) => connection.slug === slug);
+              const connected = rows.some((connection) => connection.status === 'connected');
+              const unavailable =
+                !rows.length || rows.every((connection) => connection.status === 'not_configured');
+              const reconnect = rows.some((connection) => connection.connectionId) && !connected;
+              return (
+                <article
+                  key={slug}
+                  className={`onboarding-integration${connected ? ' connected' : ''}`}
+                  aria-labelledby={`onboarding-${slug}`}
+                >
+                  <img src={`/logos/${slug}.svg`} alt="" width={27} height={27} />
+                  <h2 id={`onboarding-${slug}`}>{service.name}</h2>
+                  {connected ? (
+                    <span className="onboarding-connected">
+                      <Check size={16} aria-hidden="true" />
+                      Connected
+                    </span>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      aria-label={`${reconnect ? 'Reconnect' : 'Connect'} ${service.name}`}
+                      disabled={unavailable || Boolean(connecting) || saving}
+                      onClick={() => void connect(slug)}
+                    >
+                      {connecting === slug ? (
+                        <>
+                          <LoaderCircle className="spin" size={14} aria-hidden="true" />
+                          Opening…
+                        </>
+                      ) : reconnect ? (
+                        'Reconnect'
+                      ) : (
+                        'Connect'
+                      )}
+                    </Button>
+                  )}
+                </article>
+              );
+            })}
         </div>
         <div className="account-onboarding-actions">
           <Button disabled={saving || Boolean(connecting)} onClick={() => void complete()}>

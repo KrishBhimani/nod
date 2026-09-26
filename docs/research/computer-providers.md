@@ -2,7 +2,7 @@
 
 Research date: 2026-09-26. Repository baseline: `1a471a0f0fa6e986f82a3238a5a83c476d63dc56`.
 
-Status: proposal for review. The initial research snapshot preceded account preparation: no provider account, paid plan, remote computer, deployment, or live Google sign-in was created or tested during that snapshot. Subsequent account access is tracked in the [account-preparation record](provider-account-setup.md); it is not a remote-computer acceptance test. Vendor documentation establishes available APIs, not that Sidekick works with them. The recommended adapters and acceptance tests below are not implemented.
+Status: historical research proposal. The initial snapshot preceded account preparation and implementation. Separate E2B browser/workspace adapters and automated lifecycle fixtures are now implemented; live remote-computer acceptance remains pending. Alternative remote-computer adapters below are still proposals. See the [hosted acceptance record](../testing/results/2026-09-26-cloud-hosting.md) and [account-preparation record](provider-account-setup.md) for current evidence. Vendor documentation establishes available APIs, not that Sidekick works with them.
 
 ## Recommendation
 

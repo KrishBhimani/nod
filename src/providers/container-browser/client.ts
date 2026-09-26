@@ -73,10 +73,6 @@ export function createBridgeComputer(options: {
     if (Buffer.byteLength(encoded) > requestBytes)
       return Promise.reject(new Error('The browser request is too large.'));
     const order = ++sequence;
-    if (input.method === 'act') {
-      activitySequence = order;
-      currentSession = { taskId: input.taskId, lastActivityAt: new Date().toISOString() };
-    }
     const result = new Promise<unknown>((resolve, reject) => {
       let child: CommandProcess;
       try {
@@ -86,6 +82,10 @@ export function createBridgeComputer(options: {
         return reject(
           new Error('The workspace browser is unavailable. Start its container and try again.'),
         );
+      }
+      if (input.method === 'act') {
+        activitySequence = order;
+        currentSession = { taskId: input.taskId, lastActivityAt: new Date().toISOString() };
       }
       let output = '';
       let bytes = 0;

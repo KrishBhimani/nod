@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import type { IntegrationProvider } from '../ports/integrations.ts';
 import type { TenantRuntimeHost } from '../ports/tenant-runtime.ts';
+import { readRequestBody } from './request-body.ts';
 
 export function channelWebhookToken(
   master: Uint8Array,
@@ -24,9 +25,8 @@ export function createHostedWebhooks(options: {
 }) {
   return async (request: Request) => {
     const url = new URL(request.url);
-    const body = new Uint8Array(await request.arrayBuffer());
-    if (body.length > 262_144)
-      return Response.json({ error: 'This request is too large.' }, { status: 413 });
+    const body = await readRequestBody(request, 262_144);
+    if (!body) return Response.json({ error: 'This request is too large.' }, { status: 413 });
     const headers = new Headers();
     for (const key of [
       'content-type',

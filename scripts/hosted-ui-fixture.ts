@@ -39,7 +39,11 @@ const account = (owner: string) =>
   };
 function session(headers: Headers) {
   const token = headers.get('cookie')?.match(/(?:^|;\s*)sidekick-ui-fixture=([^;]+)/)?.[1];
-  return token ? (sessions.get(token) ?? null) : null;
+  if (!token) return null;
+  const current = sessions.get(token);
+  if (current && current.expiresAt.getTime() > Date.now()) return current;
+  sessions.delete(token);
+  return null;
 }
 const authentication: AuthenticationProvider = {
   configured: true,

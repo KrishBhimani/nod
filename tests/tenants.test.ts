@@ -201,6 +201,26 @@ test(
         await denied(() => poolA.query('CREATE TEMP TABLE fixture_escape(id integer)'));
         await denied(() => poolA.query(`GRANT "${tenantB.role}" TO "${tenantA.role}"`));
         await denied(() =>
+          poolA.query(`GRANT USAGE ON SCHEMA "${tenantB.appSchema}" TO "${tenantA.role}"`),
+        );
+        await denied(() =>
+          poolA.query(
+            `GRANT SELECT ON "${tenantB.appSchema}".fixture_records TO "${tenantA.role}"`,
+          ),
+        );
+        await denied(() =>
+          poolA.query(
+            `ALTER DEFAULT PRIVILEGES FOR ROLE "${tenantB.role}" GRANT SELECT ON TABLES TO PUBLIC`,
+          ),
+        );
+        await poolA.query(`CREATE FUNCTION fixture_attempt() RETURNS text
+          LANGUAGE plpgsql SECURITY DEFINER SET search_path TO "${tenantB.appSchema}"
+          AS $body$ BEGIN RETURN (SELECT content FROM fixture_records LIMIT 1); END $body$`);
+        await assert.rejects(() => poolA.query('SELECT fixture_attempt()'), {
+          code: '42P01',
+        });
+        await poolA.query('DROP FUNCTION fixture_attempt()');
+        await denied(() =>
           poolA.query(
             `CREATE TABLE fixture_reference(id integer REFERENCES "${tenantB.appSchema}".fixture_records(id))`,
           ),

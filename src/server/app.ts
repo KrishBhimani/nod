@@ -25,6 +25,7 @@ import { conversationRevision, currentConversationSql } from './conversations.ts
 import { isMessageReaction } from '../shared/emoji.ts';
 import { registerLocalAccess } from './access.ts';
 import { registerRuntimeAccess } from './runtime-auth.ts';
+import { createMultipartReader } from './multipart.ts';
 import type { SpeechService } from './speech.ts';
 import { BrowserActionError, type Computer } from '../ports/computer.ts';
 import { browserErrorMessage } from '../shared/browser-errors.ts';
@@ -79,14 +80,20 @@ export async function createApp(dependencies: AppDependencies = {}) {
   app.addHook('preClose', async () => {
     for (const stream of streams) stream.end();
   });
-  if (runtimeMode === 'tenant')
-    registerRuntimeAccess(app, {
-      secret: runtimeSecret,
-      ownerId,
-      environment: runtimeEnvironment,
-      generation: runtimeGeneration,
-    });
-  else registerLocalAccess(app, port);
+  const runtimeAccess =
+    runtimeMode === 'tenant'
+      ? registerRuntimeAccess(app, {
+          secret: runtimeSecret,
+          ownerId,
+          environment: runtimeEnvironment,
+          generation: runtimeGeneration,
+        })
+      : undefined;
+  if (!runtimeAccess) registerLocalAccess(app, port);
+  const uploads = createMultipartReader({
+    maxFileSize,
+    verifiedBody: runtimeAccess?.takeBody,
+  });
   app.setErrorHandler((error, _request, reply) => {
     const known = error instanceof Error ? (error as Error & { statusCode?: number }) : undefined;
     const status = error instanceof z.ZodError ? 400 : known?.statusCode || 500;
@@ -99,7 +106,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
             : 'This request could not be completed. Check the local service and try again.',
     });
   });
-  await app.register(multipart, { limits: { fileSize: maxFileSize, files: 1, fields: 5 } });
+  await app.register(multipart, { limits: uploads.limits });
   app.get('/api/health', async () => {
     await pool.query('SELECT 1');
     const release = process.env.SIDEKICK_IMAGE_RELEASE || process.env.SIDEKICK_RELEASE;
@@ -280,9 +287,9 @@ export async function createApp(dependencies: AppDependencies = {}) {
     });
   });
   app.post('/api/uploads', async (request) => {
-    const file = await request.file();
+    const file = await uploads.readFile(request);
     if (!file) throw Object.assign(new Error('Choose a file to upload.'), { statusCode: 400 });
-    return artifacts.storeArtifact(await file.toBuffer(), file.filename, file.mimetype);
+    return artifacts.storeArtifact(file.bytes, file.filename, file.mimetype);
   });
   app.get<{ Params: { id: string } }>('/api/artifacts/:id', async (request, reply) => {
     const result = await pool.query('SELECT * FROM artifacts WHERE id=$1 AND owner_id=$2', [
@@ -331,13 +338,12 @@ export async function createApp(dependencies: AppDependencies = {}) {
     return reply.send(await artifacts.readArtifact(file.id));
   });
   app.post('/api/speech/transcribe', async (request) => {
-    const file = await request.file();
+    const file = await uploads.readFile(request);
     if (!file || !file.mimetype.startsWith('audio/'))
       throw Object.assign(new Error('Choose an audio recording.'), { statusCode: 400 });
-    const bytes = await file.toBuffer();
     return {
       text: await speech().transcribe({
-        bytes,
+        bytes: file.bytes,
         mimeType: file.mimetype,
         fileName: file.filename || 'recording.webm',
       }),
