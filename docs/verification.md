@@ -8,7 +8,7 @@ This records local prototype checks. Synthetic fixtures, isolated browser flows 
 
 ## Current pass — 2026-09-26
 
-[UI and browser-control review](testing/results/2026-09-26-ux-polish.md) records compact integrations and channels, aligned empty states, revised dark controls, clearer Inspector tabs and always-available workspace takeover. The final local integration run passed **793 tests with zero failures or skips**, including automatic view recovery after Done. Actual desktop/mobile inspection, 72 contrast pairs and real container browser control support this pass. The PR checks report final-head publication status.
+[UI and browser-control review](testing/results/2026-09-26-ux-polish.md) records compact integrations and channels, aligned empty states, revised dark controls, clearer Inspector tabs and always-available workspace takeover. The final local integration run passed **796 tests with zero failures or skips**, including automatic view recovery after Done and cancellation of stale navigation focus callbacks. Mobile keeps Chat visible with other controls in a top-right menu; Apps uses centered logos and direct account Disconnect actions. Actual desktop/mobile inspection, 72 contrast pairs and real container browser control support this pass. The PR checks report final-head publication status.
 
 ## Prior pass — 2026-09-25
 

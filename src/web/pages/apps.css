@@ -18,6 +18,12 @@
 .apps-page .app-card-summary {
   grid-column: 1 / 3;
   grid-row: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.apps-page .app-card-copy {
   min-width: 0;
 }
 .apps-page .app-card.has-accounts .app-card-summary {
@@ -29,8 +35,8 @@
   flex-wrap: wrap;
   gap: 4px 10px;
 }
-.apps-page .app-card-heading > img,
-.apps-page .app-card-heading > svg {
+.apps-page .app-card-summary > img,
+.apps-page .app-card-summary > svg {
   flex-shrink: 0;
 }
 .apps-page .app-card-heading h2 {
@@ -46,7 +52,7 @@
   font-size: 11px;
 }
 .apps-page .app-card-description {
-  margin: 3px 0 0 34px;
+  margin: 3px 0 0;
   color: var(--muted-foreground);
   font-size: 12px;
   line-height: 1.5;
@@ -61,7 +67,12 @@
   padding: 3px 0;
 }
 .apps-page .compact-account-details {
+  flex: 0 1 auto;
   padding-top: 0;
+}
+.apps-page .account-disconnect {
+  flex-shrink: 0;
+  margin-left: 0;
 }
 .apps-page .compact-account-name,
 .apps-page .compact-account-email {
@@ -79,9 +90,6 @@
 .apps-page .app-card-actions > span {
   color: var(--muted-foreground);
   font-size: 11px;
-}
-.apps-page .connection-menu-options {
-  width: min(200px, calc(100vw - 76px));
 }
 @container (max-width: 700px) {
   .apps-page .app-card {
@@ -107,10 +115,6 @@
   }
   .apps-page .app-card-heading > span {
     flex-basis: 100%;
-    padding-left: 34px;
-  }
-  .apps-page .app-card-description {
-    margin-left: 0;
   }
   .apps-page .app-card-accounts {
     padding-left: 0;

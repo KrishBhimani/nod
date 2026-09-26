@@ -424,7 +424,7 @@ a svg {
 .sidebar-bottom .nav-link {
   font-size: 12px;
 }
-.mobile-navigation-more {
+.mobile-navigation {
   display: none;
 }
 .sidebar-collapsed .sidebar {
@@ -2672,85 +2672,96 @@ a svg {
 
 @media (max-width: 640px) {
   .app-shell {
-    flex-direction: column-reverse;
+    flex-direction: column;
   }
   .app-shell .sidebar {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: 0;
     width: 100%;
-    padding: 4px max(4px, env(safe-area-inset-right)) max(4px, env(safe-area-inset-bottom))
-      max(4px, env(safe-area-inset-left));
-    border-top: 1px solid var(--border);
+    padding: calc(6px + env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 6px
+      max(12px, env(safe-area-inset-left));
+    border-bottom: 1px solid var(--border);
     background: var(--background);
   }
   .app-shell .sidebar > .brand,
+  .app-shell .main-nav,
   .app-shell .sidebar-bottom,
   .app-shell .sidebar .nav-shortcut {
     display: none;
   }
-  .app-shell .main-nav {
-    flex: 1;
-    min-width: 0;
-    display: block;
-    margin: 0;
-  }
-  .app-shell .main-nav ul {
-    display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-    gap: 0;
-  }
-  .app-shell .sidebar .nav-link {
-    flex-direction: column;
-    justify-content: center;
-    gap: 4px;
-    min-height: 52px;
-    padding: 6px 0;
-    font-size: 10px;
-    border-radius: 6px;
-  }
-  .app-shell .sidebar .nav-label {
-    display: none;
-  }
-  .app-shell .sidebar .nav-link > svg {
-    width: 20px;
-    height: 20px;
-  }
-  .mobile-navigation-more {
-    display: block;
-    flex: 0 0 calc(100% / 7);
+  .mobile-navigation {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
     min-width: 0;
   }
-  .mobile-navigation-more .connection-menu,
-  .mobile-navigation-more .connection-menu > .button {
-    width: 100%;
-  }
-  .mobile-navigation-more .connection-menu > .button {
-    flex-direction: column;
-    gap: 4px;
-    min-height: 52px;
-    padding: 6px 0;
-    border: 0;
-    background: transparent;
-    color: var(--muted-foreground);
-    font-size: 10px;
-    font-weight: 400;
-    box-shadow: none;
-  }
-  .mobile-navigation-more .connection-menu > .button > span {
-    display: none;
-  }
-  .mobile-navigation-more .connection-menu-options {
-    top: auto;
-    bottom: calc(100% + 10px);
-    right: 0;
-    width: 210px;
-  }
-  .mobile-navigation-more .connection-menu-options button {
+  .mobile-chat-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
     min-height: 44px;
+    padding: 6px 4px;
+    border-radius: 6px;
+    color: var(--foreground);
+    font-size: 15px;
+    font-weight: 550;
+    text-decoration: none;
+  }
+  .mobile-chat-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .mobile-navigation .connection-menu > .button {
+    width: 44px;
+    height: 44px;
+    color: var(--foreground);
+  }
+  .mobile-navigation .connection-menu .connection-menu-options {
+    top: calc(100% + 10px);
+    bottom: auto;
+    right: 0;
+    width: 248px;
+    max-width: calc(100vw - 24px);
+    max-height: calc(100dvh - 80px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .mobile-navigation .connection-menu-options > [role='menuitem'] {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-height: 44px;
+    padding: 10px 12px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--foreground);
+    font-size: 14px;
+    line-height: 1.4;
+    text-align: left;
+    text-decoration: none;
+  }
+  .mobile-navigation .connection-menu-options > [role='menuitem'] > svg {
+    flex: none;
+    color: var(--text-secondary);
+  }
+  .mobile-navigation .connection-menu-options > [role='menuitem']:hover,
+  .mobile-navigation .connection-menu-options > [role='menuitem']:focus-visible {
+    outline: none;
+    background: var(--secondary);
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+  .mobile-navigation .connection-menu-options > [aria-current='page'],
+  .mobile-navigation .connection-menu-options > [aria-expanded='true'] {
+    background: var(--accent-soft);
+  }
+  .mobile-menu-separator {
+    height: 1px;
+    margin: 5px 7px;
+    background: var(--border);
   }
   .workspace-frame {
     min-height: 0;
+    padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   }
 }

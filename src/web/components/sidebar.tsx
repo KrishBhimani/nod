@@ -1,13 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import {
-  Monitor,
-  Moon,
-  MoreHorizontal,
-  PanelLeftClose,
-  PanelLeftOpen,
-  RotateCcw,
-  Sun,
-} from 'lucide-react';
+import { Monitor, Moon, Menu, PanelLeftClose, PanelLeftOpen, RotateCcw, Sun } from 'lucide-react';
 import { BrandMark } from './brand';
 import { ConnectionMenu } from './connection-menu';
 import { currentTheme, setTheme, subscribeTheme } from '../lib/theme';
@@ -38,6 +30,7 @@ export function Sidebar({
   onToggleInspector?(): void;
 }) {
   const [hints, setHints] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const theme = useSyncExternalStore(subscribeTheme, currentTheme, () => 'light');
   const ThemeIcon = theme === 'dark' ? Sun : Moon;
   const themeLabel = theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
@@ -45,8 +38,17 @@ export function Sidebar({
   const mac = /Mac|iPhone|iPad/.test(navigator.platform);
   const navigate = useRef(onNavigate);
   navigate.current = onNavigate;
+  useEffect(() => setMobileMenuOpen(false), [path]);
+  useEffect(() => {
+    const resize = () => {
+      if (window.innerWidth > 640) setMobileMenuOpen(false);
+    };
+    window.addEventListener('resize', resize);
+    return () => window.removeEventListener('resize', resize);
+  }, []);
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let focusFrame: number | undefined;
     const clear = () => {
       clearTimeout(timer);
       timer = undefined;
@@ -75,7 +77,9 @@ export function Sidebar({
       event.preventDefault();
       event.stopPropagation();
       navigate.current(action.path);
-      requestAnimationFrame(() => {
+      if (focusFrame !== undefined) window.cancelAnimationFrame(focusFrame);
+      focusFrame = window.requestAnimationFrame(() => {
+        focusFrame = undefined;
         const target =
           action.path === '/'
             ? document.querySelector<HTMLElement>('.composer-editor[contenteditable="true"]')
@@ -96,6 +100,7 @@ export function Sidebar({
     document.addEventListener('visibilitychange', clear);
     return () => {
       clearTimeout(timer);
+      if (focusFrame !== undefined) window.cancelAnimationFrame(focusFrame);
       window.removeEventListener('keydown', down);
       window.removeEventListener('keyup', up);
       window.removeEventListener('blur', clear);
@@ -181,22 +186,84 @@ export function Sidebar({
           })}
         </ul>
       </nav>
-      <div className="mobile-navigation-more">
+      <div className="mobile-navigation">
+        <a
+          href="/"
+          className="mobile-chat-link"
+          aria-label="Chat"
+          aria-current={path === '/' ? 'page' : undefined}
+          onClick={(event) => {
+            if (
+              event.metaKey ||
+              event.ctrlKey ||
+              event.shiftKey ||
+              event.altKey ||
+              event.button !== 0
+            )
+              return;
+            event.preventDefault();
+            setMobileMenuOpen(false);
+            onNavigate('/');
+          }}
+        >
+          <BrandMark small />
+          <span>Chat</span>
+        </a>
         <ConnectionMenu
-          label="More navigation"
-          trigger={
-            <>
-              <MoreHorizontal size={20} aria-hidden="true" />
-              <span>More</span>
-            </>
-          }
+          label="Navigation menu"
+          compact
+          open={mobileMenuOpen}
+          onOpenChange={setMobileMenuOpen}
+          trigger={<Menu size={22} aria-hidden="true" />}
         >
           {(close) => (
             <>
+              {navigationItems
+                .filter((item) => item.path !== '/')
+                .map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <a
+                      key={item.path}
+                      href={item.path}
+                      role="menuitem"
+                      aria-current={path === item.path ? 'page' : undefined}
+                      onClick={(event) => {
+                        if (
+                          event.metaKey ||
+                          event.ctrlKey ||
+                          event.shiftKey ||
+                          event.altKey ||
+                          event.button !== 0
+                        )
+                          return;
+                        event.preventDefault();
+                        close();
+                        onNavigate(item.path);
+                      }}
+                    >
+                      <Icon size={18} aria-hidden="true" />
+                      <span>{item.label}</span>
+                    </a>
+                  );
+                })}
+              <div className="mobile-menu-separator" role="separator" />
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  toggleTheme();
+                  close();
+                }}
+              >
+                <ThemeIcon size={18} aria-hidden="true" /> {themeLabel}
+              </button>
               {inspectorEnabled && (
                 <button
                   type="button"
                   role="menuitem"
+                  aria-expanded={inspectorOpen}
+                  aria-controls="developer-inspector"
                   onClick={() => {
                     close();
                     onToggleInspector?.();
@@ -214,16 +281,6 @@ export function Sidebar({
                 }}
               >
                 <RotateCcw size={18} aria-hidden="true" /> Get started
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  toggleTheme();
-                  close();
-                }}
-              >
-                <ThemeIcon size={18} aria-hidden="true" /> {themeLabel}
               </button>
             </>
           )}

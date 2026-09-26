@@ -1,6 +1,6 @@
 import { PageTitle } from '../components/page-title';
 import { useEffect, useRef, useState } from 'react';
-import { AlertCircle, Check, Link2, MoreHorizontal, Plus, Unplug } from 'lucide-react';
+import { AlertCircle, Link2, Plus, Unplug } from 'lucide-react';
 import type { Connection } from '../../shared/contracts';
 import { api, errorMessage, post } from '../lib/api';
 import { connectionUrl } from '../lib/connection-url';
@@ -12,7 +12,6 @@ import {
 } from '../lib/secondary-pages';
 import { usePageData } from '../hooks/use-page-data';
 import { Button, Loading, Notice } from '../components/ui';
-import { ConnectionMenu } from '../components/connection-menu';
 
 const logos = new Set([
   'gmail',
@@ -48,7 +47,6 @@ export function ConnectedAccount({
       <div className="compact-account-details">
         <div className="compact-account-identity">
           <span className="compact-account-name">{identity.primary}</span>
-          {account.status === 'connected' && <Check size={13} aria-label="Connected" />}
         </div>
         {identity.secondary && (
           <small className="compact-account-email">{identity.secondary}</small>
@@ -60,29 +58,18 @@ export function ConnectedAccount({
           </p>
         )}
       </div>
-      <ConnectionMenu
-        label={`Actions for ${identity.primary}`}
-        compact
+      <Button
+        variant="ghost"
+        size="sm"
+        className="account-disconnect"
+        data-disconnect-account={account.connectionId}
+        aria-label={`Disconnect ${identity.primary}${identity.secondary ? ` (${identity.secondary})` : ''} from ${account.name}`}
         disabled={busy}
-        trigger={<MoreHorizontal size={16} />}
+        onClick={onDisconnect}
       >
-        {(close) => (
-          <>
-            <button
-              role="menuitem"
-              tabIndex={-1}
-              className="connection-remove"
-              onClick={() => {
-                close();
-                onDisconnect();
-              }}
-            >
-              <Unplug size={14} />
-              Disconnect account
-            </button>
-          </>
-        )}
-      </ConnectionMenu>
+        <Unplug size={13} aria-hidden="true" />
+        Disconnect
+      </Button>
     </div>
   );
 }
@@ -174,12 +161,14 @@ export function Apps() {
               aria-labelledby={`app-${service.slug}`}
             >
               <div className="app-card-summary">
-                <div className="app-card-heading">
-                  <ServiceLogo slug={service.slug} />
-                  <h2 id={`app-${service.slug}`}>{service.name}</h2>
-                  {accounts.length > 1 && <span>{accounts.length} accounts</span>}
+                <ServiceLogo slug={service.slug} />
+                <div className="app-card-copy">
+                  <div className="app-card-heading">
+                    <h2 id={`app-${service.slug}`}>{service.name}</h2>
+                    {accounts.length > 1 && <span>{accounts.length} accounts</span>}
+                  </div>
+                  <p className="app-card-description">{service.description}</p>
                 </div>
-                <p className="app-card-description">{service.description}</p>
               </div>
               {accounts.length > 0 && (
                 <div className="app-card-accounts">

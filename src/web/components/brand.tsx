@@ -14,7 +14,7 @@ export function BrandMark({ small = false }: { small?: boolean }) {
           strokeWidth="4"
           strokeLinecap="round"
         />
-        <circle cx="25" cy="6" r="4" fill="var(--primary)" />
+        <circle cx="25" cy="6" r="4" fill="#ff91ac" />
       </svg>
     </span>
   );

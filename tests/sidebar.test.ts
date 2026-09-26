@@ -80,17 +80,23 @@ test('sidebar exposes navigation shortcuts, keyboard focus and modifier hints wi
     assert.equal(document.activeElement, links[5]);
     links[5]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     assert.equal(document.activeElement, links[0]);
-    const more = element.querySelector<HTMLButtonElement>('[aria-label="More navigation"]')!;
+    const more = element.querySelector<HTMLButtonElement>('[aria-label="Navigation menu"]')!;
     await act(async () => more.click());
     const menu = element.querySelector('[role="menu"]')!;
-    assert.equal(menu.querySelectorAll('[role="menuitem"]').length, 3);
-    await act(async () => menu.querySelector<HTMLButtonElement>('[role="menuitem"]')!.click());
+    assert.equal(menu.querySelectorAll('[role="menuitem"]').length, 8);
+    await act(async () =>
+      [...menu.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')]
+        .find((button) => button.textContent?.includes('Inspector'))!
+        .click(),
+    );
     assert.equal(inspections, 1);
     assert.equal(element.querySelector('[role="menu"]'), null);
     assert.equal(document.activeElement, more);
     await act(async () => more.click());
     await act(async () =>
-      element.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')[1]!.click(),
+      [...element.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')]
+        .find((button) => button.textContent?.includes('Get started'))!
+        .click(),
     );
     assert.equal(restarts, 1);
     const darkTheme = element.querySelector<HTMLButtonElement>(
@@ -270,5 +276,157 @@ test('sidebar preserves all shortcuts inside editable fields, including nested a
     await act(async () => root.unmount());
     element.remove();
     fields.remove();
+  }
+});
+
+test('mobile navigation keeps secondary pages in a dismissible menu and preserves native link actions', async () => {
+  const element = document.createElement('div');
+  document.body.append(element);
+  const root = createRoot(element);
+  const navigations: string[] = [];
+  try {
+    await act(async () =>
+      root.render(
+        createElement(Sidebar, {
+          path: '/vault',
+          collapsed: true,
+          onToggle() {},
+          onRestart() {},
+          onNavigate(path) {
+            navigations.push(path);
+          },
+        }),
+      ),
+    );
+    const trigger = element.querySelector<HTMLButtonElement>('[aria-label="Navigation menu"]')!;
+    assert.ok(trigger);
+    assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+    assert.equal(element.querySelector('[role="menu"]'), null);
+    const open = async () => {
+      await act(async () => trigger.click());
+    };
+    await open();
+    const links = [
+      ...element.querySelectorAll<HTMLAnchorElement>('[role="menu"] a[role="menuitem"]'),
+    ];
+    assert.deepEqual(
+      links.map((link) => link.getAttribute('href')),
+      ['/goals', '/schedule', '/apps', '/channels', '/vault'],
+    );
+    assert.equal(links[4]!.getAttribute('aria-current'), 'page');
+    assert.equal(document.activeElement, links[0]);
+    assert.deepEqual(
+      [...element.querySelectorAll<HTMLButtonElement>('[role="menu"] button[role="menuitem"]')].map(
+        (button) => button.textContent?.trim(),
+      ),
+      ['Switch to dark theme', 'Get started'],
+    );
+    for (const modifier of ['metaKey', 'ctrlKey', 'shiftKey', 'altKey']) {
+      const event = new MouseEvent('click', { bubbles: true, cancelable: true, [modifier]: true });
+      await act(async () => links[0]!.dispatchEvent(event));
+      assert.equal(event.defaultPrevented, false);
+      assert.deepEqual(navigations, []);
+    }
+    await act(async () =>
+      links[0]!.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+      ),
+    );
+    assert.equal(element.querySelector('[role="menu"]'), null);
+    assert.equal(document.activeElement, trigger);
+    await open();
+    await act(async () =>
+      document
+        .getElementById('workspace')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true })),
+    );
+    assert.equal(element.querySelector('[role="menu"]'), null);
+    await open();
+    await act(async () =>
+      element.querySelector<HTMLAnchorElement>('[role="menu"] a[href="/goals"]')!.click(),
+    );
+    assert.deepEqual(navigations, ['/goals']);
+    assert.equal(element.querySelector('[role="menu"]'), null);
+    assert.equal(document.activeElement, trigger);
+    await open();
+    await act(async () => window.dispatchEvent(new Event('resize')));
+    assert.equal(element.querySelector('[role="menu"]'), null);
+    const chat = element.querySelector<HTMLAnchorElement>('.mobile-chat-link')!;
+    assert.ok(chat);
+    assert.equal(chat.getAttribute('href'), '/');
+    await act(async () => chat.click());
+    assert.deepEqual(navigations, ['/goals', '/']);
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
+  }
+});
+
+test('shortcut focus uses only the latest navigation and never runs after sidebar unmount', async () => {
+  const requestFrame = window.requestAnimationFrame;
+  const cancelFrame = window.cancelAnimationFrame;
+  const pending = new Map<number, FrameRequestCallback>();
+  let nextFrame = 0;
+  window.requestAnimationFrame = (callback) => {
+    pending.set(++nextFrame, callback);
+    return nextFrame;
+  };
+  window.cancelAnimationFrame = (id) => {
+    pending.delete(id);
+  };
+  const element = document.createElement('div');
+  const composer = document.createElement('div');
+  composer.className = 'composer-editor';
+  composer.setAttribute('contenteditable', 'true');
+  composer.tabIndex = 0;
+  document.body.append(element, composer);
+  const root = createRoot(element);
+  let mounted = true;
+  const navigations: string[] = [];
+  const press = async (key: string) => {
+    await act(async () =>
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key, ctrlKey: true, bubbles: true, cancelable: true }),
+      ),
+    );
+  };
+  try {
+    await act(async () =>
+      root.render(
+        createElement(Sidebar, {
+          path: '/',
+          collapsed: false,
+          onToggle() {},
+          onRestart() {},
+          onNavigate(path) {
+            navigations.push(path);
+          },
+        }),
+      ),
+    );
+    document.getElementById('workspace')!.focus();
+    await press('g');
+    assert.equal(pending.size, 1);
+    await press('j');
+    assert.equal(pending.size, 1);
+    assert.deepEqual(navigations, ['/goals', '/']);
+    await act(async () => {
+      const callbacks = [...pending.values()];
+      pending.clear();
+      for (const callback of callbacks) callback(0);
+    });
+    assert.equal(document.activeElement, composer);
+    document.getElementById('workspace')!.focus();
+    await press('e');
+    assert.equal(pending.size, 1);
+    await act(async () => root.unmount());
+    mounted = false;
+    assert.equal(pending.size, 0);
+  } finally {
+    if (mounted) await act(async () => root.unmount());
+    window.requestAnimationFrame = requestFrame;
+    window.cancelAnimationFrame = cancelFrame;
+    element.remove();
+    composer.remove();
   }
 });
