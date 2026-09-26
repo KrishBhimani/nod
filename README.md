@@ -4,6 +4,8 @@ A local personal assistant with a conversation, persistent tasks, a browser, a L
 
 This is a single-owner prototype. It binds to `127.0.0.1` and has no public signup or app authentication. Do not publish or tunnel the full application.
 
+The proposed hosted, multi-user version is documented in the [cloud rollout research](docs/research/cloud-rollout-plan.md). Run `npm run prototype:cloud` for its separate interactive login/account preview. This preview uses synthetic data and does not change the application's current hosting or security status.
+
 The [system guide](docs/system-guide.md) is the living reference for product behavior, the exact stack, data flows, trust boundaries, costs, validation gaps, and module replacement. The [internal team brief](docs/team-brief.md) summarizes the implementation and remaining work.
 
 ## Run locally
