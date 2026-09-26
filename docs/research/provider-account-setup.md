@@ -28,6 +28,8 @@ A first development Composio key was created with an incomplete scope set and re
 
 GitHub now has a `production` environment restricted to the `main` branch and its verified public-origin variable. Main requires the test/build and secret-scan checks from GitHub Actions, with an up-to-date branch. Existing review and administrator rules were preserved. Deployment secrets and an actual production workflow run remain pending.
 
+Telegram is signed in locally. Dedicated development and production test bots are planned; the development bot is prepared at BotFather's final username submission, pending credential-creation confirmation. No new bot or token has been created, and the existing local bot is unchanged. Sender verification, webhook configuration and live round-trip tests remain pending.
+
 ## Validation status
 
 Real PostgreSQL fixtures use a separate disposable local service, schemas and roles. They prove role-level cross-user isolation and the real Better Auth persistence boundary. A separate live Neon development preflight also verified two restricted logins, isolated queues, private object-store migration and cross-user access denials in a temporary database, then removed its test resources. Two actual local tenant processes retained separate preferences across a graceful gateway restart without calling model or computer providers. These are synthetic-user checks, not completed Google login or live provider acceptance.
