@@ -29,17 +29,44 @@
   width: 100%;
 }
 .sidebar-account-menu .account-menu-trigger {
-  min-height: 48px;
+  min-height: 46px;
   height: auto;
+  gap: 13px;
+  padding: 8px 10px;
+  font-size: 14px;
+}
+.sidebar-account-menu .account-menu-trigger[aria-expanded='true'] {
+  background: var(--hover);
+  color: var(--foreground);
 }
 .account-menu-trigger .nav-label {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .account-menu-chevron {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
   margin-left: auto;
+  color: var(--muted-foreground);
+}
+.account-menu-trigger:hover .account-menu-chevron,
+.account-menu-trigger[aria-expanded='true'] .account-menu-chevron {
+  color: var(--foreground);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .account-menu-chevron svg {
+    transition: transform 160ms ease;
+  }
+  .account-menu-trigger:hover .account-menu-chevron svg {
+    transform: translateY(-2px);
+  }
 }
 .sidebar-account-menu .connection-menu-options {
   top: auto;
@@ -447,15 +474,26 @@
 }
 .sidebar-account-menu .account-menu-trigger > .account-avatar {
   display: inline-flex;
+  width: 28px;
+  height: 28px;
+}
+.sidebar-collapsed .sidebar-account-menu .account-menu-trigger {
+  padding-inline: 0;
 }
 @media (max-width: 1150px) {
   .with-inspector .account-menu-chevron {
     display: none;
   }
+  .with-inspector .sidebar-account-menu .account-menu-trigger {
+    padding-inline: 0;
+  }
 }
 @media (max-width: 800px) {
   .account-menu-chevron {
     display: none;
+  }
+  .sidebar-account-menu .account-menu-trigger {
+    padding-inline: 0;
   }
 }
 @media (max-width: 640px) {

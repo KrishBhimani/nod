@@ -16,6 +16,7 @@ import './pages/inspector.css';
 import './pages/sign-in.css';
 import './pages/onboarding.css';
 import './components/account-settings.css';
+import './components/time-zone-picker.css';
 
 class AppBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };

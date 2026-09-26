@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronDown, LogOut, Monitor, Moon, Settings, Sun, UserRound } from 'lucide-react';
+import { ChevronUp, LogOut, Monitor, Moon, Settings, Sun, UserRound } from 'lucide-react';
 import type { AccountTheme, AccountUser } from '../../shared/account';
 import { AccountAvatar } from './account-avatar';
 import { ConnectionMenu } from './connection-menu';
@@ -114,7 +114,9 @@ export function AccountMenu({ account }: { account: AccountControls }) {
           <>
             <AccountAvatar user={account.user} />
             <span className="nav-label">{account.user.name}</span>
-            <ChevronDown className="account-menu-chevron" size={15} aria-hidden="true" />
+            <span className="account-menu-chevron" aria-hidden="true">
+              <ChevronUp size={18} strokeWidth={1.75} />
+            </span>
           </>
         }
       >

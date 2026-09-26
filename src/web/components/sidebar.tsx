@@ -348,9 +348,7 @@ export function Sidebar({
         </ConnectionMenu>
       </div>
       <div className="sidebar-bottom">
-        {account ? (
-          <AccountMenu account={account} />
-        ) : (
+        {!account && (
           <button
             type="button"
             className="nav-link theme-toggle"
@@ -430,6 +428,7 @@ export function Sidebar({
             B
           </kbd>
         </button>
+        {account && <AccountMenu account={account} />}
       </div>
     </aside>
   );

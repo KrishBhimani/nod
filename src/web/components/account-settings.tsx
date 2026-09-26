@@ -6,10 +6,12 @@ import { AccountAvatar, GoogleMark } from './account-avatar';
 import { Button, Dialog, DialogContent, DialogTitle, Field, Input, Loading, Notice } from './ui';
 import { usePageData } from '../hooks/use-page-data';
 import { api, errorMessage } from '../lib/api';
+import { TimeZonePicker } from './time-zone-picker';
 
 const editablePreferences = ['timeZone', 'quietHoursEnabled', 'quietStart', 'quietEnd'] as const;
 
 function PreferencesForm() {
+  const timeZoneLabel = useId();
   const {
     data,
     loading,
@@ -98,23 +100,19 @@ function PreferencesForm() {
   }
   return (
     <form onSubmit={(event) => void save(event)}>
-      <label className="account-preference-row">
-        <span>
+      <div className="account-preference-row account-time-zone-row">
+        <span id={timeZoneLabel}>
           <Clock3 size={18} aria-hidden="true" />
           Time zone
         </span>
-        <select
+        <TimeZonePicker
           value={current.timeZone}
+          zones={zones}
+          labelledBy={timeZoneLabel}
           disabled={saving}
-          onChange={(event) => setDraft({ ...current, timeZone: event.target.value })}
-        >
-          {zones.map((zone) => (
-            <option key={zone} value={zone}>
-              {zone.replaceAll('_', ' ')}
-            </option>
-          ))}
-        </select>
-      </label>
+          onChange={(timeZone) => setDraft({ ...current, timeZone })}
+        />
+      </div>
       <div className="account-preference-row">
         <div className="account-preference-label">
           <Moon size={18} aria-hidden="true" />

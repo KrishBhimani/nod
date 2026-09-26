@@ -399,7 +399,7 @@ test('preference drafts survive refresh, save only edited fields and remain retr
     saved = { ...saved, timeZone: 'UTC' };
     await act(async () => pageDataCache.update('/api/preferences', () => saved));
     assert.equal(toggle.getAttribute('aria-checked'), 'false');
-    assert.equal(document.querySelector('select')?.value, 'UTC');
+    assert.equal(document.querySelector('.time-zone-picker-trigger')?.textContent, 'UTC');
     const submit = () =>
       document
         .querySelector('form')!
