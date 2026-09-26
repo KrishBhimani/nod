@@ -140,9 +140,12 @@ export function InspectorProviders() {
           </div>
           <div className="inspector-provider-groups">
             {groups.map((group) => (
-              <details className="inspector-provider-group" key={group.provider}>
-                <summary>
-                  <ChevronDown size={13} className="inspector-disclosure" />
+              <section
+                className="inspector-provider-group"
+                key={group.provider}
+                aria-label={group.name}
+              >
+                <header className="inspector-provider-heading">
                   <span className="inspector-provider-name">
                     <strong>{group.name}</strong>
                     <small>
@@ -158,7 +161,7 @@ export function InspectorProviders() {
                         : 'Usage recorded'}
                     </small>
                   </span>
-                </summary>
+                </header>
                 <div className="inspector-provider-breakdown">
                   <p className="inspector-data-note">
                     {count.format(group.pricedOperations)} of {count.format(group.operations)}
@@ -171,7 +174,7 @@ export function InspectorProviders() {
                     />
                   ))}
                 </div>
-              </details>
+              </section>
             ))}
           </div>
           {!groups.length && (

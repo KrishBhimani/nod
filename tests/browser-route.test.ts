@@ -34,9 +34,21 @@ test('the standalone browser mounts without waiting for unrelated application st
   });
   const previousFetch = globalThis.fetch;
   const calls: string[] = [];
-  globalThis.fetch = async (path) => {
+  globalThis.fetch = async (path, init) => {
     calls.push(String(path));
+    assert.equal(init?.method ?? 'GET', 'GET');
     if (path === '/api/state') throw new Error('Unrelated state is unavailable.');
+    if (path === '/api/browser/control/workspace')
+      return new Response(
+        JSON.stringify({
+          paused: false,
+          active: false,
+          revision: null,
+          mode: null,
+          signInAvailable: true,
+          resumable: false,
+        }),
+      );
     assert.equal(path, '/api/browser');
     return new Response(JSON.stringify({ currentBrowser: null }));
   };
@@ -45,8 +57,13 @@ test('the standalone browser mounts without waiting for unrelated application st
   const root = createRoot(document.getElementById('root')!);
   try {
     await act(async () => root.render(createElement(App)));
-    assert.deepEqual(calls, ['/api/browser']);
+    assert.deepEqual(calls.toSorted(), ['/api/browser', '/api/browser/control/workspace']);
     assert.equal(document.querySelector('h1')?.textContent, 'Workspace browser');
+    const control = [...document.querySelectorAll('button')].find(
+      (button) => button.textContent === 'Take control',
+    );
+    assert.ok(control);
+    assert.equal(control.disabled, false);
     assert.equal(document.querySelector('.sidebar'), null);
     assert.doesNotMatch(document.body.textContent!, /Unrelated state is unavailable/);
   } finally {

@@ -164,7 +164,7 @@ class VaultError extends Error {
 function assertSupportedBrowser(inspection: LoginInspection) {
   if (inspection.issue === 'browser_not_supported')
     throw new VaultError(
-      'This provider has blocked sign-in in the automated browser. Choose "Sign in in browser" under browser controls, then "Continue in Sidekick" after finishing there.',
+      'This provider has blocked sign-in in the automated browser. Choose "Take control" under browser controls, then "Resume agent" after finishing there.',
       409,
     );
 }

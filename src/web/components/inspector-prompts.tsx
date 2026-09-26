@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, Copy, Check } from 'lucide-react';
 import type { InspectorPromptsResponse } from '../../shared/inspector-prompts';
 import { api, errorMessage } from '../lib/api';
-import { Button, Notice } from './ui';
+import { Button, Loading, Notice } from './ui';
 import { compactActivityText } from '../lib/inspector-observations';
 
 function PromptText({ label, text }: { label: string; text: string }) {
@@ -10,8 +10,11 @@ function PromptText({ label, text }: { label: string; text: string }) {
   return (
     <details className="inspector-prompt-text">
       <summary>
-        {label}
-        <span>{text.length.toLocaleString()} characters</span>
+        <span className="inspector-prompt-label">
+          <ChevronDown size={13} />
+          {label}
+        </span>
+        <small>{text.length.toLocaleString()} characters</small>
       </summary>
       <Button
         variant="ghost"
@@ -112,6 +115,7 @@ function PromptHistory({ taskId }: { taskId?: string }) {
         Effective instructions and context. Private, redacted, retained for seven days.
       </p>
       {error && <Notice>{error}</Notice>}
+      {!data && !error && <Loading label="Loading prompts…" />}
       {older && (
         <Button variant="ghost" size="sm" disabled={loadingOlder} onClick={() => setOlder(false)}>
           Back to latest prompts
@@ -124,16 +128,15 @@ function PromptHistory({ taskId }: { taskId?: string }) {
         <p className="muted">Prompts appear when the agent next runs.</p>
       )}
       {data?.prompts.map((prompt) => (
-        <details className="inspector-prompt" key={prompt.id}>
-          <summary>
-            <ChevronDown size={14} />
+        <section className="inspector-prompt" key={prompt.id}>
+          <header className="inspector-prompt-heading">
             <span>
               <strong>{compactActivityText(prompt.title, 90)}</strong>
               <small>
                 {new Date(prompt.createdAt).toLocaleString()} · {prompt.provider} / {prompt.model}
               </small>
             </span>
-          </summary>
+          </header>
           <div className="inspector-prompt-body">
             <p className="inspector-data-note">
               {prompt.resumed
@@ -146,7 +149,7 @@ function PromptHistory({ taskId }: { taskId?: string }) {
             <PromptText label="System instructions" text={prompt.system} />
             <PromptText label="Latest instruction" text={prompt.instruction} />
           </div>
-        </details>
+        </section>
       ))}
       {data?.hasOlder && (
         <Button

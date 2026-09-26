@@ -44,7 +44,7 @@ export function useSignInScreen(path: string, revision: number | null, active: b
       } catch {
         if (!stopped && !controller.signal.aborted && generation === current) {
           clear();
-          setError('The workspace sign-in screen is temporarily unavailable.');
+          setError('The workspace browser is temporarily unavailable.');
         }
       } finally {
         if (!stopped && visible && generation === current)

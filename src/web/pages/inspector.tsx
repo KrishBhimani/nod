@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { Activity, Monitor, X, Coins, Wrench, ScrollText } from 'lucide-react';
+import { Activity, Monitor, X, Coins, Wrench, ScrollText, BrainCircuit } from 'lucide-react';
 import { Button, Notice } from '../components/ui';
 import { InspectorScreen } from '../components/inspector-screen';
 import { useInspectorState } from '../hooks/use-inspector-state';
-import { InspectorActivity, InspectorTools } from '../components/inspector-tools';
+import { InspectorActivity, InspectorModels, InspectorTools } from '../components/inspector-tools';
 import { compactActivityText } from '../lib/inspector-observations';
 import { InspectorProviders } from '../components/inspector-providers';
 import { InspectorPrompts } from '../components/inspector-prompts';
@@ -33,8 +33,9 @@ export function Inspector({
   useEffect(() => {
     writeUiPreference('sidekick.inspector.width', String(width));
   }, [width]);
-  const [tab, setTab] = useState<'screen' | 'activity' | 'tools' | 'costs' | 'prompts'>('screen');
-  const [historyOpen, setHistoryOpen] = useState(false);
+  const [tab, setTab] = useState<'screen' | 'activity' | 'tools' | 'models' | 'costs' | 'prompts'>(
+    'screen',
+  );
   const panel = useRef<HTMLElement>(null);
   const task = data?.tasks.find((item) => item.id === scope);
   const events = data?.events.filter((event) => !scope || event.taskId === scope) ?? [];
@@ -42,6 +43,7 @@ export function Inspector({
     ['screen', 'Screen', Monitor],
     ['activity', 'Activity', Activity],
     ['tools', 'Tools', Wrench],
+    ['models', 'Models', BrainCircuit],
     ['costs', 'Costs', Coins],
     ['prompts', 'Prompts', ScrollText],
   ] as const;
@@ -164,17 +166,11 @@ export function Inspector({
                   setTab('tools');
                 }}
               />
-              <details
-                className="inspector-execution-history"
-                open={historyOpen}
-                onToggle={(event) => setHistoryOpen(event.currentTarget.open)}
-              >
-                <summary>Recent execution history</summary>
-                {historyOpen && <InspectorActivity events={events} />}
-              </details>
+              <InspectorActivity events={events} />
             </>
           ))}
         {tab === 'tools' && <InspectorTools key={scope ?? 'all'} taskId={scope} />}
+        {tab === 'models' && <InspectorModels key={scope ?? 'all'} taskId={scope} />}
         {tab === 'costs' && <InspectorProviders />}
         {tab === 'prompts' && <InspectorPrompts key={scope ?? 'all'} taskId={scope} />}
       </div>

@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { createHash, randomInt } from 'node:crypto';
 import type { Pool } from 'pg';
 import { z } from 'zod';
 import type { Computer } from '../ports/computer.ts';
@@ -53,8 +54,20 @@ export function createTakeover(dependencies: {
   resume(taskId: string, revision: number): Promise<{ ok: boolean }>;
   waitForTask(taskId: string): Promise<void>;
 }) {
+  const workspaceId = `manual-${createHash('sha256').update(dependencies.ownerId).digest('hex').slice(0, 32)}`;
+  let controlRevision = randomInt(1, 2 ** 48);
   const queues = new Map<string, Promise<unknown>>();
-  const leases = new Map<string, { revision: number; until: number; mode: 'manual' | 'sign_in' }>();
+  const leases = new Map<
+    string,
+    {
+      revision: number;
+      until: number;
+      mode: 'manual' | 'sign_in';
+      taskRevision?: number;
+      terminalStatus?: string;
+    }
+  >();
+  const terminalStatuses = ['succeeded', 'failed', 'cancelled'];
   const signInAvailable = () =>
     Boolean(
       dependencies.computer.openSignIn &&
@@ -64,9 +77,14 @@ export function createTakeover(dependencies: {
       dependencies.computer.releaseControl,
     );
   const unavailable = () =>
-    Object.assign(new Error('Browser control is not available. Try taking control again.'), {
-      statusCode: 409,
-    });
+    Object.assign(
+      new Error(
+        'The workspace browser is unavailable. Make sure its container is running, then try Take control again.',
+      ),
+      {
+        statusCode: 409,
+      },
+    );
   const stale = () =>
     Object.assign(new Error('This browser control session is no longer active.'), {
       statusCode: 409,
@@ -87,12 +105,26 @@ export function createTakeover(dependencies: {
     if (!dependencies.computer.releaseControl) throw unavailable();
     try {
       await dependencies.computer.releaseControl(taskId);
+      if (taskId === workspaceId || lease.terminalStatus) await dependencies.computer.close(taskId);
     } catch {
       throw unavailable();
     }
     if (leases.get(taskId) === lease) leases.delete(taskId);
   }
   async function state(taskId: string, acquiring = false) {
+    if (taskId === workspaceId) {
+      const lease = leases.get(taskId);
+      const active = Boolean(lease && lease.until > Date.now());
+      if (!active) await releaseLease(taskId);
+      return {
+        paused: active,
+        active,
+        revision: active ? lease!.revision : null,
+        mode: active ? lease!.mode : null,
+        signInAvailable: signInAvailable(),
+        resumable: false,
+      };
+    }
     const result = await dependencies.pool.query(
       'SELECT status,revision,waiting_reason FROM tasks WHERE id=$1 AND owner_id=$2',
       [taskId, dependencies.ownerId],
@@ -105,26 +137,42 @@ export function createTakeover(dependencies: {
     if (
       acquiring &&
       !['running', 'queued'].includes(row.status) &&
+      !terminalStatuses.includes(row.status) &&
       !(row.status === 'waiting_user' && ['manual_control', 'browser'].includes(row.waiting_reason))
     ) {
       await releaseLease(taskId);
-      throw stale();
+      throw Object.assign(
+        new Error(
+          'Finish the pending request in chat or Vault before taking control of this browser.',
+        ),
+        { statusCode: 409 },
+      );
     }
     const paused = row.status === 'waiting_user' && row.waiting_reason === 'manual_control';
     const lease = leases.get(taskId);
-    const active = paused && lease && lease.revision === row.revision && lease.until > Date.now();
+    const active =
+      lease &&
+      lease.until > Date.now() &&
+      (lease.terminalStatus
+        ? lease.terminalStatus === row.status && lease.taskRevision === row.revision
+        : paused && lease.revision === row.revision);
     if (!active) await releaseLease(taskId);
     return {
       paused,
       active: Boolean(active),
-      revision: paused ? (row.revision as number) : null,
+      revision: active ? lease.revision : paused ? (row.revision as number) : null,
       mode: active ? lease.mode : null,
       signInAvailable: signInAvailable(),
+      resumable: !terminalStatuses.includes(row.status),
     };
   }
   async function current(taskId: string, revision: number, requireLease = false) {
     const result = await state(taskId);
-    if (!result.paused || result.revision !== revision || (requireLease && !result.active))
+    if (
+      (!result.paused && !result.active) ||
+      result.revision !== revision ||
+      (requireLease && !result.active)
+    )
       throw stale();
     return result;
   }
@@ -146,16 +194,21 @@ export function createTakeover(dependencies: {
       const identify = (params: unknown) => {
         if (route.startsWith('/api/inspector/') && !dependencies.enabled())
           throw Object.assign(new Error('Inspector is disabled.'), { statusCode: 404 });
-        return z.object({ taskId: z.uuid() }).parse(params).taskId;
+        const { taskId } = z
+          .object({ taskId: z.union([z.uuid(), z.literal('workspace')]) })
+          .parse(params);
+        return taskId === 'workspace' ? workspaceId : taskId;
       };
       app.get(route, async (request) => {
         const taskId = identify(request.params);
         return serialize(taskId, () => state(taskId));
       });
-      function acquire(mode: 'manual' | 'sign_in') {
+      function acquire(requestedMode: 'manual' | 'sign_in' | 'auto') {
         return async (request: { params: unknown; body: unknown }) => {
           const taskId = identify(request.params);
-          if (mode === 'sign_in') z.object({}).strict().parse(request.body);
+          z.object({}).strict().parse(request.body);
+          const mode =
+            requestedMode === 'auto' ? (signInAvailable() ? 'sign_in' : 'manual') : requestedMode;
           return serialize(taskId, async () => {
             const open =
               mode === 'sign_in'
@@ -165,27 +218,69 @@ export function createTakeover(dependencies: {
               !open ||
               (mode === 'manual' && !dependencies.computer.control) ||
               (mode === 'sign_in' && !signInAvailable()) ||
-              !dependencies.computer.releaseControl
+              !dependencies.computer.releaseControl ||
+              (taskId === workspaceId && mode !== 'sign_in')
             )
               throw unavailable();
             await state(taskId, true);
-            const { revision } = await dependencies.pause(taskId);
+            const terminal =
+              taskId === workspaceId
+                ? undefined
+                : (
+                    await dependencies.pool.query(
+                      'SELECT status,revision FROM tasks WHERE id=$1 AND owner_id=$2',
+                      [taskId, dependencies.ownerId],
+                    )
+                  ).rows.find((row) => terminalStatuses.includes(row.status));
+            const { revision } =
+              taskId === workspaceId || terminal
+                ? { revision: ++controlRevision }
+                : await dependencies.pause(taskId);
             await releaseLease(taskId);
-            await drain(taskId);
-            await current(taskId, revision);
+            if (taskId === workspaceId) {
+              try {
+                await dependencies.computer.close(taskId);
+              } catch {
+                throw unavailable();
+              }
+            }
+            const verify = async () => {
+              if (taskId === workspaceId) return;
+              if (!terminal) return current(taskId, revision);
+              const result = await dependencies.pool.query(
+                'SELECT status,revision FROM tasks WHERE id=$1 AND owner_id=$2',
+                [taskId, dependencies.ownerId],
+              );
+              if (
+                result.rows[0]?.status !== terminal.status ||
+                result.rows[0]?.revision !== terminal.revision
+              )
+                throw stale();
+            };
+            if (taskId !== workspaceId) await drain(taskId);
+            await verify();
             try {
               await open.call(dependencies.computer, taskId);
-              await current(taskId, revision);
-              leases.set(taskId, { revision, until: Date.now() + leaseDuration, mode });
-              return { revision };
+              await verify();
+              leases.set(taskId, {
+                revision,
+                until: Date.now() + leaseDuration,
+                mode,
+                ...(terminal
+                  ? { taskRevision: terminal.revision, terminalStatus: terminal.status }
+                  : {}),
+              });
+              return { revision, mode, resumable: taskId !== workspaceId && !terminal };
             } catch {
               await dependencies.computer.releaseControl(taskId).catch(() => {});
+              if (taskId === workspaceId || terminal)
+                await dependencies.computer.close(taskId).catch(() => {});
               throw unavailable();
             }
           });
         };
       }
-      app.post(`${route}/start`, acquire('manual'));
+      app.post(`${route}/start`, acquire('auto'));
       app.post(`${route}/sign-in`, acquire('sign_in'));
       app.post(`${route}/input`, async (request) => {
         const taskId = identify(request.params);
@@ -248,8 +343,12 @@ export function createTakeover(dependencies: {
         const taskId = identify(request.params);
         const { revision } = z.object({ revision: revisionSchema }).strict().parse(request.body);
         return serialize(taskId, async () => {
-          await current(taskId, revision);
+          const control = await current(taskId, revision);
           if (!dependencies.computer.releaseControl) throw unavailable();
+          if (taskId === workspaceId) {
+            await releaseLease(taskId);
+            return { ok: true };
+          }
           try {
             await dependencies.computer.finishSignIn?.(taskId);
             try {
@@ -259,10 +358,12 @@ export function createTakeover(dependencies: {
               throw error;
             }
             await dependencies.computer.releaseControl(taskId);
+            if (!control.resumable) await current(taskId, revision, true);
           } catch {
             throw unavailable();
           }
           leases.delete(taskId);
+          if (!control.resumable) return { ok: true };
           try {
             await current(taskId, revision);
           } catch (error) {

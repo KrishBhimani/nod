@@ -580,7 +580,7 @@ export function createAgentBrowserComputer(options: {
       } else if (input.action === 'type') {
         const field = await evaluate(state, protectFocusedField, signal);
         if (field === 'unsupported_frame')
-          throw new Error('Use Sign in in browser to type in this embedded field.');
+          throw new Error('Use Take control to type in this embedded field.');
         if (field !== true) throw new Error('Click a text field in the browser first.');
         state.secrets.add(input.text);
         state.protectedSelectors.add('[data-sidekick-manual-field="true"]');
@@ -613,9 +613,12 @@ export function createAgentBrowserComputer(options: {
   }
 
   async function openSignIn(id: string): Promise<void> {
-    const state = await recoverBrowser(id, true);
-    if (!state || (!state.started && !state.saved.signInPending) || state.injecting)
-      throw new Error('Open the website before signing in through a browser window.');
+    let state = await recoverBrowser(id, true);
+    if (!state) {
+      state = stateFor(id);
+      state.saved = (await screens.load(id)) ?? state.saved;
+    }
+    if (state.injecting) throw new BrowserLockedError();
     stopManual(state);
     const controller = new AbortController();
     state.manualAbort = controller;
@@ -629,7 +632,11 @@ export function createAgentBrowserComputer(options: {
         if (state.closing || disposed) throw new BrowserLockedError();
         if (state.started) await currentUrl(state);
         const destination = state.saved.resumeUrl || state.saved.url;
-        const url = browserUrl(destination);
+        const url = destination ? browserUrl(destination).href : 'about:blank';
+        const wasStarted = state.started;
+        await reserveBrowser(state);
+        state.saved.signInPending = true;
+        state.started = wasStarted;
         await state.signInWindow?.close();
         state.signInWindow = undefined;
         state.saved.signInPending = true;
@@ -647,7 +654,7 @@ export function createAgentBrowserComputer(options: {
         state.signInWindow = await signInLauncher.start({
           profilePath,
           proxyUrl: await proxy.url(),
-          url: url.href,
+          url,
           executablePath,
         });
         if (state.closing || disposed || controller.signal.aborted) {
@@ -657,10 +664,15 @@ export function createAgentBrowserComputer(options: {
         }
         state.heldUntil = state.manualUntil;
         state.manualTimer = setTimeout(() => {
-          void releaseControl(id).catch(() => {});
+          if (state.manualAbort !== controller) return;
+          void releaseControl(id)
+            .then(async () => {
+              if (!state.saved.url && !state.manualAbort) await closeBrowser(id);
+            })
+            .catch(() => {});
         }, manualTimeoutMs);
         state.manualTimer.unref();
-        markActivity(id);
+        if (state.saved.url) markActivity(id);
       });
     } catch {
       stopManual(state);
@@ -725,7 +737,7 @@ export function createAgentBrowserComputer(options: {
     await withSignIn(id, async (window, signal, state) => {
       if (!window.control) throw new Error('Sign-in control is unavailable.');
       if (input.action === 'type') state.secrets.add(input.text);
-      markActivity(id);
+      if (state.saved.url) markActivity(id);
       await window.control(input, signal);
     });
   }
@@ -736,7 +748,8 @@ export function createAgentBrowserComputer(options: {
     await serialize(state, async () => {
       await state.signInWindow?.close();
       state.signInWindow = undefined;
-      const url = browserUrl(state.saved.resumeUrl || state.saved.url);
+      const destination = state.saved.resumeUrl || state.saved.url;
+      const url = destination ? browserUrl(destination).href : 'about:blank';
       state.browserExecutable ??= await signInBrowser(resolve(runtimeRoot, 'profiles', state.id));
       state.saved.restoreSession = true;
       if (state.closing || disposed) throw new BrowserLockedError();
@@ -746,7 +759,7 @@ export function createAgentBrowserComputer(options: {
           state.started = false;
           state.socket = undefined;
         }
-        await command(state, ['open', url.href]);
+        await command(state, ['open', url]);
         state.started = true;
         if (state.closing || disposed) throw new BrowserLockedError();
         state.saved.navigationFailed = false;
@@ -756,7 +769,7 @@ export function createAgentBrowserComputer(options: {
         await saveState(state);
         markActivity(id);
       } catch {
-        throw new Error('The workspace browser could not resume. Try Continue in Sidekick again.');
+        throw new Error('The workspace browser could not resume. Try Resume agent again.');
       }
     });
   }
@@ -1129,6 +1142,7 @@ export function createAgentBrowserComputer(options: {
       if (state.started || state.saved.navigationFailed) await command(state, ['close']);
       await closeDisplay(state);
       state.started = false;
+      if (!state.saved.url) state.saved.signInPending = false;
       await saveState(state);
       state.secrets.clear();
       state.protectedSelectors.clear();
@@ -1172,7 +1186,7 @@ export function createAgentBrowserComputer(options: {
   return {
     currentSession: () => {
       const manual = [...browsers.values()].find(
-        (state) => state.saved.signInPending || state.manualUntil > Date.now(),
+        (state) => state.saved.url && state.manualUntil > Date.now(),
       );
       return manual
         ? { taskId: manual.id, lastActivityAt: new Date(manual.lastUsed).toISOString() }

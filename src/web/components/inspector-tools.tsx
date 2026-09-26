@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, Search, Wrench } from 'lucide-react';
+import { ChevronDown, Search } from 'lucide-react';
 import type { TaskEvent } from '../../shared/contracts';
 import type {
   InspectorObservationsResponse,
@@ -106,11 +106,11 @@ export function ModelUsageSummary({
 }: {
   summary: InspectorObservationsResponse['summary'];
 }) {
-  if (!summary.calls && !summary.modelRequests)
+  if (!summary.modelRequests)
     return (
       <p className="inspector-empty">
-        No tool or model recordings for this task. Older tasks are not backfilled, and expired
-        records are removed.
+        No model requests recorded yet. Older activity is not backfilled, and expired records are
+        removed.
       </p>
     );
   return (
@@ -478,6 +478,7 @@ export function InspectorTools({ taskId }: { taskId?: string }) {
   const [catalog, setCatalog] = useState<InspectorToolsResponse | null>(null);
   const [catalogError, setCatalogError] = useState('');
   const [catalogAttempt, setCatalogAttempt] = useState(0);
+  const [view, setView] = useState<'calls' | 'tools' | 'catalog'>('calls');
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<ToolStatusFilter>('all');
   const { observations, observationError, loadingEarlier, refreshing, loadEarlier } =
@@ -509,133 +510,153 @@ export function InspectorTools({ taskId }: { taskId?: string }) {
           tools.some((definition) => definition.name === tool.name)) &&
         (status === 'all' || tool[status] > 0),
     ) ?? [];
+  const calls = filterToolCalls(observations?.calls ?? [], query, status);
   return (
     <div className="inspector-tools">
       <div className="inspector-section-heading">
-        <h3>Tool usage</h3>
+        <h3>Tools</h3>
         <span>{taskId ? 'Message activity' : 'All activity'} · 7 days</span>
       </div>
-      <p className="inspector-data-note">
-        {observations
-          ? `${counts.format(observations.summary.calls)} calls across ${observations.toolUsage.length} tools. `
-          : ''}
-        Open a tool to inspect its calls and direct provider costs.
-      </p>
+      <div className="inspector-view-switch" role="group" aria-label="Tool views">
+        {(
+          [
+            ['calls', 'Recent calls'],
+            ['tools', 'By tool'],
+            ['catalog', 'Available tools'],
+          ] as const
+        ).map(([value, label]) => (
+          <button
+            type="button"
+            key={value}
+            aria-pressed={view === value}
+            onClick={() => {
+              setView(value);
+              setQuery('');
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       <div className="inspector-tool-filters">
         <label className="inspector-search">
           <Search size={14} />
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Find a tool"
-            aria-label="Find a tool"
+            placeholder={view === 'calls' ? 'Search loaded calls' : 'Find a tool'}
+            aria-label={view === 'calls' ? 'Search loaded calls' : 'Find a tool'}
           />
         </label>
-        <div className="inspector-scope-toggle" role="group" aria-label="Tool call status">
-          {statuses.map((item) => (
-            <button
-              key={item.value}
-              type="button"
-              aria-pressed={status === item.value}
-              onClick={() => setStatus(item.value)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
+        {view !== 'catalog' && (
+          <div className="inspector-scope-toggle" role="group" aria-label="Tool call status">
+            {statuses.map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                aria-pressed={status === item.value}
+                onClick={() => setStatus(item.value)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
-      <>
-        {observationError && <Notice>{observationError}</Notice>}
-        {!observations && !observationError && <Loading label="Loading recordings…" />}
-        {observations && (
-          <>
-            <div className="inspector-tool-groups">
-              {usage.map((row) => (
-                <ToolUsageGroup
-                  key={row.name}
-                  taskId={taskId}
-                  usage={row}
-                  definition={catalog?.tools.find((tool) => tool.name === row.name)}
-                  status={status}
-                />
-              ))}
-            </div>
-            {!usage.length && (
-              <p className="inspector-empty">
-                {observations.summary.calls
-                  ? 'No tools match these filters.'
-                  : 'No calls recorded yet. Older activity is not backfilled.'}
-              </p>
-            )}
-            <details className="inspector-model-details">
-              <summary>
-                Assistant model requests{' '}
-                <span>{counts.format(observations.summary.modelRequests)}</span>
-              </summary>
+      {view !== 'catalog' && (
+        <>
+          {observationError && <Notice>{observationError}</Notice>}
+          {!observations && !observationError && <Loading label="Loading recordings…" />}
+          {observations && (
+            <>
               <p className="inspector-data-note">
-                {counts.format(observations.summary.totalTokens)} tokens. Assistant model requests
-                are separate from direct tool charges.
+                {counts.format(observations.summary.calls)}{' '}
+                {observations.summary.calls === 1 ? 'call' : 'calls'} across{' '}
+                {observations.toolUsage.length}{' '}
+                {observations.toolUsage.length === 1 ? 'tool' : 'tools'}.
+                {view === 'calls' &&
+                  ` ${counts.format(observations.calls.length)} ${observations.calls.length === 1 ? 'call' : 'calls'} loaded; search applies to loaded payloads.`}
               </p>
-              <div className="inspector-record-list">
-                {observations.usage.map((row) => (
-                  <ModelUsageRecord key={row.id} usage={row} />
-                ))}
-              </div>
-              {observations.hasOlder && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={loadingEarlier || refreshing}
-                  onClick={() => void loadEarlier()}
-                >
-                  {loadingEarlier ? 'Loading…' : 'Load earlier recordings'}
-                </Button>
+              {view === 'calls' ? (
+                <>
+                  <div className="inspector-record-list">
+                    {calls.map((call) => (
+                      <ToolCallRecord key={call.id} call={call} />
+                    ))}
+                  </div>
+                  {!calls.length && (
+                    <p className="inspector-empty">
+                      {observations.summary.calls
+                        ? 'No loaded calls match these filters.'
+                        : 'No calls recorded yet. Older activity is not backfilled.'}
+                    </p>
+                  )}
+                  {observations.hasOlder && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={loadingEarlier || refreshing}
+                      onClick={() => void loadEarlier()}
+                    >
+                      {loadingEarlier ? 'Loading…' : 'Load earlier calls'}
+                    </Button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div className="inspector-tool-groups">
+                    {usage.map((row) => (
+                      <ToolUsageGroup
+                        key={row.name}
+                        taskId={taskId}
+                        usage={row}
+                        definition={catalog?.tools.find((tool) => tool.name === row.name)}
+                        status={status}
+                      />
+                    ))}
+                  </div>
+                  {!usage.length && (
+                    <p className="inspector-empty">No tools match these filters.</p>
+                  )}
+                </>
               )}
-            </details>
-          </>
-        )}
-      </>
-      <details className="inspector-catalog">
-        <summary>
-          <Wrench size={14} />
-          Registered tools <span>{catalog?.tools.length ?? '…'}</span>
-        </summary>
-        <p className="inspector-data-note">
-          Available tools, including those with no recorded calls.
-        </p>
-        {catalogError && (
-          <>
-            <Notice>{catalogError}</Notice>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setCatalogAttempt((value) => value + 1)}
-            >
-              Retry tool definitions
-            </Button>
-          </>
-        )}
-        {!catalog && !catalogError && <Loading label="Loading tool definitions…" />}
-        <div className="inspector-record-list">
+            </>
+          )}
+        </>
+      )}
+      {view === 'catalog' && (
+        <section className="inspector-catalog-list" aria-label="Available tools">
+          <p className="inspector-data-note">
+            {catalog?.tools.length ?? '…'} registered tools, including those with no recorded calls.
+          </p>
+          {catalogError && (
+            <>
+              <Notice>{catalogError}</Notice>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setCatalogAttempt((value) => value + 1)}
+              >
+                Retry tool definitions
+              </Button>
+            </>
+          )}
+          {!catalog && !catalogError && <Loading label="Loading tool definitions…" />}
           {tools.map((tool) => (
-            <details className="inspector-record" key={tool.name}>
-              <summary>
-                <ChevronDown size={13} className="inspector-disclosure" />
-                <span className="inspector-record-title">
-                  <strong>{tool.name}</strong>
-                </span>
-              </summary>
-              <div className="inspector-record-body">
-                <p className="inspector-tool-description">{tool.description}</p>
+            <section className="inspector-catalog-tool" key={tool.name}>
+              <h4>{tool.name}</h4>
+              <p className="inspector-tool-description">{tool.description}</p>
+              <details className="inspector-schema">
+                <summary>Input schema</summary>
                 <RecordedJson label="Input schema" value={tool.parameters} />
-              </div>
-            </details>
+              </details>
+            </section>
           ))}
-        </div>
-        {catalog && !tools.length && (
-          <p className="inspector-empty">No registered tools match this search.</p>
-        )}
-      </details>
+          {catalog && !tools.length && (
+            <p className="inspector-empty">No registered tools match this search.</p>
+          )}
+        </section>
+      )}
       {catalog && (
         <p className="inspector-data-note inspector-capture-note">
           {catalog.captureEnabled ? 'Capture enabled' : 'Capture disabled'} · private developer data
@@ -645,6 +666,41 @@ export function InspectorTools({ taskId }: { taskId?: string }) {
         </p>
       )}
     </div>
+  );
+}
+
+export function InspectorModels({ taskId }: { taskId?: string }) {
+  const { observations, observationError, loadingEarlier, refreshing, loadEarlier } =
+    useInspectorObservations(taskId);
+  return (
+    <section className="inspector-models inspector-tools" aria-label="Assistant model requests">
+      <div className="inspector-section-heading">
+        <h3>Model requests</h3>
+        <span>{taskId ? 'Message activity' : 'All activity'} · 7 days</span>
+      </div>
+      {observationError && <Notice>{observationError}</Notice>}
+      {!observations && !observationError && <Loading label="Loading model requests…" />}
+      {observations && (
+        <>
+          <ModelUsageSummary summary={observations.summary} />
+          <div className="inspector-record-list">
+            {observations.usage.map((row) => (
+              <ModelUsageRecord key={row.id} usage={row} />
+            ))}
+          </div>
+          {observations.hasOlder && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={loadingEarlier || refreshing}
+              onClick={() => void loadEarlier()}
+            >
+              {loadingEarlier ? 'Loading…' : 'Load earlier model requests'}
+            </Button>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 

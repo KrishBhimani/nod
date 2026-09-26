@@ -17,6 +17,10 @@
   --primary: #ff91ac;
   --primary-hover: #ff7da0;
   --primary-foreground: #44001b;
+  --control: #fff;
+  --control-hover: #f7f5f8;
+  --control-foreground: #1b1924;
+  --control-border: #e3ddd2;
   --secondary: #f1ece4;
   --secondary-foreground: #5c5868;
   --muted: #f1ece4;
@@ -54,9 +58,13 @@
   --accent: #ff9fba;
   --accent-soft: #3f2533;
   --link: #f3b0ce;
-  --primary: #ff9fba;
-  --primary-hover: #ffb1c7;
-  --primary-foreground: #3d1123;
+  --primary: #d5c4f3;
+  --primary-hover: #e1d4f8;
+  --primary-foreground: #281c3e;
+  --control: #302b3b;
+  --control-hover: #41384f;
+  --control-foreground: #eee8f8;
+  --control-border: #6b5d7b;
   --secondary: #302b37;
   --secondary-foreground: #d1c8db;
   --muted: #302b37;

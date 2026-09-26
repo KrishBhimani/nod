@@ -246,6 +246,7 @@ test('channel status separates saved configuration from delivery and limits bot 
   assert.equal(telegramBotUrl('https://example.com'), null);
   const html = renderToStaticMarkup(
     createElement(ChannelAccount, {
+      provider: 'telegram',
       setup: {
         provider: 'telegram',
         enabled: true,
@@ -255,11 +256,10 @@ test('channel status separates saved configuration from delivery and limits bot 
       },
       configured: true,
       busy: false,
-      onConfigure() {},
       onDisconnect() {},
     }),
   );
-  assert.match(html, /Open Telegram/);
+  assert.match(html, /Start conversation/);
   assert.match(html, /https:\/\/t.me\/fixture_bot/);
   assert.doesNotMatch(html, /Ready for messages|Delivered|Connected successfully/);
   assert.equal(channelLabel({ provider: 'telegram', enabled: true, mode: 'polling' }, true), null);

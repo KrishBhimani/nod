@@ -139,7 +139,7 @@ test('workspace sign-in uses a private frame and input, then explicitly resumes 
     }
     if (init?.method === 'POST') {
       writes.push({ path: String(path), body: JSON.parse(String(init.body)) });
-      if (String(path).endsWith('/sign-in')) {
+      if (String(path).endsWith('/start')) {
         control = signInState;
         return new Response(JSON.stringify({ revision: 7 }));
       }
@@ -152,19 +152,19 @@ test('workspace sign-in uses a private frame and input, then explicitly resumes 
   try {
     await act(async () => f.render());
     assert.ok(f.element.querySelector('.screen-preview'));
-    await act(async () => f.click('Sign in in browser'));
-    assert.match(f.element.textContent ?? '', /Sign in in the workspace browser below/);
+    await act(async () => f.click('Take control'));
+    assert.match(f.element.textContent ?? '', /You’re in control/);
     const image = f.element.querySelector<HTMLImageElement>('.screen-preview img')!;
     assert.equal(image.src, 'blob:private-sign-in');
-    assert.equal(image.alt, 'Workspace sign-in screen');
+    assert.equal(image.alt, 'Private workspace browser');
     assert.equal(f.element.querySelector('input')?.disabled, false);
     assert.equal(f.button('Take control'), undefined);
     assert.equal(f.button('Sign in in browser'), undefined);
-    assert.equal(f.button('Continue in Sidekick')?.disabled, false);
+    assert.equal(f.button('Resume agent')?.disabled, false);
     await act(async () => f.click('Tab'));
-    await act(async () => f.click('Continue in Sidekick'));
+    await act(async () => f.click('Resume agent'));
     assert.deepEqual(writes, [
-      { path: '/api/browser/control/task-one/sign-in', body: {} },
+      { path: '/api/browser/control/task-one/start', body: {} },
       {
         path: '/api/browser/control/task-one/input',
         body: { revision: 7, input: { action: 'press', key: 'Tab' } },
@@ -175,7 +175,7 @@ test('workspace sign-in uses a private frame and input, then explicitly resumes 
       f.element.querySelector<HTMLImageElement>('.screen-preview img')?.src,
       'data:image/png;base64,fixture',
     );
-    assert.equal(f.button('Continue in Sidekick'), undefined);
+    assert.equal(f.button('Resume agent'), undefined);
     assert.ok(revoked.includes('blob:private-sign-in'));
   } finally {
     await f.close();
@@ -185,7 +185,7 @@ test('workspace sign-in uses a private frame and input, then explicitly resumes 
   }
 });
 
-test('native sign-in remains available without a screenshot and rejected actions show an error', async () => {
+test('Take control remains available without a screenshot and rejected actions show an error', async () => {
   const priorFetch = globalThis.fetch;
   let control = idleState;
   let status = 409;
@@ -200,20 +200,20 @@ test('native sign-in remains available without a screenshot and rejected actions
   const f = mountControl();
   try {
     await act(async () => f.render('task-one', null));
-    assert.equal(f.button('Take control')?.disabled, true);
-    assert.equal(f.button('Sign in in browser')?.disabled, false);
-    await act(async () => f.click('Sign in in browser'));
+    assert.equal(f.button('Take control')?.disabled, false);
+    assert.equal(f.button('Sign in in browser'), undefined);
+    await act(async () => f.click('Take control'));
     assert.match(f.element.textContent ?? '', /Could not open the browser/);
-    assert.equal(f.button('Continue in Sidekick'), undefined);
+    assert.equal(f.button('Resume agent'), undefined);
     control = signInState;
     await act(async () => f.render('task-two', null));
-    await act(async () => f.click('Continue in Sidekick'));
-    assert.equal(f.button('Continue in Sidekick')?.disabled, false);
+    await act(async () => f.click('Resume agent'));
+    assert.equal(f.button('Resume agent')?.disabled, false);
     assert.equal(f.element.querySelector('input')?.disabled, true);
     status = 200;
-    await act(async () => f.click('Continue in Sidekick'));
+    await act(async () => f.click('Resume agent'));
     assert.match(f.element.textContent ?? '', /The browser could not continue/);
-    assert.equal(f.button('Continue in Sidekick')?.disabled, false);
+    assert.equal(f.button('Resume agent')?.disabled, false);
   } finally {
     await f.close();
     globalThis.fetch = priorFetch;
@@ -229,7 +229,7 @@ test('a delayed poll cannot replace an accepted native sign-in state', async (co
   globalThis.fetch = async (path, init) => {
     if (String(path).includes('/sign-in-screen')) return new Response(null, { status: 409 });
     if (init?.method === 'POST') {
-      assert.ok(String(path).endsWith('/sign-in'));
+      assert.ok(String(path).endsWith('/start'));
       control = signInState;
       return new Response(JSON.stringify({ revision: 7 }));
     }
@@ -244,9 +244,9 @@ test('a delayed poll cannot replace an accepted native sign-in state', async (co
   try {
     await act(async () => f.render());
     await act(async () => context.mock.timers.tick(2500));
-    await act(async () => f.click('Sign in in browser'));
+    await act(async () => f.click('Take control'));
     await act(async () => finishPoll(new Response(JSON.stringify(idleState))));
-    assert.ok(f.button('Continue in Sidekick'));
+    assert.ok(f.button('Resume agent'));
     assert.equal(f.element.querySelector('.screen-preview'), null);
   } finally {
     await f.close();
@@ -270,11 +270,11 @@ test('a late sign-in response cannot update another browser task', async () => {
   const f = mountControl();
   try {
     await act(async () => f.render());
-    await act(async () => f.click('Sign in in browser'));
+    await act(async () => f.click('Take control'));
     await act(async () => f.render('task-two'));
     await act(async () => finishSignIn(new Response(JSON.stringify({ revision: 7 }))));
-    assert.equal(f.button('Continue in Sidekick'), undefined);
-    assert.equal(f.button('Sign in in browser')?.disabled, false);
+    assert.equal(f.button('Resume agent'), undefined);
+    assert.equal(f.button('Take control')?.disabled, false);
     assert.deepEqual(reads, ['/api/browser/control/task-one', '/api/browser/control/task-two']);
   } finally {
     await f.close();
@@ -321,7 +321,7 @@ test('private sign-in frames clear on blur and reject delayed bytes from a hidde
     assert.equal(pending[1].signal.aborted, true);
     assert.equal(f.element.querySelector('img'), null);
     assert.equal(f.element.querySelector('input')?.disabled, true);
-    assert.equal(f.button('Continue in Sidekick')?.disabled, false);
+    assert.equal(f.button('Resume agent')?.disabled, false);
     assert.ok(revoked.includes('blob:private-1'));
     await act(async () => pending[1].resolve(frame()));
     assert.equal(frameId, 1);

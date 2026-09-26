@@ -81,6 +81,13 @@ test('prompt polling waits for the current request and discards results from the
     await act(async () => requests[1].resolve(response('New task')));
     await act(async () => requests[0].resolve(response('Old task')));
     assert.match(container.textContent!, /New task/);
+    assert.equal(container.querySelector('.inspector-prompt')?.tagName, 'SECTION');
+    assert.equal(
+      container.querySelector('.inspector-prompt-text')?.parentElement?.closest('details'),
+      null,
+    );
+    assert.equal(container.querySelectorAll('.inspector-prompt-text').length, 2);
+    assert.equal(container.querySelectorAll('.inspector-prompt-text[open]').length, 0);
     assert.doesNotMatch(container.textContent!, /Old task/);
     await act(async () => polls[1]());
     assert.equal(requests.length, 3);

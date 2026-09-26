@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { ExternalLink, Hand, Maximize2, Monitor, Play } from 'lucide-react';
+import { Hand, Maximize2, Monitor, Play } from 'lucide-react';
 import { api, post, errorMessage } from '../lib/api';
 import { Button, Notice } from './ui';
 import { useSignInScreen } from '../hooks/use-sign-in-screen';
@@ -11,6 +11,7 @@ interface ControlState {
   revision: number | null;
   mode: 'manual' | 'sign_in' | null;
   signInAvailable: boolean;
+  resumable?: boolean;
 }
 const initialState: ControlState = {
   paused: false,
@@ -28,16 +29,18 @@ export function BrowserControl({
   onEnlarge,
   heading,
   actions,
+  onControlChange,
 }: {
-  taskId: string;
+  taskId?: string;
   screen: string | null;
   emptyMessage: string;
   live: boolean;
   onEnlarge(): void;
   heading?: ReactNode;
   actions?: ReactNode;
+  onControlChange?(active: boolean, privateView: boolean): void;
 }) {
-  const path = `/api/browser/control/${encodeURIComponent(taskId)}`;
+  const path = `/api/browser/control/${encodeURIComponent(taskId ?? 'workspace')}`;
   const [control, setControl] = useState({ path, value: initialState });
   const state = control.path === path ? control.value : initialState;
   const setState = (value: ControlState | ((previous: ControlState) => ControlState)) => {
@@ -53,12 +56,16 @@ export function BrowserControl({
   const [text, setText] = useState('');
   const [error, setError] = useState('');
   const signingIn = state.active && state.mode === 'sign_in';
+  const resumable = Boolean(taskId) && state.resumable !== false;
   const operation = useRef(0);
   const busyRef = useRef(false);
   const signIn = useSignInScreen(path, state.revision, signingIn);
   const currentScreen = signingIn ? signIn.screen : screen;
   const currentLive = signingIn ? Boolean(signIn.screen) : live;
   const canInteract = Boolean(currentScreen) && currentLive && !busy;
+  useEffect(() => {
+    onControlChange?.(state.active || busy, signingIn || (busy && !state.active));
+  }, [state.active, signingIn, busy, onControlChange]);
   useEffect(() => {
     let stopped = false;
     operation.current++;
@@ -96,28 +103,33 @@ export function BrowserControl({
       document.removeEventListener('visibilitychange', visibility);
     };
   }, []);
-  async function action(kind: 'start' | 'sign-in' | 'resume' | 'input', input?: unknown) {
+  async function action(kind: 'start' | 'resume' | 'input', input?: unknown) {
     if (busyRef.current) return;
     busyRef.current = true;
+    if (kind === 'start') onControlChange?.(true, true);
     const version = ++operation.current;
     setBusy(true);
     setError('');
     try {
-      const result = await post<{ ok?: boolean; revision?: number }>(
+      const result = await post<{
+        ok?: boolean;
+        revision?: number;
+        mode?: ControlState['mode'];
+        resumable?: boolean;
+      }>(
         `${path}/${kind}`,
-        kind === 'start' || kind === 'sign-in'
-          ? {}
-          : { revision: state.revision, ...(input ? { input } : {}) },
+        kind === 'start' ? {} : { revision: state.revision, ...(input ? { input } : {}) },
       );
       if (operation.current !== version) return;
       if (result.ok === false) throw new Error('The browser could not continue. Try again.');
-      if ((kind === 'start' || kind === 'sign-in') && typeof result.revision === 'number')
+      if (kind === 'start' && typeof result.revision === 'number')
         setState((previous) => ({
           ...previous,
           paused: true,
           active: true,
           revision: result.revision!,
-          mode: kind === 'sign-in' ? 'sign_in' : 'manual',
+          mode: result.mode ?? (previous.signInAvailable ? 'sign_in' : 'manual'),
+          resumable: result.resumable,
         }));
       const next = await api<ControlState>(path);
       if (operation.current === version) setState(next);
@@ -136,30 +148,19 @@ export function BrowserControl({
       <div className="browser-control-heading">
         {!signingIn && heading}
         {actions}
-        {state.signInAvailable && !signingIn && (
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={busy}
-            onClick={() => void action('sign-in')}
-          >
-            <ExternalLink size={14} />
-            Sign in in browser
-          </Button>
-        )}
         <Button
           variant={state.active ? 'secondary' : 'outline'}
           size="sm"
-          disabled={busy || (!state.active && !canInteract)}
+          disabled={busy}
           onClick={() => void action(state.active ? 'resume' : 'start')}
         >
           {state.active ? <Play size={14} /> : <Hand size={14} />}
           {busy
             ? 'Please wait…'
             : state.active
-              ? signingIn
-                ? 'Continue in Sidekick'
-                : 'Resume agent'
+              ? resumable
+                ? 'Resume agent'
+                : 'Done'
               : state.paused
                 ? 'Take control again'
                 : 'Take control'}
@@ -181,11 +182,6 @@ export function BrowserControl({
           </Button>
         )}
       </div>
-      {signingIn && (
-        <p className="field-hint">
-          Sign in in the workspace browser below, then choose Continue in Sidekick.
-        </p>
-      )}
       {currentScreen ? (
         <button
           className={`screen-preview ${state.active ? 'screen-interactive' : ''}`}
@@ -205,16 +201,14 @@ export function BrowserControl({
         >
           <img
             src={currentScreen}
-            alt={signingIn ? 'Workspace sign-in screen' : 'Browser screen'}
+            alt={signingIn ? 'Private workspace browser' : 'Browser screen'}
             draggable={false}
           />
         </button>
       ) : (
         <div className="screen-empty">
           <Monitor size={26} />
-          <p>
-            {signingIn ? signIn.error || 'Opening the workspace sign-in screen…' : emptyMessage}
-          </p>
+          <p>{signingIn ? signIn.error || 'Opening the workspace browser…' : emptyMessage}</p>
         </div>
       )}
       {state.active && (
@@ -272,7 +266,7 @@ export function BrowserControl({
           </div>
           <small>
             Text stays out of chat and inspector recordings. Choose{' '}
-            {signingIn ? 'Continue in Sidekick' : 'Resume agent'} when you’re finished.
+            {resumable ? 'Resume agent' : 'Done'} when you’re finished.
           </small>
         </div>
       )}

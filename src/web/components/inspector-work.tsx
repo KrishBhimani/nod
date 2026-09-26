@@ -70,12 +70,16 @@ export function InspectorWork({ onInspect }: { onInspect(taskId: string): void }
       {!data && !error && <Loading label="Loading current work…" />}
       {data?.scope === 'owner' && (
         <>
-          <section className="inspector-work-section">
+          <section className={`inspector-work-section${!data.active.length ? ' is-empty' : ''}`}>
             <div className="inspector-section-heading">
               <h3>Now</h3>
-              <span>All activity{data.activeTotal > 0 && ` · ${data.activeTotal}`}</span>
+              <span>
+                {data.active.length
+                  ? `All activity · ${data.activeTotal}`
+                  : 'Nothing running or waiting'}
+              </span>
             </div>
-            {data.active.length ? (
+            {Boolean(data.active.length) && (
               <div className="inspector-work-list">
                 {data.active.map((item) => (
                   <div className="inspector-work-row" key={item.taskId}>
@@ -108,8 +112,6 @@ export function InspectorWork({ onInspect }: { onInspect(taskId: string): void }
                   </div>
                 ))}
               </div>
-            ) : (
-              <p className="inspector-empty">Nothing running or waiting right now.</p>
             )}
             {data.activeTotal > data.active.length && (
               <p className="inspector-data-note">
@@ -118,10 +120,14 @@ export function InspectorWork({ onInspect }: { onInspect(taskId: string): void }
               </p>
             )}
           </section>
-          <section className="inspector-work-section">
+          <section className={`inspector-work-section${!data.upcoming.length ? ' is-empty' : ''}`}>
             <div className="inspector-section-heading">
               <h3>Next up</h3>
-              {data.upcomingTotal > 0 && <span>{data.upcomingTotal} scheduled</span>}
+              <span>
+                {data.upcomingTotal > 0
+                  ? `${data.upcomingTotal} scheduled`
+                  : 'No upcoming schedules'}
+              </span>
             </div>
             {data.upcoming.map((item) => (
               <div className="inspector-upcoming-row" key={item.id}>
@@ -137,7 +143,6 @@ export function InspectorWork({ onInspect }: { onInspect(taskId: string): void }
                 </div>
               </div>
             ))}
-            {!data.upcoming.length && <p className="inspector-empty">No upcoming schedules.</p>}
             {data.upcomingTotal > data.upcoming.length && (
               <p className="inspector-data-note">
                 Showing the next {data.upcoming.length} of {data.upcomingTotal} schedules.
@@ -161,14 +166,16 @@ export function InspectorWork({ onInspect }: { onInspect(taskId: string): void }
               </div>
             </div>
             <p className="inspector-data-note">
-              The app must stay running. Reviews can stay quiet or defer action under your
-              preferences.
+              Reviews follow your preferences while Sidekick is running.
             </p>
           </section>
-          <section className="inspector-work-section">
+          <section className={`inspector-work-section${!data.decisions.length ? ' is-empty' : ''}`}>
             <div className="inspector-section-heading">
               <h3>Recent decisions</h3>
-              <span>Last {data.decisionWindowHours} hours</span>
+              <span>
+                {data.decisions.length ? 'Last' : 'None in the last'} {data.decisionWindowHours}{' '}
+                hours
+              </span>
             </div>
             {data.decisions.map((item) => (
               <div className="inspector-decision" key={item.id}>
@@ -186,9 +193,6 @@ export function InspectorWork({ onInspect }: { onInspect(taskId: string): void }
                 <small>{relativeTime(item.createdAt)}</small>
               </div>
             ))}
-            {!data.decisions.length && (
-              <p className="inspector-empty">No background decisions in this period.</p>
-            )}
             {data.decisionsTotal > data.decisions.length && (
               <p className="inspector-data-note">
                 Latest {data.decisions.length} of {data.decisionsTotal} decisions shown.

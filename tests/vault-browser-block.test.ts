@@ -75,8 +75,8 @@ test(
       blocked = true;
       const isBlocked = (error: unknown) => {
         assert.equal((error as { statusCode: number }).statusCode, 409);
-        assert.match((error as Error).message, /Sign in in browser/);
-        assert.match((error as Error).message, /Continue in Sidekick/);
+        assert.match((error as Error).message, /Take control/);
+        assert.match((error as Error).message, /Resume agent/);
         return true;
       };
       await assert.rejects(vault.request('new', 'local-development', input), isBlocked);
@@ -95,8 +95,8 @@ test(
           payload,
         });
         assert.equal(response.statusCode, 409);
-        assert.match(response.json().error, /Sign in in browser/);
-        assert.match(response.json().error, /Continue in Sidekick/);
+        assert.match(response.json().error, /Take control/);
+        assert.match(response.json().error, /Resume agent/);
       }
       assert.equal(injections, 0);
       assert.equal(selections, 0);

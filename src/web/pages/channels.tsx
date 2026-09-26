@@ -1,7 +1,6 @@
 import { PageTitle } from '../components/page-title';
-import { ConnectionMenu } from '../components/connection-menu';
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Check, ExternalLink, Settings2, Unplug } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, ExternalLink, Trash2 } from 'lucide-react';
 import { api, errorMessage } from '../lib/api';
 import {
   channelLabel,
@@ -18,6 +17,7 @@ import {
   DialogContent,
   DialogDescription,
   DialogTitle,
+  DialogTrigger,
   Field,
   Input,
   Loading,
@@ -29,13 +29,11 @@ const providers = [
     id: 'telegram' as const,
     name: 'Telegram',
     description: 'Ask questions and receive replies, images and files in Telegram.',
-    note: 'Connect your own bot',
   },
   {
     id: 'whatsapp' as const,
     name: 'WhatsApp',
     description: 'Ask questions and receive replies on your WhatsApp Business number.',
-    note: 'Requires a Meta business app',
   },
 ];
 const steps = {
@@ -249,20 +247,19 @@ export function ChannelSetupStep({
 }
 
 export function ChannelAccount({
+  provider,
   setup,
   configured,
-  onConfigure,
   onDisconnect,
   busy,
 }: {
+  provider: ChannelProvider;
   setup?: ChannelSetup;
   configured: boolean;
-  onConfigure(): void;
   onDisconnect(): void;
   busy: boolean;
 }) {
   const botUrl = setup?.provider === 'telegram' ? telegramBotUrl(setup.accountHandle) : null;
-  const [menuOpen, setMenuOpen] = useState(false);
   const name = setup?.accountName?.trim();
   const handle = setup?.accountHandle?.trim();
   const distinctHandle =
@@ -288,78 +285,52 @@ export function ChannelAccount({
       </div>
       <div className="channel-account-actions">
         {needsDelivery ? (
-          <Button variant="outline" size="sm" disabled={busy} onClick={() => setMenuOpen(true)}>
-            Finish setup
-            <ArrowRight size={13} />
-          </Button>
+          <Dialog>
+            <DialogTrigger asChild>
+              <Button variant="outline" size="sm" disabled={busy}>
+                Finish setup
+                <ArrowRight size={13} />
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="channel-delivery-dialog">
+              <DialogTitle>
+                Finish {provider === 'telegram' ? 'Telegram' : 'WhatsApp'} setup
+              </DialogTitle>
+              <DialogDescription>
+                {setup?.webhookStatus === 'registration_pending'
+                  ? 'Restart Sidekick to retry the saved setup.'
+                  : 'Finish the callback in Meta and subscribe to messages.'}
+              </DialogDescription>
+              {setup?.webhookUrl && (
+                <div className="channel-delivery-address">
+                  <span>Callback URL</span>
+                  <code>{setup.webhookUrl}</code>
+                </div>
+              )}
+              {setup?.webhookStatus !== 'registration_pending' && (
+                <p>Use the verification token you saved when connecting this channel.</p>
+              )}
+            </DialogContent>
+          </Dialog>
         ) : botUrl ? (
-          <Button asChild variant="outline" size="sm">
+          <Button asChild size="sm">
             <a href={botUrl} target="_blank" rel="noopener noreferrer">
-              Open Telegram
+              Start conversation
               <ExternalLink size={13} />
             </a>
           </Button>
         ) : null}
-        <ConnectionMenu
-          label="Manage channel"
-          open={menuOpen}
-          onOpenChange={setMenuOpen}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="channel-remove"
+          data-channel-remove={provider}
           disabled={busy}
-          trigger={
-            <>
-              <Settings2 size={14} />
-              Manage
-            </>
-          }
+          onClick={onDisconnect}
         >
-          {(closeMenu) => (
-            <>
-              {needsDelivery && (
-                <div className="channel-delivery-issue">
-                  <p>
-                    {setup?.webhookStatus === 'registration_pending'
-                      ? 'Restart Sidekick to retry the saved setup, or replace it below.'
-                      : 'Finish the callback in Meta and subscribe to messages.'}
-                  </p>
-                  {setup?.webhookUrl && <code>{setup.webhookUrl}</code>}
-                  {setup?.webhookStatus !== 'registration_pending' && (
-                    <p>
-                      Use your saved verification token, or replace the setup if you need a new one.
-                    </p>
-                  )}
-                </div>
-              )}
-              {configured && !setup && (
-                <p>Local configuration is present. Send a message to check delivery.</p>
-              )}
-              <Button
-                role="menuitem"
-                variant="ghost"
-                size="sm"
-                disabled={busy}
-                onClick={() => {
-                  closeMenu();
-                  onConfigure();
-                }}
-              >
-                Replace setup
-              </Button>
-              <Button
-                role="menuitem"
-                variant="ghost"
-                size="sm"
-                disabled={busy}
-                onClick={() => {
-                  closeMenu();
-                  onDisconnect();
-                }}
-              >
-                <Unplug size={13} />
-                Disconnect
-              </Button>
-            </>
-          )}
-        </ConnectionMenu>
+          <Trash2 size={13} aria-hidden="true" />
+          Remove channel
+        </Button>
       </div>
     </div>
   );
@@ -378,6 +349,8 @@ export function Channels() {
   const [telegramStartUrl, setTelegramStartUrl] = useState<string | null>(null);
   const telegramStartLink = useRef<HTMLAnchorElement>(null);
   const request = useRef<AbortController | null>(null);
+  const page = useRef<HTMLDivElement>(null);
+  const restoreFocus = useRef<ChannelProvider | null>(null);
   async function load() {
     request.current?.abort();
     const current = new AbortController();
@@ -411,6 +384,17 @@ export function Channels() {
   useEffect(() => {
     if (telegramStartUrl) telegramStartLink.current?.focus();
   }, [telegramStartUrl]);
+  useEffect(() => {
+    if (busy || !restoreFocus.current) return;
+    const provider = restoreFocus.current;
+    restoreFocus.current = null;
+    if (document.activeElement === document.body)
+      page.current
+        ?.querySelector<HTMLButtonElement>(
+          `[data-connect-channel="${provider}"], [data-channel-remove="${provider}"]`,
+        )
+        ?.focus();
+  }, [busy]);
   function close() {
     setEditing(null);
     setFields({});
@@ -489,10 +473,11 @@ export function Channels() {
   async function disconnect(provider: ChannelProvider) {
     if (
       !window.confirm(
-        `Disconnect ${provider === 'telegram' ? 'Telegram' : 'WhatsApp'}? You will need its credentials to connect again.`,
+        `Remove ${provider === 'telegram' ? 'Telegram' : 'WhatsApp'} from Sidekick? You will need its credentials to connect again.`,
       )
     )
       return;
+    restoreFocus.current = page.current?.contains(document.activeElement) ? provider : null;
     setBusy(true);
     setError('');
     try {
@@ -508,7 +493,7 @@ export function Channels() {
     }
   }
   return (
-    <div className="content-page secondary-page channels-page">
+    <div className="content-page secondary-page channels-page" ref={page}>
       <header className="page-heading secondary-heading">
         <div>
           <PageTitle path="/channels" />
@@ -546,18 +531,22 @@ export function Channels() {
                 <section
                   className={`channel-option${connected ? ' is-connected' : ''}`}
                   key={provider.id}
+                  aria-labelledby={`channel-${provider.id}`}
                 >
                   <div className="channel-option-heading">
                     <img src={`/logos/${provider.id}.svg`} alt="" width={28} height={28} />
                     <div>
-                      <h2>{provider.name}</h2>
-                      {!connected && <span>{provider.note}</span>}
+                      <h2 id={`channel-${provider.id}`}>{provider.name}</h2>
+                      {!connected && (
+                        <p className="channel-option-benefit">{provider.description}</p>
+                      )}
                     </div>
                     {!connected && (
                       <Button
                         variant="outline"
                         size="sm"
                         aria-label={`Connect ${provider.name}`}
+                        data-connect-channel={provider.id}
                         disabled={busy || !settings.ready}
                         onClick={() => open(provider.id)}
                       >
@@ -566,12 +555,11 @@ export function Channels() {
                       </Button>
                     )}
                   </div>
-                  {!connected && <p className="channel-option-benefit">{provider.description}</p>}
                   {connected && (
                     <ChannelAccount
+                      provider={provider.id}
                       setup={setup}
                       configured={configured}
-                      onConfigure={() => open(provider.id)}
                       onDisconnect={() => void disconnect(provider.id)}
                       busy={busy || !settings.ready}
                     />
@@ -604,7 +592,7 @@ export function Channels() {
             {telegramStartUrl
               ? 'Open your bot, press Start if prompted, then send your first request. Sidekick must be running to reply.'
               : step === 0
-                ? 'Connect in a few small steps. Your current setup stays active until verification succeeds.'
+                ? 'Connect in a few small steps. Sidekick checks your credentials before saving.'
                 : 'Credentials stay in this secure form, outside the conversation.'}
           </DialogDescription>
           {error && <Notice>{error}</Notice>}
@@ -620,7 +608,7 @@ export function Channels() {
                   target="_blank"
                   rel="noopener noreferrer"
                 >
-                  Open Telegram
+                  Start conversation
                   <ExternalLink size={14} />
                 </a>
               </Button>

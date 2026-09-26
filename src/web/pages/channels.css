@@ -1,10 +1,18 @@
+.channels-page {
+  container-type: inline-size;
+}
+
 .channels-page .channel-options {
   gap: 0;
   border-block: 1px solid var(--border);
 }
 
 .channels-page .channel-option {
-  padding: 22px 0;
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(0, 2fr);
+  align-items: center;
+  gap: 8px 24px;
+  padding: 16px 0;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -15,7 +23,13 @@
 }
 
 .channels-page .channel-option-heading {
-  gap: 14px;
+  grid-column: 1 / -1;
+  gap: 12px;
+  min-width: 0;
+}
+
+.channels-page .channel-option.is-connected .channel-option-heading {
+  grid-column: 1;
 }
 
 .channels-page .channel-option-heading > div {
@@ -27,22 +41,26 @@
 }
 
 .channels-page .channel-option-heading h2 {
-  font-size: 15px;
+  font-size: 14px;
 }
 
 .channels-page .channel-option-benefit {
   max-width: none;
-  margin: 8px 0 0 42px;
+  margin: 3px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .channels-page .channel-account {
+  grid-column: 2;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 14px 24px;
-  margin: 7px 0 0 42px;
+  gap: 12px 24px;
+  margin: 0;
   padding: 0;
   border: 0;
+  min-width: 0;
 }
 
 .channel-account-info {
@@ -68,34 +86,50 @@
 
 .channels-page .channel-account-actions {
   justify-content: flex-end;
-  gap: 12px;
+  gap: 8px;
   margin: 0;
   flex-shrink: 0;
 }
 
-.channels-page .channel-account-actions .connection-menu > .button {
-  border-color: transparent;
-  background: transparent;
-  color: var(--text-secondary);
+.channels-page .channel-remove {
+  color: var(--muted-foreground);
 }
 
-.channel-account-actions .connection-menu-options {
-  width: 220px;
+.channel-delivery-dialog {
+  gap: 20px;
 }
 
-.channel-account-actions .connection-menu-options:has(.channel-delivery-issue) {
-  width: 320px;
+.channel-delivery-dialog > p {
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.6;
 }
 
-.channels-page .channel-delivery-issue {
-  margin: 0;
-  padding: 10px;
+.channel-delivery-address {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.channel-delivery-address > span {
+  color: var(--muted-foreground);
   font-size: 12px;
 }
 
-.channel-account-actions .connection-menu-options > p {
-  padding: 6px;
-  color: var(--muted-foreground);
+.channel-delivery-address code {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+@container (max-width: 780px) {
+  .channels-page .channel-option {
+    display: block;
+    padding-block: 14px;
+  }
+
+  .channels-page .channel-account {
+    margin: 6px 0 0 40px;
+  }
 }
 
 @container (max-width: 580px) {
@@ -105,15 +139,22 @@
 
   .channels-page .channel-account-actions {
     justify-content: flex-start;
-    margin-top: 10px;
-  }
-
-  .channel-account-actions .connection-menu-options {
-    left: 0;
-    right: auto;
-    max-width: calc(100vw - 80px);
+    margin-top: 8px;
+    gap: 4px 8px;
   }
 }
-.channels-page {
-  container-type: inline-size;
+
+@container (max-width: 400px) {
+  .channels-page .channel-option-heading {
+    gap: 10px;
+  }
+
+  .channels-page .channel-account {
+    margin-left: 38px;
+  }
+
+  .channels-page .channel-account-actions .button {
+    min-height: 38px;
+    padding-inline: 8px;
+  }
 }

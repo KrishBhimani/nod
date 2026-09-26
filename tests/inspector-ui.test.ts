@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import { JSDOM } from 'jsdom';
 import { act, createElement } from 'react';
-import { InspectorTools } from '../src/web/components/inspector-tools.tsx';
+import { InspectorModels, InspectorTools } from '../src/web/components/inspector-tools.tsx';
 import { Inspector } from '../src/web/pages/inspector.tsx';
 import type {
   InspectorObservationsResponse,
@@ -102,6 +102,14 @@ function commonResponse(url: URL) {
       retentionDays: 7,
       payloadLimitBytes: 16384,
     });
+  if (url.pathname === '/api/inspector/prompts')
+    return response({
+      prompts: [],
+      captureEnabled: true,
+      retentionDays: 7,
+      dropped: 0,
+      hasOlder: false,
+    });
   if (url.pathname === '/api/inspector/providers')
     return response({
       scope: url.searchParams.has('taskId') ? 'task' : 'owner',
@@ -147,6 +155,11 @@ test('tool drilldown keeps full totals, requests exact tool pages and preserves 
   const root = createRoot(element);
   try {
     await act(async () => root.render(createElement(InspectorTools, { taskId: 'task-a' })));
+    await act(async () =>
+      [...element.querySelectorAll('button')]
+        .find((button) => button.textContent === 'By tool')!
+        .click(),
+    );
     assert.match(element.querySelector('.inspector-tool-call-count')!.textContent!, /250/);
     const group = element.querySelector<HTMLDetailsElement>('.inspector-tool-group')!;
     await act(async () => {
@@ -202,6 +215,11 @@ test('late task observations cannot overwrite the newly selected task', async ()
   try {
     await act(async () => root.render(createElement(InspectorTools, { taskId: 'task-a' })));
     await act(async () => root.render(createElement(InspectorTools, { taskId: 'task-b' })));
+    await act(async () =>
+      [...element.querySelectorAll('button')]
+        .find((button) => button.textContent === 'By tool')!
+        .click(),
+    );
     assert.match(element.querySelector('.inspector-tool-groups')!.textContent!, /new_task_tool/);
     await act(async () => finishOld(response(observations('task-a'))));
     assert.match(element.querySelector('.inspector-tool-groups')!.textContent!, /new_task_tool/);
@@ -252,7 +270,7 @@ test('inspector follows the current browser independently of message focus with 
     await act(async () => root.render(createElement(Inspector, { onClose() {} })));
     assert.deepEqual(
       [...element.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent),
-      ['Screen', 'Activity', 'Tools', 'Costs', 'Prompts'],
+      ['Screen', 'Activity', 'Tools', 'Models', 'Costs', 'Prompts'],
     );
     assert.equal(element.querySelectorAll('.inspector-context').length, 0);
     assert.doesNotMatch(
@@ -280,9 +298,11 @@ test('inspector follows the current browser independently of message focus with 
     );
     assert.match(element.textContent!, /All activity/);
     assert.match(element.textContent!, /Now|Next up|Every hour/);
+    assert.match(element.textContent!, /Recent actions/);
+    assert.equal(element.querySelector('.inspector-activity')!.closest('details'), null);
     assert.equal(
       requests.some((url) => url.pathname === '/api/inspector/observations'),
-      false,
+      true,
     );
     await act(async () =>
       root.render(
@@ -294,6 +314,40 @@ test('inspector follows the current browser independently of message focus with 
     );
     assert.match(element.textContent!, /From this message/);
     await act(async () => tabs[3]!.click());
+    assert.match(element.textContent!, /From this message|Model requests/);
+    assert.equal(
+      requests
+        .filter((url) => url.pathname === '/api/inspector/observations')
+        .at(-1)
+        ?.searchParams.get('taskId'),
+      'task-a',
+    );
+    await act(async () =>
+      tabs[3]!.dispatchEvent(
+        new dom.window.KeyboardEvent('keydown', { key: 'End', bubbles: true }),
+      ),
+    );
+    assert.equal(document.activeElement?.id, 'inspector-tab-prompts');
+    assert.equal(element.querySelector('[role="tab"][tabindex="0"]')?.id, 'inspector-tab-prompts');
+    await act(async () =>
+      tabs[5]!.dispatchEvent(
+        new dom.window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+      ),
+    );
+    assert.equal(document.activeElement?.id, 'inspector-tab-screen');
+    await act(async () =>
+      tabs[0]!.dispatchEvent(
+        new dom.window.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }),
+      ),
+    );
+    assert.equal(document.activeElement?.id, 'inspector-tab-prompts');
+    await act(async () =>
+      tabs[5]!.dispatchEvent(
+        new dom.window.KeyboardEvent('keydown', { key: 'Home', bubbles: true }),
+      ),
+    );
+    assert.equal(document.activeElement?.id, 'inspector-tab-screen');
+    await act(async () => tabs[4]!.click());
     assert.doesNotMatch(element.textContent!, /From this message/);
     assert.match(element.textContent!, /Recorded cost|No usage recorded yet/);
     assert.equal(requests.filter((url) => url.pathname === '/api/inspector/providers').length, 1);
@@ -301,6 +355,86 @@ test('inspector follows the current browser independently of message focus with 
     await act(async () => tabs[0]!.click());
     assert.doesNotMatch(element.textContent!, /From this message|Selected task/);
     assert.match(element.textContent!, /Take control/);
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
+    globalThis.fetch = previous;
+  }
+});
+
+test('recent calls and catalog descriptions are visible directly while models have a separate scoped view', async () => {
+  const previous = globalThis.fetch;
+  const requests: URL[] = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input), 'http://localhost:4310');
+    requests.push(url);
+    const common = commonResponse(url);
+    if (common) return common;
+    assert.equal(url.pathname, '/api/inspector/observations');
+    assert.equal(url.searchParams.get('taskId'), 'task-a');
+    return response({
+      ...observations('task-a', [
+        call('recent', 'task-a'),
+        { ...call('failure', 'task-a'), status: 'failed', error: 'Fixture failure' },
+      ]),
+      summary: { ...observations('task-a').summary, modelRequests: 1, totalTokens: 15 },
+      usage: [
+        {
+          id: 'model-request',
+          taskId: 'task-a',
+          revision: 1,
+          provider: 'fixture',
+          model: 'Fixture model',
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          totalTokens: 15,
+          costUsd: null,
+          costSource: 'unavailable',
+          createdAt: timestamp,
+        },
+      ],
+    });
+  };
+  const element = document.createElement('div');
+  document.body.append(element);
+  const root = createRoot(element);
+  const button = (name: string) =>
+    [...element.querySelectorAll<HTMLButtonElement>('button')].find(
+      (node) => node.textContent === name,
+    )!;
+  try {
+    await act(async () => root.render(createElement(InspectorTools, { taskId: 'task-a' })));
+    assert.equal(button('Recent calls').getAttribute('aria-pressed'), 'true');
+    assert.equal(element.querySelectorAll('.inspector-record').length, 2);
+    assert.equal(
+      element.querySelector('.inspector-record')!.parentElement!.closest('details'),
+      null,
+    );
+    assert.equal(element.querySelectorAll('.inspector-record[open]').length, 0);
+    assert.doesNotMatch(element.textContent!, /Fixture model|Assistant model requests/);
+    await act(async () => button('Failed').click());
+    assert.equal(element.querySelectorAll('.inspector-record').length, 1);
+    assert.match(element.textContent!, /Fixture failure/);
+    await act(async () => button('Available tools').click());
+    assert.match(
+      element.querySelector('.inspector-catalog-tool')!.textContent!,
+      /Operate the browser/,
+    );
+    assert.equal(element.querySelector('.inspector-catalog-tool')!.closest('details'), null);
+    assert.equal(element.querySelectorAll('.inspector-schema[open]').length, 0);
+    await act(async () => root.render(createElement(InspectorModels, { taskId: 'task-a' })));
+    assert.match(element.textContent!, /Fixture model|15 tokens/);
+    assert.equal(element.querySelectorAll('.inspector-record').length, 1);
+    assert.equal(
+      element.querySelector('.inspector-record')!.parentElement!.closest('details'),
+      null,
+    );
+    assert.equal(
+      requests.some((url) => url.pathname === '/api/inspector/providers'),
+      false,
+    );
   } finally {
     await act(async () => root.unmount());
     element.remove();

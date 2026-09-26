@@ -171,7 +171,7 @@ test('tool rows show direct provider prices and partial operation coverage witho
   assert.match(call, /model costs are separate/);
 });
 
-test('Costs shows one expandable row per provider and fetches only the owner ledger', async () => {
+test('Costs shows provider operations without a collapsed parent and fetches only the owner ledger', async () => {
   const previous = globalThis.fetch;
   const paths: string[] = [];
   globalThis.fetch = async (input) => {
@@ -219,18 +219,20 @@ test('Costs shows one expandable row per provider and fetches only the owner led
       element.querySelector('.inspector-cost-overview')!.textContent!,
       /1 of 3 operations priced/,
     );
-    const groups = [...element.querySelectorAll<HTMLDetailsElement>('.inspector-provider-group')];
+    const groups = [...element.querySelectorAll<HTMLElement>('.inspector-provider-group')];
     assert.equal(groups.length, 2);
-    assert.match(groups[0].querySelector('summary')!.textContent!, /OpenAI/);
+    assert.match(groups[0].querySelector('header')!.textContent!, /OpenAI/);
     assert.equal(groups[0].querySelectorAll('.inspector-provider-operation').length, 2);
-    await act(async () => {
-      groups[0].open = true;
-    });
+    assert.equal(groups[0].tagName, 'SECTION');
+    assert.equal(
+      groups[0].querySelector('.inspector-provider-operation')!.parentElement!.closest('details'),
+      null,
+    );
     assert.match(groups[0].textContent!, /Assistant responses.*model-a/);
     assert.match(groups[0].textContent!, /Relevance checks.*model-b/);
     assert.match(groups[0].textContent!, /1 of 2 operations priced/);
-    assert.match(groups[1].querySelector('summary')!.textContent!, /Price unavailable/);
-    assert.doesNotMatch(groups[1].querySelector('summary')!.textContent!, /USD 0/);
+    assert.match(groups[1].querySelector('header')!.textContent!, /Price unavailable/);
+    assert.doesNotMatch(groups[1].querySelector('header')!.textContent!, /USD 0/);
     assert.match(element.textContent!, /records could not be saved/);
     assert.equal(element.querySelectorAll('select').length, 0);
     assert.doesNotMatch(element.textContent!, /Recording coverage|Detailed coverage/);

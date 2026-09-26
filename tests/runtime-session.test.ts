@@ -1084,9 +1084,9 @@ test('a blocked browser sign-in returns native handoff guidance without a Vault 
       const value = JSON.parse(output.content[0].text);
       assert.equal(value.outcome, 'sign_in_blocked');
       assert.equal(value.issue, 'browser_not_supported');
-      assert.match(value.message, /Sign in in browser/);
-      assert.match(value.message, /Continue in Sidekick/);
-      assert.doesNotMatch(value.message, /Take control|signed in successfully/i);
+      assert.match(value.message, /Take control/);
+      assert.match(value.message, /Resume agent/);
+      assert.doesNotMatch(value.message, /signed in successfully/i);
     },
     {
       requestCredential: async () => {
@@ -1113,7 +1113,7 @@ test('a blocked browser sign-in returns native handoff guidance without a Vault 
   assert.equal(requests, 0);
   assert.equal(snapshots, 0);
   assert.deepEqual(result.replies, []);
-  assert.match(result.supplied.systemPrompt, /Sign in in browser/);
+  assert.match(result.supplied.systemPrompt, /Take control/);
 });
 
 test('an intercepted credential solicitation on a blocked browser receives handoff guidance', async () => {
@@ -1128,7 +1128,7 @@ test('an intercepted credential solicitation on a blocked browser receives hando
         text:
           prompts === 1
             ? 'Please provide your verification code.'
-            : 'Choose Sign in in browser, then Continue in Sidekick when you finish.',
+            : 'Choose Take control, then Resume agent when you finish.',
       });
     },
     {
@@ -1158,10 +1158,8 @@ test('an intercepted credential solicitation on a blocked browser receives hando
   assert.equal(requests, 0);
   assert.equal(snapshots, 0);
   assert.match(result.userPrompt, /sign_in_blocked/);
-  assert.match(result.userPrompt, /Sign in in browser/);
-  assert.deepEqual(result.replies, [
-    'Choose Sign in in browser, then Continue in Sidekick when you finish.',
-  ]);
+  assert.match(result.userPrompt, /Take control/);
+  assert.deepEqual(result.replies, ['Choose Take control, then Resume agent when you finish.']);
 });
 
 test('the sole provider opens its fresh sign-in flow without a choice-only Vault form', async () => {

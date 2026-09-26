@@ -219,7 +219,7 @@ export function createBrowserSignIn(
           }
           if (!forced && (await waitForClose(options.closeMs ?? 3000)) && !forced) return;
           throw new Error(
-            'The workspace sign-in browser is still closing. Try Continue in Sidekick again.',
+            'The workspace sign-in browser is still closing. Try Resume agent again.',
           );
         })().finally(() => {
           closing = undefined;

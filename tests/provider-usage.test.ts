@@ -6,13 +6,14 @@ import Fastify from 'fastify';
 import { createProviderUsageStore } from '../src/server/provider-usage.ts';
 import {
   meterAgent,
+  meterComputer,
   meterIntegrations,
   meterRelevance,
   meterSpeech,
   meterWorkspace,
 } from '../src/server/provider-metering.ts';
 import type { AgentEvent } from '../src/ports/agent.ts';
-import { fakeWorkspace } from './runtime-fixtures.ts';
+import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 import type { IntegrationProvider } from '../src/ports/integrations.ts';
 
 test('usage shutdown drains accepted writes and rejects late records', async () => {
@@ -362,4 +363,50 @@ test('workspace attachment reads and publications use distinct usage operations 
     'read_file',
   ]);
   assert.doesNotMatch(JSON.stringify(rows), /private-file-path|private-file-bytes/);
+});
+
+test('standalone browser control records owner usage without a synthetic task association', async () => {
+  const rows: unknown[][] = [];
+  const pool = {
+    query: async (sql: string, values?: unknown[]) => {
+      if (sql.includes('INSERT INTO provider_usage')) rows.push(values!);
+      return { rows: [] };
+    },
+  } as unknown as pg.Pool;
+  const usage = createProviderUsageStore(pool, {
+    ownerId: 'owner',
+    enabled: () => true,
+    coverage: [],
+  });
+  const computer = meterComputer(
+    fakeComputer({
+      openSignIn: async () => {},
+      finishSignIn: async () => {},
+      releaseControl: async () => {},
+    }),
+    usage,
+  );
+  try {
+    const standalone = 'manual-' + 'a'.repeat(32);
+    const task = randomUUID();
+    await computer.openSignIn!(standalone);
+    await computer.releaseControl!(standalone);
+    await computer.openSignIn!(task);
+    await computer.finishSignIn!(task);
+    await computer.releaseControl!(task);
+    await usage.flush();
+    assert.deepEqual(
+      new Set(rows.map((row) => [row[2], row[5]])),
+      new Set([
+        [null, 'open_sign_in'],
+        [null, 'release_control'],
+        [task, 'open_sign_in'],
+        [task, 'finish_sign_in'],
+        [task, 'release_control'],
+      ]),
+    );
+    assert.doesNotMatch(JSON.stringify(rows), /manual-/);
+  } finally {
+    await usage.close();
+  }
 });

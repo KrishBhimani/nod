@@ -1,4 +1,5 @@
 import type { Agent, ModelUsageObservation } from '../ports/agent.ts';
+import { z } from 'zod';
 import type { Computer, Workspace } from '../ports/computer.ts';
 import type { IntegrationProvider, IntegrationSession } from '../ports/integrations.ts';
 import type { MessagingTransport } from '../ports/messaging.ts';
@@ -45,6 +46,7 @@ export function meterAgent(agent: Agent, usage: ProviderUsageStore): Agent {
 
 export function meterComputer(computer: Computer, usage: ProviderUsageStore): Computer {
   const base = { provider: 'agent-browser', category: 'browser' as const };
+  const taskScope = (id: string) => (z.uuid().safeParse(id).success ? { taskId: id } : {});
   return {
     ...computer,
     act: (id, input, signal) =>
@@ -88,7 +90,7 @@ export function meterComputer(computer: Computer, usage: ProviderUsageStore): Co
     ...(computer.openSignIn
       ? {
           openSignIn: (id: string) =>
-            usage.track({ ...base, taskId: id, operation: 'open_sign_in' }, () =>
+            usage.track({ ...base, ...taskScope(id), operation: 'open_sign_in' }, () =>
               computer.openSignIn!(id),
             ),
         }
@@ -96,7 +98,7 @@ export function meterComputer(computer: Computer, usage: ProviderUsageStore): Co
     ...(computer.finishSignIn
       ? {
           finishSignIn: (id: string) =>
-            usage.track({ ...base, taskId: id, operation: 'finish_sign_in' }, () =>
+            usage.track({ ...base, ...taskScope(id), operation: 'finish_sign_in' }, () =>
               computer.finishSignIn!(id),
             ),
         }
@@ -104,7 +106,7 @@ export function meterComputer(computer: Computer, usage: ProviderUsageStore): Co
     ...(computer.releaseControl
       ? {
           releaseControl: (id: string) =>
-            usage.track({ ...base, taskId: id, operation: 'release_control' }, () =>
+            usage.track({ ...base, ...taskScope(id), operation: 'release_control' }, () =>
               computer.releaseControl!(id),
             ),
         }

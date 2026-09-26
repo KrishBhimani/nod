@@ -141,7 +141,7 @@ const takeControl = (element: HTMLElement) =>
     (button) => button.textContent === 'Take control',
   )!;
 
-test('failed browser capture revokes the previous live image and disables interaction until recovery', async () => {
+test('failed browser capture revokes the previous live image while Take control remains available', async () => {
   const fixture = await mounted(async (count) => {
     if (count === 1) return frame();
     throw new Error('Synthetic connection failure.');
@@ -161,7 +161,7 @@ test('failed browser capture revokes the previous live image and disables intera
     assert.ok(fixture.captures() >= 2);
     assert.equal(fixture.element.querySelector('.screen-preview img'), null);
     assert.ok(fixture.revoked.includes('blob:fixture-1'));
-    assert.equal(takeControl(fixture.element).disabled, true);
+    assert.equal(takeControl(fixture.element).disabled, false);
     assert.match(fixture.element.textContent!, /Reconnecting to the browser/);
     assert.doesNotMatch(
       fixture.element.querySelector('.browser-live-label')?.textContent ?? '',
@@ -203,7 +203,10 @@ test('switching inspector tabs retains a valid browser frame and does not restar
     assert.ok(
       fixture.requests
         .filter((request) => request.url.pathname.startsWith('/api/browser/control/'))
-        .every((request) => request.url.pathname.endsWith(taskId)),
+        .every(
+          (request) =>
+            request.url.pathname.endsWith(taskId) || request.url.pathname.endsWith('/workspace'),
+        ),
     );
   } finally {
     await fixture.close();
@@ -246,7 +249,7 @@ test('known navigation failure pauses screen capture, supports an explicit retry
   try {
     assert.match(fixture.element.textContent!, /The website did not load successfully/);
     assert.doesNotMatch(fixture.element.textContent!, /private\.example|token=secret/);
-    assert.equal(takeControl(fixture.element).disabled, true);
+    assert.equal(takeControl(fixture.element).disabled, false);
     await act(async () => {
       await delay(1100);
     });
@@ -282,7 +285,7 @@ test('secure input pauses capture until the browser activity changes', async () 
     });
     assert.equal(fixture.captures(), 1);
     assert.equal(fixture.element.querySelector('.screen-preview img'), null);
-    assert.equal(takeControl(fixture.element).disabled, true);
+    assert.equal(takeControl(fixture.element).disabled, false);
   } finally {
     await fixture.close();
   }

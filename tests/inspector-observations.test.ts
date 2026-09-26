@@ -323,7 +323,7 @@ test('missing model cost and historical recordings never appear as a zero invoic
   assert.equal(formatModelCost(0), 'USD 0.0000');
   assert.equal(formatModelCost(0.0000001), '< USD 0.000001');
   const empty = renderToStaticMarkup(createElement(ModelUsageSummary, { summary: page().summary }));
-  assert.match(empty, /No tool or model recordings/);
+  assert.match(empty, /No model requests recorded/);
   assert.doesNotMatch(empty, /USD 0|\$0/);
   const partial = renderToStaticMarkup(
     createElement(ModelUsageSummary, {

@@ -170,7 +170,7 @@ export function Apps() {
           {groups.map(({ service, accounts }) => (
             <section
               key={service.slug}
-              className="app-card"
+              className={`app-card${accounts.length ? ' has-accounts' : ''}`}
               aria-labelledby={`app-${service.slug}`}
             >
               <div className="app-card-summary">

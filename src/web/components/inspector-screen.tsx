@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Monitor, Terminal, FileText, ExternalLink } from 'lucide-react';
 import { Button, Dialog, DialogContent, DialogTitle, Notice } from './ui';
 import { post, errorMessage } from '../lib/api';
@@ -21,7 +21,26 @@ export function InspectorScreen({
   showDetails?: boolean;
   screenPath?: string;
 }) {
-  const browserId = data?.currentBrowser?.taskId;
+  const [controlled, setControlled] = useState<{ taskId?: string; privateView: boolean } | null>(
+    null,
+  );
+  const controlActive = controlled !== null;
+  const privateControl = controlled?.privateView ?? false;
+  const browserId = controlled ? controlled.taskId : data?.currentBrowser?.taskId;
+  const controlChanged = useCallback(
+    (active: boolean, privateView: boolean) => {
+      setControlled((current) =>
+        active
+          ? current?.privateView === privateView
+            ? current
+            : { taskId: browserId, privateView }
+          : current
+            ? null
+            : current,
+      );
+    },
+    [browserId],
+  );
   const activity = useRef(data?.currentBrowser?.lastActivityAt);
   activity.current = data?.currentBrowser?.lastActivityAt;
   const activeRef = useRef(active);
@@ -124,7 +143,7 @@ export function InspectorScreen({
         if (!stopped) timer = setTimeout(() => void frame(), 1000);
       }
     }
-    void frame();
+    if (!privateControl) void frame();
     return () => {
       stopped = true;
       controller.abort();
@@ -132,7 +151,7 @@ export function InspectorScreen({
       if (imageUrl.current) URL.revokeObjectURL(imageUrl.current);
       imageUrl.current = '';
     };
-  }, [browserId, captureAttempt, screenPath]);
+  }, [browserId, captureAttempt, screenPath, privateControl, controlActive]);
   useEffect(() => {
     if (!detached) return;
     const timer = setInterval(() => {
@@ -198,25 +217,27 @@ export function InspectorScreen({
       ) : (
         <>
           <section className="live-screen">
-            {browserId ? (
-              <BrowserControl
-                key={browserId}
-                taskId={browserId}
-                screen={currentScreen}
-                emptyMessage={screenState}
-                live={frameKind === 'live'}
-                actions={
-                  <>
-                    {capturePaused && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setCaptureAttempt((value) => value + 1)}
-                      >
-                        Retry view
-                      </Button>
-                    )}
-                    {data?.currentBrowser?.status === 'running' && (
+            <BrowserControl
+              key={browserId}
+              taskId={browserId}
+              onControlChange={controlChanged}
+              screen={currentScreen}
+              emptyMessage={screenState}
+              live={frameKind === 'live'}
+              actions={
+                <>
+                  {capturePaused && !controlActive && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCaptureAttempt((value) => value + 1)}
+                    >
+                      Retry view
+                    </Button>
+                  )}
+                  {browserId &&
+                    data?.currentBrowser?.taskId === browserId &&
+                    data.currentBrowser.status === 'running' && (
                       <Button
                         variant="ghost"
                         size="sm"
@@ -234,34 +255,20 @@ export function InspectorScreen({
                         Stop
                       </Button>
                     )}
-                  </>
-                }
-                heading={
-                  currentScreen && (
-                    <span className="browser-live-label">
-                      <i className={`connection-dot ${frameKind === 'live' ? 'connected' : ''}`} />
-                      {frameKind === 'last_known' ? 'Last view' : 'Live'}
-                    </span>
-                  )
-                }
-                onEnlarge={() => setEnlarged(true)}
-              />
-            ) : (
-              <div className="screen-empty">
-                <Monitor size={26} />
-                <p>{screenState}</p>
-              </div>
-            )}
+                </>
+              }
+              onEnlarge={() => setEnlarged(true)}
+            />
             {updated && (
               <div className="screen-caption">Updated {updated.toLocaleTimeString()}</div>
             )}
           </section>
           {showDetails && (
-            <details className="inspector-system">
-              <summary>
+            <section className="inspector-system">
+              <h3>
                 <Terminal size={14} />
-                Computer details
-              </summary>
+                Computer
+              </h3>
               <dl>
                 <dt>Workspace</dt>
                 <dd>{data?.runtime?.workspace ?? 'Connecting'}</dd>
@@ -270,7 +277,7 @@ export function InspectorScreen({
                 <dt>State</dt>
                 <dd>{data?.runtime?.database ?? 'Connecting'}</dd>
               </dl>
-            </details>
+            </section>
           )}
           {showDetails &&
             (data?.artifacts ?? []).filter((item) => item.taskId === browserId).length > 0 && (
@@ -297,10 +304,7 @@ export function InspectorScreen({
             <DialogContent className="screen-dialog">
               <DialogTitle>Browser screen</DialogTitle>
               <img src={currentScreen} alt="Enlarged browser screen" />
-              <p className="field-hint">
-                {frameKind === 'last_known' ? 'Last captured view' : 'Live view'}
-                {updated && ` · ${updated.toLocaleTimeString()}`}
-              </p>
+              <p className="field-hint">{updated && `Captured ${updated.toLocaleTimeString()}`}</p>
             </DialogContent>
           </Dialog>
         </>

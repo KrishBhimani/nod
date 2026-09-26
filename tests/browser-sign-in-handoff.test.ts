@@ -423,7 +423,7 @@ test('cancellation during automated restoration keeps sign-in paused and closes 
       }
     });
     const pending = fixture.computer.finishSignIn!('fixture');
-    const rejected = assert.rejects(pending, /Continue in Sidekick again|paused/);
+    const rejected = assert.rejects(pending, /Resume agent again|paused/);
     await started.promise;
     const closing = fixture.computer.close('fixture');
     reopening.resolve();
@@ -483,7 +483,7 @@ test('crash recovery preserves the pause when native Chrome still owns the profi
     await assert.rejects(restored.act('fixture', { action: 'snapshot' }), /paused/);
     assert.equal(fixture.commands.length, count);
     await assert.rejects(restored.finishSignIn!('fixture'), (error: Error) => {
-      assert.match(error.message, /Continue in Sidekick again/);
+      assert.match(error.message, /Resume agent again/);
       assert.doesNotMatch(error.message, /private-profile-path|ProcessSingleton/);
       return true;
     });
@@ -576,5 +576,72 @@ test('a completed native sign-in restores session cookies only on explicit reope
   } finally {
     await restored?.dispose();
     await fixture.cleanup();
+  }
+});
+
+test('manual workspace control opens an isolated blank browser before any agent navigation', async () => {
+  const f = await handoff();
+  try {
+    const current = f.computer.currentSession?.();
+    const count = f.commands.length;
+    await f.computer.openSignIn!('idle-workspace');
+    assert.equal(f.commands.length, count);
+    assert.equal(f.launches.at(-1)?.url, 'about:blank');
+    assert.equal(
+      f.launches.at(-1)?.profilePath,
+      join(f.directory, 'runtime/profiles/idle-workspace'),
+    );
+    assert.deepEqual(f.computer.currentSession?.(), current);
+    assert.equal(
+      (await f.computer.signInScreenshot!('idle-workspace'))?.toString(),
+      'native-private-frame',
+    );
+    await assert.rejects(f.computer.screenshot('idle-workspace'), /paused/);
+    await f.computer.signInControl!('idle-workspace', { action: 'type', text: 'private fixture' });
+    assert.deepEqual(f.computer.currentSession?.(), current);
+    await f.computer.releaseControl!('idle-workspace');
+    await f.computer.close('idle-workspace');
+    assert.equal(f.isClosed(), true);
+    const closed = JSON.parse(
+      await readFile(join(f.directory, 'runtime/screen-idle-workspace.json'), 'utf8'),
+    );
+    assert.equal(closed.signInPending, false);
+    assert.doesNotMatch(JSON.stringify(closed), /private fixture/);
+    await f.computer.openSignIn!('idle-workspace');
+    assert.equal(f.launches.at(-1)?.url, 'about:blank');
+    assert.equal(f.commands.length, count);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('new native workspace windows respect the browser session capacity', async () => {
+  const f = await handoff();
+  try {
+    await f.computer.hold('fixture', Date.now() + 60_000);
+    for (const id of ['manual-one', 'manual-two', 'manual-three']) await f.computer.openSignIn!(id);
+    await assert.rejects(f.computer.openSignIn!('manual-four'));
+    assert.equal(f.launches.length, 3);
+    assert.match(f.computer.status(), /^4 /);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('an abandoned blank native window releases its capacity when the lease expires without polling', async () => {
+  const f = await handoff({ manualTimeoutMs: 20 });
+  try {
+    await f.computer.openSignIn!('idle-workspace');
+    assert.match(f.computer.status(), /^2 /);
+    await delay(60);
+    assert.equal(f.isClosed(), true);
+    assert.match(f.computer.status(), /^1 /);
+    const saved = JSON.parse(
+      await readFile(join(f.directory, 'runtime/screen-idle-workspace.json'), 'utf8'),
+    );
+    assert.equal(saved.signInPending, false);
+    await assert.rejects(f.computer.signInScreenshot!('idle-workspace'));
+  } finally {
+    await f.cleanup();
   }
 });

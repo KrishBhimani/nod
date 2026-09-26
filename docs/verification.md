@@ -6,11 +6,15 @@ Local UX and app-action validation: [Apps, chat and Inspector checks](testing/re
 
 This records local prototype checks. Synthetic fixtures, isolated browser flows and live-account checks are distinct. These runs do not establish public deployment or production-provider acceptance; no new paid plan was used.
 
-## Current pass — 2026-09-25
+## Current pass — 2026-09-26
+
+[UI and browser-control review](testing/results/2026-09-26-ux-polish.md) records compact integrations and channels, aligned empty states, revised dark controls, clearer Inspector tabs and always-available workspace takeover. The final local integration run passed **793 tests with zero failures or skips**, including automatic view recovery after Done. Actual desktop/mobile inspection, 72 contrast pairs and real container browser control support this pass. The PR checks report final-head publication status.
+
+## Prior pass — 2026-09-25
 
 The prior remote CI checkpoint at `f82a3dc` passed ([run](https://github.com/n8n-io/sidekick/actions/runs/36197248725)). The PR checks show current publication status for the whole-codebase follow-up below.
 
-- **Latest full integration run: 775 passed, zero failures and zero skipped**, in 75.437 seconds under Node.js 24.21.0, using disposable PostgreSQL schemas. The run log is `/tmp/sidekick-codebase-integration-final.log`. This includes the PR review fixes, theme and icon checks, scheduled action authority, command cancellation and artifact boundaries.
+- **Full integration run: 775 passed, zero failures and zero skipped**, in 75.437 seconds under Node.js 24.21.0, using disposable PostgreSQL schemas. The run log is `/tmp/sidekick-codebase-integration-final.log`. This includes the PR review fixes, theme and icon checks, scheduled action authority, command cancellation and artifact boundaries.
 - [Whole-codebase review](testing/results/2026-09-25-codebase-review.md) records ten additional defects, their fixes and the narrower setup-help policy. Dependencies had zero known advisories in the current lockfile audit. Final peer review also verified retry after failed runtime cleanup.
 - [PR review](testing/results/2026-09-25-pr-review.md) records the reviewed findings and intentional product boundaries. [Provider boundary proof](testing/results/2026-09-25-provider-boundaries.md) includes a real isolated Docker Stop and artifact-read check.
 - [Theme acceptance](testing/results/2026-09-25-themes.md) records actual desktop/mobile inspection, 68 passing contrast pairs and two additional playable recordings. The missing web icons are now shipped and tested.
@@ -23,7 +27,7 @@ The prior remote CI checkpoint at `f82a3dc` passed ([run](https://github.com/n8n
 - An earlier native Telegram setup attempt stopped at `AXError.notImplemented`. The user has since reported using Telegram; that is distinct from agent-verified end-to-end recipient delivery, which remains unverified.
 - Otto colors and bundled Manrope fallback are implemented. Licensed Baumer assets remain pending.
 
-The current UI has one chat, rendered Markdown editing, a turn rail, concise secondary pages, delayed shortcut hints, a sidebar inspector toggle, inline emoji reactions and public link cards. Formatting/source-preview controls, a date picker, task selection and Read aloud are absent. The inspector has Screen, Activity, Tools, Costs and Prompts; Screen follows the active browser while message selection narrows the other views. Goals and schedules are created and updated through chat; their pages also provide confirmed deletion. Known requested operations execute directly; unknown or destructive actions use a specific chat confirmation. The historical UI checks below apply to their earlier versions only.
+The current UI has one chat, rendered Markdown editing, a turn rail, concise secondary pages, delayed shortcut hints, a sidebar inspector toggle, inline emoji reactions and public link cards. Formatting/source-preview controls, a date picker, task selection and Read aloud are absent. The inspector has Screen, Activity, Tools, Models, Costs and Prompts; Screen follows the active browser while message selection narrows the other views. Goals and schedules are created and updated through chat; their pages also provide confirmed deletion. Known requested operations execute directly; unknown or destructive actions use a specific chat confirmation. The historical UI checks below apply to their earlier versions only.
 
 ### Current container implementation
 

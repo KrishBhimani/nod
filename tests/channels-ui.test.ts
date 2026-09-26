@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { setTimeout as delay } from 'node:timers/promises';
 import test, { after } from 'node:test';
 import { act, createElement } from 'react';
 import { JSDOM } from 'jsdom';
@@ -12,6 +13,8 @@ for (const key of [
   'document',
   'navigator',
   'HTMLElement',
+  'HTMLButtonElement',
+  'HTMLInputElement',
   'Element',
   'Node',
   'NodeFilter',
@@ -30,7 +33,7 @@ const { Channels, ChannelAccount } = await import('../src/web/pages/channels.tsx
 const click = (element: Element) =>
   element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
-test('ready Channels show identity and one next action, without repeating setup instructions', async () => {
+test('ready Channels offer a bot conversation and direct removal without setup menus', async () => {
   const priorFetch = globalThis.fetch;
   const calls: string[] = [];
   globalThis.fetch = async (url, options) => {
@@ -85,20 +88,17 @@ test('ready Channels show identity and one next action, without repeating setup 
       /WhatsApp Business number/,
     );
     assert.ok(whatsapp.querySelector('[aria-label="Connect WhatsApp"]'));
-    assert.equal(container.querySelector('.button-primary'), null);
+    assert.equal(container.querySelector('.button-primary'), telegram.querySelector('a'));
     assert.equal(container.querySelector('select'), null);
-    const manage = telegram.querySelector('[aria-label="Manage channel"]')!;
-    assert.equal(manage.getAttribute('aria-expanded'), 'false');
-    await act(async () => click(manage));
-    assert.equal(manage.getAttribute('aria-expanded'), 'true');
-    const menu = telegram.querySelector('[role="menu"]')!;
-    assert.match(menu.textContent ?? '', /Replace setup.*Disconnect/);
-    await act(async () =>
-      menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })),
+    assert.equal(telegram.querySelector('a')?.textContent, 'Start conversation');
+    assert.doesNotMatch(
+      container.textContent ?? '',
+      /Requires a Meta business app|Manage|Replace setup/,
     );
-    assert.equal(manage.getAttribute('aria-expanded'), 'false');
-    assert.equal(telegram.querySelector('[role="menu"]'), null);
-    assert.equal(document.activeElement, manage);
+    const remove = telegram.querySelector<HTMLButtonElement>('[data-channel-remove="telegram"]')!;
+    assert.equal(remove.textContent, 'Remove channel');
+    assert.equal(remove.disabled, false);
+    assert.equal(telegram.querySelector('[aria-haspopup="menu"]'), null);
     assert.equal(calls.length, 2);
   } finally {
     await act(async () => root.unmount());
@@ -111,12 +111,12 @@ test('incomplete webhook setup reveals saved instructions without reconnecting o
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
-  let configured = 0;
   let disconnected = 0;
   try {
     await act(async () =>
       root.render(
         createElement(ChannelAccount, {
+          provider: 'whatsapp',
           setup: {
             provider: 'whatsapp',
             enabled: true,
@@ -128,17 +128,12 @@ test('incomplete webhook setup reveals saved instructions without reconnecting o
           },
           configured: true,
           busy: false,
-          onConfigure: () => {
-            configured++;
-          },
           onDisconnect: () => {
             disconnected++;
           },
         }),
       ),
     );
-    const manage = container.querySelector('[aria-label="Manage channel"]')!;
-    assert.equal(manage.getAttribute('aria-expanded'), 'false');
     assert.equal(container.querySelector('[role="menu"]'), null);
     assert.equal(container.querySelector('a'), null);
     assert.match(
@@ -149,18 +144,21 @@ test('incomplete webhook setup reveals saved instructions without reconnecting o
       button.textContent?.startsWith('Finish setup'),
     )!;
     await act(async () => click(finish));
-    assert.equal(manage.getAttribute('aria-expanded'), 'true');
-    const menu = container.querySelector('[role="menu"]')!;
-    assert.equal(document.activeElement, menu.querySelector('[role="menuitem"]'));
+    const dialog = document.querySelector('[role="dialog"]')!;
+    assert.equal(dialog.querySelector('h2')?.textContent, 'Finish WhatsApp setup');
     assert.equal(
-      menu.querySelector('code')?.textContent,
+      dialog.querySelector('code')?.textContent,
       'https://example.com/api/webhooks/whatsapp',
     );
-    assert.equal(configured, 0);
+    assert.match(dialog.textContent ?? '', /verification token you saved/);
+    assert.doesNotMatch(dialog.textContent ?? '', /Replace setup/);
     assert.equal(disconnected, 0);
-    await act(async () => click(menu.querySelector('[role="menuitem"]')!));
-    assert.equal(configured, 1);
-    assert.equal(disconnected, 0);
+    await act(async () => click(dialog.querySelector('[aria-label="Close"]')!));
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+    await act(async () => delay(0));
+    assert.equal(document.activeElement, finish);
+    await act(async () => click(container.querySelector('[data-channel-remove="whatsapp"]')!));
+    assert.equal(disconnected, 1);
   } finally {
     await act(async () => root.unmount());
     container.remove();
@@ -175,6 +173,7 @@ test('pending Telegram registration offers saved recovery instructions without M
     await act(async () =>
       root.render(
         createElement(ChannelAccount, {
+          provider: 'telegram',
           setup: {
             provider: 'telegram',
             enabled: true,
@@ -184,7 +183,6 @@ test('pending Telegram registration offers saved recovery instructions without M
           },
           configured: true,
           busy: false,
-          onConfigure: () => assert.fail('No settings should change'),
           onDisconnect: () => assert.fail('No settings should change'),
         }),
       ),
@@ -195,9 +193,9 @@ test('pending Telegram registration offers saved recovery instructions without M
       button.textContent?.startsWith('Finish setup'),
     )!;
     await act(async () => click(finish));
-    const menu = container.querySelector('[role="menu"]')!;
-    assert.match(menu.textContent ?? '', /Restart Sidekick to retry the saved setup/);
-    assert.doesNotMatch(menu.textContent ?? '', /Meta|verification token/);
+    const dialog = document.querySelector('[role="dialog"]')!;
+    assert.match(dialog.textContent ?? '', /Restart Sidekick to retry the saved setup/);
+    assert.doesNotMatch(dialog.textContent ?? '', /Meta|verification token|replace/i);
   } finally {
     await act(async () => root.unmount());
     container.remove();

@@ -33,6 +33,7 @@ async function fixture(options: { signIn?: boolean } = {}) {
   const calls: string[] = [];
   let enabled = true;
   let failAcquire = false;
+  let failClose = false;
   let failRelease = false;
   let failResume = false;
   let failSignIn = false;
@@ -53,7 +54,7 @@ async function fixture(options: { signIn?: boolean } = {}) {
   const pool = {
     query: async (_query: string, values: unknown[]) => {
       const row = rows.get(String(values[0]));
-      return { rows: row?.owner === values[1] ? [row] : [] };
+      return { rows: row?.owner === values[1] ? [{ ...row }] : [] };
     },
   } as unknown as Pool;
   const app = Fastify({ logger: false });
@@ -71,6 +72,7 @@ async function fixture(options: { signIn?: boolean } = {}) {
     computer: {
       close: async () => {
         calls.push('close');
+        if (failClose) throw new Error('private close failure');
       },
       ...(options.signIn
         ? {
@@ -172,6 +174,9 @@ async function fixture(options: { signIn?: boolean } = {}) {
     setEnabled: (value: boolean) => {
       enabled = value;
     },
+    setCloseFailure: (value: boolean) => {
+      failClose = value;
+    },
     setAcquireFailure: (value: boolean) => {
       failAcquire = value;
     },
@@ -216,13 +221,14 @@ test('takeover drains agent work before acquiring and serializes input before re
     drain.resolve();
     const started = await start;
     assert.equal(started.statusCode, 200);
-    assert.deepEqual(started.json(), { revision: 1 });
+    assert.deepEqual(started.json(), { revision: 1, mode: 'manual', resumable: true });
     assert.deepEqual((await f.request('')).json(), {
       paused: true,
       active: true,
       revision: 1,
       mode: 'manual',
       signInAvailable: false,
+      resumable: true,
     });
     const input = deferred();
     f.setInput(input.promise);
@@ -243,6 +249,7 @@ test('takeover drains agent work before acquiring and serializes input before re
       revision: null,
       mode: null,
       signInAvailable: false,
+      resumable: true,
     });
     assert.equal(
       (await f.request('/input', { revision: 1, input: { action: 'press', key: 'Enter' } }))
@@ -300,6 +307,7 @@ test('failed acquire or resume stays paused, permits retry and never returns pro
       revision: 1,
       mode: null,
       signInAvailable: false,
+      resumable: true,
     });
     f.setAcquireFailure(false);
     assert.equal((await f.request('/start', {})).statusCode, 200);
@@ -315,6 +323,7 @@ test('failed acquire or resume stays paused, permits retry and never returns pro
       revision: 1,
       mode: null,
       signInAvailable: false,
+      resumable: true,
     });
     f.setResumeFailure(false);
     assert.equal((await f.request('/resume', { revision: 1 })).statusCode, 200);
@@ -362,6 +371,7 @@ test(
         revision: 2,
         mode: null,
         signInAvailable: false,
+        resumable: true,
       });
       assert.equal((await restart).statusCode, 200);
       assert.deepEqual((await f.request('')).json(), {
@@ -370,6 +380,7 @@ test(
         revision: 2,
         mode: 'manual',
         signInAvailable: false,
+        resumable: true,
       });
       assert.equal(
         (await f.request('/input', { revision: 1, input: { action: 'press', key: 'Enter' } }))
@@ -411,31 +422,69 @@ test('cancelled, missing and transferred tasks release stale control, with retry
   }
 });
 
-test('reacquisition of a cancelled task releases manual and sign-in leases before rejecting', async () => {
-  for (const initial of ['/start', '/sign-in']) {
-    for (const retry of ['/start', '/sign-in']) {
-      const f = await fixture({ signIn: true });
-      try {
-        assert.equal((await f.coreRequest(initial, {})).statusCode, 200);
-        const row = f.rows.get(f.taskId)!;
-        row.status = 'cancelled';
-        row.revision++;
-        f.setReleaseFailure(true);
-        const failed = await f.coreRequest(retry, {});
-        assert.equal(failed.statusCode, 409);
-        assert.equal(failed.body.includes('private release'), false);
-        assert.equal(f.calls.filter((call) => call === 'release').length, 1);
-        f.setReleaseFailure(false);
-        assert.equal((await f.coreRequest(retry, {})).statusCode, 409);
-        assert.equal(f.calls.filter((call) => call === 'release').length, 2);
-        assert.equal((await f.coreRequest('')).json().active, false);
-        assert.equal(f.calls.filter((call) => call === 'release').length, 2);
-        assert.equal(f.calls.filter((call) => call === 'acquire' || call === 'sign-in').length, 1);
-        assert.equal(f.calls.includes('finish'), false);
-        assert.equal(f.calls.includes('resume'), false);
-      } finally {
-        await f.app.close();
-      }
+test('explicit takeover of a terminal task preserves its profile without resuming work', async () => {
+  for (const status of ['succeeded', 'failed', 'cancelled']) {
+    const f = await fixture({ signIn: true });
+    try {
+      await f.coreRequest('/start', {});
+      const row = f.rows.get(f.taskId)!;
+      row.status = status;
+      row.revision++;
+      assert.equal(
+        (await f.coreRequest('/input', { revision: 1, input: { action: 'press', key: 'Enter' } }))
+          .statusCode,
+        409,
+      );
+      const snapshot = { ...row };
+      const taken = await f.coreRequest('/start', {});
+      assert.equal(taken.statusCode, 200);
+      const revision = taken.json().revision;
+      assert.equal(taken.json().resumable, false);
+      assert.ok(Number.isSafeInteger(revision) && revision > 1);
+      assert.equal((await f.coreRequest('')).json().active, true);
+      assert.equal((await f.coreRequest('')).json().paused, false);
+      assert.equal(
+        (await f.coreRequest('/input', { revision, input: { action: 'press', key: 'Enter' } }))
+          .statusCode,
+        200,
+      );
+      assert.equal((await f.coreRequest('/resume', { revision })).statusCode, 200);
+      assert.deepEqual(row, snapshot);
+      assert.equal(f.calls.includes('resume'), false);
+      assert.equal(f.calls.includes('finish'), true);
+      assert.equal(f.calls.filter((call) => call === 'pause').length, 1);
+      assert.equal(f.calls.filter((call) => call === 'sign-in').length, 2);
+      assert.equal((await f.coreRequest('/sign-in-screen?revision=' + revision)).statusCode, 409);
+    } finally {
+      await f.app.close();
+    }
+  }
+});
+
+test('terminal browser control invalidates on task revision, status and ownership changes', async () => {
+  for (const change of ['revision', 'status', 'owner']) {
+    const f = await fixture({ signIn: true });
+    try {
+      const row = f.rows.get(f.taskId)!;
+      row.status = 'succeeded';
+      const revision = (await f.coreRequest('/start', {})).json().revision;
+      if (change === 'revision') row.revision++;
+      if (change === 'status') row.status = 'cancelled';
+      if (change === 'owner') row.owner = 'other';
+      const input = await f.coreRequest('/input', {
+        revision,
+        input: { action: 'press', key: 'Enter' },
+      });
+      assert.equal(input.statusCode, change === 'owner' ? 404 : 409);
+      assert.equal(f.calls.includes('sign-in-input'), false);
+      assert.equal(f.calls.includes('resume'), false);
+      assert.ok(f.calls.includes('release'));
+      assert.equal(
+        (await f.coreRequest('/resume', { revision })).statusCode,
+        change === 'owner' ? 404 : 409,
+      );
+    } finally {
+      await f.app.close();
     }
   }
 });
@@ -449,13 +498,14 @@ test('browser sign-in drains work, uses private desktop input and restores the b
     await f.drainEntered;
     assert.deepEqual(f.calls, ['pause', 'drain']);
     drain.resolve();
-    assert.deepEqual((await start).json(), { revision: 1 });
+    assert.deepEqual((await start).json(), { revision: 1, mode: 'sign_in', resumable: true });
     assert.deepEqual((await f.request('')).json(), {
       paused: true,
       active: true,
       revision: 1,
       mode: 'sign_in',
       signInAvailable: true,
+      resumable: true,
     });
     assert.equal(
       (await f.request('/input', { revision: 1, input: { action: 'type', text: 'private' } }))
@@ -609,7 +659,7 @@ test('core sign-in works without Inspector and frames require an owned exact sig
     assert.equal((await f.coreRequest('')).json().signInAvailable, true);
     assert.equal((await f.coreRequest('/sign-in-screen?revision=0')).statusCode, 409);
     assert.equal((await f.coreRequest('/start', {})).statusCode, 200);
-    assert.equal((await f.coreRequest('/sign-in-screen?revision=1')).statusCode, 409);
+    assert.equal((await f.coreRequest('/sign-in-screen?revision=1')).statusCode, 200);
     assert.equal((await f.coreRequest('/sign-in', {})).statusCode, 200);
     const frame = await f.coreRequest('/sign-in-screen?revision=1');
     assert.equal(frame.statusCode, 200);
@@ -642,7 +692,7 @@ test('core sign-in works without Inspector and frames require an owned exact sig
       assert.equal(blocked.statusCode, 403);
       assert.equal(blocked.body.includes('synthetic-private-frame'), false);
     }
-    assert.equal(f.calls.filter((call) => call === 'sign-in-frame').length, 1);
+    assert.equal(f.calls.filter((call) => call === 'sign-in-frame').length, 2);
     f.setFrameFailure(true);
     const failed = await f.coreRequest('/sign-in-screen?revision=1');
     assert.equal(failed.statusCode, 409);
@@ -764,6 +814,7 @@ test(
           revision: null,
           mode: null,
           signInAvailable: true,
+          resumable: false,
         });
         assert.equal(currentSession(), newerBrowser);
         assert.equal(
@@ -786,3 +837,199 @@ test(
     }
   },
 );
+
+test('idle workspace takeover opens a private browser without creating or resuming a task', async () => {
+  const f = await fixture({ signIn: true });
+  try {
+    f.setEnabled(false);
+    const before = [...f.rows].map(([id, row]) => [id, { ...row }]);
+    const started = await f.coreRequest('/start', {}, 'workspace');
+    assert.equal(started.statusCode, 200);
+    const revision = started.json().revision;
+    assert.ok(Number.isSafeInteger(revision));
+    assert.equal(started.json().mode, 'sign_in');
+    assert.equal(started.json().resumable, false);
+    assert.deepEqual(f.calls, ['close', 'sign-in']);
+    assert.equal(
+      (await f.coreRequest('/sign-in-screen?revision=' + revision, undefined, 'workspace')).body,
+      'synthetic-private-frame',
+    );
+    assert.equal(
+      (
+        await f.coreRequest(
+          '/input',
+          { revision, input: { action: 'type', text: 'private fixture' } },
+          'workspace',
+        )
+      ).statusCode,
+      200,
+    );
+    assert.equal((await f.coreRequest('/resume', { revision }, 'workspace')).statusCode, 200);
+    assert.deepEqual(f.calls, [
+      'close',
+      'sign-in',
+      'sign-in-frame',
+      'sign-in-input',
+      'release',
+      'close',
+    ]);
+    assert.deepEqual([...f.rows], before);
+    assert.equal((await f.coreRequest('', undefined, 'workspace')).json().active, false);
+    assert.equal(
+      (await f.coreRequest('/sign-in-screen?revision=' + revision, undefined, 'workspace'))
+        .statusCode,
+      409,
+    );
+    const replacement = (await f.coreRequest('/start', {}, 'workspace')).json().revision;
+    assert.ok(replacement > revision);
+    assert.equal(
+      (
+        await f.coreRequest(
+          '/input',
+          { revision, input: { action: 'press', key: 'Enter' } },
+          'workspace',
+        )
+      ).statusCode,
+      409,
+    );
+    assert.equal(
+      (await f.coreRequest('/resume', { revision: replacement }, 'workspace')).statusCode,
+      200,
+    );
+  } finally {
+    await f.app.close();
+  }
+});
+
+test('workspace takeover rejects unsupported adapters, caller destinations and cross-site access', async () => {
+  for (const signIn of [false, true]) {
+    const f = await fixture({ signIn });
+    try {
+      assert.equal(
+        (await f.coreRequest('/start', { url: 'https://example.test' }, 'workspace')).statusCode,
+        400,
+      );
+      if (!signIn) assert.equal((await f.coreRequest('/start', {}, 'workspace')).statusCode, 409);
+      assert.equal(
+        (
+          await f.app.inject({
+            method: 'POST',
+            url: '/api/browser/control/workspace/start',
+            headers: { host: 'localhost:4310', origin: 'https://external.test' },
+            payload: {},
+          })
+        ).statusCode,
+        403,
+      );
+      assert.deepEqual(f.calls, []);
+    } finally {
+      await f.app.close();
+    }
+  }
+});
+
+test('workspace takeover expiry closes private capture without starting an agent', async (context) => {
+  context.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  const f = await fixture({ signIn: true });
+  try {
+    const revision = (await f.coreRequest('/start', {}, 'workspace')).json().revision;
+    context.mock.timers.tick(30 * 60_000);
+    assert.equal((await f.coreRequest('', undefined, 'workspace')).json().active, false);
+    assert.deepEqual(f.calls, ['close', 'sign-in', 'release', 'close']);
+    assert.equal((await f.coreRequest('/resume', { revision }, 'workspace')).statusCode, 409);
+  } finally {
+    await f.app.close();
+    context.mock.timers.reset();
+  }
+});
+
+test('failed workspace reacquisition retains only the revision that actually acquired control', async () => {
+  for (const failure of ['release', 'close']) {
+    const f = await fixture({ signIn: true });
+    try {
+      const revision = (await f.coreRequest('/start', {}, 'workspace')).json().revision;
+      if (failure === 'release') f.setReleaseFailure(true);
+      else f.setCloseFailure(true);
+      assert.equal((await f.coreRequest('/start', {}, 'workspace')).statusCode, 409);
+      assert.equal((await f.coreRequest('', undefined, 'workspace')).json().revision, revision);
+      assert.equal(
+        (
+          await f.coreRequest(
+            '/input',
+            { revision: revision + 1, input: { action: 'press', key: 'Enter' } },
+            'workspace',
+          )
+        ).statusCode,
+        409,
+      );
+      f.setReleaseFailure(false);
+      f.setCloseFailure(false);
+      assert.ok((await f.coreRequest('/start', {}, 'workspace')).json().revision > revision);
+    } finally {
+      await f.app.close();
+    }
+  }
+});
+
+test('a recreated takeover never accepts the prior standalone control revision', async () => {
+  const previous = await fixture({ signIn: true });
+  const current = await fixture({ signIn: true });
+  try {
+    const oldRevision = (await previous.coreRequest('/start', {}, 'workspace')).json().revision;
+    const revision = (await current.coreRequest('/start', {}, 'workspace')).json().revision;
+    assert.notEqual(revision, oldRevision);
+    assert.equal(
+      (
+        await current.coreRequest(
+          '/input',
+          { revision: oldRevision, input: { action: 'press', key: 'Enter' } },
+          'workspace',
+        )
+      ).statusCode,
+      409,
+    );
+    assert.equal(
+      (await current.coreRequest('/resume', { revision: oldRevision }, 'workspace')).statusCode,
+      409,
+    );
+    assert.equal((await current.coreRequest('', undefined, 'workspace')).json().revision, revision);
+  } finally {
+    await previous.app.close();
+    await current.app.close();
+  }
+});
+
+test('failed standalone launch closes the reserved native browser and permits a fresh acquisition', async () => {
+  const f = await fixture({ signIn: true });
+  try {
+    f.setSignInFailure(true);
+    assert.equal((await f.coreRequest('/start', {}, 'workspace')).statusCode, 409);
+    assert.deepEqual(f.calls, ['close', 'sign-in', 'release', 'close']);
+    assert.equal((await f.coreRequest('', undefined, 'workspace')).json().active, false);
+    f.setSignInFailure(false);
+    assert.equal((await f.coreRequest('/start', {}, 'workspace')).statusCode, 200);
+    assert.equal(f.calls.filter((call) => call === 'sign-in').length, 2);
+  } finally {
+    await f.app.close();
+  }
+});
+
+test('a terminal task changed while draining cannot open or close its browser', async () => {
+  const f = await fixture({ signIn: true });
+  try {
+    const row = f.rows.get(f.taskId)!;
+    row.status = 'succeeded';
+    const drain = deferred();
+    f.setDrain(drain.promise);
+    const pending = f.coreRequest('/start', {});
+    await f.drainEntered;
+    assert.deepEqual(f.calls, ['drain']);
+    row.status = 'queued';
+    row.revision++;
+    drain.resolve();
+    assert.equal((await pending).statusCode, 409);
+    assert.deepEqual(f.calls, ['drain']);
+  } finally {
+    await f.app.close();
+  }
+});

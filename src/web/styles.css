@@ -124,11 +124,12 @@ a svg {
   color: var(--accent);
 }
 .button-outline {
-  background: var(--surface);
-  border-color: var(--border);
+  background: var(--control);
+  border-color: var(--control-border);
+  color: var(--control-foreground);
 }
 .button-outline:hover:not(:disabled) {
-  background: var(--surface-subtle);
+  background: var(--control-hover);
 }
 .button-ghost {
   background: transparent;

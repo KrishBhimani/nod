@@ -8,23 +8,26 @@
 }
 .apps-page .app-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 12px 24px;
+  grid-template-columns: minmax(180px, 1fr) minmax(160px, 1fr) auto;
+  align-items: center;
+  gap: 8px 24px;
   min-width: 0;
-  padding: 22px 0;
+  padding: 14px 0;
   border-bottom: 1px solid var(--border);
 }
 .apps-page .app-card-summary {
-  grid-column: 1;
+  grid-column: 1 / 3;
   grid-row: 1;
   min-width: 0;
+}
+.apps-page .app-card.has-accounts .app-card-summary {
+  grid-column: 1;
 }
 .apps-page .app-card-heading {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px 10px;
+  gap: 4px 10px;
 }
 .apps-page .app-card-heading > img,
 .apps-page .app-card-heading > svg {
@@ -43,20 +46,19 @@
   font-size: 11px;
 }
 .apps-page .app-card-description {
-  margin: 5px 0 0 34px;
+  margin: 3px 0 0 34px;
   color: var(--muted-foreground);
   font-size: 12px;
-  line-height: 1.55;
+  line-height: 1.5;
 }
 .apps-page .app-card-accounts {
-  grid-column: 1 / -1;
-  grid-row: 2;
+  grid-column: 2;
+  grid-row: 1;
   min-width: 0;
-  padding-left: 34px;
 }
 .apps-page .compact-account {
   align-items: center;
-  padding: 7px 0;
+  padding: 3px 0;
 }
 .apps-page .compact-account-details {
   padding-top: 0;
@@ -67,7 +69,7 @@
   overflow-wrap: anywhere;
 }
 .apps-page .app-card-actions {
-  grid-column: 2;
+  grid-column: 3;
   grid-row: 1;
   display: flex;
   flex-direction: column-reverse;
@@ -81,10 +83,27 @@
 .apps-page .connection-menu-options {
   width: min(200px, calc(100vw - 76px));
 }
+@container (max-width: 700px) {
+  .apps-page .app-card {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px 16px;
+  }
+  .apps-page .app-card-summary {
+    grid-column: 1;
+  }
+  .apps-page .app-card-accounts {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    padding-left: 34px;
+  }
+  .apps-page .app-card-actions {
+    grid-column: 2;
+  }
+}
 @container (max-width: 400px) {
   .apps-page .app-card {
-    gap: 12px;
-    padding-block: 18px;
+    gap: 6px 10px;
+    padding-block: 12px;
   }
   .apps-page .app-card-heading > span {
     flex-basis: 100%;

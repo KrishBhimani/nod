@@ -159,6 +159,8 @@ test('light and dark semantic text and button pairs meet normal-text contrast', 
     for (const [foreground, background] of [
       ['primary-foreground', 'primary'],
       ['primary-foreground', 'primary-hover'],
+      ['control-foreground', 'control'],
+      ['control-foreground', 'control-hover'],
       ['on-solid', 'destructive'],
       ['foreground', 'accent-soft'],
       ['accent', 'accent-soft'],
