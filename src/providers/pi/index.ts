@@ -192,13 +192,15 @@ export function createPiAgent(options: {
               text: (finalBlocks.length ? finalBlocks : blocks).map((item) => item.text).join('\n'),
             });
           }
-          const status = ['stop', 'length', 'toolUse'].includes(event.message.stopReason)
+          const status = ['stop', 'toolUse'].includes(event.message.stopReason)
             ? 'succeeded'
-            : event.message.stopReason === 'error'
-              ? 'failed'
-              : event.message.stopReason === 'aborted'
-                ? 'cancelled'
-                : undefined;
+            : event.message.stopReason === 'length'
+              ? 'incomplete'
+              : event.message.stopReason === 'error'
+                ? 'failed'
+                : event.message.stopReason === 'aborted'
+                  ? 'cancelled'
+                  : undefined;
           input.onEvent({ type: 'message_end', ...(status ? { status } : {}) });
         }
       });

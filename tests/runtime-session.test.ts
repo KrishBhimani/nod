@@ -997,6 +997,31 @@ test('a successful model retry clears the earlier failure result', async () => {
   assert.deepEqual(result.replies, ['The retry completed.']);
 });
 
+test('a complete retry replaces a token-limited stream without saving the truncated text', async () => {
+  const chunks: Array<{ text: string; id?: string; done?: boolean }> = [];
+  const result = await fixture(
+    async (_tools, emit) => {
+      emit({ type: 'message_start' });
+      emit({ type: 'text_delta', text: 'The first result was truncated.' });
+      emit({ type: 'message_end', status: 'incomplete' });
+      emit({ type: 'message_start' });
+      emit({ type: 'text_delta', text: 'The retry completed.' });
+      emit({ type: 'final', text: 'The retry completed.' });
+      emit({ type: 'message_end', status: 'succeeded' });
+    },
+    {
+      delta: (text, id, done) => {
+        chunks.push({ text, id, done });
+      },
+    },
+  );
+  assert.equal(result.result.status, 'succeeded');
+  assert.deepEqual(result.replies, ['The retry completed.']);
+  const partial = chunks.find(({ text }) => text === 'The first result was truncated.');
+  assert.ok(partial?.id);
+  assert.ok(chunks.some(({ id, done }) => id === partial.id && done));
+});
+
 test('a question uses the atomic wait callback and stops the segment before another action', async () => {
   const questions: string[] = [];
   const result = await fixture(

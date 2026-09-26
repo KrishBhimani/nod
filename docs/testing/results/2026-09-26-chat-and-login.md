@@ -28,8 +28,29 @@ At 1280 pixels, the user bubble ended at the conversation's right boundary. Its 
 
 ## Current app-to-container acceptance
 
-A fresh disposable harness mounted the current source into both temporary containers so the worker and Docker command bridge used the same input protocol. In the actual production UI, Take control forwarded a click, typed text, Cmd+A, pasted text, a final key and Enter to Chromium. The synthetic page confirmed the exact value with `Manual input accepted: MANUAL-741`. Shift-Escape focused Done; Done restored the ordinary browser view. Event fixtures separately cover composition, wheel input, queue bounds, focus loss and stale sessions.
+A fresh disposable harness mounted the current source into the temporary browser container so the worker and Docker command bridge used the same input protocol. In the actual production UI, Take control forwarded a click, typed text, Cmd+A, pasted text, a final key and Enter to Chromium. The synthetic page confirmed the exact value with `Manual input accepted: MANUAL-741`. Shift-Escape focused Done; Done restored the ordinary browser view. Event fixtures separately cover composition, wheel input, queue bounds, focus loss and stale sessions.
 
 The same app/model/container run opened the synthetic login page, collected one email/password pair in a private form, requested the code in chat, and reached the Northstar account page. The code reply immediately appeared as `Verification code sent securely.` and retained that form after reload. The completed assistant reply remained visible after refresh. A read-only audit of the exact disposable schemas found no plaintext password or code across all tables, including seven messages, 24 task events, 20 Inspector records and four prompt snapshots. The 34 agent records and 29 timing records also had no match. Exactly one masked code receipt was stored. The task succeeded 3.023 seconds after that receipt. This establishes the new chat-code flow with a synthetic website, not a live email-code lookup or real Google/X authentication.
 
 Validation and publication results are recorded in [verification](../../verification.md). Live website authentication, live consent initiation, synthetic inbox fixtures and UI event fixtures remain distinct evidence.
+
+## Review follow-up
+
+The follow-up addressed the 13 automated review comments on commit `6c1ac81`:
+
+- Codes with attachments or an explicit new-task flag cannot bypass masking while verification is pending. Channel classification and ordinary inbox persistence now share task locks with actual Vault request insertion. PostgreSQL tests cover both transaction orders.
+- In-flight duplicate code replies say `Verification code received securely.` and report `pending`. A keyed HMAC binds retries to the original code, owner, channel and message ID without storing the code. Changed-code retries and legacy receipts without a fingerprint fail closed.
+- Small wheel deltas accumulate before a native scroll step. Split code boxes are checked again before each digit, including their identity, order and shape.
+- A token-limited model response cannot complete a task or become a saved reply. Earlier completed tool commentary survives, and a completed retry clears the incomplete state.
+- Snapshot fixtures preserve the command flags under test. Browser input fixture cleanup settles pending requests before restoring the global fetch function.
+- Documentation now names the actual browser source mount, shortcut focus rules, consent-state storage and precise stale verification-ID behavior.
+
+Focused review found no further defect in these changes. The full local gate passed 885 tests with zero failures or skips in 81.913 seconds under Node.js 24.21.0. This does not establish physical trackpad behavior, real Google/X authentication or live mailbox-code lookup.
+
+## Private sign-in presentation and local server
+
+The sign-in page now keeps the full logo and wordmark separate from responsive sidebar rules. The privacy footer was removed. The heading and form use a compact card, and the primary action uses pink in both themes. Actual browser checks covered desktop and 390 × 844 mobile layouts in light and dark themes, plus an unavailable-link state. The mobile page had no horizontal overflow; inputs used 16-pixel text and the primary action was 44 pixels tall. Its text/background contrast was 7.85:1, with 6.89:1 on hover.
+
+The normal app was restored at `http://localhost:4320` with its existing profile intact. Docker registry metadata stalled the normal image rebuild, so this development session uses the existing images with current browser source mounted read-only. The separate acceptance server used port 4341. Old links from deleted test schemas remain unavailable and require a new sign-in request.
+
+The [scientists-chat update](https://n8nio.slack.com/archives/C0BT5S8CV42/p1790426338393529) includes the implementation TLDR, setup needs, validation limits and five additional playable UI clips. Those clips predate this final sign-in presentation and code-retry review.

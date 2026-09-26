@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, KeyRound, LockKeyhole, ShieldCheck, ArrowUpRight } from 'lucide-react';
+import { Check, KeyRound, LockKeyhole, ArrowUpRight } from 'lucide-react';
 import type { CredentialRequest } from '../../shared/contracts';
 import { api } from '../lib/api';
 import { suggestLoginName } from '../lib/vault-name';
@@ -165,7 +165,7 @@ function CredentialForm({ id }: { id: string }) {
   }
   return (
     <main className="credential-page">
-      <a href="/" className="brand credential-brand">
+      <a href="/" className="credential-brand" aria-label="Sidekick home">
         <BrandMark />
         <span>sidekick</span>
       </a>
@@ -212,19 +212,17 @@ function CredentialForm({ id }: { id: string }) {
           </div>
         ) : (
           <>
-            <div className="credential-symbol">
-              <LockKeyhole size={22} />
-            </div>
-            <h1>{request?.kind === 'otp' ? 'Enter verification code' : 'Sign in'}</h1>
-            <p className="credential-intro">
-              {request ? (
-                <>
-                  <strong>{request.origin}</strong>
-                </>
-              ) : (
-                'Return to chat to request a new sign-in link.'
-              )}
-            </p>
+            <header className="credential-heading">
+              <div className="credential-symbol">
+                <LockKeyhole size={22} />
+              </div>
+              <div>
+                <h1>{request?.kind === 'otp' ? 'Enter verification code' : 'Sign in'}</h1>
+                <p className="credential-intro">
+                  {request?.origin ?? 'Return to chat to request a new sign-in link.'}
+                </p>
+              </div>
+            </header>
             {request && canFill && fields.length > 0 && choosingSaved && (
               <div className="credential-accounts">
                 <h2>Choose a login</h2>
@@ -318,7 +316,7 @@ function CredentialForm({ id }: { id: string }) {
                     )}
                   </>
                 )}
-                <Button type="submit" disabled={saving}>
+                <Button className="credential-submit" type="submit" disabled={saving}>
                   {saving ? 'Continuing…' : password ? 'Save and continue' : 'Continue'}
                 </Button>
                 {savedEntries.length > 0 && (
@@ -351,12 +349,6 @@ function CredentialForm({ id }: { id: string }) {
           </>
         )}
         {error && <Notice>{error}</Notice>}
-        {!filled && (
-          <div className="credential-privacy">
-            <ShieldCheck size={15} />
-            <span>Your details go to the website, never to the chat or AI.</span>
-          </div>
-        )}
       </div>
     </main>
   );

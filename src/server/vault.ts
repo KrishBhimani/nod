@@ -843,25 +843,39 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     const hash = createHash('sha256').update(token).digest('hex');
     const expiresAt = Date.now() + 10 * 60_000;
     await options.hold?.(taskId, expiresAt);
-    const result = await pool.query(
-      `INSERT INTO credential_requests (id,token_hash,task_id,owner_id,origin,label,kind,selectors,expires_at,task_revision,inspection)
-       SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,revision,$10 FROM tasks
-       WHERE id::text=$3 AND owner_id=$4 AND revision=$11 AND status IN ('running','waiting_credentials')`,
-      [
-        randomUUID(),
-        hash,
-        taskId,
-        ownerId,
-        input.origin,
-        input.label,
-        input.kind,
-        JSON.stringify(input),
-        new Date(expiresAt),
-        JSON.stringify(storedInspection(inspection)),
-        task.rows[0].revision,
-      ],
-    );
-    if (!result.rowCount) throw new VaultError('This task can no longer request credentials.', 409);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const current = await client.query(
+        "SELECT revision FROM tasks WHERE id::text=$1 AND owner_id=$2 AND revision=$3 AND status IN ('running','waiting_credentials') FOR NO KEY UPDATE",
+        [taskId, ownerId, task.rows[0].revision],
+      );
+      if (!current.rowCount)
+        throw new VaultError('This task can no longer request credentials.', 409);
+      await client.query(
+        `INSERT INTO credential_requests (id,token_hash,task_id,owner_id,origin,label,kind,selectors,expires_at,task_revision,inspection)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [
+          randomUUID(),
+          hash,
+          taskId,
+          ownerId,
+          input.origin,
+          input.label,
+          input.kind,
+          JSON.stringify(input),
+          new Date(expiresAt),
+          current.rows[0].revision,
+          JSON.stringify(storedInspection(inspection)),
+        ],
+      );
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
     const savedLoginAvailable =
       input.kind === 'otp'
         ? undefined

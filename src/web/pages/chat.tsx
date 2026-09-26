@@ -175,8 +175,7 @@ export function Chat({
       (request) =>
         Date.parse(request.expiresAt) > Date.now() && (!reply || request.taskId === reply.taskId),
     );
-    let privateVerification =
-      attachments.length === 0 && /^\d{4,8}$/.test(value.trim()) && verificationRequests.length > 0;
+    let privateVerification = /^\d{4,8}$/.test(value.trim()) && verificationRequests.length > 0;
     const verificationRequestId =
       privateVerification && verificationRequests.length === 1
         ? verificationRequests[0].id
@@ -279,7 +278,9 @@ export function Chat({
       setOptimistic((current) => current.filter((item) => item.message.id !== id));
       setError(
         privateVerification
-          ? verificationFailure(verificationStatus, verificationRequests.length > 1)
+          ? attachments.length
+            ? 'Send the verification code by itself, without attachments.'
+            : verificationFailure(verificationStatus, verificationRequests.length > 1)
           : errorMessage(cause),
       );
       return privateVerification;

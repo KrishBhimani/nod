@@ -35,7 +35,7 @@ export interface SubmitMessageResponse {
   continued: boolean;
   messageId: string;
   messageText?: string;
-  verificationStatus?: 'submitted' | 'rejected' | 'unavailable';
+  verificationStatus?: 'pending' | 'submitted' | 'rejected' | 'unavailable';
 }
 export interface VerificationRequest {
   id: string;

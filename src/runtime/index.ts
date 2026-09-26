@@ -101,6 +101,7 @@ export function createAgentRuntime(dependencies: {
     });
     const observe = observations.record;
     let modelFailed = false;
+    let modelIncomplete = false;
     let secureContinuation: string | undefined;
     let browserSignInNeeded = false;
     let selectedLoginMethod: { origin: string; id: string } | undefined;
@@ -631,9 +632,13 @@ ${JSON.stringify(context.memories.slice(0, 30).map((item) => item.slice(0, 2000)
             streamId = randomUUID();
           }
           if (event.type === 'message_end') {
-            if (event.status === 'succeeded') modelFailed = false;
+            if (event.status === 'succeeded') {
+              modelFailed = false;
+              modelIncomplete = false;
+            }
+            if (event.status === 'incomplete') modelIncomplete = true;
             completeStream(
-              !modelFailed && event.status !== 'failed' && event.status !== 'cancelled',
+              !modelFailed && (event.status === undefined || event.status === 'succeeded'),
             );
           }
           if (!stopped && !context.background && event.type === 'text_delta') {
@@ -642,7 +647,10 @@ ${JSON.stringify(context.memories.slice(0, 30).map((item) => item.slice(0, 2000)
             if (/[.!?\n]\s*$/.test(bufferedText)) flushText();
           }
           if (event.type === 'error') modelFailed = true;
-          if (event.type === 'final') modelFailed = false;
+          if (event.type === 'final') {
+            modelFailed = false;
+            modelIncomplete = false;
+          }
           if (!stopped && !context.background && event.type === 'final') {
             const id = streamId ?? randomUUID();
             queueStreamReply(event.text, id);
@@ -733,6 +741,8 @@ ${JSON.stringify(context.memories.slice(0, 30).map((item) => item.slice(0, 2000)
       context.signal.throwIfAborted();
       if (modelFailed)
         throw new Error('The model request failed. Check the configured provider and model.');
+      if (modelIncomplete && status === 'succeeded')
+        throw new Error('The model response was incomplete. Continue the task to try again.');
       if (stopped && status === 'succeeded')
         throw new Error('Task execution limit reached. Continue the task to resume.');
       return { status, ...(waitingFor ? { waitingFor } : {}), ...(question ? { question } : {}) };

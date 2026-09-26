@@ -15,7 +15,11 @@ interface ChannelOptions {
   transport: MessagingTransport;
   acceptVerification?: (
     text: string,
-    input: { clientMessageId: string; channel: string },
+    input: {
+      clientMessageId: string;
+      channel: string;
+      persistOrdinary: (client: PoolClient) => Promise<void>;
+    },
   ) => Promise<SubmitMessageResponse | undefined>;
   prepare?: (text: string, sourceId: string, channel: string) => Promise<PreparedUserRoute>;
   submit: (
@@ -155,12 +159,41 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
         return;
       const acceptedMessageId = inboundMessageId(ownerId, sourceId);
       let verification: SubmitMessageResponse | undefined;
+      let ordinaryPersisted = false;
+      const persist = async (database: Pool | PoolClient) => {
+        if (closed || replacing || !permitted(identity))
+          throw new Error('Channel configuration changed.');
+        await database.query(
+          `INSERT INTO channel_inbox(source_id,provider,account_id,sender_id,thread_id,text,received_at,message_id,state,task_id)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(source_id) DO NOTHING`,
+          [
+            sourceId,
+            channelId,
+            accountId,
+            senderId,
+            threadId,
+            verification ? (verification.messageText ?? 'Verification code sent securely.') : text,
+            sentAt,
+            acceptedMessageId,
+            verification ? 'submitted' : 'pending',
+            verification?.taskId ?? null,
+          ],
+        );
+        if (closed || replacing || !permitted(identity))
+          throw new Error('Channel configuration changed.');
+      };
       if (/^\d{4,8}$/.test(text) && options.acceptVerification) {
         try {
           verification = await options.acceptVerification(text, {
             clientMessageId: acceptedMessageId,
             channel: conversationChannel(identity),
+            persistOrdinary: async (client) => {
+              await persist(client);
+              ordinaryPersisted = true;
+            },
           });
+          if (!verification && !ordinaryPersisted)
+            throw new Error('Verification did not persist its receipt.');
         } catch (cause) {
           const conflict =
             cause instanceof Error && 'statusCode' in cause && cause.statusCode === 409;
@@ -203,26 +236,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
           return;
         }
       }
-      if (closed || replacing || !permitted(identity))
-        throw Object.assign(new Error('Channel configuration changed. Try again.'), {
-          statusCode: 503,
-        });
-      await pool.query(
-        `INSERT INTO channel_inbox(source_id,provider,account_id,sender_id,thread_id,text,received_at,message_id,state,task_id)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(source_id) DO NOTHING`,
-        [
-          sourceId,
-          channelId,
-          accountId,
-          senderId,
-          threadId,
-          verification ? (verification.messageText ?? 'Verification code sent securely.') : text,
-          sentAt,
-          acceptedMessageId,
-          verification ? 'submitted' : 'pending',
-          verification?.taskId ?? null,
-        ],
-      );
+      if (!ordinaryPersisted) await persist(pool);
     } catch {
       throw Object.assign(new Error('Channel processing is temporarily unavailable. Try again.'), {
         statusCode: 503,

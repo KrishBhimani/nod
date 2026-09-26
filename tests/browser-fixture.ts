@@ -8,9 +8,12 @@ import {
 } from '../src/providers/agent-browser/screens.ts';
 import type { ProcessOptions } from '../src/providers/process.ts';
 
-type Options = Parameters<typeof createAgentBrowserComputer>[0];
+type Options = Parameters<typeof createAgentBrowserComputer>[0] & {
+  onDaemonCommand?(command: Record<string, unknown>): void;
+};
 
 export function createBrowserFixture(options: Options, preferRealSocket = false) {
+  const { onDaemonCommand, ...computerOptions } = options;
   const run = options.run;
   if (!run) throw new Error('A synthetic browser process is required.');
   const sessions = new Map<
@@ -19,7 +22,7 @@ export function createBrowserFixture(options: Options, preferRealSocket = false)
   >();
   const socketDir = resolve(options.dataRoot, 'fixture-sockets');
   return createAgentBrowserComputer({
-    ...options,
+    ...computerOptions,
     run: async (executable, args, input) => {
       const session = args[args.indexOf('--session') + 1];
       if (args.includes('info')) {
@@ -55,6 +58,7 @@ export function createBrowserFixture(options: Options, preferRealSocket = false)
       return run(executable, args, input);
     },
     daemonCommand: async (path, command, signal, timeoutMs) => {
+      onDaemonCommand?.(structuredClone(command));
       const session = [...sessions].find(([id]) => path === resolve(socketDir, `${id}.sock`))?.[1];
       if (!session) return existingDaemonCommand(path, command, signal, timeoutMs);
       const args =
@@ -67,7 +71,11 @@ export function createBrowserFixture(options: Options, preferRealSocket = false)
               : command.action === 'evaluate'
                 ? ['eval', '--stdin']
                 : command.action === 'snapshot'
-                  ? ['snapshot', '-c']
+                  ? [
+                      'snapshot',
+                      ...(command.compact === true ? ['-c'] : []),
+                      ...(command.interactive === true ? ['-i'] : []),
+                    ]
                   : command.action === 'screenshot'
                     ? ['screenshot', String(command.path)]
                     : command.action === 'click'

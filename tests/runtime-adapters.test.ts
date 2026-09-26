@@ -41,15 +41,19 @@ function browserFixture() {
 test('computer observations retain body text, normalize controls, protect credentials and return screenshot bytes', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'sidekick-computer-'));
   const fixture = browserFixture();
-  const computer = createAgentBrowserComputer({ dataRoot: directory, run: fixture.run });
+  const protocol: Record<string, unknown>[] = [];
+  const computer = createAgentBrowserComputer({
+    dataRoot: directory,
+    run: fixture.run,
+    onDaemonCommand: (command) => protocol.push(command),
+  });
   try {
     const page = await computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/' });
     assert.match(page.text, /Readable article body/);
     assert.deepEqual(page.candidates, [{ id: '@e2', label: '- button "Continue" [ref=e2]' }]);
-    assert.ok(
-      fixture.commands
-        .filter((command) => command[0] === 'snapshot')
-        .every((command) => !command.includes('-i')),
+    assert.deepEqual(
+      protocol.filter((command) => command.action === 'snapshot'),
+      [{ action: 'snapshot', compact: true }],
     );
     await computer.injectCredentials({
       taskId: 'fixture',

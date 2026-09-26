@@ -34,6 +34,8 @@ export function createSignInDesktop(
     let server: ChildProcess | undefined;
     let closed = false;
     let closing = false;
+    let wheelX = 0;
+    let wheelY = 0;
     let closePending: Promise<void> | undefined;
     let finish!: () => void;
     const exited = new Promise<void>((resolve) => {
@@ -152,6 +154,10 @@ export function createSignInDesktop(
       },
       async control(raw, signal) {
         const input = manualInputSchema.parse(raw);
+        if (signal?.aborted) wheelX = wheelY = 0;
+        signal?.throwIfAborted();
+        if (closing || closed) throw new Error('The sign-in display is closed.');
+        if (input.action !== 'wheel') wheelX = wheelY = 0;
         let args: string[];
         let text = '';
         if (input.action === 'click')
@@ -171,18 +177,24 @@ export function createSignInDesktop(
           args = ['click', '--repeat', '3', '--delay', '60', input.direction === 'up' ? '4' : '5'];
         else if (input.action === 'wheel') {
           args = [];
-          for (const [delta, negative, positive] of [
-            [input.deltaY, '4', '5'],
-            [input.deltaX, '6', '7'],
+          wheelX += input.deltaX;
+          wheelY += input.deltaY;
+          const horizontal = Math.trunc(wheelX / 80);
+          const vertical = Math.trunc(wheelY / 80);
+          wheelX -= horizontal * 80;
+          wheelY -= vertical * 80;
+          for (const [steps, negative, positive] of [
+            [vertical, '4', '5'],
+            [horizontal, '6', '7'],
           ] as const) {
-            if (delta)
+            if (steps)
               args.push(
                 'click',
                 '--repeat',
-                String(Math.max(1, Math.ceil(Math.abs(delta) / 80))),
+                String(Math.abs(steps)),
                 '--delay',
                 '0',
-                delta < 0 ? negative : positive,
+                steps < 0 ? negative : positive,
               );
           }
           if (!args.length) return;
@@ -214,13 +226,19 @@ export function createSignInDesktop(
             [...modifiers, keys[input.key] ?? input.key].join('+'),
           ];
         }
-        const pending = execute('/usr/bin/xdotool', args, text, signal);
-        text = '';
-        await pending;
+        try {
+          const pending = execute('/usr/bin/xdotool', args, text, signal);
+          text = '';
+          await pending;
+        } catch (error) {
+          wheelX = wheelY = 0;
+          throw error;
+        }
       },
       close() {
         closePending ??= (async () => {
           closing = true;
+          wheelX = wheelY = 0;
           for (const child of children) child.kill('SIGKILL');
           await bounded(Promise.allSettled([...operations]), options.closeMs ?? 1500);
           if (server && !closed) {

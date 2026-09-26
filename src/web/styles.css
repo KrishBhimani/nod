@@ -1875,23 +1875,56 @@ a svg {
   margin-top: 10px;
 }
 .credential-page {
+  --primary: #ff91ac;
+  --primary-hover: #ff7da0;
+  --primary-foreground: #44001b;
   min-height: 100dvh;
   background: var(--surface-subtle);
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 55px 20px;
+  padding: clamp(28px, 6dvh, 56px) 20px 40px;
 }
 .credential-brand {
-  margin-bottom: 35px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  margin-bottom: 24px;
+  font-size: 25px;
+  font-weight: 650;
+  letter-spacing: -1.3px;
 }
 .credential-card {
-  width: min(470px, 100%);
+  width: min(440px, 100%);
   border: 1px solid var(--border);
   background: var(--surface);
-  border-radius: 17px;
-  padding: 32px;
+  border-radius: 16px;
+  padding: 28px;
   box-shadow: 0 3px 20px #321b3c04;
+}
+.credential-heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 24px;
+}
+.credential-heading > div:last-child {
+  min-width: 0;
+}
+.credential-card .form-stack {
+  gap: 16px;
+}
+.credential-card .input {
+  min-height: 44px;
+  font-size: 15px;
+}
+.credential-card .form-stack > .button {
+  min-height: 44px;
+}
+.credential-submit {
+  margin-top: 4px;
+  font-size: 14px;
 }
 .credential-card h1 {
   font-size: 25px;
@@ -1915,11 +1948,15 @@ a svg {
   background: var(--success-soft);
   color: var(--success);
 }
+.credential-heading .credential-symbol {
+  flex: none;
+  margin-bottom: 0;
+}
 .credential-intro {
   color: var(--muted-foreground);
   font-size: 13px;
   line-height: 1.65;
-  margin: 12px 0 25px;
+  margin-top: 3px;
   overflow-wrap: anywhere;
 }
 .credential-accounts {
@@ -1952,20 +1989,6 @@ a svg {
   color: var(--muted-foreground);
   font-size: 12px;
 }
-.credential-privacy {
-  margin-top: 26px;
-  padding-top: 20px;
-  border-top: 1px solid var(--border);
-  display: flex;
-  gap: 9px;
-  color: var(--muted-foreground);
-  font-size: 11px;
-  line-height: 1.65;
-}
-.credential-privacy svg {
-  flex: none;
-  margin-top: 2px;
-}
 .credential-footer {
   color: var(--muted-foreground);
   font-size: 11px;
@@ -1977,7 +2000,12 @@ a svg {
 .credential-complete {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 16px;
+  text-align: center;
+}
+.credential-complete > .button {
+  width: 100%;
 }
 .credential-complete p {
   font-size: 13px;
@@ -2358,10 +2386,16 @@ a svg {
     grid-template-columns: 1fr;
   }
   .credential-page {
-    padding: 30px 14px;
+    padding: max(24px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+  }
+  .credential-brand {
+    margin-bottom: 20px;
   }
   .credential-card {
-    padding: 24px;
+    padding: 22px;
+  }
+  .credential-card .input {
+    font-size: 16px;
   }
   .plan-row {
     gap: 8px;

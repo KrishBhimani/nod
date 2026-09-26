@@ -145,20 +145,7 @@ test('Native input uses fixed commands and sends typed credentials only through 
     assert.equal(f.calls.at(-1)!.input, 'ç日本語\nSynthetic paste');
     assert.equal(f.calls.at(-1)!.options.env?.LANG, 'C.UTF-8');
     await desktop.control({ action: 'wheel', deltaX: 60, deltaY: -140 });
-    assert.deepEqual(f.calls.at(-1)!.args, [
-      'click',
-      '--repeat',
-      '2',
-      '--delay',
-      '0',
-      '4',
-      'click',
-      '--repeat',
-      '1',
-      '--delay',
-      '0',
-      '7',
-    ]);
+    assert.deepEqual(f.calls.at(-1)!.args, ['click', '--repeat', '1', '--delay', '0', '4']);
     await desktop.control({ action: 'scroll', direction: 'down' });
     assert.deepEqual(f.calls.at(-1)!.args, ['click', '--repeat', '3', '--delay', '60', '5']);
     const count = f.calls.length;
@@ -171,6 +158,80 @@ test('Native input uses fixed commands and sends typed credentials only through 
     );
     await assert.rejects(desktop.control({ action: 'wheel', deltaX: 0, deltaY: 2001 }));
     assert.equal(f.calls.length, count);
+  } finally {
+    await desktop.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('native trackpad deltas accumulate per display and reset after focus input or replacement', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sk-desktop-wheel-'));
+  const f = fixture();
+  const start = createSignInDesktop({ spawn: f.spawn });
+  let desktop = await start(root);
+  try {
+    let before = f.calls.length;
+    for (let index = 0; index < 7; index++)
+      await desktop.control({ action: 'wheel', deltaX: 0, deltaY: 10 });
+    assert.equal(f.calls.length, before);
+    await desktop.control({ action: 'wheel', deltaX: 0, deltaY: 10 });
+    assert.equal(f.calls.length, before + 1);
+    assert.deepEqual(f.calls.at(-1)!.args, ['click', '--repeat', '1', '--delay', '0', '5']);
+    await desktop.control({ action: 'wheel', deltaX: -50, deltaY: 30 });
+    await desktop.control({ action: 'wheel', deltaX: -30, deltaY: -110 });
+    assert.deepEqual(f.calls.at(-1)!.args, [
+      'click',
+      '--repeat',
+      '1',
+      '--delay',
+      '0',
+      '4',
+      'click',
+      '--repeat',
+      '1',
+      '--delay',
+      '0',
+      '6',
+    ]);
+    await desktop.control({ action: 'wheel', deltaX: 0, deltaY: 79 });
+    await desktop.control({ action: 'click', x: 0.5, y: 0.5 });
+    before = f.calls.length;
+    await desktop.control({ action: 'wheel', deltaX: 0, deltaY: 1 });
+    assert.equal(f.calls.length, before);
+    await desktop.control({ action: 'wheel', deltaX: 0, deltaY: 78 });
+    await desktop.close();
+    await assert.rejects(desktop.control({ action: 'wheel', deltaX: 0, deltaY: 1 }), /closed/);
+    desktop = await start(root);
+    before = f.calls.length;
+    await desktop.control({ action: 'wheel', deltaX: 0, deltaY: 1 });
+    assert.equal(f.calls.length, before);
+  } finally {
+    await desktop.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('cancelled or failed native input clears accumulated wheel movement', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sk-desktop-wheel-'));
+  const f = fixture();
+  const desktop = await createSignInDesktop({ spawn: f.spawn })(root);
+  try {
+    await desktop.control({ action: 'wheel', deltaX: 0, deltaY: 79 });
+    await assert.rejects(
+      desktop.control({ action: 'wheel', deltaX: 0, deltaY: 1 }, AbortSignal.abort()),
+      { name: 'AbortError' },
+    );
+    let before = f.calls.length;
+    await desktop.control({ action: 'wheel', deltaX: 0, deltaY: 1 });
+    assert.equal(f.calls.length, before);
+    f.hold('/usr/bin/xdotool');
+    const pending = desktop.control({ action: 'wheel', deltaX: 0, deltaY: 158 });
+    f.calls.at(-1)!.finish(1);
+    await assert.rejects(pending, /operation failed/);
+    f.hold('');
+    before = f.calls.length;
+    await desktop.control({ action: 'wheel', deltaX: 0, deltaY: 1 });
+    assert.equal(f.calls.length, before);
   } finally {
     await desktop.close();
     await rm(root, { recursive: true, force: true });

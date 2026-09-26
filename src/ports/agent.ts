@@ -131,7 +131,7 @@ export type AgentEvent =
   | { type: 'provider_usage'; usage: ProviderUsageEvent }
   | { type: 'turn_start' }
   | { type: 'message_start' }
-  | { type: 'message_end'; status?: 'succeeded' | 'failed' | 'cancelled' }
+  | { type: 'message_end'; status?: 'succeeded' | 'failed' | 'cancelled' | 'incomplete' }
   | { type: 'text_delta'; text: string }
   | { type: 'final'; text: string }
   | ModelUsageObservation

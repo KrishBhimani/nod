@@ -1,6 +1,6 @@
 # Sidekick internal brief
 
-Updated 2026-09-26. This describes the repository, not a hosted release or a claim that every provider works. The [team announcement](https://n8nio.slack.com/archives/C0BT5S8CV42/p1790351646964669) and [recordings](https://n8nio.slack.com/archives/C0BT5S8CV42/p1790351018250929) are available in scientists-chat. A [later TL;DR and theme follow-up](https://n8nio.slack.com/archives/C0BT5S8CV42/p1790376954723799) was also shared; five additional polish recordings cover Inspector, mobile navigation, connected accounts, browser control and named sign-in. Those clips predate direct keyboard input and chat-code entry.
+Updated 2026-09-26. This describes the repository, not a hosted release or a claim that every provider works. The [team announcement](https://n8nio.slack.com/archives/C0BT5S8CV42/p1790351646964669) and [recordings](https://n8nio.slack.com/archives/C0BT5S8CV42/p1790351018250929) are available in scientists-chat. A [later TL;DR and theme follow-up](https://n8nio.slack.com/archives/C0BT5S8CV42/p1790376954723799) was also shared; [five additional polish recordings and an updated TLDR](https://n8nio.slack.com/archives/C0BT5S8CV42/p1790426338393529) cover Inspector, mobile navigation, connected accounts, browser control and named sign-in. Those clips predate direct keyboard input and chat-code entry.
 
 ## What it does
 

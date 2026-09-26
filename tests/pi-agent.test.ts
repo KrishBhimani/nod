@@ -277,6 +277,147 @@ test('real Pi sessions persist a credential pause and resume without replaying c
   }
 });
 
+test('token-limited Pi replies are not completed messages and retain prior tool commentary', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sidekick-pi-truncated-'));
+  const events: AgentEvent[] = [];
+  const replies: Array<{ text: string; id?: string }> = [];
+  const deltas: Array<{ text: string; id?: string; done?: boolean }> = [];
+  const update = 'I will inspect the fixture.';
+  const truncated = 'The fixture contains these unfinished';
+  let turns = 0;
+  let commands = 0;
+  const factory: typeof createAgentSession = async (options) => {
+    const result = await createAgentSession(options);
+    result.session.agent.streamFunction = (model) => {
+      assert.ok(++turns <= 2);
+      const first = turns === 1;
+      const output = usageMessage({
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        responseId: `truncated-turn-${turns}`,
+        stopReason: first ? 'toolUse' : 'length',
+        content: [],
+      });
+      const text = first ? update : truncated;
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => {
+        stream.push({ type: 'start', partial: structuredClone(output) });
+        output.content.push({ type: 'text', text: '' });
+        stream.push({ type: 'text_start', contentIndex: 0, partial: structuredClone(output) });
+        output.content[0] = { type: 'text', text };
+        stream.push({
+          type: 'text_delta',
+          contentIndex: 0,
+          delta: text,
+          partial: structuredClone(output),
+        });
+        stream.push({
+          type: 'text_end',
+          contentIndex: 0,
+          content: text,
+          partial: structuredClone(output),
+        });
+        if (first)
+          output.content.push({
+            type: 'toolCall',
+            id: 'fixture-inspection',
+            name: 'shell',
+            arguments: { command: 'fixture inspection' },
+          });
+        stream.push({ type: 'done', reason: first ? 'toolUse' : 'length', message: output });
+      });
+      return stream;
+    };
+    return result;
+  };
+  const agent = createPiAgent({
+    provider: 'openai',
+    apiKey: 'fixture-key',
+    sessionRoot: directory,
+    createSession: factory,
+  });
+  const workspace = fakeWorkspace();
+  const runtime = createAgentRuntime({
+    agent: {
+      ...agent,
+      open: (options) =>
+        agent.open({
+          ...options,
+          onEvent: (event) => {
+            events.push(event);
+            options.onEvent(event);
+          },
+        }),
+    },
+    computer: fakeComputer(),
+    workspace: fakeWorkspace({
+      open: (taskId) => ({
+        ...workspace.open(taskId),
+        execute: async () => {
+          commands += 1;
+          assert.deepEqual(
+            replies.map(({ text }) => text),
+            [update],
+          );
+          return 'Fixture inspected';
+        },
+      }),
+    }),
+  });
+  try {
+    await assert.rejects(
+      runtime.runTask({
+        taskId: `test-${randomUUID()}`,
+        ownerId: 'fixture-owner',
+        prompt: 'Inspect the fixture',
+        history: [],
+        memories: [],
+        workspacePath: directory,
+        signal: new AbortController().signal,
+        attachments: [],
+        emit: async () => {},
+        reply: async (text, id) => {
+          replies.push({ text, id });
+        },
+        delta: (text, id, done) => {
+          deltas.push({ text, id, done });
+        },
+        remember: async () => {},
+        publish: async () => {
+          throw new Error('Not used');
+        },
+        requestCredential: async () => ({ url: '/credentials/fixture' }),
+        integration: async () => ({}),
+        manage: async () => ({}),
+      }),
+      /model response was incomplete/,
+    );
+    assert.equal(commands, 1);
+    assert.equal(turns, 2);
+    assert.deepEqual(
+      replies.map(({ text }) => text),
+      [update],
+    );
+    assert.deepEqual(
+      events.filter((event) => event.type === 'message_end').map((event) => event.status),
+      ['succeeded', 'incomplete'],
+    );
+    assert.equal(
+      events.some((event) => event.type === 'final'),
+      false,
+    );
+    assert.equal(events.filter((event) => event.type === 'model_usage').length, 2);
+    const partial = deltas.find(({ text }) => text === truncated);
+    assert.ok(partial?.id);
+    assert.deepEqual(deltas.at(-1), { text: '', id: partial.id, done: true });
+    assert.notEqual(replies[0].id, partial.id);
+  } finally {
+    await runtime.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('Responses commentary and final answer remain separate visible messages', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'sidekick-pi-phases-'));
   const events: Array<import('../src/ports/agent.ts').AgentEvent> = [];

@@ -679,65 +679,66 @@ const verificationRequest = {
 };
 const verificationState: AppState = { ...base, verificationRequests: [verificationRequest] };
 
-test('verification sends stay masked before acceptance and use canonical text even when refresh fails', async () => {
-  const priorFetch = globalThis.fetch;
-  let submitted!: Submission;
-  let finish!: (response: Response) => void;
-  let reads = 0;
-  globalThis.fetch = async (path, init) => {
-    if (path === '/api/state') {
-      if (reads++) throw new Error('State refresh unavailable.');
-      return Response.json(verificationState);
-    }
-    if (path === '/api/messages') {
-      submitted = JSON.parse(String(init?.body));
-      return new Promise((resolve) => {
-        finish = resolve;
+for (const verificationStatus of ['pending', 'submitted'] as const)
+  test(`verification ${verificationStatus} replies stay masked and use canonical text when refresh fails`, async () => {
+    const priorFetch = globalThis.fetch;
+    let submitted!: Submission;
+    let finish!: (response: Response) => void;
+    let reads = 0;
+    globalThis.fetch = async (path, init) => {
+      if (path === '/api/state') {
+        if (reads++) throw new Error('State refresh unavailable.');
+        return Response.json(verificationState);
+      }
+      if (path === '/api/messages') {
+        submitted = JSON.parse(String(init?.body));
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      }
+      throw new Error('Unexpected fixture request');
+    };
+    const fixture = await mount();
+    try {
+      await draft('483729');
+      const input = fixture.element.querySelector<HTMLElement>('[role="textbox"]')!;
+      await act(async () => {
+        sendKey(input);
+        await tick();
       });
-    }
-    throw new Error('Unexpected fixture request');
-  };
-  const fixture = await mount();
-  try {
-    await draft('483729');
-    const input = fixture.element.querySelector<HTMLElement>('[role="textbox"]')!;
-    await act(async () => {
-      sendKey(input);
-      await tick();
-    });
-    assert.equal(submitted.text, '483729');
-    assert.equal(submitted.verificationRequestId, verificationRequest.id);
-    assert.equal(input.textContent, '');
-    assert.doesNotMatch(fixture.element.innerHTML, /483729/);
-    assert.match(
-      fixture.element.querySelector('.message-user')?.textContent ?? '',
-      /Verification code sent securely/,
-    );
-    await draft('A new draft');
-    await act(async () => {
-      finish(
-        Response.json({
-          taskId: verificationRequest.taskId,
-          messageId: submitted.clientMessageId,
-          continued: true,
-          messageText: 'Verification code received securely.',
-          verificationStatus: 'submitted',
-        }),
+      assert.equal(submitted.text, '483729');
+      assert.equal(submitted.verificationRequestId, verificationRequest.id);
+      assert.equal(input.textContent, '');
+      assert.doesNotMatch(fixture.element.innerHTML, /483729/);
+      assert.match(
+        fixture.element.querySelector('.message-user')?.textContent ?? '',
+        /Verification code sent securely/,
       );
-      await tick();
-    });
-    assert.match(
-      fixture.element.querySelector('.message-user')?.textContent ?? '',
-      /Verification code received securely/,
-    );
-    assert.doesNotMatch(fixture.element.innerHTML, /483729/);
-    assert.equal(input.textContent, 'A new draft');
-    assert.equal(document.activeElement, input);
-  } finally {
-    await fixture.dispose();
-    globalThis.fetch = priorFetch;
-  }
-});
+      await draft('A new draft');
+      await act(async () => {
+        finish(
+          Response.json({
+            taskId: verificationRequest.taskId,
+            messageId: submitted.clientMessageId,
+            continued: true,
+            messageText: 'Verification code received securely.',
+            verificationStatus,
+          }),
+        );
+        await tick();
+      });
+      assert.match(
+        fixture.element.querySelector('.message-user')?.textContent ?? '',
+        /Verification code received securely/,
+      );
+      assert.doesNotMatch(fixture.element.innerHTML, /483729/);
+      assert.equal(input.textContent, 'A new draft');
+      assert.equal(document.activeElement, input);
+    } finally {
+      await fixture.dispose();
+      globalThis.fetch = priorFetch;
+    }
+  });
 
 test('a persisted masked verification reply survives a lost HTTP response without restoring the code', async () => {
   const priorFetch = globalThis.fetch;
@@ -941,6 +942,50 @@ test('ordinary numeric messages preserve normal drafts when no matching unexpire
       }
     }
   } finally {
+    globalThis.fetch = priorFetch;
+  }
+});
+
+test('verification with an attachment stays private through a rejected submission', async () => {
+  const priorFetch = globalThis.fetch;
+  const submissions: Submission[] = [];
+  let finish!: (response: Response) => void;
+  globalThis.fetch = async (path, init) => {
+    if (path === '/api/state') return Response.json(verificationState);
+    if (path === '/api/uploads') return Response.json(image);
+    if (path === '/api/messages') {
+      submissions.push(JSON.parse(String(init?.body)));
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    }
+    throw new Error('Unexpected fixture request');
+  };
+  const fixture = await mount();
+  try {
+    await draft('483729');
+    const input = fixture.element.querySelector<HTMLElement>('[role="textbox"]')!;
+    const upload = fixture.element.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(upload, 'files', {
+      value: [new File(['fixture'], 'fixture.png', { type: 'image/png' })],
+    });
+    await act(async () => {
+      upload.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      sendKey(input);
+      await tick();
+    });
+    assert.equal(submissions[0].verificationRequestId, verificationRequest.id);
+    assert.doesNotMatch(fixture.element.innerHTML, /483729/);
+    await act(async () => {
+      finish(Response.json({ error: 'Send the code by itself.' }, { status: 409 }));
+      await tick();
+    });
+    assert.doesNotMatch(fixture.element.innerHTML, /483729/);
+    assert.equal(input.textContent, '');
+    assert.match(fixture.element.textContent ?? '', /without attachments/);
+  } finally {
+    await fixture.dispose();
     globalThis.fetch = priorFetch;
   }
 });

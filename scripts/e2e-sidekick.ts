@@ -32,6 +32,11 @@ const environment = {
   ...parse(await readFile(join(repository, '.env'), 'utf8').catch(() => '')),
   ...process.env,
 };
+const configuredPort = environment.SIDEKICK_E2E_PORT ?? '4320';
+const port = Number(configuredPort);
+if (!/^\d{1,5}$/.test(configuredPort) || port < 1 || port > 65_535)
+  throw new Error('SIDEKICK_E2E_PORT must be an integer between 1 and 65535.');
+const baseUrl = `http://localhost:${port}`;
 const provider = environment.LLM_PROVIDER || 'openai';
 const model = environment.LLM_MODEL || agentModels[provider as keyof typeof agentModels];
 const apiKey =
@@ -59,7 +64,7 @@ const database = new URL(baseDatabase);
 database.searchParams.set('options', `-c search_path=${schema}`);
 process.env.DATABASE_URL = database.href;
 process.env.PGBOSS_SCHEMA = bossSchema;
-process.env.PORT = '4320';
+process.env.PORT = String(port);
 process.env.NODE_ENV = 'production';
 process.env.DEV_INSPECTOR = 'true';
 if (provider === 'anthropic') process.env.ANTHROPIC_API_KEY = apiKey;
@@ -273,7 +278,7 @@ try {
     import('../src/server/events.ts'),
   ]);
   databasePool = pool;
-  const integration = createIntegrationFixture('http://localhost:4320', audit);
+  const integration = createIntegrationFixture(baseUrl, audit);
   const vaultKey = randomBytes(32);
   const unavailable = async () => {
     throw new Error('Speech is disabled in this acceptance harness.');
@@ -434,10 +439,10 @@ try {
       ? reply.code(404).send({ error: 'Route not found.' })
       : reply.sendFile('index.html'),
   );
-  await app.listen({ host: '127.0.0.1', port: 4320 });
+  await app.listen({ host: '127.0.0.1', port });
   const manifest = {
-    baseUrl: 'http://localhost:4320',
-    operatorUrl: 'http://localhost:4320/e2e',
+    baseUrl,
+    operatorUrl: `${baseUrl}/e2e`,
     fixtureLogin,
     directory,
     schema,

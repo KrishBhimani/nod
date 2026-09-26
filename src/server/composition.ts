@@ -303,6 +303,7 @@ export async function createApplication(
   });
   const chatVerification = await createChatVerification(pool, {
     ownerId,
+    keyStore: adapters.keyStore,
     submitCode: vault.submitChatCode,
     refresh,
   });

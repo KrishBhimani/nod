@@ -36,6 +36,7 @@ test(
     let throwPrivateError = false;
     const verification = await createChatVerification(db.pool, {
       ownerId,
+      keyStore: { getKey: async () => Buffer.alloc(32, 61) },
       refresh() {},
       async submitCode(owner, taskId, code, requestId) {
         injected.push({ owner, taskId, code, requestId });
@@ -179,6 +180,12 @@ test(
           await entering;
           const duplicate = await send('834725', { clientMessageId });
           assert.equal(duplicate.statusCode, 200, duplicate.body);
+          assert.equal(duplicate.json().verificationStatus, 'pending');
+          assert.equal(duplicate.json().messageText, 'Verification code received securely.');
+          const pendingReceipt = (
+            await db.pool.query('SELECT text FROM messages WHERE id=$1', [clientMessageId])
+          ).rows[0];
+          assert.equal(pendingReceipt.text, 'Verification code received securely.');
           assert.equal(injected.length, 1);
           release();
           assert.equal((await first).statusCode, 200);
@@ -187,6 +194,7 @@ test(
             verificationRequestId: request.requestId,
           });
           assert.equal(after.statusCode, 200, after.body);
+          assert.equal(after.json().verificationStatus, 'submitted');
           assert.equal(injected.length, 1);
           assert.deepEqual(ordinary, []);
           assert.equal(
@@ -212,6 +220,136 @@ test(
         assert.equal(injected[0]?.requestId, second.requestId);
         assert.equal((await verification.pending())[0]?.id, first.requestId);
       });
+      await t.test(
+        'code-shaped attachments and forced messages cannot bypass an OTP wait',
+        async () => {
+          for (const extra of [{ attachmentIds: [randomUUID()] }, { forceNew: true }]) {
+            await reset();
+            await seed();
+            const response = await send('578231', extra);
+            assert.equal(response.statusCode, 409, response.body);
+            assert.match(response.json().error, /code by itself/);
+            assert.deepEqual(ordinary, []);
+            assert.equal(injected.length, 0);
+            assert.equal(
+              (await db.pool.query("SELECT * FROM messages WHERE role='user'")).rowCount,
+              0,
+            );
+          }
+          await reset();
+          assert.equal((await send('2026', { forceNew: true })).statusCode, 200);
+          assert.deepEqual(ordinary, ['2026']);
+        },
+      );
+      await t.test(
+        'changed retry codes conflict and keyed receipts remain exact across service restart',
+        async () => {
+          await reset();
+          const request = await seed();
+          const clientMessageId = randomUUID();
+          let release!: () => void;
+          hold = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          const entering = new Promise<void>((resolve) => {
+            started = resolve;
+          });
+          const first = send('481925', { clientMessageId });
+          await entering;
+          assert.equal((await send('591826', { clientMessageId })).statusCode, 409);
+          assert.equal((await send('481925', { clientMessageId, forceNew: true })).statusCode, 409);
+          release();
+          assert.equal((await first).statusCode, 200);
+          const restarted = await createChatVerification(db.pool, {
+            ownerId,
+            keyStore: { getKey: async () => Buffer.alloc(32, 61) },
+            refresh() {},
+            submitCode: async () => {
+              throw new Error('A duplicate must not inject again.');
+            },
+          });
+          const retry = await restarted.accept('481925', { clientMessageId });
+          assert.equal(retry?.verificationStatus, 'submitted');
+          await assert.rejects(restarted.accept('591826', { clientMessageId }), /already in use/);
+          const stored = await db.pool.query(
+            'SELECT code_fingerprint FROM chat_verification_submissions',
+          );
+          assert.match(stored.rows[0].code_fingerprint, /^[a-f0-9]{64}$/);
+          assert.doesNotMatch(JSON.stringify(stored.rows), /481925|591826/);
+          await db.pool.query('UPDATE chat_verification_submissions SET code_fingerprint=NULL');
+          await assert.rejects(
+            restarted.accept('481925', {
+              clientMessageId,
+              verificationRequestId: request.requestId,
+            }),
+            /already in use/,
+          );
+          assert.equal(injected.length, 1);
+          assert.deepEqual(ordinary, []);
+        },
+      );
+      await t.test(
+        'in-flight duplicate status remains pending before a later rejection',
+        async () => {
+          await reset();
+          await seed();
+          outcome = 'rejected';
+          const clientMessageId = randomUUID();
+          let release!: () => void;
+          hold = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          const entering = new Promise<void>((resolve) => {
+            started = resolve;
+          });
+          const first = send('739821', { clientMessageId });
+          await entering;
+          const duplicate = await send('739821', { clientMessageId });
+          assert.equal(duplicate.json().verificationStatus, 'pending');
+          release();
+          assert.equal((await first).json().verificationStatus, 'rejected');
+          assert.equal(
+            (await send('739821', { clientMessageId })).json().verificationStatus,
+            'rejected',
+          );
+          assert.equal(injected.length, 1);
+        },
+      );
+      await t.test(
+        'an unavailable fingerprint key never routes or stores a possible code',
+        async () => {
+          await reset();
+          await seed();
+          const unavailable = await createChatVerification(db.pool, {
+            ownerId,
+            keyStore: {
+              getKey: async () => {
+                throw new Error('Private key failure.');
+              },
+            },
+            refresh() {},
+            submitCode: async () => {
+              throw new Error('No injection expected.');
+            },
+          });
+          await assert.rejects(
+            unavailable.accept('482753', { clientMessageId: randomUUID() }),
+            (error: unknown) => {
+              assert.equal((error as { statusCode: number }).statusCode, 503);
+              assert.doesNotMatch(String(error), /482753|Private key failure/);
+              return true;
+            },
+          );
+          assert.equal(
+            (await db.pool.query("SELECT * FROM messages WHERE role='user'")).rowCount,
+            0,
+          );
+          assert.equal(
+            (await db.pool.query('SELECT * FROM chat_verification_submissions')).rowCount,
+            0,
+          );
+        },
+      );
       await t.test(
         'ordinary numeric messages and replies to other work remain ordinary',
         async () => {

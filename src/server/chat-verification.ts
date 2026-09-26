@@ -1,5 +1,6 @@
-import { randomUUID } from 'node:crypto';
-import type { Pool } from 'pg';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import type { Pool, PoolClient } from 'pg';
+import type { CredentialKeyStore } from '../ports/key-store.ts';
 import type { SubmitMessageResponse, VerificationRequest } from '../shared/contracts.ts';
 import { currentConversationSql, lockConversation } from './conversations.ts';
 
@@ -12,10 +13,12 @@ interface VerificationInput {
   verificationRequestId?: string;
   forceNew?: boolean;
   attachmentIds?: string[];
+  persistOrdinary?: (client: PoolClient) => Promise<void>;
 }
 
 type VerificationStatus = 'submitted' | 'rejected' | 'invalid' | 'unavailable';
 const maskedMessage = 'Verification code sent securely.';
+const pendingMessage = 'Verification code received securely.';
 const unavailableMessage =
   'This verification request is no longer available. Continue the sign-in task to request a new code.';
 
@@ -27,6 +30,7 @@ export async function createChatVerification(
   pool: Pool,
   options: {
     ownerId: string;
+    keyStore: Pick<CredentialKeyStore, 'getKey'>;
     submitCode: (
       ownerId: string,
       taskId: string,
@@ -39,7 +43,30 @@ export async function createChatVerification(
   await pool.query(`CREATE TABLE IF NOT EXISTS chat_verification_submissions (
     message_id uuid PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
     request_id text NOT NULL, status text NOT NULL DEFAULT 'pending'
-  )`);
+  );
+  ALTER TABLE chat_verification_submissions ADD COLUMN IF NOT EXISTS code_fingerprint text`);
+  let fingerprintKey: Promise<Buffer> | undefined;
+  async function fingerprint(code: string, input: VerificationInput) {
+    fingerprintKey ??= options.keyStore
+      .getKey()
+      .then((key) => {
+        if (!Buffer.isBuffer(key) || key.length !== 32) throw new Error();
+        return createHmac('sha256', key)
+          .update('sidekick:chat-verification:fingerprint:v1')
+          .digest();
+      })
+      .catch(() => {
+        fingerprintKey = undefined;
+        throw Object.assign(new Error('Verification is temporarily unavailable. Try again.'), {
+          statusCode: 503,
+        });
+      });
+    return createHmac('sha256', await fingerprintKey)
+      .update(
+        JSON.stringify([options.ownerId, input.channel ?? 'web', input.clientMessageId, code]),
+      )
+      .digest('hex');
+  }
 
   async function pending(channel = 'web'): Promise<VerificationRequest[]> {
     const result = await pool.query<VerificationRequest>(
@@ -61,12 +88,11 @@ export async function createChatVerification(
     const code = text.trim();
     const exactCode = /^\d{4,8}$/.test(code);
     if (!exactCode && !input.verificationRequestId) return;
-    if (input.attachmentIds?.length || input.forceNew) {
-      if (input.verificationRequestId)
-        throw conflict('Send the verification code by itself in the sign-in conversation.');
-      return;
-    }
     if (!exactCode) throw conflict('Enter the verification code using 4 to 8 digits.');
+    const incompatible = Boolean(input.attachmentIds?.length || input.forceNew);
+    if (incompatible && input.verificationRequestId)
+      throw conflict('Send the verification code by itself in the sign-in conversation.');
+    const codeFingerprint = await fingerprint(code, input);
     const channel = input.channel ?? 'web';
     const client = await pool.connect();
     let reserved: { taskId: string; requestId: string; revision: number } | undefined;
@@ -75,10 +101,16 @@ export async function createChatVerification(
       const revision = await lockConversation(client, options.ownerId, channel);
       if (input.conversationRevision !== undefined && input.conversationRevision !== revision)
         throw conflict('This conversation has been reset. Reload it before continuing.');
+      await client.query(
+        `SELECT t.id FROM tasks t WHERE t.owner_id=$1 AND t.channel=$2
+         AND t.status IN ('queued','running','waiting_credentials','waiting_user') AND ${currentConversationSql()}
+         ORDER BY t.id FOR NO KEY UPDATE`,
+        [options.ownerId, channel],
+      );
       const previous = (
         await client.query(
           `SELECT m.owner_id,m.task_id,m.reply_to_message_id,t.owner_id AS task_owner_id,
-           t.channel,t.conversation_revision,v.request_id,v.status
+           t.channel,t.conversation_revision,v.request_id,v.status,v.code_fingerprint
            FROM messages m LEFT JOIN tasks t ON t.id=m.task_id
            LEFT JOIN chat_verification_submissions v ON v.message_id=m.id WHERE m.id=$1`,
           [input.clientMessageId],
@@ -86,6 +118,7 @@ export async function createChatVerification(
       ).rows[0];
       if (previous) {
         if (!previous.request_id) {
+          await input.persistOrdinary?.(client);
           await client.query('COMMIT');
           return;
         }
@@ -96,7 +129,11 @@ export async function createChatVerification(
           previous.conversation_revision !== revision ||
           previous.reply_to_message_id !== (input.replyToMessageId ?? null) ||
           (input.taskId && previous.task_id !== input.taskId) ||
-          (input.verificationRequestId && previous.request_id !== input.verificationRequestId)
+          (input.verificationRequestId && previous.request_id !== input.verificationRequestId) ||
+          incompatible ||
+          typeof previous.code_fingerprint !== 'string' ||
+          previous.code_fingerprint.length !== codeFingerprint.length ||
+          !timingSafeEqual(Buffer.from(previous.code_fingerprint), Buffer.from(codeFingerprint))
         )
           throw conflict('This message ID is already in use. Send this as a new message.');
         await client.query('COMMIT');
@@ -104,8 +141,8 @@ export async function createChatVerification(
           taskId: previous.task_id,
           continued: true,
           messageId: input.clientMessageId,
-          messageText: maskedMessage,
-          verificationStatus: previous.status === 'pending' ? 'submitted' : previous.status,
+          messageText: previous.status === 'pending' ? pendingMessage : maskedMessage,
+          verificationStatus: previous.status,
         };
       }
       let taskId = input.taskId;
@@ -146,9 +183,12 @@ export async function createChatVerification(
               ? unavailableMessage
               : 'The sign-in step is getting ready. Send the code again in a moment.',
           );
+        await input.persistOrdinary?.(client);
         await client.query('COMMIT');
         return;
       }
+      if (incompatible)
+        throw conflict('Send the verification code by itself in the sign-in conversation.');
       if (requests.rowCount !== 1)
         throw conflict(
           'More than one sign-in needs a code. Reply to the verification request you want to complete.',
@@ -160,14 +200,14 @@ export async function createChatVerification(
         [
           input.clientMessageId,
           options.ownerId,
-          maskedMessage,
+          pendingMessage,
           request.task_id,
           input.replyToMessageId ?? null,
         ],
       );
       await client.query(
-        'INSERT INTO chat_verification_submissions(message_id,request_id) VALUES($1,$2)',
-        [input.clientMessageId, request.id],
+        'INSERT INTO chat_verification_submissions(message_id,request_id,code_fingerprint) VALUES($1,$2,$3)',
+        [input.clientMessageId, request.id, codeFingerprint],
       );
       await client.query('COMMIT');
       reserved = { taskId: request.task_id, requestId: request.id, revision: request.revision };
@@ -193,10 +233,12 @@ export async function createChatVerification(
     } catch {
       status = 'unavailable';
     }
-    await pool.query('UPDATE chat_verification_submissions SET status=$2 WHERE message_id=$1', [
-      input.clientMessageId,
-      status,
-    ]);
+    await pool.query(
+      `WITH changed AS (
+       UPDATE chat_verification_submissions SET status=$2 WHERE message_id=$1 RETURNING message_id
+       ) UPDATE messages SET text=$3 WHERE id IN (SELECT message_id FROM changed)`,
+      [input.clientMessageId, status, maskedMessage],
+    );
     if (status !== 'submitted') {
       const message =
         status === 'rejected'

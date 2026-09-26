@@ -183,6 +183,54 @@ test('retry replaces a rejected split code before the website can submit a mixed
   }
 });
 
+test('split-code entry stops when an input handler changes the observed group', () => {
+  for (const change of [
+    'selector',
+    'type',
+    'size',
+    'parent',
+    'extra-input',
+    'order',
+    'replacement',
+  ]) {
+    const dom = fixture(`<div class="otp">${digits}</div>`);
+    try {
+      const inspection = loginInspectionSchema.parse(dom.window.eval(loginInspectionScript()));
+      const inputs = [...dom.window.document.querySelectorAll('input')];
+      inputs[0].addEventListener('input', () => {
+        if (change === 'selector') inputs[1].removeAttribute('data-sidekick-login-field');
+        if (change === 'type') inputs[1].type = 'password';
+        if (change === 'size') inputs[1].maxLength = 2;
+        if (change === 'parent') dom.window.document.body.append(inputs[1]);
+        if (change === 'extra-input')
+          inputs[0].parentElement!.append(dom.window.document.createElement('input'));
+        if (change === 'order') inputs[0].parentElement!.insertBefore(inputs[2], inputs[1]);
+        if (change === 'replacement') inputs[1].replaceWith(inputs[1].cloneNode());
+      });
+      const result = dom.window.eval(
+        credentialScript(
+          'https://example.com',
+          credentialFields({
+            taskId: 'test',
+            origin: 'https://example.com',
+            kind: 'otp',
+            code: '483729',
+            passwordSelector: inspection.fields[0].selector,
+          }),
+        ),
+      );
+      assert.equal(JSON.stringify(result), '{"ok":false}', change);
+      assert.deepEqual(
+        inputs.map((input) => input.value),
+        ['4', '', '', '', '', ''],
+        change,
+      );
+    } finally {
+      dom.window.close();
+    }
+  }
+});
+
 test('ordinary repeated text inputs and independent verification groups remain ambiguous', () => {
   for (const html of [
     `<div>${digits.replaceAll('otp-input', 'plain')}</div>`,

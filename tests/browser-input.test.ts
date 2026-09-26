@@ -29,6 +29,7 @@ type InputWrite = { path: string; revision: number; input?: Record<string, unkno
 async function mountInput(send?: (write: InputWrite) => Promise<Response>) {
   const previousFetch = globalThis.fetch;
   const writes: InputWrite[] = [];
+  const pending = new Set<() => void>();
   let active = true;
   let revision = 7;
   globalThis.fetch = async (path, options) => {
@@ -36,7 +37,15 @@ async function mountInput(send?: (write: InputWrite) => Promise<Response>) {
       const write = { path: String(path), ...JSON.parse(String(options.body)) } as InputWrite;
       writes.push(write);
       if (write.path.endsWith('/resume')) active = false;
-      return send ? send(write) : new Response(JSON.stringify({ ok: true }));
+      if (!send) return new Response(JSON.stringify({ ok: true }));
+      let cancel!: () => void;
+      const cancelled = new Promise<Response>((_, reject) => {
+        cancel = () => reject(new Error('Fixture closed'));
+        pending.add(cancel);
+      });
+      return Promise.race([Promise.resolve().then(() => send(write)), cancelled]).finally(() =>
+        pending.delete(cancel),
+      );
     }
     return new Response(
       JSON.stringify({
@@ -62,7 +71,24 @@ async function mountInput(send?: (write: InputWrite) => Promise<Response>) {
         }),
       ),
     );
-  await render();
+  async function close() {
+    try {
+      await act(async () => {
+        root.unmount();
+        for (const cancel of pending) cancel();
+        pending.clear();
+      });
+    } finally {
+      element.remove();
+      globalThis.fetch = previousFetch;
+    }
+  }
+  try {
+    await render();
+  } catch (cause) {
+    await close();
+    throw cause;
+  }
   const surface = element.querySelector<HTMLTextAreaElement>('.screen-preview textarea')!;
   const button = () =>
     [...element.querySelectorAll('button')].find(
@@ -77,11 +103,7 @@ async function mountInput(send?: (write: InputWrite) => Promise<Response>) {
       revision = value;
     },
     button,
-    async close() {
-      await act(async () => root.unmount());
-      element.remove();
-      globalThis.fetch = previousFetch;
-    },
+    close,
   };
 }
 const key = (surface: HTMLElement, key: string, options: KeyboardEventInit = {}) => {

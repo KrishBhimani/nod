@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import test from 'node:test';
 import Fastify from 'fastify';
 import pg from 'pg';
 import { channelReply, createChannels } from '../src/server/channels.ts';
+import { createChatVerification } from '../src/server/chat-verification.ts';
+import { createVault } from '../src/server/vault.ts';
 import { channelConfiguration, createChatSdkTransport } from '../src/providers/chat-sdk/index.ts';
 import type { InboundMessage, MessagingTransport } from '../src/ports/messaging.ts';
 
@@ -20,6 +22,213 @@ const fixtureEnv = {
   WHATSAPP_ALLOWED_NUMBER: '351910000000',
   WHATSAPP_POLICY_CONFIRMED: 'true',
 };
+
+test(
+  'channel numeric receipt classification and actual Vault request creation serialize on the task',
+  { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
+  async () => {
+    const schema = `test_channel_otp_race_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+      application_name: `${schema}_channel`,
+    });
+    const vaultPool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+      application_name: `${schema}_vault`,
+    });
+    await pool.query(`CREATE TABLE tasks(id uuid PRIMARY KEY,owner_id text NOT NULL,status text NOT NULL,revision integer NOT NULL DEFAULT 0,channel text NOT NULL,conversation_revision integer NOT NULL DEFAULT 0);
+      CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text NOT NULL,role text NOT NULL,text text NOT NULL,task_id uuid REFERENCES tasks(id),attachments jsonb NOT NULL DEFAULT '[]',reply_to_message_id uuid,created_at timestamptz NOT NULL DEFAULT now());
+      CREATE TABLE conversations(owner_id text,channel text,revision integer,PRIMARY KEY(owner_id,channel))`);
+    const keyStore = { id: 'fixture', configured: true, getKey: async () => Buffer.alloc(32, 71) };
+    let injections = 0;
+    const vault = await createVault(vaultPool, {
+      keyStore,
+      inspect: async () => ({
+        url: 'https://1.1.1.1/login',
+        origin: 'https://1.1.1.1',
+        fields: [{ kind: 'otp', selector: '#code', label: 'Verification code' }],
+        methods: [
+          { id: 'credentials', kind: 'credentials', label: 'Verification code', supported: true },
+        ],
+      }),
+      inject: async () => {
+        injections++;
+      },
+      resume: async () => {},
+      retry: async () => {},
+    });
+    const verification = await createChatVerification(pool, {
+      ownerId: 'local-development',
+      keyStore,
+      submitCode: vault.submitChatCode,
+      refresh() {},
+    });
+    const channel = `telegram:${createHash('sha256')
+      .update(JSON.stringify(['fixture-account', 'local-development']))
+      .digest('hex')
+      .slice(0, 32)}`;
+    const ordinaryTaskId = randomUUID();
+    const codeTaskId = randomUUID();
+    await pool.query(
+      "INSERT INTO tasks(id,owner_id,status,channel) VALUES($1,'local-development','running',$2)",
+      [ordinaryTaskId, channel],
+    );
+    let releaseReceipt!: () => void;
+    const heldReceipt = new Promise<void>((resolve) => {
+      releaseReceipt = resolve;
+    });
+    let receiptStarted!: () => void;
+    const receiptStarting = new Promise<void>((resolve) => {
+      receiptStarted = resolve;
+    });
+    let holdOrdinary = true;
+    const prepared: string[] = [];
+    const app = Fastify();
+    const channels = await createChannels(pool, {
+      ownerId: 'local-development',
+      transport: {
+        channels: [
+          {
+            id: 'telegram',
+            status: 'configured',
+            missing: [],
+            accountId: 'fixture-account',
+            allowedSenderIds: ['local-development'],
+          },
+        ],
+        receive: async (request) => ({
+          status: 200,
+          body: 'accepted',
+          messages: [
+            {
+              channelId: 'telegram',
+              accountId: 'fixture-account',
+              senderId: 'local-development',
+              threadId: 'fixture-thread',
+              sentAt: new Date(),
+              ...JSON.parse(Buffer.from(request.body).toString('utf8')),
+            },
+          ],
+        }),
+        post: async () => ({ id: 'fixture-reply' }),
+        close: async () => {},
+      },
+      acceptVerification: (text, input) =>
+        verification.accept(text, {
+          ...input,
+          persistOrdinary: async (client) => {
+            if (holdOrdinary) {
+              receiptStarted();
+              await heldReceipt;
+            }
+            await input.persistOrdinary(client);
+          },
+        }),
+      prepare: async (text) => {
+        prepared.push(text);
+        return undefined!;
+      },
+      submit: async () => ordinaryTaskId,
+      subscribe: () => () => {},
+      intervalMs: 600000,
+    });
+    channels.registerRoutes(app);
+    vault.registerRoutes(app);
+    const send = (messageId: string, text: string) =>
+      app.inject({
+        method: 'POST',
+        url: '/api/webhooks/telegram',
+        headers: { 'content-type': 'application/json' },
+        payload: { messageId, text },
+      });
+    const request = (taskId: string) =>
+      vault.request(taskId, 'local-development', {
+        origin: 'https://1.1.1.1',
+        label: 'Fixture sign-in',
+        kind: 'otp',
+        passwordSelector: '#code',
+      });
+    async function waitForDatabaseLock(application: string) {
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const waiting = await admin.query(
+          "SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock'",
+          [application],
+        );
+        if (waiting.rowCount) return;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      assert.fail('Expected the fixture transaction to wait on the task boundary.');
+    }
+    const gate = await pool.connect();
+    const gateId = Math.floor(Math.random() * 1000000000);
+    try {
+      const year = send('year', '2026');
+      await receiptStarting;
+      const laterRequest = request(ordinaryTaskId);
+      await waitForDatabaseLock(`${schema}_vault`);
+      assert.equal((await pool.query('SELECT * FROM credential_requests')).rowCount, 0);
+      assert.equal((await pool.query('SELECT * FROM channel_inbox')).rowCount, 0);
+      releaseReceipt();
+      assert.equal((await year).statusCode, 200);
+      await laterRequest;
+      await channels.drain();
+      assert.deepEqual(prepared, ['2026']);
+      assert.equal((await pool.query('SELECT text FROM channel_inbox')).rows[0].text, '2026');
+      await pool.query("UPDATE tasks SET status='succeeded' WHERE id=$1", [ordinaryTaskId]);
+      await pool.query(
+        "INSERT INTO tasks(id,owner_id,status,channel) VALUES($1,'local-development','waiting_credentials',$2)",
+        [codeTaskId, channel],
+      );
+      holdOrdinary = false;
+      await pool.query(`CREATE FUNCTION hold_fixture_request() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(${gateId}); RETURN NEW; END $$;
+        CREATE TRIGGER hold_fixture_request BEFORE INSERT ON credential_requests FOR EACH ROW EXECUTE FUNCTION hold_fixture_request()`);
+      await gate.query('SELECT pg_advisory_lock($1)', [gateId]);
+      const earlierRequest = request(codeTaskId);
+      await waitForDatabaseLock(`${schema}_vault`);
+      const code = send('private-code', '481927');
+      await waitForDatabaseLock(`${schema}_channel`);
+      assert.equal(
+        (
+          await pool.query(
+            "SELECT * FROM channel_inbox WHERE source_id='channel:telegram:fixture-account:private-code'",
+          )
+        ).rowCount,
+        0,
+      );
+      assert.equal(injections, 0);
+      await gate.query('SELECT pg_advisory_unlock($1)', [gateId]);
+      await earlierRequest;
+      const response = await code;
+      assert.equal(response.statusCode, 200, response.body);
+      await channels.drain();
+      assert.equal(injections, 1);
+      assert.deepEqual(prepared, ['2026']);
+      const privateRows = await pool.query(
+        'SELECT row_to_json(i) AS row FROM channel_inbox i UNION ALL SELECT row_to_json(m) FROM messages m UNION ALL SELECT row_to_json(v) FROM chat_verification_submissions v',
+      );
+      assert.doesNotMatch(JSON.stringify(privateRows.rows), /481927/);
+      const receipt = (
+        await pool.query(
+          "SELECT text,state FROM channel_inbox WHERE source_id='channel:telegram:fixture-account:private-code'",
+        )
+      ).rows[0];
+      assert.deepEqual(receipt, { text: 'Verification code sent securely.', state: 'submitted' });
+    } finally {
+      releaseReceipt();
+      await gate.query('SELECT pg_advisory_unlock_all()');
+      gate.release();
+      await app.close();
+      await vaultPool.end();
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);
 
 test(
   'channel verification stays private before inbox persistence and fences duplicate delivery across restart',
@@ -94,7 +303,20 @@ test(
           if (text === '111111')
             throw Object.assign(new Error('Ambiguous fixture code 111111.'), { statusCode: 409 });
           if (text === '222222') throw new Error('Provider failed with code 222222.');
-          if (text !== '483729' && text !== '123456') return;
+          if (text !== '483729' && text !== '123456') {
+            const client = await pool.connect();
+            try {
+              await client.query('BEGIN');
+              await input.persistOrdinary(client);
+              await client.query('COMMIT');
+            } catch (error) {
+              await client.query('ROLLBACK');
+              throw error;
+            } finally {
+              client.release();
+            }
+            return;
+          }
           if (text === '123456') {
             beginHeld();
             await heldReleased;
