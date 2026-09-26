@@ -316,14 +316,15 @@ test(
         },
       );
       await t.test(
-        'an unavailable fingerprint key never routes or stores a possible code',
+        'ordinary numeric messages and receipts do not require a Vault key',
         async () => {
           await reset();
-          await seed();
+          let keyReads = 0;
           const unavailable = await createChatVerification(db.pool, {
             ownerId,
             keyStore: {
               getKey: async () => {
+                keyReads += 1;
                 throw new Error('Private key failure.');
               },
             },
@@ -332,14 +333,114 @@ test(
               throw new Error('No injection expected.');
             },
           });
-          await assert.rejects(
-            unavailable.accept('482753', { clientMessageId: randomUUID() }),
-            (error: unknown) => {
-              assert.equal((error as { statusCode: number }).statusCode, 503);
-              assert.doesNotMatch(String(error), /482753|Private key failure/);
-              return true;
+          const unavailableApp = await createApp({
+            verification: unavailable,
+            configuration: () => ({ ...configuration(), llmReady: true }),
+            submitMessage: async (text, _attachments, input) => {
+              ordinary.push(text);
+              return { taskId: randomUUID(), continued: false, messageId: input?.clientMessageId };
             },
-          );
+          });
+          const ordinarySend = (text: string, extra: Record<string, unknown> = {}) =>
+            unavailableApp.inject({
+              method: 'POST',
+              url: '/api/messages',
+              headers,
+              payload: { text, clientMessageId: randomUUID(), ...extra },
+            });
+          try {
+            for (const text of ['2026', '12345', '123456', '1234567', '12345678']) {
+              const response = await ordinarySend(text);
+              assert.equal(response.statusCode, 200, response.body);
+            }
+            assert.equal((await ordinarySend('2027', { forceNew: true })).statusCode, 200);
+            await seed();
+            const other = await seed({ kind: 'password', status: 'running' });
+            assert.equal(
+              (await ordinarySend('2048', { replyToMessageId: other.messageId })).statusCode,
+              200,
+            );
+            const receiptId = randomUUID();
+            assert.equal(
+              await unavailable.accept('6060', {
+                clientMessageId: receiptId,
+                taskId: other.taskId,
+                persistOrdinary: async (client) => {
+                  await client.query(
+                    "INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,$2,'user','6060',$3)",
+                    [receiptId, ownerId, other.taskId],
+                  );
+                },
+              }),
+              undefined,
+            );
+            assert.equal(
+              (await ordinarySend('6060', { clientMessageId: receiptId })).statusCode,
+              200,
+            );
+            assert.equal(keyReads, 0);
+            assert.deepEqual(ordinary, [
+              '2026',
+              '12345',
+              '123456',
+              '1234567',
+              '12345678',
+              '2027',
+              '2048',
+              '6060',
+            ]);
+            assert.equal(injected.length, 0);
+            assert.equal(
+              (await db.pool.query('SELECT text FROM messages WHERE id=$1', [receiptId])).rows[0]
+                .text,
+              '6060',
+            );
+            assert.equal(
+              (await db.pool.query('SELECT * FROM chat_verification_submissions')).rowCount,
+              0,
+            );
+          } finally {
+            await unavailableApp.close();
+          }
+        },
+      );
+      await t.test(
+        'an unavailable fingerprint key never routes pending codes or replays receipts',
+        async () => {
+          await reset();
+          await seed();
+          let keyReads = 0;
+          const unavailable = await createChatVerification(db.pool, {
+            ownerId,
+            keyStore: {
+              getKey: async () => {
+                keyReads += 1;
+                throw new Error('Private key failure.');
+              },
+            },
+            refresh() {},
+            submitCode: async () => {
+              throw new Error('No injection expected.');
+            },
+          });
+          const clientMessageId = randomUUID();
+          const assertUnavailable = () =>
+            assert.rejects(
+              unavailable.accept('482753', {
+                clientMessageId,
+                persistOrdinary: async () => {
+                  throw new Error('No ordinary persistence expected.');
+                },
+              }),
+              (error: unknown) => {
+                assert.equal((error as { statusCode: number }).statusCode, 503);
+                assert.doesNotMatch(String(error), /482753|Private key failure/);
+                return true;
+              },
+            );
+          await assertUnavailable();
+          assert.equal(keyReads, 1);
+          assert.equal(injected.length, 0);
           assert.equal(
             (await db.pool.query("SELECT * FROM messages WHERE role='user'")).rowCount,
             0,
@@ -347,6 +448,23 @@ test(
           assert.equal(
             (await db.pool.query('SELECT * FROM chat_verification_submissions')).rowCount,
             0,
+          );
+          assert.equal(
+            (await verification.accept('482753', { clientMessageId }))?.verificationStatus,
+            'submitted',
+          );
+          await assertUnavailable();
+          assert.equal(keyReads, 2);
+          assert.equal(injected.length, 1);
+          assert.deepEqual(ordinary, []);
+          assert.equal(
+            (await db.pool.query('SELECT * FROM chat_verification_submissions')).rowCount,
+            1,
+          );
+          assert.equal(
+            (await db.pool.query('SELECT text FROM messages WHERE id=$1', [clientMessageId]))
+              .rows[0].text,
+            'Verification code sent securely.',
           );
         },
       );

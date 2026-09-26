@@ -28,6 +28,8 @@ export interface ComposerHandle {
   focus(): void;
 }
 
+export type ComposerSendResult = { sent: true } | { sent: false; restoreText: boolean };
+
 interface ComposerProps {
   ready: boolean;
   sending: boolean;
@@ -35,7 +37,7 @@ interface ComposerProps {
   setText(value: string): void;
   replyTo: Pick<Message, 'id' | 'role' | 'text'> | null;
   clearReply(): void;
-  onSend(text: string, attachments: Artifact[]): Promise<boolean>;
+  onSend(text: string, attachments: Artifact[]): Promise<ComposerSendResult>;
 }
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
@@ -202,9 +204,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     editor.commands.clearContent();
     updateAttachments([]);
     focus();
-    let sent = false;
+    let result: ComposerSendResult = { sent: false, restoreText: true };
     try {
-      sent = await onSend(
+      result = await onSend(
         sentText,
         sentAttachments.map((item) => item.artifact!),
       );
@@ -212,13 +214,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       if (mounted.current) setError(errorMessage(cause));
     } finally {
       sendLock.current = false;
-      if (sent) for (const item of sentAttachments) releasePreview(item);
+      if (result.sent) for (const item of sentAttachments) releasePreview(item);
       if (mounted.current && !editor.isDestroyed) {
-        if (!sent) {
-          const draft = editor.getMarkdown();
-          editor.commands.setContent([sentText, draft].filter(Boolean).join('\n\n'), {
-            contentType: 'markdown',
-          });
+        if (!result.sent) {
+          if (result.restoreText) {
+            const draft = editor.getMarkdown();
+            editor.commands.setContent([sentText, draft].filter(Boolean).join('\n\n'), {
+              contentType: 'markdown',
+            });
+          }
           updateAttachments([...sentAttachments, ...attachmentValues.current]);
         }
         restoreFocus();

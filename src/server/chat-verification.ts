@@ -92,7 +92,6 @@ export async function createChatVerification(
     const incompatible = Boolean(input.attachmentIds?.length || input.forceNew);
     if (incompatible && input.verificationRequestId)
       throw conflict('Send the verification code by itself in the sign-in conversation.');
-    const codeFingerprint = await fingerprint(code, input);
     const channel = input.channel ?? 'web';
     const client = await pool.connect();
     let reserved: { taskId: string; requestId: string; revision: number } | undefined;
@@ -122,6 +121,7 @@ export async function createChatVerification(
           await client.query('COMMIT');
           return;
         }
+        const codeFingerprint = await fingerprint(code, input);
         if (
           previous.owner_id !== options.ownerId ||
           previous.task_owner_id !== options.ownerId ||
@@ -194,6 +194,7 @@ export async function createChatVerification(
           'More than one sign-in needs a code. Reply to the verification request you want to complete.',
         );
       const request = requests.rows[0]!;
+      const codeFingerprint = await fingerprint(code, input);
       await client.query(
         `INSERT INTO messages(id,owner_id,role,text,task_id,reply_to_message_id)
          VALUES($1,$2,'user',$3,$4,$5)`,

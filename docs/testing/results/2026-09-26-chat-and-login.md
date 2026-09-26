@@ -54,3 +54,9 @@ The sign-in page now keeps the full logo and wordmark separate from responsive s
 The normal app was restored at `http://localhost:4320` with its existing profile intact. Docker registry metadata stalled the normal image rebuild, so this development session uses the existing images with current browser source mounted read-only. The separate acceptance server used port 4341. Old links from deleted test schemas remain unavailable and require a new sign-in request.
 
 The [scientists-chat update](https://n8nio.slack.com/archives/C0BT5S8CV42/p1790426338393529) includes the implementation TLDR, setup needs, validation limits and five additional playable UI clips. Those clips predate this final sign-in presentation and code-retry review.
+
+## Retry boundary follow-up
+
+Ordinary numeric messages now reach normal routing without accessing the Vault key. A stored verification receipt or unique pending OTP request still requires the key and fails closed when it is unavailable. The channel service also rolls back inbox persistence when its configuration changes during the write, so a later provider retry is not lost to deduplication.
+
+A rejected code submission keeps its attachments and any newer composer draft. Only the submitted code is cleared. The HTTP fixture asserts the submitted attachment IDs, and a delayed-response test verifies that original and newly added files can be sent without another upload. The final local gate passed 888 tests with zero failures or skips in 81.244 seconds; type, architecture, formatting and build checks also passed.

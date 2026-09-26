@@ -24,6 +24,168 @@ const fixtureEnv = {
 };
 
 test(
+  'channel lifecycle changes roll back receipts and preserve provider retries',
+  { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
+  async () => {
+    const schema = `test_channel_lifecycle_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+      application_name: schema,
+    });
+    await pool.query(`CREATE TABLE tasks(id uuid PRIMARY KEY,source_id text UNIQUE);
+      CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text,role text,text text,task_id uuid,attachments jsonb DEFAULT '[]')`);
+    const submitted: string[] = [];
+    const verificationIds = new Set<string>();
+    const taskId = randomUUID();
+    function transport(accountId = 'fixture-account'): MessagingTransport {
+      return {
+        channels: [
+          {
+            id: 'telegram',
+            status: 'configured',
+            missing: [],
+            accountId,
+            allowedSenderIds: ['fixture-owner'],
+          },
+        ],
+        receive: async (request) => ({
+          status: 200,
+          body: 'accepted',
+          messages: [
+            {
+              channelId: 'telegram',
+              accountId: 'fixture-account',
+              senderId: 'fixture-owner',
+              threadId: 'fixture-thread',
+              sentAt: new Date(),
+              ...JSON.parse(Buffer.from(request.body).toString('utf8')),
+            },
+          ],
+        }),
+        post: async () => {
+          throw new Error('This fixture must not send a message.');
+        },
+        close: async () => {},
+      };
+    }
+    const app = Fastify();
+    const channels = await createChannels(pool, {
+      ownerId: 'fixture-owner',
+      transport: transport(),
+      acceptVerification: async (text, input) => {
+        if (text === '483729') {
+          verificationIds.add(input.clientMessageId);
+          return {
+            taskId,
+            messageId: input.clientMessageId,
+            continued: true,
+            messageText: 'Verification code sent securely.',
+            verificationStatus: 'submitted',
+          };
+        }
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          await input.persistOrdinary(client);
+          await client.query('COMMIT');
+        } catch (error) {
+          await client.query('ROLLBACK');
+          throw error;
+        } finally {
+          client.release();
+        }
+      },
+      submit: async (_text, sourceId, client) => {
+        submitted.push(sourceId);
+        const result = await client.query(
+          'INSERT INTO tasks(id,source_id) VALUES($1,$2) RETURNING id',
+          [randomUUID(), sourceId],
+        );
+        return result.rows[0].id;
+      },
+      subscribe: () => () => {},
+      intervalMs: 600000,
+    });
+    channels.registerRoutes(app);
+    const send = (messageId: string, text: string) =>
+      app.inject({
+        method: 'POST',
+        url: '/api/webhooks/telegram',
+        headers: { 'content-type': 'application/json' },
+        payload: { messageId, text },
+      });
+    const gate = await pool.connect();
+    const gateId = Math.floor(Math.random() * 1000000000);
+    await pool.query(`CREATE FUNCTION hold_fixture_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(${gateId}); RETURN NEW; END $$;
+      CREATE TRIGGER hold_fixture_receipt BEFORE INSERT ON channel_inbox FOR EACH ROW EXECUTE FUNCTION hold_fixture_receipt()`);
+    try {
+      for (const [messageId, text] of [
+        ['ordinary', 'Continue the fixture task'],
+        ['verification', '483729'],
+        ['transaction', '2026'],
+      ]) {
+        const sourceId = `channel:telegram:fixture-account:${messageId}`;
+        await gate.query('SELECT pg_advisory_lock($1)', [gateId]);
+        const pending = send(messageId, text);
+        let waiting = false;
+        for (let attempt = 0; attempt < 100; attempt++) {
+          waiting = Boolean(
+            (
+              await admin.query(
+                "SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock' AND query LIKE 'INSERT INTO channel_inbox%'",
+                [schema],
+              )
+            ).rowCount,
+          );
+          if (waiting) break;
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        assert.equal(waiting, true, messageId);
+        await channels.replaceTransport(transport('revoked-account'));
+        await gate.query('SELECT pg_advisory_unlock($1)', [gateId]);
+        const response = await pending;
+        assert.equal(response.statusCode, 503, messageId);
+        assert.doesNotMatch(response.body, /483729|Channel configuration changed/);
+        await channels.drain();
+        assert.equal(
+          (await pool.query('SELECT 1 FROM channel_inbox WHERE source_id=$1', [sourceId])).rowCount,
+          0,
+          messageId,
+        );
+        await channels.replaceTransport(transport());
+        assert.equal((await send(messageId, text)).statusCode, 200, messageId);
+        await channels.drain();
+        assert.equal((await send(messageId, text)).statusCode, 200, messageId);
+        await channels.drain();
+        assert.equal(
+          submitted.filter((id) => id === sourceId).length,
+          messageId === 'verification' ? 0 : 1,
+          messageId,
+        );
+        const receipt = (
+          await pool.query('SELECT text,state FROM channel_inbox WHERE source_id=$1', [sourceId])
+        ).rows[0];
+        assert.deepEqual(receipt, {
+          text: messageId === 'verification' ? 'Verification code sent securely.' : text,
+          state: 'submitted',
+        });
+      }
+      assert.equal(verificationIds.size, 1);
+    } finally {
+      await gate.query('SELECT pg_advisory_unlock_all()');
+      gate.release();
+      await app.close();
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);
+
+test(
   'channel numeric receipt classification and actual Vault request creation serialize on the task',
   { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
   async () => {

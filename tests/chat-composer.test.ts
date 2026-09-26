@@ -6,6 +6,7 @@ import { Selection } from '@tiptap/pm/state';
 import { createElement, act, useState } from 'react';
 import { createComposerExtensions } from '../src/web/lib/composer-editor.ts';
 import type { Artifact } from '../src/shared/contracts.ts';
+import type { ComposerSendResult } from '../src/web/components/composer.tsx';
 
 const editorModifier: KeyboardEventInit =
   typeof navigator !== 'undefined' && /Mac|iP(hone|[oa]d)/.test(navigator.platform)
@@ -104,7 +105,7 @@ function key(element: HTMLElement, options: KeyboardEventInit = {}) {
   );
 }
 async function mountComposer(
-  onSend: (text: string, attachments: Artifact[]) => Promise<boolean>,
+  onSend: (text: string, attachments: Artifact[]) => Promise<ComposerSendResult>,
   initial = '',
 ) {
   const element = document.createElement('div');
@@ -321,11 +322,11 @@ test('rich HTML paste preserves supported formatting and discards scripts, remot
 });
 
 test('composer has no formatting switch and restores a failed message alongside a newly typed draft', async () => {
-  let finish!: (result: boolean) => void;
+  let finish!: (result: ComposerSendResult) => void;
   const sent: string[] = [];
   const fixture = await mountComposer(async (text) => {
     sent.push(text);
-    return new Promise<boolean>((resolve) => {
+    return new Promise<ComposerSendResult>((resolve) => {
       finish = resolve;
     });
   }, '**First draft**');
@@ -344,7 +345,7 @@ test('composer has no formatting switch and restores a failed message alongside 
       paste(fixture.input(), { text: 'Next message' });
     });
     await act(async () => {
-      finish(false);
+      finish({ sent: false, restoreText: true });
       await tick();
     });
     assert.match(fixture.input().textContent ?? '', /First draft/);
@@ -362,7 +363,7 @@ test('consecutive image pastes upload independently and block submit until both 
   globalThis.fetch = async () => new Promise<Response>((resolve) => pending.push(resolve));
   const fixture = await mountComposer(async (text, attachments) => {
     sent.push({ text, attachments });
-    return true;
+    return { sent: true };
   });
   try {
     await act(async () => {
@@ -423,7 +424,7 @@ test('pending images show thumbnail-only previews and cancelled uploads cannot r
   const sent: Artifact[][] = [];
   const fixture = await mountComposer(async (_text, files) => {
     sent.push(files);
-    return sent.length > 1;
+    return sent.length > 1 ? { sent: true } : { sent: false, restoreText: true };
   });
   const artifacts = ['first.png', 'second.png'].map((name, index) => ({
     id: `00000000-0000-4000-8000-00000000000${index}`,
@@ -522,7 +523,7 @@ test('pending mixed media preview locally without active documents and keep uplo
   const sent: Artifact[][] = [];
   const fixture = await mountComposer(async (_text, attachments) => {
     sent.push(attachments);
-    return true;
+    return { sent: true };
   });
   try {
     await act(async () => paste(fixture.input(), { files }));

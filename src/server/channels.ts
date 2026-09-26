@@ -160,7 +160,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
       const acceptedMessageId = inboundMessageId(ownerId, sourceId);
       let verification: SubmitMessageResponse | undefined;
       let ordinaryPersisted = false;
-      const persist = async (database: Pool | PoolClient) => {
+      const persist = async (database: PoolClient) => {
         if (closed || replacing || !permitted(identity))
           throw new Error('Channel configuration changed.');
         await database.query(
@@ -236,7 +236,19 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
           return;
         }
       }
-      if (!ordinaryPersisted) await persist(pool);
+      if (!ordinaryPersisted) {
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          await persist(client);
+          await client.query('COMMIT');
+        } catch (error) {
+          await client.query('ROLLBACK');
+          throw error;
+        } finally {
+          client.release();
+        }
+      }
     } catch {
       throw Object.assign(new Error('Channel processing is temporarily unavailable. Try again.'), {
         statusCode: 503,

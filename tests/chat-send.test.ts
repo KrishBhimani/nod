@@ -976,6 +976,7 @@ test('verification with an attachment stays private through a rejected submissio
       await tick();
     });
     assert.equal(submissions[0].verificationRequestId, verificationRequest.id);
+    assert.deepEqual(submissions[0].attachmentIds, [image.id]);
     assert.doesNotMatch(fixture.element.innerHTML, /483729/);
     await act(async () => {
       finish(Response.json({ error: 'Send the code by itself.' }, { status: 409 }));
@@ -983,7 +984,95 @@ test('verification with an attachment stays private through a rejected submissio
     });
     assert.doesNotMatch(fixture.element.innerHTML, /483729/);
     assert.equal(input.textContent, '');
+    assert.equal(
+      fixture.element.querySelector('.composer-wrap img')?.getAttribute('src'),
+      image.url,
+    );
     assert.match(fixture.element.textContent ?? '', /without attachments/);
+  } finally {
+    await fixture.dispose();
+    globalThis.fetch = priorFetch;
+  }
+});
+
+test('a late verification rejection preserves new draft text and combines both attachment drafts', async () => {
+  const priorFetch = globalThis.fetch;
+  const nextImage = {
+    ...image,
+    id: 'aafad34e-5dd5-4e50-83dc-8b8e458ff1ac',
+    name: 'next.png',
+    url: '/api/artifacts/aafad34e-5dd5-4e50-83dc-8b8e458ff1ac',
+  };
+  const uploads = [image, nextImage];
+  let uploadCount = 0;
+  const submissions: Submission[] = [];
+  let finish!: (response: Response) => void;
+  globalThis.fetch = async (path, init) => {
+    if (path === '/api/state') return Response.json(verificationState);
+    if (path === '/api/uploads') return Response.json(uploads[uploadCount++]);
+    if (path === '/api/messages') {
+      const submission: Submission = JSON.parse(String(init?.body));
+      submissions.push(submission);
+      if (submissions.length === 1)
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      return Response.json({ taskId: 'accepted-task', messageId: submission.clientMessageId });
+    }
+    throw new Error('Unexpected fixture request');
+  };
+  const fixture = await mount();
+  try {
+    const input = fixture.element.querySelector<HTMLElement>('[role="textbox"]')!;
+    const upload = fixture.element.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const attach = async (name: string) => {
+      Object.defineProperty(upload, 'files', {
+        configurable: true,
+        value: [new File(['fixture'], name, { type: 'image/png' })],
+      });
+      await act(async () => {
+        upload.dispatchEvent(new Event('change', { bubbles: true }));
+        await tick();
+      });
+    };
+    await draft('483729');
+    await attach(image.name);
+    await act(async () => {
+      sendKey(input);
+      await tick();
+    });
+    assert.deepEqual(submissions[0].attachmentIds, [image.id]);
+    assert.equal(submissions[0].verificationRequestId, verificationRequest.id);
+    await draft('Review both images.');
+    await attach(nextImage.name);
+    await act(async () => {
+      finish(Response.json({ error: 'Send the code by itself.' }, { status: 409 }));
+      await tick();
+    });
+    assert.equal(input.textContent, 'Review both images.');
+    assert.deepEqual(
+      [...fixture.element.querySelectorAll('.composer-wrap img')].map((item) =>
+        item.getAttribute('src'),
+      ),
+      uploads.map((item) => item.url),
+    );
+    assert.equal(fixture.element.querySelector('.message-user'), null);
+    assert.doesNotMatch(fixture.element.innerHTML, /483729/);
+    await act(async () => {
+      sendKey(input);
+      await tick();
+    });
+    assert.equal(submissions[1].text, 'Review both images.');
+    assert.deepEqual(
+      submissions[1].attachmentIds,
+      uploads.map((item) => item.id),
+    );
+    assert.equal(submissions[1].verificationRequestId, undefined);
+    assert.notEqual(submissions[0].clientMessageId, submissions[1].clientMessageId);
+    assert.equal(uploadCount, 2);
+    assert.equal(input.textContent, '');
+    assert.equal(fixture.element.querySelector('.pending-attachment'), null);
+    assert.doesNotMatch(fixture.element.innerHTML, /483729/);
   } finally {
     await fixture.dispose();
     globalThis.fetch = priorFetch;

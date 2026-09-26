@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowUpRight } from 'lucide-react';
 import type { AppState, Artifact, Message, SubmitMessageResponse } from '../../shared/contracts';
-import { Composer, type ComposerHandle } from '../components/composer';
+import { Composer, type ComposerHandle, type ComposerSendResult } from '../components/composer';
 import { MessageBubble } from '../components/message';
 import { ChatTurnRail } from '../components/chat-turn-rail';
 import { BrandMark } from '../components/brand';
@@ -167,8 +167,8 @@ export function Chat({
     window.addEventListener('sidekick:compose', compose);
     return () => window.removeEventListener('sidekick:compose', compose);
   }, []);
-  async function send(value: string, attachments: Artifact[]) {
-    if (sendLock.current || resetLock.current) return false;
+  async function send(value: string, attachments: Artifact[]): Promise<ComposerSendResult> {
+    if (sendLock.current || resetLock.current) return { sent: false, restoreText: true };
     const sentRevision = revision;
     const reply = replyTo;
     const verificationRequests = (state.verificationRequests ?? []).filter(
@@ -236,7 +236,7 @@ export function Chat({
       if (!response.ok) {
         throw new Error(result.error || 'The message could not be sent.');
       }
-      if (revisionRef.current !== sentRevision) return true;
+      if (revisionRef.current !== sentRevision) return { sent: true };
       if (result.messageId !== id || typeof result.taskId !== 'string')
         throw new Error('The message could not be confirmed. Try sending it again.');
       const taskId = result.taskId;
@@ -263,13 +263,13 @@ export function Chat({
       );
       setReplyTo((current) => (current?.id === replyId ? null : current));
       void refresh().catch(() => {});
-      return true;
+      return { sent: true };
     } catch (cause) {
-      if (revisionRef.current !== sentRevision) return true;
+      if (revisionRef.current !== sentRevision) return { sent: true };
       if (acknowledgedIds.current.has(id)) {
         retry.current = null;
         setReplyTo((current) => (current?.id === replyId ? null : current));
-        return true;
+        return { sent: true };
       }
       retry.current =
         !privateVerification && signature !== null
@@ -283,7 +283,7 @@ export function Chat({
             : verificationFailure(verificationStatus, verificationRequests.length > 1)
           : errorMessage(cause),
       );
-      return privateVerification;
+      return { sent: false, restoreText: !privateVerification };
     } finally {
       if (sendLock.current?.id === id && sendLock.current.revision === sentRevision) {
         sendLock.current = null;
