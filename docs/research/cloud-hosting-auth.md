@@ -4,11 +4,11 @@ Research date: 2026-09-26. Repository inspected at `1a471a0`. This is a proposed
 
 ## Recommendation
 
-Keep React/Vite, Fastify, Pi and PostgreSQL. Deploy a small Cloudflare Worker for the public origin and asset delivery, with the trusted Node application running in Cloudflare Containers on Jan's account. Use Neon PostgreSQL in a nearby EU region, private R2 storage, and Better Auth with Google sign-in. Keep computer execution behind the existing capability interfaces and select its provider separately from application hosting.
+Keep React/Vite, Fastify, Pi and PostgreSQL. Deploy a small Cloudflare Worker for the public origin and asset delivery, with the trusted Node application running in Cloudflare Containers on Jan's account. Use Neon PostgreSQL in a nearby EU region, private R2 storage, and Better Auth with Google sign-in. Keep computer execution behind the existing capability interfaces. The operator selects its local or remote provider at server startup through composition, independently of application hosting. There is no per-user provider setting.
 
 This is the best fit for the current code and the requirement to let other people host Sidekick. It preserves a normal Node container that can also run on another host. Cloudflare-specific ingress and lifecycle code stay in one deployment adapter. The application must become tenant-aware before it is publicly exposed.
 
-The recommendation is conditional on a short real-platform feasibility exercise after prototype review: image startup, Pi transcript persistence, long streaming requests, worker wake-up/recovery, private computer control, and database latency. If a Cloudflare constraint fails that exercise, keep the frontend/ingress on Cloudflare and run the same Node image on a conventional container host. Do not silently replace the runtime or weaken isolation to force a Worker-only deployment.
+The recommendation is conditional on a short real-platform feasibility exercise after prototype review: image startup, Pi transcript persistence, long streaming requests, worker wake-up/recovery, developer-authorized computer control, scoped private credential forms, and database latency. If a Cloudflare constraint fails that exercise, keep the frontend/ingress on Cloudflare and run the same Node image on a conventional container host. Do not silently replace the runtime or weaken isolation to force a Worker-only deployment.
 
 ```mermaid
 flowchart TD
@@ -57,7 +57,7 @@ Cloudflare container disk is ephemeral across sleep/restart. Instances have no g
 
 Regional and EU jurisdiction constraints are now documented for Containers. Configure an EU placement boundary when provisioning, align the database region, and measure the actual path. This does not establish the residency of every other provider, log, backup or connected integration. [Placement](https://developers.cloudflare.com/containers/concepts/placement/)
 
-Worker streams can pass the API's SSE response through without buffering the whole body. Container `fetch` also forwards WebSocket upgrades. Keep SSE for chat initially, and test heartbeat, disconnect, reconnect, proxy buffering and deployments on the real platform. Browser takeover must authenticate and authorize its own connection; an unguessable viewer URL alone is insufficient. [Streams](https://developers.cloudflare.com/workers/runtime-apis/streams/), [Container WebSockets](https://developers.cloudflare.com/containers/examples/websocket/)
+Worker streams can pass the API's SSE response through without buffering the whole body. Container `fetch` also forwards WebSocket upgrades. Keep SSE for chat initially, and test heartbeat, disconnect, reconnect, proxy buffering and deployments on the real platform. Developer computer control must authenticate and authorize its own connection, including developer capability and ownership; an unguessable viewer URL alone is insufficient. Ordinary hosted users do not receive a computer viewer or general manual control. [Streams](https://developers.cloudflare.com/workers/runtime-apis/streams/), [Container WebSockets](https://developers.cloudflare.com/containers/examples/websocket/)
 
 ### Events between API and worker processes
 
@@ -135,6 +135,7 @@ Clerk is a credible hosted alternative with managed UI and operations, but adds 
 4. Store `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, the auth session secret and a fixed public auth base URL only in the corresponding server environment. Configure exact trusted origins and allowed post-login destinations. Better Auth's callback follows `/api/auth/callback/google`; a correct explicit base URL avoids proxy-derived callback errors. [Better Auth Google](https://better-auth.com/docs/authentication/google)
 5. Request only `openid email profile` for app login. Gmail/Calendar connection remains a separate Apps flow through Composio, with distinct account selection and consent. A user may sign in with one Google identity and connect a different or additional account.
 6. Give each user an internal immutable ID. Link Google by the verified issuer/provider subject, not by email. Google's `sub` is stable; email can change and is not the primary identity key. Validate claims using the library's server-side OAuth flow. [Google OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect)
+7. Normalize the verified Google profile and picture claim server-side. Show its avatar in the sidebar account control and profile, with initials when absent or unavailable. Serve pictures through bounded safe loading or a controlled image proxy restricted to trusted provider image sources; enforce HTTPS, response size/type/time limits and redirect/address validation. A client-editable picture URL must not create an arbitrary fetch endpoint. Synthetic local portraits in the prototype do not validate this integration.
 
 Use database-backed sessions with `HttpOnly`, `Secure` production cookies, appropriate SameSite settings, origin/CSRF checks, bounded expiry and session revocation. Keep auth routes and application routes protected separately: installing the auth handler does not automatically authorize Sidekick APIs. Better Auth documents state/PKCE, cookies and trusted-origin protection. Configure known proxy headers at the ingress and never trust a caller's arbitrary forwarded host. [Better Auth security](https://better-auth.com/docs/reference/security)
 
@@ -143,6 +144,12 @@ Disable cookie session caching initially so revocation is checked against the se
 ## Tenant isolation: implementation contract
 
 Authentication determines who is calling. Every feature must then authorize what they can access. The following is the proposed contract, not proof that current code enforces it.
+
+### Account experience
+
+Use a simple avatar account control leading to Profile, Appearance, Preferences and sign out. Persist owned settings and return to the underlying screen when the dialog closes. Desktop navigation stays vertically centered with hover animation and a visible collapse/expand control. Mobile defaults to chat, with a menu for navigation and settings. Avoid ownership reassurances, provider explanations or event cadence in ordinary product copy.
+
+After signup, offer Gmail, Google Calendar, Google Drive, Google Docs, Google Sheets, Slack and Notion on one optional connection screen. Each real consent flow returns to the exact owned setup or Apps screen, re-fetches connection status and preserves the remaining setup, including after cancellation or failure. Persist the allowed destination and initiating owner/session with the single-use attempt; never redirect to an arbitrary client-provided URL. Callback reloads must recover the recorded outcome without repeating consent side effects.
 
 ### Request, job and provider context
 
@@ -172,7 +179,7 @@ Add same-owner composite references for relationships such as message/task, arti
 | Runtime          | Sandbox allocation, file mounts, browser profiles, cancellation, model context, per-user budgets and concurrency                           |
 | Diagnostics      | Inspector, prompt snapshots, usage, operator tools, health/readiness, logs and error messages                                              |
 
-Keep the hosted Inspector disabled for ordinary users. If a support/admin surface is introduced, give it its own authorization and audit design; never infer admin status from a Google email alone or from the existing dev flag.
+Keep the hosted Inspector, computer viewer, manual-control routes, provider details and event diagnostics unavailable to ordinary users. Developer access requires an explicit server-authorized capability in addition to resource ownership; client flags, query parameters and a Google email alone cannot grant it. Developer permission must not imply access to other users' data. If a support/admin surface is introduced, give any broader access a separate authorization and audit design. Ordinary users can receive a task-scoped credential form when necessary, without exposing the computer or browser.
 
 At the network layer, keep untrusted shell traffic away from the application control plane, metadata services, loopback/private/link-local destinations and credentials. Revalidate redirects/DNS/IP families for server fetchers such as link previews and downloads. Any provider that cannot enforce the required isolation/egress controls fails the production gate. Separate tenant browser profiles and trusted credential injection from shell files/processes; authenticated browser cookies are secrets too.
 
@@ -182,7 +189,7 @@ Start new hosted users empty. Never assign all `local-development` data to the f
 
 ## Environments, domains and CI/CD
 
-Use explicit local, development/staging and production configuration. The provider implementation choices stay in `src/server/composition.ts`; document environment variables for auth mode, storage, computer provider, model provider/model, integration provider/available apps and public URLs. Ordinary hosted users provide account consent and their own Telegram bot token, not shared service keys. Self-hosting operators supply their own service configuration.
+Use explicit local, development/staging and production configuration. Server startup configuration resolves provider implementation choices in `src/server/composition.ts`; document environment variables for auth mode, storage, computer provider, model provider/model, integration provider/available apps and public URLs. Ordinary hosted users provide account consent and their own Telegram bot token, not shared service keys. Self-hosting operators supply their own service configuration.
 
 Wrangler environments create separate Workers, and bindings/variables must be configured per environment. Define separate Durable Object namespaces, R2 buckets, secrets, database credentials, callback URLs and provider projects. Do not rely on inheritance for isolation. [Wrangler environments](https://developers.cloudflare.com/workers/wrangler/environments/)
 
@@ -220,17 +227,17 @@ Keep all normal CI checks credential-free. A separate manually triggered/schedul
 
 | Phase                   | Completion gate                                                                                                                                       |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0. Review               | Interactive login/sidebar/profile/settings/Apps/Telegram/computer UX reviewed before production feature edits                                         |
+| 0. Review               | Login, avatar/settings, responsive sidebar, all-app onboarding and Telegram reviewed; developer diagnostics reviewed separately                       |
 | 1. Feasibility          | Real Node image on Cloudflare proves SSE, shutdown, durable Pi session recovery, worker wake-up and DB connectivity; no public beta users             |
 | 2. Isolation foundation | Remove global owner, add authenticated context and migrations/RLS, fence jobs and streams; two-user adversarial fixture suite passes                  |
 | 3. Portable providers   | Durable artifacts/sessions, hosted keys, remote computer adapters, live local development-provider suite and replaceability contract pass             |
-| 4. Product flows        | Google signup/signin/signout/session expiry; owned profile/settings; account consent/watch states; secure Telegram pairing/test/disconnect            |
+| 4. Product flows        | Google signup/signin/signout/session expiry; owned profile/settings; all-app consent return/reconnect states; secure Telegram pairing/test/disconnect |
 | 5. Delivery             | Staging and production environments, main-merge CD, migration/rollback drill, retention/deletion, bounded operator recovery and cost metrics          |
 | 6. Production proof     | Authorized live account completes the journey; data persists across image restart; remote events and Telegram round trips are correlated and verified |
 
-Production proof includes a fresh Google signup, refresh/sign-out/sign-in, owned settings persisted on a second browser, connected Gmail and Calendar, verified event arrival and processing, assistant tasks on the remote computer, artifact read, private takeover, Telegram pairing and bidirectional message/media where supported, schedule execution with the browser closed, disconnect/revoke behavior, and process replacement during work. Use disposable emails/events/files and keep private contents out of evidence files.
+Production proof includes a fresh Google signup, refresh/sign-out/sign-in, owned settings persisted on a second browser, connected Gmail and Calendar, verified event arrival and processing, assistant tasks on the remote computer, artifact read, scoped private credential handling where needed, Telegram pairing and bidirectional message/media where supported, schedule execution with the browser closed, disconnect/revoke behavior, and process replacement during work. Use disposable emails/events/files and keep private contents out of evidence files. Separately test developer computer controls and diagnostics, including server denial of those endpoints to ordinary users even when they supply a prototype-style flag.
 
-Isolation acceptance uses two distinct users and attempts cross-user access across every row in the audit table, including simultaneous SSE, guessed IDs, stale control leases, swapped upload IDs, provider callbacks, channel routing and background jobs. Also test anonymous access, expired/revoked sessions, foreign origins, reconnects, storage URLs and credential reveals. One successful personal Google login proves a live login only; it does not prove isolation. A second live identity test remains pending until an authorized second account is available.
+Isolation acceptance uses two distinct users and attempts cross-user access across every row in the audit table, including simultaneous SSE, guessed IDs, stale control leases, swapped upload IDs, provider callbacks, channel routing and background jobs. Also test anonymous access, expired/revoked sessions, foreign origins, reconnects, storage URLs, avatar loading, credential reveals and role escalation. Confirm that developer access retains owner checks. One successful personal Google login proves a live login only; it does not prove isolation. A second live identity test remains pending until an authorized second account is available.
 
 ## Required documentation updates during implementation
 

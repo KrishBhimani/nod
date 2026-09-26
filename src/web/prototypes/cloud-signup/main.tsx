@@ -20,6 +20,7 @@ import {
   Monitor,
   Moon,
   PanelLeftClose,
+  PanelLeftOpen,
   Pause,
   PlugZap,
   Plus,
@@ -35,6 +36,8 @@ import {
 import { BrandMark } from '../../components/brand';
 import '../../theme.css';
 import './prototype.css';
+import alexPicture from './avatars/alex.svg';
+import samPicture from './avatars/sam.svg';
 
 type Variant = 'A' | 'B' | 'C';
 type Page =
@@ -48,7 +51,8 @@ type Page =
   | 'Profile'
   | 'Settings';
 type AccountId = 'alex' | 'sam';
-type AppId = 'gmail' | 'googlecalendar' | 'googledrive' | 'slack' | 'notion';
+type AppId =
+  'gmail' | 'googlecalendar' | 'googledrive' | 'googledocs' | 'googlesheets' | 'slack' | 'notion';
 type Connection = {
   id: string;
   identity: string;
@@ -59,12 +63,12 @@ type Theme = 'system' | 'light' | 'dark';
 type Person = {
   name: string;
   email: string;
+  picture: string;
   theme: Theme;
   timezone: string;
   quiet: boolean;
   apps: Partial<Record<AppId, Connection[]>>;
   telegram: 'none' | 'paired' | 'tested';
-  hostMode: string;
   computer: 'asleep' | 'running' | 'manual' | 'unavailable';
   messages: { role: 'user' | 'assistant'; text: string }[];
 };
@@ -113,6 +117,18 @@ const apps: { id: AppId; name: string; description: string; access: string[] }[]
     access: ['Find and read files you grant access to', 'Create and edit files when you ask'],
   },
   {
+    id: 'googledocs',
+    name: 'Google Docs',
+    description: 'Create and edit documents.',
+    access: ['Read documents you grant access to', 'Create and edit documents'],
+  },
+  {
+    id: 'googlesheets',
+    name: 'Google Sheets',
+    description: 'Work with your spreadsheets.',
+    access: ['Read spreadsheets you grant access to', 'Create and edit spreadsheets'],
+  },
+  {
     id: 'slack',
     name: 'Slack',
     description: 'Catch up on the conversations that matter.',
@@ -137,29 +153,51 @@ const freshPeople = (): Record<AccountId, Person> => ({
   alex: {
     name: 'Alex Morgan',
     email: 'alex@example.test',
+    picture: alexPicture,
     theme: 'system',
     timezone: 'Europe/Lisbon',
     quiet: true,
     apps: {},
     telegram: 'none',
-    hostMode: 'Managed cloud computer',
     computer: 'asleep',
     messages: [],
   },
   sam: {
     name: 'Sam Rivera',
     email: 'sam@example.test',
+    picture: samPicture,
     theme: 'system',
     timezone: 'Europe/London',
     quiet: true,
     apps: {},
     telegram: 'none',
-    hostMode: 'Managed cloud computer',
     computer: 'asleep',
     messages: [],
   },
 });
 
+function Avatar({ person, size = '' }: { person: Person; size?: 'large' | 'greeting' | '' }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [person.picture]);
+  return (
+    <span className={`avatar ${size}`}>
+      {person.picture && !failed ? (
+        <img
+          src={person.picture}
+          alt={person.name}
+          onError={() => setFailed(true)}
+          referrerPolicy="no-referrer"
+        />
+      ) : (
+        person.name
+          .split(' ')
+          .map((part) => part[0])
+          .slice(0, 2)
+          .join('')
+      )}
+    </span>
+  );
+}
 function GoogleMark() {
   return (
     <svg width="19" height="19" viewBox="0 0 24 24" aria-hidden="true">
@@ -228,17 +266,22 @@ function Modal({
   children,
   close,
   wide = false,
+  returnFocus,
 }: {
   title: string;
   children: React.ReactNode;
   close: () => void;
   wide?: boolean;
+  returnFocus?: () => HTMLElement | null;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     ref.current?.showModal();
-    return () => previous?.focus();
+    return () => {
+      const target = returnFocus?.() ?? (previous?.isConnected ? previous : null);
+      target?.focus({ preventScroll: true });
+    };
   }, []);
   return (
     <dialog
@@ -270,12 +313,21 @@ function App() {
   const [account, setAccount] = useState<AccountId | null>(null);
   const [screen, setScreen] = useState<'login' | 'welcome' | 'preferences' | 'app'>('login');
   const [page, setPage] = useState<Page>('Chat');
-  const [settingsTab, setSettingsTab] = useState<
-    'Profile' | 'Appearance' | 'Preferences' | 'Privacy'
-  >('Profile');
+  const [settingsTab, setSettingsTab] = useState<'Profile' | 'Appearance' | 'Preferences'>(
+    'Profile',
+  );
   const [accountMenu, setAccountMenu] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [developerEnabled, setDeveloperEnabled] = useState(
+    import.meta.env.DEV && new URLSearchParams(location.search).get('developer') === '1',
+  );
+  const developer = import.meta.env.DEV && developerEnabled;
+  const computerProvider = import.meta.env.VITE_PROTOTYPE_COMPUTER_PROVIDER || 'Cloud computer';
+  const navigationButton = useRef<HTMLButtonElement>(null);
+  const accountAnchor = useRef<HTMLDivElement>(null);
+  const settingsTrigger = useRef<HTMLElement | null>(null);
   const [review, setReview] = useState(false);
   const [modal, setModal] = useState<'google' | 'telegram' | 'disconnect' | null>(null);
   const [connecting, setConnecting] = useState<AppId | null>(null);
@@ -326,6 +378,26 @@ function App() {
     media.addEventListener('change', update);
     return () => media.removeEventListener('change', update);
   }, [person.theme]);
+  useEffect(() => {
+    const viewport = matchMedia('(max-width: 640px)');
+    const closeOnDesktop = () => {
+      if (!viewport.matches) setMobileNav(false);
+    };
+    viewport.addEventListener('change', closeOnDesktop);
+    return () => viewport.removeEventListener('change', closeOnDesktop);
+  }, []);
+  useEffect(() => {
+    if (!accountMenu) return;
+    const dismiss = (event: PointerEvent) => {
+      if (!accountAnchor.current?.contains(event.target as Node)) setAccountMenu(false);
+    };
+    document.addEventListener('pointerdown', dismiss);
+    return () => document.removeEventListener('pointerdown', dismiss);
+  }, [accountMenu]);
+  const closeMobileNav = () => {
+    setMobileNav(false);
+    navigationButton.current?.focus();
+  };
   const chooseVariant = (next: Variant) => {
     setVariant(next);
     setSettingsOpen(false);
@@ -353,7 +425,7 @@ function App() {
         setAccountMenu(false);
         setSettingsOpen(false);
         setReview(false);
-        setMobileNav(false);
+        closeMobileNav();
       }
     };
     window.addEventListener('keydown', keyboard);
@@ -381,15 +453,20 @@ function App() {
     setSettingsTab('Profile');
   };
   const go = (next: Page) => {
+    if (next === 'Computer' && !developer) return;
     setPage(next);
     setMobileNav(false);
     setAccountMenu(false);
     setAccessDenied(false);
   };
   const openSettings = (tab: typeof settingsTab) => {
+    settingsTrigger.current = mobileNav
+      ? navigationButton.current
+      : (accountAnchor.current?.querySelector<HTMLButtonElement>('.account-button') ?? null);
     setSettingsTab(tab);
     setEditingName(person.name);
     setAccountMenu(false);
+    setMobileNav(false);
     if (variant === 'B') go(tab === 'Profile' ? 'Profile' : 'Settings');
     else setSettingsOpen(true);
   };
@@ -437,9 +514,7 @@ function App() {
     setConnecting(null);
     setReconnecting(null);
     setConnectionError('');
-    notice(
-      `${apps.find((a) => a.id === id)?.name} ${reconnecting ? 'reconnected' : 'connected'} in this preview.`,
-    );
+    notice(`${apps.find((a) => a.id === id)?.name} ${reconnecting ? 'reconnected' : 'connected'}.`);
   };
   const advanceAppSetup = () => {
     const next = { ...person.apps };
@@ -453,18 +528,12 @@ function App() {
     patch({ apps: next });
     setScreen('app');
     go('Apps');
-    notice(
-      changed
-        ? 'Periodic updates enabled in this preview. No event has arrived yet.'
-        : 'Connect Gmail or Calendar first. Reconnect accounts that need attention.',
-    );
+    notice(changed ? 'App setup complete.' : 'Connect Gmail or Calendar first.');
   };
   const requireReconnect = () => {
-    const id = (['gmail', 'googlecalendar', 'googledrive', 'slack', 'notion'] as AppId[]).find(
-      (app) => person.apps[app]?.length,
-    );
+    const id = apps.find((app) => person.apps[app.id]?.length)?.id;
     if (!id) {
-      notice('Connect a demo account first.');
+      notice('Connect an account first.');
       return;
     }
     patch({
@@ -475,15 +544,17 @@ function App() {
         ),
       },
     });
-    setScreen('app');
-    go('Apps');
+    if (screen !== 'welcome') {
+      setScreen('app');
+      go('Apps');
+    }
   };
   const deliverSampleEvent = () => {
     const id = (['googlecalendar', 'gmail'] as const).find((app) =>
       person.apps[app]?.some((connection) => connection.status === 'ready'),
     );
     if (!id) {
-      notice('Enable periodic updates for a connected Gmail or Calendar account first.');
+      notice('Complete app setup first.');
       return;
     }
     const source = person.apps[id]!.find((connection) => connection.status === 'ready')!;
@@ -494,8 +565,8 @@ function App() {
     }).format(new Date());
     const text =
       id === 'googlecalendar'
-        ? `Your 10:00 meeting on ${source.identity} moved to 10:30. There is a little more time to finish your proposal. This is a simulated Calendar event.`
-        : `A new message arrived in the inbox for ${source.identity}: “Feedback on your proposal”. This is a simulated Gmail event.`;
+        ? `Your 10:00 meeting on ${source.identity} moved to 10:30. There is a little more time to finish your proposal.`
+        : `A new message arrived in the inbox for ${source.identity}: “Feedback on your proposal”.`;
     patch({
       apps: {
         ...person.apps,
@@ -509,7 +580,7 @@ function App() {
     });
     setScreen('app');
     go('Chat');
-    notice('Sample event received and processed in this preview.');
+    notice('Event received.');
   };
   const previewTelegram = (step: 'expired' | 'conflict') => {
     setReview(false);
@@ -523,8 +594,8 @@ function App() {
   const send = (text = draft) => {
     if (!text.trim()) return;
     const response = availableCount
-      ? 'I can help with that. In the live product I would use only the accounts you connected. This preview shows the conversation flow; it has not read or sent anything.'
-      : 'Let’s start here. Tell me what you’d like a hand with. You can connect your email or calendar whenever you need them.';
+      ? 'Let’s make a plan. What would you like to focus on first?'
+      : 'What would you like a hand with?';
     patch({
       messages: [
         ...person.messages,
@@ -536,52 +607,49 @@ function App() {
   };
   const appRow = (app: (typeof apps)[number], compact = false) => {
     const connections = person.apps[app.id] ?? [];
-    const periodic = app.id === 'gmail' || app.id === 'googlecalendar';
     return (
-      <div key={app.id}>
-        {!connections.length ? (
-          <div className={`service-row ${compact ? 'compact' : ''}`}>
-            <AppIcon id={app.id} />
-            <div className="service-copy">
-              <h3>{app.name}</h3>
-              <p>{app.description}</p>
-            </div>
-            <Button onClick={() => startConnection(app.id)}>Connect</Button>
+      <div
+        key={app.id}
+        data-app-id={app.id}
+        className={compact ? 'onboarding-app-card' : 'app-card'}
+      >
+        <div className={`service-row ${compact ? 'compact' : ''}`}>
+          <AppIcon id={app.id} />
+          <div className="service-copy">
+            <h3>{app.name}</h3>
+            {!compact && !connections.length && <p>{app.description}</p>}
           </div>
-        ) : (
-          <>
+          {connections.length ? (
+            <button
+              className="icon-btn"
+              aria-label={`Add ${app.name} account`}
+              title="Add account"
+              onClick={() => startConnection(app.id)}
+            >
+              <Plus size={17} />
+            </button>
+          ) : (
+            <Button onClick={() => startConnection(app.id)}>Connect</Button>
+          )}
+        </div>
+        {connections.length > 0 && (
+          <div className={compact ? 'onboarding-account-list' : 'app-account-list'}>
             {connections.map((connection) => (
-              <div className={`service-row ${compact ? 'compact' : ''}`} key={connection.id}>
-                <AppIcon id={app.id} />
+              <div className="service-row connected-account" key={connection.id}>
                 <div className="service-copy">
-                  <h3>{app.name}</h3>
                   <p>{connection.identity}</p>
-                  {connection.status === 'pending' && (
-                    <span className="small-status">
-                      <Clock3 size={12} />
-                      Connected · periodic updates being set up
-                    </span>
-                  )}
-                  {connection.status === 'ready' && (
-                    <span className="small-status good">
-                      <Check size={12} />
-                      {periodic ? 'Connected · periodic updates enabled' : 'Connected'}
-                    </span>
-                  )}
-                  {connection.status === 'ready' && periodic && (
-                    <p>
-                      {connection.lastEvent
-                        ? `Last simulated event: ${connection.lastEvent}`
-                        : 'No events received yet'}
-                    </p>
-                  )}
-                  {connection.status === 'attention' && (
+                  {connection.status === 'attention' ? (
                     <button
                       className="text-button warning"
                       onClick={() => startConnection(app.id, connection.id)}
                     >
-                      Reconnect this account to resume access
+                      Reconnect
                     </button>
+                  ) : (
+                    <span className="small-status good">
+                      <Check size={12} />
+                      Connected
+                    </span>
                   )}
                 </div>
                 <button
@@ -592,19 +660,11 @@ function App() {
                     setModal('disconnect');
                   }}
                 >
-                  <X size={16} />
+                  <X size={15} />
                 </button>
               </div>
             ))}
-            {!compact && (
-              <div className="service-add">
-                <button className="text-button" onClick={() => startConnection(app.id)}>
-                  <Plus size={13} />
-                  Add another {app.name} account
-                </button>
-              </div>
-            )}
-          </>
+          </div>
         )}
       </div>
     );
@@ -612,26 +672,20 @@ function App() {
   const profileContent = (
     <>
       <div className="profile-identity">
-        <div className="avatar large">
-          {person.name
-            .split(' ')
-            .map((s) => s[0])
-            .slice(0, 2)
-            .join('')}
-        </div>
+        <Avatar person={person} size="large" />
         <div>
           <h3>{person.name}</h3>
           <p>{person.email}</p>
-          <span className="small-status">
-            <GoogleMark /> Signed in with Google
-          </span>
         </div>
       </div>
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          patch({ name: editingName.trim() || person.name });
-          notice('Profile saved in this preview.');
+          const name = editingName.trim();
+          if (!name) return;
+          patch({ name });
+          setEditingName(name);
+          notice('Profile saved.');
         }}
       >
         <label className="field">
@@ -646,20 +700,12 @@ function App() {
         <label className="field">
           Email
           <input value={person.email} readOnly />
-          <span>Your email comes from your Google account.</span>
         </label>
-        <label className="field">
-          Time zone
-          <select value={person.timezone} onChange={(e) => patch({ timezone: e.target.value })}>
-            <option>Europe/Lisbon</option>
-            <option>Europe/London</option>
-            <option>America/New_York</option>
-          </select>
-          <span>Used for your schedule and quiet hours.</span>
-        </label>
-        <Button primary type="submit">
-          Save changes
-        </Button>
+        {editingName.trim() !== person.name && (
+          <Button primary type="submit" disabled={!editingName.trim()}>
+            Save changes
+          </Button>
+        )}
       </form>
     </>
   );
@@ -668,8 +714,7 @@ function App() {
       {settingsTab === 'Profile' && profileContent}
       {settingsTab === 'Appearance' && (
         <>
-          <h3 className="section-heading">Make yourself at home</h3>
-          <p className="muted section-intro">Choose how Sidekick looks on this device.</p>
+          <h3 className="section-heading">Appearance</h3>
           <div className="theme-options">
             {(['light', 'dark', 'system'] as Theme[]).map((theme) => {
               const Icon = theme === 'light' ? Sun : theme === 'dark' ? Moon : Monitor;
@@ -697,21 +742,23 @@ function App() {
               );
             })}
           </div>
-          <p className="subtle-note">
-            Your choice applies immediately. Preview settings reset on reload.
-          </p>
         </>
       )}
       {settingsTab === 'Preferences' && (
         <>
-          <h3 className="section-heading">Keep the useful updates</h3>
-          <p className="muted section-intro">
-            Sidekick can notice relevant changes in your connected apps.
-          </p>
+          <h3 className="section-heading">Preferences</h3>
+          <label className="field">
+            Time zone
+            <select value={person.timezone} onChange={(e) => patch({ timezone: e.target.value })}>
+              <option>Europe/Lisbon</option>
+              <option>Europe/London</option>
+              <option>America/New_York</option>
+            </select>
+          </label>
           <div className="setting-row">
             <div>
               <strong>Quiet hours</strong>
-              <p>Hold routine updates between 22:00 and 08:00.</p>
+              <p>22:00–08:00</p>
             </div>
             <button
               className={`toggle ${person.quiet ? 'on' : ''}`}
@@ -723,66 +770,14 @@ function App() {
               <span />
             </button>
           </div>
-          <div className="setting-row">
-            <div>
-              <strong>Time zone</strong>
-              <p>{person.timezone}</p>
-            </div>
-            <button className="text-button" onClick={() => setSettingsTab('Profile')}>
-              Change
-            </button>
-          </div>
-          <div className="plain-note">
-            <MessageCircle size={18} />
-            <p>You can also tell Sidekick what deserves your attention in chat.</p>
-          </div>
-        </>
-      )}
-      {settingsTab === 'Privacy' && (
-        <>
-          <h3 className="section-heading">Your space, your accounts</h3>
-          <p className="muted section-intro">
-            Your chats, files, app connections and computer belong to your account.
-          </p>
-          <div className="setting-row">
-            <div>
-              <strong>Connected accounts</strong>
-              <p>Review access or disconnect an app.</p>
-            </div>
-            <Button
-              onClick={() => {
-                setSettingsOpen(false);
-                go('Apps');
-              }}
-            >
-              Manage apps
-            </Button>
-          </div>
-          <div className="setting-row">
-            <div>
-              <strong>This session</strong>
-              <p>Signed in as {person.email}</p>
-            </div>
-            <Button onClick={signOut}>
-              <LogOut size={15} />
-              Sign out
-            </Button>
-          </div>
-          <div className="plain-note">
-            <ShieldCheck size={18} />
-            <p>
-              Security and data-isolation behavior are design requirements. This UI prototype does
-              not verify them.
-            </p>
-          </div>
         </>
       )}
     </>
   );
   const settingsPanel = (
     <div className="settings-layout">
-      <nav aria-label="Account settings">
-        {(['Profile', 'Appearance', 'Preferences', 'Privacy'] as const).map((tab) => (
+      <nav className="settings-nav" aria-label="Account settings">
+        {(['Profile', 'Appearance', 'Preferences'] as const).map((tab) => (
           <button
             key={tab}
             aria-current={settingsTab === tab ? 'page' : undefined}
@@ -794,6 +789,12 @@ function App() {
         ))}
       </nav>
       <div className="settings-body">{settingsContent}</div>
+      <div className="settings-signout">
+        <button className="text-button" onClick={signOut}>
+          <LogOut size={16} />
+          Sign out
+        </button>
+      </div>
     </div>
   );
 
@@ -886,22 +887,10 @@ function App() {
             )}
             {screen === 'welcome' ? (
               <>
-                <div className="avatar greeting">{person.name[0]}</div>
+                <Avatar person={person} size="greeting" />
                 <h1>Welcome, {person.name.split(' ')[0]}.</h1>
-                <p className="lead">Give your assistant a little context.</p>
-                <p className="muted onboarding-explanation">
-                  Connect the apps you want help with. You can add or remove accounts at any time.
-                </p>
-                <div className="onboarding-apps">
-                  {apps.slice(0, 2).map((app) => appRow(app, true))}
-                </div>
-                <div className="plain-note">
-                  <ShieldCheck size={17} />
-                  <p>
-                    You review access on Google’s consent screen. Background updates become
-                    available after setup.
-                  </p>
-                </div>
+                <p className="lead">Connect your apps.</p>
+                <div className="onboarding-apps">{apps.map((app) => appRow(app, true))}</div>
                 <div className="onboarding-actions">
                   <Button
                     primary
@@ -926,8 +915,7 @@ function App() {
               </>
             ) : (
               <>
-                <h1>At your pace.</h1>
-                <p className="lead">A couple of preferences before you start.</p>
+                <h1>Your preferences</h1>
                 <div className="onboarding-preferences">
                   <label className="field">
                     Time zone
@@ -943,7 +931,7 @@ function App() {
                   <div className="setting-row">
                     <div>
                       <strong>Quiet hours</strong>
-                      <p>Keep 22:00–08:00 clear of routine updates.</p>
+                      <p>22:00–08:00</p>
                     </div>
                     <button
                       className={`toggle ${person.quiet ? 'on' : ''}`}
@@ -963,93 +951,115 @@ function App() {
               </>
             )}
           </div>
-          <footer>
-            {person.email}
-            <span>Only you can access this workspace</span>
-          </footer>
+          <footer>{person.email}</footer>
         </main>
       ) : (
-        <div className={`workspace variant-${variant}`}>
+        <div
+          className={`workspace variant-${variant} ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}
+        >
           <header className="mobile-header">
             <Logo />
             <button
+              ref={navigationButton}
               className="icon-btn"
-              aria-label="Open navigation"
+              aria-label={mobileNav ? 'Close navigation' : 'Open navigation'}
+              aria-expanded={mobileNav}
+              aria-controls="main-sidebar"
               onClick={() => setMobileNav(!mobileNav)}
             >
               <Menu size={21} />
             </button>
           </header>
-          <aside className={`sidebar ${mobileNav ? 'mobile-open' : ''}`}>
+          {mobileNav && (
+            <button
+              className="mobile-nav-backdrop"
+              aria-label="Close navigation"
+              onClick={closeMobileNav}
+            />
+          )}
+          <aside id="main-sidebar" className={`sidebar ${mobileNav ? 'mobile-open' : ''}`}>
             <div className="sidebar-brand">
               <Logo />
               <button
-                className="icon-btn close-nav"
-                aria-label="Close navigation"
-                onClick={() => setMobileNav(false)}
+                className="icon-btn sidebar-toggle"
+                aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
               >
-                <PanelLeftClose size={18} />
+                {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+              </button>
+              <button
+                className="icon-btn sidebar-mobile-close"
+                aria-label="Close navigation"
+                onClick={closeMobileNav}
+              >
+                <X size={20} />
               </button>
             </div>
-            <nav aria-label="Main navigation">
+            <div className="mobile-account-header">
+              <Avatar person={person} />
+              <div>
+                <strong>{person.name}</strong>
+                <small>{person.email}</small>
+              </div>
+            </div>
+            <nav className="sidebar-nav" aria-label="Main navigation">
               {nav.map(({ name, icon: Icon }) => (
                 <button
                   key={name}
                   className={`nav-item ${page === name ? 'active' : ''}`}
+                  aria-label={name}
+                  title={name}
                   aria-current={page === name ? 'page' : undefined}
                   onClick={() => go(name)}
                 >
-                  <Icon size={19} strokeWidth={1.7} />
-                  {name}
+                  <span className="nav-icon">
+                    <Icon size={19} strokeWidth={1.7} />
+                  </span>
+                  <span className="nav-label">{name}</span>
                   {name === 'Apps' && connectedCount > 0 && (
                     <span className="nav-count">{connectedCount}</span>
                   )}
                 </button>
               ))}
             </nav>
+            <button
+              className="mobile-settings-link nav-item"
+              onClick={() => openSettings('Profile')}
+            >
+              <span className="nav-icon">
+                <Settings size={19} />
+              </span>
+              <span className="nav-label">Settings</span>
+            </button>
             <div className="sidebar-bottom">
-              <button
-                className={`computer-link ${page === 'Computer' ? 'active' : ''}`}
-                onClick={() => go('Computer')}
-              >
-                <Monitor size={17} />
-                <span>
-                  Computer
-                  <small>
-                    {person.computer === 'asleep'
-                      ? 'Ready when you need it'
-                      : person.computer === 'manual'
-                        ? 'You have control'
-                        : person.computer === 'unavailable'
-                          ? 'Needs attention'
-                          : 'Available'}
-                  </small>
-                </span>
-                <span
-                  className={`status-dot ${person.computer === 'running' || person.computer === 'manual' ? 'online' : ''}`}
-                />
-              </button>
-              {variant === 'B' && (
+              {developer && (
                 <button
-                  className={`nav-item ${page === 'Profile' || page === 'Settings' ? 'active' : ''}`}
-                  onClick={() => openSettings('Profile')}
+                  className={`computer-link ${page === 'Computer' ? 'active' : ''}`}
+                  title="Computer"
+                  aria-label="Computer"
+                  onClick={() => go('Computer')}
                 >
-                  <Settings size={18} />
-                  Account & settings
+                  <span className="nav-icon">
+                    <Monitor size={17} />
+                  </span>
+                  <span className="nav-label">Computer</span>
+                  <span
+                    className={`status-dot ${person.computer === 'running' || person.computer === 'manual' ? 'online' : ''}`}
+                  />
                 </button>
               )}
-              <div className="account-anchor">
+              <div className="account-anchor" ref={accountAnchor}>
                 {accountMenu && (
                   <div className="account-menu">
                     <div className="menu-identity">
-                      <strong>{person.name}</strong>
-                      <small>{person.email}</small>
+                      <Avatar person={person} />
+                      <div>
+                        <strong>{person.name}</strong>
+                        <small>{person.email}</small>
+                      </div>
                     </div>
                     <button onClick={() => openSettings('Profile')}>
-                      <UserRound size={17} />
-                      Profile
-                    </button>
-                    <button onClick={() => openSettings('Appearance')}>
                       <Settings size={17} />
                       Settings
                     </button>
@@ -1061,20 +1071,15 @@ function App() {
                 )}
                 <button
                   className="account-button"
-                  aria-label="Open account menu"
+                  aria-label={`Open account menu for ${person.name}`}
+                  title={person.name}
                   aria-expanded={accountMenu}
                   onClick={() => setAccountMenu(!accountMenu)}
                 >
-                  <span className="avatar">
-                    {person.name
-                      .split(' ')
-                      .map((s) => s[0])
-                      .slice(0, 2)
-                      .join('')}
-                  </span>
-                  <span>
+                  <Avatar person={person} />
+                  <span className="account-copy">
                     <strong>{person.name}</strong>
-                    <small>Personal account</small>
+                    <small>{person.email}</small>
                   </span>
                   <ChevronDown size={16} />
                 </button>
@@ -1082,13 +1087,11 @@ function App() {
             </div>
           </aside>
           <main className={`main-content ${page === 'Chat' ? 'chat-page' : ''}`}>
-            <header className="page-top">
-              <span>{page === 'Chat' ? 'Your conversation' : page}</span>
-              <span className="private-label">
-                <LockKeyhole size={12} />
-                Your private workspace
-              </span>
-            </header>
+            {page !== 'Chat' && (
+              <header className="page-top">
+                <span>{page}</span>
+              </header>
+            )}
             {accessDenied ? (
               <div className="unavailable-page">
                 <ShieldCheck size={32} />
@@ -1099,46 +1102,22 @@ function App() {
             ) : page === 'Chat' ? (
               <>
                 <div className="conversation">
-                  <div className="conversation-heading">
-                    <Logo word={false} />
-                    <h1>
-                      {person.messages.length
-                        ? 'A little help, right here.'
-                        : `What’s on your mind, ${person.name.split(' ')[0]}?`}
-                    </h1>
-                    <p>
-                      {availableCount
-                        ? 'Your connected accounts are ready to help.'
-                        : connectedCount
-                          ? 'Reconnect your apps when you need them. We can keep chatting here.'
-                          : 'Make a plan, work through an idea, or take something off your list.'}
-                    </p>
-                  </div>
+                  {!person.messages.length && (
+                    <div className="conversation-heading">
+                      <Logo word={false} />
+                      <h1>What’s on your mind, {person.name.split(' ')[0]}?</h1>
+                    </div>
+                  )}
                   {!person.messages.length && (
                     <>
-                      <div className="assistant-opening">
-                        {variant === 'C' ? (
-                          <>
-                            <p>Welcome to your Sidekick. What would you like a hand with?</p>
-                            <p className="muted">
-                              If you want help with your day, connect Gmail or Calendar. We can do
-                              that whenever you’re ready.
-                            </p>
-                            <Button onClick={() => go('Apps')}>
-                              <PlugZap size={16} />
-                              Connect an app
-                            </Button>
-                          </>
-                        ) : (
-                          <>
-                            <p>
-                              {availableCount
-                                ? 'You’re all set to start. What would you like to do first?'
-                                : 'We can start with a conversation. Your apps will be here when you need them.'}
-                            </p>
-                          </>
-                        )}
-                      </div>
+                      {variant === 'C' && !connectedCount && (
+                        <div className="assistant-opening">
+                          <Button onClick={() => go('Apps')}>
+                            <PlugZap size={16} />
+                            Connect your apps
+                          </Button>
+                        </div>
+                      )}
                       <div className="suggestions">
                         <button onClick={() => send('Help me plan a focused day')}>
                           <Sun size={17} />
@@ -1197,10 +1176,6 @@ function App() {
                       }}
                     />
                     <div className="composer-tools">
-                      <span>
-                        <LockKeyhole size={13} />
-                        Only in your workspace
-                      </span>
                       <button
                         type="submit"
                         className="send-button"
@@ -1211,9 +1186,6 @@ function App() {
                       </button>
                     </div>
                   </form>
-                  <p className="composer-note">
-                    Sidekick can make mistakes. Review important actions.
-                  </p>
                 </div>
               </>
             ) : (
@@ -1224,21 +1196,9 @@ function App() {
                       <PlugZap size={26} />
                       <div>
                         <h1>Your apps</h1>
-                        <p>Choose the accounts your assistant can work with.</p>
                       </div>
                     </div>
-                    <div className="account-explainer">
-                      <GoogleMark />
-                      <p>
-                        Signing in with Google connects your Sidekick account. Gmail and Calendar
-                        need their own permission.
-                      </p>
-                    </div>
                     <div className="service-list">{apps.map((app) => appRow(app))}</div>
-                    <p className="subtle-note">
-                      Gmail inbox and primary-calendar updates are checked about every 15 minutes.
-                      Enabling updates does not confirm an event has arrived.
-                    </p>
                   </>
                 )}
                 {page === 'Channels' && (
@@ -1246,8 +1206,7 @@ function App() {
                     <div className="page-heading">
                       <Send size={26} />
                       <div>
-                        <h1>Talk to Sidekick elsewhere</h1>
-                        <p>Keep your assistant close, even with this tab closed.</p>
+                        <h1>Channels</h1>
                       </div>
                     </div>
                     <div className="service-row">
@@ -1256,7 +1215,7 @@ function App() {
                         <h3>Telegram</h3>
                         <p>
                           {person.telegram === 'none'
-                            ? 'Connect your own bot to your private assistant.'
+                            ? 'Chat with your assistant in Telegram.'
                             : telegramHandle}
                         </p>
                         {person.telegram !== 'none' && (
@@ -1268,9 +1227,7 @@ function App() {
                             ) : (
                               <Clock3 size={13} />
                             )}
-                            {person.telegram === 'tested'
-                              ? 'Test reply received in this preview'
-                              : 'Paired with your Telegram account'}
+                            {person.telegram === 'tested' ? 'Connected' : 'Finish setup'}
                           </span>
                         )}
                       </div>
@@ -1283,19 +1240,12 @@ function App() {
                         {person.telegram === 'none' ? 'Connect' : 'Test connection'}
                       </Button>
                     </div>
-                    <div className="plain-note">
-                      <ShieldCheck size={18} />
-                      <p>
-                        Pairing links your Telegram account to Sidekick. Your bot only responds to
-                        the account you verify.
-                      </p>
-                    </div>
                     {person.telegram !== 'none' && (
                       <button
                         className="text-button danger"
                         onClick={() => {
                           patch({ telegram: 'none' });
-                          notice('Telegram disconnected in this preview.');
+                          notice('Telegram disconnected.');
                         }}
                       >
                         Disconnect Telegram
@@ -1303,13 +1253,12 @@ function App() {
                     )}
                   </>
                 )}
-                {page === 'Computer' && (
+                {page === 'Computer' && developer && (
                   <>
                     <div className="page-heading">
                       <Monitor size={26} />
                       <div>
-                        <h1>Your computer</h1>
-                        <p>A separate place for Sidekick to browse and work for you.</p>
+                        <h1>Computer</h1>
                       </div>
                     </div>
                     <div className="computer-summary">
@@ -1326,7 +1275,7 @@ function App() {
                                 ? 'Unable to start your computer'
                                 : 'Ready to work'}
                         </strong>
-                        <p>{person.hostMode}. Available only to your account.</p>
+                        <p>{computerProvider}</p>
                       </div>
                       {person.computer === 'asleep' || person.computer === 'unavailable' ? (
                         <Button primary onClick={() => patch({ computer: 'running' })}>
@@ -1394,7 +1343,6 @@ function App() {
                                 ? 'The assistant waits while you use the browser. Resume it when you are ready.'
                                 : 'Ask Sidekick to look something up or work on a file.'}
                             </p>
-                            <span className="preview-tag">Simulated computer preview</span>
                           </>
                         )}
                       </div>
@@ -1406,24 +1354,6 @@ function App() {
                         conversation.
                       </p>
                     </div>
-                    <details className="advanced">
-                      <summary>Computer options</summary>
-                      <p>
-                        Your host decides which providers are available. A change starts a new
-                        computer; browser sign-ins do not move between providers.
-                      </p>
-                      <label className="field">
-                        Available in this preview
-                        <select
-                          value={person.hostMode}
-                          onChange={(e) => patch({ hostMode: e.target.value, computer: 'asleep' })}
-                        >
-                          <option>Managed cloud computer</option>
-                          <option>Local Docker computer</option>
-                          <option>Alternative cloud provider</option>
-                        </select>
-                      </label>
-                    </details>
                   </>
                 )}
                 {(page === 'Profile' || page === 'Settings') && (
@@ -1431,8 +1361,7 @@ function App() {
                     <div className="page-heading">
                       <UserRound size={26} />
                       <div>
-                        <h1>Account & settings</h1>
-                        <p>Make Sidekick feel like your own.</p>
+                        <h1>Settings</h1>
                       </div>
                     </div>
                     {settingsPanel}
@@ -1498,10 +1427,6 @@ function App() {
                     <div className="quiet-empty">
                       <LockKeyhole size={30} />
                       <h3>Your vault is empty</h3>
-                      <p>
-                        Existing secure forms will become account-scoped. This design preview does
-                        not collect or store secrets.
-                      </p>
                     </div>
                   </>
                 )}
@@ -1511,7 +1436,7 @@ function App() {
           {settingsOpen && variant === 'C' && (
             <aside className="settings-drawer" aria-label="Account settings panel">
               <header>
-                <h2>Account & settings</h2>
+                <h2>Settings</h2>
                 <button
                   className="icon-btn"
                   aria-label="Close settings"
@@ -1526,21 +1451,22 @@ function App() {
         </div>
       )}
       {settingsOpen && variant === 'A' && (
-        <Modal title="Account & settings" close={() => setSettingsOpen(false)} wide>
+        <Modal
+          title="Settings"
+          close={() => setSettingsOpen(false)}
+          returnFocus={() => settingsTrigger.current}
+          wide
+        >
           {settingsPanel}
         </Modal>
       )}
       {modal === 'google' && (
-        <Modal title="Choose a demo account" close={() => setModal(null)}>
+        <Modal title="Choose an account" close={() => setModal(null)}>
           <div className="modal-body">
-            <div className="demo-note">
-              <FlaskConical size={17} />
-              <p>This is a simulated sign-in. No Google account is accessed.</p>
-            </div>
             <div className="demo-accounts">
               {(['alex', 'sam'] as AccountId[]).map((id) => (
                 <button key={id} onClick={() => enter(id)}>
-                  <span className="avatar">{people[id].name[0]}</span>
+                  <Avatar person={people[id]} />
                   <span>
                     <strong>{people[id].name}</strong>
                     <small>{people[id].email}</small>
@@ -1553,10 +1479,10 @@ function App() {
               className="text-button"
               onClick={() => {
                 setModal(null);
-                setAuthError('Google sign-in was cancelled. You can try again when you’re ready.');
+                setAuthError('Sign-in cancelled. Try again.');
               }}
             >
-              Preview cancelled sign-in
+              Cancel
             </button>
           </div>
         </Modal>
@@ -1564,6 +1490,9 @@ function App() {
       {connecting && (
         <Modal
           title={`${reconnecting ? 'Reconnect' : 'Connect'} ${apps.find((a) => a.id === connecting)?.name}`}
+          returnFocus={() =>
+            document.querySelector<HTMLButtonElement>(`[data-app-id="${connecting}"] button`)
+          }
           close={() => {
             setConnecting(null);
             setReconnecting(null);
@@ -1574,17 +1503,17 @@ function App() {
             <div className="connect-heading">
               <AppIcon id={connecting} />
               <div>
-                <h3>Choose what your assistant can access</h3>
+                <h3>{apps.find((app) => app.id === connecting)?.name}</h3>
                 <p>
-                  {['gmail', 'googlecalendar', 'googledrive'].includes(connecting)
-                    ? 'You can use a different Google account from the one you signed in with.'
-                    : `Choose the ${apps.find((a) => a.id === connecting)?.name} account or workspace you want to connect.`}
+                  {(person.apps[connecting] ?? []).find(
+                    (connection) => connection.id === reconnecting,
+                  )?.identity ?? nextIdentity(connecting)}
                 </p>
               </div>
             </div>
             <ul className="permission-list">
               {apps
-                .find((a) => a.id === connecting)
+                .find((app) => app.id === connecting)
                 ?.access.map((access) => (
                   <li key={access}>
                     <Check size={16} />
@@ -1592,45 +1521,24 @@ function App() {
                   </li>
                 ))}
             </ul>
-            <div className="demo-note">
-              <FlaskConical size={17} />
-              <p>
-                The live app will open provider consent through Composio. This preview uses the
-                fictional account{' '}
-                {(person.apps[connecting] ?? []).find(
-                  (connection) => connection.id === reconnecting,
-                )?.identity ?? nextIdentity(connecting)}
-                .
-              </p>
-            </div>
             {connectionError && (
               <div className="error-note" role="alert">
                 {connectionError}
               </div>
             )}
-            <button
-              className="text-button"
-              onClick={() =>
-                setConnectionError(
-                  'Access was not granted. Your existing connections are unchanged. You can try again when you are ready.',
-                )
-              }
-            >
-              Preview denied consent
-            </button>
             <div className="modal-actions">
               <Button
                 onClick={() => {
                   setConnecting(null);
                   setReconnecting(null);
                   setConnectionError('');
-                  notice('Connection cancelled. Nothing changed.');
+                  notice('Connection cancelled.');
                 }}
               >
                 Cancel
               </Button>
               <Button primary onClick={() => connect(connecting)}>
-                {connectionError ? 'Try simulated consent again' : 'Simulate connection'}
+                {connectionError ? 'Try again' : 'Continue'}
                 <ArrowRight size={15} />
               </Button>
             </div>
@@ -1640,6 +1548,9 @@ function App() {
       {modal === 'disconnect' && disconnecting && (
         <Modal
           title={`Disconnect ${apps.find((a) => a.id === disconnecting.app)?.name}?`}
+          returnFocus={() =>
+            document.querySelector<HTMLButtonElement>(`[data-app-id="${disconnecting.app}"] button`)
+          }
           close={() => {
             setModal(null);
             setDisconnecting(null);
@@ -1647,9 +1558,7 @@ function App() {
         >
           <div className="modal-body">
             <p>
-              Sidekick will stop using <strong>{disconnecting.connection.identity}</strong> and
-              receiving its background updates. Other connected accounts and your existing
-              conversation stay.
+              Disconnect <strong>{disconnecting.connection.identity}</strong>?
             </p>
             <div className="modal-actions">
               <Button
@@ -1672,7 +1581,7 @@ function App() {
                   });
                   setModal(null);
                   setDisconnecting(null);
-                  notice('This account was disconnected in the preview.');
+                  notice('Account disconnected.');
                 }}
               >
                 Disconnect
@@ -1709,17 +1618,13 @@ function App() {
                 <label className="field">
                   Bot token
                   <input type="password" readOnly value="demo-token-not-a-real-secret" />
-                  <span>
-                    In the live app this goes to a secure server form, never into chat. A working
-                    token verifies your bot; pairing verifies you.
-                  </span>
                 </label>
                 <div className="demo-note">
                   <FlaskConical size={17} />
                   <p>A demo token is filled in. Do not enter a real token into this prototype.</p>
                 </div>
                 <Button primary onClick={() => setTelegramStep('waiting')}>
-                  Use demo bot
+                  Continue
                   <ArrowRight size={15} />
                 </Button>
               </>
@@ -1727,10 +1632,7 @@ function App() {
               <>
                 <Link2 size={30} />
                 <h3 className="section-heading">Open your bot in Telegram</h3>
-                <p>
-                  In the live app, open Sidekick’s one-time pairing link and press Start. Then
-                  return here to confirm the Telegram identity we observed.
-                </p>
+                <p>Press Start in Telegram, then return here.</p>
                 <div className="pairing-card">
                   <AppIcon id="telegram" />
                   <div>
@@ -1740,37 +1642,22 @@ function App() {
                 </div>
                 <div className="plain-note">
                   <Clock3 size={17} />
-                  <p>
-                    Waiting for you to press Start. Your assistant cannot respond through this bot
-                    until you confirm the identity.
-                  </p>
+                  <p>Waiting for you to press Start.</p>
                 </div>
                 <Button primary onClick={() => setTelegramStep('confirm')}>
-                  Simulate pressing Start in Telegram
+                  Open Telegram
                 </Button>
               </>
             ) : telegramStep === 'confirm' ? (
               <>
                 <ShieldCheck size={30} />
                 <h3 className="section-heading">Is this your Telegram account?</h3>
-                <p>
-                  We observed this identity opening the pairing link. Confirm it here before linking
-                  your assistant.
-                </p>
                 <div className="pairing-card">
-                  <span className="avatar">{telegramIdentity[0]}</span>
+                  <Avatar person={person} />
                   <div>
                     <strong>{telegramIdentity}</strong>
-                    <small>Fictional identity: demo-telegram-{account}</small>
                     <small>Bot: {telegramHandle}</small>
                   </div>
-                </div>
-                <div className="plain-note">
-                  <LockKeyhole size={17} />
-                  <p>
-                    No assistant data has been shared. Only this confirmed private chat will have
-                    access.
-                  </p>
                 </div>
                 <div className="modal-actions">
                   <Button onClick={() => setTelegramStep('waiting')}>This isn’t me</Button>
@@ -1789,16 +1676,10 @@ function App() {
               <>
                 <Clock3 size={30} />
                 <h3 className="section-heading">This pairing link expired</h3>
-                <p>
-                  It can no longer link a Telegram account.{' '}
-                  {person.telegram === 'none'
-                    ? 'Nothing has been paired.'
-                    : 'Your existing connection is unchanged.'}
-                </p>
                 <div className="modal-actions">
                   <Button onClick={() => setModal(null)}>Cancel</Button>
                   <Button primary onClick={() => setTelegramStep('waiting')}>
-                    Create new demo pairing link
+                    Get a new link
                   </Button>
                 </div>
               </>
@@ -1806,21 +1687,11 @@ function App() {
               <>
                 <ShieldCheck size={30} />
                 <h3 className="section-heading">This bot is already in use</h3>
-                <p>
-                  It is linked elsewhere or has a webhook managed by another app. Sidekick will not
-                  replace that connection during setup.
-                </p>
-                <div className="plain-note">
-                  <LockKeyhole size={17} />
-                  <p>
-                    Use a separate bot for this account and environment. A deliberate bot move needs
-                    its own confirmed setup.
-                  </p>
-                </div>
+                <p>Connect a different bot.</p>
                 <div className="modal-actions">
                   <Button onClick={() => setModal(null)}>Cancel</Button>
                   <Button primary onClick={() => setTelegramStep('token')}>
-                    Use a different demo bot
+                    Use another bot
                   </Button>
                 </div>
               </>
@@ -1828,15 +1699,9 @@ function App() {
               <>
                 <CheckCheck size={32} className="success-icon" />
                 <h3 className="section-heading">
-                  {person.telegram === 'tested'
-                    ? 'Your test reply arrived.'
-                    : 'Paired. Try a conversation.'}
+                  {person.telegram === 'tested' ? 'You’re connected.' : 'Try a conversation.'}
                 </h3>
-                <p>
-                  {person.telegram === 'tested'
-                    ? 'This preview simulates a complete exchange with your paired Telegram account.'
-                    : 'Send “Hello Sidekick” in Telegram. After the assistant responds, reply there to confirm you received it.'}
-                </p>
+                {person.telegram !== 'tested' && <p>Send “Hello Sidekick” in Telegram.</p>}
                 <div className="telegram-transcript">
                   <div>Hello Sidekick</div>
                   {person.telegram === 'tested' ? (
@@ -1851,20 +1716,13 @@ function App() {
                     </span>
                   )}
                 </div>
-                <div className="demo-note">
-                  <FlaskConical size={17} />
-                  <p>
-                    This delivery is simulated. No Telegram message is sent. API acceptance alone
-                    would not confirm you received a reply.
-                  </p>
-                </div>
                 {person.telegram === 'tested' ? (
                   <Button primary onClick={() => setModal(null)}>
                     Done
                   </Button>
                 ) : (
                   <Button primary onClick={() => patch({ telegram: 'tested' })}>
-                    Simulate received reply and confirmation
+                    I received a reply
                   </Button>
                 )}
               </>
@@ -1919,7 +1777,8 @@ function App() {
               <p>{variants[variant].detail}</p>
               <span className="review-note">
                 All accounts, events, messages and computers are simulated. No backend or provider
-                calls.
+                calls. Google photos are represented by fictional avatar fixtures. Provider consent
+                and Telegram actions advance the preview only.
               </span>
               <div className="scenario-actions">
                 <Button
@@ -1949,17 +1808,25 @@ function App() {
                     >
                       Switch demo user
                     </Button>
+                    <Button
+                      onClick={() => {
+                        setDeveloperEnabled(!developer);
+                        if (page === 'Computer') go('Chat');
+                      }}
+                    >
+                      {developer ? 'Hide developer tools' : 'Show developer tools'}
+                    </Button>
                     <Button onClick={advanceAppSetup}>Advance app setup</Button>
                     <Button onClick={requireReconnect}>App needs reconnection</Button>
                     <Button onClick={deliverSampleEvent}>Deliver sample event</Button>
                     <Button
                       onClick={() => {
-                        setScreen('app');
-                        go('Apps');
+                        if (screen !== 'welcome') {
+                          setScreen('app');
+                          go('Apps');
+                        }
                         startConnection('gmail');
-                        setConnectionError(
-                          'The provider declined access. Your existing accounts are unchanged.',
-                        );
+                        setConnectionError('Access declined. Try again.');
                         setReview(false);
                       }}
                     >
@@ -1973,9 +1840,11 @@ function App() {
                     </Button>
                     <Button
                       onClick={() => {
+                        setDeveloperEnabled(true);
                         patch({ computer: 'unavailable' });
                         setScreen('app');
-                        go('Computer');
+                        setPage('Computer');
+                        setReview(false);
                       }}
                     >
                       Computer unavailable
@@ -1991,9 +1860,7 @@ function App() {
                     <Button
                       onClick={() => {
                         signOut();
-                        setAuthError(
-                          'Your session expired. Sign in again to continue in your workspace.',
-                        );
+                        setAuthError('Your session expired. Sign in again.');
                         setReview(false);
                       }}
                     >
@@ -2024,7 +1891,8 @@ function App() {
                       apps: person.apps,
                       telegram: person.telegram,
                       computer: person.computer,
-                      hostMode: person.hostMode,
+                      developer,
+                      computerProvider,
                       messages: person.messages.length,
                     },
                     null,

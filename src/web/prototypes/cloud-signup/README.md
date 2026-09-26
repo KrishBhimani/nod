@@ -2,7 +2,7 @@
 
 Question: which signup and account-management flow makes hosted Sidekick easy to start using while preserving its quiet, chat-centered interface?
 
-**Selected on 2026-09-26: A.** The user requested removing the account-privacy line, explanation of login versus Gmail/Calendar consent, host credit and design-preview label from the login screen. Those removals apply to the login surface; provider permissions are explained at connection time.
+**Selected on 2026-09-26: A.** Keep ordinary screens concise. The login has no privacy reassurance, login-versus-app-access explanation, host credit or preview label. Connection screens use account identity and actionable states; provider consent contains the permissions review. Event-processing details stay in developer diagnostics.
 
 This is a disposable, in-memory UI preview on `prototype/cloud-signup`. It is not authentication, an isolation boundary, a running agent, provider consent, webhook processing, or a deployment. All identities and results are synthetic. Do not enter real credentials.
 
@@ -44,18 +44,25 @@ B: login -> apps -> preferences -> chat   | full account page
 C: login -> chat + optional setup        | side drawer
 ```
 
-Keep infrastructure/provider details in research/operator configuration, not the signup path. Make permission and actual delivery distinct. Preserve two independent demo identities to review account-switch UX; this is not a server isolation test.
+The computer provider is selected when the server starts, through composition. Ordinary users see the assistant, not a Computer page, desktop stream or provider picker. A developer preview can expose simulated computer diagnostics; its client-side flag is not authorization. Production must authorize these routes server-side. A necessary private credential request is a scoped form, not general browser access.
+
+The sidebar account control uses a portrait, name and email, with an initials fallback. Profile, Appearance and Preferences belong in a simple account dialog. Production will use the verified Google picture claim through normalized, bounded safe image handling; the prototype uses synthetic local portraits and does not exercise Google claims or remote avatar loading.
+
+Desktop navigation remains vertically centered with subtle hover animation and a visible collapse/expand control. On mobile, prioritize chat and a menu for navigation and settings. Preserve two independent demo identities to review account-switch UX; this is not a server isolation test.
+
+Onboarding offers Gmail, Google Calendar, Google Drive, Google Docs, Google Sheets, Slack and Notion on one optional screen. The simulated consent flow returns to that screen with current connection status and preserves the other apps. Production must bind each return to its owned attempt and allowlisted app destination, handling cancellation, expiry and failure without arbitrary redirects. Subscription receipt and processing are independently tracked backend states; ordinary rows do not expose watch configuration or diagnostic timestamps.
 
 ## Review route
 
 1. Continue with Google and choose a synthetic account.
-2. Connect or skip Gmail/Calendar and enter the conversation.
-3. Try Apps, reconnect/disconnect and the sample-event scenario.
+2. Connect any of the seven apps, return to the same setup screen with updated status, then continue or skip.
+3. Try Apps, reconnect/disconnect, and cancelled or failed consent without losing the setup screen.
 4. Pair the synthetic Telegram bot, confirm identity and simulate a reply.
-5. Start the simulated computer, take control and resume.
-6. Open the account menu, edit the profile and change appearance.
-7. Switch demo users and inspect the separate state; exercise session expiry.
-8. Compare the three directions and narrow layouts.
+5. Open the avatar account control, edit the profile and change appearance.
+6. Collapse and expand the desktop sidebar; review navigation hover states.
+7. On a narrow screen, open the menu from chat and reach profile/settings.
+8. Switch demo users and inspect the separate state; exercise session expiry.
+9. Separately review the developer-only computer simulation and event diagnostics. Their visibility is a prototype affordance, not an authorization test.
 
 Validation results are recorded in [the prototype verification note](../../../../docs/testing/results/2026-09-26-cloud-prototype.md). The implementation proposal and official sources are in [the cloud rollout plan](../../../../docs/research/cloud-rollout-plan.md).
 

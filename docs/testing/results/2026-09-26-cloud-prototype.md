@@ -45,4 +45,20 @@ Desktop login, dark appearance, app connection and Telegram terminal states were
 
 Three independent research strands used official documentation and current source references. A second pass clarified cross-process owner-scoped events, durable worker wake-up/reconciliation, provisional computer-provider selection, aggregate pair-hour costs and separate project billing. The final [rollout proposal](../../research/cloud-rollout-plan.md) distinguishes known implementation gaps, documented provider capabilities, design choices and live verification still required.
 
-The future local-live, staging and production acceptance suites are specified in the research reports. Existing backend integration fixtures were not rerun for this documentation/standalone UI change; no backend behavior changed.
+The future local-live, staging and production acceptance suites are specified in the research reports. Existing backend integration fixtures were not rerun during the initial research pass; no backend behavior changed.
+
+## Selected A refinement
+
+The follow-up design keeps Computer behind the prototype's developer scenario and removes user provider selection. The rollout documents require server-authorized developer access and provider selection in startup configuration. Account settings now contain Profile, Appearance and Preferences; ordinary chat, Apps and onboarding omit routine privacy and event-processing explanations. The avatar component consumes the account picture field, with local fictional portraits standing in for Google's profile image until authentication is implemented.
+
+Browser checks on the revised prototype confirmed:
+
+- All seven supported integration cards appear on onboarding. Connecting Gmail returns to the same screen with its account and Connected status. Cancelling Google Docs consent keeps that screen and the existing Gmail connection.
+- Desktop navigation stays vertically centered, and both collapse and expand remain available. CSS review confirmed icon hover transitions and a reduced-motion override.
+- Editing and saving a name updates account identity. Appearance changes the rendered theme and selected control.
+- At 390×844, chat uses a compact menu control. The menu shows the avatar, account and Settings; Settings opens directly and closes the menu. Chat, menu and settings had no document-level horizontal overflow. Review caught and fixed a missing column direction in the mobile menu.
+- Computer is absent for ordinary users. The developer scenario reveals it with a read-only provider label; disabling that scenario returns to chat and removes Computer.
+
+`npm run check`, `npm run build` and the independent prototype build passed again under Node 26.7.0. Existing application dependency-annotation and bundle-size warnings remain. `npm run test:integration` was attempted but stopped before running fixtures because this checkout has no configured local or explicit test database. No database was provisioned for the UI refinement. These checks do not establish live Google OAuth, account isolation, provider connections or production readiness.
+
+The updated desktop screenshots are saved locally as `.local/cloud-prototype/refined-chat.png` and `.local/cloud-prototype/refined-settings.png`; they contain only synthetic data.
