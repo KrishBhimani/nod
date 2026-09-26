@@ -16,6 +16,8 @@ Outside editable fields, Cmd/Ctrl+B toggles the sidebar or mobile navigation men
 - Actual keyboard input verified sidebar and Inspector toggles, mobile menu access, bold and italic without navigation, and a bullet list after Shift+Enter. The synthetic draft was cleared without sending a message.
 - An independent code review found no further actionable issues in the channel lifecycle, contextual shortcuts or bullet input rule.
 
+The automated review follow-up corrected the test guide so it attributes row width and visual alignment to browser inspection. Its bullet-rule finding does not apply to Tiptap 3.31.3: input rules use `getTextContentFromNodes`, which calls the hard-break node's text serializer and supplies a newline to the matcher. The typed-input regression and actual browser check both exercised that path. The lookbehind remains in place.
+
 No live channel was removed or replaced, and no provider message was sent. Setup and removal mutations used fixtures. These checks do not establish external channel delivery or new provider authentication.
 
 Local screenshot evidence is in the ignored `.local/evidence/channel-cards-2026-09-26` directory. The local app remains available at `http://localhost:4320/channels`.
