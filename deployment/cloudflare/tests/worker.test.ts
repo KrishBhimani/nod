@@ -212,3 +212,174 @@ test('the scheduled wake targets only the configured gateway', async () => {
   await worker.scheduled({} as ScheduledController, env);
   assert.deepEqual(calls, [{ target: 'wake' }]);
 });
+
+function processFixture(
+  role: 'gateway' | 'tenant',
+  respond: (url: URL, request: Request) => Promise<Response> = async () => new Response('ready'),
+) {
+  let status = 'healthy';
+  let starts = 0;
+  let forwards = 0;
+  let startupError: Error | undefined;
+  const container = {
+    running: true,
+    getTcpPort(port: number) {
+      assert.equal(port, 4310);
+      return {
+        async fetch(url: URL, request: Request) {
+          forwards++;
+          return respond(url, request);
+        },
+      };
+    },
+  };
+  const { env } = fixture();
+  env.GATEWAY_ENV = JSON.stringify({ SIDEKICK_BIND_HOST: '127.0.0.1' });
+  const instance = Object.assign(
+    Object.create(role === 'gateway' ? GatewayContainer.prototype : TenantContainer.prototype),
+    {
+      ctx: { container },
+      env,
+      defaultPort: 4310,
+      lifecycle: { async identity() {} },
+      async getState() {
+        return { status };
+      },
+      async startAndWaitForPorts() {
+        starts++;
+        if (startupError) throw startupError;
+        container.running = true;
+        status = 'healthy';
+      },
+      renewActivityTimeout() {},
+      async containerFetch() {
+        assert.fail('HTTP must not enter the SDK response-error conversion path');
+      },
+    },
+  ) as InstanceType<typeof GatewayContainer> | InstanceType<typeof TenantContainer>;
+  const publicEnv = {
+    ...env,
+    GATEWAY: { getByName: () => instance },
+  } as unknown as Parameters<typeof worker.fetch>[1];
+  return {
+    instance,
+    container,
+    publicEnv,
+    counts: () => ({ starts, forwards }),
+    stop() {
+      container.running = false;
+      status = 'stopped';
+    },
+    failStartup() {
+      startupError = new Error('synthetic private startup configuration');
+    },
+  };
+}
+
+test('gateway forces the actual Node bind setting and safely restarts after becoming ready', async () => {
+  const current = processFixture('gateway');
+  const request = () => new Request('https://sidekick.example.test/api/health');
+  assert.equal((await worker.fetch(request(), current.publicEnv)).status, 200);
+  assert.equal((current.instance.envVars as Record<string, string>).SIDEKICK_BIND_HOST, '0.0.0.0');
+  assert.deepEqual(current.counts(), { starts: 1, forwards: 1 });
+  current.stop();
+  assert.equal((await worker.fetch(request(), current.publicEnv)).status, 200);
+  assert.deepEqual(current.counts(), { starts: 2, forwards: 2 });
+  current.stop();
+  current.failStartup();
+  const failed = await worker.fetch(request(), current.publicEnv);
+  assert.equal(failed.status, 503);
+  assert.equal(failed.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(await failed.json(), {
+    error: 'This request could not be completed. Try again.',
+  });
+  assert.deepEqual(current.counts(), { starts: 3, forwards: 2 });
+});
+
+test('anonymous gateway startup and both TCP proxy failures return fixed errors', async () => {
+  const unavailable = processFixture('gateway');
+  unavailable.failStartup();
+  const initial = await worker.fetch(
+    new Request('https://sidekick.example.test/api/session'),
+    unavailable.publicEnv,
+  );
+  assert.equal(initial.status, 503);
+  assert.doesNotMatch(await initial.text(), /synthetic|startup|configuration/);
+  for (const role of ['gateway', 'tenant'] as const) {
+    const current = processFixture(role, async () => {
+      throw new Error('synthetic private upstream credential');
+    });
+    const response = await current.instance.fetch(
+      new Request('https://sidekick.example.test/api/events'),
+    );
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await response.json(), {
+      error: 'This request could not be completed. Try again.',
+    });
+  }
+});
+
+test('container forwarding preserves application status, body, cookies and streaming', async () => {
+  for (const role of ['gateway', 'tenant'] as const)
+    for (const status of [401, 429, 500, 503]) {
+      const application = new Response(`application response ${status}`, {
+        status,
+        headers: { 'set-cookie': 'synthetic-session=accepted; HttpOnly', 'retry-after': '12' },
+      });
+      const current = processFixture(role, async (url, request) => {
+        assert.equal(url.href, 'http://sidekick.example.test/api/session?fresh=true');
+        assert.equal(request.headers.get('x-sidekick-account'), 'fixture-account');
+        return application;
+      });
+      const response = await current.instance.fetch(
+        new Request('https://sidekick.example.test/api/session?fresh=true', {
+          headers: { 'x-sidekick-account': 'fixture-account' },
+        }),
+      );
+      assert.equal(response, application);
+      assert.equal(response.status, status);
+      assert.equal(response.headers.get('retry-after'), '12');
+      assert.equal(response.headers.get('set-cookie'), 'synthetic-session=accepted; HttpOnly');
+      assert.equal(await response.text(), `application response ${status}`);
+    }
+  const stream = new TransformStream<Uint8Array, Uint8Array>();
+  const application = new Response(stream.readable, {
+    headers: { 'content-type': 'text/event-stream' },
+  });
+  const current = processFixture('gateway', async () => application);
+  const response = await current.instance.fetch(
+    new Request('https://sidekick.example.test/api/events'),
+  );
+  assert.equal(response, application);
+  const reader = response.body!.getReader();
+  const writer = stream.writable.getWriter();
+  const chunk = new TextEncoder().encode('data: fixture\n\n');
+  const write = writer.write(chunk);
+  assert.deepEqual((await reader.read()).value, chunk);
+  await write;
+  await reader.cancel();
+  await writer.closed.catch(() => {});
+});
+
+test('tenant forwarding never starts a stopped actor or restarts one lost during dispatch', async () => {
+  const stopped = processFixture('tenant');
+  stopped.stop();
+  assert.equal(
+    (await stopped.instance.fetch(new Request('https://sidekick.example.test/api/state'))).status,
+    503,
+  );
+  assert.deepEqual(stopped.counts(), { starts: 0, forwards: 0 });
+  const lost = processFixture('tenant');
+  Object.assign(lost.instance, {
+    async getState() {
+      lost.container.running = false;
+      return { status: 'healthy' };
+    },
+  });
+  assert.equal(
+    (await lost.instance.fetch(new Request('https://sidekick.example.test/api/state'))).status,
+    503,
+  );
+  assert.deepEqual(lost.counts(), { starts: 0, forwards: 0 });
+});

@@ -26,10 +26,14 @@ function configuration(ownerId = randomUUID(), version = '1') {
 
 test('tenant bootstrap binds the SQL namespace, runtime identity and environment', async () => {
   const input = configuration();
-  const result = await bootstrap(input, 'development');
+  const result = await bootstrap(
+    { ...input, env: { ...input.env, SIDEKICK_BIND_HOST: '127.0.0.1' } },
+    'development',
+  );
   assert.equal(result.env.NODE_ENV, 'production');
   assert.equal(result.env.SIDEKICK_DATA_ROOT, '/data');
   assert.equal(result.env.HOST, '0.0.0.0');
+  assert.equal(result.env.SIDEKICK_BIND_HOST, '0.0.0.0');
   assert.ok(!JSON.stringify(result.identity).includes('synthetic'));
   await assert.rejects(bootstrap(input, 'production'));
   await assert.rejects(bootstrap({ ...input, ownerId: randomUUID() }, 'development'));

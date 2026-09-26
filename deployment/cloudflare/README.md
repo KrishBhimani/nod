@@ -18,13 +18,15 @@ cd deployment/cloudflare
 npx wrangler deploy --env development --dry-run --containers-rollout=none
 ```
 
-The tests use synthetic identities, lifecycle substitutes and an in-memory object-store substitute. The dry run validates bundling and configuration; it does not start Cloudflare containers, verify a real R2 write, authenticate Google or deploy anything.
+The tests use synthetic identities, lifecycle substitutes and an in-memory object-store substitute. On 2026-09-26, type checks, all 20 package tests and both environment dry runs passed after the private bind-host and fixed-error proxy changes. The dry run validates bundling and configuration; it does not start Cloudflare containers, verify a real R2 write, authenticate Google or deploy anything. Track the separate root and live checks in the [acceptance record](../../docs/testing/results/2026-09-26-cloud-hosting.md).
 
 For the actual container stack, use `wrangler dev --env development` with a local `.dev.vars.development` secret file. Set `SIDEKICK_PUBLIC_URL` to the local Wrangler origin and use development provider accounts. Cloudflare's virtual-host outbound handlers keep the same HTTP adapter interface in local container development. The Node gateway's ordinary process transport remains the simpler way to test providers without deploying.
 
 ## Environments and secrets
 
-`wrangler.jsonc` has separate `development` and `production` Workers, Durable Object namespaces, EU R2 buckets and container applications. Replace the example `SIDEKICK_PUBLIC_URL` values with each environment's canonical HTTPS origin before deployment. Set the selected Cloudflare account through the deployment environment, rather than committing account credentials. Create both private R2 buckets in the configured EU jurisdiction.
+`wrangler.jsonc` has separate `development` and `production` Workers, Durable Object namespaces, EU R2 buckets and container applications. The repository is configured for Sidekick's verified account subdomain: `https://sidekick-development.n8n-maintenance.workers.dev` and `https://sidekick-production.n8n-maintenance.workers.dev`. These are configured destinations; neither app has been deployed there. The account's existing Workers Paid plan includes Containers, and no plan change was made for this work.
+
+For self-hosting in another account, change the Worker/resource names as needed and replace each `SIDEKICK_PUBLIC_URL` with that deployment's canonical HTTPS origin. Keep the corresponding `GATEWAY_ENV`, Google OAuth callbacks, integration callbacks and GitHub environment variable consistent with it. Set the selected Cloudflare account through the deployment environment, rather than committing account credentials. Create both private R2 buckets in the configured EU jurisdiction.
 
 Store one `GATEWAY_ENV` Worker secret per environment. Its value is the JSON object of server environment variables used by the Node gateway: the control-plane database URL, auth settings, tenant key material and operator-selected provider configuration. The Worker overrides process mode, canonical origin, environment, data directory and port. Never use build arguments, Vite variables or checked-in Wrangler `vars` for secrets.
 
@@ -32,7 +34,7 @@ Keep the compact JSON under 5 KiB including the injected `SIDEKICK_RELEASE`: thi
 
 The gateway builds each tenant's environment explicitly. Required fields are `SIDEKICK_OWNER_ID`, `SIDEKICK_ENVIRONMENT`, `SIDEKICK_MODE=tenant`, `SIDEKICK_RUNTIME_GENERATION`, `SIDEKICK_RUNTIME_SECRET`, `SIDEKICK_RUNTIME_LEASE_EXPIRES`, `DATABASE_URL` and `PGBOSS_SCHEMA`. The Worker checks that the SQL role and jobs namespace match the opaque hash of the supplied owner/environment. Only derived tenant credentials and the configured runtime provider keys belong in that environment. The control database credentials, Google login secret and tenant derivation master key stay in the gateway.
 
-Both process roles run `node --import tsx src/server/index.ts`, listen on `0.0.0.0:4310` inside the private container, and use `/data` as an ephemeral working directory. The Docker build copies only source, package manifests and public build assets. It never copies `.env`, `.local`, browser profiles or database files. The image runs as the unprivileged `node` user.
+Both process roles run `node --import tsx src/server/index.ts`; bootstrap forces `SIDEKICK_BIND_HOST=0.0.0.0` and port 4310 inside the private container. They use `/data` as an ephemeral working directory. The Docker build copies only source, package manifests and public build assets. It never copies `.env`, `.local`, browser profiles or database files. The image runs as the unprivileged `node` user.
 
 ## Private transport
 
@@ -45,7 +47,7 @@ Only the fixed gateway Durable Object may call `http://sidekick.runtime`. The ha
 | `POST /runtime/stop`            | `{ownerId, generation}`                              | `{ok:true, generation, stopped:true}` only after confirmed termination |
 | Any method `/<ownerId>/api/...` | Original body and signed `x-sidekick-runtime` header | Tenant HTTP response, including streaming bodies                       |
 
-The handler removes the owner prefix before the actor verifies the signed request target. Startup stores only owner/environment/generation, a configuration digest and stopped state in the Durable Object. It does not persist the bootstrap environment or credentials. A changed generation requires an explicit stop of the exact prior generation and a larger generation number. Stale cleanup cannot stop a replacement. A stopped actor is not automatically started by forwarding an ordinary request.
+The handler removes the owner prefix before the actor verifies the signed request target. Startup stores only owner/environment/generation, a configuration digest and stopped state in the Durable Object. It does not persist the bootstrap environment or credentials. A changed generation requires an explicit stop of the exact prior generation and a larger generation number. Stale cleanup cannot stop a replacement. A stopped actor is not automatically started by forwarding an ordinary request. HTTP forwarding uses the platform TCP-port Fetcher inside fixed-error handlers; SDK helpers continue to manage lifecycle/startup monitoring, but the proxy does not return or log their raw HTTP errors.
 
 Only tenant containers may call `http://sidekick.control`, and only `POST /api/internal/channels/claim` or `/release`. The handler checks the platform identity, forwards the signed runtime header and body, and fixes the owner and canonical Host. The gateway independently verifies the owner's signature, request body and current SQL lease. Tenant containers cannot call runtime lifecycle operations.
 

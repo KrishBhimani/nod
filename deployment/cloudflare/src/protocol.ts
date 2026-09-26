@@ -92,6 +92,7 @@ export async function bootstrap(value: unknown, environment: string) {
     ...env,
     SIDEKICK_CONTROL_URL: 'http://sidekick.control',
     SIDEKICK_DATA_ROOT: '/data',
+    SIDEKICK_BIND_HOST: '0.0.0.0',
     NODE_ENV: 'production',
     PORT: '4310',
     HOST: '0.0.0.0',

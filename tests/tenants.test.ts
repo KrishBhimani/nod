@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import pg from 'pg';
 import { PgBoss } from 'pg-boss';
@@ -72,14 +73,30 @@ test(
     let provisionerCreated = false;
     let admin: pg.Pool | undefined;
     t.after(async () => {
-      for (const queue of queues)
-        await queue.stop({ graceful: true, timeout: 1000 }).catch(() => {});
-      await Promise.all(runtimePools.map((pool) => pool.end()));
-      await admin?.end();
-      if (created) await root.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
-      for (const role of tenantRoles) await root.query(`DROP ROLE IF EXISTS "${role}"`);
-      if (provisionerCreated) await root.query(`DROP ROLE "${provisionerRole}"`);
-      await root.end();
+      try {
+        for (const queue of queues)
+          await queue.stop({ graceful: true, timeout: 1000 }).catch(() => {});
+        await Promise.all(runtimePools.map((pool) => pool.end()));
+        await admin?.end();
+        if (created) {
+          const deadline = Date.now() + 5_000;
+          while (
+            (
+              await root.query('SELECT 1 FROM pg_stat_activity WHERE datname=$1 LIMIT 1', [
+                databaseName,
+              ])
+            ).rowCount
+          ) {
+            assert.ok(Date.now() < deadline, 'Fixture database connections did not close.');
+            await delay(10);
+          }
+          await root.query(`DROP DATABASE "${databaseName}"`);
+        }
+        for (const role of tenantRoles) await root.query(`DROP ROLE IF EXISTS "${role}"`);
+        if (provisionerCreated) await root.query(`DROP ROLE "${provisionerRole}"`);
+      } finally {
+        await root.end();
+      }
     });
     await root.query(
       `CREATE ROLE "${provisionerRole}" LOGIN CREATEROLE NOCREATEDB NOSUPERUSER NOBYPASSRLS PASSWORD '${provisionerPassword}'`,
@@ -288,5 +305,11 @@ test(
         assert.equal((await store.runtimeConfiguration(ownerA)).ownerId, ownerA);
       },
     );
+    const closingConnection = await admin.connect();
+    closingConnection.release();
+    const closeConnection = closingConnection.end.bind(closingConnection);
+    t.mock.method(closingConnection, 'end', (callback?: () => void) => {
+      setTimeout(() => closeConnection(callback ?? (() => {})), 100);
+    });
   },
 );

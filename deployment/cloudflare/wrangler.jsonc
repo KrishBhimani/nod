@@ -18,7 +18,7 @@
       "name": "sidekick-development",
       "vars": {
         "SIDEKICK_ENVIRONMENT": "development",
-        "SIDEKICK_PUBLIC_URL": "https://sidekick-development.example.workers.dev",
+        "SIDEKICK_PUBLIC_URL": "https://sidekick-development.n8n-maintenance.workers.dev",
       },
       "triggers": { "crons": ["* * * * *"] },
       "durable_objects": {
@@ -63,7 +63,7 @@
       "name": "sidekick-production",
       "vars": {
         "SIDEKICK_ENVIRONMENT": "production",
-        "SIDEKICK_PUBLIC_URL": "https://sidekick-production.example.workers.dev",
+        "SIDEKICK_PUBLIC_URL": "https://sidekick-production.n8n-maintenance.workers.dev",
       },
       "triggers": { "crons": ["* * * * *"] },
       "durable_objects": {

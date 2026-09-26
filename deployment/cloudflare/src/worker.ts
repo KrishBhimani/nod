@@ -52,6 +52,17 @@ function publicOrigin(env: Bindings) {
   return url.origin;
 }
 
+function fetchContainer(
+  container: DurableObjectState['container'],
+  port: number,
+  request: Request,
+) {
+  if (!container?.running) throw new RuntimeControlError(503);
+  const target = new URL(request.url);
+  target.protocol = 'http:';
+  return container.getTcpPort(port).fetch(target, request);
+}
+
 const runtimeOutbound: OutboundHandler<Bindings> = async (request, env, context) => {
   try {
     if (
@@ -178,7 +189,10 @@ export class GatewayContainer extends Container<Bindings> {
         throw error;
       });
       await this.ready;
-      return await this.containerFetch(request);
+      if (!this.ctx.container?.running || (await this.getState()).status !== 'healthy')
+        await this.startAndWaitForPorts({ cancellationOptions: { abort: request.signal } });
+      this.renewActivityTimeout();
+      return await fetchContainer(this.ctx.container, this.defaultPort, request);
     } catch (error) {
       return failure(error);
     }
@@ -193,6 +207,7 @@ export class GatewayContainer extends Container<Bindings> {
       SIDEKICK_PUBLIC_URL: publicOrigin(this.env),
       SIDEKICK_RUNTIME_URL: 'http://sidekick.runtime',
       SIDEKICK_DATA_ROOT: '/data',
+      SIDEKICK_BIND_HOST: '0.0.0.0',
       NODE_ENV: 'production',
       PORT: '4310',
       HOST: '0.0.0.0',
@@ -256,7 +271,8 @@ export class TenantContainer extends Container<Bindings> {
       await this.lifecycle.identity();
       const state = await this.getState();
       if (!['running', 'healthy'].includes(state.status)) throw new RuntimeControlError(503);
-      return await this.containerFetch(request);
+      this.renewActivityTimeout();
+      return await fetchContainer(this.ctx.container, this.defaultPort, request);
     } catch (error) {
       return failure(error);
     }
