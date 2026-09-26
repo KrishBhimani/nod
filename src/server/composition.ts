@@ -57,6 +57,7 @@ import { createTenantRuntimeHost } from './runtime-host.ts';
 import { createChannelAccountRegistry } from './channel-account-registry.ts';
 import { createTenantControl, createTenantChannelRegistry } from './tenant-control.ts';
 import { createHostedWebhooks } from './hosted-webhooks.ts';
+import { loadPrivacyNoticeFile, registerPrivacyNotice } from './privacy.ts';
 import { createInspectorPool, initializeDatabase, pool } from './db.ts';
 import { events, refresh } from './events.ts';
 import { createIntegrations } from './integrations.ts';
@@ -248,6 +249,10 @@ export async function createApplication(
   adapters: ApplicationAdapters,
   options: { workers?: boolean; channels?: boolean } = {},
 ) {
+  const privacyNotice =
+    runtimeMode === 'local'
+      ? await loadPrivacyNoticeFile(process.env.SIDEKICK_PRIVACY_NOTICE_FILE)
+      : undefined;
   await mkdir(dataRoot, { recursive: true, mode: 0o700 });
   await initializeDatabase();
   await adapters.initialize?.();
@@ -535,6 +540,7 @@ export async function createApplication(
       }),
   });
   if (runtimeMode === 'local') {
+    registerPrivacyNotice(app, privacyNotice);
     const accounts = createAccountStore(pool);
     await accounts.initialize();
     createAccountSession({
@@ -678,6 +684,7 @@ export async function createApplication(
 export async function createGatewayApplication(
   env: Record<string, string | undefined> = process.env,
 ) {
+  const privacyNotice = await loadPrivacyNoticeFile(env.SIDEKICK_PRIVACY_NOTICE_FILE);
   const databaseUrl = z.string().min(1).parse(env.DATABASE_URL);
   const environment = z
     .string()
@@ -744,6 +751,7 @@ export async function createGatewayApplication(
       authentication,
       accounts,
       runtimes,
+      privacyNotice,
       release: env.SIDEKICK_IMAGE_RELEASE || env.SIDEKICK_RELEASE,
       developerIds,
       internal: createTenantControl({

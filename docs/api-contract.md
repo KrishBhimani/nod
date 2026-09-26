@@ -8,6 +8,7 @@ Local mode uses a fixed development account. It restricts `Host` and any supplie
 | ------ | -------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | GET    | /api/health                      | `{ok:true,release?:string}`; public readiness and baked deployment revision                                  |
 | GET    | /api/session                     | `SessionResponse`; public, with `user:null` and `settings:null` when signed out                              |
+| GET    | /api/privacy                     | `{content:string\|null}`; anonymous access to the operator's public Markdown notice; null when unconfigured  |
 | POST   | /api/login                       | `{}` -> `{url}` with OAuth state cookies; fixed Google login and onboarding callback                         |
 | GET    | /api/auth/callback/google        | Provider callback; validated state/PKCE, then an app redirect or `/login?error=sign-in`                      |
 | POST   | /api/logout                      | `{}` -> `{ok:true}`; Google mode revokes the session and clears cookies; local mode has no session to revoke |
@@ -15,6 +16,8 @@ Local mode uses a fixed development account. It restricts `Host` and any supplie
 | GET    | /api/account/avatar?account=UUID | Authenticated, bounded raster avatar; the query must match the current account                               |
 
 `SessionResponse` is defined in `src/shared/account.ts`: `{auth:{mode,googleAvailable},user,settings,capabilities:{developer}}`. The public user contains only ID, display name, email and the private avatar route. Google OAuth tokens and upstream avatar URLs remain server-side. `/api/account` edits the app account presentation; `/api/profile` remains the separate personal context the assistant uses. Other authentication-provider routes are not exposed.
+
+`/privacy` is a public web route available before sign-in. The gateway loads the optional `SIDEKICK_PRIVACY_NOTICE_FILE` UTF-8 Markdown file at startup, bounded to 128 KiB and 32,000 characters. The API returns only its public text, not the path or gateway environment; neither configuration nor text is forwarded to a tenant. Omitting the setting permits startup with `content:null`; a configured unreadable or invalid file fails startup. The operator must configure and review the notice before sharing a hosted signup link. [Operator template](privacy-notice-template.md).
 
 Hosted private requests use the session cookie. The browser also sends `X-Sidekick-Account` as an expected-account fence: a stale value returns 401 and cannot select another tenant. Native image and event requests include the expected account in their guarded URL instead. SSE requires `/api/events?account=UUID`, is checked again after runtime startup and closes after session revocation is detected. Private responses are `no-store`, except owned raster avatars with a short private cache. Runtime responses cannot set browser cookies.
 

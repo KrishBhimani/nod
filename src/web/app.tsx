@@ -17,6 +17,7 @@ import { readUiPreference, writeUiPreference } from './lib/ui-preferences';
 import type { AccountUpdate, SessionResponse } from '../shared/account';
 import { useSession } from './hooks/use-session';
 import { SignIn } from './pages/sign-in';
+import { Privacy } from './pages/privacy';
 import { Onboarding } from './pages/onboarding';
 import { AccountSettings } from './components/account-settings';
 import type { AccountControls, AccountTab } from './components/account-menu';
@@ -230,15 +231,9 @@ function Workspace({
     </div>
   );
 }
-export function App() {
-  const [path, setPath] = useState(window.location.pathname);
+function AccountApp({ path, setPath }: { path: string; setPath(path: string): void }) {
   const sessionState = useSession();
   const { session } = sessionState;
-  useEffect(() => {
-    const update = () => setPath(window.location.pathname);
-    window.addEventListener('popstate', update);
-    return () => window.removeEventListener('popstate', update);
-  }, []);
   useEffect(() => {
     if (sessionState.loading || !session?.user || !session.settings) return;
     const secure = /^\/(?:vault|credentials)\/[^/]+\/?$/.test(path) || path === '/browser';
@@ -337,4 +332,14 @@ export function App() {
       onLogout={logout}
     />
   );
+}
+
+export function App() {
+  const [path, setPath] = useState(window.location.pathname);
+  useEffect(() => {
+    const update = () => setPath(window.location.pathname);
+    window.addEventListener('popstate', update);
+    return () => window.removeEventListener('popstate', update);
+  }, []);
+  return /^\/privacy\/?$/.test(path) ? <Privacy /> : <AccountApp path={path} setPath={setPath} />;
 }

@@ -5,6 +5,7 @@ import type { TenantRuntimeHost } from '../ports/tenant-runtime.ts';
 import type { AccountStore } from './account-store.ts';
 import { authenticationHeaders, createAccountSession, sendFetchResponse } from './account.ts';
 import { canonicalRequestPath } from './runtime-auth.ts';
+import { parsePrivacyNotice, registerPrivacyNotice } from './privacy.ts';
 
 function privateRuntimeResponse(response: Response, artifact = false) {
   const headers = new Headers();
@@ -101,9 +102,11 @@ export async function createGateway(options: {
   developerIds?: ReadonlySet<string>;
   sessionCheckIntervalMs?: number;
   release?: string;
+  privacyNotice?: string;
   internal?(request: Request): Promise<Response>;
   webhook?(request: Request): Promise<Response>;
 }) {
+  const privacyNotice = parsePrivacyNotice(options.privacyNotice);
   const origin = new URL(options.origin);
   if (origin.pathname !== '/' || origin.search || origin.hash || origin.username || origin.password)
     throw new Error('Configure a canonical application origin.');
@@ -191,6 +194,7 @@ export async function createGateway(options: {
     });
   });
   accounts.register(app);
+  registerPrivacyNotice(app, privacyNotice);
   app.get('/api/health', async () => ({
     ok: true,
     ...(options.release ? { release: options.release } : {}),

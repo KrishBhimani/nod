@@ -13,7 +13,10 @@ import {
 } from '../src/shared/integrations.ts';
 
 const repository = fileURLToPath(new URL('..', import.meta.url));
-const origin = 'http://localhost:4346';
+const fixturePort = Number(process.env.SIDEKICK_UI_PORT || 4346);
+if (!Number.isInteger(fixturePort) || fixturePort < 1024 || fixturePort > 65535)
+  throw new Error('Use a valid local fixture port.');
+const origin = `http://localhost:${fixturePort}`;
 const cookieName = 'sidekick-ui-fixture';
 const users = [
   { id: randomUUID(), name: 'Alex Morgan', email: 'alex@example.test', avatarUrl: null },
@@ -73,6 +76,13 @@ const authentication: AuthenticationProvider = {
 };
 const app = await createGateway({
   origin,
+  privacyNotice: [
+    'This is a local interface preview with fictional accounts and app connections.',
+    '## Preview data',
+    'Names, settings and connections exist only in memory and reset when the preview server restarts.',
+    '## Connected services',
+    'This preview does not sign in to Google, access connected apps or send messages.',
+  ].join('\n\n'),
   authentication,
   accounts: {
     async read(owner) {
@@ -291,5 +301,5 @@ for (const signal of ['SIGINT', 'SIGTERM'])
       void app.close();
     }
   });
-await app.listen({ host: '127.0.0.1', port: 4346 });
+await app.listen({ host: '127.0.0.1', port: fixturePort });
 console.log(`Synthetic hosted UI fixture is ready at ${origin}.`);

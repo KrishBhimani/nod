@@ -61,6 +61,84 @@ const account: SessionResponse = {
 };
 const anonymous: SessionResponse = { ...account, user: null, settings: null };
 
+test('privacy is public and never requests a session, account data or embedded content', async (t) => {
+  const previous = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = previous;
+  });
+  for (const path of ['/privacy', '/privacy/']) {
+    window.history.replaceState(null, '', path);
+    const requests: string[] = [];
+    const streamCount = Events.all.length;
+    globalThis.fetch = async (url, options) => {
+      requests.push(String(url));
+      assert.equal(options?.credentials, 'omit');
+      assert.equal(new Headers(options?.headers).get('X-Sidekick-Account'), null);
+      return Response.json({
+        content: [
+          '## Your information',
+          'A published notice.',
+          '[Contact](mailto:privacy@example.test)',
+          '![Tracking image](https://example.test/pixel)',
+          '<iframe src="https://example.test/frame"></iframe>',
+          '<script>alert("unsafe")</script>',
+          '[Unsafe](javascript:alert%281%29)',
+        ].join('\n\n'),
+      });
+    };
+    const element = document.createElement('div');
+    document.body.append(element);
+    const root = createRoot(element);
+    try {
+      await act(async () => root.render(createElement(App)));
+      assert.deepEqual(requests, ['/api/privacy']);
+      assert.equal(Events.all.length, streamCount);
+      assert.ok(element.textContent?.includes('Your information'));
+      assert.equal(
+        element.querySelector('a[href="mailto:privacy@example.test"]')?.textContent,
+        'Contact',
+      );
+      assert.equal(element.querySelector('img, script, iframe'), null);
+      assert.equal(element.querySelector('a[href^="javascript:"]'), null);
+      assert.equal(element.textContent?.includes('Continue with Google'), false);
+    } finally {
+      await act(async () => root.unmount());
+      element.remove();
+    }
+  }
+});
+
+test('privacy masks request errors and can retry without loading private routes', async (t) => {
+  const previous = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = previous;
+  });
+  window.history.replaceState(null, '', '/privacy');
+  let attempts = 0;
+  globalThis.fetch = async (url) => {
+    assert.equal(String(url), '/api/privacy');
+    if (++attempts === 1)
+      return Response.json({ error: 'private service diagnostics' }, { status: 503 });
+    return Response.json({ content: null });
+  };
+  const element = document.createElement('div');
+  document.body.append(element);
+  const root = createRoot(element);
+  try {
+    await act(async () => root.render(createElement(App)));
+    assert.ok(element.textContent?.includes('The privacy notice could not be loaded.'));
+    assert.equal(element.textContent?.includes('private service diagnostics'), false);
+    const retry = element.querySelector<HTMLButtonElement>('button');
+    assert.equal(retry?.textContent, 'Try again');
+    await act(async () => retry!.click());
+    assert.equal(attempts, 2);
+    assert.ok(element.textContent?.includes('A privacy notice has not been published here yet.'));
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
+  }
+});
+
 test('private routes do not mount or fetch before authentication, including browser and credentials', async (t) => {
   const previous = globalThis.fetch;
   t.after(() => {

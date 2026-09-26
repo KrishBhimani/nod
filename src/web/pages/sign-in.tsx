@@ -80,6 +80,9 @@ export function SignIn({
             </div>
           )}
         </div>
+        <a className="sign-in-privacy" href="/privacy">
+          Privacy
+        </a>
       </div>
       <aside className="sign-in-story" aria-label="What Sidekick can help with">
         <div className="sign-in-note">

@@ -14,6 +14,7 @@ import './components/attachment-images.css';
 import './components/vault-details.css';
 import './pages/inspector.css';
 import './pages/sign-in.css';
+import './pages/privacy.css';
 import './pages/onboarding.css';
 import './components/account-settings.css';
 import './components/time-zone-picker.css';
