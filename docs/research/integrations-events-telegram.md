@@ -1,6 +1,6 @@
 # Hosted integrations, events, and Telegram
 
-Research date: 2026-09-26. This is a proposal for review, not an implementation or a record of live validation. Public provider documentation and the current Sidekick source were inspected. No credentials were read, provider accounts created, connections authorized, webhooks registered, messages sent, or production resources changed.
+Research date: 2026-09-26. This is a proposal for review, not an implementation or a record of live validation. Public provider documentation and the current Sidekick source were inspected. The initial research snapshot preceded account preparation: no credentials were read, provider accounts created, connections authorized, webhooks registered, messages sent, or production resources changed during that snapshot. The later empty Composio production project and remaining access steps are recorded in [provider account preparation](provider-account-setup.md); they do not establish live integration or event delivery.
 
 ## Recommended direction
 

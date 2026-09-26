@@ -12,6 +12,83 @@ Ctrl-C stops the web process. `docker compose stop` retains data. Do not use `do
 
 The launcher prepares PostgreSQL before browser/workspace services. It generates `SIDEKICK_POSTGRES_PASSWORD` only when absent, saves it with the matching local `DATABASE_URL` in private `.env`, starts PostgreSQL, updates only the `sidekick` role password through local psql stdin, verifies authentication, then starts the remaining services. Repeating startup retains the generated password. If rotation fails, startup stops before the app starts; retrying can repair the role through the same Unix-socket path. Existing tables and rows are not reset. An explicitly configured external server database is preserved. The launcher removes the old network-guard orphan after recreating services.
 
+## Hosted mode on your computer
+
+Hosted development uses the real Google login, account isolation and per-user runtime processes, with the web app at [localhost:4330](http://localhost:4330). It is separate from ordinary local mode, the app on port 4320, and the design prototype on port 4318. Node.js 24.21.0 or newer is required. Install dependencies with `npm ci` first.
+
+Create a private `.env.hosted.local` in the repository root, or keep it elsewhere and pass `--env /absolute/path/to/file`. The launcher reads only that file; it does not fall back to `.env` or inherit provider credentials from the shell. It creates local state under `.local/hosted`, starts the gateway on loopback, and starts tenant processes on private ephemeral ports as users sign in. It does not start Docker, create a tunnel or deploy anything.
+
+Use a dedicated development PostgreSQL database. A separate Neon development branch works, as does a separate local PostgreSQL instance on port 54331. Its setup role must be able to create schemas and tenant roles; use the direct database connection for migrations and provisioning. Do not point hosted development at the ordinary local database or a production database. The launcher explicitly rejects local port 54329 and `SIDEKICK_ENVIRONMENT=production`.
+
+For a new local database, this optional setup creates a dedicated container and volume. Run it once from the repository root; it refuses to overwrite existing configuration files:
+
+```sh
+node --input-type=module <<'JS'
+import { randomBytes } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
+await mkdir('.local', { recursive: true });
+const password = randomBytes(32).toString('hex');
+await writeFile('.local/hosted-postgres.env', `POSTGRES_USER=sidekick_hosted\nPOSTGRES_DB=sidekick_hosted\nPOSTGRES_PASSWORD=${password}\n`, { mode: 0o600, flag: 'wx' });
+await writeFile('.env.hosted.local', `DATABASE_URL=postgresql://sidekick_hosted:${password}@localhost:54331/sidekick_hosted\nSIDEKICK_MASTER_KEY=${randomBytes(32).toString('base64')}\nBETTER_AUTH_SECRET=${randomBytes(32).toString('base64')}\n`, { mode: 0o600, flag: 'wx' });
+JS
+docker run --detach --name sidekick-hosted-postgres \
+  --env-file .local/hosted-postgres.env \
+  --publish 127.0.0.1:54331:5432 \
+  --volume sidekick-hosted-postgres:/var/lib/postgresql \
+  postgres:18-alpine
+```
+
+For Neon, create the private file yourself with your development connection string and independent random 32-byte `SIDEKICK_MASTER_KEY` and `BETTER_AUTH_SECRET` values. Retain those keys across restarts: replacing them does not migrate existing tenant credentials or encrypted data. Set file permissions to `600`; the launcher warns only when its owner or permissions are actually insecure.
+
+Complete the file with your development provider configuration:
+
+```dotenv
+SIDEKICK_ENVIRONMENT=development
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+E2B_API_KEY=
+E2B_BROWSER_TEMPLATE=
+E2B_WORKSPACE_TEMPLATE=
+LLM_PROVIDER=openai
+OPENAI_API_KEY=
+COMPOSIO_API_KEY=
+COMPOSIO_WEBHOOK_SECRET=
+```
+
+The database, both server keys, Google credentials and all three E2B fields are required. Add `http://localhost:4330` to the Google OAuth client's JavaScript origins and `http://localhost:4330/api/auth/callback/google` to its redirect URIs. Google login grants only account identity; app connections use the development Composio project and its separate auth configurations. See [Composio](composio.md) for each `COMPOSIO_*_AUTH_CONFIG_ID` override.
+
+```sh
+node scripts/start-hosted.mjs --check
+node scripts/start-hosted.mjs
+```
+
+`--check` validates configuration without connecting to a provider or database and reports field names without values. Ctrl-C stops the gateway and its tenant processes. Restart the command after changing server configuration. The web UI uses Vite during development. Local hosted mode stores durable artifacts and Pi checkpoints in each tenant's private PostgreSQL schema (`OBJECT_STORAGE_PROVIDER=postgres`); Cloudflare uses the private R2 broker (`OBJECT_STORAGE_PROVIDER=http`). Actor-local directories are caches in these modes. Each artifact and transcript is limited to 15 MiB. Keep development databases separate from production; these bytes count toward the database provider's storage allowance.
+
+The explicit filesystem object adapter remains available for custom setups. A process crash while holding its exclusive lock leaves the object fenced until the operator confirms the old process stopped and reconciles that lock. Use PostgreSQL or the HTTP broker for automatic restart testing. Storage-provider changes require explicit byte and metadata migration, and an interrupted external action without a durable result receipt must be reconciled before resuming its task.
+
+The server configuration selects the computer provider. Hosted mode currently requires E2B for isolated computers; ordinary local mode retains the Docker option. Users do not select providers or enter operator API keys. Model customization uses `LLM_PROVIDER`, `LLM_MODEL`, `ROUTING_MODEL` and `TRIAGE_MODEL`; set `ANTHROPIC_API_KEY` when selecting Anthropic. Missing model or integration keys leave those capabilities unavailable. `SIDEKICK_DEVELOPER_IDS` is a comma-separated list of signed-in user UUIDs allowed to inspect the computer; ordinary users see chat, apps, channels and account settings. [Replacing modules](replacing-modules.md) describes the adapter boundaries.
+
+`SIDEKICK_MAX_USERS` controls admission to the hosted instance. The pilot default is 8; accepted values are 1–400. Existing users retain their accounts when admission is full.
+
+### Receiving real webhooks locally
+
+The optional relay listens on loopback port 4331 and forwards only `POST /api/webhooks/composio`, opaque Telegram/WhatsApp callback URLs, and WhatsApp's GET verification challenge to the gateway on 4330. It excludes login, account, chat, internal control and all other routes. It strips cookies and client identity headers and preserves the raw body and provider signature headers. The application still verifies provider authentication.
+
+In separate terminals, start the relay and your chosen tunnel:
+
+```sh
+node scripts/webhook-relay.mjs
+cloudflared tunnel --url http://127.0.0.1:4331
+```
+
+Copy the resulting HTTPS origin into `SIDEKICK_WEBHOOK_ORIGIN` in the hosted environment file and restart the gateway. Configure the development Composio webhook destination as `<tunnel-origin>/api/webhooks/composio` with the matching development webhook secret. Telegram setup through Channels uses the server-generated opaque callback URL. When a temporary tunnel URL changes, update the origin and re-register affected development callbacks. Google sign-in remains on localhost:4330; the tunnel exposes no login page. The launcher never starts a tunnel or changes provider webhooks automatically.
+
+### What local checks establish
+
+`tests/hosted-development.test.ts` verifies launcher isolation and the relay allowlist with synthetic values. `gateway`, `tenant-control`, `runtime-host`, `hosted-webhooks`, `channel-account-leases` and `better-auth-session` exercise ownership, signatures, revocation, lease races and SDK database behavior with injected providers or disposable PostgreSQL. They do not prove real OAuth consent, E2B availability, webhook registration or message delivery.
+
+The separate `scripts/hosted-ui-fixture.ts` runs the actual web app against synthetic account and integration adapters on port 4346, with no database or real provider access. Use `node --import tsx scripts/hosted-ui-fixture.ts` for repeatable login, onboarding, settings and responsive UI review. Its simulated consent route exists only in that script and is never imported by the application. Real provider acceptance instead uses `start-hosted.mjs`, development accounts and actual callbacks; production verification remains a separate step.
+
 ## Code and local state
 
 Read the relevant [area guide](../AGENTS.md), then use [architecture](architecture.md) and [API contract](api-contract.md) for cross-layer changes. Provider replacement starts in [replacing modules](replacing-modules.md). Keep provider keys in `.env` or the secure channel forms, never in React or model context.

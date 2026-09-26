@@ -62,6 +62,7 @@ export function ChannelSetupStep({
   onField,
   policy,
   onPolicy,
+  hosted = false,
 }: {
   provider: ChannelProvider;
   step: number;
@@ -69,6 +70,7 @@ export function ChannelSetupStep({
   onField(name: string, value: string): void;
   policy: boolean;
   onPolicy(value: boolean): void;
+  hosted?: boolean;
 }) {
   const field = (name: string) => ({
     value: fields[name] ?? '',
@@ -112,27 +114,23 @@ export function ChannelSetupStep({
           <Check size={18} />
           <div>
             <strong>One private conversation</strong>
-            <p>
-              Messages from Telegram user {fields.allowedUserId} will reach Sidekick while your Mac
-              is running.
-            </p>
+            <p>Messages from Telegram user {fields.allowedUserId} will reach Sidekick.</p>
           </div>
         </div>
-        <p>
-          After connecting, open your bot in Telegram, press Start, and send a short message. No
-          public URL is needed.
-        </p>
-        <details className="channel-advanced">
-          <summary>Advanced: use a webhook</summary>
-          <Field label="Public HTTPS callback" hint="Leave blank to receive messages locally.">
-            <Input
-              type="url"
-              pattern="https://.*"
-              placeholder="https://your-domain.example/api/webhooks/telegram"
-              {...field('webhookUrl')}
-            />
-          </Field>
-        </details>
+        <p>After connecting, open your bot in Telegram, press Start, and send a short message.</p>
+        {!hosted && (
+          <details className="channel-advanced">
+            <summary>Advanced: use a webhook</summary>
+            <Field label="Public HTTPS callback" hint="Leave blank to receive messages locally.">
+              <Input
+                type="url"
+                pattern="https://.*"
+                placeholder="https://your-domain.example/api/webhooks/telegram"
+                {...field('webhookUrl')}
+              />
+            </Field>
+          </details>
+        )}
       </>
     );
   }
@@ -146,7 +144,7 @@ export function ChannelSetupStep({
         <ul className="channel-requirements">
           <li>A Meta app with WhatsApp enabled</li>
           <li>A business sender number and its credentials</li>
-          <li>A public HTTPS callback for messages</li>
+          {!hosted && <li>A public HTTPS callback for messages</li>}
         </ul>
         <p>
           Replies are available for 24 hours after your message. Delayed proactive messages are not
@@ -213,24 +211,27 @@ export function ChannelSetupStep({
   return (
     <>
       <p>
-        Use these same callback settings in Meta, then subscribe the app to messages. Expose only
-        this route; keep the rest of Sidekick private.
+        {hosted
+          ? 'After connecting, copy the callback URL into Meta and subscribe to messages.'
+          : 'Use these same callback settings in Meta, then subscribe the app to messages. Expose only this route; keep the rest of Sidekick private.'}
       </p>
-      <Field
-        label="Public HTTPS callback"
-        hint="You can leave this blank and finish delivery setup later."
-      >
-        <Input
-          type="url"
-          pattern="https://.*"
-          placeholder="https://your-domain.example/api/webhooks/whatsapp"
-          autoFocus
-          {...field('webhookUrl')}
-        />
-      </Field>
+      {!hosted && (
+        <Field
+          label="Public HTTPS callback"
+          hint="You can leave this blank and finish delivery setup later."
+        >
+          <Input
+            type="url"
+            pattern="https://.*"
+            placeholder="https://your-domain.example/api/webhooks/whatsapp"
+            autoFocus
+            {...field('webhookUrl')}
+          />
+        </Field>
+      )}
       <Field
         label="Webhook verification token"
-        hint="Choose 16–256 letters, digits, underscores or hyphens. Copy it into Meta before saving; it will not be shown again."
+        hint="Choose 16–256 letters, digits, underscores or hyphens. Use the same token in Meta; it will not be shown again."
       >
         <Input
           type="password"
@@ -252,12 +253,14 @@ export function ChannelAccount({
   configured,
   onDisconnect,
   busy,
+  hosted = false,
 }: {
   provider: ChannelProvider;
   setup?: ChannelSetup;
   configured: boolean;
   onDisconnect(trigger: HTMLButtonElement): void;
   busy: boolean;
+  hosted?: boolean;
 }) {
   const botUrl = setup?.provider === 'telegram' ? telegramBotUrl(setup.accountHandle) : null;
   const name = setup?.accountName?.trim();
@@ -300,10 +303,12 @@ export function ChannelAccount({
               </DialogTitle>
               <DialogDescription>
                 {setup?.webhookStatus === 'registration_pending'
-                  ? 'Restart Sidekick to retry the saved setup.'
+                  ? hosted
+                    ? 'Delivery setup could not finish. Contact the person who hosts your Sidekick.'
+                    : 'Restart Sidekick to retry the saved setup.'
                   : 'Finish the callback in Meta and subscribe to messages.'}
               </DialogDescription>
-              {setup?.webhookUrl && (
+              {setup?.webhookUrl && (!hosted || provider === 'whatsapp') && (
                 <div className="channel-delivery-address">
                   <span>Callback URL</span>
                   <code>{setup.webhookUrl}</code>
@@ -339,7 +344,7 @@ export function ChannelAccount({
   );
 }
 
-export function Channels() {
+export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
   const [data, setData] = useState<ChannelResponse | null>(null);
   const [settings, setSettings] = useState<ChannelSettings | null>(null);
   const [error, setError] = useState('');
@@ -538,6 +543,7 @@ export function Channels() {
                 provider={provider.id}
                 setup={setup}
                 configured={configured}
+                hosted={hosted}
                 onDisconnect={(trigger) => {
                   removeTrigger.current = trigger;
                   removeProvider.current = provider.id;
@@ -563,7 +569,11 @@ export function Channels() {
       {error && !editing && <Notice>{error}</Notice>}
       {data?.error && <Notice>{data.error}</Notice>}
       {settings && !settings.ready && (
-        <Notice>The secure key store needs local setup before you can save a channel.</Notice>
+        <Notice>
+          {hosted
+            ? 'Channel setup is temporarily unavailable.'
+            : 'The secure key store needs local setup before you can save a channel.'}
+        </Notice>
       )}
       {!data || !settings ? (
         loading ? (
@@ -656,7 +666,9 @@ export function Channels() {
           </DialogTitle>
           <DialogDescription className="channel-wizard-description">
             {telegramStartUrl
-              ? 'Open your bot, press Start if prompted, then send your first request. Sidekick must be running to reply.'
+              ? hosted
+                ? 'Open your bot, press Start if prompted, then send your first request.'
+                : 'Open your bot, press Start if prompted, then send your first request. Sidekick must be running to reply.'
               : step === 0
                 ? 'Connect in a few small steps. Sidekick checks your credentials before saving.'
                 : 'Credentials stay in this secure form, outside the conversation.'}
@@ -689,6 +701,7 @@ export function Channels() {
                   onField={(name, value) => setFields((current) => ({ ...current, [name]: value }))}
                   policy={policy}
                   onPolicy={setPolicy}
+                  hosted={hosted}
                 />
               </div>
               <div className="channel-wizard-actions">

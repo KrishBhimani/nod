@@ -1,0 +1,11 @@
+FROM node:24.21.0-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip python3-venv pipx ffmpeg ca-certificates curl git unzip && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /workspace /home/node/.local/bin /opt/sidekick && chown -R node:node /workspace /home/node
+COPY workspace-command.py /opt/sidekick/workspace-command.py
+RUN chmod 555 /opt/sidekick && chmod 444 /opt/sidekick/workspace-command.py
+USER node
+ENV NPM_CONFIG_PREFIX=/home/node/.local
+ENV PIPX_HOME=/home/node/.local/pipx
+ENV PIPX_BIN_DIR=/home/node/.local/bin
+ENV PATH=/home/node/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WORKDIR /workspace

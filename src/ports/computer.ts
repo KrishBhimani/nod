@@ -92,6 +92,12 @@ export interface WorkspaceSession {
   writeFile(path: string, content: string): Promise<string>;
 }
 export interface Workspace {
+  writeArtifact?(
+    taskId: string,
+    path: string,
+    bytes: Uint8Array,
+    signal?: AbortSignal,
+  ): Promise<void>;
   readArtifact?(
     taskId: string,
     path: string,

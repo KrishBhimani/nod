@@ -85,15 +85,15 @@ export function channelReply(text: string, hasAttachments = false, deliversAttac
   const safe = text
     .replace(
       /\[[^\]]*\]\((?:https?:\/\/[^\s)]+)?\/api\/artifacts\/[^\s)]+\)|(?:https?:\/\/[^\s)]+)?\/api\/artifacts\/[^\s)]+/g,
-      deliversAttachments ? 'Attached file.' : 'Open Sidekick on your Mac to view this file.',
+      deliversAttachments ? 'Attached file.' : 'Open Sidekick to view this file.',
     )
     .replace(
       new RegExp(`\\[[^\\]]*\\]\\(${securePath}\\)|${securePath}`, 'g'),
-      'Open Sidekick on your Mac to continue securely.',
+      'Open Sidekick to continue securely.',
     );
   return (
-    `${safe}${hasAttachments ? '\n\nAttachments are available in Sidekick on your Mac.' : ''}`.trim() ||
-    'A reply is available in Sidekick on your Mac.'
+    `${safe}${hasAttachments ? '\n\nAttachments are available in Sidekick.' : ''}`.trim() ||
+    'A reply is available in Sidekick.'
   );
 }
 
@@ -123,12 +123,16 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
   CREATE INDEX IF NOT EXISTS channel_inbox_task ON channel_inbox(task_id);
   CREATE INDEX IF NOT EXISTS channel_outbox_pending ON channel_outbox(state,created_at);
   ALTER TABLE channel_inbox ADD COLUMN IF NOT EXISTS message_id uuid;
+  ALTER TABLE channel_inbox ADD COLUMN IF NOT EXISTS owner_id text;
   CREATE TABLE IF NOT EXISTS channel_task_routes (
     task_id uuid PRIMARY KEY,owner_id text NOT NULL,
     source_id text NOT NULL REFERENCES channel_inbox(source_id)
   )`);
+  await pool.query('UPDATE channel_inbox SET owner_id=$1 WHERE owner_id IS NULL', [ownerId]);
+  await pool.query('ALTER TABLE channel_inbox ALTER COLUMN owner_id SET NOT NULL');
   await pool.query(
-    "UPDATE channel_outbox SET state='uncertain',reason='interrupted_send',updated_at=now() WHERE state='sending'",
+    "UPDATE channel_outbox o SET state='uncertain',reason='interrupted_send',updated_at=now() FROM channel_inbox i WHERE o.source_id=i.source_id AND i.owner_id=$1 AND o.state='sending'",
+    [ownerId],
   );
   let closed = false;
   let replacing = false;
@@ -155,7 +159,14 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
       return;
     try {
       const sourceId = `channel:${channelId}:${accountId}:${messageId}`;
-      if ((await pool.query('SELECT 1 FROM channel_inbox WHERE source_id=$1', [sourceId])).rowCount)
+      if (
+        (
+          await pool.query('SELECT 1 FROM channel_inbox WHERE source_id=$1 AND owner_id=$2', [
+            sourceId,
+            ownerId,
+          ])
+        ).rowCount
+      )
         return;
       const acceptedMessageId = inboundMessageId(ownerId, sourceId);
       let verification: SubmitMessageResponse | undefined;
@@ -164,8 +175,8 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
         if (closed || replacing || !permitted(identity))
           throw new Error('Channel configuration changed.');
         await database.query(
-          `INSERT INTO channel_inbox(source_id,provider,account_id,sender_id,thread_id,text,received_at,message_id,state,task_id)
-           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(source_id) DO NOTHING`,
+          `INSERT INTO channel_inbox(source_id,provider,account_id,sender_id,thread_id,text,received_at,message_id,state,task_id,owner_id)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(source_id) DO NOTHING`,
           [
             sourceId,
             channelId,
@@ -177,6 +188,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
             acceptedMessageId,
             verification ? 'submitted' : 'pending',
             verification?.taskId ?? null,
+            ownerId,
           ],
         );
         if (closed || replacing || !permitted(identity))
@@ -204,10 +216,19 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
             if (closed || replacing || !permitted(identity))
               throw new Error('Channel configuration changed.');
             const receipt = await client.query(
-              `INSERT INTO channel_inbox(source_id,provider,account_id,sender_id,thread_id,text,received_at,message_id,state)
-             VALUES($1,$2,$3,$4,$5,'Verification code not applied.',$6,$7,'discarded')
+              `INSERT INTO channel_inbox(source_id,provider,account_id,sender_id,thread_id,text,received_at,message_id,state,owner_id)
+             VALUES($1,$2,$3,$4,$5,'Verification code not applied.',$6,$7,'discarded',$8)
              ON CONFLICT(source_id) DO NOTHING`,
-              [sourceId, channelId, accountId, senderId, threadId, sentAt, acceptedMessageId],
+              [
+                sourceId,
+                channelId,
+                accountId,
+                senderId,
+                threadId,
+                sentAt,
+                acceptedMessageId,
+                ownerId,
+              ],
             );
             if (receipt.rowCount) {
               const replyId = randomUUID();
@@ -260,7 +281,8 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
     for (let index = 0; index < 25 && !closed && !replacing; index++) {
       const pending = (
         await pool.query<InboxRow>(
-          "SELECT * FROM channel_inbox WHERE state='pending' ORDER BY created_at LIMIT 1",
+          "SELECT * FROM channel_inbox WHERE state='pending' AND owner_id=$1 ORDER BY created_at LIMIT 1",
+          [ownerId],
         )
       ).rows[0];
       if (!pending) break;
@@ -273,8 +295,8 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
       try {
         await client.query('BEGIN');
         const result = await client.query<InboxRow>(
-          "SELECT * FROM channel_inbox WHERE state='pending' AND source_id=$1 FOR UPDATE SKIP LOCKED",
-          [pending.source_id],
+          "SELECT * FROM channel_inbox WHERE state='pending' AND source_id=$1 AND owner_id=$2 FOR UPDATE SKIP LOCKED",
+          [pending.source_id, ownerId],
         );
         const row = result.rows[0];
         if (!row) {
@@ -282,9 +304,10 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
           continue;
         }
         if (!permitted(row)) {
-          await client.query("UPDATE channel_inbox SET state='discarded' WHERE source_id=$1", [
-            row.source_id,
-          ]);
+          await client.query(
+            "UPDATE channel_inbox SET state='discarded' WHERE source_id=$1 AND owner_id=$2",
+            [row.source_id, ownerId],
+          );
         } else {
           const messageId = row.message_id ?? randomUUID();
           const taskId = await options.submit(
@@ -296,8 +319,8 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
             messageId,
           );
           await client.query(
-            "UPDATE channel_inbox SET state='submitted',task_id=$2,message_id=$3 WHERE source_id=$1",
-            [row.source_id, taskId, messageId],
+            "UPDATE channel_inbox SET state='submitted',task_id=$2,message_id=$3 WHERE source_id=$1 AND owner_id=$4",
+            [row.source_id, taskId, messageId, ownerId],
           );
         }
         await client.query('COMMIT');
@@ -315,19 +338,22 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
       `INSERT INTO channel_outbox(message_id,source_id)
       SELECT DISTINCT ON (m.id) m.id,i.source_id FROM messages m
       LEFT JOIN channel_task_routes r ON r.task_id=m.task_id AND r.owner_id=m.owner_id
-      JOIN channel_inbox i ON i.source_id=r.source_id OR (r.task_id IS NULL AND i.task_id=m.task_id)
+      JOIN channel_inbox i ON (i.source_id=r.source_id OR (r.task_id IS NULL AND i.task_id=m.task_id)) AND i.owner_id=m.owner_id
       WHERE m.role='assistant' AND m.owner_id=$1 AND i.state='submitted'
       ORDER BY m.id,i.received_at DESC,i.source_id
       ON CONFLICT(message_id) DO NOTHING`,
       [ownerId],
     );
     for (let index = 0; index < 25 && !closed && !replacing; index++) {
-      const result = await pool.query<OutboxRow>(`WITH claimed AS (
+      const result = await pool.query<OutboxRow>(
+        `WITH claimed AS (
         UPDATE channel_outbox SET state='sending',updated_at=now() WHERE message_id=(
-          SELECT message_id FROM channel_outbox WHERE state='pending' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
+          SELECT o.message_id FROM channel_outbox o JOIN channel_inbox i ON i.source_id=o.source_id JOIN messages m ON m.id=o.message_id WHERE o.state='pending' AND i.owner_id=$1 AND m.owner_id=$1 ORDER BY o.created_at FOR UPDATE OF o SKIP LOCKED LIMIT 1
         ) RETURNING message_id,source_id
       ) SELECT c.message_id,m.owner_id,m.task_id,i.provider,i.account_id,i.sender_id,i.thread_id,m.text,m.attachments
-        FROM claimed c JOIN channel_inbox i ON i.source_id=c.source_id JOIN messages m ON m.id=c.message_id`);
+        FROM claimed c JOIN channel_inbox i ON i.source_id=c.source_id JOIN messages m ON m.id=c.message_id`,
+        [ownerId],
+      );
       const row = result.rows[0];
       if (!row) break;
       let reason: string | null =
@@ -340,8 +366,8 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
       if (!reason && replyWindowMs !== undefined) {
         const latest = await pool.query(
           `SELECT max(received_at) AS at FROM channel_inbox
-          WHERE provider=$1 AND account_id=$2 AND sender_id=$3`,
-          [row.provider, row.account_id, row.sender_id],
+          WHERE provider=$1 AND account_id=$2 AND sender_id=$3 AND owner_id=$4`,
+          [row.provider, row.account_id, row.sender_id, ownerId],
         );
         if (
           !latest.rows[0]?.at ||
@@ -493,10 +519,16 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
       channels: configuration,
       error: lastError,
       inbox: (
-        await pool.query('SELECT state,count(*)::int AS count FROM channel_inbox GROUP BY state')
+        await pool.query(
+          'SELECT state,count(*)::int AS count FROM channel_inbox WHERE owner_id=$1 GROUP BY state',
+          [ownerId],
+        )
       ).rows,
       deliveries: (
-        await pool.query('SELECT state,count(*)::int AS count FROM channel_outbox GROUP BY state')
+        await pool.query(
+          'SELECT o.state,count(*)::int AS count FROM channel_outbox o JOIN channel_inbox i ON i.source_id=o.source_id WHERE i.owner_id=$1 GROUP BY o.state',
+          [ownerId],
+        )
       ).rows,
     }));
     app.register(async (scope) => {

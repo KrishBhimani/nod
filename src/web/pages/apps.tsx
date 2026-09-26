@@ -113,7 +113,7 @@ export function Apps() {
     try {
       const result = await api<{ url: string }>(
         `/api/apps/${encodeURIComponent(connection.slug)}/connect`,
-        { method: 'POST', body: '{}', signal: request.signal },
+        { method: 'POST', body: JSON.stringify({ returnTo: 'apps' }), signal: request.signal },
       );
       if (request.signal.aborted) return;
       window.location.assign(connectionUrl(result.url, window.location.origin));

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { apiResponse } from '../lib/api';
 
 export function useSignInScreen(path: string, revision: number | null, active: boolean) {
   const session = `${path}:${revision}`;
@@ -26,7 +27,7 @@ export function useSignInScreen(path: string, revision: number | null, active: b
       const controller = new AbortController();
       request = controller;
       try {
-        const response = await fetch(`${path}/sign-in-screen?revision=${revision}`, {
+        const response = await apiResponse(`${path}/sign-in-screen?revision=${revision}`, {
           cache: 'no-store',
           credentials: 'same-origin',
           signal: controller.signal,

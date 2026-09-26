@@ -251,12 +251,14 @@ function Modal({
   children,
   close,
   wide = false,
+  className = '',
   returnFocus,
 }: {
   title: string;
   children: React.ReactNode;
   close: () => void;
   wide?: boolean;
+  className?: string;
   returnFocus?: () => HTMLElement | null;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -271,7 +273,7 @@ function Modal({
   return (
     <dialog
       ref={ref}
-      className={`dialog ${wide ? 'wide' : ''}`}
+      className={`dialog ${wide ? 'wide' : ''} ${className}`}
       onCancel={close}
       onClick={(e) => {
         if (e.target === e.currentTarget) close();
@@ -400,6 +402,7 @@ function App() {
   useEffect(() => {
     const keyboard = (e: KeyboardEvent) => {
       if (
+        e.defaultPrevented ||
         (e.target as HTMLElement)?.closest('input,textarea,select,[contenteditable],dialog') ||
         e.metaKey ||
         e.ctrlKey ||
@@ -720,14 +723,8 @@ function App() {
   };
   const profileContent = (
     <>
-      <div className="profile-identity">
-        <Avatar person={person} size="large" />
-        <div>
-          <h3>{person.name}</h3>
-          <p>{person.email}</p>
-        </div>
-      </div>
       <form
+        className="profile-form"
         onSubmit={(e) => {
           e.preventDefault();
           const name = editingName.trim();
@@ -737,23 +734,33 @@ function App() {
           notice('Profile saved.');
         }}
       >
-        <label className="field">
-          Name
-          <input
-            value={editingName}
-            onChange={(e) => setEditingName(e.target.value)}
-            required
-            maxLength={80}
-          />
-        </label>
-        <label className="field">
-          Email
-          <input value={person.email} readOnly />
-        </label>
+        <div className="profile-identity">
+          <Avatar person={person} size="large" />
+          <label className="field">
+            Display name
+            <input
+              value={editingName}
+              onChange={(e) => setEditingName(e.target.value)}
+              autoComplete="name"
+              required
+              maxLength={80}
+            />
+          </label>
+        </div>
+        <div className="profile-email">
+          <span>Email</span>
+          <div>
+            <GoogleMark />
+            <span>{person.email}</span>
+          </div>
+        </div>
         {editingName.trim() !== person.name && (
-          <Button primary type="submit" disabled={!editingName.trim()}>
-            Save changes
-          </Button>
+          <div className="profile-actions">
+            <Button onClick={() => setEditingName(person.name)}>Cancel</Button>
+            <Button primary type="submit" disabled={!editingName.trim()}>
+              Save changes
+            </Button>
+          </div>
         )}
       </form>
     </>
@@ -762,52 +769,61 @@ function App() {
     <>
       {settingsTab === 'Profile' && profileContent}
       {settingsTab === 'Appearance' && (
-        <>
-          <h3 className="section-heading">Appearance</h3>
-          <div className="theme-options">
+        <div className="settings-appearance">
+          <div className="theme-options" role="group" aria-label="Theme">
             {(['light', 'dark', 'system'] as Theme[]).map((theme) => {
               const Icon = theme === 'light' ? Sun : theme === 'dark' ? Moon : Monitor;
               return (
                 <button
                   key={theme}
                   aria-pressed={person.theme === theme}
+                  aria-label={`${theme[0].toUpperCase() + theme.slice(1)} theme`}
                   className={`theme-choice ${person.theme === theme ? 'selected' : ''}`}
                   onClick={() => patch({ theme })}
                 >
-                  <span className={`theme-sample ${theme}`}>
-                    <i />
+                  <span className={`theme-sample ${theme}`} aria-hidden="true">
+                    <i>
+                      <em />
+                      <em />
+                      <em />
+                    </i>
                     <span>
                       <b />
                       <b />
                       <b />
+                      <em />
                     </span>
                   </span>
-                  <span>
+                  <span className="theme-choice-label">
                     <Icon size={15} />
                     {theme[0].toUpperCase() + theme.slice(1)}
-                    {person.theme === theme && <Check size={15} />}
                   </span>
                 </button>
               );
             })}
           </div>
-        </>
+        </div>
       )}
       {settingsTab === 'Preferences' && (
-        <>
-          <h3 className="section-heading">Preferences</h3>
-          <label className="field">
-            Time zone
+        <div className="settings-preferences">
+          <label className="settings-preference-row">
+            <span>
+              <Clock3 size={18} aria-hidden="true" />
+              Time zone
+            </span>
             <select value={person.timezone} onChange={(e) => patch({ timezone: e.target.value })}>
-              <option>Europe/Lisbon</option>
-              <option>Europe/London</option>
-              <option>America/New_York</option>
+              <option value="Europe/Lisbon">Lisbon</option>
+              <option value="Europe/London">London</option>
+              <option value="America/New_York">New York</option>
             </select>
           </label>
-          <div className="setting-row">
-            <div>
-              <strong>Quiet hours</strong>
-              <p>22:00–08:00</p>
+          <div className="settings-preference-row">
+            <div className="settings-preference-label">
+              <Moon size={18} aria-hidden="true" />
+              <div>
+                <strong>Quiet hours</strong>
+                <p>22:00–08:00</p>
+              </div>
             </div>
             <button
               className={`toggle ${person.quiet ? 'on' : ''}`}
@@ -819,29 +835,70 @@ function App() {
               <span />
             </button>
           </div>
-        </>
+        </div>
       )}
     </>
   );
   const settingsPanel = (
     <div className="settings-layout">
-      <nav className="settings-nav" aria-label="Account settings">
-        {(['Profile', 'Appearance', 'Preferences'] as const).map((tab) => (
-          <button
-            key={tab}
-            aria-current={settingsTab === tab ? 'page' : undefined}
-            className={settingsTab === tab ? 'active' : ''}
-            onClick={() => setSettingsTab(tab)}
-          >
-            {tab}
-          </button>
-        ))}
+      <nav
+        className="settings-nav"
+        role="tablist"
+        aria-label="Account settings"
+        aria-orientation="vertical"
+      >
+        {(['Profile', 'Appearance', 'Preferences'] as const).map((tab, index, tabs) => {
+          const Icon =
+            tab === 'Profile' ? UserRound : tab === 'Appearance' ? Sun : SlidersHorizontal;
+          return (
+            <button
+              key={tab}
+              id={`settings-tab-${tab.toLowerCase()}`}
+              role="tab"
+              aria-selected={settingsTab === tab}
+              aria-label={tab}
+              aria-controls="settings-content"
+              title={tab}
+              tabIndex={settingsTab === tab ? 0 : -1}
+              className={settingsTab === tab ? 'active' : ''}
+              onClick={() => setSettingsTab(tab)}
+              onKeyDown={(event) => {
+                const next =
+                  event.key === 'ArrowDown' || event.key === 'ArrowRight'
+                    ? (index + 1) % tabs.length
+                    : event.key === 'ArrowUp' || event.key === 'ArrowLeft'
+                      ? (index - 1 + tabs.length) % tabs.length
+                      : event.key === 'Home'
+                        ? 0
+                        : event.key === 'End'
+                          ? tabs.length - 1
+                          : null;
+                if (next === null) return;
+                event.preventDefault();
+                setSettingsTab(tabs[next]);
+                document.getElementById(`settings-tab-${tabs[next].toLowerCase()}`)?.focus();
+              }}
+            >
+              <Icon size={16} aria-hidden="true" />
+              <span>{tab}</span>
+            </button>
+          );
+        })}
       </nav>
-      <div className="settings-body">{settingsContent}</div>
+      <div
+        className="settings-body"
+        id="settings-content"
+        role="tabpanel"
+        aria-labelledby={`settings-tab-${settingsTab.toLowerCase()}`}
+        tabIndex={0}
+      >
+        <h3 className="settings-section-title">{settingsTab}</h3>
+        {settingsContent}
+      </div>
       <div className="settings-signout">
-        <button className="text-button" onClick={signOut}>
+        <button className="text-button" aria-label="Sign out" title="Sign out" onClick={signOut}>
           <LogOut size={16} />
-          Sign out
+          <span>Sign out</span>
         </button>
       </div>
     </div>
@@ -882,8 +939,9 @@ function App() {
               </span>
               <h1>Sign in to Sidekick</h1>
               <p>
-                Your assistant, your accounts,
-                <br />a little more room in your day.
+                Hand off the work you keep putting off.
+                <br />
+                Sidekick gets it done while you sleep.
               </p>
               {authError && (
                 <div className="error-note" role="alert">
@@ -905,34 +963,28 @@ function App() {
           <aside className="login-story">
             <div className="story-content">
               <div className="paper-note">
-                <span className="note-date">26 September</span>
+                <span className="note-date">Today, 07:30</span>
                 <h2>
-                  A clear start
+                  Ready when
                   <br />
-                  to your day.
+                  you wake up.
                 </h2>
-                <p>
-                  Your first meeting is at 10:00.
-                  <br />
-                  There is time to finish the proposal first.
-                </p>
                 <div className="note-divider" />
                 <div className="story-item">
-                  <AppIcon id="googlecalendar" />
+                  <AppIcon id="googledocs" />
                   <div>
-                    <strong>Design catch-up</strong>
-                    <span>10:00 – 10:30</span>
+                    <strong>Supplier comparison</strong>
+                    <span>Prices, trade-offs and a recommendation.</span>
                   </div>
                 </div>
                 <div className="story-item">
                   <AppIcon id="gmail" />
                   <div>
-                    <strong>One reply worth a look</strong>
-                    <span>The team shared feedback on your draft.</span>
+                    <strong>Follow-ups drafted</strong>
+                    <span>Ready for your review.</span>
                   </div>
                 </div>
               </div>
-              <p className="story-caption">A conversation that knows where you left off.</p>
             </div>
           </aside>
         </main>
@@ -1535,6 +1587,7 @@ function App() {
       {settingsOpen && variant === 'A' && (
         <Modal
           title="Settings"
+          className="settings-dialog"
           close={() => setSettingsOpen(false)}
           returnFocus={() =>
             settingsTrigger.current?.isConnected

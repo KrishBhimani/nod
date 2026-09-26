@@ -9,8 +9,8 @@ for (const failure of ['none', 'application', 'database'] as const) {
       import { registerHooks } from 'node:module';
       const modules = new Map([
         [${JSON.stringify(server + 'db.ts')}, "export const pool={end:async()=>{process.stdout.write('database-closed');if(process.env.CLOSE_FAILURE==='database')throw new Error('synthetic-private-failure')}}"],
-        [${JSON.stringify(server + 'config.ts')}, 'export const port=4310'],
-        [${JSON.stringify(server + 'composition.ts')}, "export const createDefaultAdapters=()=>({});export const createApplication=async()=>({app:{register:async()=>{},setNotFoundHandler:()=>{},listen:async()=>{setImmediate(()=>{process.emit('SIGTERM');process.emit('SIGINT')})},close:async()=>{process.stdout.write('application-closed');if(process.env.CLOSE_FAILURE==='application')throw new Error('synthetic-private-failure')}}})"],
+        [${JSON.stringify(server + 'config.ts')}, "export const port=4310;export const runtimeMode='local';export const ownerId='local-development';export const runtimeGeneration=''"],
+        [${JSON.stringify(server + 'composition.ts')}, "export const createGatewayApplication=()=>{throw new Error()};export const createDefaultAdapters=()=>({});export const createApplication=async()=>({app:{register:async()=>{},setNotFoundHandler:()=>{},listen:async()=>{setImmediate(()=>{process.emit('SIGTERM');process.emit('SIGINT')})},close:async()=>{process.stdout.write('application-closed');if(process.env.CLOSE_FAILURE==='application')throw new Error('synthetic-private-failure')}}})"],
       ]);
       registerHooks({load(url, context, next){
         const source=modules.get(url);

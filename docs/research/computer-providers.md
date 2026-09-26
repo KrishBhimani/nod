@@ -2,7 +2,7 @@
 
 Research date: 2026-09-26. Repository baseline: `1a471a0f0fa6e986f82a3238a5a83c476d63dc56`.
 
-Status: proposal for review. No provider account, paid plan, remote computer, deployment, or live Google sign-in was created or tested for this research. Vendor documentation establishes available APIs, not that Sidekick works with them. The recommended adapters and acceptance tests below are not implemented.
+Status: proposal for review. The initial research snapshot preceded account preparation: no provider account, paid plan, remote computer, deployment, or live Google sign-in was created or tested during that snapshot. Subsequent account access is tracked in the [account-preparation record](provider-account-setup.md); it is not a remote-computer acceptance test. Vendor documentation establishes available APIs, not that Sidekick works with them. The recommended adapters and acceptance tests below are not implemented.
 
 ## Recommendation
 

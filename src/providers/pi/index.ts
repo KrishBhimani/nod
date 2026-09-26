@@ -11,7 +11,9 @@ import {
   type ResourceLoader,
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
-import type { Agent } from '../../ports/agent.ts';
+import type { Agent, AgentEvent } from '../../ports/agent.ts';
+import type { PrivateObjectStore } from '../../ports/object-storage.ts';
+import { createPiCheckpoint } from './checkpoint.ts';
 import { taskId } from '../../ports/task-identity.ts';
 import { createPiUsageTracker, piUsageMetrics, usageId } from './usage.ts';
 import { agentModels } from '../../shared/model-defaults.ts';
@@ -47,9 +49,13 @@ export function createPiAgent(options: {
   model?: string;
   apiKey?: string;
   sessionRoot: string;
+  objectStore?: PrivateObjectStore;
   createSession?: typeof createAgentSession;
 }): Agent {
-  const active = new Set<Awaited<ReturnType<typeof createAgentSession>>['session']>();
+  const active = new Map<
+    Awaited<ReturnType<typeof createAgentSession>>['session'],
+    () => Promise<void>
+  >();
   let disposed = false;
   return {
     async open(input) {
@@ -69,18 +75,34 @@ export function createPiAgent(options: {
       const model = runtime.getModel(options.provider, modelId);
       if (!model)
         throw new Error('The configured model is not present in the installed Pi catalog.');
+      const durable = options.objectStore
+        ? await createPiCheckpoint({ store: options.objectStore, taskId: input.taskId, directory })
+        : undefined;
+      const manager = durable?.manager ?? SessionManager.continueRecent(directory, directory);
+      const completedEvents: AgentEvent[] = [];
+      const checkpoint = async () => {
+        await durable?.checkpoint();
+        for (const event of completedEvents.splice(0)) input.onEvent(event);
+      };
+      const completed = (event: AgentEvent) => {
+        if (durable) completedEvents.push(event);
+        else input.onEvent(event);
+      };
       const tools: ToolDefinition[] = input.tools.map((tool) => ({
         name: tool.name,
         label: tool.name.replaceAll('_', ' '),
         description: tool.description,
         parameters: tool.parameters as ToolDefinition['parameters'],
         executionMode: 'sequential',
-        execute: async (_id, args) => ({
-          ...(await tool.execute(args as Record<string, unknown>)),
-          details: {},
-        }),
+        execute: async (id, args) => {
+          const execute = async () => {
+            await checkpoint();
+            return { ...(await tool.execute(args as Record<string, unknown>)), details: {} };
+          };
+          const result = durable ? await durable.execute(id, tool.name, execute) : await execute();
+          return { ...result, details: {} };
+        },
       }));
-      const manager = SessionManager.continueRecent(directory, directory);
       const resumed = manager.buildSessionContext().messages.length > 0;
       const { session } = await (options.createSession ?? createAgentSession)({
         cwd: directory,
@@ -103,12 +125,21 @@ export function createPiAgent(options: {
         session.dispose();
         throw new Error('The agent service has stopped.');
       }
-      active.add(session);
+
       const finishTurn = session.agent.finishTurn;
       session.agent.finishTurn = async (...args) => {
         const result = await finishTurn?.(...args);
+        await checkpoint();
         return input.shouldStop() ? { action: 'end' as const } : (result ?? undefined);
       };
+      if (durable) {
+        const prepareNextTurn = session.agent.prepareNextTurnWithContext;
+        session.agent.prepareNextTurnWithContext = async (...args) => {
+          const result = await prepareNextTurn?.(...args);
+          await checkpoint();
+          return result;
+        };
+      }
       let textBlock: number | undefined;
       let compaction: { id: string; started: number } | undefined;
       const auxiliarySeen = new Set(manager.getEntries().map((entry) => entry.id));
@@ -187,7 +218,7 @@ export function createPiAgent(options: {
           if (event.message.stopReason === 'stop') {
             const blocks = event.message.content.filter((item) => item.type === 'text');
             const finalBlocks = blocks.filter((item) => isFinalAnswer(item.textSignature));
-            input.onEvent({
+            completed({
               type: 'final',
               text: (finalBlocks.length ? finalBlocks : blocks).map((item) => item.text).join('\n'),
             });
@@ -201,29 +232,46 @@ export function createPiAgent(options: {
                 : event.message.stopReason === 'aborted'
                   ? 'cancelled'
                   : undefined;
-          input.onEvent({ type: 'message_end', ...(status ? { status } : {}) });
+          completed({ type: 'message_end', ...(status ? { status } : {}) });
         }
       });
-      return {
-        resumed,
-        prompt: (text, images) => session.prompt(text, { images }),
-        abort: () => session.abort(),
-        dispose: () => {
+      const dispose = async () => {
+        try {
+          if (durable) await checkpoint();
+        } finally {
           unsubscribe();
           session.dispose();
           active.delete(session);
+        }
+      };
+      active.set(session, dispose);
+      return {
+        resumed,
+        async prompt(text, images) {
+          try {
+            await session.prompt(text, { images });
+          } finally {
+            await checkpoint();
+          }
         },
+        async abort() {
+          try {
+            await session.abort();
+          } finally {
+            await checkpoint();
+          }
+        },
+        dispose,
       };
     },
     async dispose() {
       disposed = true;
       const results = await Promise.allSettled(
-        [...active].map(async (session) => {
+        [...active].map(async ([session, dispose]) => {
           try {
             await session.abort();
           } finally {
-            session.dispose();
-            active.delete(session);
+            await dispose();
           }
         }),
       );

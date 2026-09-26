@@ -23,8 +23,20 @@ export class ChannelSetupFailure extends Error {
       | 'verification_failed'
       | 'existing_webhook'
       | 'webhook_failed'
-      | 'activation_pending',
+      | 'activation_pending'
+      | 'account_in_use',
   ) {
     super(reason);
   }
+}
+
+export interface ChannelAccountIdentity {
+  ownerId: string;
+  provider: ChannelProvider;
+  accountId: string;
+}
+
+export interface ChannelAccountRegistry {
+  claim(input: ChannelAccountIdentity): Promise<boolean>;
+  release(input: ChannelAccountIdentity): Promise<void>;
 }

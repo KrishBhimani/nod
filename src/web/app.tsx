@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { Chat } from './pages/chat';
 import { Vault } from './pages/vault';
@@ -14,13 +14,33 @@ import { Sidebar } from './components/sidebar';
 import { navigationItems } from './lib/navigation';
 import { BrowserWindow } from './pages/browser';
 import { readUiPreference, writeUiPreference } from './lib/ui-preferences';
+import type { AccountUpdate, SessionResponse } from '../shared/account';
+import { useSession } from './hooks/use-session';
+import { SignIn } from './pages/sign-in';
+import { Onboarding } from './pages/onboarding';
+import { AccountSettings } from './components/account-settings';
+import type { AccountControls, AccountTab } from './components/account-menu';
 
 function navigate(path: string) {
   window.history.pushState(null, '', path);
   window.dispatchEvent(new PopStateEvent('popstate'));
 }
-function Workspace({ path }: { path: string }) {
-  const { state, streams, error, connected, refresh, resetConversation } = useAppState();
+function Workspace({
+  path,
+  session,
+  saving,
+  onAccountUpdate,
+  onLogout,
+}: {
+  path: string;
+  session: SessionResponse;
+  saving: boolean;
+  onAccountUpdate(change: AccountUpdate): Promise<void>;
+  onLogout(): void;
+}) {
+  const { state, streams, error, connected, refresh, resetConversation } = useAppState(
+    session.user!.id,
+  );
   const [inspector, setInspector] = useState(
     () =>
       path === '/dev' ||
@@ -31,6 +51,35 @@ function Workspace({ path }: { path: string }) {
   );
   const [composerDraft, setComposerDraft] = useState<{ text: string; nonce: number }>();
   const [inspectionFocus, setInspectionFocus] = useState<{ messageId: string; taskId: string }>();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<AccountTab>('Profile');
+  const settingsTrigger = useRef<HTMLElement | null>(null);
+  const developer = session.capabilities.developer;
+  const openSettings = (tab: AccountTab, trigger?: HTMLElement) => {
+    settingsTrigger.current = trigger ?? (document.activeElement as HTMLElement);
+    setSettingsTab(tab);
+    setSettingsOpen(true);
+  };
+  useEffect(() => {
+    const shortcut = (event: KeyboardEvent) => {
+      const modifier = /Mac|iPhone|iPad/.test(navigator.platform) ? event.metaKey : event.ctrlKey;
+      if (
+        !modifier ||
+        event.key !== ',' ||
+        event.altKey ||
+        event.shiftKey ||
+        event.repeat ||
+        event.isComposing ||
+        event.defaultPrevented
+      )
+        return;
+      if (document.querySelector('[role="dialog"]') && !settingsOpen) return;
+      event.preventDefault();
+      if (!settingsOpen) openSettings('Profile');
+    };
+    window.addEventListener('keydown', shortcut);
+    return () => window.removeEventListener('keydown', shortcut);
+  }, [settingsOpen]);
   useEffect(() => {
     const compose = (event: Event) => {
       const detail = (event as CustomEvent<{ text: string }>).detail;
@@ -39,6 +88,7 @@ function Workspace({ path }: { path: string }) {
       navigate('/');
     };
     const inspect = (event: Event) => {
+      if (!developer) return;
       const detail = (event as CustomEvent<{ messageId: string; taskId: string }>).detail;
       if (!detail?.taskId) return;
       setInspectionFocus(detail);
@@ -50,7 +100,7 @@ function Workspace({ path }: { path: string }) {
       window.removeEventListener('sidekick:compose', compose);
       window.removeEventListener('sidekick:inspect-message', inspect);
     };
-  }, []);
+  }, [developer]);
   const currentPath = path === '/dev' || path === '/you' ? '/' : path;
   useEffect(() => {
     if (path === '/dev') setInspector(true);
@@ -68,7 +118,20 @@ function Workspace({ path }: { path: string }) {
   useEffect(() => {
     writeUiPreference('sidekick.sidebar', collapsed ? 'collapsed' : 'expanded');
   }, [collapsed]);
-  const inspectorOpen = !!state?.configuration.inspectorEnabled && inspector;
+  const inspectorEnabled = developer && !!state?.configuration.inspectorEnabled;
+  const inspectorOpen = inspectorEnabled && inspector;
+  const visibleState = state
+    ? { ...state, configuration: { ...state.configuration, inspectorEnabled } }
+    : null;
+  const account: AccountControls = {
+    user: session.user!,
+    theme: session.settings!.theme,
+    saving,
+    canLogout: session.auth.mode === 'google',
+    onSettings: openSettings,
+    onTheme: (theme) => onAccountUpdate({ theme }),
+    onLogout,
+  };
   return (
     <div
       className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''} ${inspectorOpen ? 'with-inspector' : ''}`}
@@ -80,10 +143,11 @@ function Workspace({ path }: { path: string }) {
         path={currentPath}
         collapsed={collapsed}
         onToggle={() => setCollapsed((value) => !value)}
-        inspectorEnabled={state?.configuration.inspectorEnabled}
+        inspectorEnabled={inspectorEnabled}
         inspectorOpen={inspectorOpen}
         onToggleInspector={() => setInspector((value) => !value)}
         onNavigate={navigate}
+        account={account}
         onRestart={() => {
           navigate('/');
           setComposerDraft(undefined);
@@ -94,7 +158,7 @@ function Workspace({ path }: { path: string }) {
       <div className="workspace-frame">
         <div className="workspace-body">
           <main id="workspace" className="main-workspace" tabIndex={-1}>
-            {!state ? (
+            {!visibleState ? (
               <div className="initial-loading">
                 {error ? (
                   <>
@@ -111,7 +175,7 @@ function Workspace({ path }: { path: string }) {
               <>
                 <div className="chat-route" hidden={currentPath !== '/'}>
                   <Chat
-                    state={state}
+                    state={visibleState}
                     streams={streams}
                     refresh={refresh}
                     resetConversation={resetConversation}
@@ -120,7 +184,9 @@ function Workspace({ path }: { path: string }) {
                 </div>
                 {currentPath === '/vault' && <Vault />}
                 {currentPath === '/apps' && <Apps />}
-                {currentPath === '/channels' && <Channels />}
+                {currentPath === '/channels' && (
+                  <Channels hosted={session.auth.mode === 'google'} />
+                )}
                 {currentPath === '/goals' && <Goals />}
                 {currentPath === '/schedule' && <SchedulePage />}
                 {!navigationItems.some((item) => item.path === currentPath) && (
@@ -145,18 +211,130 @@ function Workspace({ path }: { path: string }) {
           )}
         </div>
       </div>
+      <AccountSettings
+        account={account}
+        open={settingsOpen}
+        initialTab={settingsTab}
+        onOpenChange={setSettingsOpen}
+        onName={(name) => onAccountUpdate({ name })}
+        returnFocus={() =>
+          settingsTrigger.current?.isConnected
+            ? settingsTrigger.current
+            : document.querySelector<HTMLElement>(
+                window.innerWidth <= 640
+                  ? '[aria-label="Navigation menu"]'
+                  : '[aria-label="Account menu"]',
+              )
+        }
+      />
     </div>
   );
 }
 export function App() {
   const [path, setPath] = useState(window.location.pathname);
+  const sessionState = useSession();
+  const { session } = sessionState;
   useEffect(() => {
     const update = () => setPath(window.location.pathname);
     window.addEventListener('popstate', update);
     return () => window.removeEventListener('popstate', update);
   }, []);
-  if (path === '/browser') return <BrowserWindow />;
+  useEffect(() => {
+    if (sessionState.loading || !session?.user || !session.settings) return;
+    const secure = /^\/(?:vault|credentials)\/[^/]+\/?$/.test(path) || path === '/browser';
+    const next =
+      !session.settings.onboardingCompleted && !secure
+        ? '/onboarding'
+        : path === '/login' || path === '/onboarding'
+          ? '/'
+          : null;
+    if (next && next !== path) {
+      window.history.replaceState(null, '', next);
+      setPath(next);
+    }
+  }, [sessionState.loading, session?.user?.id, session?.settings?.onboardingCompleted, path]);
+  if (sessionState.signingOut)
+    return (
+      <main className="initial-loading">
+        {sessionState.error ? (
+          <>
+            <Notice>{sessionState.error}</Notice>
+            <Button variant="outline" onClick={() => void sessionState.logout()}>
+              Try again
+            </Button>
+          </>
+        ) : (
+          <Loading label="Signing out…" />
+        )}
+      </main>
+    );
+  if (sessionState.loading)
+    return (
+      <main className="initial-loading">
+        <Loading label="Opening Sidekick…" />
+      </main>
+    );
+  if (!session?.user)
+    return (
+      <SignIn
+        available={session?.auth.googleAvailable ?? false}
+        error={
+          sessionState.error ||
+          (new URLSearchParams(window.location.search).has('error')
+            ? 'Sign-in did not finish. Try again.'
+            : '')
+        }
+        onRetry={() => void sessionState.refresh()}
+      />
+    );
+  if (!session.settings)
+    return (
+      <main className="initial-loading">
+        <Notice>Your account could not be opened.</Notice>
+        <Button variant="outline" onClick={() => void sessionState.refresh()}>
+          Try again
+        </Button>
+      </main>
+    );
+  const key = `${session.user.id}:${sessionState.epoch}`;
+  const logout = () => {
+    void sessionState.logout().then(() => {
+      window.history.replaceState(null, '', '/login');
+      setPath('/login');
+    });
+  };
+  if (path === '/browser' || path === '/dev') {
+    if (!session.capabilities.developer)
+      return (
+        <main className="empty-state">
+          <h1>This page isn’t here.</h1>
+          <Button variant="outline" onClick={() => navigate('/')}>
+            Back to chat
+          </Button>
+        </main>
+      );
+    if (path === '/browser') return <BrowserWindow key={key} />;
+  }
   const match = /^\/(?:vault|credentials)\/([^/]+)\/?$/.exec(path);
-  if (match) return <Credentials key={match[1]} id={match[1]} />;
-  return <Workspace path={path} />;
+  if (match) return <Credentials key={`${key}:${match[1]}`} id={match[1]} />;
+  if (!session.settings.onboardingCompleted)
+    return (
+      <Onboarding
+        key={key}
+        user={session.user}
+        canLogout={session.auth.mode === 'google'}
+        onLogout={logout}
+        onComplete={() => sessionState.update({ onboardingCompleted: true })}
+      />
+    );
+  return (
+    <Workspace
+      key={key}
+      path={path === '/login' || path === '/onboarding' ? '/' : path}
+      session={session}
+      saving={sessionState.mutating}
+      onAccountUpdate={sessionState.update}
+      onLogout={logout}
+    />
+  );
 }

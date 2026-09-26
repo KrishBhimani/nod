@@ -9,7 +9,11 @@ import {
   WorkspaceCommandError,
   type WorkspaceCommandLauncher,
 } from '../src/providers/docker/command.ts';
-import { artifactReadProgram } from '../src/providers/docker/index.ts';
+import {
+  artifactReadProgram,
+  artifactWriteProgram,
+  createCommandWorkspace,
+} from '../src/providers/docker/index.ts';
 
 async function local() {
   const directory = await mkdtemp('/tmp/sidekick-command-');
@@ -276,5 +280,48 @@ test('an uncertain workspace operation cancels and drains commands already in fl
     acknowledge();
     await workspace.dispose();
     await Promise.allSettled([failed, drained]);
+  }
+});
+
+test('workspace uploads transfer binary chunks atomically and reject symlink directories', async () => {
+  const f = await local();
+  const outside = await mkdtemp('/tmp/sidekick-upload-outside-');
+  const workspace = createCommandWorkspace({
+    workspaceRoot: f.directory,
+    status: 'fixture',
+    instructions: 'fixture',
+    runCommand: async (_id, args, input) => {
+      const request = JSON.parse(input.input!);
+      assert.ok([artifactWriteProgram, artifactReadProgram].includes(args[2]));
+      request.base = f.directory;
+      return f.run(args, { ...input, input: JSON.stringify(request) });
+    },
+  });
+  try {
+    const bytes = Buffer.alloc(1024 * 1024 + 13);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = i % 256;
+    await workspace.writeArtifact!('fixture', 'nested/file.bin', bytes);
+    assert.deepEqual(
+      Buffer.from(await workspace.readArtifact!('fixture', 'nested/file.bin', bytes.length)),
+      bytes,
+    );
+    await symlink(outside, join(f.directory, 'escape'));
+    await assert.rejects(
+      workspace.writeArtifact!('fixture', 'escape/private.bin', bytes),
+      /Workspace command failed/,
+    );
+    assert.equal(await exists(join(outside, 'private.bin')), false);
+    await assert.rejects(
+      workspace.writeArtifact!('fixture', '../foreign/file', bytes),
+      /stay within/,
+    );
+    await assert.rejects(
+      workspace.writeArtifact!('fixture', 'too-large', Buffer.alloc(15 * 1024 * 1024 + 1)),
+      /15 MB/,
+    );
+  } finally {
+    await workspace.dispose();
+    await f.close();
+    await rm(outside, { recursive: true, force: true });
   }
 });

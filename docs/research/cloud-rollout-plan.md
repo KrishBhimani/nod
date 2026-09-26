@@ -4,9 +4,9 @@ Research and prototype date: **2026-09-26**. Starting revision: `1a471a0`.
 
 **Selected UX: A — Quick start**, following the user's review on 2026-09-26. Keep login and account setup concise: remove privacy reassurances, explanations of login versus app access, hosting credits, preview labels and event-processing detail from ordinary screens. Provider consent supplies the permissions review; the product adds only information needed for the immediate decision.
 
-**Architecture recommendation:** keep Sidekick's current stack, add Google login and complete user isolation, host the application in Cloudflare Containers behind a small Worker, and use managed PostgreSQL plus private object storage. Evaluate E2B and Cloudflare for remote computers before selecting the production default. Preserve local Docker and provider replacement.
+**Selected application providers:** Cloudflare for application hosting and private object storage, Neon for PostgreSQL, and Composio for connected apps. Keep Sidekick's current stack, add Google login and complete user isolation, and run the application in Cloudflare Containers behind a small Worker. E2B remains the provisional remote-computer candidate, pending a full trusted-browser plus isolated-shell test and comparison with Cloudflare. Preserve local Docker and provider replacement.
 
-This branch contains research and a disposable UI prototype. Authentication, tenancy, provider provisioning, deployments and production acceptance are **not implemented** here. Existing application instructions still describe the working single-owner product. The user requested a review before those changes.
+This branch contains research and a disposable UI prototype. Authentication, tenancy, automated provider provisioning, deployments and production acceptance are **not implemented** here. All four provider dashboards are now accessible, including Jan's intended Cloudflare account. Account preparation created an empty Composio production project and a free Neon PostgreSQL database; E2B has no sandboxes. The [account-preparation record](provider-account-setup.md) separates those actions from implementation and live provider proof. Existing application instructions still describe the working single-owner product.
 
 ## Review the experience
 
@@ -27,6 +27,8 @@ Switch with the bottom bar or `?variant=A`, `B`, or `C`. Development-only scenar
 
 Review the full route: sign in → connect or skip → chat → Apps → Channels/Telegram → sidebar avatar → Profile/Appearance. Existing Chat, Goals, Schedule, Apps, Channels and Vault remain familiar. Preserve the production Apps page design and account management; onboarding does not replace it. On desktop, keep navigation vertically centered, animate icon hover states, preserve the collapse/expand control and omit connected-app counts. On mobile, chat fills the screen; a menu opens navigation and account settings. Computer views and technical diagnostics belong only to explicitly authorized developers.
 
+Preserve the existing app styles rather than redesigning its sidebar or other established surfaces. The sign-in page keeps its editorial cards and explains the intended benefit through concrete overnight outputs: a supplier comparison and prepared follow-ups. This is proposed product behavior, not evidence that scheduled work has run. Settings use vertical navigation beside the active section, familiar form controls and concise preference rows. Selectable theme previews communicate selection through border and background, without checkboxes or checkmarks.
+
 Product requirements reflected in the design:
 
 - Google login identifies a Sidekick user; connected accounts can differ from that identity. Keep the distinction in authorization and consent handling without explanatory banners in the ordinary flow.
@@ -42,13 +44,13 @@ Product requirements reflected in the design:
 
 | Piece              | Proposal                                                                                             | Why and qualification                                                                                                                   |
 | ------------------ | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| Public origin      | Cloudflare Worker, static assets and HTTPS domain on Jan's account                                   | Small deployment-specific ingress; the account, domain and access are not verified                                                      |
+| Public origin      | Cloudflare Worker, static assets and HTTPS domain on Jan's account                                   | Account access verified; domain, plan, Containers support and CI credentials still need validation                                      |
 | API and agent jobs | Existing Fastify/Pi Node image in Cloudflare Containers, separate API/worker roles                   | Preserves the stack and can run on another container host; prove lifecycle/streaming first                                              |
 | Login              | Better Auth with PostgreSQL sessions and Google                                                      | Fits Fastify and portable hosting; pin and validate the integration rather than inventing auth                                          |
 | Database           | Neon PostgreSQL in an appropriate EU region                                                          | Standard PostgreSQL; direct worker/migration connections initially; separate development/production projects                            |
 | Durable files      | Private R2 behind a storage interface; local filesystem adapter retained                             | Containers lose disk on restart. Transcripts, artifacts and browser recovery need explicit persistence                                  |
 | Apps               | Existing Composio adapter with separate environment projects, keys, auth configs and webhook secrets | Preserves account selection and tools while adding immutable user ownership                                                             |
-| Remote computer    | First candidates: E2B Desktop and Cloudflare with separate trusted-browser and shell environments    | Choose after a measured bake-off. Daytona is an alternative; browser-only services do not automatically satisfy private desktop sign-in |
+| Remote computer    | Provisional E2B candidate; compare Cloudflare with separate trusted-browser and shell environments   | Choose after a measured bake-off. Daytona is an alternative; browser-only services do not automatically satisfy private desktop sign-in |
 | Telegram           | Existing transport with per-user encrypted bot configuration, explicit pairing and webhook delivery  | Reuse the durable inbox/outbox; remove fixed-owner/global bot assumptions                                                               |
 | Models             | Existing provider ports and server-side configuration                                                | Reuse suitable existing operator keys; users supply their own connected accounts, not model credentials                                 |
 
@@ -107,11 +109,18 @@ Keep vendor SDKs in adapters and provider selection in server-startup configurat
 
 Implementation must update `README.md`, the system/architecture/security/production guides, API contracts, development and verification instructions, Composio/channel/vault docs, replacement-module guide, environment examples and owning `AGENTS.md` files. Document operator setup, end-user behavior, actual commands, providers/models/available-app configuration, required scopes, supported regions, test data cleanup and recovery. Preserve a dated distinction between fixtures and real provider/production proof.
 
-After review, inspect existing accounts and configuration before creating resources. Remaining access facts are Jan's Cloudflare account/zone/plan, final hostname, repository deployment rights, Google OAuth audience/verification, database and provider regions, existing key availability and a bounded test budget. If a computer provider account is missing, the requested identity is `filipe.tavares@n8n.io` through Google where available. Personal Google is authorized for the later production test. No account creation, provider grants, paid provisioning or production test occurred during this research phase.
+The initial research snapshot preceded account preparation and made no provider changes. During the subsequent authorized account-preparation step on 2026-09-26, an empty `sidekick_production` project was created in Composio's `n8n` organization. The existing `sidekick` project was left unchanged. No keys, auth configurations or webhook registrations were created.
+
+E2B work-Google signup and email verification are complete; its dashboard shows the default project with zero sandboxes. Neon work-Google login succeeded in an existing organization, and free-plan project `sidekick` now contains database `sidekick` on PostgreSQL 17 in AWS Frankfurt (`eu-central-1`), matching `compose.yaml`. Additional Neon auth, storage, functions and gateway services remain off. No migrations, data or credentials were copied.
+
+The user completed Cloudflare two-factor sign-in directly. Dashboard access to Jan's intended account is verified and existing Workers are visible; no new account was needed. All four provider accounts are accessible. Cloudflare's plan, Containers support and least-privilege CI credentials remain unchecked. See the [account-preparation record](provider-account-setup.md) for the remaining configuration. No tokens were created, no paid plans were purchased, and no deployments or live provider acceptance tests were completed during account preparation.
+
+Remaining configuration includes the Cloudflare zone, plan and Containers support, final hostname, least-privilege CI credentials, repository deployment rights, Google OAuth audience/verification, computer-provider regions, existing key availability and a bounded test budget. Establish separate development and production database connections before running Sidekick against Neon. Personal Google is authorized for the later production test. Keep email addresses, secret values and private account content out of repository records.
 
 ## Detailed research
 
 - [Cloudflare hosting, authentication, tenancy, database and CI/CD](cloud-hosting-auth.md)
 - [Remote computer providers, contracts, prices and bake-off](computer-providers.md)
 - [Google/Composio events and Telegram setup](integrations-events-telegram.md)
+- [Provider account preparation and remaining access](provider-account-setup.md)
 - [Prototype design and validation record](../../src/web/prototypes/cloud-signup/README.md)

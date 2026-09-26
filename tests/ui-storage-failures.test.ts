@@ -63,16 +63,23 @@ for (const mode of ['read', 'write'] as const)
     Object.defineProperty(window, 'localStorage', { configurable: true, get: access });
     Object.defineProperty(globalThis, 'localStorage', { configurable: true, get: access });
     globalThis.fetch = async (path) =>
-      path === '/api/state'
-        ? new Response(JSON.stringify({ error: 'Fixture is offline.' }), { status: 503 })
-        : new Response(
-            JSON.stringify({
-              tasks: [],
-              events: [],
-              currentBrowser: null,
-              runtime: { browser: 'Ready', workspace: 'Ready', database: 'Ready' },
-            }),
-          );
+      path === '/api/session'
+        ? Response.json({
+            auth: { mode: 'local', googleAvailable: false },
+            user: { id: 'fixture-owner', name: 'Alex Example', email: null, avatarUrl: null },
+            settings: { theme: 'system', onboardingCompleted: true },
+            capabilities: { developer: true },
+          })
+        : path === '/api/state'
+          ? new Response(JSON.stringify({ error: 'Fixture is offline.' }), { status: 503 })
+          : new Response(
+              JSON.stringify({
+                tasks: [],
+                events: [],
+                currentBrowser: null,
+                runtime: { browser: 'Ready', workspace: 'Ready', database: 'Ready' },
+              }),
+            );
     const element = document.createElement('div');
     document.body.append(element);
     const root = createRoot(element);

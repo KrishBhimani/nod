@@ -1,12 +1,23 @@
 import pg from 'pg';
 import { databaseUrl } from './config.ts';
 
-export const pool = new pg.Pool({ connectionString: databaseUrl, max: 12 });
+function poolSize(value: string | undefined, fallback: number) {
+  const size = value === undefined ? fallback : Number(value);
+  if (!Number.isSafeInteger(size) || size < 1 || size > 12)
+    throw new Error('The database pool size must be between 1 and 12.');
+  return size;
+}
+
+export const pool = new pg.Pool({
+  connectionString: databaseUrl,
+  max: poolSize(process.env.DATABASE_POOL_MAX, 12),
+  connectionTimeoutMillis: 10_000,
+});
 
 export function createInspectorPool() {
   return new pg.Pool({
     connectionString: databaseUrl,
-    max: 2,
+    max: poolSize(process.env.INSPECTOR_DATABASE_POOL_MAX, 2),
     connectionTimeoutMillis: 500,
     statement_timeout: 500,
     query_timeout: 750,
@@ -54,8 +65,10 @@ export async function initializeDatabase() {
     );
     CREATE TABLE IF NOT EXISTS preferences (
       owner_id text PRIMARY KEY, notification_rule text NOT NULL DEFAULT '', time_zone text NOT NULL DEFAULT 'Europe/Lisbon',
-      quiet_start text NOT NULL DEFAULT '22:00', quiet_end text NOT NULL DEFAULT '08:00'
+      quiet_start text NOT NULL DEFAULT '22:00', quiet_end text NOT NULL DEFAULT '08:00',
+      quiet_hours_enabled boolean NOT NULL DEFAULT true
     );
+    ALTER TABLE preferences ADD COLUMN IF NOT EXISTS quiet_hours_enabled boolean NOT NULL DEFAULT true;
     CREATE TABLE IF NOT EXISTS notifications (
       id uuid PRIMARY KEY, event_id text UNIQUE NOT NULL, owner_id text NOT NULL, summary text NOT NULL,
       decision text NOT NULL, reason text NOT NULL, feedback text, task_id uuid REFERENCES tasks(id),

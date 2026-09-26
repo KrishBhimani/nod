@@ -206,6 +206,34 @@ test('channel steps reveal only the current credentials and never repeat secrets
   assert.doesNotMatch(keys, /fixture-private-bot-token/);
 });
 
+test('hosted channel setup keeps identity restrictions and omits operator callback controls', () => {
+  const base = {
+    fields: { allowedUserId: '123456' },
+    hosted: true,
+    policy: false,
+    onField() {},
+    onPolicy() {},
+  };
+  const identity = renderToStaticMarkup(
+    createElement(ChannelSetupStep, { ...base, provider: 'telegram', step: 1 }),
+  );
+  assert.match(identity, /Your Telegram user ID/);
+  assert.match(identity, /inputMode="numeric"/);
+  assert.match(identity, /required/);
+  const telegram = renderToStaticMarkup(
+    createElement(ChannelSetupStep, { ...base, provider: 'telegram', step: 2 }),
+  );
+  assert.match(telegram, /123456/);
+  assert.match(telegram, /press Start/);
+  assert.doesNotMatch(telegram, /Mac|running|locally|webhook|type="url"/);
+  const whatsapp = renderToStaticMarkup(
+    createElement(ChannelSetupStep, { ...base, provider: 'whatsapp', step: 3 }),
+  );
+  assert.doesNotMatch(whatsapp, /type="url"|keep the rest of Sidekick private/);
+  assert.match(whatsapp, /Webhook verification token/);
+  assert.match(whatsapp, /After connecting, copy the callback URL into Meta/);
+});
+
 test('channel setup payloads include only the selected provider fields', () => {
   const fields = {
     botToken: ' bot-token ',

@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { App } from './app';
 import { initializeTheme } from './lib/theme';
 import './styles.css';
+import './pages/chat.css';
 import './theme.css';
 import './pages/secondary-pages.css';
 import './pages/apps.css';
@@ -12,6 +13,9 @@ import './components/emoji-picker.css';
 import './components/attachment-images.css';
 import './components/vault-details.css';
 import './pages/inspector.css';
+import './pages/sign-in.css';
+import './pages/onboarding.css';
+import './components/account-settings.css';
 
 class AppBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };

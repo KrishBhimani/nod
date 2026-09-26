@@ -1,73 +1,81 @@
-# Before hosting Sidekick
+# Hosted Sidekick
 
-Sidekick is a loopback-only, single-owner prototype. A successful local task does not make it a hosted product. No public login, production database, deployment, or multi-user signup is provisioned.
+The repository includes Google login, account settings, isolated per-user Node runtimes, private tenant SQL roles, a Cloudflare container adapter and production CI/CD. This is a bounded pilot implementation. Automated fixtures and local process tests do not establish a working public deployment or live provider delivery; record those checks separately before sharing a production signup link.
 
-## First hosted shape
-
-After implementing the boundaries below, an initial deployment can use an application service, PostgreSQL, private object storage, and isolated task computers. Separate web/API capacity from workers as usage grows. Browser memory, concurrent tasks, and retained authenticated sessions determine capacity more than open chat windows.
+## Deployment shape
 
 ```text
-Authenticated app / verified channel ingress
-                    |
-             API + task broker
-                    |
-       PostgreSQL tasks, jobs, outbox
-                    |
-        Workers -> isolated computers
-                    |
-     Credential broker + private artifacts
+Browser / verified webhook
+            |
+Public Cloudflare Worker + static web assets
+            |
+Private Node gateway: Google sessions, accounts, tenant provisioning
+            |
+One private Node container per user, signed requests and expiring lease
+            |
+Private PostgreSQL role + app/jobs schemas
+            |
+E2B browser / E2B workspace     Owner-bound private R2 storage
 ```
 
-This is a target architecture. The repository does not provision it. `npm run build` checks TypeScript and builds the client; production also needs reproducible server images, supervised processes, health checks, versioned migrations, and a tested rollback path.
+The gateway authenticates the session before selecting an owner. Each tenant process has an immutable owner, its own SSE emitter and task workers, its own PostgreSQL login and application/jobs schemas, and a separate working directory. Schema permissions isolate child tables even where they have no owner column. Tenant roles cannot read another tenant or the control/auth schemas, create roles, or switch to another tenant role. Provisioning never adopts unrelated existing roles or schemas.
 
-## Required boundaries
+Control/auth database credentials, Google login secrets and the tenant derivation master key stay in the gateway. Actors receive derived database/vault credentials, signed-runtime identity and selected provider credentials. Provider credentials never enter the user's E2B command environment. Cloudflare's trusted container identity determines storage paths; caller headers cannot select another owner. Public ingress does not expose actor bootstrap or internal channel claims.
 
-| Area                    | Required work                                                                                                                                                                                                                                                                                                                                                                          |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| User accounts           | Replace `local-development` with authenticated identity and secure sessions. Authorize every task, file, event stream, credential, approval, and provider connection. Google consent and a configured bot sender are not app login.                                                                                                                                                    |
-| Execution               | Isolate tenants with separate sandboxes, volumes, identities, quotas, and egress policy. Current tasks share one Linux user, container, and tool volume. Task folder names do not isolate hostile commands.                                                                                                                                                                            |
-| Browser and credentials | Separate authenticated profiles, browser control, and decryption from unrestricted shell execution under a trusted service identity. Retain origin, form, revision, and observation checks.                                                                                                                                                                                            |
-| Keys                    | Add managed key storage, rotation, access auditing, and recovery. Existing ciphertext needs the same key or explicit re-encryption. KMS does not hide plaintext from an operator controlling its authorized decrypting service.                                                                                                                                                        |
-| Files and retention     | Use private artifact/profile/transcript storage with ownership checks, retention, deletion, and short-lived access. Never publish complete workspaces. Database content outside the vault/channel ciphertext remains sensitive. Disable developer capture with DEV_INSPECTOR=false; any future production inspector needs separate administrator authorization and a retention policy. |
-| HTTP                    | Add HTTPS, authenticated ingress, session/CSRF controls, quotas, and abuse handling. Preserve raw webhook bytes, signatures, replay checks, account binding, and deduplication. Expose only intended public routes.                                                                                                                                                                    |
-| Database                | Use restricted service credentials, versioned migrations, monitored queues, encrypted backups, and restore drills. Back up required key material separately under controlled access.                                                                                                                                                                                                   |
+The pilot admits eight users and keeps one gateway plus up to eight tenant containers active. Minute Cron wakes the gateway; its persisted owner registry and periodic recovery restore registered tenants. Actors require signed SQL-backed lease renewal and self-fence on expiry. Replacement requires a confirmed stop of the exact prior generation. This is an always-running service. Increase admission, container limits, database connections and budgets together; the provisioner has an absolute 400-role ceiling.
 
-## Internet and computer access
+## Operator configuration
 
-The local workspace uses normal Docker networking without a Sidekick egress firewall. It can install CLI packages and reach destinations allowed by Docker and host routing, including reachable private networks; IPv6 depends on the Docker and host configuration. It still runs without Linux capabilities or privilege escalation. This is not a tenant sandbox.
+Use distinct development and production Workers, Durable Object namespaces, private EU R2 buckets, PostgreSQL databases, Composio projects/auth configs, Google OAuth clients and E2B keys/templates. PostgreSQL initialization changes default public grants, so use a dedicated Sidekick database with a provisioner allowed to create login roles and schemas. Keep that credential out of actors and task computers.
 
-A production policy must decide which destinations, package registries, and downloads are allowed, and how to limit cost, malware, and resource use. Public egress can carry files, prompts, or other data the agent can access. The workspace has no provider environment, host Docker socket, or authenticated browser profile, but those exclusions alone do not prevent every prompt-injection outcome.
+| Configuration                                                                                 | Purpose                                                            |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `SIDEKICK_MODE=gateway`, `SIDEKICK_ENVIRONMENT`, `SIDEKICK_PUBLIC_URL`                        | Hosted entrypoint and fixed application origin                     |
+| `DATABASE_URL`                                                                                | Dedicated control/auth database and tenant provisioning connection |
+| `SIDEKICK_MASTER_KEY`                                                                         | Stable 32-byte key for tenant database/runtime/vault derivation    |
+| `BETTER_AUTH_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`                              | Login sessions and Google OAuth                                    |
+| `SIDEKICK_MAX_USERS`                                                                          | Atomic admission limit, default eight                              |
+| `SIDEKICK_DEVELOPER_IDS`                                                                      | Account UUIDs authorized for developer/computer views              |
+| `COMPUTER_PROVIDER=e2b`, `E2B_API_KEY`, `E2B_BROWSER_TEMPLATE`, `E2B_WORKSPACE_TEMPLATE`      | Separate browser and command computers                             |
+| `OBJECT_STORAGE_PROVIDER=http`, `OBJECT_STORAGE_ENDPOINT=http://sidekick.storage/v1/objects/` | Private Cloudflare storage broker                                  |
+| Model keys/settings and `COMPOSIO_*`                                                          | Server-owned providers and enabled integrations                    |
 
-Native Mac/Windows applications and a GUI desktop are not implemented. A future shared desktop would also need exclusive coordination for its physical input state. A browser screenshot is not a remote operating-system desktop.
+Users choose which accounts to connect; startup configuration selects computer/model providers. The Google callback origin must match the deployed HTTPS origin. Profile, avatar and settings belong to the authenticated account; appearance is also accessible from the account menu. Hosted Inspector capture requires both `DEV_INSPECTOR=true` and an owner UUID in `SIDEKICK_DEVELOPER_IDS`; ordinary accounts do not persist Inspector prompts or tool payloads.
 
-## Workers and uncertain outcomes
+Cloudflare stores the gateway configuration as a compact JSON `GATEWAY_ENV` secret, limited to 5 KiB. Deployment validates origin/environment, injects the release SHA and keeps keys out of build arguments and web assets. The [Cloudflare runbook](../deployment/cloudflare/README.md) lists resources, token scopes, CI secrets, private RPC and deployment commands.
 
-The API, four task workers, pg-boss scheduler, heartbeat, and channel scans currently share one Node process. The machine must stay awake. Stored schedules survive restart, but exact execution time and replay of every missed occurrence are not guaranteed.
+Self-hosting can use the Node gateway's local per-user process transport and a compatible PostgreSQL service. Local hosted actors store private objects and checkpoints in their own PostgreSQL schema by default. The optional filesystem adapter requires a durable private volume and manual stale-lock recovery after an interrupted writer. Computer/storage ports keep Cloudflare/E2B details outside product logic. Use development provider projects and disposable data to test this stack locally. Local process isolation assumes a trusted host; never expose the single-owner `local` mode publicly. See [replacing modules](replacing-modules.md) and [development](development.md).
 
-Before running several replicas, add leases, worker ownership, scheduler coordination, graceful draining, and reconciliation. Current startup recovery assumes one process and can mistake another process's work for interrupted work. Persist waiting states and release workers rather than keeping long credential or approval requests open.
+## Durability and external actions
 
-Database idempotency prevents duplicate internal dispatch. It cannot make external API writes or browser actions exactly once. Use provider idempotency keys where available and retain approval/result records. The channel outbox stops retries after uncertain sends; add an operator recovery flow and backoff for failures known to be retryable.
+Tasks, jobs, schedules, event inbox/outbox and ownership live in PostgreSQL. Artifacts and Pi checkpoints use bounded private object storage with conditional writes. A stale checkpoint writer fails; a saved pre-action journal without a confirmed result prevents automatic replay. Failed conditional cleanup can leave a private orphan for reconciliation rather than delete a newer object. Cloudflare container disks are ephemeral working space.
 
-## Apps and messaging
+Database idempotency does not make external writes or browser actions exactly once. A provider may accept an action before its acknowledgement is lost. Preserve uncertain outcomes and reconcile them rather than silently replaying. Browser/workspace allocations are separate and leased; unknown termination or competing ownership remains fenced. Fixtures do not prove that a real website permits automation.
 
-Composio holds managed OAuth tokens. Review its access, retention, scopes, event usage, and actual account plan. Google production consent can require verification or additional assessment for sensitive/restricted scopes. Managed OAuth does not remove those obligations. [Google production OAuth policy](https://developers.google.com/identity/protocols/oauth2/production-readiness/policy-compliance).
+The E2B workspace can execute arbitrary commands and reach its configured network. It receives no trusted provider keys, host Docker socket or authenticated browser profile. These separations do not prevent every prompt-injection outcome or replace provider network controls, quotas and monitoring. A browser screenshot is not a native operating-system desktop.
 
-Apps supports Google services, Slack and Notion. Multi-account actions and confirmations must preserve a specific account binding throughout review and execution. Provider replacement requires revocation/reconnection and cannot silently adopt old account or subscription IDs. Gmail/Calendar watch preference being enabled does not prove an active subscription or webhook delivery. See [Apps](composio.md).
+## Integrations and messaging
 
-Channel setup verifies a bot/business credential and stores it encrypted. It does not prove ownership of the user-entered recipient ID, public webhook reachability, or end-to-end delivery. A public bot needs secure account pairing, tenant routing, consent, revocation, quotas, and abuse controls.
+App connections use Composio authorization and owned callback attempts. Gmail/Calendar subscriptions, signatures, deduplication and owner routing need a real production event test; enabling a preference does not establish delivery. Keep development and production Composio credentials separate. Managed OAuth does not remove Google production consent/restricted-scope requirements. [Google OAuth production policy](https://developers.google.com/identity/protocols/oauth2/production-readiness/policy-compliance).
 
-Telegram local polling requires no public ingress. Webhook deployments should expose only the signed callback route. Telegram webhook registration and local persistence are separate operations; failures may require checking both systems. Disconnecting locally does not revoke a token or remove the remote webhook.
+Telegram setup verifies the bot identity, claims it for one Sidekick account, encrypts its credentials and uses an owner-bound webhook route. Another user cannot claim the same verified bot. The current form requires the user's numeric Telegram sender ID; one-time deep-link pairing and a verified test challenge are not implemented. Sender binding, webhook authentication and owned routing remain required. Test registration, receipt, a reply, disconnect and duplicate delivery in production. Uncertain remote webhook state or token revocation requires provider-side reconciliation. Local polling and synthetic fixtures are separate evidence.
 
-WhatsApp needs a current market-specific eligibility and pricing review, approved account configuration, reply-window handling, and templates if proactive messages are required. The prototype accepts text from one configured owner and sends free-form replies only within 24 hours. An operator confirmation checkbox or working SDK is not worldwide eligibility. [Channel setup and limits](channels.md).
+WhatsApp needs its own current eligibility, pricing, account and template review; a working adapter is not worldwide production availability. Preserve reply-window limits, channel identity, account-bound approvals and uncertain-send behavior described in [channels](channels.md).
 
-Messaging channels have no task chooser when several ordinary questions are waiting. Ambiguous replies need clarification in the originating conversation. Known ordinary actions can execute from a clear owned request; destructive or unmatched actions use a specific yes/no confirmation in that same chat. Secure credential forms remain in the local app.
+## CI/CD and rollback
 
-Telegram can upload owned task images and files after the server rechecks their owner, task, path and size. WhatsApp retains text replies with a local-app attachment fallback. Partial or uncertain sends are not replayed automatically. Delivery receipts and operator resend tools are not implemented. Synthetic transport checks do not establish delivery to a real recipient.
+CI checks root types/architecture/formatting, the full PostgreSQL fixture suite, client build, Cloudflare types/fixtures, both environment bundles and an amd64 Node image. Production follows successful CI for the current `main` revision, inside the GitHub `production` environment. Configure branch/environment protection so reviewed `main` code alone receives production secrets.
 
-## Cost and evidence
+Deployment pre-pushes the tested commit-tagged image, then activates Worker code, image reference and `GATEWAY_ENV` through `wrangler deploy --secrets-file`. Worker activation and container rollout are separate operations. Smoke waits for the exact release SHA from gateway health, then checks anonymous session/state access, private-route denial and foreign-origin POST rejection. CI does not log in to Google, connect apps or send messages.
 
-Budget for application and worker compute, PostgreSQL/backups, private file/profile storage, and bandwidth. Add model, speech, optional Jev, Composio tools/events, and messaging-provider usage. Trigger checks and hourly reviews can cost money even when no notification is sent. Tool installs, browser observations, long histories, retries, and retained artifacts also affect usage.
+A failed smoke does not trigger automatic rollback. Inspect the live Worker/image and tenant leases first. Keep one active generation per tenant; old code must support the current SQL schema, object/checkpoint format and key versions. Worker rollback does not restore PostgreSQL, R2, computer sessions or external actions. Preserve prior images and keys; prefer a forward fix after incompatible state changes. Startup schema setup is not a tested reversible migration system.
 
-No fixed monthly estimate is validated for this workload. Measure task time, model usage, events, stored bytes, and actual provider bills; then price the hosting region and plans. Existing Composio accounts may have different terms. [Composio pricing](https://composio.dev/pricing).
+Treat derivation and encrypted-data keys as recovery material. Replacing one without coordinated credential rotation or re-encryption can make accounts unavailable. Back up required keys separately from PostgreSQL/R2 and test restoration. Secret changes also require a controlled process restart because running containers retain startup values.
 
-Use [verification](verification.md) to distinguish synthetic checks from live provider evidence. Local network tests and a live Gmail label read do not validate every integration, deployment, or adversarial page.
+## Release evidence
+
+Automated suites cover SQL cross-schema/`SET ROLE` denial, session/CSRF boundaries, signed requests, actor fencing, owned callbacks/bot claims, object-store conflicts, checkpoint recovery, private routing and deployment ordering. Docker image and two-user process tests add local evidence. They are not Cloudflare, Google, Neon, R2, E2B, Composio or Telegram acceptance tests.
+
+Before marking the pilot ready, record a real two-account check: signup/logout; profile/theme/mobile settings; each supported app returning to its original screen; chat streaming; inaccessible foreign task/file/SSE/vault IDs; Gmail/Calendar event receipt; Telegram setup/reply; browser/workspace pause/reconnect; restart with history/files intact; and a merged-main production release. Record commit, environment, provider and outcome without private content or credentials. Verify database/key restoration and cost limits separately before expanding access.
+
+Measure always-running containers, database connections/storage/backups, private object bytes, E2B active/paused resources, model tokens, Composio tools/events and messaging usage. No fixed monthly cost or scale claim follows from the fixtures. Verify limits and plans for the actual deployment. [Verification guide](verification.md).

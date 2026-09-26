@@ -36,6 +36,7 @@ const relevancePolicy: RelevancePolicy = {
   minWakeConfidence: 0.8,
 };
 export function isQuietTime(preferences: Preferences, now = new Date()) {
+  if (!preferences.quietHoursEnabled) return false;
   const current = new Intl.DateTimeFormat('en-GB', {
     timeZone: preferences.timeZone,
     hour: '2-digit',
@@ -210,7 +211,7 @@ export function createTriage(options: {
   ) {
     if (notification.decision !== 'wake' || notification.task_id) return;
     const current = await client.query(
-      'SELECT notification_rule AS "notificationRule",time_zone AS "timeZone",quiet_start AS "quietStart",quiet_end AS "quietEnd" FROM preferences WHERE owner_id=$1',
+      'SELECT notification_rule AS "notificationRule",time_zone AS "timeZone",quiet_hours_enabled AS "quietHoursEnabled",quiet_start AS "quietStart",quiet_end AS "quietEnd" FROM preferences WHERE owner_id=$1',
       [ownerId],
     );
     const preferences: Preferences = current.rows[0] || defaultPreferences;
@@ -283,10 +284,12 @@ export function createTriage(options: {
   function registerTriageRoutes(app: FastifyInstance) {
     app.get('/api/preferences', getPreferences);
     app.put('/api/preferences', async (request) => {
-      const input = preferencesSchema.parse(request.body);
-      await updatePreferences(input);
-      return input;
+      const input = preferencesSchema
+        .extend({ quietHoursEnabled: z.boolean().optional() })
+        .parse(request.body);
+      return updatePreferences(input);
     });
+    app.patch('/api/preferences', async (request) => updatePreferences(request.body));
     app.get(
       '/api/notifications',
       async () =>

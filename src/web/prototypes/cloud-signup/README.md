@@ -4,6 +4,8 @@ Question: which signup and account-management flow makes hosted Sidekick easy to
 
 **Selected on 2026-09-26: A.** Keep ordinary screens concise. The login has no privacy reassurance, login-versus-app-access explanation, host credit or preview label. Onboarding shows each app and its connection state without connected-account identity or account-management controls. Connect goes straight to provider authorization; provider consent contains the permissions review. Event-processing details stay in developer diagnostics.
 
+The sign-in page keeps the editorial card style and presents work completed overnight: a supplier comparison and follow-up drafts ready to review. Settings use a compact dialog with vertical navigation and the existing app's controls and colors. Preserve the existing app styles, including the sidebar and Apps page; the proposal adds account behavior without introducing a different visual system.
+
 This is a disposable, in-memory UI preview on `prototype/cloud-signup`. It is not authentication, an isolation boundary, a running agent, provider consent, webhook processing, or a deployment. All identities and results are synthetic. Do not enter real credentials.
 
 ## Run
@@ -46,7 +48,7 @@ C: login -> chat + optional setup        | side drawer
 
 The computer provider is selected when the server starts, through composition. Ordinary users see the assistant, not a Computer page, desktop stream or provider picker. A developer preview can expose simulated computer diagnostics; its client-side flag is not authorization. Production must authorize these routes server-side. A necessary private credential request is a scoped form, not general browser access.
 
-The sidebar account control uses a portrait, name and email, with an initials fallback. Profile, Appearance and Preferences belong in a simple account dialog. The account dropdown also offers quick Light, Dark and System theme controls, with equivalent access from the mobile menu. Cmd+, on macOS and Ctrl+, elsewhere open settings from the signed-in app when no other modal is active. Production will use the verified Google picture claim through normalized, bounded safe image handling; the prototype uses synthetic local portraits and does not exercise Google claims or remote avatar loading.
+The sidebar account control uses a portrait, name and email, with an initials fallback. Profile, Appearance and Preferences belong in a compact account dialog with keyboard-accessible vertical tabs. Keep the avatar and editable name together, show the Google email as read-only, and reveal Save changes only after an edit. Appearance uses selectable light, dark and system previews; border and background communicate selection without checkboxes or checkmarks. Preferences use concise rows for time zone and quiet hours. The account dropdown also offers quick Light, Dark and System theme controls, with equivalent access from the mobile menu. Cmd+, on macOS and Ctrl+, elsewhere open settings from the signed-in app when no other modal is active. Production will use the verified Google picture claim through normalized, bounded safe image handling; the prototype uses synthetic local portraits and does not exercise Google claims or remote avatar loading.
 
 Desktop navigation remains vertically centered with subtle hover animation and a visible collapse/expand control. Do not show a connected-app count in the sidebar. On mobile, prioritize chat and a menu for navigation and settings. Preserve two independent demo identities to review account-switch UX; this is not a server isolation test.
 
@@ -65,5 +67,7 @@ Onboarding offers Gmail, Google Calendar, Google Drive, Google Docs, Google Shee
 9. Separately review the developer-only computer simulation and event diagnostics. Their visibility is a prototype affordance, not an authorization test.
 
 Validation results are recorded in [the prototype verification note](../../../../docs/testing/results/2026-09-26-cloud-prototype.md). The implementation proposal and official sources are in [the cloud rollout plan](../../../../docs/research/cloud-rollout-plan.md).
+
+Provider account preparation is tracked separately in the [dated access record](../../../../docs/research/provider-account-setup.md). Those dashboard actions do not make the prototype's simulated sign-in, integrations or overnight tasks real.
 
 After design review, implement the selected behavior with the real auth/tenant/provider contracts. Keep prototype code on its review branch; do not merge it as production behavior.

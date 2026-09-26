@@ -115,6 +115,7 @@ test(
     const fixture = createFixtureMessagingSetup();
     const key = randomBytes(32);
     const settings = await createChannelSettings(pool, {
+      ownerId: 'local-development',
       keyStore: { id: 'synthetic', configured: true, getKey: async () => key },
       verifier: fixture.verifier,
       apply: async () => {},

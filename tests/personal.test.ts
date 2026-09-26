@@ -81,7 +81,7 @@ test(
         CREATE TABLE memory_facts(id uuid PRIMARY KEY,owner_id text NOT NULL,text text NOT NULL,
           source_message_id uuid REFERENCES messages(id),UNIQUE(owner_id,text))`);
       await pool.query(`CREATE TABLE preferences(owner_id text PRIMARY KEY,notification_rule text NOT NULL DEFAULT '',
-        time_zone text NOT NULL DEFAULT 'Europe/Lisbon',quiet_start text NOT NULL DEFAULT '22:00',quiet_end text NOT NULL DEFAULT '08:00')`);
+        time_zone text NOT NULL DEFAULT 'Europe/Lisbon',quiet_start text NOT NULL DEFAULT '22:00',quiet_end text NOT NULL DEFAULT '08:00',quiet_hours_enabled boolean NOT NULL DEFAULT true)`);
       await t.test(
         'conversation preferences start useful but preserve an explicit quiet choice and partial changes',
         async () => {

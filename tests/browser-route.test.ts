@@ -37,6 +37,22 @@ test('the standalone browser mounts without waiting for unrelated application st
   globalThis.fetch = async (path, init) => {
     calls.push(String(path));
     assert.equal(init?.method ?? 'GET', 'GET');
+    if (path === '/api/session')
+      return Response.json({
+        auth: { mode: 'local', googleAvailable: false },
+        user: {
+          id: '89628f27-7ed2-4bd3-93d4-b9f83194fcce',
+          name: 'Local developer',
+          email: null,
+          avatarUrl: null,
+        },
+        settings: { theme: 'system', onboardingCompleted: true },
+        capabilities: { developer: true },
+      });
+    assert.equal(
+      new Headers(init?.headers).get('X-Sidekick-Account'),
+      '89628f27-7ed2-4bd3-93d4-b9f83194fcce',
+    );
     if (path === '/api/state') throw new Error('Unrelated state is unavailable.');
     if (path === '/api/browser/control/workspace')
       return new Response(
@@ -57,7 +73,11 @@ test('the standalone browser mounts without waiting for unrelated application st
   const root = createRoot(document.getElementById('root')!);
   try {
     await act(async () => root.render(createElement(App)));
-    assert.deepEqual(calls.toSorted(), ['/api/browser', '/api/browser/control/workspace']);
+    assert.deepEqual(calls.toSorted(), [
+      '/api/browser',
+      '/api/browser/control/workspace',
+      '/api/session',
+    ]);
     assert.equal(document.querySelector('h1')?.textContent, 'Workspace browser');
     const control = [...document.querySelectorAll('button')].find(
       (button) => button.textContent === 'Take control',

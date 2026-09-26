@@ -94,6 +94,7 @@ async function fixture(t: TestContext) {
     },
   };
   const service = await createIntegrations(pool, {
+    ownerId: 'local-development',
     provider,
     baseUrl: 'http://localhost:4310',
     wake: async (_prompt, id) => {
@@ -116,8 +117,11 @@ async function fixture(t: TestContext) {
     url.searchParams.set('account', id);
     const callback = await app.inject({ url: `${url.pathname}${url.search}` });
     assert.equal(callback.statusCode, 302, callback.body);
-    assert.equal(callback.headers.location, '/apps');
-    assert.equal((await app.inject({ url: `${url.pathname}${url.search}` })).statusCode, 409);
+    assert.equal(callback.headers.location, '/apps?connection=connected');
+    assert.equal(
+      (await app.inject({ url: `${url.pathname}${url.search}` })).headers.location,
+      '/apps?connection=expired',
+    );
     return (await service.list()).find((account) => account.accountId === id)!;
   }
   return {

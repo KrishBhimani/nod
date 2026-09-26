@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Monitor, Terminal, FileText, ExternalLink } from 'lucide-react';
 import { Button, Dialog, DialogContent, DialogTitle, Notice } from './ui';
-import { post, errorMessage } from '../lib/api';
+import { post, errorMessage, apiResponse } from '../lib/api';
 import { BrowserControl } from './browser-control';
 import type { BrowserDetail, InspectorDetail } from '../hooks/use-inspector-state';
 import { browserErrorMessage } from '../../shared/browser-errors';
@@ -89,11 +89,14 @@ export function InspectorScreen({
       setCapturePaused(false);
       const requestedActivity = activity.current ?? '';
       try {
-        const response = await fetch(`${screenPath}?taskId=${encodeURIComponent(browserId)}`, {
-          cache: 'no-store',
-          credentials: 'same-origin',
-          signal: controller.signal,
-        });
+        const response = await apiResponse(
+          `${screenPath}?taskId=${encodeURIComponent(browserId)}`,
+          {
+            cache: 'no-store',
+            credentials: 'same-origin',
+            signal: controller.signal,
+          },
+        );
         if (stopped || detachedRef.current) return;
         if (!response.ok) {
           setScreen('');

@@ -193,7 +193,7 @@ Use explicit local, development/staging and production configuration. Server sta
 
 Wrangler environments create separate Workers, and bindings/variables must be configured per environment. Define separate Durable Object namespaces, R2 buckets, secrets, database credentials, callback URLs and provider projects. Do not rely on inheritance for isolation. [Wrangler environments](https://developers.cloudflare.com/workers/wrangler/environments/)
 
-Choose a domain in Jan's Cloudflare account before provisioning production OAuth. Worker Custom Domains manage DNS/certificates for the selected hostname. Verify the exact account ID, accessible zone, plan, limits and deployment token scopes; none is confirmed here. The public origin should serve login and app APIs together to simplify cookies and CORS. [Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)
+Choose a domain in Jan's Cloudflare account before provisioning production OAuth. Worker Custom Domains manage DNS/certificates for the selected hostname. Dashboard access to the intended account was verified during [account preparation](provider-account-setup.md) on 2026-09-26. The accessible zone, plan, Containers support, limits and least-privilege deployment credentials still need validation. The public origin should serve login and app APIs together to simplify cookies and CORS. [Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)
 
 Proposed pipeline:
 

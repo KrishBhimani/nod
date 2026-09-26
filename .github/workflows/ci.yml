@@ -53,6 +53,25 @@ jobs:
         run: npm run test:integration
       - name: Build the client
         run: npm run build
+      - name: Install Cloudflare adapter dependencies
+        run: npm --prefix deployment/cloudflare ci
+      - name: Check Cloudflare adapter types and fixtures
+        run: |
+          npm --prefix deployment/cloudflare run check
+          npm --prefix deployment/cloudflare test
+      - name: Validate both Cloudflare deployment bundles
+        working-directory: deployment/cloudflare
+        env:
+          WRANGLER_SEND_METRICS: 'false'
+        run: |
+          npx wrangler deploy --env development --dry-run --containers-rollout=none
+          npx wrangler deploy --env production --dry-run --containers-rollout=none
+      - name: Build the production Node image
+        run: docker build --platform linux/amd64 --file deployment/cloudflare/Dockerfile --tag sidekick-ci .
+      - name: Verify the container filesystem and user
+        run: >-
+          docker run --rm --network none --entrypoint node sidekick-ci
+          -e 'const fs=require("node:fs");if(process.getuid()===0||fs.existsSync("/app/.env")||fs.existsSync("/app/.local")||!fs.existsSync("/app/dist/web/index.html"))process.exit(1)'
 
   secrets:
     name: Secret scanning

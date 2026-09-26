@@ -5,6 +5,7 @@ export const preferencesSchema = z
   .object({
     notificationRule: z.string().max(4000),
     timeZone: z.string().max(100),
+    quietHoursEnabled: z.boolean(),
     quietStart: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
     quietEnd: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
   })
@@ -14,11 +15,12 @@ export const defaultPreferences: Preferences = {
   notificationRule:
     'Only interrupt me for a time-sensitive message that needs my reply, a meaningful calendar change affecting me, or a concrete next step for an active goal. Keep newsletters, routine updates, uncertain relevance and repeated reminders quiet.',
   timeZone: 'Europe/Lisbon',
+  quietHoursEnabled: true,
   quietStart: '22:00',
   quietEnd: '08:00',
 };
 const columns =
-  'notification_rule AS "notificationRule",time_zone AS "timeZone",quiet_start AS "quietStart",quiet_end AS "quietEnd"';
+  'notification_rule AS "notificationRule",time_zone AS "timeZone",quiet_hours_enabled AS "quietHoursEnabled",quiet_start AS "quietStart",quiet_end AS "quietEnd"';
 export function createPreferencesStore(pool: Pool, ownerId: string) {
   function validate(raw: unknown) {
     const patch = preferencesSchema.partial().parse(raw);
@@ -42,10 +44,11 @@ export function createPreferencesStore(pool: Pool, ownerId: string) {
     async update(raw: unknown): Promise<Preferences> {
       const patch = validate(raw);
       const result = await pool.query(
-        `INSERT INTO preferences(owner_id,notification_rule,time_zone,quiet_start,quiet_end)
-        VALUES($1,COALESCE($2,$6),COALESCE($3,$7),COALESCE($4,$8),COALESCE($5,$9))
+        `INSERT INTO preferences(owner_id,notification_rule,time_zone,quiet_start,quiet_end,quiet_hours_enabled)
+        VALUES($1,COALESCE($2,$7),COALESCE($3,$8),COALESCE($4,$9),COALESCE($5,$10),COALESCE($6::boolean,$11::boolean))
         ON CONFLICT(owner_id) DO UPDATE SET notification_rule=COALESCE($2,preferences.notification_rule),
-        time_zone=COALESCE($3,preferences.time_zone),quiet_start=COALESCE($4,preferences.quiet_start),quiet_end=COALESCE($5,preferences.quiet_end)
+        time_zone=COALESCE($3,preferences.time_zone),quiet_start=COALESCE($4,preferences.quiet_start),quiet_end=COALESCE($5,preferences.quiet_end),
+        quiet_hours_enabled=COALESCE($6,preferences.quiet_hours_enabled)
         RETURNING ${columns}`,
         [
           ownerId,
@@ -53,10 +56,12 @@ export function createPreferencesStore(pool: Pool, ownerId: string) {
           patch.timeZone ?? null,
           patch.quietStart ?? null,
           patch.quietEnd ?? null,
+          patch.quietHoursEnabled ?? null,
           defaultPreferences.notificationRule,
           defaultPreferences.timeZone,
           defaultPreferences.quietStart,
           defaultPreferences.quietEnd,
+          defaultPreferences.quietHoursEnabled,
         ],
       );
       return result.rows[0];

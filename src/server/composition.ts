@@ -1,5 +1,7 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import pg from 'pg';
+import { z } from 'zod';
 import type { Agent } from '../ports/agent.ts';
 import type { BrowserChooser, Computer, Workspace } from '../ports/computer.ts';
 import type { IntegrationProvider, IntegrationService } from '../ports/integrations.ts';
@@ -7,7 +9,8 @@ import type { CredentialKeyStore } from '../ports/key-store.ts';
 import type { RelevanceClassifier } from '../ports/relevance.ts';
 import type { SpeechProvider } from '../ports/speech.ts';
 import type { MessagingTransport } from '../ports/messaging.ts';
-import type { ChannelSetupVerifier } from '../ports/channel-settings.ts';
+import type { ChannelAccountRegistry, ChannelSetupVerifier } from '../ports/channel-settings.ts';
+import type { PrivateObjectStore } from '../ports/object-storage.ts';
 import type { LinkPreviewProvider } from '../ports/link-preview.ts';
 import type { ConversationRouter } from '../ports/conversation.ts';
 import type { RecordProviderUsage } from '../ports/provider-usage.ts';
@@ -17,7 +20,16 @@ import { createChatSdkSetupVerifier } from '../providers/chat-sdk/settings.ts';
 import { createContainerBrowserComputer } from '../providers/container-browser/index.ts';
 import { createComposioProvider } from '../providers/composio/integrations.ts';
 import { createDockerWorkspace } from '../providers/docker/index.ts';
-import { createEnvironmentKeyStore } from '../providers/environment/key-store.ts';
+import { createE2BAdapters } from '../providers/e2b/index.ts';
+import { createFilesystemObjectStore } from '../providers/object-storage/filesystem.ts';
+import { createHttpObjectStore } from '../providers/object-storage/http.ts';
+import {
+  createEnvironmentKeyStore,
+  parseCredentialKey,
+} from '../providers/environment/key-store.ts';
+import { createGoogleAuthentication } from '../providers/better-auth/index.ts';
+import { createCloudflareRuntimeTransport } from '../providers/runtime-host/cloudflare.ts';
+import { createLocalRuntimeTransport } from '../providers/runtime-host/local.ts';
 import { createJevBrowserChooser } from '../providers/jev/browser.ts';
 import { createJevRelevanceClassifier } from '../providers/jev/relevance.ts';
 import { createKeychainKeyStore } from '../providers/keychain/key-store.ts';
@@ -31,10 +43,20 @@ import { createApp } from './app.ts';
 import { createChatVerification } from './chat-verification.ts';
 import { createAgentReactionService } from './agent-reactions.ts';
 import { createApprovals } from './approvals.ts';
-import { readTaskArtifacts } from './artifacts.ts';
+import { createArtifactService, localArtifacts } from './artifacts.ts';
 import { createChannels } from './channels.ts';
 import { createChannelSettings } from './channel-settings.ts';
-import { configuration, dataRoot, ownerId, port } from './config.ts';
+import { configuration, dataRoot, ownerId, publicOrigin, runtimeMode } from './config.ts';
+import { createAccountStore } from './account-store.ts';
+import { createAccountSession } from './account.ts';
+import { createComputerAllocationStore } from './computer-allocations.ts';
+import { createPostgresObjectStore } from './object-storage.ts';
+import { createGateway } from './gateway.ts';
+import { createTenantStore } from './tenants.ts';
+import { createTenantRuntimeHost } from './runtime-host.ts';
+import { createChannelAccountRegistry } from './channel-account-registry.ts';
+import { createTenantControl, createTenantChannelRegistry } from './tenant-control.ts';
+import { createHostedWebhooks } from './hosted-webhooks.ts';
 import { createInspectorPool, initializeDatabase, pool } from './db.ts';
 import { events, refresh } from './events.ts';
 import { createIntegrations } from './integrations.ts';
@@ -72,6 +94,9 @@ import {
 } from './provider-metering.ts';
 
 export interface ApplicationAdapters {
+  initialize?(): Promise<void>;
+  objectStore?: PrivateObjectStore;
+  channelAccounts?: ChannelAccountRegistry;
   createConversationRouter?(onUsage: RecordProviderUsage): ConversationRouter;
   agent: Agent;
   computer: Computer;
@@ -107,15 +132,81 @@ export function createDefaultAdapters(
     slack: env.COMPOSIO_SLACK_AUTH_CONFIG_ID,
     notion: env.COMPOSIO_NOTION_AUTH_CONFIG_ID,
   };
+  const computerProvider = env.COMPUTER_PROVIDER || 'docker';
+  if (
+    !['docker', 'e2b'].includes(computerProvider) ||
+    (runtimeMode === 'tenant' && computerProvider !== 'e2b')
+  )
+    throw new Error('Configure a supported, isolated computer provider.');
+  const allocations =
+    computerProvider === 'e2b'
+      ? createComputerAllocationStore({ database: pool, ownerId })
+      : undefined;
+  if (
+    computerProvider === 'e2b' &&
+    (!env.E2B_API_KEY || !env.E2B_BROWSER_TEMPLATE || !env.E2B_WORKSPACE_TEMPLATE)
+  )
+    throw new Error('The remote computer configuration is incomplete.');
+  const remote = allocations
+    ? createE2BAdapters({
+        apiKey: env.E2B_API_KEY!,
+        ownerId,
+        allocations,
+        templates: { browser: env.E2B_BROWSER_TEMPLATE!, workspace: env.E2B_WORKSPACE_TEMPLATE! },
+        workspaceRoot: join(dataRoot, 'workspaces'),
+        ...(env.E2B_SANDBOX_TIMEOUT_MS
+          ? { sandboxTimeoutMs: Number(env.E2B_SANDBOX_TIMEOUT_MS) }
+          : {}),
+      })
+    : undefined;
+  const databaseObjects =
+    env.OBJECT_STORAGE_PROVIDER === 'postgres'
+      ? createPostgresObjectStore({ database: pool, ownerId })
+      : undefined;
+  const objectStore =
+    databaseObjects ??
+    (env.OBJECT_STORAGE_PROVIDER === 'http'
+      ? createHttpObjectStore({ endpoint: env.OBJECT_STORAGE_ENDPOINT })
+      : env.OBJECT_STORAGE_PROVIDER === 'filesystem'
+        ? createFilesystemObjectStore(env.OBJECT_STORAGE_ROOT || join(dataRoot, 'objects'))
+        : undefined);
+  if (runtimeMode === 'tenant' && !objectStore)
+    throw new Error('Private durable storage is required.');
   return {
+    initialize: async () => {
+      await allocations?.initialize();
+      await databaseObjects?.initialize();
+    },
+    objectStore,
+    ...(runtimeMode === 'tenant'
+      ? {
+          channelAccounts: createTenantChannelRegistry({
+            origin: env.SIDEKICK_CONTROL_URL!,
+            ownerId,
+            environment: env.SIDEKICK_ENVIRONMENT!,
+            generation: env.SIDEKICK_RUNTIME_GENERATION!,
+            secret: env.SIDEKICK_RUNTIME_SECRET!,
+          }),
+        }
+      : {}),
     createConversationRouter: (onUsage) =>
       createPiConversationRouter({ provider, model: env.ROUTING_MODEL, apiKey, onUsage }),
-    agent: createPiAgent({ provider, model, apiKey, sessionRoot: join(dataRoot, 'sessions') }),
-    computer: createContainerBrowserComputer({ dataRoot, container: env.BROWSER_CONTAINER }),
-    workspace: createDockerWorkspace({
-      container: env.WORKSPACE_CONTAINER || 'sidekick-workspace',
-      workspaceRoot: join(dataRoot, 'workspaces'),
+    agent: createPiAgent({
+      provider,
+      model,
+      apiKey,
+      sessionRoot: join(dataRoot, 'sessions'),
+      objectStore,
     }),
+    computer:
+      remote?.computer ??
+      createContainerBrowserComputer({ dataRoot, container: env.BROWSER_CONTAINER }),
+    workspace:
+      remote?.workspace ??
+      createDockerWorkspace({
+        container: env.WORKSPACE_CONTAINER || 'sidekick-workspace',
+        workspaceRoot: join(dataRoot, 'workspaces'),
+      }),
     speech: createOpenAISpeechProvider({
       apiKey: env.OPENAI_API_KEY,
       transcriptionModel: env.STT_MODEL,
@@ -139,7 +230,13 @@ export function createDefaultAdapters(
       ? createJevBrowserChooser({ apiKey: env.TYPESAFE_API_KEY, model: env.TYPESAFE_MODEL })
       : undefined,
     messagingSetup: {
-      verifier: createChatSdkSetupVerifier(),
+      verifier: createChatSdkSetupVerifier(
+        runtimeMode === 'tenant'
+          ? {
+              webhookUrl: (provider) => env[`SIDEKICK_${provider.toUpperCase()}_WEBHOOK_URL`]!,
+            }
+          : undefined,
+      ),
       create: (environment) => createChatSdkTransport(pool, { ...env, ...environment }),
     },
     linkPreviews: createPublicLinkPreviewProvider(),
@@ -153,7 +250,11 @@ export async function createApplication(
 ) {
   await mkdir(dataRoot, { recursive: true, mode: 0o700 });
   await initializeDatabase();
+  await adapters.initialize?.();
   await initializeTasks();
+  const artifacts = adapters.objectStore
+    ? createArtifactService({ database: pool, ownerId, store: adapters.objectStore })
+    : localArtifacts;
   const inspectorDatabase = createInspectorPool();
   const inspectorSecrets = Object.entries(process.env)
     .filter(([key]) => /(?:API_KEY|SECRET|PASSWORD|VAULT_KEY|BOT_TOKEN|ACCESS_TOKEN)$/.test(key))
@@ -286,10 +387,11 @@ export async function createApplication(
     listGoals: personal.listGoals,
   });
   const integrations = await createIntegrations(pool, {
+    ownerId,
     provider: integrationProvider,
     wake: triage.triageEvent,
     refresh,
-    baseUrl: `http://localhost:${port}`,
+    baseUrl: publicOrigin,
   });
   const vault = await createVault(pool, {
     keyStore: adapters.keyStore,
@@ -330,6 +432,8 @@ export async function createApplication(
     await inspector.recover().catch(() => {});
     await triage.initializeHeartbeat();
     await startTaskWorkers({
+      artifacts,
+      writeArtifact: workspace.writeArtifact?.bind(workspace),
       readArtifact: workspace.readArtifact?.bind(workspace),
       executeConfirmation: approvals.executeConfirmed,
       reactToMessage: reactions.react,
@@ -409,6 +513,7 @@ export async function createApplication(
     });
   }
   const app = await createApp({
+    artifacts,
     submitMessage: userMessages.submit,
     verification: chatVerification,
     onboard: async (timeZone, conversationRevision) => {
@@ -429,6 +534,16 @@ export async function createApplication(
         browserAssistReady: Boolean(adapters.chooseBrowserAction),
       }),
   });
+  if (runtimeMode === 'local') {
+    const accounts = createAccountStore(pool);
+    await accounts.initialize();
+    createAccountSession({
+      accounts,
+      origin: publicOrigin,
+      localUser: { id: ownerId, name: 'You', email: null, avatarUrl: null },
+      developerIds: configuration().inspectorEnabled ? new Set([ownerId]) : new Set(),
+    }).register(app);
+  }
   providerUsage.registerRoutes(app);
   promptInspector.registerRoutes(app);
   createInspectorWork(inspectorDatabase, {
@@ -481,6 +596,8 @@ export async function createApplication(
     const setup = adapters.messagingSetup;
     if (setup) {
       channelSettings = await createChannelSettings(pool, {
+        ownerId,
+        accounts: adapters.channelAccounts,
         keyStore: adapters.keyStore,
         verifier: {
           verify: (provider, input) =>
@@ -509,7 +626,7 @@ export async function createApplication(
       : adapters.messaging!;
     channels = await createChannels(pool, {
       ownerId,
-      resolveAttachments: readTaskArtifacts,
+      resolveAttachments: artifacts.readTaskArtifacts,
       transport: meterMessaging(messaging, providerUsage),
       acceptVerification: (text, input) => chatVerification.accept(text, input),
       subscribe(listener) {
@@ -556,4 +673,134 @@ export async function createApplication(
     if (failures.length) throw new Error('Some application resources could not close.');
   });
   return { app, runtime, personal, triage, integrations, vault, channels, channelSettings };
+}
+
+export async function createGatewayApplication(
+  env: Record<string, string | undefined> = process.env,
+) {
+  const databaseUrl = z.string().min(1).parse(env.DATABASE_URL);
+  const environment = z
+    .string()
+    .regex(/^[a-z][a-z0-9-]{0,31}$/)
+    .parse(env.SIDEKICK_ENVIRONMENT || 'development');
+  const origin = z.url().parse(env.SIDEKICK_PUBLIC_URL);
+  const masterKey = parseCredentialKey(env.SIDEKICK_MASTER_KEY || '');
+  const tenants = createTenantStore({
+    admin: pool,
+    databaseUrl,
+    environment,
+    getSecret: () => masterKey,
+    maxTenants: env.SIDEKICK_MAX_USERS ? Number(env.SIDEKICK_MAX_USERS) : 8,
+  });
+  await tenants.initialize();
+  await pool.query(
+    'CREATE SCHEMA IF NOT EXISTS sidekick_auth; REVOKE ALL ON SCHEMA sidekick_auth FROM PUBLIC',
+  );
+  const authenticationDatabase = new pg.Pool({
+    connectionString: databaseUrl,
+    max: 4,
+    connectionTimeoutMillis: 10_000,
+    options: '-c search_path=sidekick_auth',
+  });
+  let runtimes: ReturnType<typeof createTenantRuntimeHost> | undefined;
+  try {
+    const authentication = createGoogleAuthentication({
+      database: authenticationDatabase,
+      origin,
+      environment,
+      secret: env.BETTER_AUTH_SECRET || '',
+      clientId: env.GOOGLE_CLIENT_ID || '',
+      clientSecret: env.GOOGLE_CLIENT_SECRET || '',
+    });
+    await authentication.initialize();
+    const accounts = createAccountStore(authenticationDatabase);
+    await accounts.initialize();
+    const channelAccounts = createChannelAccountRegistry({ admin: pool, environment });
+    await channelAccounts.initialize();
+    const developerIds = new Set(
+      (env.SIDEKICK_DEVELOPER_IDS || '')
+        .split(',')
+        .filter(Boolean)
+        .map((id) => z.uuid().parse(id.trim()).toLowerCase()),
+    );
+    const transport =
+      env.SIDEKICK_RUNTIME_URL === 'http://sidekick.runtime'
+        ? createCloudflareRuntimeTransport()
+        : createLocalRuntimeTransport({
+            root: join(dataRoot, 'tenants'),
+            entrypoint: 'src/server/index.ts',
+            cwd: process.cwd(),
+          });
+    runtimes = createTenantRuntimeHost({
+      tenants,
+      transport,
+      masterKey,
+      environment,
+      developerIds,
+      operatorEnvironment: { ...env, SIDEKICK_PUBLIC_URL: origin },
+    });
+    const app = await createGateway({
+      origin,
+      authentication,
+      accounts,
+      runtimes,
+      release: env.SIDEKICK_IMAGE_RELEASE || env.SIDEKICK_RELEASE,
+      developerIds,
+      internal: createTenantControl({
+        masterKey,
+        environment,
+        accounts: channelAccounts,
+        currentLease: tenants.currentLease,
+      }),
+      webhook: createHostedWebhooks({
+        runtimes,
+        masterKey,
+        environment,
+        listOwners: tenants.listOwners,
+        hasOwner: async (owner) => Boolean(await tenants.get(owner)),
+        integrations: createComposioProvider({
+          apiKey: env.COMPOSIO_API_KEY,
+          webhookSecret: env.COMPOSIO_WEBHOOK_SECRET,
+        }),
+      }),
+    });
+    let restoring = false;
+    let closing = false;
+    async function restore() {
+      if (restoring || closing) return;
+      restoring = true;
+      try {
+        for (const owner of await tenants.listOwners()) {
+          if (closing) break;
+          try {
+            const result = await runtimes!.fetch(
+              owner,
+              new Request('http://sidekick.runtime/api/runtime/wake', { method: 'POST' }),
+              { developer: false, kind: 'wake' },
+            );
+            await result.body?.cancel();
+          } catch {}
+        }
+      } finally {
+        restoring = false;
+      }
+    }
+    const timer = setInterval(() => {
+      void restore().catch(() => {});
+    }, 30_000);
+    timer.unref();
+    app.addHook('onListen', async () => {
+      void restore().catch(() => {});
+    });
+    app.addHook('preClose', async () => {
+      closing = true;
+      clearInterval(timer);
+    });
+    app.addHook('onClose', async () => authenticationDatabase.end());
+    return { app };
+  } catch {
+    await runtimes?.close().catch(() => {});
+    await authenticationDatabase.end().catch(() => {});
+    throw new Error('The hosted application configuration could not be initialized.');
+  }
 }

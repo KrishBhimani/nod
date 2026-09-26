@@ -1,0 +1,400 @@
+import { useEffect, useId, useRef, useState } from 'react';
+import { Clock3, LogOut, Monitor, Moon, SlidersHorizontal, Sun, UserRound } from 'lucide-react';
+import type { AccountPreferences, AccountTheme } from '../../shared/account';
+import type { AccountControls, AccountTab } from './account-menu';
+import { AccountAvatar, GoogleMark } from './account-avatar';
+import { Button, Dialog, DialogContent, DialogTitle, Field, Input, Loading, Notice } from './ui';
+import { usePageData } from '../hooks/use-page-data';
+import { api, errorMessage } from '../lib/api';
+
+const editablePreferences = ['timeZone', 'quietHoursEnabled', 'quietStart', 'quietEnd'] as const;
+
+function PreferencesForm() {
+  const {
+    data,
+    loading,
+    error: loadError,
+    update,
+    refresh,
+  } = usePageData<AccountPreferences>('/api/preferences');
+  const [draft, setDraft] = useState<AccountPreferences | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const request = useRef<AbortController | null>(null);
+  const previous = useRef<AccountPreferences | null>(null);
+  useEffect(() => {
+    if (!data) return;
+    const baseline = previous.current;
+    setDraft((current) =>
+      !current || !baseline
+        ? data
+        : {
+            ...data,
+            ...Object.fromEntries(
+              editablePreferences
+                .filter((key) => current[key] !== baseline[key])
+                .map((key) => [key, current[key]]),
+            ),
+          },
+    );
+    previous.current = data;
+  }, [data]);
+  useEffect(() => () => request.current?.abort(), []);
+  if (!data || !draft)
+    return (
+      <>
+        {loading ? <Loading /> : <Notice>{loadError || 'Preferences could not be loaded.'}</Notice>}
+        {!loading && (
+          <Button variant="outline" onClick={() => void refresh()}>
+            Try again
+          </Button>
+        )}
+      </>
+    );
+  const current = draft;
+  const saved = data;
+  const dirty = editablePreferences.some((key) => current[key] !== saved[key]);
+  const zones = [
+    ...new Set([
+      current.timeZone,
+      ...(Intl.supportedValuesOf?.('timeZone') ?? [
+        'Europe/Lisbon',
+        'Europe/London',
+        'America/New_York',
+      ]),
+    ]),
+  ].sort();
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    if (request.current) return;
+    const controller = new AbortController();
+    request.current = controller;
+    setSaving(true);
+    setError('');
+    try {
+      const result = await api<AccountPreferences>('/api/preferences', {
+        method: 'PATCH',
+        signal: controller.signal,
+        body: JSON.stringify(
+          Object.fromEntries(
+            editablePreferences
+              .filter((key) => current[key] !== saved[key])
+              .map((key) => [key, current[key]]),
+          ),
+        ),
+      });
+      if (!controller.signal.aborted) {
+        setDraft(result);
+        update(() => result);
+      }
+    } catch (cause) {
+      if (!controller.signal.aborted) setError(errorMessage(cause));
+    } finally {
+      if (request.current === controller) {
+        request.current = null;
+        if (!controller.signal.aborted) setSaving(false);
+      }
+    }
+  }
+  return (
+    <form onSubmit={(event) => void save(event)}>
+      <label className="account-preference-row">
+        <span>
+          <Clock3 size={18} aria-hidden="true" />
+          Time zone
+        </span>
+        <select
+          value={current.timeZone}
+          disabled={saving}
+          onChange={(event) => setDraft({ ...current, timeZone: event.target.value })}
+        >
+          {zones.map((zone) => (
+            <option key={zone} value={zone}>
+              {zone.replaceAll('_', ' ')}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="account-preference-row">
+        <div className="account-preference-label">
+          <Moon size={18} aria-hidden="true" />
+          <div>
+            <strong>Quiet hours</strong>
+          </div>
+        </div>
+        <button
+          type="button"
+          className={`account-toggle${current.quietHoursEnabled ? ' on' : ''}`}
+          role="switch"
+          aria-checked={current.quietHoursEnabled}
+          aria-label="Quiet hours"
+          disabled={saving}
+          onClick={() => setDraft({ ...current, quietHoursEnabled: !current.quietHoursEnabled })}
+        >
+          <span />
+        </button>
+      </div>
+      {current.quietHoursEnabled && (
+        <div className="account-quiet-times">
+          <Field label="From">
+            <Input
+              type="time"
+              value={current.quietStart}
+              required
+              disabled={saving}
+              onChange={(event) => setDraft({ ...current, quietStart: event.target.value })}
+            />
+          </Field>
+          <Field label="Until">
+            <Input
+              type="time"
+              value={current.quietEnd}
+              required
+              disabled={saving}
+              onChange={(event) => setDraft({ ...current, quietEnd: event.target.value })}
+            />
+          </Field>
+        </div>
+      )}
+      {(error || loadError) && <Notice>{error || loadError}</Notice>}
+      {dirty && (
+        <div className="account-settings-actions">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={saving}
+            onClick={() => {
+              setDraft(saved);
+              setError('');
+            }}
+          >
+            Cancel
+          </Button>
+          <Button type="submit" disabled={saving}>
+            {saving ? 'Saving…' : 'Save changes'}
+          </Button>
+        </div>
+      )}
+    </form>
+  );
+}
+
+export function AccountSettings({
+  account,
+  open,
+  initialTab,
+  onOpenChange,
+  onName,
+  returnFocus,
+}: {
+  account: AccountControls;
+  open: boolean;
+  initialTab: AccountTab;
+  onOpenChange(open: boolean): void;
+  onName(name: string): Promise<void>;
+  returnFocus(): HTMLElement | null;
+}) {
+  const [tab, setTab] = useState<AccountTab>(initialTab);
+  const [name, setName] = useState(account.user.name);
+  const [error, setError] = useState('');
+  const active = useRef(false);
+  const id = useId();
+  useEffect(() => {
+    active.current = true;
+    return () => {
+      active.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (open) {
+      setTab(initialTab);
+      setName(account.user.name);
+      setError('');
+    }
+  }, [open, initialTab, account.user.id]);
+  useEffect(() => setName(account.user.name), [account.user.name]);
+  async function saveName(event: React.FormEvent) {
+    event.preventDefault();
+    if (!name.trim() || account.saving) return;
+    setError('');
+    try {
+      await onName(name.trim());
+    } catch (cause) {
+      if (active.current) setError(errorMessage(cause));
+    }
+  }
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="account-settings"
+        aria-describedby={undefined}
+        onCloseAutoFocus={(event) => {
+          const target = returnFocus();
+          if (target?.isConnected) {
+            event.preventDefault();
+            target.focus({ preventScroll: true });
+          }
+        }}
+      >
+        <DialogTitle>Settings</DialogTitle>
+        <div className="account-settings-layout">
+          <nav role="tablist" aria-label="Account settings" aria-orientation="vertical">
+            {(['Profile', 'Appearance', 'Preferences'] as const).map((value, index, tabs) => {
+              const Icon =
+                value === 'Profile' ? UserRound : value === 'Appearance' ? Sun : SlidersHorizontal;
+              return (
+                <button
+                  key={value}
+                  id={`${id}-${value}`}
+                  type="button"
+                  role="tab"
+                  aria-selected={value === tab}
+                  aria-label={value}
+                  title={value}
+                  aria-controls={`${id}-content`}
+                  tabIndex={value === tab ? 0 : -1}
+                  onClick={() => {
+                    setTab(value);
+                    setError('');
+                  }}
+                  onKeyDown={(event) => {
+                    const next =
+                      event.key === 'ArrowDown' || event.key === 'ArrowRight'
+                        ? (index + 1) % tabs.length
+                        : event.key === 'ArrowUp' || event.key === 'ArrowLeft'
+                          ? (index - 1 + tabs.length) % tabs.length
+                          : event.key === 'Home'
+                            ? 0
+                            : event.key === 'End'
+                              ? tabs.length - 1
+                              : null;
+                    if (next === null) return;
+                    event.preventDefault();
+                    setTab(tabs[next]);
+                    setError('');
+                    document.getElementById(`${id}-${tabs[next]}`)?.focus();
+                  }}
+                >
+                  <Icon size={16} aria-hidden="true" />
+                  <span>{value}</span>
+                </button>
+              );
+            })}
+          </nav>
+          <div
+            className="account-settings-body"
+            id={`${id}-content`}
+            role="tabpanel"
+            aria-labelledby={`${id}-${tab}`}
+            tabIndex={0}
+          >
+            <h3>{tab}</h3>
+            {tab === 'Profile' && (
+              <form className="account-profile-form" onSubmit={(event) => void saveName(event)}>
+                <div className="account-profile-identity">
+                  <AccountAvatar user={account.user} large />
+                  <Field label="Display name">
+                    <Input
+                      value={name}
+                      onChange={(event) => setName(event.target.value)}
+                      required
+                      maxLength={80}
+                      autoComplete="name"
+                      disabled={account.saving}
+                    />
+                  </Field>
+                </div>
+                {account.user.email && (
+                  <div className="account-profile-email">
+                    <span>Email</span>
+                    <div>
+                      <GoogleMark />
+                      <span>{account.user.email}</span>
+                    </div>
+                  </div>
+                )}
+                {error && <Notice>{error}</Notice>}
+                {name.trim() !== account.user.name && (
+                  <div className="account-settings-actions">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={account.saving}
+                      onClick={() => {
+                        setName(account.user.name);
+                        setError('');
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                    <Button type="submit" disabled={account.saving || !name.trim()}>
+                      {account.saving ? 'Saving…' : 'Save changes'}
+                    </Button>
+                  </div>
+                )}
+              </form>
+            )}
+            {tab === 'Appearance' && (
+              <>
+                <div className="account-theme-previews" role="group" aria-label="Theme">
+                  {(['light', 'dark', 'system'] as AccountTheme[]).map((theme) => {
+                    const Icon = theme === 'light' ? Sun : theme === 'dark' ? Moon : Monitor;
+                    const label = theme[0].toUpperCase() + theme.slice(1);
+                    return (
+                      <button
+                        key={theme}
+                        type="button"
+                        aria-label={`${label} theme`}
+                        aria-pressed={account.theme === theme}
+                        disabled={account.saving}
+                        onClick={() => {
+                          setError('');
+                          void account.onTheme(theme).catch((cause) => {
+                            if (active.current) setError(errorMessage(cause));
+                          });
+                        }}
+                      >
+                        <span className={`account-theme-sample ${theme}`} aria-hidden="true">
+                          <i>
+                            <em />
+                            <em />
+                            <em />
+                          </i>
+                          <span>
+                            <b />
+                            <b />
+                            <b />
+                            <em />
+                          </span>
+                        </span>
+                        <span className="account-theme-label">
+                          <Icon size={15} aria-hidden="true" />
+                          {label}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {error && <Notice>{error}</Notice>}
+              </>
+            )}
+            {tab === 'Preferences' && <PreferencesForm />}
+          </div>
+          <div className="account-settings-signout">
+            {account.canLogout && (
+              <button
+                type="button"
+                aria-label="Sign out"
+                title="Sign out"
+                onClick={account.onLogout}
+              >
+                <LogOut size={16} aria-hidden="true" />
+                <span>Sign out</span>
+              </button>
+            )}
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}

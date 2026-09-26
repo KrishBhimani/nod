@@ -46,7 +46,12 @@ test(
       },
     };
     const seedApp = Fastify();
-    const saved = await createChannelSettings(pool, { keyStore, verifier, apply: async () => {} });
+    const saved = await createChannelSettings(pool, {
+      ownerId: 'local-development',
+      keyStore,
+      verifier,
+      apply: async () => {},
+    });
     saved.registerRoutes(seedApp);
     assert.equal(
       (

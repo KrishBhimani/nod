@@ -1,0 +1,155 @@
+export class RuntimeControlError extends Error {
+  constructor(readonly status = 400) {
+    super('The runtime request could not be completed.');
+    this.name = 'RuntimeControlError';
+  }
+}
+
+export type Bootstrap = { ownerId: string; env: Record<string, string> };
+export type TenantIdentity = {
+  ownerId: string;
+  environment: string;
+  generation: string;
+  configurationHash: string;
+  stopped: boolean;
+};
+
+export function ownerIdentity(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
+  )
+    throw new RuntimeControlError();
+  return value;
+}
+
+export function environmentName(value: unknown): string {
+  if (typeof value !== 'string' || !/^[a-z][a-z0-9-]{0,31}$/.test(value))
+    throw new RuntimeControlError();
+  return value;
+}
+
+export function generation(value: unknown): string {
+  if (typeof value !== 'string' || !/^[1-9]\d{0,18}$/.test(value)) throw new RuntimeControlError();
+  return value;
+}
+
+export function environmentValues(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new RuntimeControlError();
+  const entries = Object.entries(value);
+  if (entries.length > 100 || JSON.stringify(value).length > 48 * 1024)
+    throw new RuntimeControlError(413);
+  for (const [key, entry] of entries)
+    if (
+      !/^[A-Z][A-Z0-9_]{0,79}$/.test(key) ||
+      key === 'SIDEKICK_IMAGE_RELEASE' ||
+      typeof entry !== 'string' ||
+      entry.includes('\u0000') ||
+      entry.length > 32 * 1024
+    )
+      throw new RuntimeControlError();
+  return Object.fromEntries(entries) as Record<string, string>;
+}
+
+async function hash(value: string) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+export async function bootstrap(value: unknown, environment: string) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new RuntimeControlError();
+  const input = value as Partial<Bootstrap>;
+  if (Object.keys(input).some((key) => key !== 'ownerId' && key !== 'env'))
+    throw new RuntimeControlError();
+  const ownerId = ownerIdentity(input.ownerId);
+  const env = environmentValues(input.env);
+  const runtimeGeneration = generation(env.SIDEKICK_RUNTIME_GENERATION);
+  if (
+    env.SIDEKICK_OWNER_ID !== ownerId ||
+    env.SIDEKICK_ENVIRONMENT !== environmentName(environment) ||
+    env.SIDEKICK_MODE !== 'tenant' ||
+    !/^[a-zA-Z0-9_-]{43,128}$/.test(env.SIDEKICK_RUNTIME_SECRET ?? '')
+  )
+    throw new RuntimeControlError();
+  const suffix = (await hash(JSON.stringify(['sidekick-tenant-v1', environment, ownerId]))).slice(
+    0,
+    32,
+  );
+  let database: URL;
+  try {
+    database = new URL(env.DATABASE_URL);
+  } catch {
+    throw new RuntimeControlError();
+  }
+  if (
+    !['postgres:', 'postgresql:'].includes(database.protocol) ||
+    decodeURIComponent(database.username) !== `sk_user_${suffix}` ||
+    !database.password ||
+    env.PGBOSS_SCHEMA !== `sk_jobs_${suffix}`
+  )
+    throw new RuntimeControlError();
+  const configured = {
+    ...env,
+    SIDEKICK_CONTROL_URL: 'http://sidekick.control',
+    SIDEKICK_DATA_ROOT: '/data',
+    NODE_ENV: 'production',
+    PORT: '4310',
+    HOST: '0.0.0.0',
+  };
+  const configurationHash = await hash(JSON.stringify(Object.entries(configured).sort()));
+  const identity: TenantIdentity = {
+    ownerId,
+    environment,
+    generation: runtimeGeneration,
+    configurationHash,
+    stopped: false,
+  };
+  return { env: configured, identity };
+}
+
+export async function boundedBody(request: Request, limit: number) {
+  if (!request.body) return new Uint8Array();
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      size += next.value.byteLength;
+      if (size > limit) {
+        await reader.cancel().catch(() => {});
+        throw new RuntimeControlError(413);
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+export async function controlBody(request: Request) {
+  try {
+    return JSON.parse(new TextDecoder().decode(await boundedBody(request, 64 * 1024))) as unknown;
+  } catch (error) {
+    if (error instanceof RuntimeControlError) throw error;
+    throw new RuntimeControlError();
+  }
+}
+
+export function failure(error: unknown) {
+  return Response.json(
+    { error: 'This request could not be completed. Try again.' },
+    {
+      status: error instanceof RuntimeControlError ? error.status : 503,
+      headers: { 'cache-control': 'no-store' },
+    },
+  );
+}

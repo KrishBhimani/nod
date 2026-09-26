@@ -17,8 +17,7 @@ import type { CredentialKind, CredentialSubmission, LoginInspection } from '../p
 import type { CredentialKeyStore } from '../ports/key-store.ts';
 import type { CredentialInvitation } from '../ports/agent.ts';
 import { normalizedEmail, type EmailCodeRequest, type PrivateEmailCode } from './email-code.ts';
-
-const owner = 'local-development';
+import { ownerId as owner } from './config.ts';
 const passwordInput = z
   .object({
     kind: z.literal('login').optional(),

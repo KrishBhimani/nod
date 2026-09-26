@@ -101,6 +101,7 @@ test(
       authConfigs: { gmail: 'custom-gmail-auth' },
     });
     const integrations = await createIntegrations(pool, {
+      ownerId: 'local-development',
       provider,
       baseUrl: 'http://localhost:4310',
       wake: async () => {},

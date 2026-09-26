@@ -1,11 +1,31 @@
 import 'dotenv/config';
 import { resolve } from 'node:path';
 import type { Configuration } from '../shared/contracts.ts';
+import { z } from 'zod';
 
-export const ownerId = 'local-development';
+export const runtimeMode = z
+  .enum(['local', 'gateway', 'tenant'])
+  .parse(process.env.SIDEKICK_MODE || 'local');
+export const ownerId =
+  runtimeMode === 'tenant'
+    ? z.uuid().parse(process.env.SIDEKICK_OWNER_ID).toLowerCase()
+    : 'local-development';
 export const port = Number(process.env.PORT || 4310);
-export const dataRoot = resolve('.local');
+export const dataRoot = resolve(process.env.SIDEKICK_DATA_ROOT || '.local');
 export const databaseUrl = process.env.DATABASE_URL || undefined;
+export const publicOrigin = new URL(process.env.SIDEKICK_PUBLIC_URL || `http://localhost:${port}`)
+  .origin;
+export const runtimeEnvironment = process.env.SIDEKICK_ENVIRONMENT || 'development';
+export const runtimeSecret = process.env.SIDEKICK_RUNTIME_SECRET || '';
+export const runtimeGeneration = process.env.SIDEKICK_RUNTIME_GENERATION || '';
+if (
+  runtimeMode === 'tenant' &&
+  (!databaseUrl ||
+    Buffer.from(runtimeSecret, 'base64url').length < 32 ||
+    !/^[1-9]\d*$/.test(runtimeGeneration) ||
+    !/^sk_jobs_[a-f0-9]{32}$/.test(process.env.PGBOSS_SCHEMA || ''))
+)
+  throw new Error('Tenant runtime configuration is incomplete.');
 export function configuration(overrides: Partial<Configuration> = {}): Configuration {
   return {
     provider: 'unconfigured',
@@ -14,8 +34,11 @@ export function configuration(overrides: Partial<Configuration> = {}): Configura
     speechReady: false,
     integrationsReady: false,
     browserAssistReady: false,
-    inspectorEnabled: process.env.DEV_INSPECTOR !== 'false',
-    localOnly: true,
+    inspectorEnabled:
+      runtimeMode === 'local'
+        ? process.env.DEV_INSPECTOR !== 'false'
+        : process.env.DEV_INSPECTOR === 'true',
+    localOnly: runtimeMode === 'local',
     ...overrides,
   };
 }
