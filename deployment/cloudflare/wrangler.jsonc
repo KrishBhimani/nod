@@ -133,10 +133,10 @@
       ],
     },
     "production": {
-      "name": "sidekick-production",
+      "name": "sidekick",
       "vars": {
         "SIDEKICK_ENVIRONMENT": "production",
-        "SIDEKICK_PUBLIC_URL": "https://sidekick-production.n8n-maintenance.workers.dev",
+        "SIDEKICK_PUBLIC_URL": "https://sidekick.n8n-maintenance.workers.dev",
       },
       "triggers": {
         "crons": ["* * * * *"],

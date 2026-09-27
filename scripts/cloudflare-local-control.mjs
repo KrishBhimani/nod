@@ -219,7 +219,12 @@ export async function openLocalCloudflareControl(
       const signal = AbortSignal.any([cancellation.signal, AbortSignal.timeout(timeout)]);
       let rejectAborted;
       const aborted = new Promise((_, reject) => {
-        rejectAborted = () => reject(unavailable());
+        rejectAborted = () =>
+          reject(
+            cancellation.signal.aborted
+              ? unavailable()
+              : Object.assign(unavailable(), { name: 'TimeoutError' }),
+          );
       });
       signal.addEventListener('abort', rejectAborted, { once: true });
       let reader;

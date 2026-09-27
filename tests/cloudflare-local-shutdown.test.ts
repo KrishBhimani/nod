@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { EventEmitter, once } from 'node:events';
 import { createServer } from 'node:http';
-import { chmod, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -18,6 +18,9 @@ import {
 const { assertLocalCloudflarePortFree, openLocalCloudflareControl, superviseLocalCloudflare } =
   await import(new URL('../scripts/cloudflare-local-control.mjs', import.meta.url).href);
 const { startHosted } = await import(new URL('../scripts/start-hosted.mjs', import.meta.url).href);
+const { startCloudflareLocal } = await import(
+  new URL('../scripts/start-cloudflare-local.mjs', import.meta.url).href
+);
 const failure = /Local Cloudflare control could not confirm a safe state/;
 
 test('the local listener guard refuses an occupied port and leaves its service untouched', async () => {
@@ -33,6 +36,95 @@ test('the local listener guard refuses an occupied port and leaves its service u
     await new Promise<void>((complete) => server.close(() => complete()));
   }
   await assertLocalCloudflarePortFree(port);
+});
+
+test('local startup removes its partial secret write but preserves secrets it cannot own', async (t) => {
+  for (const condition of ['partial', 'occupied', 'locked'] as const) {
+    await t.test(condition, async (subtest) => {
+      const root = await mkdtemp(join(tmpdir(), 'sidekick-startup-secret-'));
+      let existing: { close(): Promise<void> } | undefined;
+      subtest.after(async () => {
+        await existing?.close();
+        await rm(root, { recursive: true, force: true });
+      });
+      const directory = join(root, '.local/cloudflare-development');
+      const packageDirectory = join(root, 'deployment/cloudflare');
+      await mkdir(join(packageDirectory, 'node_modules/wrangler/bin'), { recursive: true });
+      await mkdir(join(root, 'dist/web'), { recursive: true });
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await writeFile(join(packageDirectory, 'node_modules/wrangler/bin/wrangler.js'), '');
+      await writeFile(join(root, 'dist/web/index.html'), 'synthetic');
+      await writeFile(
+        join(packageDirectory, 'wrangler.jsonc'),
+        JSON.stringify({
+          main: 'src/worker.ts',
+          assets: { directory: '../../dist/web' },
+          env: {
+            development: {
+              containers: [
+                {
+                  class_name: 'GatewayContainer',
+                  image: './Dockerfile',
+                  image_build_context: '../..',
+                },
+              ],
+            },
+          },
+        }),
+      );
+      const environment = {
+        COMPUTER_PROVIDER: 'cloudflare',
+        SIDEKICK_ENVIRONMENT: 'development',
+        SIDEKICK_PUBLIC_URL: 'http://localhost:4330',
+        DATABASE_URL: 'postgresql://fixture:synthetic@localhost:54331/local',
+        SIDEKICK_MASTER_KEY: randomBytes(32).toString('base64'),
+      };
+      const secretFile = join(directory, '.dev.vars');
+      const preserved = 'GATEWAY_ENV=synthetic-existing-runtime\n';
+      await writeFile(secretFile, preserved, { mode: 0o600 });
+      const listener = createServer((_request, response) => response.end('synthetic listener'));
+      listener.listen(0, '127.0.0.1');
+      await once(listener, 'listening');
+      const port = (listener.address() as AddressInfo).port;
+      subtest.after(async () => {
+        listener.closeAllConnections();
+        await new Promise<void>((complete) => listener.close(() => complete()));
+      });
+      existing =
+        condition === 'locked'
+          ? await openLocalCloudflareControl(directory, environment)
+          : undefined;
+      const lockFile = join(directory, 'launcher.lock');
+      const originalLock = existing ? await readFile(lockFile, 'utf8') : undefined;
+      let attemptedWrite = false;
+      let checkedPort = false;
+      await assert.rejects(
+        startCloudflareLocal(environment, {
+          root,
+          assertPortFree: async () => {
+            checkedPort = true;
+            if (condition === 'occupied') await assertLocalCloudflarePortFree(port);
+          },
+          writeSecret: async (path: string, value: string) => {
+            attemptedWrite = true;
+            assert.equal(path, secretFile);
+            await writeFile(path, value.slice(0, 24), { mode: 0o600 });
+            throw new Error('Synthetic partial write failure.');
+          },
+        }),
+        condition === 'partial' ? /Synthetic partial write failure/ : failure,
+      );
+      assert.equal(attemptedWrite, condition === 'partial');
+      assert.equal(checkedPort, condition !== 'locked');
+      if (condition === 'partial') {
+        await assert.rejects(readFile(secretFile), { code: 'ENOENT' });
+      } else {
+        assert.equal(await readFile(secretFile, 'utf8'), preserved);
+      }
+      if (existing) assert.equal(await readFile(lockFile, 'utf8'), originalLock);
+      else await assert.rejects(readFile(lockFile), { code: 'ENOENT' });
+    });
+  }
 });
 
 function deferred<T = void>() {
@@ -144,6 +236,7 @@ async function fixture(t: TestContext) {
     hooks,
     actions,
     claims,
+    fetcher,
     open: openControl,
     state: () => state!,
     setState: (value: DeploymentState) => {
@@ -176,6 +269,79 @@ test('local shutdown signs a durable exact operation and reopens only the same p
   await assert.rejects(readFile(join(f.directory, 'local-shutdown.json')), { code: 'ENOENT' });
   assert.deepEqual(f.actions, ['status', 'status', 'prepare', 'status', 'abort']);
   assert.equal(new Set(f.claims).size, f.claims.length);
+});
+
+test('local recovery retries timed-out health headers and bodies within its readiness budget', async (t) => {
+  for (const condition of ['headers', 'body'] as const) {
+    await t.test(condition, async (subtest) => {
+      const f = await fixture(subtest);
+      const late = deferred<Response>();
+      let healthCalls = 0;
+      let firstSignal: AbortSignal | undefined;
+      const cancelled = deferred();
+      const stalled = new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"ok":'));
+          },
+          cancel() {
+            cancelled.resolve();
+          },
+        }),
+      );
+      const control = await f.open(false, {
+        requestMs: 100,
+        readinessMs: 2000,
+        fetcher: (url: URL, init: RequestInit) => {
+          if (url.pathname === '/api/health' && ++healthCalls === 1) {
+            firstSignal = init.signal ?? undefined;
+            return condition === 'headers' ? late.promise : Promise.resolve(stalled);
+          }
+          return f.fetcher(url, init);
+        },
+      });
+      try {
+        await control.recover();
+        assert.equal(healthCalls, 2);
+        assert.equal(firstSignal?.aborted, true);
+        assert.deepEqual(f.actions, ['status']);
+        if (condition === 'headers') late.resolve(stalled);
+        await cancelled.promise;
+      } finally {
+        late.resolve(stalled);
+      }
+    });
+  }
+});
+
+test('health retries stop at the readiness deadline and explicit cancellation never retries', async (t) => {
+  for (const condition of ['deadline', 'cancel'] as const) {
+    await t.test(condition, async (subtest) => {
+      const f = await fixture(subtest);
+      const entered = deferred();
+      let calls = 0;
+      const control = await f.open(false, {
+        requestMs: 30,
+        readinessMs: 120,
+        fetcher: () => {
+          calls++;
+          entered.resolve();
+          return new Promise(() => {});
+        },
+      });
+      const recovering = control.recover();
+      await entered.promise;
+      if (condition === 'cancel') control.cancel();
+      await assert.rejects(recovering, {
+        name: 'Error',
+        message: 'Local Cloudflare control could not confirm a safe state.',
+      });
+      if (condition === 'cancel') assert.equal(calls, 1);
+      else assert.ok(calls > 1 && calls <= 4);
+      assert.deepEqual(f.actions, []);
+      await assert.rejects(readFile(join(f.directory, 'local-shutdown.json')), { code: 'ENOENT' });
+    });
+  }
 });
 
 test('lost prepared response preserves intent and a restart resolves only its exact durable state', async (t) => {

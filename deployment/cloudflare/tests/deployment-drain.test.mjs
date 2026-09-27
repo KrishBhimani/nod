@@ -6,7 +6,7 @@ import { createDeploymentVerifier, deploymentHeader } from '../../../src/server/
 
 function fixture(overrides = {}) {
   const masterKey = randomBytes(32);
-  const origin = 'https://sidekick-production.test.workers.dev';
+  const origin = 'https://sidekick.test.workers.dev';
   const release = 'b'.repeat(40);
   const account = 'c'.repeat(32);
   const classes = [
@@ -22,7 +22,7 @@ function fixture(overrides = {}) {
   const plan = {
     origin,
     release,
-    config: { env: { production: { name: 'sidekick-production', containers } } },
+    config: { env: { production: { name: 'sidekick', containers } } },
   };
   const variables = {
     CLOUDFLARE_ACCOUNT_ID: account,

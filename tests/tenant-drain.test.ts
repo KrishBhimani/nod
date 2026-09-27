@@ -177,3 +177,108 @@ test('a disconnected HTTP client cannot release work until its handler actually 
     await f.app.close();
   }
 });
+
+test(
+  'a signed partial-body disconnect before the handler releases admission for deployment',
+  { timeout: 5000 },
+  async () => {
+    const f = fixture();
+    const received = gate();
+    const disconnected = gate();
+    let handled = 0;
+    f.app.addHook('onRequest', async (request, reply) => {
+      if (request.url !== '/api/work') return;
+      request.raw.once('data', received.resolve);
+      reply.raw.once('close', disconnected.resolve);
+    });
+    f.app.post('/api/work', async () => {
+      handled++;
+      return { ok: true };
+    });
+    const body = JSON.stringify({ value: 'synthetic partial request' });
+    let request: ReturnType<typeof httpRequest> | undefined;
+    try {
+      const address = await f.app.listen({ host: '127.0.0.1', port: 0 });
+      request = httpRequest(address + '/api/work', {
+        method: 'POST',
+        headers: { ...f.headers('/api/work', body), 'content-length': Buffer.byteLength(body) },
+      });
+      request.on('error', () => {});
+      request.write(body.slice(0, 8));
+      await received.promise;
+      assert.equal(f.admission.pending, 1);
+      assert.equal(handled, 0);
+      request.destroy();
+      await disconnected.promise;
+      const input = {
+        nonce: randomUUID(),
+        targetRelease: 'e'.repeat(40),
+        deadline: Date.now() + 500,
+      };
+      const receipt = await f.request('/api/runtime/drain', input, 'deployment');
+      assert.equal(receipt.statusCode, 200, receipt.body);
+      assert.equal(receipt.json().drained, true);
+      assert.equal(f.admission.pending, 0);
+      assert.equal(handled, 0);
+    } finally {
+      request?.destroy();
+      await f.app.close();
+    }
+  },
+);
+
+test(
+  'a disconnected request cannot start its handler after a delayed pre-handler resumes',
+  { timeout: 5000 },
+  async () => {
+    const f = fixture();
+    const started = gate();
+    const finish = gate();
+    const completed = gate();
+    const disconnected = gate();
+    let handled = 0;
+    f.app.addHook('onRequest', async (request, reply) => {
+      if (request.url === '/api/work') reply.raw.once('close', disconnected.resolve);
+    });
+    f.app.addHook('preHandler', async (request) => {
+      if (request.url !== '/api/work') return;
+      started.resolve();
+      await finish.promise;
+      completed.resolve();
+    });
+    f.app.post('/api/work', async () => {
+      handled++;
+      return { ok: true };
+    });
+    let request: ReturnType<typeof httpRequest> | undefined;
+    try {
+      const address = await f.app.listen({ host: '127.0.0.1', port: 0 });
+      request = httpRequest(address + '/api/work', {
+        method: 'POST',
+        headers: f.headers('/api/work', '{}'),
+      });
+      request.on('error', () => {});
+      request.end('{}');
+      await started.promise;
+      assert.equal(f.admission.pending, 1);
+      request.destroy();
+      await disconnected.promise;
+      const input = {
+        nonce: randomUUID(),
+        targetRelease: 'f'.repeat(40),
+        deadline: Date.now() + 500,
+      };
+      assert.equal((await f.request('/api/runtime/drain', input, 'deployment')).statusCode, 200);
+      assert.equal(f.admission.pending, 0);
+      finish.resolve();
+      await completed.promise;
+      await delay(0);
+      assert.equal(handled, 0);
+      assert.equal(f.admission.pending, 0);
+    } finally {
+      finish.resolve();
+      request?.destroy();
+      await f.app.close();
+    }
+  },
+);

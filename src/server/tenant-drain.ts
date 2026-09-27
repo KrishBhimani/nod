@@ -116,11 +116,7 @@ export function registerTenantDrain(
   const accepted = new WeakMap<FastifyRequest, Admitted>();
   function release(request: FastifyRequest) {
     const state = accepted.get(request);
-    if (
-      !state ||
-      (state.started && !state.finished) ||
-      (!state.responded && !(state.disconnected && state.finished))
-    )
+    if (!state || (state.started && !state.finished) || (!state.responded && !state.disconnected))
       return;
     state.release();
     state.cleanup();
@@ -151,6 +147,7 @@ export function registerTenantDrain(
       },
     });
     reply.raw.once('close', disconnected);
+    if (reply.raw.destroyed) disconnected();
   });
   app.addHook('onResponse', async (request) => {
     const state = accepted.get(request);
@@ -160,6 +157,7 @@ export function registerTenantDrain(
   app.addHook('onRoute', (route) => {
     const handler = route.handler;
     route.handler = async function (request, reply) {
+      if (reply.raw.destroyed) return;
       const state = accepted.get(request);
       if (state) state.started = true;
       try {

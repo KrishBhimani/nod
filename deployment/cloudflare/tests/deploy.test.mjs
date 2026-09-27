@@ -7,7 +7,7 @@ import { recoverDeployment } from '../scripts/recover.mjs';
 
 const release = 'a'.repeat(40);
 const accountId = 'b'.repeat(32);
-const origin = 'https://sidekick-production.test.workers.dev';
+const origin = 'https://sidekick.test.workers.dev';
 const variables = {
   CLOUDFLARE_ACCOUNT_ID: accountId,
   CLOUDFLARE_API_TOKEN: 'synthetic-cloudflare-credential',
@@ -45,7 +45,7 @@ function configuration(computers = true) {
     assets: { directory: '../../dist/web' },
     env: {
       production: {
-        name: 'sidekick-production',
+        name: 'sidekick',
         containers: classes.map((class_name) => ({
           class_name,
           image: './Dockerfile',

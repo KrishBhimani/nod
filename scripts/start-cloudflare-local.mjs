@@ -83,7 +83,14 @@ export function cloudflareLocalPlan(environment, config, root = repository, rele
   };
 }
 
-export async function startCloudflareLocal(environment, { root = repository } = {}) {
+export async function startCloudflareLocal(
+  environment,
+  {
+    root = repository,
+    assertPortFree = assertLocalCloudflarePortFree,
+    writeSecret = (path, value) => writeFile(path, value, { mode: 0o600 }),
+  } = {},
+) {
   if (process.platform === 'win32')
     throw new Error('Checkpoint-safe local Cloudflare shutdown requires macOS or Linux.');
   const packageDirectory = resolve(root, 'deployment/cloudflare');
@@ -106,10 +113,10 @@ export async function startCloudflareLocal(environment, { root = repository } = 
   let wroteSecret = false;
   try {
     const plan = cloudflareLocalPlan(environment, parsed.config, root, control.release);
-    await assertLocalCloudflarePortFree();
+    await assertPortFree();
     await writeFile(configFile, JSON.stringify(plan.config, null, 2), { mode: 0o600 });
-    await writeFile(secretFile, plan.devVars, { mode: 0o600 });
     wroteSecret = true;
+    await writeSecret(secretFile, plan.devVars);
     await chmod(secretFile, 0o600);
     const child = spawn(
       process.execPath,
