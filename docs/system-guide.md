@@ -98,6 +98,8 @@ The Cloudflare gateway persists its deployment admission barrier separately from
 
 `scripts/start-hosted.mjs` automatically starts local Wrangler/Docker/R2 emulation for Cloudflare, or private Node child processes with PostgreSQL object storage for E2B. Both use the development Google callback on localhost:4330. Cloudflare serves built web assets, so frontend changes require a rebuild. The browser image contains Chromium and the private worker; the workspace image contains Python/Node CLI tooling. Both run unprivileged under `tini` with fixed read-only helpers and internal readiness checks. CI builds three images, and deployment pushes every selected role image before Worker activation.
 
+The local Cloudflare launcher uses the existing signed drain protocol for Ctrl-C and SIGTERM. It stops Wrangler only after accepted work finishes, computer checkpoints commit and exact generations stop. A private installation identity and operation journal bind the next startup to the same clean-stop recovery; `--resume` can explicitly reopen a refused operation against the still-running stack. Repeated signals never force termination. External kills and watched-source rebuilds bypass this handshake, so stop cleanly before editing runtime sources. See the [local shutdown and recovery instructions](development.md#hosted-mode-on-your-computer).
+
 ### Model selection
 
 | Work                                   | Default                                             | Configuration                                                            |

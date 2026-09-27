@@ -110,6 +110,7 @@ test('local Cloudflare uses development bindings and private runtime configurati
     COMPUTER_PROVIDER: 'cloudflare',
     CLOUDFLARE_API_TOKEN: 'private-deployment-token',
     GOOGLE_CLIENT_SECRET: "synthetic's # quoted \\\\ value\nnext line",
+    SIDEKICK_IMAGE_RELEASE: 'untrusted-image-release',
   };
   delete (input as Partial<typeof input>).E2B_API_KEY;
   delete (input as Partial<typeof input>).E2B_BROWSER_TEMPLATE;
@@ -130,6 +131,17 @@ test('local Cloudflare uses development bindings and private runtime configurati
         name: 'development',
         containers: [
           { class_name: 'GatewayContainer', image: './Dockerfile', image_build_context: '../..' },
+          { class_name: 'TenantContainer', image: './Dockerfile', image_build_context: '../..' },
+          {
+            class_name: 'BrowserComputerContainer',
+            image: './Dockerfile.browser',
+            image_build_context: '../..',
+          },
+          {
+            class_name: 'WorkspaceComputerContainer',
+            image: './Dockerfile.workspace',
+            image_build_context: '../..',
+          },
         ],
         r2_buckets: [{ binding: 'TENANT_FILES', bucket_name: 'development-files' }],
       },
@@ -140,7 +152,8 @@ test('local Cloudflare uses development bindings and private runtime configurati
       },
     },
   };
-  const plan = cloudflareLocalPlan(environment, config, '/fixture');
+  const localRelease = 'a'.repeat(40);
+  const plan = cloudflareLocalPlan(environment, config, '/fixture', localRelease);
   assert.equal(plan.config.account_id, undefined);
   assert.equal(plan.config.env, undefined);
   assert.equal(plan.config.dev.ip, '127.0.0.1');
@@ -149,6 +162,10 @@ test('local Cloudflare uses development bindings and private runtime configurati
   assert.equal(plan.config.r2_buckets[0].bucket_name, 'development-files');
   assert.equal(plan.config.containers[0].image, '/fixture/deployment/cloudflare/Dockerfile');
   assert.equal(plan.config.containers[0].image_build_context, '/fixture');
+  assert.equal(plan.config.containers[0].image_vars.SIDEKICK_RELEASE, localRelease);
+  assert.equal(plan.config.containers[1].image_vars.SIDEKICK_RELEASE, localRelease);
+  assert.equal(plan.config.containers[2].image_vars, undefined);
+  assert.equal(plan.config.containers[3].image_vars, undefined);
   assert.doesNotMatch(JSON.stringify(plan.config), /synthetic|secret|production/);
   const privateValues = JSON.parse(plan.secret);
   const encodedValues = parseEnv(plan.devVars).GATEWAY_ENV;
@@ -156,6 +173,8 @@ test('local Cloudflare uses development bindings and private runtime configurati
   assert.deepEqual(JSON.parse(encodedValues), privateValues);
   assert.equal(privateValues.GOOGLE_CLIENT_SECRET, input.GOOGLE_CLIENT_SECRET);
   assert.equal(privateValues.DATABASE_URL, input.DATABASE_URL);
+  assert.equal(privateValues.SIDEKICK_RELEASE, localRelease);
+  assert.equal(privateValues.SIDEKICK_IMAGE_RELEASE, undefined);
   for (const key of ['CLOUDFLARE_API_TOKEN', 'DOTENV_CONFIG_PATH', 'PATH', 'OPENAI_API_KEY'])
     assert.equal(privateValues[key], undefined);
   assert.deepEqual(plan.environment, { PATH: '/bin' });

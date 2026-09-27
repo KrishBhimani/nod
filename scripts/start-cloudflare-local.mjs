@@ -1,18 +1,24 @@
 import { spawn } from 'node:child_process';
-import { access, chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import {
+  assertLocalCloudflarePortFree,
+  openLocalCloudflareControl,
+  superviseLocalCloudflare,
+} from './cloudflare-local-control.mjs';
 
 const repository = fileURLToPath(new URL('..', import.meta.url));
 const systemKeys =
   /^(PATH|HOME|USERPROFILE|SYSTEMROOT|TEMP|TMP|TMPDIR|SHELL|LANG|LC_ALL|TERM|COLORTERM)$/;
 
-export function cloudflareLocalPlan(environment, config, root = repository) {
+export function cloudflareLocalPlan(environment, config, root = repository, release) {
   if (
     environment.COMPUTER_PROVIDER !== 'cloudflare' ||
     environment.SIDEKICK_ENVIRONMENT === 'production' ||
-    environment.SIDEKICK_PUBLIC_URL !== 'http://localhost:4330'
+    environment.SIDEKICK_PUBLIC_URL !== 'http://localhost:4330' ||
+    !/^[a-f0-9]{40}$/.test(release ?? '')
   )
     throw new Error('Configure an isolated local Cloudflare development environment.');
   const { env, $schema, ...common } = config;
@@ -33,11 +39,13 @@ export function cloudflareLocalPlan(environment, config, root = repository) {
           'NODE_ENV',
           'CLOUDFLARE_API_TOKEN',
           'CLOUDFLARE_ACCOUNT_ID',
+          'SIDEKICK_IMAGE_RELEASE',
         ].includes(key),
     ),
   );
   const secret = JSON.stringify({
     ...gateway,
+    SIDEKICK_RELEASE: release,
     OBJECT_STORAGE_PROVIDER: 'http',
     OBJECT_STORAGE_ENDPOINT: 'http://sidekick.storage/v1/objects/',
   });
@@ -58,6 +66,9 @@ export function cloudflareLocalPlan(environment, config, root = repository) {
       ...container,
       image: resolve(directory, container.image),
       image_build_context: resolve(directory, container.image_build_context),
+      ...(['GatewayContainer', 'TenantContainer'].includes(container.class_name) && {
+        image_vars: { ...container.image_vars, SIDEKICK_RELEASE: release },
+      }),
     })),
   };
   delete local.triggers;
@@ -73,6 +84,8 @@ export function cloudflareLocalPlan(environment, config, root = repository) {
 }
 
 export async function startCloudflareLocal(environment, { root = repository } = {}) {
+  if (process.platform === 'win32')
+    throw new Error('Checkpoint-safe local Cloudflare shutdown requires macOS or Linux.');
   const packageDirectory = resolve(root, 'deployment/cloudflare');
   const wrangler = join(packageDirectory, 'node_modules/wrangler/bin/wrangler.js');
   try {
@@ -86,39 +99,49 @@ export async function startCloudflareLocal(environment, { root = repository } = 
     await readFile(join(packageDirectory, 'wrangler.jsonc'), 'utf8'),
   );
   if (parsed.error) throw new Error('The Cloudflare development configuration is invalid.');
-  const plan = cloudflareLocalPlan(environment, parsed.config, root);
   const directory = resolve(root, '.local/cloudflare-development');
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  await chmod(directory, 0o700);
+  const control = await openLocalCloudflareControl(directory, environment);
   const configFile = join(directory, 'wrangler.json');
   const secretFile = join(directory, '.dev.vars');
-  await writeFile(configFile, JSON.stringify(plan.config, null, 2), { mode: 0o600 });
-  await writeFile(secretFile, plan.devVars, { mode: 0o600 });
-  await chmod(secretFile, 0o600);
-  const child = spawn(
-    process.execPath,
-    [wrangler, 'dev', '--config', configFile, '--local', '--show-interactive-dev-session=false'],
-    {
-      cwd: root,
-      env: { ...plan.environment, WRANGLER_SEND_METRICS: 'false', WRANGLER_LOG_LEVEL: 'warn' },
-      stdio: 'inherit',
-    },
-  );
-  console.log('Starting the local Cloudflare stack at http://localhost:4330.');
-  const handlers = new Map(
-    ['SIGINT', 'SIGTERM'].map((signal) => [signal, () => child.kill(signal)]),
-  );
-  for (const [signal, handler] of handlers) process.on(signal, handler);
+  let wroteSecret = false;
   try {
-    await new Promise((complete, reject) => {
-      child.once('error', () => reject(new Error('Local Cloudflare development could not start.')));
-      child.once('exit', (code) => {
-        process.exitCode = code ?? 1;
-        complete();
-      });
-    });
+    const plan = cloudflareLocalPlan(environment, parsed.config, root, control.release);
+    await assertLocalCloudflarePortFree();
+    await writeFile(configFile, JSON.stringify(plan.config, null, 2), { mode: 0o600 });
+    await writeFile(secretFile, plan.devVars, { mode: 0o600 });
+    wroteSecret = true;
+    await chmod(secretFile, 0o600);
+    const child = spawn(
+      process.execPath,
+      [wrangler, 'dev', '--config', configFile, '--local', '--show-interactive-dev-session=false'],
+      {
+        cwd: root,
+        env: { ...plan.environment, WRANGLER_SEND_METRICS: 'false', WRANGLER_LOG_LEVEL: 'warn' },
+        stdio: ['ignore', 'inherit', 'inherit'],
+        detached: true,
+      },
+    );
+    console.log('Starting the local Cloudflare stack at http://localhost:4330.');
+    process.exitCode = await superviseLocalCloudflare(child, control);
   } finally {
-    for (const [signal, handler] of handlers) process.off(signal, handler);
-    await rm(secretFile, { force: true });
+    try {
+      if (wroteSecret) await rm(secretFile, { force: true });
+    } finally {
+      await control.close();
+    }
+  }
+}
+
+export async function resumeCloudflareLocal(environment, { root = repository } = {}) {
+  const control = await openLocalCloudflareControl(
+    resolve(root, '.local/cloudflare-development'),
+    environment,
+    { resume: true },
+  );
+  try {
+    await control.resume();
+    console.log('The recorded local shutdown was safely resumed. The stack remains running.');
+  } finally {
+    await control.close();
   }
 }

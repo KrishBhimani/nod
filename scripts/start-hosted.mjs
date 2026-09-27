@@ -127,15 +127,26 @@ export async function readHostedEnvironment(
 export async function startHosted(args = process.argv.slice(2)) {
   let envFile = resolve(repository, '.env.hosted.local');
   let check = false;
+  let resume = false;
   for (let index = 0; index < args.length; index++) {
     if (args[index] === '--check') check = true;
+    else if (args[index] === '--resume') resume = true;
     else if (args[index] === '--env' && args[index + 1] && !args[index + 1].startsWith('--'))
       envFile = resolve(args[++index]);
-    else throw new Error('Usage: node scripts/start-hosted.mjs [--env <file>] [--check]');
+    else
+      throw new Error('Usage: node scripts/start-hosted.mjs [--env <file>] [--check | --resume]');
   }
+  if (check && resume) throw new Error('Choose either --check or --resume.');
   const [major, minor] = process.versions.node.split('.').map(Number);
   if (major < 24 || (major === 24 && minor < 21)) throw new Error('Use Node.js 24.21.0 or newer.');
   const environment = await readHostedEnvironment(envFile);
+  if (resume) {
+    if (environment.COMPUTER_PROVIDER !== 'cloudflare')
+      throw new Error('The --resume command requires the Cloudflare computer provider.');
+    const { resumeCloudflareLocal } = await import('./start-cloudflare-local.mjs');
+    await resumeCloudflareLocal(environment);
+    return;
+  }
   if (check) {
     console.log('Hosted development configuration is valid.');
     return;
