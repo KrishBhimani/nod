@@ -81,7 +81,25 @@ try {
     fileURLToPath(new URL('./computer-boundary.py', import.meta.url)),
     `${name}:/tmp/sidekick-boundary.py`,
   ]);
-  const result = docker(['exec', '--user', 'root', name, 'python3', '/tmp/sidekick-boundary.py']);
+  const result = docker(
+    ['exec', '--user', 'root', name, 'python3', '/tmp/sidekick-boundary.py'],
+    true,
+  );
+  if (result.error || result.status !== 0) {
+    let check = 'unknown';
+    try {
+      const failure = JSON.parse(result.stdout);
+      if (
+        failure.passed === false &&
+        typeof failure.check === 'string' &&
+        /^(xauthority-creation|chromium-exited|xvfb-exited|browser-readiness|browser-network-[0-5]|workspace-network-[0-5]|workspace-private-[0-7]|workspace-firewall|workspace-x11|workspace-files-dns-privileges|workspace-https|unchanged-firewall-readiness|changed-firewall-readiness|fixture-error)$/.test(
+          failure.check,
+        )
+      )
+        check = failure.check;
+    } catch {}
+    throw new Error(`The isolated computer boundary check failed (${check}).`);
+  }
   process.stdout.write(result.stdout);
 } finally {
   docker(['rm', '--force', rejectedName], true);

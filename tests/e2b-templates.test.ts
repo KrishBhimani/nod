@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { Template } from 'e2b';
 import { buildE2BTemplate, prepareE2BTemplate } from '../deployment/e2b/build.ts';
@@ -182,4 +183,57 @@ test('browser readiness rejects silent and malformed Unix services within its de
   await assert.rejects(checkBrowserWorker(socketPath, 50), /not ready/);
   malformed = true;
   await assert.rejects(checkBrowserWorker(socketPath), /not ready/);
+});
+
+test('computer boundary failures keep fixed diagnostics and clean up both fixture containers', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'sidekick-boundary-runner-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const reply = join(root, 'reply.json');
+  const calls = join(root, 'calls.jsonl');
+  const executable = join(root, 'docker');
+  await writeFile(
+    executable,
+    `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n');
+if (args[0] === 'run' && args.includes('none')) {
+  process.stderr.write('The private computer is not ready.\\n');
+  process.exit(1);
+}
+if (args[0] === 'exec' && args.includes('check')) process.stdout.write('{"ready":true}\\n');
+if (args[0] === 'exec' && args.includes('/tmp/sidekick-boundary.py')) {
+  process.stdout.write(fs.readFileSync(${JSON.stringify(reply)}, 'utf8'));
+  process.stderr.write('synthetic-private-subprocess-output');
+  process.exit(1);
+}
+`,
+    { mode: 0o700 },
+  );
+  for (const [response, expected] of [
+    [JSON.stringify({ passed: false, check: 'chromium-exited' }), 'chromium-exited'],
+    [JSON.stringify({ passed: false, check: 'synthetic-private-subprocess-output' }), 'unknown'],
+    ['synthetic-private-subprocess-output', 'unknown'],
+  ]) {
+    await writeFile(reply, response);
+    await writeFile(calls, '');
+    const result = spawnSync(
+      process.execPath,
+      [resolve('deployment/e2b/validate-computer.mjs'), 'sidekick-e2b-computer:123456789abc'],
+      { env: { PATH: `${root}:${dirname(process.execPath)}` }, encoding: 'utf8', timeout: 15_000 },
+    );
+    assert.equal(result.status, 1);
+    assert.ok(result.stderr.includes(`boundary check failed (${expected})`));
+    assert.doesNotMatch(result.stdout + result.stderr, /synthetic-private-subprocess-output/);
+    const invoked = (await readFile(calls, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as string[]);
+    const created = invoked
+      .filter((args) => args[0] === 'run')
+      .map((args) => args[args.indexOf('--name') + 1]);
+    const removed = invoked.filter((args) => args[0] === 'rm').map((args) => args[2]);
+    assert.equal(created.length, 2);
+    assert.deepEqual(removed.sort(), created.sort());
+  }
 });
