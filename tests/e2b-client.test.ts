@@ -55,6 +55,7 @@ test('E2B SDK configuration keeps keys server-side, blocks public traffic and bo
   assert.deepEqual(created.envs, {});
   assert.deepEqual(created.lifecycle, { onTimeout: 'pause', autoResume: false });
   assert.equal(created.apiKey, 'synthetic-server-key');
+  assert.equal('retries' in created, false);
   await sandbox.ready();
   assert.deepEqual(calls.find((call) => call.action === 'run')!.args, [
     'python3 /opt/sidekick/computer-guard.py check',
@@ -117,6 +118,27 @@ test('E2B SDK configuration keeps keys server-side, blocks public traffic and bo
   ]);
   assert.equal('getHost' in sandbox, false);
   assert.equal('trafficAccessToken' in sandbox, false);
+});
+
+test('E2B disposable acceptance can disable control-plane retries without replaying failures', async (t) => {
+  const calls: Array<{ action: string; options: Record<string, unknown> }> = [];
+  const failure = new Error('Synthetic provider throttling');
+  for (const action of ['create', 'connect'] as const) {
+    t.mock.method(Sandbox, action, async (_id: string, options: Record<string, unknown>) => {
+      calls.push({ action, options });
+      throw failure;
+    });
+  }
+  const client = createE2BClient({ apiKey: 'synthetic-key', retries: 0 });
+  await assert.rejects(client.create('synthetic-template', {}), (error) => error === failure);
+  await assert.rejects(client.connect('synthetic-resource'), (error) => error === failure);
+  assert.deepEqual(
+    calls.map(({ action, options }) => ({ action, retries: options.retries })),
+    [
+      { action: 'create', retries: 0 },
+      { action: 'connect', retries: 0 },
+    ],
+  );
 });
 
 test('E2B readiness refuses missing, malformed or failed protected-computer proof with fixed errors', async (t) => {

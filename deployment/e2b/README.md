@@ -57,3 +57,42 @@ The durable allocation store binds owner, resource, generation and version. Shar
 Normal shutdown drains accepted commands and closes the browser namespace before confirming pause and releasing ownership. Reconnect must retain the same sandbox ID and generation. Idle pause and continuous-runtime recycling must wait for both browser and workspace commands. SDK creation disables traffic auto-resume and selects pause on timeout. Provider disk or memory snapshots do not replace owned transcript/artifact storage. Operators still need retention, deletion and explicit uncertain-resource recovery procedures. [E2B persistence reference](https://docs.e2b.dev/sandbox/persistence).
 
 Local fixtures and image checks establish only their tested boundaries. Live development acceptance must verify one sandbox ID across browser and shell, the full isolation matrix, synthetic navigation and private input, cancellation with a surviving child, artifact publication, same-resource pause/resume and profile recovery after an actor restart. A readiness or receipt failure must remain fenced without replay. Only then repeat the approved journey with production keys. Keep sandbox IDs, credentials, private frames and user content out of public reports.
+
+## Opt-in disposable development acceptance
+
+`acceptance.ts` supplies a live provider test, separate from the Docker validator. It never runs by default or in CI. The ordinary Node tests execute its injected lifecycle/transport fixtures and the Python probe's offline regressions; they need no E2B credentials and create no provider resources.
+
+Before live use, review the selected development project's key and the combined template ID in its dashboard. Put only the approved development configuration in an owner-only environment file with `SIDEKICK_ENVIRONMENT=development`, `COMPUTER_PROVIDER=e2b`, `E2B_API_KEY` and `E2B_COMPUTER_TEMPLATE`. Use the actual template ID returned by its build. Environment labels cannot authenticate which project issued a key: the operator must verify this pairing. Production keys, ordinary users' sandboxes and old allocations are outside this harness's scope. Do not pass service credentials through shell arguments or upload environment files.
+
+Create a new private journal under the ignored `.local/cloud` directory. `plan` is offline; it binds the template, a credential fingerprint, exact source hashes, a random synthetic owner/task and a disposable-resource nonce. Source binding follows the bounded relative-import closure of the harness, host adapters and guest entrypoints, including template preparation, Python helpers and the package lock; linked or out-of-root sources are refused. Review `plan.json` before copying its printed hash into the explicit live command. The plan expires for execution after 24 hours. All commands require a Unix host, Node 24.21 or later, and the same canonical directory and source; files use mode 0600 and directories mode 0700.
+
+```sh
+node --import tsx deployment/e2b/acceptance.ts plan --env <private-development-env> --journal .local/cloud/e2b-live-development-1
+node --import tsx deployment/e2b/acceptance.ts run --env <private-development-env> --journal .local/cloud/e2b-live-development-1 --confirm-plan <reviewed-hash> --development-only
+```
+
+`run` makes one sandbox creation attempt with SDK control-plane retries disabled, which can incur provider usage. It saves and fsyncs the intent before creation and its returned resource ID before readiness or tool calls. It uses the existing E2B client, allocation manager, browser bridge and supervised workspace. Both capabilities share the same synthetic owner's allocation. The checks cover:
+
+- The fixed guest readiness gate, actual root NET_ADMIN/nftables support, browser CDP and authenticated X11 positives before and after workspace denial, and workspace denial of browser files/profile/socket, synthetic browser process environment, root-owned helpers and privilege escalation.
+- Positive browser listeners followed by workspace rejection on IPv4/IPv6 loopback and every configured non-loopback address. The real envd port 49983 is checked with TCP connections only; no control API is invoked. No interfaces, metadata addresses or firewall rules are changed. An absent non-loopback IPv6 interface is recorded as zero checks; IPv6 loopback remains required. Public DNS/HTTPS and ordinary workspace writes must work.
+- Example Domain navigation, exclusive creation and bounded artifact-byte reads of a synthetic CSV, held-browser pause refusal without a provider pause attempt, and acknowledged cancellation of a TERM-resistant child process.
+- A synthetic persistent cookie on `https://httpbin.org`, same-resource pause/resume, and a fresh adapter instance reconnecting to the same allocation generation and reading the original file/cookie without reseeding them. The final successful state is confirmed paused with the allocation lease released.
+
+The guest probe has a 100-second work budget plus 20 seconds for its own descendants and files to be cleaned up; the remote command has a 150-second bound. Cleanup cannot pass while the probe's display lock or socket remains. Individual SDK requests, browser commands and supervised commands retain their existing deadlines. The CLI exits after 15 minutes at most, including failed operations with lingering provider streams. Fixed aggregate results and command start/terminal receipts are recorded privately; raw browser pages, command output, cookies and credentials are not logged. A timeout, failed readiness, uncertain transport or missing receipt stops the run. The run cannot be repeated in the same journal, even after failure. No automatic reconnect, replacement, deletion or action replay is used as failure recovery.
+
+Inspect the exact resource separately. If creation lost its response before recording an ID, inspection searches only the plan's unique disposable metadata and template; zero or multiple matches establish no resource to act upon. A uniquely matched resource may be deleted by the separate cleanup command, never adopted to continue a failed test.
+
+```sh
+node --import tsx deployment/e2b/acceptance.ts inspect --env <private-development-env> --journal .local/cloud/e2b-live-development-1 --confirm-plan <reviewed-hash> --development-only
+node --import tsx deployment/e2b/acceptance.ts cleanup --env <private-development-env> --journal .local/cloud/e2b-live-development-1 --confirm-plan <reviewed-hash> --development-only
+```
+
+Cleanup rechecks the exact template, owner, generation and disposable nonce, journals one deletion attempt, and requires a separate not-found read afterward. Its authorization applies only to this synthetic disposable sandbox; it is not normal application disposal. A lost delete response does not permit another deletion attempt: use inspection to reconcile absence. External process termination can leave `operation.lock` or an incomplete event; preserve the journal and verify that its recorded process is gone before any manual reconciliation. Never delete application allocation rows, existing recovery state, or the whole `.local` directory. Keep the reviewed source until cleanup is confirmed, because a source mismatch deliberately blocks subsequent commands.
+
+A passing run is adapter/provider evidence only. It does not exercise Google signup, authenticated onboarding, production keys, the real SQL allocation store, a real tenant-process restart, HTTP artifact publication, bilateral account access, arbitrary website sessions, manual sign-in, deliberately broken-firewall recovery or Cloudflare deployment. The provider pause/resume and adapter reconstruction are explicit; natural idle recycling is a separate check. Complete those application and two-account checks with development accounts before any production conversion. Public HTTP dependencies can fail independently; such a failure is recorded as incomplete acceptance, never bypassed or silently retried.
+
+Offline checks:
+
+```sh
+node --import tsx --test tests/e2b-live-acceptance.test.ts
+```

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { isDeepStrictEqual } from 'node:util';
 import pg from 'pg';
 import { z } from 'zod';
 import {
@@ -39,6 +40,52 @@ const rolloutSchema = z.object({
       target: z.object({ configuration: z.object({ image: z.string().min(1) }) }).nullish(),
     })
     .nullish(),
+});
+
+const countSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const applicationIdentitySchema = z.object({
+  id: z.uuid(),
+  name: z.string().regex(/^[a-z0-9-]{1,128}$/),
+  account_id: z.string().regex(/^[a-f0-9]{32}$/),
+  durable_objects: z.object({ namespace_id: z.string().regex(/^[a-f0-9]{32}$/) }),
+  version: countSchema,
+});
+const pendingApplicationSchema = applicationIdentitySchema.extend({
+  configuration: z.object({ image: z.string().min(1) }),
+  active_rollout_id: z.uuid(),
+  scheduling_hint: rolloutSchema.shape.scheduling_hint,
+});
+const completedRolloutSchema = z.object({
+  id: z.uuid(),
+  status: z.literal('completed'),
+  current_version: countSchema,
+  current_configuration: z.object({ image: z.string().min(1) }),
+  target_version: countSchema,
+  target_configuration: z.object({ image: z.string().min(1) }),
+  health: z.object({
+    errors: z.array(z.unknown()).length(0),
+    instances: z.object({ failed: z.literal(0) }),
+  }),
+  steps: z
+    .array(
+      z.object({
+        status: z.literal('completed'),
+        step_size: z.object({ percentage: z.number().int().positive().max(100) }),
+      }),
+    )
+    .min(1)
+    .max(100),
+  progress: z.object({
+    total_steps: countSchema,
+    current_step: countSchema,
+    updated_instances: countSchema,
+    total_instances: countSchema,
+    version_distribution: z.object({
+      target_version_instances: countSchema,
+      current_version_instances: z.literal(0),
+      target_version_percentage: z.literal(100),
+    }),
+  }),
 });
 
 async function boundedJson(response, maximum = 1024 * 1024) {
@@ -214,6 +261,7 @@ export function createDeploymentClient({
       {
         headers: { authorization: `Bearer ${variables.CLOUDFLARE_API_TOKEN}` },
         redirect: 'error',
+        cache: 'no-store',
         signal: AbortSignal.timeout(10_000),
       },
     );
@@ -240,6 +288,59 @@ export function createDeploymentClient({
         if (matches.length > 1) throw unavailable();
         return { expected: container.image, application: matches[0] };
       }),
+    );
+  }
+
+  async function completedRollout(expected, application) {
+    const parsed = pendingApplicationSchema.safeParse(application);
+    if (!parsed.success || parsed.data.account_id !== variables.CLOUDFLARE_ACCOUNT_ID) return false;
+    const identity = parsed.data;
+    if (
+      identity.scheduling_hint?.target &&
+      identity.scheduling_hint.target.configuration.image !== expected
+    )
+      return false;
+    const path = `containers/applications/${identity.id}`;
+    const detail = await api(path);
+    const current = applicationIdentitySchema.and(rolloutSchema).safeParse(detail);
+    if (
+      !current.success ||
+      current.data.id !== identity.id ||
+      current.data.name !== identity.name ||
+      current.data.account_id !== identity.account_id ||
+      current.data.durable_objects.namespace_id !== identity.durable_objects.namespace_id ||
+      current.data.configuration.image !== expected ||
+      (current.data.scheduling_hint?.target &&
+        current.data.scheduling_hint.target.configuration.image !== expected)
+    )
+      return false;
+    const result = completedRolloutSchema.safeParse(
+      await api(`${path}/rollouts/${identity.active_rollout_id}`),
+    );
+    if (!result.success) return false;
+    const rollout = result.data;
+    const progress = rollout.progress;
+    if (
+      rollout.id !== identity.active_rollout_id ||
+      rollout.current_version !== identity.version ||
+      rollout.current_configuration.image !== identity.configuration.image ||
+      rollout.target_version <= rollout.current_version ||
+      rollout.target_version !== current.data.version ||
+      rollout.target_configuration.image !== expected ||
+      progress.total_steps !== rollout.steps.length ||
+      progress.current_step !== progress.total_steps ||
+      rollout.steps.at(-1).step_size.percentage !== 100 ||
+      progress.total_instances === 0 ||
+      progress.updated_instances !== progress.total_instances ||
+      progress.version_distribution.target_version_instances !== progress.total_instances
+    )
+      return false;
+    const latest = await api(path);
+    const final = applicationIdentitySchema.and(rolloutSchema).safeParse(latest);
+    return (
+      final.success &&
+      isDeepStrictEqual(final.data, current.data) &&
+      isDeepStrictEqual(latest.configuration, detail.configuration)
     );
   }
 
@@ -348,17 +449,20 @@ export function createDeploymentClient({
       verified = false;
       for (let attempt = 0; attempt < attempts; attempt += 1) {
         const entries = await applications();
-        if (
-          entries.every(({ expected, application }) => {
+        const results = await Promise.all(
+          entries.map(async ({ expected, application }) => {
             const parsed = rolloutSchema.safeParse(application);
-            return (
+            if (
               parsed.success &&
               parsed.data.configuration.image === expected &&
               (!parsed.data.scheduling_hint?.target ||
                 parsed.data.scheduling_hint.target.configuration.image === expected)
-            );
-          })
-        ) {
+            )
+              return true;
+            return completedRollout(expected, application);
+          }),
+        );
+        if (results.every(Boolean)) {
           verified = true;
           return;
         }

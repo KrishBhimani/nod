@@ -207,6 +207,7 @@ function fixture(overrides = {}) {
       assert.equal(options.redirect, 'error');
       if (url.hostname === 'api.cloudflare.com') {
         assert.equal(options.headers.authorization, 'Bearer synthetic-api-key');
+        assert.equal(options.cache, 'no-store');
         if (url.pathname.endsWith('/settings')) {
           if (state.denied) return Response.json({ success: false }, { status: 403 });
           if (state.missing)
@@ -215,6 +216,10 @@ function fixture(overrides = {}) {
               { status: 404 },
             );
           return api({ bindings: [] });
+        }
+        if (state.api) {
+          const response = await state.api(url, options);
+          if (response) return response;
         }
         applicationReads += 1;
         const name = url.searchParams.get('name');
@@ -263,8 +268,268 @@ function fixture(overrides = {}) {
     state,
     registryReads: () => registryReads,
     applicationReads: () => applicationReads,
+    containers,
   };
 }
+
+function completedRolloutFixture() {
+  const id = randomUUID();
+  const rolloutId = randomUUID();
+  const identity = {
+    id,
+    account_id: 'c'.repeat(32),
+    durable_objects: { namespace_id: 'e'.repeat(32) },
+  };
+  const observations = [];
+  const changes = {
+    list: (value) => value,
+    detail: (value) => value,
+    rollout: (value) => value,
+    status: () => 200,
+  };
+  const f = fixture({
+    application: (value) =>
+      value.name.includes('tenantcontainer')
+        ? changes.list({
+            ...value,
+            ...structuredClone(identity),
+            version: 10,
+            configuration: { image: 'previous-image' },
+            active_rollout_id: rolloutId,
+          })
+        : value,
+    api: (url, options) => {
+      if (!url.pathname.includes('/containers/applications/')) return;
+      assert.equal(options.method, undefined);
+      const resource = url.pathname.endsWith(`/rollouts/${rolloutId}`) ? 'rollout' : 'detail';
+      assert.equal(
+        url.pathname,
+        `/client/v4/accounts/${identity.account_id}/containers/applications/${id}${resource === 'rollout' ? `/rollouts/${rolloutId}` : ''}`,
+      );
+      observations.push(resource);
+      const status = changes.status(resource);
+      if (status !== 200) return Response.json({ success: false }, { status });
+      const container = f.containers[1];
+      const result =
+        resource === 'detail'
+          ? changes.detail(
+              {
+                ...structuredClone(identity),
+                name: container.name,
+                version: 11,
+                configuration: { image: container.image, vcpu: 1, memory_mib: 4096 },
+              },
+              observations.filter((value) => value === 'detail').length,
+            )
+          : changes.rollout({
+              id: rolloutId,
+              status: 'completed',
+              current_version: 10,
+              current_configuration: { image: 'previous-image' },
+              target_version: 11,
+              target_configuration: { image: container.image },
+              health: { errors: [], instances: { failed: 0, healthy: 7 } },
+              steps: [{ status: 'completed', step_size: { percentage: 100 } }],
+              progress: {
+                total_steps: 1,
+                current_step: 1,
+                updated_instances: 7,
+                total_instances: 7,
+                version_distribution: {
+                  target_version_instances: 7,
+                  current_version_instances: 0,
+                  target_version_percentage: 100,
+                },
+              },
+            });
+      return Response.json({ success: true, result });
+    },
+  });
+  return { ...f, changes, observations };
+}
+
+test('a stale application list requires exact completed rollout proof bracketed by coherent detail reads', async () => {
+  const f = completedRolloutFixture();
+  await f.client.prepare();
+  await f.client.activate();
+  await f.client.verifyRollouts();
+  assert.deepEqual(f.observations, ['detail', 'rollout', 'detail']);
+  await f.client.complete();
+  assert.deepEqual(
+    f.controls.map((input) => input.action),
+    ['prepare', 'activate', 'complete'],
+  );
+  assert.equal(new Set(f.controls.map((input) => input.nonce)).size, 1);
+});
+
+test('the completed rollout fallback refuses malformed or foreign list identities without detail requests', async (t) => {
+  for (const [name, change] of [
+    ['missing application ID', (value) => delete value.id],
+    ['malformed application ID', (value) => (value.id = '../foreign')],
+    ['foreign account', (value) => (value.account_id = 'a'.repeat(32))],
+    ['missing namespace', (value) => delete value.durable_objects],
+    ['malformed namespace', (value) => (value.durable_objects.namespace_id = 'unknown')],
+    ['missing list version', (value) => delete value.version],
+    ['negative list version', (value) => (value.version = -1)],
+    ['fractional list version', (value) => (value.version = 10.5)],
+    ['missing rollout ID', (value) => delete value.active_rollout_id],
+    ['empty rollout ID', (value) => (value.active_rollout_id = '')],
+    ['malformed rollout ID', (value) => (value.active_rollout_id = '../foreign')],
+    ['unknown pending target', (value) => (value.scheduling_hint = { target: {} })],
+    [
+      'conflicting pending target',
+      (value) => (value.scheduling_hint = { target: { configuration: { image: 'newer' } } }),
+    ],
+  ])
+    await t.test(name, async () => {
+      const f = completedRolloutFixture();
+      f.changes.list = (value) => {
+        change(value);
+        return value;
+      };
+      await f.client.prepare();
+      await f.client.activate();
+      await assert.rejects(f.client.verifyRollouts());
+      await assert.rejects(f.client.complete());
+      assert.deepEqual(f.observations, []);
+    });
+});
+
+test('the completed rollout fallback requires terminal progress for every instance and step', async (t) => {
+  for (const [name, change] of [
+    ['foreign rollout', (value) => (value.id = randomUUID())],
+    ['pending rollout', (value) => (value.status = 'running')],
+    ['failed rollout', (value) => (value.status = 'failed')],
+    ['wrong source version', (value) => (value.current_version = 9)],
+    ['wrong source image', (value) => (value.current_configuration.image = 'other')],
+    ['non-increasing version', (value) => (value.target_version = 10)],
+    ['wrong target version', (value) => (value.target_version = 12)],
+    ['wrong target image', (value) => (value.target_configuration.image = 'wrong')],
+    ['unknown target', (value) => delete value.target_configuration],
+    ['reported health error', (value) => value.health.errors.push({ code: 'failed' })],
+    ['missing health errors', (value) => delete value.health.errors],
+    ['failed instance', (value) => (value.health.instances.failed = 1)],
+    ['unknown instance health', (value) => delete value.health.instances.failed],
+    ['no steps', (value) => (value.steps = [])],
+    ['unfinished step', (value) => (value.steps[0].status = 'running')],
+    ['partial final step', (value) => (value.steps[0].step_size.percentage = 50)],
+    ['inconsistent steps', (value) => (value.progress.total_steps = 2)],
+    ['unfinished progress step', (value) => (value.progress.current_step = 0)],
+    ['no instances', (value) => (value.progress.total_instances = 0)],
+    ['not all instances updated', (value) => (value.progress.updated_instances = 6)],
+    ['extra updated instance', (value) => (value.progress.updated_instances = 8)],
+    ['fractional instance count', (value) => (value.progress.updated_instances = 7.5)],
+    ['negative instance count', (value) => (value.progress.updated_instances = -1)],
+    ['unknown distribution', (value) => delete value.progress.version_distribution],
+    [
+      'old-version instance',
+      (value) => (value.progress.version_distribution.current_version_instances = 1),
+    ],
+    [
+      'missing target instance',
+      (value) => (value.progress.version_distribution.target_version_instances = 6),
+    ],
+    [
+      'partial version distribution',
+      (value) => (value.progress.version_distribution.target_version_percentage = 99),
+    ],
+  ])
+    await t.test(name, async () => {
+      const f = completedRolloutFixture();
+      f.changes.rollout = (value) => {
+        change(value);
+        return value;
+      };
+      await f.client.prepare();
+      await f.client.activate();
+      await assert.rejects(f.client.verifyRollouts());
+      await assert.rejects(f.client.complete());
+      assert.deepEqual(f.observations, ['detail', 'rollout', 'detail', 'rollout']);
+    });
+});
+
+test('rollout completion cannot mask conflicting, foreign or changed application detail', async (t) => {
+  for (const [name, change] of [
+    ['foreign application', (value) => (value.id = randomUUID())],
+    ['foreign name', (value) => (value.name = 'foreign')],
+    ['foreign account', (value) => (value.account_id = 'a'.repeat(32))],
+    ['foreign namespace', (value) => (value.durable_objects.namespace_id = 'a'.repeat(32))],
+    ['wrong version', (value) => (value.version = 12)],
+    ['wrong image', (value) => (value.configuration.image = 'wrong')],
+    ['newer active rollout', (value) => (value.active_rollout_id = randomUUID())],
+    ['unknown target', (value) => (value.scheduling_hint = { target: {} })],
+    [
+      'conflicting target',
+      (value) => (value.scheduling_hint = { target: { configuration: { image: 'wrong' } } }),
+    ],
+  ])
+    for (const secondRead of [false, true])
+      await t.test(`${name} on ${secondRead ? 'final' : 'first'} read`, async () => {
+        const f = completedRolloutFixture();
+        f.changes.detail = (value, read) => {
+          if (!secondRead || read % 2 === 0) change(value);
+          return value;
+        };
+        await f.client.prepare();
+        await f.client.activate();
+        await assert.rejects(f.client.verifyRollouts());
+        await assert.rejects(f.client.complete());
+        assert.equal(
+          f.controls.some((input) => input.action === 'complete'),
+          false,
+        );
+      });
+  const f = completedRolloutFixture();
+  f.changes.detail = (value, read) => {
+    if (read % 2 === 0) value.configuration.memory_mib *= 2;
+    return value;
+  };
+  await f.client.prepare();
+  await f.client.activate();
+  await assert.rejects(f.client.verifyRollouts());
+  await assert.rejects(f.client.complete());
+});
+
+test('detail and rollout API failures remain closed without retrying an ambiguous response', async (t) => {
+  for (const resource of ['detail', 'rollout'])
+    for (const status of [403, 404, 500])
+      await t.test(`${resource} HTTP ${status}`, async () => {
+        const f = completedRolloutFixture();
+        f.changes.status = (requested) => (requested === resource ? status : 200);
+        await f.client.prepare();
+        await f.client.activate();
+        await assert.rejects(f.client.verifyRollouts());
+        await assert.rejects(f.client.complete());
+        assert.deepEqual(
+          f.observations,
+          resource === 'detail' ? ['detail'] : ['detail', 'rollout'],
+        );
+      });
+});
+
+test('a later failed verification invalidates earlier completed rollout proof before recovery can reopen', async () => {
+  const f = completedRolloutFixture();
+  const original = interrupted();
+  f.state.control = original;
+  await f.client.recover();
+  await f.client.verifyRollouts();
+  f.changes.rollout = (value) => ({ ...value, status: 'failed' });
+  await assert.rejects(f.client.verifyRollouts());
+  await assert.rejects(f.client.complete());
+  assert.deepEqual(
+    f.controls.map((input) => input.action),
+    ['status'],
+  );
+  f.changes.rollout = (value) => value;
+  await f.client.verifyRollouts();
+  await f.client.complete();
+  assert.deepEqual(
+    f.controls.map((input) => input.action),
+    ['status', 'complete'],
+  );
+  assert.equal(f.controls[1].nonce, original.nonce);
+  assert.equal(f.controls[1].deadline, original.deadline);
+});
 
 test('existing deployment requires signed drain and all four exact image rollouts before reopening', async () => {
   const f = fixture();

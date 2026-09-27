@@ -2,9 +2,11 @@
 
 The repository includes Google login, account settings, isolated per-user Node runtimes, private tenant SQL roles, a Cloudflare container adapter and production CI/CD. This is a bounded pilot implementation. Automated fixtures and local process tests do not establish a working public deployment or live provider delivery; record those checks separately before sharing a production signup link.
 
-**Current selection, 2026-09-27:** host the application on Cloudflare and allocate one combined E2B computer per user during authenticated onboarding. The earlier Cloudflare-computer implementation remains optional and its recorded checks are historical evidence for that provider. Live E2B execution and its same-VM boundary are not yet validated; development shows 100 credits, production shows 0 credits with a payment-card gate, and runtime-key authorization is pending.
+**Selected architecture, 2026-09-27:** host the application on Cloudflare and allocate one combined E2B computer per user during authenticated onboarding. Live E2B execution and its same-VM boundary are not yet validated; development shows 100 credits, production shows 0 credits with a payment-card gate, and runtime-key authorization is pending.
 
-## Deployment shape
+The running pilot still selects `COMPUTER_PROVIDER=cloudflare`, with separate private browser/workspace containers per owner. Its [production acceptance on `6e0a3aab`](testing/results/2026-09-27-production-chat.md) verifies ordinary chat, real browser/workspace tasks, two-account file isolation and persistence across the successful automatic deployment from `main`. It does not establish live E2B, integration-event delivery or completion of the broader hosted acceptance gates.
+
+## Selected E2B deployment shape
 
 ```text
 Browser / verified webhook
