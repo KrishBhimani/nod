@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { Schedule, ScheduleRun, TaskStatus } from '../shared/contracts.ts';
 import type { submitTask } from './tasks.ts';
 import { currentConversationSql } from './conversations.ts';
+import type { WorkConsumers } from './work-admission.ts';
 
 const queue = 'scheduled-task';
 const timingSchema = z.object({
@@ -36,12 +37,14 @@ const columns =
   'id,title,prompt,kind,cron,run_at AS "runAt",time_zone AS "timeZone",enabled,revision,next_run_at AS "nextRun",job_id AS "jobId",delivery_channel AS "deliveryChannel",channel_source_id AS "channelSourceId",authority_instruction AS "authorityInstruction",authority_source_message_id AS "authoritySourceMessageId"';
 
 export interface ScheduleDependencies {
+  consumers?: WorkConsumers;
   pool: Pool;
   ownerId: string;
   scheduler: Pick<
     PgBoss,
     'createQueue' | 'work' | 'send' | 'cancel' | 'getJobById' | 'unschedule' | 'previewSchedule'
   >;
+  stopConsumer?: (id: string) => Promise<void>;
   submitTask: typeof submitTask;
   refresh(): void;
   now?: () => Date;
@@ -317,9 +320,14 @@ export function createSchedules(dependencies: ScheduleDependencies) {
       });
     }
     if (options.workers !== false && !workerStarted) {
-      await scheduler.work<ScheduleJob>(queue, async (jobs) => {
-        for (const job of jobs) await dispatch(job);
-      });
+      const start = () =>
+        scheduler.work<ScheduleJob>(queue, async (jobs) => {
+          for (const job of jobs) await dispatch(job);
+        });
+      if (dependencies.consumers) {
+        if (!dependencies.stopConsumer) throw invalid('Schedule consumer control is unavailable.');
+        await dependencies.consumers.register({ start, stop: dependencies.stopConsumer });
+      } else await start();
       workerStarted = true;
     }
   }

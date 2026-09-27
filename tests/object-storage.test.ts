@@ -120,6 +120,7 @@ test('HTTP storage bounds responses, uses version conditions and never forwards 
   assert.equal(new Headers(requests[1].init.headers).get('if-match'), '"current"');
   assert.equal(new Headers(requests[1].init.headers).get('authorization'), null);
   assert.equal(new Headers(requests[1].init.headers).get('x-owner-id'), null);
+  assert.equal(new Headers(requests[1].init.headers).get('x-sidekick-generation'), null);
   assert.equal(requests[0].url, 'http://sidekick.storage/v1/objects/' + encodeURIComponent(key));
   assert.equal(requests[0].init.redirect, 'manual');
   await assert.rejects(store.read(key, 3), /unavailable/);
@@ -132,6 +133,36 @@ test('HTTP storage bounds responses, uses version conditions and never forwards 
     store.read(key, 100),
     (error: Error) => !/secret|private.*URL|token/.test(error.message),
   );
+});
+
+test('HTTP storage keeps one immutable generation on reads, writes and deletes', async () => {
+  const requests: Request[] = [];
+  const options = {
+    generation: '17',
+    fetch: (async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      return request.method === 'GET'
+        ? new Response('synthetic', { headers: { etag: '"current"' } })
+        : new Response(null, { status: 204, headers: { etag: '"next"' } });
+    }) satisfies typeof fetch,
+  };
+  const store = createHttpObjectStore(options);
+  options.generation = '99';
+  await store.read(key, 100);
+  await store.write(key, Buffer.from('synthetic'), { expectedVersion: '"current"' });
+  await store.remove(key, { expectedVersion: '"next"' });
+  assert.deepEqual(
+    requests.map((request) => request.method),
+    ['GET', 'PUT', 'DELETE'],
+  );
+  assert.ok(requests.every((request) => request.headers.get('x-sidekick-generation') === '17'));
+  assert.equal(requests[1].headers.get('if-match'), '"current"');
+  assert.equal(requests[2].headers.get('if-match'), '"next"');
+  for (const generation of ['', '0', '-1', '1.5', 'synthetic-private-value'])
+    assert.throws(() => createHttpObjectStore({ generation }), {
+      message: 'The private storage generation is invalid.',
+    });
 });
 
 test('self-host S3 storage binds every operation to the configured owner and environment', async (t) => {

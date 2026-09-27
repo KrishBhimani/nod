@@ -5,12 +5,13 @@ import type { InjectOptions } from 'fastify';
 import type { AuthenticatedSession, AuthenticationProvider } from '../src/ports/authentication.ts';
 import type { TenantRuntimeHost } from '../src/ports/tenant-runtime.ts';
 import { createGateway } from '../src/server/gateway.ts';
+import { deploymentHeader, signDeploymentRequest } from '../src/server/deployment-auth.ts';
 
 const origin = 'http://localhost:4399';
 const host = 'localhost:4399';
 
 async function fixture(
-  services: Pick<Parameters<typeof createGateway>[0], 'internal' | 'webhook'> = {},
+  services: Pick<Parameters<typeof createGateway>[0], 'internal' | 'webhook' | 'deployment'> = {},
 ) {
   const secret = randomBytes(32);
   const users: string[] = [randomUUID(), randomUUID()];
@@ -97,6 +98,7 @@ async function fixture(
   });
   return {
     app,
+    runtimes,
     users,
     cookies,
     calls,
@@ -124,6 +126,48 @@ async function fixture(
     streamCancelled: () => streamCancelled,
   };
 }
+
+test('deployment gateway accepts only purpose-signed exact control bodies without using a user session', async (t) => {
+  const masterKey = randomBytes(32);
+  const release = 'a'.repeat(40);
+  const f = await fixture({ deployment: { masterKey, environment: 'production', release } });
+  t.after(() => f.app.close());
+  const receipt = { ownerId: randomUUID(), generation: '2' };
+  let calls = 0;
+  f.runtimes.prepareDeployment = async () => {
+    calls += 1;
+    return [receipt];
+  };
+  const input = {
+    action: 'prepare',
+    nonce: randomUUID(),
+    previousRelease: release,
+    targetRelease: 'b'.repeat(40),
+    deadline: Date.now() + 30_000,
+  };
+  const body = Buffer.from(JSON.stringify(input));
+  const token = signDeploymentRequest({ masterKey, environment: 'production', body });
+  const rejected = await f.app.inject({
+    method: 'POST',
+    url: '/api/deployment',
+    headers: { ...f.headers(), origin, 'content-type': 'application/json' },
+    payload: body,
+  });
+  assert.equal(rejected.statusCode, 401);
+  assert.equal(calls, 0);
+  const options = {
+    method: 'POST' as const,
+    url: '/api/deployment',
+    headers: { host, 'content-type': 'application/json', [deploymentHeader]: token },
+    payload: body,
+  };
+  const response = await f.app.inject(options);
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), { ok: true, receipts: [receipt] });
+  assert.equal((await f.app.inject(options)).statusCode, 401);
+  assert.equal(calls, 1);
+  assert.equal(f.calls.length, 0);
+});
 
 test('gateway routes two signed users only by their cookie identity and strips client routing credentials', async () => {
   const f = await fixture();

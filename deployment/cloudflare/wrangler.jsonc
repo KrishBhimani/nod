@@ -11,8 +11,19 @@
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*", "/runtime/*", "/__sidekick/*"],
   },
-  "observability": { "enabled": false },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GatewayContainer", "TenantContainer"] }],
+  "observability": {
+    "enabled": false,
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["GatewayContainer", "TenantContainer"],
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["BrowserComputerContainer", "WorkspaceComputerContainer"],
+    },
+  ],
   "env": {
     "development": {
       "name": "sidekick-development",
@@ -20,11 +31,27 @@
         "SIDEKICK_ENVIRONMENT": "development",
         "SIDEKICK_PUBLIC_URL": "https://sidekick-development.n8n-maintenance.workers.dev",
       },
-      "triggers": { "crons": ["* * * * *"] },
+      "triggers": {
+        "crons": ["* * * * *"],
+      },
       "durable_objects": {
         "bindings": [
-          { "name": "GATEWAY", "class_name": "GatewayContainer" },
-          { "name": "TENANTS", "class_name": "TenantContainer" },
+          {
+            "name": "GATEWAY",
+            "class_name": "GatewayContainer",
+          },
+          {
+            "name": "TENANTS",
+            "class_name": "TenantContainer",
+          },
+          {
+            "name": "BROWSER_COMPUTERS",
+            "class_name": "BrowserComputerContainer",
+          },
+          {
+            "name": "WORKSPACE_COMPUTERS",
+            "class_name": "WorkspaceComputerContainer",
+          },
         ],
       },
       "r2_buckets": [
@@ -41,10 +68,16 @@
           "image_build_context": "../..",
           "instance_type": "basic",
           "max_instances": 1,
-          "constraints": { "jurisdiction": "eu" },
+          "constraints": {
+            "jurisdiction": "eu",
+          },
           "rollout_step_percentage": 100,
           "rollout_active_grace_period": 60,
-          "observability": { "logs": { "enabled": false } },
+          "observability": {
+            "logs": {
+              "enabled": false,
+            },
+          },
         },
         {
           "class_name": "TenantContainer",
@@ -52,10 +85,50 @@
           "image_build_context": "../..",
           "instance_type": "basic",
           "max_instances": 8,
-          "constraints": { "jurisdiction": "eu" },
+          "constraints": {
+            "jurisdiction": "eu",
+          },
           "rollout_step_percentage": 100,
           "rollout_active_grace_period": 60,
-          "observability": { "logs": { "enabled": false } },
+          "observability": {
+            "logs": {
+              "enabled": false,
+            },
+          },
+        },
+        {
+          "class_name": "BrowserComputerContainer",
+          "image": "./Dockerfile.browser",
+          "image_build_context": "../..",
+          "instance_type": "standard-1",
+          "max_instances": 8,
+          "constraints": {
+            "jurisdiction": "eu",
+          },
+          "rollout_step_percentage": 100,
+          "rollout_active_grace_period": 60,
+          "observability": {
+            "logs": {
+              "enabled": false,
+            },
+          },
+        },
+        {
+          "class_name": "WorkspaceComputerContainer",
+          "image": "./Dockerfile.workspace",
+          "image_build_context": "../..",
+          "instance_type": "basic",
+          "max_instances": 8,
+          "constraints": {
+            "jurisdiction": "eu",
+          },
+          "rollout_step_percentage": 100,
+          "rollout_active_grace_period": 60,
+          "observability": {
+            "logs": {
+              "enabled": false,
+            },
+          },
         },
       ],
     },
@@ -65,11 +138,27 @@
         "SIDEKICK_ENVIRONMENT": "production",
         "SIDEKICK_PUBLIC_URL": "https://sidekick-production.n8n-maintenance.workers.dev",
       },
-      "triggers": { "crons": ["* * * * *"] },
+      "triggers": {
+        "crons": ["* * * * *"],
+      },
       "durable_objects": {
         "bindings": [
-          { "name": "GATEWAY", "class_name": "GatewayContainer" },
-          { "name": "TENANTS", "class_name": "TenantContainer" },
+          {
+            "name": "GATEWAY",
+            "class_name": "GatewayContainer",
+          },
+          {
+            "name": "TENANTS",
+            "class_name": "TenantContainer",
+          },
+          {
+            "name": "BROWSER_COMPUTERS",
+            "class_name": "BrowserComputerContainer",
+          },
+          {
+            "name": "WORKSPACE_COMPUTERS",
+            "class_name": "WorkspaceComputerContainer",
+          },
         ],
       },
       "r2_buckets": [
@@ -86,10 +175,16 @@
           "image_build_context": "../..",
           "instance_type": "basic",
           "max_instances": 1,
-          "constraints": { "jurisdiction": "eu" },
+          "constraints": {
+            "jurisdiction": "eu",
+          },
           "rollout_step_percentage": 100,
           "rollout_active_grace_period": 60,
-          "observability": { "logs": { "enabled": false } },
+          "observability": {
+            "logs": {
+              "enabled": false,
+            },
+          },
         },
         {
           "class_name": "TenantContainer",
@@ -97,10 +192,50 @@
           "image_build_context": "../..",
           "instance_type": "basic",
           "max_instances": 8,
-          "constraints": { "jurisdiction": "eu" },
+          "constraints": {
+            "jurisdiction": "eu",
+          },
           "rollout_step_percentage": 100,
           "rollout_active_grace_period": 60,
-          "observability": { "logs": { "enabled": false } },
+          "observability": {
+            "logs": {
+              "enabled": false,
+            },
+          },
+        },
+        {
+          "class_name": "BrowserComputerContainer",
+          "image": "./Dockerfile.browser",
+          "image_build_context": "../..",
+          "instance_type": "standard-1",
+          "max_instances": 8,
+          "constraints": {
+            "jurisdiction": "eu",
+          },
+          "rollout_step_percentage": 100,
+          "rollout_active_grace_period": 60,
+          "observability": {
+            "logs": {
+              "enabled": false,
+            },
+          },
+        },
+        {
+          "class_name": "WorkspaceComputerContainer",
+          "image": "./Dockerfile.workspace",
+          "image_build_context": "../..",
+          "instance_type": "basic",
+          "max_instances": 8,
+          "constraints": {
+            "jurisdiction": "eu",
+          },
+          "rollout_step_percentage": 100,
+          "rollout_active_grace_period": 60,
+          "observability": {
+            "logs": {
+              "enabled": false,
+            },
+          },
         },
       ],
     },

@@ -1,3 +1,5 @@
+import type { DeploymentInput, DeploymentReceipt } from './deployment.ts';
+
 export interface TenantRuntimeHost {
   fetch(
     ownerId: string,
@@ -7,5 +9,7 @@ export interface TenantRuntimeHost {
       kind?: 'user' | 'webhook' | 'wake';
     },
   ): Promise<Response>;
+  prepareDeployment?(input: DeploymentInput): Promise<DeploymentReceipt[]>;
+  resumeDeployment?(input: DeploymentInput): Promise<void>;
   close(): Promise<void>;
 }

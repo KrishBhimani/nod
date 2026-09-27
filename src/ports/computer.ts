@@ -7,6 +7,21 @@ export class BrowserActionError extends Error {
   }
 }
 
+export class WorkspaceExitError extends Error {
+  readonly output: string;
+
+  constructor(
+    readonly exitCode: number,
+    output: string,
+  ) {
+    super('Workspace command failed.');
+    if (!Number.isSafeInteger(exitCode) || exitCode === 0)
+      throw new Error('The workspace exit code is invalid.');
+    this.name = 'WorkspaceExitError';
+    this.output = output.slice(0, 20_000);
+  }
+}
+
 export interface BrowserAction {
   action: 'open' | 'snapshot' | 'click' | 'fill' | 'scroll';
   url?: string;

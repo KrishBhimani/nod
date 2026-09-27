@@ -13,6 +13,7 @@ export function createHttpObjectStore(
     endpoint?: string;
     fetch?: typeof fetch;
     timeoutMs?: number;
+    generation?: string;
   } = {},
 ): PrivateObjectStore {
   const endpoint = new URL(options.endpoint ?? 'http://sidekick.storage/v1/objects/');
@@ -26,10 +27,16 @@ export function createHttpObjectStore(
     throw new Error('The private storage endpoint is invalid.');
   const base = endpoint.href.replace(/\/?$/, '/');
   const request = options.fetch ?? fetch;
+  const generation = options.generation;
+  if (generation !== undefined && !/^[1-9]\d{0,18}$/.test(generation))
+    throw new Error('The private storage generation is invalid.');
   async function send(key: string, init: RequestInit) {
     try {
+      const headers = new Headers(init.headers);
+      if (generation !== undefined) headers.set('x-sidekick-generation', generation);
       const response = await request(base + encodeURIComponent(objectKey(key)), {
         ...init,
+        headers,
         redirect: 'manual',
         signal: AbortSignal.timeout(options.timeoutMs ?? 15_000),
       });

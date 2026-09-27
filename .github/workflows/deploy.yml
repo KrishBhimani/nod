@@ -47,7 +47,7 @@ jobs:
     needs: gate
     if: needs.gate.outputs.approved == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     environment:
       name: production
       url: ${{ vars.SIDEKICK_PUBLIC_URL }}
@@ -79,13 +79,12 @@ jobs:
           npm run build
           npm --prefix deployment/cloudflare run check
           npm --prefix deployment/cloudflare test
-      - name: Build the verified production image
-        run: >-
-          docker build --platform linux/amd64
-          --build-arg "SIDEKICK_RELEASE=$SIDEKICK_RELEASE"
-          --file deployment/cloudflare/Dockerfile
-          --tag "sidekick-production:$SIDEKICK_RELEASE" .
-      - name: Publish image, deploy code and secrets together, and verify production
+      - name: Build the verified runtime and computer images
+        run: |
+          docker build --platform linux/amd64 --build-arg "SIDEKICK_RELEASE=$SIDEKICK_RELEASE" --file deployment/cloudflare/Dockerfile --tag "sidekick-production:$SIDEKICK_RELEASE" .
+          docker build --platform linux/amd64 --file deployment/cloudflare/Dockerfile.browser --tag "sidekick-production-browser:$SIDEKICK_RELEASE" .
+          docker build --platform linux/amd64 --file deployment/cloudflare/Dockerfile.workspace --tag "sidekick-production-workspace:$SIDEKICK_RELEASE" .
+      - name: Publish images, deploy code and secrets together, and verify production
         env:
           GH_TOKEN: ${{ github.token }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

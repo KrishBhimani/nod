@@ -11,6 +11,8 @@ export type TenantIdentity = {
   environment: string;
   generation: string;
   configurationHash: string;
+  leaseExpiresAt: number;
+  revoking: boolean;
   stopped: boolean;
 };
 
@@ -32,6 +34,24 @@ export function environmentName(value: unknown): string {
 export function generation(value: unknown): string {
   if (typeof value !== 'string' || !/^[1-9]\d{0,18}$/.test(value)) throw new RuntimeControlError();
   return value;
+}
+
+export function leaseExpiry(value: unknown, now: () => number = Date.now) {
+  const match =
+    typeof value === 'string'
+      ? /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/.exec(value)
+      : null;
+  if (!match) throw new RuntimeControlError();
+  const expiry = Date.parse(value as string);
+  const time = now();
+  if (
+    !Number.isSafeInteger(expiry) ||
+    expiry <= time ||
+    expiry > time + 65_000 ||
+    new Date(expiry).toISOString() !== `${match[1]}.${(match[2] ?? '').padEnd(3, '0').slice(0, 3)}Z`
+  )
+    throw new RuntimeControlError();
+  return expiry;
 }
 
 export function environmentValues(value: unknown): Record<string, string> {
@@ -56,7 +76,7 @@ async function hash(value: string) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export async function bootstrap(value: unknown, environment: string) {
+export async function bootstrap(value: unknown, environment: string, now: () => number = Date.now) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new RuntimeControlError();
   const input = value as Partial<Bootstrap>;
   if (Object.keys(input).some((key) => key !== 'ownerId' && key !== 'env'))
@@ -64,6 +84,7 @@ export async function bootstrap(value: unknown, environment: string) {
   const ownerId = ownerIdentity(input.ownerId);
   const env = environmentValues(input.env);
   const runtimeGeneration = generation(env.SIDEKICK_RUNTIME_GENERATION);
+  const leaseExpiresAt = leaseExpiry(env.SIDEKICK_RUNTIME_LEASE_EXPIRES, now);
   if (
     env.SIDEKICK_OWNER_ID !== ownerId ||
     env.SIDEKICK_ENVIRONMENT !== environmentName(environment) ||
@@ -103,6 +124,8 @@ export async function bootstrap(value: unknown, environment: string) {
     environment,
     generation: runtimeGeneration,
     configurationHash,
+    leaseExpiresAt,
+    revoking: false,
     stopped: false,
   };
   return { env: configured, identity };

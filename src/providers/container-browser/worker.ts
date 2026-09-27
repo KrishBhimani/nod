@@ -20,10 +20,11 @@ import {
 } from './protocol.ts';
 
 type Namespace = {
-  computer: Promise<Computer>;
+  computer: Promise<Computer & { canCheckpoint?(): boolean }>;
   pending: Map<string, { controller: AbortController; done: Promise<unknown> }>;
   closing?: Promise<void>;
   closeFailed?: boolean;
+  quiescing?: boolean;
 };
 
 function metadata(computer?: Computer, request?: BrowserRequest): BrowserMetadata {
@@ -87,6 +88,7 @@ async function dispatch(computer: Computer, request: BrowserRequest, signal: Abo
     case 'status':
       return null;
     case 'dispose':
+    case 'quiesce':
       throw new Error();
   }
 }
@@ -116,7 +118,11 @@ export async function startContainerBrowserWorker(
   options: {
     socketPath?: string;
     dataRoot?: string;
-    createComputer?: (dataRoot: string) => Computer | Promise<Computer>;
+    createComputer?: (
+      dataRoot: string,
+    ) =>
+      | (Computer & { canCheckpoint?(): boolean })
+      | Promise<Computer & { canCheckpoint?(): boolean }>;
     maxNamespaces?: number;
     maxPendingPerNamespace?: number;
   } = {},
@@ -139,7 +145,7 @@ export async function startContainerBrowserWorker(
       };
       namespaces.set(name, value);
     }
-    if (value.closing) throw new Error();
+    if (value.closing || value.quiescing) throw new Error();
     return value;
   }
   async function dispose(name: string) {
@@ -159,6 +165,22 @@ export async function startContainerBrowserWorker(
     }
     await entry.closing;
   }
+  async function quiesce(name: string, signal: AbortSignal) {
+    signal.throwIfAborted();
+    if (closing) throw new Error();
+    const entry = namespaces.get(name);
+    if (!entry) return true;
+    if (entry.closing || entry.quiescing || entry.pending.size) return false;
+    entry.quiescing = true;
+    const computer = await entry.computer;
+    signal.throwIfAborted();
+    if (entry.closing || entry.pending.size || computer.canCheckpoint?.() !== true) {
+      entry.quiescing = false;
+      return false;
+    }
+    await dispose(name);
+    return true;
+  }
   await prepareSocket(path);
   const server = createServer((socket) => {
     socket.setEncoding('utf8');
@@ -176,7 +198,8 @@ export async function startContainerBrowserWorker(
     socket.on('close', () => {
       controller.abort();
       connections.delete(socket);
-      if (!terminal && request) void dispose(request.namespace).catch(() => {});
+      if (!terminal && request && request.method !== 'quiesce')
+        void dispose(request.namespace).catch(() => {});
     });
     socket.setTimeout(90_000, stop);
     const execute = async (input: BrowserRequest) => {
@@ -187,6 +210,13 @@ export async function startContainerBrowserWorker(
         if (input.method === 'dispose') {
           await dispose(input.namespace);
           response = { id: input.id, ok: true, result: null, metadata: metadata() };
+        } else if (input.method === 'quiesce') {
+          response = {
+            id: input.id,
+            ok: true,
+            result: await quiesce(input.namespace, controller.signal),
+            metadata: metadata(),
+          };
         } else {
           entry = namespace(input.namespace);
           if (entry.pending.has(input.id)) throw new Error();

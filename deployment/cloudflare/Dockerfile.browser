@@ -1,0 +1,25 @@
+FROM node:24.21.0-bookworm-slim AS dependencies
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+FROM node:24.21.0-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    chromium xvfb xauth xdotool ffmpeg fonts-liberation ca-certificates python3 tini \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=dependencies /app/package.json /app/package-lock.json ./
+COPY --from=dependencies /app/node_modules ./node_modules
+COPY src/ports/computer.ts src/ports/task-identity.ts ./src/ports/
+COPY src/shared/browser-errors.ts src/shared/browser-input.ts ./src/shared/
+COPY src/providers/process.ts ./src/providers/
+COPY src/providers/agent-browser ./src/providers/agent-browser/
+COPY src/providers/container-browser/worker.ts src/providers/container-browser/bridge.ts src/providers/container-browser/protocol.ts src/providers/container-browser/config.ts ./src/providers/container-browser/
+RUN mkdir -p /data /opt/sidekick && chown node:node /data && chmod 700 /data
+COPY src/providers/cloudflare-computer/entrypoint.mjs /opt/sidekick/entrypoint.mjs
+COPY src/providers/cloudflare-computer/checkpoint.py /opt/sidekick/checkpoint.py
+RUN chmod 555 /opt/sidekick && chmod 444 /opt/sidekick/*
+USER node
+EXPOSE 4311
+ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/sidekick/entrypoint.mjs"]
+CMD ["browser"]

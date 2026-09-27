@@ -1,26 +1,56 @@
 import { Container, ContainerProxy, type OutboundHandler } from '@cloudflare/containers';
+import {
+  BrowserComputerContainer,
+  WorkspaceComputerContainer,
+  computerName,
+} from './computer-container.ts';
 import { createTenantLifecycle } from './lifecycle.ts';
+import { createRuntimeLeaseAlarm } from './lease-alarm.ts';
+import {
+  runtimeLeaseAcknowledgement,
+  runtimeLeaseBody,
+  runtimeRoutingGeneration,
+} from './runtime-forwarding.ts';
 import {
   controlBody,
   environmentName,
   environmentValues,
   failure,
+  generation,
   ownerIdentity,
   RuntimeControlError,
   type TenantIdentity,
 } from './protocol.ts';
 import { storageRequest } from './storage.ts';
+import { assertContainerStartupSettled, startContainer } from './container-startup.ts';
+import type { DeploymentInput } from '../../../src/ports/deployment.ts';
+import {
+  DeploymentControlError,
+  deploymentInputSchema,
+  deploymentMaximumDuration,
+  deploymentPath,
+} from '../../../src/server/deployment-auth.ts';
+import { createGatewayDeployment } from './deployment-gateway.ts';
+import {
+  deploymentProof,
+  runtimeDeploymentAcknowledgement,
+  runtimeDeploymentBody,
+  type RuntimeDeploymentProof,
+} from './runtime-deployment.ts';
 
-export { ContainerProxy };
+export { ContainerProxy, BrowserComputerContainer, WorkspaceComputerContainer };
 
 export interface Bindings {
   GATEWAY: DurableObjectNamespace<GatewayContainer>;
   TENANTS: DurableObjectNamespace<TenantContainer>;
+  BROWSER_COMPUTERS: DurableObjectNamespace<BrowserComputerContainer>;
+  WORKSPACE_COMPUTERS: DurableObjectNamespace<WorkspaceComputerContainer>;
   TENANT_FILES: R2Bucket;
   ASSETS: Fetcher;
   GATEWAY_ENV: string;
   SIDEKICK_ENVIRONMENT: string;
   SIDEKICK_PUBLIC_URL: string;
+  SIDEKICK_DEPLOYMENT_MANAGED?: string;
 }
 
 declare global {
@@ -71,13 +101,68 @@ const runtimeOutbound: OutboundHandler<Bindings> = async (request, env, context)
     )
       throw new RuntimeControlError(403);
     const url = new URL(request.url);
+    if (url.pathname === '/runtime/deployment-status' && request.method === 'POST' && !url.search) {
+      const input = await controlBody(request);
+      if (!input || typeof input !== 'object' || Object.keys(input).length)
+        throw new RuntimeControlError(400);
+      return Response.json(
+        { closed: await env.GATEWAY.getByName(gatewayName(env)).deploymentClosed() },
+        { headers: { 'cache-control': 'no-store' } },
+      );
+    }
     if (url.pathname === '/runtime/start' && request.method === 'POST') {
+      if (await env.GATEWAY.getByName(gatewayName(env)).deploymentClosed())
+        throw new RuntimeControlError(503);
       const input = await controlBody(request);
       const ownerId = ownerIdentity((input as { ownerId?: unknown } | null)?.ownerId);
       const tenant = env.TENANTS.getByName(tenantName(env, ownerId));
       return Response.json(await tenant.startRuntime(input), {
         headers: { 'cache-control': 'no-store' },
       });
+    }
+    if (
+      url.pathname === '/runtime/prepare-deployment' &&
+      request.method === 'POST' &&
+      !url.search
+    ) {
+      const raw = (await controlBody(request)) as Record<string, unknown>;
+      const { ownerId: owner, generation: version, ...fields } = raw;
+      const ownerId = ownerIdentity(owner);
+      const input = deploymentInputSchema.parse(fields);
+      const result = await env.TENANTS.getByName(tenantName(env, ownerId)).prepareDeploymentDrain(
+        ownerId,
+        generation(version),
+        input,
+      );
+      return Response.json(result, {
+        status: result.ok ? 200 : result.status === 'busy' ? 409 : 503,
+        headers: { 'cache-control': 'no-store' },
+      });
+    }
+    if (
+      url.pathname === '/runtime/deployment-stopped' &&
+      request.method === 'POST' &&
+      !url.search
+    ) {
+      const input = (await controlBody(request)) as Record<string, unknown>;
+      if (
+        !input ||
+        typeof input !== 'object' ||
+        Object.keys(input).length !== 2 ||
+        !Object.hasOwn(input, 'ownerId') ||
+        !Object.hasOwn(input, 'generation')
+      )
+        throw new RuntimeControlError(400);
+      const ownerId = ownerIdentity(input.ownerId);
+      const version = input.generation === null ? null : generation(input.generation);
+      const stopped = await env.TENANTS.getByName(tenantName(env, ownerId)).deploymentStopped(
+        ownerId,
+        version,
+      );
+      return Response.json(
+        { stopped, generation: version },
+        { headers: { 'cache-control': 'no-store' } },
+      );
     }
     if (url.pathname === '/runtime/stop' && request.method === 'POST') {
       const input = (await controlBody(request)) as { ownerId?: unknown; generation?: unknown };
@@ -114,7 +199,9 @@ const storageOutbound: OutboundHandler<Bindings> = async (request, env, context)
   try {
     if (context.className !== 'TenantContainer') throw new RuntimeControlError(403);
     const tenant = env.TENANTS.get(env.TENANTS.idFromString(context.containerId));
-    const identity = await tenant.storageIdentity();
+    const identity = await tenant.storageIdentity(
+      generation(request.headers.get('x-sidekick-generation')),
+    );
     if (
       identity.environment !== env.SIDEKICK_ENVIRONMENT ||
       context.containerId !== env.TENANTS.idFromName(tenantName(env, identity.ownerId)).toString()
@@ -164,15 +251,59 @@ const controlOutbound: OutboundHandler<Bindings> = async (request, env, context)
   }
 };
 
+const computerOutbound: OutboundHandler<Bindings> = async (request, env, context) => {
+  try {
+    if (context.className !== 'TenantContainer') throw new RuntimeControlError(403);
+    const version = generation(request.headers.get('x-sidekick-generation'));
+    const role = request.headers.get('x-sidekick-computer-role');
+    if (role !== 'browser' && role !== 'workspace') throw new RuntimeControlError(400);
+    const identity = await env.TENANTS.get(
+      env.TENANTS.idFromString(context.containerId),
+    ).storageIdentity(version);
+    if (
+      identity.environment !== env.SIDEKICK_ENVIRONMENT ||
+      context.containerId !== env.TENANTS.idFromName(tenantName(env, identity.ownerId)).toString()
+    )
+      throw new RuntimeControlError(403);
+    const namespace = role === 'browser' ? env.BROWSER_COMPUTERS : env.WORKSPACE_COMPUTERS;
+    return await namespace
+      .getByName(computerName(identity.environment, identity.ownerId, role))
+      .request(identity.ownerId, version, request);
+  } catch (error) {
+    return failure(error);
+  }
+};
+
 export class GatewayContainer extends Container<Bindings> {
   defaultPort = 4310;
   sleepAfter = '10m';
   enableInternet = true;
   private ready: Promise<void> | undefined;
+  private deployment: ReturnType<typeof createGatewayDeployment> | undefined;
+
+  private deploymentControl() {
+    if (this.ctx.id.toString() !== this.env.GATEWAY.idFromName(gatewayName(this.env)).toString())
+      throw new RuntimeControlError(403);
+    this.deployment ??= createGatewayDeployment({
+      storage: this.ctx.storage,
+      environment: this.env.SIDEKICK_ENVIRONMENT,
+      gatewayEnvironment: this.env.GATEWAY_ENV,
+      requireInitialization:
+        this.env.SIDEKICK_ENVIRONMENT === 'production' ||
+        this.env.SIDEKICK_DEPLOYMENT_MANAGED === 'true',
+      forward: (request) => this.forward(request),
+    });
+    return this.deployment;
+  }
+
+  deploymentClosed() {
+    return this.deploymentControl().closed();
+  }
 
   override async onActivityExpired() {}
 
   async wake() {
+    if (await this.deploymentClosed()) return;
     const response = await this.fetch(
       new Request(`${publicOrigin(this.env)}/api/health`, {
         headers: { host: new URL(publicOrigin(this.env)).host },
@@ -184,18 +315,40 @@ export class GatewayContainer extends Container<Bindings> {
 
   override async fetch(request: Request) {
     try {
-      this.ready ??= this.configure().catch((error) => {
-        this.ready = undefined;
-        throw error;
-      });
-      await this.ready;
-      if (!this.ctx.container?.running || (await this.getState()).status !== 'healthy')
-        await this.startAndWaitForPorts({ cancellationOptions: { abort: request.signal } });
-      this.renewActivityTimeout();
-      return await fetchContainer(this.ctx.container, this.defaultPort, request);
+      const url = new URL(request.url);
+      const origin = request.headers.get('origin');
+      if (url.origin !== publicOrigin(this.env) || (origin && origin !== publicOrigin(this.env)))
+        throw new RuntimeControlError(403);
+      if (url.pathname === deploymentPath)
+        return Response.json(await this.deploymentControl().handle(request), {
+          headers: { 'cache-control': 'no-store' },
+        });
+      const anonymousSmoke =
+        request.method === 'GET' &&
+        !url.search &&
+        !request.headers.has('cookie') &&
+        !request.headers.has('authorization') &&
+        ['/api/session', '/api/state'].includes(url.pathname);
+      if (url.pathname !== '/api/health' && !anonymousSmoke && (await this.deploymentClosed()))
+        throw new RuntimeControlError(503);
+      return await this.forward(request);
     } catch (error) {
-      return failure(error);
+      return failure(
+        error instanceof DeploymentControlError ? new RuntimeControlError(error.status) : error,
+      );
     }
+  }
+
+  private async forward(request: Request) {
+    this.ready ??= this.configure().catch((error) => {
+      this.ready = undefined;
+      throw error;
+    });
+    await this.ready;
+    if (!this.ctx.container?.running || (await this.getState()).status !== 'healthy')
+      await startContainer(this, { signal: request.signal });
+    this.renewActivityTimeout();
+    return fetchContainer(this.ctx.container, this.defaultPort, request);
   }
 
   private async configure() {
@@ -212,7 +365,7 @@ export class GatewayContainer extends Container<Bindings> {
       PORT: '4310',
       HOST: '0.0.0.0',
     };
-    await this.startAndWaitForPorts();
+    await startContainer(this);
   }
 
   override onError() {
@@ -225,18 +378,50 @@ export class TenantContainer extends Container<Bindings> {
   sleepAfter = '10m';
   enableInternet = true;
   envVars = { SIDEKICK_MODE: 'tenant', NODE_ENV: 'production' };
+  private deploymentWitness: { proof: RuntimeDeploymentProof; token: object } | undefined;
 
   override async onActivityExpired() {}
+  private leaseAlarm = createRuntimeLeaseAlarm({
+    read: () => this.ctx.storage.get<TenantIdentity>('identity'),
+    expire: () => this.lifecycle.expire(),
+    clear: () => this.deleteSchedules('expireRuntimeLease'),
+    schedule: (when) => this.schedule(when, 'expireRuntimeLease'),
+  });
   private lifecycle = createTenantLifecycle({
     environment: environmentName(this.env.SIDEKICK_ENVIRONMENT),
     read: () => this.ctx.storage.get<TenantIdentity>('identity'),
     write: (identity) => this.ctx.storage.put('identity', identity),
-    status: async () => (await this.getState()).status,
-    start: (envVars) => this.startAndWaitForPorts({ startOptions: { envVars } }),
+    status: async () => {
+      assertContainerStartupSettled(this);
+      const state = await this.getState();
+      assertContainerStartupSettled(this);
+      return state.status;
+    },
+    start: (envVars) => startContainer(this, { envVars }),
     stop: async () => {
+      assertContainerStartupSettled(this);
       await this.stop();
+      assertContainerStartupSettled(this);
+    },
+    leaseUpdated: () => this.leaseAlarm.update(),
+    stopComputers: async (identity) => {
+      const results = await Promise.allSettled(
+        (['browser', 'workspace'] as const).map(async (role) => {
+          const namespace =
+            role === 'browser' ? this.env.BROWSER_COMPUTERS : this.env.WORKSPACE_COMPUTERS;
+          return namespace
+            .getByName(computerName(identity.environment, identity.ownerId, role))
+            .stopComputer(identity.ownerId, identity.generation);
+        }),
+      );
+      if (results.some((result) => result.status !== 'fulfilled' || result.value?.stopped !== true))
+        throw new RuntimeControlError(503);
     },
   });
+
+  expireRuntimeLease() {
+    return this.leaseAlarm.run();
+  }
 
   async startRuntime(input: unknown) {
     const ownerId = ownerIdentity((input as { ownerId?: unknown } | null)?.ownerId);
@@ -245,34 +430,264 @@ export class TenantContainer extends Container<Bindings> {
       this.env.TENANTS.idFromName(tenantName(this.env, ownerId)).toString()
     )
       throw new RuntimeControlError(403);
+    if (await this.env.GATEWAY.getByName(gatewayName(this.env)).deploymentClosed())
+      throw new RuntimeControlError(503);
     return this.lifecycle.start(input);
+  }
+
+  private async physicallyStopped() {
+    assertContainerStartupSettled(this);
+    const stopped =
+      !this.ctx.container?.running &&
+      ['stopped', 'stopped_with_code'].includes((await this.getState()).status);
+    assertContainerStartupSettled(this);
+    return stopped && !this.ctx.container?.running;
+  }
+
+  private async storeDeploymentProof(
+    ownerId: string,
+    version: string,
+    input: DeploymentInput,
+    requireAttempt = false,
+  ) {
+    await this.ctx.storage.transaction(async (storage) => {
+      const identity = await storage.get<TenantIdentity>('identity');
+      if (
+        !identity ||
+        identity.ownerId !== ownerId ||
+        identity.generation !== version ||
+        identity.environment !== this.env.SIDEKICK_ENVIRONMENT
+      )
+        throw new RuntimeControlError(409);
+      if (
+        requireAttempt &&
+        (!deploymentProof(await storage.get('deployment-attempt'), input, version) ||
+          deploymentProof(await storage.get('deployment-resume'), input, version))
+      )
+        throw new RuntimeControlError(409);
+      await storage.put('deployment-proof', { ...input, generation: version });
+    });
+  }
+
+  private async beginDeployment(
+    ownerId: string,
+    version: string,
+    input: DeploymentInput,
+    action: 'drain' | 'resume',
+  ) {
+    this.deploymentWitness = undefined;
+    await this.ctx.storage.transaction(async (storage) => {
+      const identity = await storage.get<TenantIdentity>('identity');
+      if (
+        !identity ||
+        identity.ownerId !== ownerId ||
+        identity.generation !== version ||
+        identity.environment !== this.env.SIDEKICK_ENVIRONMENT
+      )
+        throw new RuntimeControlError(409);
+      const attempt = await storage.get<RuntimeDeploymentProof>('deployment-attempt');
+      const resumed = await storage.get<RuntimeDeploymentProof>('deployment-resume');
+      if (action === 'drain') {
+        if (
+          deploymentProof(resumed, input, version) ||
+          (attempt?.generation === version &&
+            !deploymentProof(attempt, input, version) &&
+            !deploymentProof(resumed, attempt, version))
+        )
+          throw new RuntimeControlError(409);
+      } else {
+        if (
+          !deploymentProof(attempt, input, version) &&
+          !deploymentProof(await storage.get('deployment-proof'), input, version)
+        )
+          throw new RuntimeControlError(409);
+        await storage.put('deployment-resume', { ...input, generation: version });
+      }
+      await storage.put('deployment-attempt', { ...input, generation: version });
+      await storage.delete('deployment-proof');
+    });
+  }
+
+  async deploymentStoppedIdentity(owner: string, version: string | null) {
+    const ownerId = ownerIdentity(owner);
+    const expected = version === null ? null : generation(version);
+    if (
+      this.ctx.id.toString() !==
+      this.env.TENANTS.idFromName(tenantName(this.env, ownerId)).toString()
+    )
+      throw new RuntimeControlError(403);
+    if (!(await this.env.GATEWAY.getByName(gatewayName(this.env)).deploymentClosed()))
+      throw new RuntimeControlError(409);
+    const stopped = await this.lifecycle.inspectStopped(ownerId, expected, () =>
+      this.physicallyStopped(),
+    );
+    if (!(await this.env.GATEWAY.getByName(gatewayName(this.env)).deploymentClosed()))
+      throw new RuntimeControlError(409);
+    return stopped;
+  }
+
+  async deploymentStopped(owner: string, version: string | null) {
+    const ownerId = ownerIdentity(owner);
+    const expected = version === null ? null : generation(version);
+    if (!(await this.deploymentStoppedIdentity(ownerId, expected))) return false;
+    for (const role of ['browser', 'workspace'] as const) {
+      const namespace =
+        role === 'browser' ? this.env.BROWSER_COMPUTERS : this.env.WORKSPACE_COMPUTERS;
+      if (
+        !(await namespace
+          .getByName(computerName(this.env.SIDEKICK_ENVIRONMENT, ownerId, role))
+          .inspectDeploymentStopped(ownerId, expected))
+      )
+        return false;
+    }
+    return this.deploymentStoppedIdentity(ownerId, expected);
+  }
+
+  async deploymentComputerIdentity(owner: string, version: string, raw: DeploymentInput) {
+    const ownerId = ownerIdentity(owner);
+    const expected = generation(version);
+    const input = deploymentInputSchema.parse(raw);
+    if (input.deadline <= Date.now() || input.deadline > Date.now() + deploymentMaximumDuration)
+      throw new RuntimeControlError(409);
+    const identity = await this.ctx.storage.get<TenantIdentity>('identity');
+    const proof = await this.ctx.storage.get<RuntimeDeploymentProof>('deployment-proof');
+    if (
+      !identity ||
+      identity.ownerId !== ownerId ||
+      identity.generation !== expected ||
+      identity.environment !== this.env.SIDEKICK_ENVIRONMENT ||
+      !deploymentProof(proof, input, expected) ||
+      (!deploymentProof(this.deploymentWitness?.proof, input, expected) &&
+        !(await this.physicallyStopped()))
+    )
+      throw new RuntimeControlError(409);
+    return identity;
+  }
+
+  async prepareDeploymentDrain(owner: string, version: string, raw: DeploymentInput) {
+    const ownerId = ownerIdentity(owner);
+    const expected = generation(version);
+    const input = deploymentInputSchema.parse(raw);
+    if (
+      this.ctx.id.toString() !==
+      this.env.TENANTS.idFromName(tenantName(this.env, ownerId)).toString()
+    )
+      throw new RuntimeControlError(403);
+    if (await this.physicallyStopped()) await this.storeDeploymentProof(ownerId, expected, input);
+    await this.deploymentComputerIdentity(ownerId, expected, input);
+    let progressed = false;
+    for (const role of ['browser', 'workspace'] as const) {
+      const namespace =
+        role === 'browser' ? this.env.BROWSER_COMPUTERS : this.env.WORKSPACE_COMPUTERS;
+      const result = await namespace
+        .getByName(computerName(this.env.SIDEKICK_ENVIRONMENT, ownerId, role))
+        .prepareDeploymentDrain(ownerId, expected, input);
+      if (result.status !== 'drained')
+        return {
+          ok: false as const,
+          status: result.status === 'busy' && !progressed ? ('busy' as const) : ('unsafe' as const),
+          generation: expected,
+        };
+      if (result.generation !== expected || result.clean !== true || result.stopped !== true)
+        throw new RuntimeControlError(503);
+      progressed = true;
+      await this.deploymentComputerIdentity(ownerId, expected, input);
+    }
+    await this.lifecycle.stop(ownerId, expected);
+    if (!(await this.physicallyStopped())) throw new RuntimeControlError(503);
+    return {
+      ok: true as const,
+      generation: expected,
+      clean: true as const,
+      stopped: true as const,
+    };
+  }
+
+  override onStop() {
+    this.deploymentWitness = undefined;
   }
 
   stopRuntime(ownerId: unknown, generation: unknown) {
     return this.lifecycle.stop(ownerId, generation);
   }
 
-  storageIdentity() {
-    return this.lifecycle.identity();
+  storageIdentity(expectedGeneration?: string) {
+    return this.lifecycle.identity(expectedGeneration);
+  }
+
+  async computerIdentity(owner: string, version: string, stopping: boolean) {
+    const ownerId = ownerIdentity(owner);
+    const expected = generation(version);
+    if (typeof stopping !== 'boolean') throw new RuntimeControlError();
+    const identity = stopping
+      ? await this.ctx.storage.get<TenantIdentity>('identity')
+      : await this.lifecycle.identity(expected);
+    if (
+      !identity ||
+      identity.ownerId !== ownerId ||
+      identity.environment !== this.env.SIDEKICK_ENVIRONMENT ||
+      identity.generation !== expected ||
+      (stopping && identity.revoking !== true)
+    )
+      throw new RuntimeControlError(403);
+    return identity;
   }
 
   async runtimeStatus() {
+    assertContainerStartupSettled(this);
     const identity = await this.ctx.storage.get<TenantIdentity>('identity');
     const state = await this.getState();
+    assertContainerStartupSettled(this);
     return {
       generation: identity?.generation ?? null,
-      stopped: ['stopped', 'stopped_with_code'].includes(state.status),
+      stopped:
+        !this.ctx.container?.running && ['stopped', 'stopped_with_code'].includes(state.status),
       status: state.status,
     };
   }
 
   override async fetch(request: Request) {
     try {
-      await this.lifecycle.identity();
-      const state = await this.getState();
-      if (!['running', 'healthy'].includes(state.status)) throw new RuntimeControlError(503);
-      this.renewActivityTimeout();
-      return await fetchContainer(this.ctx.container, this.defaultPort, request);
+      const identity = await this.lifecycle.identity();
+      const generation = runtimeRoutingGeneration(request, identity);
+      const forward = async (input: Request) => {
+        await this.lifecycle.identity(generation);
+        const state = await this.getState();
+        if (!['running', 'healthy'].includes(state.status)) throw new RuntimeControlError(503);
+        this.renewActivityTimeout();
+        return fetchContainer(this.ctx.container, this.defaultPort, input);
+      };
+      if (new URL(request.url).pathname === '/api/runtime/lease') {
+        const { bytes, expiresAt } = await runtimeLeaseBody(request);
+        return await this.lifecycle.renew(identity.ownerId, generation, expiresAt, async () =>
+          runtimeLeaseAcknowledgement(await forward(new Request(request, { body: bytes }))),
+        );
+      }
+      const path = new URL(request.url).pathname;
+      if (path === '/api/runtime/drain' || path === '/api/runtime/resume') {
+        const { bytes, input } = await runtimeDeploymentBody(request);
+        const action = path === '/api/runtime/drain' ? 'drain' : 'resume';
+        await this.beginDeployment(identity.ownerId, generation, input, action);
+        const response = await runtimeDeploymentAcknowledgement(
+          await forward(new Request(request, { body: bytes })),
+          input,
+          generation,
+          action,
+        );
+        if (action === 'drain') {
+          await this.storeDeploymentProof(identity.ownerId, generation, input, true);
+          const token = {};
+          this.deploymentWitness = { proof: { ...input, generation }, token };
+          void this.ctx
+            .container!.monitor()
+            .finally(() => {
+              if (this.deploymentWitness?.token === token) this.deploymentWitness = undefined;
+            })
+            .catch(() => {});
+        }
+        return response;
+      }
+      return await forward(request);
     } catch (error) {
       return failure(error);
     }
@@ -287,6 +702,7 @@ GatewayContainer.outboundByHost = { 'sidekick.runtime': runtimeOutbound };
 TenantContainer.outboundByHost = {
   'sidekick.storage': storageOutbound,
   'sidekick.control': controlOutbound,
+  'sidekick.computer': computerOutbound,
 };
 
 export default {

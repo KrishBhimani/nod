@@ -6,6 +6,8 @@ import type { AccountStore } from './account-store.ts';
 import { authenticationHeaders, createAccountSession, sendFetchResponse } from './account.ts';
 import { canonicalRequestPath } from './runtime-auth.ts';
 import { parsePrivacyNotice, registerPrivacyNotice } from './privacy.ts';
+import { createDeploymentControl, deploymentHeader } from './deployment-control.ts';
+import { deploymentBodyLimit, deploymentPath } from './deployment-auth.ts';
 
 function privateRuntimeResponse(response: Response, artifact = false) {
   const headers = new Headers();
@@ -103,6 +105,7 @@ export async function createGateway(options: {
   sessionCheckIntervalMs?: number;
   release?: string;
   privacyNotice?: string;
+  deployment?: { masterKey: Uint8Array; environment: string; release?: string };
   internal?(request: Request): Promise<Response>;
   webhook?(request: Request): Promise<Response>;
 }) {
@@ -122,6 +125,9 @@ export async function createGateway(options: {
     forceCloseConnections: true,
   });
   const accounts = createAccountSession({ ...options, origin: origin.origin });
+  const deployment = options.deployment
+    ? createDeploymentControl({ ...options.deployment, runtimes: options.runtimes })
+    : undefined;
   app.removeAllContentTypeParsers();
   app.addContentTypeParser('*', { parseAs: 'buffer' }, (_request, body, done) => done(null, body));
   app.addHook('onRequest', async (request, reply) => {
@@ -137,6 +143,7 @@ export async function createGateway(options: {
     if (request.headers.host !== origin.host)
       return reply.code(403).send({ error: 'This host is not permitted.' });
     const serviceRequest =
+      (Boolean(deployment) && request.method === 'POST' && path === deploymentPath) ||
       (Boolean(options.internal) &&
         request.method === 'POST' &&
         /^\/api\/internal\/channels\/(claim|release)$/.test(path)) ||
@@ -199,6 +206,27 @@ export async function createGateway(options: {
     ok: true,
     ...(options.release ? { release: options.release } : {}),
   }));
+  app.post(deploymentPath, { bodyLimit: deploymentBodyLimit }, async (request, reply) => {
+    if (!deployment) return reply.code(404).send({ error: 'Route not found.' });
+    try {
+      return await deployment(
+        request.headers[deploymentHeader],
+        request.method,
+        request.url,
+        Buffer.isBuffer(request.body) ? request.body : new Uint8Array(),
+      );
+    } catch (error) {
+      const status =
+        error &&
+        typeof error === 'object' &&
+        'status' in error &&
+        typeof error.status === 'number' &&
+        [400, 401, 409].includes(error.status)
+          ? error.status
+          : 503;
+      return reply.code(status).send({ error: 'The deployment operation could not be completed.' });
+    }
+  });
   if (options.internal || options.webhook) {
     const service = async (
       request: import('fastify').FastifyRequest,

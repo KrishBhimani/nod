@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
 import { verifyDeployment } from './smoke.mjs';
+import { createDeploymentClient, inspectImageDigest, pinDeploymentImages } from './drain.mjs';
 
 const packageDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -54,11 +55,54 @@ export function deploymentPlan({ environment, release, accountId, publicUrl, gat
     throw new Error('The gateway configuration belongs to another environment.');
   if (values.SIDEKICK_PUBLIC_URL && values.SIDEKICK_PUBLIC_URL !== origin.origin)
     throw new Error('The gateway configuration uses another application origin.');
+  if (!['cloudflare', 'e2b'].includes(values.COMPUTER_PROVIDER))
+    throw new Error('Set COMPUTER_PROVIDER to cloudflare or e2b for this deployment.');
+  if (
+    values.COMPUTER_PROVIDER === 'e2b' &&
+    ['E2B_API_KEY', 'E2B_BROWSER_TEMPLATE', 'E2B_WORKSPACE_TEMPLATE'].some(
+      (key) => !values[key]?.trim(),
+    )
+  )
+    throw new Error('Configure the E2B API key and both computer templates.');
+  if (
+    values.OBJECT_STORAGE_PROVIDER !== 'http' ||
+    values.OBJECT_STORAGE_ENDPOINT !== 'http://sidekick.storage/v1/objects/'
+  )
+    throw new Error(
+      'Set OBJECT_STORAGE_PROVIDER to http and OBJECT_STORAGE_ENDPOINT to http://sidekick.storage/v1/objects/.',
+    );
   const selected = config.env?.[environment];
   if (!selected?.containers?.length)
     throw new Error('The selected environment has no container configuration.');
+  const classes = selected.containers.map((container) => container.class_name);
+  if (
+    classes.some(
+      (name) =>
+        ![
+          'GatewayContainer',
+          'TenantContainer',
+          'BrowserComputerContainer',
+          'WorkspaceComputerContainer',
+        ].includes(name),
+    )
+  )
+    throw new Error('The deployment has an unsupported container class.');
+  const requiredClasses = ['GatewayContainer', 'TenantContainer'];
+  if (values.COMPUTER_PROVIDER === 'cloudflare')
+    requiredClasses.push('BrowserComputerContainer', 'WorkspaceComputerContainer');
+  if (
+    new Set(classes).size !== classes.length ||
+    requiredClasses.some((name) => !classes.includes(name))
+  )
+    throw new Error('The deployment is missing a required container class or repeats one.');
   const localImage = `sidekick-${environment}:${release}`;
-  const image = `registry.cloudflare.com/${accountId}/${localImage}`;
+  const classImages = new Map([
+    ['GatewayContainer', localImage],
+    ['TenantContainer', localImage],
+    ['BrowserComputerContainer', `sidekick-${environment}-browser:${release}`],
+    ['WorkspaceComputerContainer', `sidekick-${environment}-workspace:${release}`],
+  ]);
+  const localImages = new Set();
   const gatewaySecret = JSON.stringify({ ...values, SIDEKICK_RELEASE: release });
   if (Buffer.byteLength(gatewaySecret) > 5 * 1024)
     throw new Error('The compact gateway configuration exceeds the Worker secret size limit.');
@@ -74,9 +118,21 @@ export function deploymentPlan({ environment, release, accountId, publicUrl, gat
         ...selected.vars,
         SIDEKICK_ENVIRONMENT: environment,
         SIDEKICK_PUBLIC_URL: origin.origin,
+        SIDEKICK_DEPLOYMENT_MANAGED: 'true',
       },
       containers: selected.containers.map((container) => {
-        const result = { ...container, image };
+        const selectedImage = classImages.get(container.class_name);
+        if (!selectedImage) throw new Error('The deployment has an unsupported container class.');
+        localImages.add(selectedImage);
+        const result = {
+          ...container,
+          name:
+            container.name ||
+            `${selected.name || config.name}-${container.class_name}-${environment}`
+              .toLowerCase()
+              .replaceAll(' ', '-'),
+          image: `registry.cloudflare.com/${accountId}/${selectedImage}`,
+        };
         delete result.image_build_context;
         delete result.image_vars;
         return result;
@@ -86,6 +142,7 @@ export function deploymentPlan({ environment, release, accountId, publicUrl, gat
   return {
     config: deployment,
     localImage,
+    localImages: [...localImages],
     origin: origin.origin,
     release,
     secrets: { GATEWAY_ENV: gatewaySecret },
@@ -124,11 +181,15 @@ export async function deploy(environment, variables = process.env, dependencies 
   const run = dependencies.command ?? command;
   const smoke = dependencies.smoke ?? verifyDeployment;
   const report = dependencies.report ?? ((message) => process.stdout.write(`${message}\n`));
-  const parsed = ts.parseConfigFileTextToJson(
-    'wrangler.jsonc',
-    await readFile(join(packageDirectory, 'wrangler.jsonc'), 'utf8'),
-  );
-  if (parsed.error) throw new Error('The Cloudflare deployment configuration is invalid.');
+  let configuration = dependencies.config;
+  if (!configuration) {
+    const parsed = ts.parseConfigFileTextToJson(
+      'wrangler.jsonc',
+      await readFile(join(packageDirectory, 'wrangler.jsonc'), 'utf8'),
+    );
+    if (parsed.error) throw new Error('The Cloudflare deployment configuration is invalid.');
+    configuration = parsed.config;
+  }
   if (!variables.CLOUDFLARE_API_TOKEN)
     throw new Error('Configure the Cloudflare deployment token.');
   const plan = deploymentPlan({
@@ -137,8 +198,11 @@ export async function deploy(environment, variables = process.env, dependencies 
     accountId: variables.CLOUDFLARE_ACCOUNT_ID,
     publicUrl: variables.SIDEKICK_PUBLIC_URL,
     gatewayEnv: variables.GATEWAY_ENV,
-    config: parsed.config,
+    config: configuration,
   });
+  const lifecycle =
+    dependencies.deploymentControl ?? createDeploymentClient({ environment, plan, variables });
+  const digest = dependencies.imageDigest ?? inspectImageDigest;
   const privateDirectory = await mkdtemp(join(tmpdir(), 'sidekick-deploy-'));
   await chmod(privateDirectory, 0o700);
   try {
@@ -158,11 +222,17 @@ export async function deploy(environment, variables = process.env, dependencies 
     childEnvironment.CI = 'true';
     childEnvironment.WRANGLER_SEND_METRICS = 'false';
     childEnvironment.WRANGLER_LOG_PATH = join(privateDirectory, 'wrangler.log');
-    report('Publishing the verified container image.');
-    await run(
-      ['containers', 'push', plan.localImage, '--env', environment, '--config', configPath],
-      childEnvironment,
-    );
+    report('Publishing the verified container images.');
+    for (const image of plan.localImages)
+      await run(
+        ['containers', 'push', image, '--env', environment, '--config', configPath],
+        childEnvironment,
+      );
+    await pinDeploymentImages(plan, environment, childEnvironment, digest);
+    await writeFile(configPath, JSON.stringify(plan.config), { mode: 0o600 });
+    report('Pausing admission and waiting for clean tenant checkpoints.');
+    await lifecycle.prepare();
+    await lifecycle.activate();
     report('Deploying Worker code, the image reference and gateway secrets.');
     await run(
       [
@@ -182,9 +252,16 @@ export async function deploy(environment, variables = process.env, dependencies 
       ],
       childEnvironment,
     );
+    report('Waiting for every container role to finish its image rollout.');
+    await lifecycle.verifyRollouts();
     report('Waiting for the new release and checking public authorization.');
     await smoke({ origin: plan.origin, release: plan.release });
+    await lifecycle.initialize();
+    await lifecycle.complete();
     report('The deployed release passed health and unauthenticated boundary checks.');
+  } catch (error) {
+    await lifecycle.abort().catch(() => {});
+    throw error;
   } finally {
     await rm(privateDirectory, { recursive: true, force: true });
   }

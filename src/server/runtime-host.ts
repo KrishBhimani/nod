@@ -3,9 +3,15 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import type { RuntimeTransport } from '../ports/runtime-transport.ts';
 import type { TenantRuntimeHost } from '../ports/tenant-runtime.ts';
+import type { DeploymentInput, DeploymentReceipt } from '../ports/deployment.ts';
 import type { createTenantStore, TenantLease } from './tenants.ts';
 import { deriveRuntimeSecret, runtimeHeader, signRuntimeRequest } from './runtime-auth.ts';
 import { channelWebhookToken } from './hosted-webhooks.ts';
+import {
+  DeploymentControlError,
+  deploymentInputSchema,
+  deploymentMaximumDuration,
+} from './deployment-auth.ts';
 
 const forwardedEnvironment = [
   'SIDEKICK_PUBLIC_URL',
@@ -47,7 +53,8 @@ export function createTenantRuntimeHost(options: {
   tenants: Pick<
     ReturnType<typeof createTenantStore>,
     'provision' | 'runtimeConfiguration' | 'acquireLease' | 'renewLease' | 'releaseLease'
-  >;
+  > &
+    Partial<Pick<ReturnType<typeof createTenantStore>, 'listOwners'>>;
   transport: RuntimeTransport;
   masterKey: Uint8Array;
   environment: string;
@@ -72,19 +79,38 @@ export function createTenantRuntimeHost(options: {
   let closed = false;
   let renewal: Promise<void> | undefined;
   let closing: Promise<void> | undefined;
+  let resumedDeployment: DeploymentInput | undefined;
+  let deployment:
+    | {
+        input: DeploymentInput;
+        paused: Set<string>;
+        unknown: Set<string>;
+        receipts: Map<string, string>;
+        operation?: Promise<DeploymentReceipt[]>;
+        resuming?: Promise<void>;
+        lostJournal?: boolean;
+      }
+    | undefined;
 
   async function signedFetch(
     entry: Entry,
     request: Request,
-    access: { developer: boolean; kind?: 'user' | 'webhook' | 'wake' },
+    access: { developer: boolean; kind?: 'user' | 'webhook' | 'wake' | 'deployment' },
   ) {
+    if (deployment && access.kind !== 'deployment' && access.kind !== 'wake')
+      throw new DeploymentControlError();
     if (!entry.healthy || Date.parse(entry.lease.expiresAt) <= Date.now())
       throw new Error('The account runtime is unavailable.');
     const url = new URL(request.url);
     const body = ['GET', 'HEAD'].includes(request.method)
       ? new Uint8Array()
       : new Uint8Array(await request.arrayBuffer());
-    if (closed || !entry.healthy || Date.parse(entry.lease.expiresAt) <= Date.now())
+    if (
+      closed ||
+      !entry.healthy ||
+      Date.parse(entry.lease.expiresAt) <= Date.now() ||
+      (deployment && access.kind !== 'deployment' && access.kind !== 'wake')
+    )
       throw new Error('The account runtime is unavailable.');
     const headers = new Headers(request.headers);
     for (const name of ['cookie', 'authorization', 'host', 'x-sidekick-account', runtimeHeader])
@@ -205,12 +231,14 @@ export function createTenantRuntimeHost(options: {
   }
 
   async function ensure(owner: string) {
-    if (closed) throw new Error('The account runtime is unavailable.');
+    if (closed || deployment) throw new Error('The account runtime is unavailable.');
+    if (await options.transport.deploymentClosed?.()) throw new DeploymentControlError();
+    if (closed || deployment) throw new Error('The account runtime is unavailable.');
     const ownerId = z.uuid().parse(owner).toLowerCase();
     const entry = entries.get(ownerId);
     if (entry?.healthy && Date.parse(entry.lease.expiresAt) > Date.now()) return entry;
     if (entry) await stop(entry);
-    if (closed) throw new Error('The account runtime is unavailable.');
+    if (closed || deployment) throw new Error('The account runtime is unavailable.');
     let operation = pending.get(ownerId);
     if (!operation) {
       operation = start(ownerId);
@@ -221,6 +249,131 @@ export function createTenantRuntimeHost(options: {
         })
         .catch(() => {});
     }
+    return operation;
+  }
+
+  function sameDeployment(input: DeploymentInput) {
+    return (
+      deployment?.input.nonce === input.nonce &&
+      deployment.input.targetRelease === input.targetRelease &&
+      deployment.input.deadline === input.deadline
+    );
+  }
+
+  async function tenantDeployment(
+    entry: Entry,
+    input: DeploymentInput,
+    action: 'drain' | 'resume',
+  ) {
+    const remaining = action === 'drain' ? input.deadline - Date.now() : 30_000;
+    if (remaining <= 0) throw new DeploymentControlError();
+    const response = await signedFetch(
+      entry,
+      new Request(`http://sidekick.runtime/api/runtime/${action}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+        signal: AbortSignal.timeout(remaining),
+      }),
+      { developer: false, kind: 'deployment' },
+    );
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new DeploymentControlError();
+    }
+    const result = await response.json();
+    if (action === 'drain')
+      z.object({
+        ok: z.literal(true),
+        nonce: z.literal(input.nonce),
+        targetRelease: z.literal(input.targetRelease),
+        generation: z.literal(entry.lease.generation),
+        drained: z.literal(true),
+      })
+        .strict()
+        .parse(result);
+    else
+      z.object({ ok: z.literal(true) })
+        .strict()
+        .parse(result);
+  }
+
+  function prepareDeployment(raw: DeploymentInput): Promise<DeploymentReceipt[]> {
+    const input = deploymentInputSchema.parse(raw);
+    if (
+      closed ||
+      !options.tenants.listOwners ||
+      !options.transport.prepareDeployment ||
+      input.deadline <= Date.now() ||
+      input.deadline > Date.now() + deploymentMaximumDuration ||
+      (deployment && !sameDeployment(input))
+    )
+      return Promise.reject(new DeploymentControlError());
+    if (
+      deployment?.resuming ||
+      deployment?.lostJournal ||
+      (!deployment && resumedDeployment?.nonce === input.nonce)
+    )
+      return Promise.reject(new DeploymentControlError(409));
+    deployment ??= { input, paused: new Set(), unknown: new Set(), receipts: new Map() };
+    if (deployment.operation) return deployment.operation;
+    const current = deployment;
+    const assertCurrent = () => {
+      if (closed || deployment !== current || Date.now() >= input.deadline)
+        throw new DeploymentControlError();
+    };
+    const operation = (async () => {
+      await Promise.allSettled([...pending.values()]);
+      assertCurrent();
+      const owners = await options.tenants.listOwners!();
+      if (owners.length > 1024 || new Set(owners).size !== owners.length)
+        throw new DeploymentControlError();
+      for (const ownerId of owners) {
+        z.uuid().parse(ownerId);
+        assertCurrent();
+        const status = await options.transport.status(ownerId);
+        assertCurrent();
+        if (!status.generation) {
+          if (!status.stopped || entries.has(ownerId)) throw new DeploymentControlError();
+          continue;
+        }
+        const generation = z
+          .string()
+          .regex(/^[1-9]\d{0,19}$/)
+          .parse(status.generation);
+        const entry = entries.get(ownerId);
+        if (entry && entry.lease.generation !== generation) throw new DeploymentControlError();
+        if (!status.stopped) {
+          if (!entry?.healthy) throw new DeploymentControlError();
+          current.paused.add(ownerId);
+          await tenantDeployment(entry, input, 'drain');
+          assertCurrent();
+        }
+        current.unknown.add(ownerId);
+        const prepared = await options.transport.prepareDeployment!(ownerId, generation, input);
+        if (prepared === 'busy') {
+          current.unknown.delete(ownerId);
+          throw new DeploymentControlError(409);
+        }
+        if (prepared !== 'stopped') throw new DeploymentControlError();
+        assertCurrent();
+        if (entry) await stop(entry);
+        else await options.transport.stop(ownerId, generation);
+        current.unknown.delete(ownerId);
+        current.paused.delete(ownerId);
+        current.receipts.set(ownerId, generation);
+      }
+      assertCurrent();
+      return [...current.receipts].map(([ownerId, generation]) => ({ ownerId, generation }));
+    })().catch(() => {
+      throw new DeploymentControlError();
+    });
+    current.operation = operation;
+    void operation
+      .finally(() => {
+        if (current.operation === operation) current.operation = undefined;
+      })
+      .catch(() => {});
     return operation;
   }
 
@@ -262,6 +415,84 @@ export function createTenantRuntimeHost(options: {
     async fetch(ownerId, request, access) {
       const entry = await ensure(ownerId);
       return signedFetch(entry, request, access);
+    },
+    prepareDeployment,
+    async resumeDeployment(raw) {
+      const input = deploymentInputSchema.parse(raw);
+      if (
+        !deployment &&
+        resumedDeployment?.nonce === input.nonce &&
+        resumedDeployment.targetRelease === input.targetRelease &&
+        resumedDeployment.deadline === input.deadline
+      )
+        return;
+      if (closed) throw new DeploymentControlError(409);
+      if (!deployment) {
+        if (
+          entries.size ||
+          pending.size ||
+          !options.tenants.listOwners ||
+          !options.transport.deploymentClosed ||
+          !options.transport.deploymentStopped
+        )
+          throw new DeploymentControlError();
+        deployment = {
+          input,
+          paused: new Set(),
+          unknown: new Set(),
+          receipts: new Map(),
+          lostJournal: true,
+        };
+      }
+      if (!sameDeployment(input)) throw new DeploymentControlError(409);
+      const current = deployment!;
+      current.resuming ??= (async () => {
+        await current.operation?.catch(() => {});
+        if (current.lostJournal) {
+          const deadline = Date.now() + 30_000;
+          const assertRecovery = () => {
+            if (
+              closed ||
+              deployment !== current ||
+              entries.size ||
+              pending.size ||
+              Date.now() >= deadline
+            )
+              throw new DeploymentControlError();
+          };
+          assertRecovery();
+          if (!(await options.transport.deploymentClosed!())) throw new DeploymentControlError();
+          const owners = await options.tenants.listOwners!();
+          if (owners.length > 1024 || new Set(owners).size !== owners.length)
+            throw new DeploymentControlError();
+          for (const ownerId of owners) {
+            z.uuid().parse(ownerId);
+            assertRecovery();
+            const status = await options.transport.status(ownerId);
+            if (
+              !status.stopped ||
+              !(await options.transport.deploymentStopped!(ownerId, status.generation))
+            )
+              throw new DeploymentControlError();
+            assertRecovery();
+          }
+          if (!(await options.transport.deploymentClosed!())) throw new DeploymentControlError();
+          assertRecovery();
+        }
+        if (current.unknown.size) throw new DeploymentControlError();
+        for (const owner of current.paused) {
+          const entry = entries.get(owner);
+          if (!entry?.healthy) throw new DeploymentControlError();
+          await tenantDeployment(entry, input, 'resume');
+          current.paused.delete(owner);
+        }
+        if (deployment !== current) throw new DeploymentControlError();
+        resumedDeployment = input;
+        deployment = undefined;
+      })().finally(() => {
+        current.resuming = undefined;
+      });
+      return current.resuming;
     },
     close() {
       closing ??= (async () => {

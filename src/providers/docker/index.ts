@@ -1,6 +1,7 @@
 import { relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Workspace } from '../../ports/computer.ts';
+import { WorkspaceExitError } from '../../ports/computer.ts';
 import { taskId } from '../../ports/task-identity.ts';
 import {
   runWorkspaceCommand,
@@ -142,8 +143,9 @@ export function createCommandWorkspace(options: {
     try {
       const result = await operation;
       if (result.exitCode)
-        throw new Error(
-          `Workspace command failed (${result.exitCode}).\n${Buffer.concat([result.stdout, result.stderr]).toString('utf8').slice(0, 20_000)}`,
+        throw new WorkspaceExitError(
+          result.exitCode,
+          Buffer.concat([result.stdout, result.stderr]).toString('utf8'),
         );
       return result;
     } catch (error) {

@@ -18,7 +18,7 @@ export function createInspectorPool() {
   return new pg.Pool({
     connectionString: databaseUrl,
     max: poolSize(process.env.INSPECTOR_DATABASE_POOL_MAX, 2),
-    connectionTimeoutMillis: 500,
+    connectionTimeoutMillis: 10_000,
     statement_timeout: 500,
     query_timeout: 750,
   });

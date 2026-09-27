@@ -12,15 +12,16 @@ export function hostedEnvironment(
   values,
   { root = repository, envFile, inherited = process.env } = {},
 ) {
+  const computerProvider = values.COMPUTER_PROVIDER || 'e2b';
   const missing = [
     'DATABASE_URL',
     'SIDEKICK_MASTER_KEY',
     'BETTER_AUTH_SECRET',
     'GOOGLE_CLIENT_ID',
     'GOOGLE_CLIENT_SECRET',
-    'E2B_API_KEY',
-    'E2B_BROWSER_TEMPLATE',
-    'E2B_WORKSPACE_TEMPLATE',
+    ...(computerProvider === 'e2b'
+      ? ['E2B_API_KEY', 'E2B_BROWSER_TEMPLATE', 'E2B_WORKSPACE_TEMPLATE']
+      : []),
   ].filter((key) => !values[key]?.trim());
   if (missing.length) throw new Error(`Missing configuration: ${missing.join(', ')}.`);
   const invalid = new Set();
@@ -32,8 +33,7 @@ export function hostedEnvironment(
   if (values.PORT && values.PORT !== '4330') invalid.add('PORT');
   if (values.SIDEKICK_PUBLIC_URL && values.SIDEKICK_PUBLIC_URL !== 'http://localhost:4330')
     invalid.add('SIDEKICK_PUBLIC_URL');
-  if (values.COMPUTER_PROVIDER && values.COMPUTER_PROVIDER !== 'e2b')
-    invalid.add('COMPUTER_PROVIDER');
+  if (!['e2b', 'cloudflare'].includes(computerProvider)) invalid.add('COMPUTER_PROVIDER');
   if (values.BETTER_AUTH_SECRET.length < 32) invalid.add('BETTER_AUTH_SECRET');
   if (
     !/^[A-Za-z0-9+/]+={0,2}$/.test(values.SIDEKICK_MASTER_KEY) ||
@@ -93,8 +93,11 @@ export function hostedEnvironment(
     SIDEKICK_DATA_ROOT: resolve(root, '.local/hosted'),
     PORT: '4330',
     NODE_ENV: 'development',
-    COMPUTER_PROVIDER: 'e2b',
-    OBJECT_STORAGE_PROVIDER: 'postgres',
+    COMPUTER_PROVIDER: computerProvider,
+    OBJECT_STORAGE_PROVIDER: computerProvider === 'cloudflare' ? 'http' : 'postgres',
+    ...(computerProvider === 'cloudflare'
+      ? { OBJECT_STORAGE_ENDPOINT: 'http://sidekick.storage/v1/objects/' }
+      : {}),
   };
 }
 
@@ -143,6 +146,11 @@ export async function startHosted(args = process.argv.slice(2)) {
     throw new Error('Install repository dependencies with npm ci first.');
   }
   await mkdir(environment.SIDEKICK_DATA_ROOT, { recursive: true, mode: 0o700 });
+  if (environment.COMPUTER_PROVIDER === 'cloudflare') {
+    const { startCloudflareLocal } = await import('./start-cloudflare-local.mjs');
+    await startCloudflareLocal(environment);
+    return;
+  }
   const child = spawn(process.execPath, ['--import', 'tsx', 'src/server/index.ts'], {
     cwd: repository,
     env: environment,

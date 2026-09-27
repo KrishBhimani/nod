@@ -18,6 +18,7 @@ import type { CredentialKeyStore } from '../ports/key-store.ts';
 import type { CredentialInvitation } from '../ports/agent.ts';
 import { normalizedEmail, type EmailCodeRequest, type PrivateEmailCode } from './email-code.ts';
 import { ownerId as owner } from './config.ts';
+import type { WorkAdmission } from './work-admission.ts';
 const passwordInput = z
   .object({
     kind: z.literal('login').optional(),
@@ -96,6 +97,7 @@ export type CredentialInjection = CredentialInput & {
   code?: string;
 };
 type VaultOptions = {
+  admission?: WorkAdmission;
   resume(taskId: string, expectedRevision: number): Promise<void>;
   retry(taskId: string, expectedRevision: number): Promise<void>;
   inject(input: CredentialInjection): Promise<CredentialSubmission | void>;
@@ -454,7 +456,9 @@ export async function createVault(pool: Pool, options: VaultOptions) {
   const timer = setInterval(() => {
     for (const [id, value] of identifiers)
       if (value.expiresAt <= Date.now()) identifiers.delete(id);
-    void resumePending().catch(() => {});
+    void (options.admission ? options.admission.run(resumePending) : resumePending())?.catch(
+      () => {},
+    );
   }, 5000);
   timer.unref();
 

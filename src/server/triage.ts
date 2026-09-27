@@ -5,6 +5,7 @@ import { ownerId } from './config.ts';
 import { boss, submitTask } from './tasks.ts';
 import type { FastifyInstance } from 'fastify';
 import type { PoolClient } from 'pg';
+import type { WorkConsumers } from './work-admission.ts';
 import { refresh } from './events.ts';
 import { currentConversationSql } from './conversations.ts';
 import type {
@@ -83,6 +84,7 @@ async function savedUpdates(client: Pick<PoolClient, 'query'> = pool, lock = fal
   ).rows;
 }
 export function createTriage(options: {
+  consumers?: WorkConsumers;
   classifier: RelevanceClassifier;
   getProfile(): Promise<{ location: string; preferences: string }>;
   listGoals(): Promise<GoalContext[]>;
@@ -276,10 +278,17 @@ export function createTriage(options: {
     await recoverPendingNotifications();
     await boss.createQueue('heartbeat', { retryLimit: 0 });
     await boss.schedule('heartbeat', '0 * * * *', {}, { tz: 'UTC' });
-    await boss.work('heartbeat', async (jobs) => {
-      await recoverPendingNotifications();
-      for (const job of jobs) await reviewHeartbeat(job.id);
-    });
+    const start = () =>
+      boss.work('heartbeat', async (jobs) => {
+        await recoverPendingNotifications();
+        for (const job of jobs) await reviewHeartbeat(job.id);
+      });
+    if (options.consumers)
+      await options.consumers.register({
+        start,
+        stop: (id) => boss.offWork('heartbeat', { id, wait: true }),
+      });
+    else await start();
   }
   function registerTriageRoutes(app: FastifyInstance) {
     app.get('/api/preferences', getPreferences);

@@ -5,6 +5,27 @@ export function createCloudflareRuntimeTransport(
   options: { fetch?: typeof fetch } = {},
 ): RuntimeTransport {
   const request = options.fetch ?? fetch;
+  async function boundedResponse(response: Response) {
+    if (!response.body) throw new Error();
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+        size += next.value.byteLength;
+        if (size > 4096) throw new Error();
+        chunks.push(next.value);
+      }
+      return JSON.parse(
+        new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.concat(chunks)),
+      ) as unknown;
+    } finally {
+      await reader.cancel().catch(() => {});
+      reader.releaseLock();
+    }
+  }
   async function control(path: string, body: unknown) {
     try {
       const response = await request(`http://sidekick.runtime/runtime/${path}`, {
@@ -18,12 +39,33 @@ export function createCloudflareRuntimeTransport(
         await response.body?.cancel();
         throw new Error();
       }
-      return (await response.json()) as unknown;
+      return await boundedResponse(response);
     } catch {
       throw new Error('The account computer service is unavailable.');
     }
   }
   return {
+    async deploymentStopped(ownerId, generation) {
+      try {
+        z.uuid().parse(ownerId);
+        z.string()
+          .regex(/^[1-9]\d{0,19}$/)
+          .nullable()
+          .parse(generation);
+        return z
+          .object({ stopped: z.boolean(), generation: z.literal(generation) })
+          .strict()
+          .parse(await control('deployment-stopped', { ownerId, generation })).stopped;
+      } catch {
+        throw new Error('The account runtime could not be verified as stopped.');
+      }
+    },
+    async deploymentClosed() {
+      return z
+        .object({ closed: z.boolean() })
+        .strict()
+        .parse(await control('deployment-status', {})).closed;
+    },
     async status(ownerId) {
       return z
         .object({
@@ -53,6 +95,45 @@ export function createCloudflareRuntimeTransport(
           if (Date.now() >= deadline) throw new Error('The account runtime could not be stopped.');
           await new Promise((resolve) => setTimeout(resolve, 500));
         }
+      }
+    },
+    async prepareDeployment(ownerId, generation, input) {
+      try {
+        z.uuid().parse(ownerId);
+        const remaining = input.deadline - Date.now();
+        if (remaining <= 0 || remaining > 600_000) throw new Error();
+        const response = await request('http://sidekick.runtime/runtime/prepare-deployment', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ownerId, generation, ...input }),
+          redirect: 'error',
+          signal: AbortSignal.timeout(remaining),
+        });
+        const result = await boundedResponse(response);
+        if (
+          response.status === 409 &&
+          z
+            .object({
+              ok: z.literal(false),
+              status: z.literal('busy'),
+              generation: z.literal(generation),
+            })
+            .strict()
+            .safeParse(result).success
+        )
+          return 'busy';
+        if (response.status !== 200) throw new Error();
+        z.object({
+          ok: z.literal(true),
+          generation: z.literal(generation),
+          clean: z.literal(true),
+          stopped: z.literal(true),
+        })
+          .strict()
+          .parse(result);
+        return 'stopped';
+      } catch {
+        throw new Error('The account runtime could not be prepared for deployment.');
       }
     },
     fetch(ownerId, input) {

@@ -21,6 +21,7 @@ import { createContainerBrowserComputer } from '../providers/container-browser/i
 import { createComposioProvider } from '../providers/composio/integrations.ts';
 import { createDockerWorkspace } from '../providers/docker/index.ts';
 import { createE2BAdapters } from '../providers/e2b/index.ts';
+import { createCloudflareAdapters } from '../providers/cloudflare-computer/index.ts';
 import { createFilesystemObjectStore } from '../providers/object-storage/filesystem.ts';
 import { createHttpObjectStore } from '../providers/object-storage/http.ts';
 import {
@@ -40,13 +41,22 @@ import { createPiConversationRouter } from '../providers/pi/conversation.ts';
 import { createPublicLinkPreviewProvider } from '../providers/public-web/link-preview.ts';
 import { createAgentRuntime } from '../runtime/index.ts';
 import { createApp } from './app.ts';
+import { createWorkAdmission, createWorkConsumers } from './work-admission.ts';
+import { createTenantDrain } from './tenant-drain.ts';
 import { createChatVerification } from './chat-verification.ts';
 import { createAgentReactionService } from './agent-reactions.ts';
 import { createApprovals } from './approvals.ts';
 import { createArtifactService, localArtifacts } from './artifacts.ts';
 import { createChannels } from './channels.ts';
 import { createChannelSettings } from './channel-settings.ts';
-import { configuration, dataRoot, ownerId, publicOrigin, runtimeMode } from './config.ts';
+import {
+  configuration,
+  dataRoot,
+  ownerId,
+  publicOrigin,
+  runtimeGeneration,
+  runtimeMode,
+} from './config.ts';
 import { createAccountStore } from './account-store.ts';
 import { createAccountSession } from './account.ts';
 import { createComputerAllocationStore } from './computer-allocations.ts';
@@ -135,8 +145,9 @@ export function createDefaultAdapters(
   };
   const computerProvider = env.COMPUTER_PROVIDER || 'docker';
   if (
-    !['docker', 'e2b'].includes(computerProvider) ||
-    (runtimeMode === 'tenant' && computerProvider !== 'e2b')
+    !['docker', 'e2b', 'cloudflare'].includes(computerProvider) ||
+    (runtimeMode === 'tenant' && computerProvider === 'docker') ||
+    (computerProvider === 'cloudflare' && runtimeMode !== 'tenant')
   )
     throw new Error('Configure a supported, isolated computer provider.');
   const allocations =
@@ -148,18 +159,28 @@ export function createDefaultAdapters(
     (!env.E2B_API_KEY || !env.E2B_BROWSER_TEMPLATE || !env.E2B_WORKSPACE_TEMPLATE)
   )
     throw new Error('The remote computer configuration is incomplete.');
-  const remote = allocations
-    ? createE2BAdapters({
-        apiKey: env.E2B_API_KEY!,
-        ownerId,
-        allocations,
-        templates: { browser: env.E2B_BROWSER_TEMPLATE!, workspace: env.E2B_WORKSPACE_TEMPLATE! },
-        workspaceRoot: join(dataRoot, 'workspaces'),
-        ...(env.E2B_SANDBOX_TIMEOUT_MS
-          ? { sandboxTimeoutMs: Number(env.E2B_SANDBOX_TIMEOUT_MS) }
-          : {}),
-      })
-    : undefined;
+  const remote =
+    computerProvider === 'cloudflare'
+      ? createCloudflareAdapters({
+          ownerId,
+          generation: runtimeGeneration,
+          workspaceRoot: join(dataRoot, 'workspaces'),
+        })
+      : allocations
+        ? createE2BAdapters({
+            apiKey: env.E2B_API_KEY!,
+            ownerId,
+            allocations,
+            templates: {
+              browser: env.E2B_BROWSER_TEMPLATE!,
+              workspace: env.E2B_WORKSPACE_TEMPLATE!,
+            },
+            workspaceRoot: join(dataRoot, 'workspaces'),
+            ...(env.E2B_SANDBOX_TIMEOUT_MS
+              ? { sandboxTimeoutMs: Number(env.E2B_SANDBOX_TIMEOUT_MS) }
+              : {}),
+          })
+        : undefined;
   const databaseObjects =
     env.OBJECT_STORAGE_PROVIDER === 'postgres'
       ? createPostgresObjectStore({ database: pool, ownerId })
@@ -167,7 +188,10 @@ export function createDefaultAdapters(
   const objectStore =
     databaseObjects ??
     (env.OBJECT_STORAGE_PROVIDER === 'http'
-      ? createHttpObjectStore({ endpoint: env.OBJECT_STORAGE_ENDPOINT })
+      ? createHttpObjectStore({
+          endpoint: env.OBJECT_STORAGE_ENDPOINT,
+          ...(runtimeMode === 'tenant' ? { generation: runtimeGeneration } : {}),
+        })
       : env.OBJECT_STORAGE_PROVIDER === 'filesystem'
         ? createFilesystemObjectStore(env.OBJECT_STORAGE_ROOT || join(dataRoot, 'objects'))
         : undefined);
@@ -249,6 +273,9 @@ export async function createApplication(
   adapters: ApplicationAdapters,
   options: { workers?: boolean; channels?: boolean } = {},
 ) {
+  const admission = createWorkAdmission();
+  const consumers = createWorkConsumers();
+  const deploymentDrain = createTenantDrain({ admission, consumers });
   const privacyNotice =
     runtimeMode === 'local'
       ? await loadPrivacyNoticeFile(process.env.SIDEKICK_PRIVACY_NOTICE_FILE)
@@ -283,7 +310,7 @@ export async function createApplication(
     provider: adapters.model.provider,
     model: adapters.model.name,
   });
-  await promptInspector.initialize();
+  await promptInspector.initialize(pool);
   const providerUsage = createProviderUsageStore(inspectorDatabase, {
     ownerId,
     enabled: () => configuration().inspectorEnabled,
@@ -364,7 +391,7 @@ export async function createApplication(
       },
     ],
   });
-  await providerUsage.initialize();
+  await providerUsage.initialize(pool);
   const computer = meterComputer(adapters.computer, providerUsage);
   const workspace = meterWorkspace(adapters.workspace, providerUsage);
   const speechProvider = meterSpeech(adapters.speech, providerUsage);
@@ -384,14 +411,24 @@ export async function createApplication(
       : undefined,
   });
   const speech = createSpeech(speechProvider);
-  const personal = createPersonalService({ pool, ownerId, scheduler: boss, submitTask, refresh });
+  const personal = createPersonalService({
+    pool,
+    ownerId,
+    scheduler: boss,
+    submitTask,
+    refresh,
+    consumers,
+    stopConsumer: (id) => boss.offWork('scheduled-task', { id, wait: true }),
+  });
   await personal.initialize({ workers: options.workers });
   const triage = createTriage({
+    consumers,
     classifier: classify,
     getProfile: personal.getProfile,
     listGoals: personal.listGoals,
   });
   const integrations = await createIntegrations(pool, {
+    admission,
     ownerId,
     provider: integrationProvider,
     wake: triage.triageEvent,
@@ -399,6 +436,7 @@ export async function createApplication(
     baseUrl: publicOrigin,
   });
   const vault = await createVault(pool, {
+    admission,
     keyStore: adapters.keyStore,
     resume: resumeTask,
     retry: retryTaskCredentials,
@@ -437,6 +475,7 @@ export async function createApplication(
     await inspector.recover().catch(() => {});
     await triage.initializeHeartbeat();
     await startTaskWorkers({
+      consumers,
       artifacts,
       writeArtifact: workspace.writeArtifact?.bind(workspace),
       readArtifact: workspace.readArtifact?.bind(workspace),
@@ -518,6 +557,8 @@ export async function createApplication(
     });
   }
   const app = await createApp({
+    admission,
+    deploymentDrain,
     artifacts,
     submitMessage: userMessages.submit,
     verification: chatVerification,
@@ -631,6 +672,7 @@ export async function createApplication(
       ? setup.create(await channelSettings!.environment())
       : adapters.messaging!;
     channels = await createChannels(pool, {
+      admission,
       ownerId,
       resolveAttachments: artifacts.readTaskArtifacts,
       transport: meterMessaging(messaging, providerUsage),
@@ -659,11 +701,31 @@ export async function createApplication(
     channels.registerRoutes(app);
     await channelSettings?.recover();
   }
+  let closingConsumers: Promise<void> | undefined;
+  app.addHook('preClose', async () => {
+    admission.close();
+    closingConsumers = consumers.close();
+    void closingConsumers.catch(() => {});
+  });
+  async function finishWork() {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.all([closingConsumers, admission.drain(Date.now() + 30_000)]),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('Application work did not finish.')), 30_000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   app.addHook('onClose', async () => {
     const failures: unknown[] = [];
     for (const close of [
       () => channels?.close(),
       () => stopTasks(),
+      finishWork,
       () => runtime.dispose(),
       () => inspector.close(),
       () => promptInspector.close(),
@@ -678,7 +740,17 @@ export async function createApplication(
     }
     if (failures.length) throw new Error('Some application resources could not close.');
   });
-  return { app, runtime, personal, triage, integrations, vault, channels, channelSettings };
+  return {
+    app,
+    runtime,
+    personal,
+    triage,
+    integrations,
+    vault,
+    channels,
+    channelSettings,
+    deploymentDrain,
+  };
 }
 
 export async function createGatewayApplication(
@@ -753,6 +825,13 @@ export async function createGatewayApplication(
       runtimes,
       privacyNotice,
       release: env.SIDEKICK_IMAGE_RELEASE || env.SIDEKICK_RELEASE,
+      ...(env.SIDEKICK_RUNTIME_URL === 'http://sidekick.runtime' && {
+        deployment: {
+          masterKey,
+          environment,
+          release: env.SIDEKICK_IMAGE_RELEASE || env.SIDEKICK_RELEASE,
+        },
+      }),
       developerIds,
       internal: createTenantControl({
         masterKey,

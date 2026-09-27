@@ -19,7 +19,7 @@ import type {
   LoginInspection,
   Workspace,
 } from '../ports/computer.ts';
-import { BrowserActionError } from '../ports/computer.ts';
+import { BrowserActionError, WorkspaceExitError } from '../ports/computer.ts';
 import { browserErrorMessage } from '../shared/browser-errors.ts';
 import { taskId } from '../ports/task-identity.ts';
 import { inspectToolCatalog, toolDefinitions } from './tools.ts';
@@ -110,10 +110,15 @@ export function createAgentRuntime(dependencies: {
       requestsApiKey(text) ||
       requestsLoginDetails(text) ||
       (!manualSignInRequested && requestsManualSignIn(text));
+    const abortSession = () => {
+      void Promise.resolve()
+        .then(() => session?.abort())
+        .catch(() => {});
+    };
     const abort = () => {
       stopped = true;
       lifecycle.abort();
-      void session?.abort();
+      abortSession();
     };
     activeTasks.set(context.taskId, { abort, done });
     const timeout = setTimeout(abort, 12 * 60_000);
@@ -215,7 +220,7 @@ export function createAgentRuntime(dependencies: {
       status = 'waiting_credentials';
       waitingFor = 'credentials';
       stopped = true;
-      void session?.abort();
+      abortSession();
       return 'Task paused for secure credential entry.';
     };
     const redirectLoginRequest = async () => {
@@ -348,7 +353,7 @@ export function createAgentRuntime(dependencies: {
       if ('question' in result && typeof result.question === 'string') question = result.question;
       await dependencies.computer.hold(context.taskId, Date.now() + 30 * 60_000);
       stopped = true;
-      void session?.abort();
+      abortSession();
       return 'The specific action question is already in chat. Wait for the user reply; do not send another confirmation message.';
     };
     const tool = <P extends TSchema>(
@@ -408,28 +413,43 @@ export function createAgentRuntime(dependencies: {
           } catch (error) {
             if (!stopped)
               await context.emit('tool_failed', name.replaceAll('_', ' ')).catch(() => {});
+            const workspaceFailure =
+              !context.signal.aborted &&
+              !stopped &&
+              status === 'succeeded' &&
+              name === 'shell' &&
+              error instanceof WorkspaceExitError
+                ? { status: 'failed', exitCode: error.exitCode, output: error.output }
+                : undefined;
             const browserFailure =
               error instanceof BrowserActionError ? browserErrorMessage(error.code) : undefined;
             const failure = context.signal.aborted
               ? 'The action was cancelled.'
-              : browserFailure
-                ? browserFailure
-                : name === 'apps' || name === 'download_app_file'
-                  ? 'The connected-account request could not be completed. Check the selected account and the discovered argument schema before retrying.'
-                  : ['request_credentials', 'inspect_login', 'select_login_method'].includes(name)
-                    ? 'The sign-in step could not be prepared. Inspect the current page and request secure entry again.'
-                    : name === 'create_audio'
-                      ? 'Audio generation is not available right now.'
-                      : 'The action could not be completed. Check the current state before trying again; do not assume it succeeded.';
+              : workspaceFailure
+                ? `The workspace command exited with code ${workspaceFailure.exitCode}.`
+                : browserFailure
+                  ? browserFailure
+                  : name === 'apps' || name === 'download_app_file'
+                    ? 'The connected-account request could not be completed. Check the selected account and the discovered argument schema before retrying.'
+                    : ['request_credentials', 'inspect_login', 'select_login_method'].includes(name)
+                      ? 'The sign-in step could not be prepared. Inspect the current page and request secure entry again.'
+                      : name === 'create_audio'
+                        ? 'Audio generation is not available right now.'
+                        : 'The action could not be completed. Check the current state before trying again; do not assume it succeeded.';
             await observe({
               type: 'tool_end',
               id,
               name,
               status: context.signal.aborted ? 'cancelled' : 'failed',
               error: failure,
+              ...(workspaceFailure && { output: workspaceFailure }),
               finishedAt: new Date().toISOString(),
               durationMs: performance.now() - started,
             });
+            if (workspaceFailure && !stopped && status === 'succeeded') {
+              context.signal.throwIfAborted();
+              return textResult(workspaceFailure);
+            }
             throw new Error(failure);
           }
         }),
@@ -522,7 +542,7 @@ export function createAgentRuntime(dependencies: {
           stopped = true;
           if (context.waitForUser) await context.waitForUser(question);
           else await deliverReply(question);
-          void session?.abort();
+          abortSession();
           return 'Task paused for the user.';
         }),
         tool(toolDefinitions.apps, async (p) =>

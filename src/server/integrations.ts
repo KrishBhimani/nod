@@ -14,6 +14,7 @@ import {
   integrationServices,
 } from '../shared/integrations.ts';
 import { integrationActions } from './integration-policy.ts';
+import type { WorkAdmission } from './work-admission.ts';
 import {
   normalizedEmail,
   verificationCode,
@@ -46,6 +47,7 @@ type ConnectionRow = {
   revoked: boolean;
 };
 type IntegrationOptions = {
+  admission?: WorkAdmission;
   ownerId: string;
   wake(prompt: string, eventId: string): Promise<void>;
   provider: IntegrationProvider;
@@ -167,6 +169,10 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
   let draining = false;
   let closed = false;
   let refreshing: Promise<void> | undefined;
+  function background(operation: () => Promise<void>) {
+    if (closed) return undefined;
+    return options.admission ? options.admission.run(operation) : Promise.resolve().then(operation);
+  }
   await pool.query(
     `UPDATE app_connections SET watch_requested=true,watch_attempted=false,watch_revision=watch_revision+1
      WHERE owner_id=$1 AND provider_id=$2 AND slug=ANY($3::text[]) AND NOT revoked AND NOT watch_requested`,
@@ -370,8 +376,8 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
   async function list(ownerId = configuredOwner): Promise<Connection[]> {
     const rows = await connectionRows(ownerId);
     if (provider.configured && !closed && !refreshing) {
-      refreshing = refreshAccounts(rows)
-        .catch(() => {})
+      refreshing = background(() => refreshAccounts(rows))
+        ?.catch(() => {})
         .finally(() => {
           refreshing = undefined;
         });
@@ -976,8 +982,8 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     }
   }
   const timer = setInterval(() => {
-    void drain().catch(() => {});
-    void syncWatches().catch(() => {});
+    void background(drain)?.catch(() => {});
+    void background(syncWatches)?.catch(() => {});
   }, 5000);
   timer.unref();
 
@@ -1128,7 +1134,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
             providerId,
           ],
         );
-        void drain().catch(() => {});
+        void background(drain)?.catch(() => {});
         return reply.code(202).send({ ok: true });
       });
     });

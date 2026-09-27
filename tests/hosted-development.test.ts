@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parseEnv } from 'node:util';
 import test from 'node:test';
 import type { AddressInfo } from 'node:net';
 
@@ -11,6 +12,9 @@ const { hostedEnvironment, readHostedEnvironment } = await import(
 );
 const { webhookRoute, createWebhookRelay } = await import(
   new URL('../scripts/webhook-relay.mjs', import.meta.url).href
+);
+const { cloudflareLocalPlan } = await import(
+  new URL('../scripts/start-cloudflare-local.mjs', import.meta.url).href
 );
 const values = () => ({
   DATABASE_URL: 'postgresql://fixture:synthetic@localhost:54331/hosted',
@@ -98,6 +102,72 @@ test('hosted environment files warn only for actual insecure permissions', async
     assert.match(warnings[0], /permissions to 600/);
     assert.doesNotMatch(warnings[0], /synthetic/);
   }
+});
+
+test('local Cloudflare uses development bindings and private runtime configuration without provider keys at image build', () => {
+  const input = {
+    ...values(),
+    COMPUTER_PROVIDER: 'cloudflare',
+    CLOUDFLARE_API_TOKEN: 'private-deployment-token',
+    GOOGLE_CLIENT_SECRET: "synthetic's # quoted \\\\ value\nnext line",
+  };
+  delete (input as Partial<typeof input>).E2B_API_KEY;
+  delete (input as Partial<typeof input>).E2B_BROWSER_TEMPLATE;
+  delete (input as Partial<typeof input>).E2B_WORKSPACE_TEMPLATE;
+  const environment = hostedEnvironment(input, {
+    root: '/fixture',
+    inherited: { PATH: '/bin', OPENAI_API_KEY: 'inherited-secret' },
+  });
+  assert.equal(environment.COMPUTER_PROVIDER, 'cloudflare');
+  assert.equal(environment.OBJECT_STORAGE_PROVIDER, 'http');
+  assert.equal(environment.OBJECT_STORAGE_ENDPOINT, 'http://sidekick.storage/v1/objects/');
+  const config = {
+    main: 'src/worker.ts',
+    assets: { directory: '../../dist/web' },
+    account_id: 'production-account',
+    env: {
+      development: {
+        name: 'development',
+        containers: [
+          { class_name: 'GatewayContainer', image: './Dockerfile', image_build_context: '../..' },
+        ],
+        r2_buckets: [{ binding: 'TENANT_FILES', bucket_name: 'development-files' }],
+      },
+      production: {
+        name: 'production',
+        containers: [],
+        r2_buckets: [{ bucket_name: 'production-files' }],
+      },
+    },
+  };
+  const plan = cloudflareLocalPlan(environment, config, '/fixture');
+  assert.equal(plan.config.account_id, undefined);
+  assert.equal(plan.config.env, undefined);
+  assert.equal(plan.config.dev.ip, '127.0.0.1');
+  assert.equal(plan.config.dev.port, 4330);
+  assert.equal(plan.config.vars.SIDEKICK_PUBLIC_URL, 'http://localhost:4330');
+  assert.equal(plan.config.r2_buckets[0].bucket_name, 'development-files');
+  assert.equal(plan.config.containers[0].image, '/fixture/deployment/cloudflare/Dockerfile');
+  assert.equal(plan.config.containers[0].image_build_context, '/fixture');
+  assert.doesNotMatch(JSON.stringify(plan.config), /synthetic|secret|production/);
+  const privateValues = JSON.parse(plan.secret);
+  const encodedValues = parseEnv(plan.devVars).GATEWAY_ENV;
+  assert.ok(encodedValues);
+  assert.deepEqual(JSON.parse(encodedValues), privateValues);
+  assert.equal(privateValues.GOOGLE_CLIENT_SECRET, input.GOOGLE_CLIENT_SECRET);
+  assert.equal(privateValues.DATABASE_URL, input.DATABASE_URL);
+  for (const key of ['CLOUDFLARE_API_TOKEN', 'DOTENV_CONFIG_PATH', 'PATH', 'OPENAI_API_KEY'])
+    assert.equal(privateValues[key], undefined);
+  assert.deepEqual(plan.environment, { PATH: '/bin' });
+  assert.throws(() =>
+    cloudflareLocalPlan({ ...environment, SIDEKICK_ENVIRONMENT: 'production' }, config),
+  );
+  assert.throws(() =>
+    cloudflareLocalPlan(
+      { ...environment, SIDEKICK_PUBLIC_URL: 'https://sidekick.example.test' },
+      config,
+    ),
+  );
 });
 
 test('webhook relay allowlist excludes application, authentication, encoded and normalized paths', () => {

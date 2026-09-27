@@ -33,6 +33,9 @@ import type { Configuration, Message, MessageReaction } from '../shared/contract
 import type { AgentToolMetadata } from '../ports/agent.ts';
 import { inspectorPayloadLimit, inspectorRetentionDays, type InspectorStore } from './inspector.ts';
 import type { createChatVerification } from './chat-verification.ts';
+import { registerTenantDrain } from './tenant-drain.ts';
+import type { WorkAdmission } from './work-admission.ts';
+import type { TenantDrain } from '../ports/deployment.ts';
 
 const messageFields = `m.id,m.role,m.text,m.task_id AS "taskId",m.created_at AS "createdAt",m.attachments,m.stream_id AS "streamId",m.reaction,m.assistant_reaction AS "assistantReaction",m.reply_to_message_id AS "replyToMessageId",
  CASE WHEN target.id IS NULL THEN NULL ELSE json_build_object('id',target.id,'role',target.role,'text',left(target.text,1000)) END AS "replyTo"`;
@@ -48,6 +51,8 @@ function messageView(row: Message & { assistantReaction?: MessageReaction | null
 }
 
 export interface AppDependencies {
+  admission?: WorkAdmission;
+  deploymentDrain?: TenantDrain;
   artifacts?: ArtifactService;
   submitMessage?: typeof submitUserMessage;
   verification?: Awaited<ReturnType<typeof createChatVerification>>;
@@ -90,6 +95,12 @@ export async function createApp(dependencies: AppDependencies = {}) {
         })
       : undefined;
   if (!runtimeAccess) registerLocalAccess(app, port);
+  if (runtimeAccess && dependencies.admission && dependencies.deploymentDrain)
+    registerTenantDrain(app, {
+      admission: dependencies.admission,
+      drain: dependencies.deploymentDrain,
+      generation: runtimeGeneration,
+    });
   const uploads = createMultipartReader({
     maxFileSize,
     verifiedBody: runtimeAccess?.takeBody,

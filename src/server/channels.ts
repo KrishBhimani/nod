@@ -4,6 +4,7 @@ import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 import type { PreparedUserRoute } from './outcomes.ts';
 import type { SubmitMessageResponse } from '../shared/contracts.ts';
+import type { WorkAdmission } from './work-admission.ts';
 import type {
   InboundMessage,
   MessagingAttachment,
@@ -11,6 +12,7 @@ import type {
 } from '../ports/messaging.ts';
 
 interface ChannelOptions {
+  admission?: WorkAdmission;
   ownerId: string;
   transport: MessagingTransport;
   acceptVerification?: (
@@ -442,13 +444,16 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
   }
 
   function drain() {
-    if (closed || replacing) return Promise.resolve();
+    if (closed || replacing || options.admission?.paused || options.admission?.closed)
+      return Promise.resolve();
     drainRequested = true;
     if (running) return running;
+    const release = options.admission?.enter();
+    if (options.admission && !release) return Promise.resolve();
     running = (async () => {
       let pollingFailed = false;
       try {
-        while (drainRequested && !closed && !replacing) {
+        while (drainRequested && !closed && !replacing && !options.admission?.paused) {
           drainRequested = false;
           try {
             await transport.poll?.((message) => accept(message, message.channelId));
@@ -466,6 +471,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
           'Channel processing needs attention. Check the local database and task service.';
       } finally {
         running = undefined;
+        release?.();
       }
     })();
     return running;

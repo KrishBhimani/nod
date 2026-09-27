@@ -25,6 +25,7 @@ import {
   routingMessageDigest,
   type PreparedUserRoute,
 } from './outcomes.ts';
+import type { WorkConsumers } from './work-admission.ts';
 
 const queue = 'assistant-task';
 export const boss = new PgBoss({
@@ -34,6 +35,7 @@ export const boss = new PgBoss({
   max: runtimeMode === 'tenant' ? 2 : 10,
 });
 const running = new Map<string, AbortController>();
+let stopping = false;
 type TaskSource = 'user' | 'schedule' | 'event';
 export interface SubmitTaskOptions {
   sourceId?: string;
@@ -50,6 +52,7 @@ type ConfirmAction = (
 ) => Promise<{ taskId: string; continued: boolean; messageId?: string } | undefined>;
 
 export interface TaskDependencies {
+  consumers?: WorkConsumers;
   artifacts?: ArtifactService;
   writeArtifact?: (
     taskId: string,
@@ -966,6 +969,7 @@ export async function retryTaskCredentials(taskId: string, expectedRevision: num
   refresh();
 }
 export async function initializeTasks() {
+  stopping = false;
   await initializeTaskSchema();
   boss.on('error', () =>
     console.error('The task queue reported an error. Check database availability.'),
@@ -999,15 +1003,23 @@ export async function startTaskWorkers(dependencies: TaskDependencies) {
       { taskId: task.id, revision: task.revision },
       { retryLimit: 0, expireInSeconds: 1800 },
     );
-  await boss.work<{ taskId: string; revision: number }>(
-    queue,
-    { localConcurrency: 4, pollingIntervalSeconds: 0.5 },
-    async (jobs) => {
-      for (const job of jobs) await executeTask(job.data.taskId, job.data.revision, dependencies);
-    },
-  );
+  const start = () =>
+    boss.work<{ taskId: string; revision: number }>(
+      queue,
+      { localConcurrency: 4, pollingIntervalSeconds: 0.5 },
+      async (jobs) => {
+        for (const job of jobs) await executeTask(job.data.taskId, job.data.revision, dependencies);
+      },
+    );
+  if (dependencies.consumers)
+    await dependencies.consumers.register({
+      start,
+      stop: (id) => boss.offWork(queue, { id, wait: true }),
+    });
+  else await start();
 }
 async function executeTask(taskId: string, revision: number, dependencies: TaskDependencies) {
+  if (stopping) return;
   if (running.has(taskId)) {
     await boss.send(
       queue,
@@ -1024,6 +1036,7 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
   const task = selected.rows[0];
   const controller = new AbortController();
   running.set(taskId, controller);
+  if (stopping) controller.abort();
   const timeout = setTimeout(() => controller.abort(), 20 * 60 * 1000);
   const current = async <T>(operation: (client: PoolClient) => Promise<T>) => {
     if (controller.signal.aborted) throw taskStopped();
@@ -1356,6 +1369,7 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
   }
 }
 export async function stopTasks() {
+  stopping = true;
   for (const control of running.values()) control.abort();
   await boss.stop({ graceful: true, timeout: 5000 });
 }

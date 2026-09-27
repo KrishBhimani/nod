@@ -150,9 +150,13 @@ export function runSupervisedCommand(options: {
   timeoutMs?: number;
   maxBytes?: number;
   drainTimeoutMs?: number;
+  transportGraceMs?: number;
   launch(): CommandProcess;
 }): Promise<{ stdout: Buffer; stderr: Buffer; exitCode: number }> {
   options.signal?.throwIfAborted();
+  const transportGraceMs = options.transportGraceMs ?? 0;
+  if (!Number.isInteger(transportGraceMs) || transportGraceMs < 0 || transportGraceMs > 300_000)
+    throw new Error('The workspace transport grace period is invalid.');
   const timeoutMs = Math.max(1, Math.min(options.timeoutMs ?? 30_000, 120_000));
   const maxBytes = Math.max(1, Math.min(options.maxBytes ?? 64 * 1024, 16 * 1024 * 1024));
   const request =
@@ -179,7 +183,7 @@ export function runSupervisedCommand(options: {
     let cancelling = false;
     let response: { code: number; reason: string | null } | undefined;
     let drain: ReturnType<typeof setTimeout> | undefined;
-    const timer = setTimeout(() => cancel(), timeoutMs + 1000);
+    const timer = setTimeout(() => cancel(), transportGraceMs + timeoutMs + 1000);
     const cleanup = () => {
       clearTimeout(timer);
       clearTimeout(drain);
