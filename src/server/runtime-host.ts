@@ -365,8 +365,8 @@ export function createTenantRuntimeHost(options: {
       }
       assertCurrent();
       return [...current.receipts].map(([ownerId, generation]) => ({ ownerId, generation }));
-    })().catch(() => {
-      throw new DeploymentControlError();
+    })().catch((error) => {
+      throw error instanceof DeploymentControlError ? error : new DeploymentControlError();
     });
     current.operation = operation;
     void operation

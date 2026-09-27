@@ -31,6 +31,16 @@ const stateSchema = deploymentRequestSchema.omit({ action: true }).extend({
     .max(1024),
 });
 
+const rolloutSchema = z.object({
+  configuration: z.object({ image: z.string().min(1) }),
+  active_rollout_id: z.null().optional(),
+  scheduling_hint: z
+    .object({
+      target: z.object({ configuration: z.object({ image: z.string().min(1) }) }).nullish(),
+    })
+    .nullish(),
+});
+
 async function boundedJson(response, maximum = 1024 * 1024) {
   if (!response.body) throw unavailable();
   const reader = response.body.getReader();
@@ -304,17 +314,19 @@ export function createDeploymentClient({
     },
     async verifyRollouts() {
       if (!activated) throw unavailable();
+      verified = false;
       for (let attempt = 0; attempt < attempts; attempt += 1) {
         const entries = await applications();
         if (
-          entries.every(
-            ({ expected, application }) =>
-              application &&
-              application.configuration?.image === expected &&
-              !application.active_rollout_id &&
-              (!application.scheduling_hint?.target?.configuration?.image ||
-                application.scheduling_hint.target.configuration.image === expected),
-          )
+          entries.every(({ expected, application }) => {
+            const parsed = rolloutSchema.safeParse(application);
+            return (
+              parsed.success &&
+              parsed.data.configuration.image === expected &&
+              (!parsed.data.scheduling_hint?.target ||
+                parsed.data.scheduling_hint.target.configuration.image === expected)
+            );
+          })
         ) {
           verified = true;
           return;

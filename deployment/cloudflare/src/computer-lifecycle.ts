@@ -357,6 +357,8 @@ export function createComputerLifecycle(options: {
         loaded = state;
         if (!state) {
           await destroy();
+          await options.authorize(expected, true);
+          await write({ ...expected, phase: 'ready', stopped: true });
           return;
         }
         if (active.size || state.phase === 'uncertain' || (state.phase === 'dirty' && !booted)) {

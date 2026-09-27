@@ -44,6 +44,7 @@ function fixture(overrides = {}) {
     occupied: false,
     rollout: false,
     wrongImage: false,
+    application: (value) => value,
     control: null,
     ...overrides,
   };
@@ -83,11 +84,11 @@ function fixture(overrides = {}) {
           state.missing && !state.published
             ? []
             : [
-                {
+                state.application({
                   name,
                   configuration: { image: state.wrongImage ? 'wrong' : expected.image },
                   ...(state.rollout ? { active_rollout_id: 'still-running' } : {}),
-                },
+                }),
               ],
         );
       }
@@ -168,6 +169,71 @@ test('initial deployment requires confirmed absent Worker, absent applications a
   assert.equal(f.controls[0].previousRelease, f.controls[0].targetRelease);
 });
 
+test('initial deployment refuses unknown or pending rollout metadata for any application', async (t) => {
+  for (const [name, metadata] of [
+    ['target without configuration', { scheduling_hint: { target: {} } }],
+    ['target without image', { scheduling_hint: { target: { configuration: {} } } }],
+    ['null target configuration', { scheduling_hint: { target: { configuration: null } } }],
+    ['empty target image', { scheduling_hint: { target: { configuration: { image: '' } } } }],
+    ['wrong target image', { scheduling_hint: { target: { configuration: { image: 'wrong' } } } }],
+    ['non-object target', { scheduling_hint: { target: false } }],
+    ['array target', { scheduling_hint: { target: [] } }],
+    ['non-object scheduling hint', { scheduling_hint: false }],
+    ['array scheduling hint', { scheduling_hint: [] }],
+    ['pending rollout', { active_rollout_id: 'pending' }],
+    ['unknown rollout identity', { active_rollout_id: false }],
+  ]) {
+    await t.test(name, async () => {
+      const f = fixture({
+        missing: true,
+        application: (value) =>
+          value.name.includes('workspacecomputer') ? { ...value, ...metadata } : value,
+      });
+      await f.client.prepare();
+      await f.client.activate();
+      f.state.published = true;
+      await assert.rejects(f.client.verifyRollouts(), /Deployment safety checks did not pass/);
+      await assert.rejects(f.client.initialize());
+      await assert.rejects(f.client.complete());
+      assert.equal(f.controls.length, 0);
+      assert.equal(f.applicationReads(), 12);
+    });
+  }
+});
+
+test('initial deployment accepts absent, null or matching targets only after all current images match', async (t) => {
+  for (const [name, metadata] of [
+    ['absent scheduling hint', () => ({})],
+    ['null scheduling hint', () => ({ scheduling_hint: null })],
+    ['absent target', () => ({ scheduling_hint: {} })],
+    ['null target', () => ({ scheduling_hint: { target: null } })],
+    [
+      'matching target',
+      (value) => ({
+        active_rollout_id: null,
+        scheduling_hint: { target: { configuration: { image: value.configuration.image } } },
+      }),
+    ],
+  ]) {
+    await t.test(name, async () => {
+      const f = fixture({
+        missing: true,
+        application: (value) => ({ ...value, ...metadata(value) }),
+      });
+      await f.client.prepare();
+      await f.client.activate();
+      f.state.published = true;
+      await f.client.verifyRollouts();
+      await f.client.initialize();
+      await f.client.complete();
+      assert.deepEqual(
+        f.controls.map((input) => input.action),
+        ['prepare', 'activate', 'complete'],
+      );
+    });
+  }
+});
+
 test('API denial, unknown404, occupied registry or existing application never count as empty bootstrap', async () => {
   for (const changes of [
     { denied: true },
@@ -216,6 +282,43 @@ test('recovery retains the exact interrupted deployment identity and re-verifies
   f.state.rollout = true;
   await assert.rejects(f.client.verifyRollouts());
   f.state.rollout = false;
+  await f.client.verifyRollouts();
+  await f.client.complete();
+  assert.deepEqual(
+    f.controls.map((input) => input.action),
+    ['status', 'complete'],
+  );
+  assert.equal(f.controls[1].nonce, original.nonce);
+  assert.equal(f.controls[1].deadline, original.deadline);
+});
+
+test('recovery keeps admission closed until every present target has a known matching image', async () => {
+  const original = interrupted();
+  const f = fixture({
+    control: original,
+    published: true,
+    application: (value) =>
+      value.name.includes('browsercomputer')
+        ? { ...value, scheduling_hint: { target: { configuration: {} } } }
+        : value,
+  });
+  await f.client.recover();
+  await assert.rejects(f.client.verifyRollouts(), /Deployment safety checks did not pass/);
+  await assert.rejects(f.client.complete());
+  assert.deepEqual(
+    f.controls.map((input) => input.action),
+    ['status'],
+  );
+  f.state.application = (value) => ({
+    ...value,
+    scheduling_hint: { target: { configuration: { image: value.configuration.image } } },
+  });
+  await f.client.verifyRollouts();
+  f.state.application = (value) => ({ ...value, scheduling_hint: { target: {} } });
+  await assert.rejects(f.client.verifyRollouts(), /Deployment safety checks did not pass/);
+  await assert.rejects(f.client.complete());
+  assert.equal(f.controls.length, 1);
+  f.state.application = (value) => ({ ...value, scheduling_hint: { target: null } });
   await f.client.verifyRollouts();
   await f.client.complete();
   assert.deepEqual(

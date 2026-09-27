@@ -265,7 +265,7 @@ test('an untouched busy computer permits explicit abort while a partial complete
   f.hooks.fetch = async (_owner, request) => deploymentResponse(request);
   f.hooks.prepare = async (owner) => (owner === second ? 'busy' : 'stopped');
   const input = deploymentInput();
-  await assert.rejects(f.host.prepareDeployment!(input));
+  await assert.rejects(f.host.prepareDeployment!(input), { status: 409 });
   assert.deepEqual(f.stops, [{ ownerId: first, generation: '1' }]);
   await assert.rejects(f.host.resumeDeployment!({ ...input, nonce: randomUUID() }));
   await f.host.resumeDeployment!(input);
@@ -288,7 +288,10 @@ test('unknown computer preparation cannot be resumed or replaced by a different 
     throw new Error('Synthetic lost acknowledgement');
   };
   const input = deploymentInput();
-  await assert.rejects(f.host.prepareDeployment!(input));
+  await assert.rejects(f.host.prepareDeployment!(input), {
+    status: 503,
+    message: 'The deployment operation could not be completed.',
+  });
   await assert.rejects(f.host.resumeDeployment!(input));
   await assert.rejects(f.host.prepareDeployment!(deploymentInput()));
   await assert.rejects(f.request(randomUUID()));

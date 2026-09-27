@@ -341,6 +341,93 @@ test('confirmed clean stop permits a newer generation while stale stop and fence
   assert.equal(f.claimed(second, '2'), true);
 });
 
+test('an unused role records confirmed destruction before allowing a newer generation', async (t) => {
+  for (const role of ['browser', 'workspace'] as const) {
+    for (const restart of [false, true]) {
+      await t.test(`${role}, ${restart ? 'fresh' : 'same'} controller`, async () => {
+        const f = fixture(role);
+        const entered = deferred();
+        const release = deferred();
+        f.beforeDestroy(async () => {
+          entered.resolve();
+          await release.promise;
+        });
+        let acknowledged = false;
+        const stopping = f.lifecycle.stop(f.ownerId, '1').then(() => {
+          acknowledged = true;
+        });
+        await entered.promise;
+        assert.equal(acknowledged, false);
+        assert.equal(f.state(), undefined);
+        assert.deepEqual(f.events, ['destroy']);
+        release.resolve();
+        await stopping;
+        assert.deepEqual(f.state(), {
+          ownerId: f.ownerId,
+          environment: 'development',
+          generation: '1',
+          role,
+          phase: 'ready',
+          stopped: true,
+        });
+        assert.deepEqual(f.events, ['destroy', 'write:ready:true']);
+        if (restart) f.restart();
+        await assert.rejects(f.launch(randomUUID(), '1'));
+        const id = randomUUID();
+        await f.launch(id, '2');
+        await f.completed(id, '2');
+        const current = f.state();
+        const events = [...f.events];
+        await assert.rejects(f.lifecycle.stop(f.ownerId, '1'), { status: 409 });
+        assert.deepEqual(f.state(), current);
+        assert.deepEqual(f.events, events);
+        assert.equal(f.running(), true);
+        assert.equal(f.state()?.generation, '2');
+      });
+    }
+  }
+});
+
+test('failed or unconfirmed destruction of an unused role cannot publish a stopped identity', async (t) => {
+  for (const outcome of ['rejected', 'still-running'] as const) {
+    await t.test(outcome, async () => {
+      const f = fixture();
+      const lifecycle = createComputerLifecycle({
+        ...f.options,
+        destroy: async () => {
+          if (outcome === 'rejected') throw new Error('Synthetic private destruction failure');
+        },
+        running: () => outcome === 'still-running',
+      });
+      await assert.rejects(lifecycle.stop(f.ownerId, '1'));
+      assert.equal(f.state(), undefined);
+      assert.equal(f.writes.length, 0);
+      await assert.rejects(
+        lifecycle.launch(f.ownerId, { id: randomUUID(), generation: '2', taskId: 'task' }),
+      );
+      assert.equal(f.events.includes('launch'), false);
+      assert.equal(f.state(), undefined);
+    });
+  }
+});
+
+test('unused-role stop requires authority before destruction and before publishing its identity', async (t) => {
+  for (const revokeDuringDestruction of [false, true]) {
+    await t.test(
+      revokeDuringDestruction ? 'revoked during destruction' : 'unauthorized',
+      async () => {
+        const f = fixture();
+        if (revokeDuringDestruction) f.beforeDestroy(async () => f.revoke());
+        else f.revoke();
+        await assert.rejects(f.lifecycle.stop(f.ownerId, '1'));
+        assert.equal(f.state(), undefined);
+        assert.equal(f.writes.length, 0);
+        assert.deepEqual(f.events, revokeDuringDestruction ? ['destroy'] : []);
+      },
+    );
+  }
+});
+
 test('an unused newer tenant can stop while its prior computer generation remains clean and stopped', async () => {
   for (const role of ['browser', 'workspace'] as const) {
     const f = fixture(role);

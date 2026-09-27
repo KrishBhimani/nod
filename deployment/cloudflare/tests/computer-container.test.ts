@@ -54,7 +54,11 @@ function nativeProcess() {
   };
 }
 
-function fixture(role: 'browser' | 'workspace', phase: ComputerState['phase'], checkpoint = false) {
+function fixture(
+  role: 'browser' | 'workspace',
+  phase: ComputerState['phase'] | undefined,
+  checkpoint = false,
+) {
   const ownerId = randomUUID();
   const data = new Uint8Array(1024);
   const state: ComputerState = {
@@ -62,7 +66,7 @@ function fixture(role: 'browser' | 'workspace', phase: ComputerState['phase'], c
     environment: 'development',
     generation: '1',
     role,
-    phase,
+    phase: phase ?? 'ready',
     stopped: false,
     ...(checkpoint
       ? {
@@ -79,9 +83,10 @@ function fixture(role: 'browser' | 'workspace', phase: ComputerState['phase'], c
         }
       : {}),
   };
-  const values = new Map<string, unknown>([['computer', state]]);
+  const values = new Map<string, unknown>(phase ? [['computer', state]] : []);
   const events: string[] = [];
   const pending: Promise<unknown>[] = [];
+  let authorizedGeneration = '1';
   let exec = async (_args: string[]): Promise<ExecProcess> => nativeProcess().process;
   const storage = {
     get: async (key: string) => structuredClone(values.get(key)),
@@ -91,7 +96,7 @@ function fixture(role: 'browser' | 'workspace', phase: ComputerState['phase'], c
     transaction: async <T>(operation: (storage: unknown) => Promise<T>) => operation(storage),
   };
   const container = {
-    running: true,
+    running: phase !== undefined,
     exec: (args: string[]) => {
       events.push(`exec:${args.join(' ')}`);
       return exec(args);
@@ -108,7 +113,7 @@ function fixture(role: 'browser' | 'workspace', phase: ComputerState['phase'], c
         return {
           async computerIdentity(owner: string, generation: string) {
             assert.equal(owner, ownerId);
-            assert.equal(generation, '1');
+            assert.equal(generation, authorizedGeneration);
           },
         };
       },
@@ -156,6 +161,9 @@ function fixture(role: 'browser' | 'workspace', phase: ComputerState['phase'], c
     ownerId,
     events,
     container,
+    generation: (value: string) => {
+      authorizedGeneration = value;
+    },
     state: () => structuredClone(values.get('computer')) as ComputerState,
     exec: (value: typeof exec) => {
       exec = value;
@@ -163,18 +171,90 @@ function fixture(role: 'browser' | 'workspace', phase: ComputerState['phase'], c
     request: (path: string, init: RequestInit = {}) =>
       computer.request(
         ownerId,
-        '1',
+        authorizedGeneration,
         new Request(`http://sidekick.computer${path}`, {
           ...init,
           headers: {
             ...Object.fromEntries(new Headers(init.headers)),
-            'x-sidekick-generation': '1',
+            'x-sidekick-generation': authorizedGeneration,
             'x-sidekick-computer-role': role,
           },
         }),
       ),
   };
 }
+
+test('the same controller can launch a new generation after stopping an unused role', async (t) => {
+  for (const role of ['browser', 'workspace'] as const) {
+    await t.test(role, async (t) => {
+      const current = fixture(role, undefined);
+      assert.equal(current.state(), undefined);
+      assert.deepEqual(await current.computer.stopComputer(current.ownerId, '1'), {
+        stopped: true,
+      });
+      assert.equal(current.state().generation, '1');
+      assert.equal(current.state().phase, 'ready');
+      assert.equal(current.state().stopped, true);
+      assert.deepEqual(current.events, ['destroy']);
+
+      current.generation('2');
+      const exit = deferred<number>();
+      const command = nativeProcess();
+      command.process = {
+        ...command.process,
+        exitCode: exit.promise,
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('synthetic generation two'));
+            controller.close();
+          },
+        }),
+      };
+      current.exec(async (args) =>
+        args.includes('/app/src/providers/container-browser/bridge.ts') ||
+        args.includes('/opt/sidekick/workspace-command.py')
+          ? command.process
+          : nativeProcess().process,
+      );
+      t.after(async () => {
+        await current.computer.stopComputer(current.ownerId, '2');
+        exit.resolve(137);
+      });
+      const id = randomUUID();
+      const created = await current.request('/v1/commands', {
+        method: 'POST',
+        body: JSON.stringify({ id, role, ...(role === 'workspace' ? { taskId: 'task' } : {}) }),
+      });
+      assert.equal(created.status, 201);
+      assert.deepEqual(await created.json(), { id });
+      const output = await current.request(`/v1/commands/${id}/output`);
+      assert.equal(output.status, 200);
+      const reader = output.body!.getReader();
+      t.after(() => reader.cancel().catch(() => {}));
+      const first = await Promise.race([
+        reader.read(),
+        delay(500).then(() => assert.fail('The replacement command did not produce output')),
+      ]);
+      assert.equal(first.done, false);
+      assert.deepEqual(JSON.parse(new TextDecoder().decode(first.value)), {
+        type: 'stdout',
+        data: Buffer.from('synthetic generation two').toString('base64'),
+      });
+      assert.equal(current.state().generation, '2');
+      assert.equal(current.state().phase, 'dirty');
+      assert.equal(current.state().stopped, false);
+      assert.equal(current.container.running, true);
+      assert.equal(current.events.filter((event) => event === 'start').length, 1);
+      const saved = current.state();
+      const events = [...current.events];
+      await assert.rejects(current.computer.stopComputer(current.ownerId, '1'));
+      assert.deepEqual(current.state(), saved);
+      assert.deepEqual(current.events, events);
+      assert.equal(current.container.running, true);
+      assert.deepEqual(command.killed, []);
+    });
+  }
+});
 
 test('an idle alarm hydrates an evicted controller before retiring its running computer', async (t) => {
   for (const phase of ['ready', 'restoring', 'dirty'] as const) {
