@@ -4,7 +4,9 @@ A personal assistant with chat, persistent tasks, a browser, a Linux workspace, 
 
 Sidekick has two entry modes. The default local mode is a single-owner app bound to `127.0.0.1`; keep it private. Hosted mode adds Google login, account settings and one isolated runtime/database role per user. The Cloudflare adapter and CI/CD are implemented for an eight-user pilot; a passing fixture or dry run is not proof of a working production account or provider connection.
 
-**2026-09-27 provider decision:** E2B is the selected production computer. Combined-template isolation and pause/resume have implementation/fixture coverage only; live E2B execution remains unverified. Development shows 100 credits, while production shows 0 credits and a payment-card gate; runtime-key authorization is pending. Prior Cloudflare-computer results do not validate this new path.
+**2026-09-27 production acceptance:** the Cloudflare-computer pilot passed ordinary chat, real browser/workspace tasks, two-account file isolation and file persistence across an automatic deployment from `main`. [Release `6e0a3aab` and its exact test scope](docs/testing/results/2026-09-27-production-chat.md) are recorded separately from the outstanding integration and account checks.
+
+E2B remains the selected next production computer. Its combined-template isolation and pause/resume have implementation/fixture coverage only; live E2B execution remains unverified. Development shows 100 credits, while production shows 0 credits and a payment-card gate; runtime-key authorization is pending. The current Cloudflare-computer results do not validate E2B.
 
 Use [hosted setup](#run-the-hosted-pilot) for deployment configuration and [production](docs/production.md) for current limits and release evidence. The separate `npm run prototype:cloud` preview remains a synthetic design artifact, not a production test.
 

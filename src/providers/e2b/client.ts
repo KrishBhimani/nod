@@ -31,11 +31,16 @@ export function createE2BClient(options: {
   apiKey: string;
   sandboxTimeoutMs?: number;
   requestTimeoutMs?: number;
+  retries?: number;
 }): E2BClient {
   if (!options.apiKey.trim()) throw new Error('An E2B API key is required.');
   const requestTimeoutMs = options.requestTimeoutMs ?? 10_000;
   const timeoutMs = options.sandboxTimeoutMs ?? 30 * 60_000;
-  const connection = { apiKey: options.apiKey, requestTimeoutMs };
+  const connection = {
+    apiKey: options.apiKey,
+    requestTimeoutMs,
+    ...(options.retries === undefined ? {} : { retries: options.retries }),
+  };
   function wrap(sandbox: Sandbox): E2BSandbox {
     return {
       id: sandbox.sandboxId,
