@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
-import type { PreparedUserRoute } from './outcomes.ts';
+import { TaskReviewRequiredError, type PreparedUserRoute } from './outcomes.ts';
 import type { SubmitMessageResponse } from '../shared/contracts.ts';
 import type { WorkAdmission } from './work-admission.ts';
 import type {
@@ -312,18 +312,44 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
           );
         } else {
           const messageId = row.message_id ?? randomUUID();
-          const taskId = await options.submit(
-            row.text,
-            row.source_id,
-            client,
-            channel,
-            preparedRoute,
-            messageId,
-          );
-          await client.query(
-            "UPDATE channel_inbox SET state='submitted',task_id=$2,message_id=$3 WHERE source_id=$1 AND owner_id=$4",
-            [row.source_id, taskId, messageId, ownerId],
-          );
+          await client.query('SAVEPOINT channel_task_submission');
+          try {
+            const taskId = await options.submit(
+              row.text,
+              row.source_id,
+              client,
+              channel,
+              preparedRoute,
+              messageId,
+            );
+            await client.query(
+              "UPDATE channel_inbox SET state='submitted',task_id=$2,message_id=$3 WHERE source_id=$1 AND owner_id=$4",
+              [row.source_id, taskId, messageId, ownerId],
+            );
+            await client.query('RELEASE SAVEPOINT channel_task_submission');
+          } catch (error) {
+            if (!(error instanceof TaskReviewRequiredError)) throw error;
+            await client.query('ROLLBACK TO SAVEPOINT channel_task_submission');
+            await client.query('RELEASE SAVEPOINT channel_task_submission');
+            if (closed || replacing || !permitted(row))
+              throw new Error('Channel configuration changed.');
+            const discarded = await client.query(
+              "UPDATE channel_inbox SET state='discarded',task_id=NULL,message_id=$3 WHERE source_id=$1 AND owner_id=$2 AND state='pending'",
+              [row.source_id, ownerId, messageId],
+            );
+            if (discarded.rowCount !== 1) throw new Error('The channel receipt changed.');
+            const replyId = randomUUID();
+            await client.query(
+              "INSERT INTO messages(id,owner_id,role,text) VALUES($1,$2,'assistant',$3)",
+              [replyId, ownerId, TaskReviewRequiredError.publicMessage],
+            );
+            await client.query('INSERT INTO channel_outbox(message_id,source_id) VALUES($1,$2)', [
+              replyId,
+              row.source_id,
+            ]);
+            if (closed || replacing || !permitted(row))
+              throw new Error('Channel configuration changed.');
+          }
         }
         await client.query('COMMIT');
       } catch (error) {

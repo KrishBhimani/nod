@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { InMemoryCredentialStore, type AssistantMessage } from '@earendil-works/pi-ai';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
-import type { ConversationRoutingContext } from '../src/ports/conversation.ts';
+import type {
+  ConversationRouteDecision,
+  ConversationRoutingContext,
+} from '../src/ports/conversation.ts';
 import type { ProviderUsageEvent } from '../src/ports/provider-usage.ts';
 import { createPiConversationRouter } from '../src/providers/pi/conversation.ts';
 
@@ -165,6 +168,129 @@ test('Pi routing preserves an explicit model override and reports the actual sel
   );
   assert.deepEqual(await value.router(context()), { kind: 'conversation' });
   assert.equal(value.usage[0].model, 'gpt-4.1-nano');
+});
+
+test('Pi routing carries bounded blocked context without making it executable or exposing private fields', async () => {
+  const input = context();
+  input.text = 'Continue the earlier action';
+  input.candidates = Array.from({ length: 2 }, (_, index) => ({
+    ...input.candidates[0],
+    outcomeId: `eligible-${index}`,
+  }));
+  input.blockedCandidates = Array.from({ length: 10 }, (_, index) => ({
+    ...input.candidates[0],
+    outcomeId: `blocked-${index}`,
+    taskId: 'private-blocked-task-id',
+    title: 'x'.repeat(150),
+    objective: 'y'.repeat(2500),
+    status: index % 2 ? 'waiting_user' : 'failed',
+    waitingReason: index % 2 ? 'recovery' : null,
+    recentMessages: Array.from({ length: 6 }, () => ({
+      role: 'user' as const,
+      text: 'z'.repeat(1500),
+      secret: 'private-blocked-extra',
+    })),
+    secret: 'private-blocked-extra',
+  }));
+  let decision = { kind: 'continue', outcomeId: 'blocked-0' };
+  const value = fixture(async (_model, request) => {
+    const data = JSON.parse(String((request.messages[0] as { content: string }).content));
+    assert.equal(data.candidates.length, 2);
+    assert.equal(data.blockedCandidates.length, 6);
+    assert.deepEqual(
+      data.candidates.map((candidate: { outcomeId: string }) => candidate.outcomeId),
+      ['eligible-0', 'eligible-1'],
+    );
+    assert.equal(data.blockedCandidates[0].title.length, 100);
+    assert.equal(data.blockedCandidates[0].objective.length, 2000);
+    assert.equal(data.blockedCandidates[0].recentMessages.length, 4);
+    assert.equal(data.blockedCandidates[0].recentMessages[0].text.length, 1000);
+    assert.equal(data.blockedCandidates[0].status, 'failed');
+    assert.equal(data.blockedCandidates[1].waitingReason, 'recovery');
+    assert.doesNotMatch(
+      JSON.stringify(request),
+      /private-blocked|private-fixture-key|private-task-id/,
+    );
+    assert.match(
+      request.systemPrompt ?? '',
+      /Never convert that continuation into conversation or new_outcome/,
+    );
+    assert.match(request.systemPrompt ?? '', /fully specified read or inspection/);
+    return response(JSON.stringify(decision));
+  });
+  assert.deepEqual(await value.router(input), { kind: 'continue', outcomeId: 'blocked-0' });
+  decision = { kind: 'continue', outcomeId: 'blocked-6' };
+  await assert.rejects(value.router(input), { message: 'Conversation routing is unavailable.' });
+});
+
+test('Pi routing preserves identical blocked read context for fresh observations and explicit retry decisions', async () => {
+  const input = context();
+  input.candidates = [];
+  input.text = 'Open https://example.com and tell me the page title.';
+  input.blockedCandidates = [
+    {
+      outcomeId: 'blocked-browser',
+      taskId: 'private-blocked-browser',
+      title: 'Read Example Domain',
+      objective: input.text,
+      status: 'failed',
+      waitingReason: null,
+      recentMessages: [
+        { role: 'user', text: input.text },
+        { role: 'assistant', text: 'I couldn’t finish that. You can ask me to continue.' },
+      ],
+    },
+    {
+      outcomeId: 'blocked-email',
+      taskId: 'private-blocked-email',
+      title: 'Send confirmation',
+      objective: 'Send the confirmation email to sam@example.test.',
+      status: 'waiting_user',
+      waitingReason: 'recovery',
+      recentMessages: [],
+    },
+  ];
+  input.recentConversation = [
+    { role: 'user', text: 'What is 17 times 23?', outcomeId: null },
+    { role: 'assistant', text: '391.', outcomeId: null },
+  ];
+  let decision: ConversationRouteDecision = {
+    kind: 'new_outcome',
+    title: 'Read the current page title',
+    objective: input.text,
+  };
+  const value = fixture(async (_model, request) => {
+    const data = JSON.parse(String((request.messages[0] as { content: string }).content));
+    assert.equal(data.text, input.text);
+    assert.deepEqual(data.candidates, []);
+    assert.deepEqual(
+      data.blockedCandidates.map((candidate: { outcomeId: string; status: string }) => [
+        candidate.outcomeId,
+        candidate.status,
+      ]),
+      [
+        ['blocked-browser', 'failed'],
+        ['blocked-email', 'waiting_user'],
+      ],
+    );
+    assert.equal(
+      data.blockedCandidates[0].objective,
+      'Open https://example.com and tell me the page title.',
+    );
+    assert.equal(data.blockedCandidates[1].waitingReason, 'recovery');
+    assert.deepEqual(data.recentConversation, input.recentConversation);
+    assert.doesNotMatch(JSON.stringify(request), /private-blocked|private-fixture-key/);
+    assert.match(request.systemPrompt ?? '', /Matching the earlier request is not itself a retry/);
+    assert.match(request.systemPrompt ?? '', /Repeating an uncertain side effect is also continue/);
+    return response(JSON.stringify(decision));
+  });
+  assert.deepEqual(await value.router(input), decision);
+  input.text = 'Retry opening https://example.com and getting the title.';
+  decision = { kind: 'continue', outcomeId: 'blocked-browser' };
+  assert.deepEqual(await value.router(input), decision);
+  input.text = 'Send the confirmation email to sam@example.test.';
+  decision = { kind: 'continue', outcomeId: 'blocked-email' };
+  assert.deepEqual(await value.router(input), decision);
 });
 
 test('Pi routing accepts only strict decisions and rejects foreign IDs, extra authority and malformed output', async () => {

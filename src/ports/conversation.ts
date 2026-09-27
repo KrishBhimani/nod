@@ -21,6 +21,7 @@ export interface ConversationRoutingContext {
     waitingReason: string | null;
     recentMessages: Array<{ role: 'user' | 'assistant'; text: string }>;
   }>;
+  blockedCandidates?: ConversationRoutingContext['candidates'];
   signal: AbortSignal;
 }
 

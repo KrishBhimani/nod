@@ -1,0 +1,32 @@
+# Interrupted task routing repair
+
+Status date: **2026-09-27**.
+
+A normal production request to check the current weather in Lisbon was attached to an older failed weather execution. It failed before starting a new model or tool call because the saved execution contained a browser action whose result was never confirmed. The checkpoint correctly refused to replay that action; selecting the interrupted execution for a new request was the defect.
+
+The downloaded original checkpoint contained one old pending browser action and no completed receipt or new request entries. Read-only database observation confirmed the new request reused the old task and failed in about 1.3 seconds without starting a tool. Accounts, history and the unresolved receipt were preserved.
+
+## Behavior
+
+Conversation routing separates eligible outcomes from blocked failed or recovery outcomes within the same bounded context. Independent requests can create new work. A continuation naming blocked work returns a fixed conflict before changing messages, jobs or task revisions. Explicit replies and task IDs have the same guard. The transaction rechecks the latest task so a status change after routing cannot reopen a failed execution or select an older successful one.
+
+If routing fails while blocked work is present, submission fails closed. The existing conversation fallback remains available without blocked context. Successful follow-ups, active work and current questions keep their existing behavior. Failure messages no longer promise that an interrupted execution can simply continue. The checkpoint replay protection is unchanged.
+
+Messaging channels recognize this specific refusal, roll back partial submission writes and atomically record one owned response before processing later messages. Other errors retain their existing retry behavior. This prevents a refused continuation from blocking the channel inbox and outbox.
+
+## Validation
+
+- Sixty-five focused tests passed against disposable local PostgreSQL, including routing races, blocked continuations, fresh requests, bounded context, fallback behavior, explicit older-target refusal and the existing checkpoint replay protection.
+- Six live routing checks using the development OpenAI configuration and synthetic context passed: fresh weather, blocked weather retry, blocked email retry, independent file creation, successful follow-up and ordinary conversation. These checks called only the classifier; they did not execute tools or change accounts.
+- The complete local application suite passed all 1,273 tests with no skips or failures, including the identical-read routing protocol fixture. The frontend build, TypeScript, architecture and repository checks passed.
+- With the final routing instructions, the existing `gpt-6-luna` model passed all 29 synthetic live development cases. These covered fresh identical reads, busy history, explicit retries and uncertain duplicate email actions. A comparison using `gpt-6-sol` classified 27 correctly and hit the unchanged five-second cancellation budget twice; both timeouts failed closed. The existing model and timeout remain unchanged. Earlier prompt failures are retained in private evidence rather than counted as passing results.
+
+Manual deployment of `cd84a8c2c02371817d404c7f2b3f9a65d3a4dc06` completed at 21:02 UTC. The same ordinary weather request, submitted through the personal account's production chat at 21:03 UTC, completed in a fresh task at revision zero. The previous failed task stayed unchanged. Sidekick returned current conditions with a source link; the original downloaded checkpoint verified two browser calls, two completed durable receipts, no tool errors and no unresolved actions. This used normal chat routing, without forcing a new task or resetting the account.
+
+Review then identified a related explicit-reply edge case: an older successful target could bypass a newer blocked task in its outcome. The repair checks the latest owned outcome task under the same lock for explicit task IDs and replies. The regression verifies failed and recovery states without changing task, message, job or pending-input records.
+
+Manual deployment of `31f5299f8e3857eb7437fe8f1b23f95ad7e4a06f` also passed. A normal request to open Example Domain and report its title was then incorrectly refused as a continuation of older failed work. Read-only observation found no new task or message from that rejected request, and the prior failed weather task was unchanged. Synthetic development context reproduced the classification failure without sending production history to the development provider.
+
+Routing instructions now distinguish a fully specified fresh read from a request to repeat earlier work. An identical read can start a new observation; explicit retries and dependent references still select the blocked outcome. Restating an uncertain send, submission or edit also remains blocked. This changes classification instructions without weakening task, approval or checkpoint guards. Fixture tests establish context and decision propagation; the live classifier matrix and production browser check establish actual behavior separately.
+
+Final-head CI, manual browser acceptance and automatic deployment after merge are recorded with the pull request. The earlier weather check does not by itself establish the later identical-read repair or deployment persistence checks.

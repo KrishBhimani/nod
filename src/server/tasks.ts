@@ -23,6 +23,8 @@ import {
   createConversationRouting,
   initializeOutcomes,
   routingMessageDigest,
+  taskNeedsReview,
+  TaskReviewRequiredError,
   type PreparedUserRoute,
 } from './outcomes.ts';
 import type { WorkConsumers } from './work-admission.ts';
@@ -460,7 +462,7 @@ export function createUserMessageService(
   return { prepare, submit };
 }
 
-async function activatePendingInput(client: PoolClient, taskId: string, allowRecovery = false) {
+async function activatePendingInput(client: PoolClient, taskId: string) {
   const task = (
     await client.query(
       `SELECT * FROM tasks t WHERE id=$1 AND owner_id=$2 AND ${currentConversationSql()} FOR UPDATE`,
@@ -471,10 +473,7 @@ async function activatePendingInput(client: PoolClient, taskId: string, allowRec
     !task ||
     !(
       task.status === 'succeeded' ||
-      (task.status === 'waiting_user' && task.waiting_reason === 'question') ||
-      (allowRecovery &&
-        (task.status === 'failed' ||
-          (task.status === 'waiting_user' && task.waiting_reason === 'recovery')))
+      (task.status === 'waiting_user' && task.waiting_reason === 'question')
     )
   )
     return false;
@@ -535,7 +534,7 @@ async function queueUserInput(
       'INSERT INTO task_continuations(owner_id,source_id,task_id) VALUES($1,$2,$3)',
       [ownerId, options.sourceId, taskId],
     );
-  await activatePendingInput(client, taskId, true);
+  await activatePendingInput(client, taskId);
 }
 
 export async function submitUserMessage(
@@ -669,17 +668,25 @@ export async function submitUserMessage(
     if (!existingId && !options.replyToMessageId && !options.forceNew && prepared) {
       const decision = prepared.decision;
       if (decision.kind === 'continue') {
-        if (!prepared.candidateIds.includes(decision.outcomeId))
+        if (
+          !prepared.candidateIds.includes(decision.outcomeId) &&
+          !prepared.blockedOutcomeIds.includes(decision.outcomeId)
+        )
           throw Object.assign(new Error('This work is no longer available.'), { statusCode: 409 });
         const selected = await client.query(
-          `SELECT t.id FROM outcomes o JOIN tasks t ON t.outcome_id=o.id
+          `SELECT t.id,t.status,t.waiting_reason FROM outcomes o JOIN tasks t ON t.outcome_id=o.id
            WHERE o.id=$1 AND o.owner_id=$2 AND o.channel=$3 AND o.conversation_revision=$4 AND o.status='open'
-             AND t.owner_id=$2 AND t.channel=$3 AND t.status<>'cancelled' AND ${currentConversationSql()}
+             AND t.owner_id=$2 AND t.channel=$3 AND ${currentConversationSql()}
            ORDER BY t.updated_at DESC,t.id DESC LIMIT 1 FOR UPDATE OF t`,
           [decision.outcomeId, ownerId, channel, revision],
         );
         if (!selected.rows[0])
           throw Object.assign(new Error('This work is no longer available.'), { statusCode: 409 });
+        if (
+          prepared.blockedOutcomeIds.includes(decision.outcomeId) ||
+          taskNeedsReview(selected.rows[0].status, selected.rows[0].waiting_reason)
+        )
+          throw new TaskReviewRequiredError();
         existingId = selected.rows[0].id;
       } else if (decision.kind === 'new_outcome') {
         outcomeId = randomUUID();
@@ -698,6 +705,22 @@ export async function submitUserMessage(
       ).rows[0];
       if (!selected || selected.channel !== channel || selected.status === 'cancelled')
         throw Object.assign(new Error('Task not found in this conversation.'), { statusCode: 404 });
+      if (taskNeedsReview(selected.status, selected.waiting_reason))
+        throw new TaskReviewRequiredError();
+      if (selected.outcome_id) {
+        const latest = (
+          await client.query(
+            `SELECT status,waiting_reason FROM tasks t
+             WHERE outcome_id=$1 AND owner_id=$2 AND channel=$3 AND ${currentConversationSql()}
+             ORDER BY updated_at DESC,id DESC LIMIT 1 FOR UPDATE`,
+            [selected.outcome_id, ownerId, channel],
+          )
+        ).rows[0];
+        if (!latest)
+          throw Object.assign(new Error('This work is no longer available.'), { statusCode: 409 });
+        if (taskNeedsReview(latest.status, latest.waiting_reason))
+          throw new TaskReviewRequiredError();
+      }
       if (!selected.outcome_id) {
         if (selected.status === 'waiting_credentials')
           throw Object.assign(new Error('Complete the secure sign-in form to continue.'), {
@@ -1319,9 +1342,7 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
         ]);
     });
   } catch (error) {
-    const safeError = controller.signal.aborted
-      ? 'The task stopped.'
-      : 'I couldn’t finish this task. You can try again from the conversation.';
+    const safeError = controller.signal.aborted ? 'The task stopped.' : 'I couldn’t finish that.';
     const accepted = await transaction(async (client) => {
       await lockConversation(client, ownerId, task.channel);
       const updated = await client.query(
@@ -1344,7 +1365,7 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
           [
             randomUUID(),
             ownerId,
-            'I couldn’t finish that. You can ask me to continue.',
+            'I couldn’t finish that.',
             taskId,
             `failure:${taskId}:${revision}`,
           ],

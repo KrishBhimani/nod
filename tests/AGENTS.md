@@ -6,32 +6,32 @@
 
 `work-admission`, `tenant-drain`, `tenant-drain-work` and `tenant-drain-background` verify non-aborting deployment pause, deadlines, stale/idempotent resume, late consumer registration, exact-worker replacement, actual Fastify handler/disconnect accounting and signed control authority. Disposable PostgreSQL and real pg-boss fixtures hold a task before model startup, finish accepted work naturally, preserve queued work until resume and retain shutdown cancellation. Synthetic channel, integration and Vault callbacks prove accepted background work remains counted while new polling/retries pause. These fixtures do not prove a live deployment, provider webhook delivery or computer checkpoint/stop receipts.
 
-| Boundary                                                               | Tests                                                                                   |
-| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Runtime, tools, lifecycle and provider replacement                     | `runtime-*`, `pi-agent`, `application-adapters`                                         |
-| Dispatch, recovery, cancellation and revisions                         | `task-durability`, `task-continuation`, `task-progress`, `task-failures`, `outcomes`    |
-| Message replies, shared owner channel context, emoji and reset fencing | `conversation`, `conversation-reset`, `message-idempotency`, `channel-context`, `emoji` |
-| Serialized manual browser control and stale leases                     | `takeover`, `runtime-session`, `task-continuation`                                      |
-| HTTP ownership, artifacts and chat confirmations                       | `server-boundaries`                                                                     |
-| Credentials, stale forms and encryption                                | `vault`, `vault-rejected-login`, `credential-feedback`, `runtime-credentials`           |
-| App consent, events, file downloads and provider migration             | `integrations`, `integration-apps`, `integration-files`, `provider-adapters`            |
-| Messaging authentication, inbox/outbox and uncertain delivery          | `channels`                                                                              |
-| Goals, schedules and memory                                            | `personal`, `schedules`                                                                 |
-| Audio policy and cancellation                                          | `speech`, `provider-adapters`                                                           |
-| Streaming and safe links                                               | `web-streams`, `message-links`                                                          |
-| Markdown composer, inline emoji, preview cards and reset UI            | `chat-composer`, `chat-messages`, `chat-reset`, `web-markdown`                          |
-| Sidebar shortcuts, modifier hints and navigation focus                 | `sidebar`                                                                               |
-| Public metadata, pinned resolution, image proxy and caching            | `link-preview`                                                                          |
-| Compact accounts, channel setup steps, and plan chat drafts            | `secondary-pages`, `secondary-page-layout`                                              |
-| Cached navigation, obsolete reads and account action focus             | `page-data-cache`, `connections-ui`                                                     |
-| One-time timing, schedule tabs and read-only execution history         | `schedule-ui`                                                                           |
-| Inspector payload masking, ownership, usage and pagination             | `inspector-redaction`, `inspector-store`, `inspector-observations`                      |
-| Paired activity, retained tool counts and provider coverage            | `inspector-ui`, `provider-usage`, `pi-agent`                                            |
-| Browser takeover locks, socket input, expiry and task resume           | `browser-manual`, `browser-control`, `takeover`                                         |
+| Boundary                                                               | Tests                                                                                                         |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Runtime, tools, lifecycle and provider replacement                     | `runtime-*`, `pi-agent`, `application-adapters`                                                               |
+| Dispatch, recovery, cancellation and revisions                         | `task-durability`, `task-continuation`, `task-progress`, `task-failures`, `task-routing-recovery`, `outcomes` |
+| Message replies, shared owner channel context, emoji and reset fencing | `conversation`, `conversation-reset`, `message-idempotency`, `channel-context`, `emoji`                       |
+| Serialized manual browser control and stale leases                     | `takeover`, `runtime-session`, `task-continuation`                                                            |
+| HTTP ownership, artifacts and chat confirmations                       | `server-boundaries`                                                                                           |
+| Credentials, stale forms and encryption                                | `vault`, `vault-rejected-login`, `credential-feedback`, `runtime-credentials`                                 |
+| App consent, events, file downloads and provider migration             | `integrations`, `integration-apps`, `integration-files`, `provider-adapters`                                  |
+| Messaging authentication, inbox/outbox and uncertain delivery          | `channels`, `channel-task-recovery`                                                                           |
+| Goals, schedules and memory                                            | `personal`, `schedules`                                                                                       |
+| Audio policy and cancellation                                          | `speech`, `provider-adapters`                                                                                 |
+| Streaming and safe links                                               | `web-streams`, `message-links`                                                                                |
+| Markdown composer, inline emoji, preview cards and reset UI            | `chat-composer`, `chat-messages`, `chat-reset`, `web-markdown`                                                |
+| Sidebar shortcuts, modifier hints and navigation focus                 | `sidebar`                                                                                                     |
+| Public metadata, pinned resolution, image proxy and caching            | `link-preview`                                                                                                |
+| Compact accounts, channel setup steps, and plan chat drafts            | `secondary-pages`, `secondary-page-layout`                                                                    |
+| Cached navigation, obsolete reads and account action focus             | `page-data-cache`, `connections-ui`                                                                           |
+| One-time timing, schedule tabs and read-only execution history         | `schedule-ui`                                                                                                 |
+| Inspector payload masking, ownership, usage and pagination             | `inspector-redaction`, `inspector-store`, `inspector-observations`                                            |
+| Paired activity, retained tool counts and provider coverage            | `inspector-ui`, `provider-usage`, `pi-agent`                                                                  |
+| Browser takeover locks, socket input, expiry and task resume           | `browser-manual`, `browser-control`, `takeover`                                                               |
 
 Inject fakes through ports and factories. Avoid global transport mocks when testing feature policy. Keep adapter protocol tests separate. No real email, channel delivery, paid action or personal data in fixtures. A passing substitute stack is not a live provider check.
 
-`channels` verifies code interception before persistence, masked receipts, fixed conflict guidance through the durable outbox, transaction rollback and stable webhook/polling deduplication across restart. Taskless guidance must retain message ownership, sender/account access, original recipient, reply-window and uncertain-send guards. Generic hook and database errors must leave the receipt unacknowledged without exposing the code. These checks use disposable PostgreSQL and synthetic transport callbacks; they never send a live message.
+`channels` verifies code interception before persistence, masked receipts, fixed conflict guidance through the durable outbox, transaction rollback and stable webhook/polling deduplication across restart. Taskless guidance must retain message ownership, sender/account access, original recipient, reply-window and uncertain-send guards. Generic hook and database errors must leave the receipt unacknowledged without exposing the code. `channel-task-recovery` also verifies typed blocked-task refusals, savepoint rollback, exact-owner outbox routing, once-only responses, later-message progress and retryable unknown failures. These checks use disposable PostgreSQL and synthetic transport callbacks; they never send a live message.
 
 `integration-consent` drives the Apps consent route through the real Composio SDK adapter and a transport fixture that rejects authorizing an already-pinned toolkit. Use its disposable schema to check that adding another account preserves the existing account and execution session, propagates custom auth configuration, cleans up temporary consent sessions, and keeps provider errors private. This fixture does not complete live OAuth.
 
