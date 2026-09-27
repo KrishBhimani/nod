@@ -8,13 +8,17 @@ import { startContainer } from '../src/container-startup.ts';
 
 type Options = Parameters<typeof retireUnusedComputer>[0];
 
-function fixture(role: 'browser' | 'workspace' = 'browser') {
+function fixture(
+  role: 'browser' | 'workspace' = 'browser',
+  revision: 'older' | 'current' = 'older',
+  originallyStopped = true,
+) {
   const identity = { ownerId: randomUUID(), environment: 'development', generation: '4', role };
   const original: ComputerState = {
     ...identity,
-    generation: '3',
+    generation: revision === 'older' ? '3' : '4',
     phase: 'uncertain',
-    stopped: true,
+    stopped: originallyStopped,
     commands: [],
   };
   const values = new Map<string, unknown>([['computer', structuredClone(original)]]);
@@ -126,7 +130,9 @@ test('identity, generation, legacy command and checkpoint ambiguity keep the ori
     { ownerId: randomUUID() },
     { environment: 'production' },
     { role: 'workspace' },
-    { generation: '4' },
+    { generation: '4', stopped: null },
+    { generation: '4', stopped: 'false' },
+    { generation: '4', stopped: undefined },
     { generation: '5' },
     { generation: 'invalid' },
     { stopped: false },
@@ -488,4 +494,112 @@ test('native inspection cannot install a concurrent controller or acknowledge lo
   await assert.rejects(drain);
   assert.deepEqual(f.values.get('computer'), f.original);
   assert.equal(f.values.has(f.archiveKey), false);
+});
+
+test('a current unused failure retires only to a stopped marker and preserves its original record', async () => {
+  for (const role of ['browser', 'workspace'] as const) {
+    for (const stopped of [false, true]) {
+      const f = controllerFixture(role, fixture(role, 'current', stopped));
+      f.values.set('synthetic-pending-receipt', { completed: false });
+      assert.deepEqual(await f.drain(), {
+        status: 'drained',
+        generation: '4',
+        clean: true,
+        stopped: true,
+      });
+      assert.deepEqual(f.values.get(f.archiveKey), {
+        format: 'sidekick-unused-computer-retirement-v1',
+        deployment: f.options.deployment,
+        original: f.original,
+        replacement: { ...f.options.identity, phase: 'ready', stopped: true },
+      });
+      assert.deepEqual(f.values.get('synthetic-pending-receipt'), { completed: false });
+      const before = JSON.stringify([...f.values]);
+      const response = await f.computer.request(
+        f.options.identity.ownerId,
+        f.options.identity.generation,
+        new Request('http://sidekick.computer/v1/commands', {
+          method: 'POST',
+          headers: { 'x-sidekick-generation': '4', 'x-sidekick-computer-role': role },
+          body: JSON.stringify({
+            id: randomUUID(),
+            role,
+            ...(role === 'workspace' && { taskId: 'synthetic' }),
+          }),
+        }),
+      );
+      assert.equal(response.status, 503);
+      assert.equal(JSON.stringify([...f.values]), before);
+      assert.equal(
+        [...f.values.keys()].some((key) => key.startsWith('command:')),
+        false,
+      );
+    }
+  }
+});
+
+test('a cold retry of current-generation retirement preserves the archive under a later drain', async () => {
+  for (const role of ['browser', 'workspace'] as const) {
+    const f = controllerFixture(role, fixture(role, 'current', false));
+    assert.equal((await f.drain()).status, 'drained');
+    const before = JSON.stringify([...f.values]);
+    const writes = f.writes();
+    f.options.deployment = {
+      nonce: randomUUID(),
+      targetRelease: 'd'.repeat(40),
+      deadline: Date.now() + 60_000,
+    };
+    const reloaded = controllerFixture(role, f);
+    assert.equal((await reloaded.drain()).status, 'drained');
+    assert.equal(JSON.stringify([...f.values]), before);
+    assert.equal(f.writes(), writes);
+    assert.deepEqual(reloaded.events, []);
+  }
+});
+
+test('current-generation retirement retains claim, checkpoint, controller and authority fences', async () => {
+  for (const condition of [
+    'claim',
+    'checkpoint',
+    'previous-checkpoint',
+    'loaded',
+    'authority',
+    'late-native',
+  ]) {
+    const f = controllerFixture('workspace', fixture('workspace', 'current', false));
+    if (condition === 'claim') f.values.set(`command:1:${randomUUID()}`, true);
+    if (condition === 'checkpoint') f.values.set('computer', { ...f.original, checkpoint: {} });
+    if (condition === 'previous-checkpoint')
+      f.values.set('computer', { ...f.original, previousCheckpoint: {} });
+    let loaded: unknown;
+    if (condition === 'loaded') {
+      loaded = {
+        ownerId: f.options.identity.ownerId,
+        generation: f.options.identity.generation,
+        commands: { active: 0 },
+        lifecycle: { drain: async () => ({ status: 'unsafe', generation: '4' }) },
+      };
+      Object.assign(f.computer, { current: loaded });
+    }
+    if (condition === 'authority') f.revoke();
+    if (condition === 'late-native') {
+      let checks = 0;
+      f.inspect(async () => (++checks === 1 ? null : { image: 'synthetic', labels: {} }));
+    }
+    const before = structuredClone(f.values);
+    if (condition === 'loaded') {
+      assert.deepEqual(await f.drain(), { status: 'unsafe', generation: '4' });
+      assert.equal((f.computer as unknown as { current: unknown }).current, loaded);
+    } else await assert.rejects(f.drain());
+    if (condition === 'late-native') {
+      assert.deepEqual(
+        (f.values.get(f.archiveKey) as { original: ComputerState }).original,
+        f.original,
+      );
+      assert.equal((f.values.get('computer') as ComputerState).stopped, true);
+    } else {
+      assert.deepEqual(f.values, before);
+      assert.equal(f.values.has(f.archiveKey), false);
+    }
+  }
 });

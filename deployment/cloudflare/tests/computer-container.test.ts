@@ -88,7 +88,8 @@ function fixture(
   const authorizations: string[] = [];
   const pending: Promise<unknown>[] = [];
   let authorizedGeneration = '1';
-  let exec = async (_args: string[]): Promise<ExecProcess> => nativeProcess().process;
+  let exec = async (_args: string[], _options: ContainerExecOptions): Promise<ExecProcess> =>
+    nativeProcess().process;
   const storage = {
     get: async (key: string) => structuredClone(values.get(key)),
     put: async (key: string, value: unknown) => {
@@ -98,9 +99,9 @@ function fixture(
   };
   const container = {
     running: phase !== undefined,
-    exec: (args: string[]) => {
+    exec: (args: string[], options: ContainerExecOptions) => {
       events.push(`exec:${args.join(' ')}`);
-      return exec(args);
+      return exec(args, options);
     },
   };
   const namespace = { idFromName: (name: string) => ({ toString: () => name }) };
@@ -186,6 +187,62 @@ function fixture(
       ),
   };
 }
+
+test('both computer roles preserve the pinned image user for restore helpers and commands', async (t) => {
+  for (const role of ['browser', 'workspace'] as const) {
+    await t.test(role, async (t) => {
+      const current = fixture(role, 'ready', true);
+      const exit = deferred<number>();
+      const calls: { args: string[]; options: ContainerExecOptions }[] = [];
+      const command = nativeProcess().process;
+      current.exec(async (args, options) => {
+        calls.push({ args, options });
+        assert.equal(Object.hasOwn(options, 'user'), false);
+        return args.includes('/app/src/providers/container-browser/bridge.ts') ||
+          args.includes('/opt/sidekick/workspace-command.py')
+          ? { ...command, exitCode: exit.promise }
+          : nativeProcess().process;
+      });
+      t.after(async () => {
+        await current.computer.stopComputer(current.ownerId, '1');
+        exit.resolve(137);
+      });
+      const response = await current.request('/v1/commands', {
+        method: 'POST',
+        body: JSON.stringify({
+          id: randomUUID(),
+          role,
+          ...(role === 'workspace' ? { taskId: 'task' } : {}),
+        }),
+      });
+      assert.equal(response.status, 201);
+      assert.equal(current.state().phase, 'dirty');
+      assert.equal(calls.length, role === 'browser' ? 3 : 4);
+      const restore = calls[0]!;
+      assert.deepEqual(restore.args.slice(0, 4), [
+        'python3',
+        '-u',
+        '/opt/sidekick/checkpoint.py',
+        'restore',
+      ]);
+      assert.ok(restore.options.stdin instanceof ReadableStream);
+      assert.equal(restore.options.stdout, 'ignore');
+      assert.equal(restore.options.stderr, 'ignore');
+      for (const helper of calls.slice(1, -1)) {
+        assert.deepEqual(helper.args.slice(0, 2), ['python3', '-c']);
+        assert.equal(helper.options.cwd, role === 'browser' ? '/app' : '/home/node');
+        assert.equal(helper.options.stderr, 'ignore');
+      }
+      const launched = calls.at(-1)!;
+      assert.equal(launched.options.cwd, role === 'browser' ? '/app' : '/workspace/task');
+      assert.equal(launched.options.stdin, 'pipe');
+      for (const call of calls) {
+        assert.equal(Object.hasOwn(call.options, 'user'), false);
+        assert.ok(call.options.signal instanceof AbortSignal);
+      }
+    });
+  }
+});
 
 test('the same controller can launch a new generation after stopping an unused role', async (t) => {
   for (const role of ['browser', 'workspace'] as const) {

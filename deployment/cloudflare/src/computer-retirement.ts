@@ -63,9 +63,10 @@ export async function retireUnusedComputer(options: {
         state.ownerId !== identity.ownerId ||
         state.environment !== identity.environment ||
         state.role !== identity.role ||
-        BigInt(generation(state.generation)) >= BigInt(identity.generation) ||
+        BigInt(generation(state.generation)) > BigInt(identity.generation) ||
         state.phase !== 'uncertain' ||
-        state.stopped !== true ||
+        typeof state.stopped !== 'boolean' ||
+        (state.generation !== identity.generation && !state.stopped) ||
         (state.commands !== undefined &&
           (!Array.isArray(state.commands) || state.commands.length !== 0)) ||
         state.checkpoint !== undefined ||

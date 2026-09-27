@@ -105,7 +105,7 @@ abstract class ComputerContainer extends Container<Bindings> {
 
   private exec(args: string[], options: ContainerExecOptions = {}) {
     if (!this.ctx.container?.running) throw unavailable();
-    return this.ctx.container.exec(args, { ...options, user: 'node' });
+    return this.ctx.container.exec(args, options);
   }
 
   private async helper(args: string[], input?: Uint8Array, keepInputOpen = false) {
