@@ -72,7 +72,6 @@ if (runtimeMode !== 'tenant' && process.env.NODE_ENV !== 'production') {
 async function shutdown(fenced = false) {
   if (stopping) return;
   stopping = true;
-  lease?.close();
   let failed = fenced;
   for (const close of [() => closeApplication?.(), () => pool.end()]) {
     try {
@@ -81,6 +80,7 @@ async function shutdown(fenced = false) {
       failed = true;
     }
   }
+  lease?.close();
   if (failed) console.error('Some application resources could not close.');
   process.exit(failed ? 1 : 0);
 }
