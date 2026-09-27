@@ -24,7 +24,7 @@ node deployment/e2b/validate-computer.mjs sidekick-e2b-computer:<source-hash-pre
 
 The build downloads public Docker, Debian and npm dependencies; it does not forward application environment variables into Docker. The fixture creates only its own temporary Docker container, with NET_ADMIN as the only added capability, no host network or bind mounts, and synthetic files. It checks real Chromium CDP and authenticated Xvfb access as the browser user; workspace denial of CDP, IPv4/IPv6 loopback, the container's own address, synthetic metadata addresses, the control port, browser files/socket, process access, helper writes and privilege escalation. Workspace DNS, HTTPS and ordinary file writes must still work. Missing NET_ADMIN and a changed firewall must fail readiness. The fixture removes only its own container. These checks do not prove the live E2B kernel, networking or pause/resume behavior.
 
-On 2026-09-27, the combined linux/amd64 image passed that local fixture, including the positive browser and workspace checks, six denied network targets, eight denied file/process operations, and both readiness failures. The five template/readiness tests and TypeScript check also passed. No live E2B template or sandbox was created for this evidence.
+On 2026-09-27, the combined linux/amd64 image passed that local fixture, including the positive browser and workspace checks, six denied network targets, eight denied file/process operations, and both readiness failures. The six template/readiness tests and TypeScript check also passed. No live E2B template or sandbox was created for this evidence.
 
 After confirming the development key's project, build a versioned template explicitly:
 

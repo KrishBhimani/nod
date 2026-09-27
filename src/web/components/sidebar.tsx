@@ -298,35 +298,33 @@ export function Sidebar({
         >
           {(close) => (
             <>
-              {navigationItems
-                .filter((item) => item.path !== '/')
-                .map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <a
-                      key={item.path}
-                      href={item.path}
-                      role="menuitem"
-                      aria-current={path === item.path ? 'page' : undefined}
-                      onClick={(event) => {
-                        if (
-                          event.metaKey ||
-                          event.ctrlKey ||
-                          event.shiftKey ||
-                          event.altKey ||
-                          event.button !== 0
-                        )
-                          return;
-                        event.preventDefault();
-                        close();
-                        onNavigate(item.path);
-                      }}
-                    >
-                      <Icon size={18} aria-hidden="true" />
-                      <span>{item.label}</span>
-                    </a>
-                  );
-                })}
+              {navigationItems.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <a
+                    key={item.path}
+                    href={item.path}
+                    role="menuitem"
+                    aria-current={path === item.path ? 'page' : undefined}
+                    onClick={(event) => {
+                      if (
+                        event.metaKey ||
+                        event.ctrlKey ||
+                        event.shiftKey ||
+                        event.altKey ||
+                        event.button !== 0
+                      )
+                        return;
+                      event.preventDefault();
+                      close();
+                      onNavigate(item.path);
+                    }}
+                  >
+                    <Icon size={18} aria-hidden="true" />
+                    <span>{item.label}</span>
+                  </a>
+                );
+              })}
               <div className="mobile-menu-separator" role="separator" />
               {account ? (
                 <AccountMenuItems account={account} close={close} />
