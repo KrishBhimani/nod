@@ -27,7 +27,22 @@ export interface PreparedUserRoute {
   conversationRevision: number;
   messageDigest: string;
   candidateIds: string[];
+  blockedOutcomeIds: string[];
   decision: ConversationRouteDecision;
+}
+
+export class TaskReviewRequiredError extends Error {
+  static readonly publicMessage =
+    'I can’t safely repeat the earlier action because its outcome is unknown.';
+  readonly statusCode = 409;
+
+  constructor() {
+    super(TaskReviewRequiredError.publicMessage);
+  }
+}
+
+export function taskNeedsReview(status: string, waitingReason?: string | null) {
+  return status === 'failed' || (status === 'waiting_user' && waitingReason === 'recovery');
 }
 
 export function routingMessageDigest(text: string, attachments: Artifact[], channel: string) {
@@ -83,6 +98,7 @@ export function createConversationRouting(options: {
       conversationRevision: revision,
       messageDigest: routingMessageDigest(text, attachments, channel),
       candidateIds: [],
+      blockedOutcomeIds: [],
       decision: { kind: 'conversation' },
     };
     if (request.skip || !options.routeConversation) return prepared;
@@ -100,7 +116,7 @@ export function createConversationRouting(options: {
       [options.ownerId, channel, revision],
     );
     const candidateMessageIds: string[] = [];
-    const candidates: ConversationRoutingContext['candidates'] = await Promise.all(
+    const outcomes: ConversationRoutingContext['candidates'] = await Promise.all(
       rows.rows.map(async (row) => {
         const messages = await options.pool.query<{
           id: string;
@@ -140,7 +156,14 @@ export function createConversationRouting(options: {
         [options.ownerId, channel, candidateMessageIds],
       )
     ).rows;
+    const candidates = outcomes.filter(
+      (candidate) => !taskNeedsReview(candidate.status, candidate.waitingReason),
+    );
+    const blockedCandidates = outcomes.filter((candidate) =>
+      taskNeedsReview(candidate.status, candidate.waitingReason),
+    );
     prepared.candidateIds = candidates.map((candidate) => candidate.outcomeId);
+    prepared.blockedOutcomeIds = blockedCandidates.map((candidate) => candidate.outcomeId);
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -154,23 +177,30 @@ export function createConversationRouting(options: {
               conversationRevision: revision,
               recentConversation,
               candidates,
+              blockedCandidates,
               signal: controller.signal,
             }),
           )
-          .catch(() => ({ kind: 'conversation' as const })),
-        new Promise<ConversationRouteDecision>((resolve) => {
+          .catch(() => undefined),
+        new Promise<ConversationRouteDecision | undefined>((resolve) => {
           timer = setTimeout(() => {
             controller.abort();
-            resolve({ kind: 'conversation' });
+            resolve(undefined);
           }, options.timeoutMs ?? defaultConversationRoutingTimeoutMs);
         }),
       ]);
       const parsed = decisionSchema.safeParse(result);
       if (
         parsed.success &&
-        (parsed.data.kind !== 'continue' || prepared.candidateIds.includes(parsed.data.outcomeId))
+        (parsed.data.kind !== 'continue' ||
+          prepared.candidateIds.includes(parsed.data.outcomeId) ||
+          prepared.blockedOutcomeIds.includes(parsed.data.outcomeId))
       )
         prepared.decision = parsed.data;
+      else if (blockedCandidates.length)
+        throw Object.assign(new Error('I couldn’t check the earlier request. Please try again.'), {
+          statusCode: 503,
+        });
     } finally {
       if (timer) clearTimeout(timer);
       controller.abort();

@@ -104,13 +104,13 @@ test(
           assert.equal(attempted.has(id), false);
           const replies = await messages(id);
           assert.equal(replies.length, 1);
-          assert.equal(replies[0].text, 'I couldn’t finish that. You can ask me to continue.');
+          assert.equal(replies[0].text, 'I couldn’t finish that.');
           assert.equal(replies[0].stream_id, `failure:${id}:0`);
           assert.equal(replies[0].owner_id, 'local-development');
         },
       );
       await t.test(
-        'duplicate delivery cannot repeat a segment failure and a new revision can report its own failure',
+        'duplicate delivery and a rejected retry preserve the original failed segment',
         async () => {
           const id = await tasks.submitTask('Fail the synthetic request');
           await waitFor(async () => (await row(id)).status === 'failed');
@@ -118,16 +118,25 @@ test(
           await tasks.boss.send('assistant-task', { taskId: id, revision: 0 }, { retryLimit: 0 });
           await delay(650);
           assert.equal((await messages(id)).length, 1);
-          await tasks.submitUserMessage('Retry the synthetic request', [], {
-            replyToMessageId: first.id,
-          });
-          await waitFor(
-            async () => (await row(id)).status === 'failed' && (await row(id)).revision === 1,
+          await assert.rejects(
+            tasks.submitUserMessage('Retry the synthetic request', [], {
+              replyToMessageId: first.id,
+            }),
+            {
+              statusCode: 409,
+              message: 'I can’t safely repeat the earlier action because its outcome is unknown.',
+            },
           );
           const replies = await messages(id);
           assert.deepEqual(
             replies.map((item) => item.stream_id),
-            [`failure:${id}:0`, `failure:${id}:1`],
+            [`failure:${id}:0`],
+          );
+          assert.equal((await row(id)).revision, 0);
+          assert.equal(
+            (await db.pool.query('SELECT id FROM pending_task_inputs WHERE task_id=$1', [id]))
+              .rowCount,
+            0,
           );
           const publicData = JSON.stringify({
             task: await row(id),
@@ -136,7 +145,34 @@ test(
           });
           assert.equal(publicData.includes('PRIVATE-FIXTURE-KEY'), false);
           assert.equal(publicData.includes('/private/fixture/path'), false);
-          assert.ok(diagnostics.some((item) => item.taskId === id && item.revision === 1));
+          assert.ok(diagnostics.some((item) => item.taskId === id && item.revision === 0));
+        },
+      );
+      await t.test(
+        'an already accepted follow-up remains held when its active segment fails',
+        async () => {
+          const id = await tasks.submitTask('held:synthetic work with a queued follow-up');
+          await waitFor(() => held.has(id));
+          await tasks.submitUserMessage('Add the synthetic supporting detail', [], { taskId: id });
+          held.get(id)!();
+          await waitFor(async () => (await row(id)).status === 'failed');
+          await delay(100);
+          assert.equal((await row(id)).revision, 0);
+          assert.deepEqual(
+            (await db.pool.query('SELECT state FROM pending_task_inputs WHERE task_id=$1', [id]))
+              .rows,
+            [{ state: 'pending' }],
+          );
+          assert.equal(
+            (
+              await db.pool.query(
+                `SELECT id FROM ${bossSchema}.job WHERE name='assistant-task' AND data->>'taskId'=$1 AND (data->>'revision')::int>0`,
+                [id],
+              )
+            ).rowCount,
+            0,
+          );
+          assert.equal((await messages(id)).length, 1);
         },
       );
       await t.test(
@@ -224,9 +260,7 @@ test(
           await channels.drain();
           await app.inject({ method: 'POST', url: '/api/webhooks/telegram', payload: {} });
           await channels.drain();
-          assert.deepEqual(sent, [
-            { text: 'I couldn’t finish that. You can ask me to continue.', threadId: 'fixture-dm' },
-          ]);
+          assert.deepEqual(sent, [{ text: 'I couldn’t finish that.', threadId: 'fixture-dm' }]);
           assert.equal((await db.pool.query('SELECT * FROM channel_outbox')).rowCount, 1);
         },
       );

@@ -167,6 +167,59 @@ test('Pi routing preserves an explicit model override and reports the actual sel
   assert.equal(value.usage[0].model, 'gpt-4.1-nano');
 });
 
+test('Pi routing carries bounded blocked context without making it executable or exposing private fields', async () => {
+  const input = context();
+  input.text = 'Continue the earlier action';
+  input.candidates = Array.from({ length: 2 }, (_, index) => ({
+    ...input.candidates[0],
+    outcomeId: `eligible-${index}`,
+  }));
+  input.blockedCandidates = Array.from({ length: 10 }, (_, index) => ({
+    ...input.candidates[0],
+    outcomeId: `blocked-${index}`,
+    taskId: 'private-blocked-task-id',
+    title: 'x'.repeat(150),
+    objective: 'y'.repeat(2500),
+    status: index % 2 ? 'waiting_user' : 'failed',
+    waitingReason: index % 2 ? 'recovery' : null,
+    recentMessages: Array.from({ length: 6 }, () => ({
+      role: 'user' as const,
+      text: 'z'.repeat(1500),
+      secret: 'private-blocked-extra',
+    })),
+    secret: 'private-blocked-extra',
+  }));
+  let decision = { kind: 'continue', outcomeId: 'blocked-0' };
+  const value = fixture(async (_model, request) => {
+    const data = JSON.parse(String((request.messages[0] as { content: string }).content));
+    assert.equal(data.candidates.length, 2);
+    assert.equal(data.blockedCandidates.length, 6);
+    assert.deepEqual(
+      data.candidates.map((candidate: { outcomeId: string }) => candidate.outcomeId),
+      ['eligible-0', 'eligible-1'],
+    );
+    assert.equal(data.blockedCandidates[0].title.length, 100);
+    assert.equal(data.blockedCandidates[0].objective.length, 2000);
+    assert.equal(data.blockedCandidates[0].recentMessages.length, 4);
+    assert.equal(data.blockedCandidates[0].recentMessages[0].text.length, 1000);
+    assert.equal(data.blockedCandidates[0].status, 'failed');
+    assert.equal(data.blockedCandidates[1].waitingReason, 'recovery');
+    assert.doesNotMatch(
+      JSON.stringify(request),
+      /private-blocked|private-fixture-key|private-task-id/,
+    );
+    assert.match(
+      request.systemPrompt ?? '',
+      /Never convert that continuation into conversation or new_outcome/,
+    );
+    assert.match(request.systemPrompt ?? '', /new self-contained request/);
+    return response(JSON.stringify(decision));
+  });
+  assert.deepEqual(await value.router(input), { kind: 'continue', outcomeId: 'blocked-0' });
+  decision = { kind: 'continue', outcomeId: 'blocked-6' };
+  await assert.rejects(value.router(input), { message: 'Conversation routing is unavailable.' });
+});
+
 test('Pi routing accepts only strict decisions and rejects foreign IDs, extra authority and malformed output', async () => {
   let text = '{"kind":"conversation"}';
   let stopReason: AssistantMessage['stopReason'] = 'stop';

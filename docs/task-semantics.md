@@ -8,9 +8,13 @@ The server adds an owned `outcomes` record for a concrete request that needs wor
 
 Resolve explicit owned message replies first, then ordinary answers to the current waiting question. Both retain the current channel and conversation-generation checks. For other messages, ask an injected semantic router to choose conversation-only, a new outcome, or continuation of one of a small set of server-supplied outcome candidates. The router receives bounded user/assistant context and candidate identifiers. Broker-held Vault values and raw browser content are not supplied, but anything typed in a chat message can reach the model, including sensitive text entered by the user. A model decision cannot grant access or bypass a wait.
 
-Run the model callback outside database locks with a short timeout. On return, acquire the conversation lock and revalidate the selected outcome's owner, channel and generation. An idle related session resumes through the existing revision mechanism. If it is active, persist the message and a pending input without starting overlapping browser work. After the current segment ends, dispatch the pending input in order only when ordinary continuation is permitted. Secure credentials, approvals and manual control keep their dedicated continuation paths. Cancellation/reset invalidate pending inputs. Persist the selected input's message ID for each segment so later queued messages cannot replace its memory provenance.
+Run the model callback outside database locks with a short timeout. Partition the latest eight outcomes into eligible and blocked context using each outcome's latest task. Failed executions and recovery waits remain blocked context: an independent request may start new work, but a continuation naming blocked work returns a fixed conflict without accepting a message or changing jobs, revisions or receipts. Explicit replies and task IDs have the same guard. On return, acquire the conversation lock and revalidate the latest task, owner, channel and generation; never fall back to an older successful task after the latest task fails.
+
+An eligible idle session resumes through the existing revision mechanism. If it is active, persist the message and a pending input without starting overlapping browser work. After the current segment ends, dispatch the pending input in order only when ordinary continuation is permitted. Secure credentials, approvals and manual control keep their dedicated continuation paths. Failed work retains pending inputs without dispatching them. Cancellation/reset invalidate pending inputs. Persist the selected input's message ID for each segment so later queued messages cannot replace its memory provenance.
 
 This routing improves continuity but does not prove semantic correctness. Unavailable or invalid classification must have a bounded fallback; it must not guess a foreign target or resume an uncertain external action. Ambiguous requests may need one concise clarifying question. Outcome completion must be an explicit recorded decision backed by a result or the user, never a direct alias of `tasks.status='succeeded'`.
+
+For messaging channels, a recognized blocked-continuation refusal rolls back partial submission writes, discards only that owned inbox request and queues one fixed response through the original owned outbox route. Later requests can proceed. Unknown errors remain pending for retry; they are not treated as safe refusals.
 
 ## Acceptance checks
 
@@ -21,6 +25,7 @@ This routing improves continuity but does not prove semantic correctness. Unavai
 - Cancelling/resetting active work prevents pending inputs from resurrecting it.
 - Each resumed segment receives the correct user-message provenance, including when several inputs arrived during an active segment.
 - No router timeout, provider failure or malformed target bypasses existing secure-wait or uncertain-action rules.
+- New requests can run alongside preserved failed history, while blocked continuations and status changes after classification cannot restart that failed execution.
 - Existing task IDs, artifacts, inspector records and browser sessions remain addressable; old data is not fabricated into outcomes.
 
 ## General inspector
@@ -31,4 +36,4 @@ Schedule history is a separate operational view: exact due time, accepted execut
 
 Outcome routing and pending-input dispatch are implemented in `server/outcomes.ts` and `server/tasks.ts`. The injected port lives in `ports/conversation.ts`; provider-specific classification remains in adapters. `outcomes`, `conversation`, `task-continuation` and `channels` passed 24 focused synthetic checks. Schedule history is implemented in `server/schedules.ts`; `schedules` and `personal` passed 20 checks, including a timed pg-boss worker without model or external actions. These checks do not measure live semantic routing accuracy.
 
-Automatic outcome completion, user outcome management, a historical backfill and a generalized cross-channel outcome transfer are not implemented. The current policy retains channel-specific execution ownership even though saved personal context is shared. A router timeout or invalid result creates an ordinary unclassified execution; it does not attach work to a guessed candidate.
+Automatic outcome completion, user outcome management, a historical backfill and a generalized cross-channel outcome transfer are not implemented. The current policy retains channel-specific execution ownership even though saved personal context is shared. A router timeout or invalid result creates an ordinary unclassified execution only when no blocked context is present. With blocked context, submission fails without accepting work; it cannot reinterpret a potential retry as fresh execution.
