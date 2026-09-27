@@ -27,4 +27,8 @@ export interface AccountUpdate {
   onboardingCompleted?: boolean;
 }
 
+export interface AccountPreparationResponse {
+  ok: true;
+}
+
 export type AccountPreferences = Preferences;

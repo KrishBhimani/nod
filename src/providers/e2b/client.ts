@@ -7,9 +7,13 @@ export interface E2BCommand {
   disconnect(): Promise<void>;
 }
 
+export type E2BCommandRole = 'browser' | 'workspace';
+
 export interface E2BSandbox {
   id: string;
+  ready(): Promise<void>;
   start(input: {
+    role: E2BCommandRole;
     command: string;
     stdout(data: string): void;
     stderr(data: string): void;
@@ -35,11 +39,25 @@ export function createE2BClient(options: {
   function wrap(sandbox: Sandbox): E2BSandbox {
     return {
       id: sandbox.sandboxId,
+      async ready() {
+        try {
+          const result = await sandbox.commands.run(
+            'python3 /opt/sidekick/computer-guard.py check',
+            { user: 'root', envs: {}, timeoutMs: 30_000, requestTimeoutMs },
+          );
+          if (result.exitCode !== 0 || result.stdout !== '{"ready":true}\n' || result.stderr !== '')
+            throw new Error();
+        } catch {
+          throw new Error('The remote computer did not pass its readiness check.');
+        }
+      },
       async start(input) {
+        if (input.role !== 'browser' && input.role !== 'workspace')
+          throw new Error('The remote computer command is invalid.');
         const handle = await sandbox.commands.run(input.command, {
           background: true,
           stdin: true,
-          user: 'node',
+          user: input.role === 'browser' ? 'sidekick-browser' : 'node',
           envs: {},
           timeoutMs: 180_000,
           requestTimeoutMs,

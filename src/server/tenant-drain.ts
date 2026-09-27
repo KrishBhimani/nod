@@ -9,12 +9,15 @@ const unavailable = (statusCode = 503) =>
 export function createTenantDrain(options: {
   admission: WorkAdmission;
   consumers: WorkConsumers;
+  computer?: { pause(): Promise<void>; resume(): Promise<void> };
 }): TenantDrain {
   let selected: DeploymentInput | undefined;
   let resumed: DeploymentInput | undefined;
   let token = 0;
   let stopping: Promise<void> | undefined;
   let resuming: Promise<void> | undefined;
+  let pausingComputer: Promise<void> | undefined;
+  let computerPaused = false;
   const matches = (first: DeploymentInput | undefined, second: DeploymentInput) =>
     first &&
     first.nonce === second.nonce &&
@@ -59,6 +62,14 @@ export function createTenantDrain(options: {
         await beforeDeadline(stopping!, input.deadline);
         if (current !== token) throw unavailable();
         await options.admission.drain(input.deadline);
+        if (current !== token || resuming || options.admission.closed) throw unavailable(409);
+        if (options.computer) {
+          pausingComputer ??= options.computer.pause().then(() => {
+            computerPaused = true;
+          });
+          await beforeDeadline(pausingComputer, input.deadline);
+          if (!computerPaused) throw unavailable();
+        }
       } catch {
         throw unavailable(current !== token ? 409 : 503);
       }
@@ -73,14 +84,24 @@ export function createTenantDrain(options: {
       if (!matches(selected, input)) throw unavailable(409);
       if (resuming) return resuming;
       token++;
-      const operation = options.consumers
-        .resume()
+      const operation = (async () => {
+        if (pausingComputer)
+          await beforeDeadline(
+            pausingComputer.catch(() => {}),
+            Date.now() + 30_000,
+          );
+        computerPaused = false;
+        if (options.computer) await beforeDeadline(options.computer.resume(), Date.now() + 30_000);
+        pausingComputer = undefined;
+        await options.consumers.resume();
+      })()
         .then(() => {
           if (options.admission.closed) throw unavailable();
           options.admission.resume();
           resumed = selected;
           selected = undefined;
           stopping = undefined;
+          pausingComputer = undefined;
         })
         .catch(() => {
           stopping = options.consumers.pause();
@@ -94,6 +115,7 @@ export function createTenantDrain(options: {
       return operation;
     },
     active: () => Boolean(selected) || options.admission.closed,
+    ...(options.computer ? { computerPaused: () => computerPaused } : {}),
   };
 }
 
@@ -177,6 +199,7 @@ export function registerTenantDrain(
       targetRelease: input.targetRelease,
       generation: options.generation,
       drained: true,
+      ...(options.drain.computerPaused?.() === true ? { computerPaused: true } : {}),
     };
   });
   app.post('/api/runtime/resume', async (request) => {

@@ -1,54 +1,59 @@
 # E2B computers
 
-The server selects E2B through `createE2BAdapters` in `src/providers/e2b/index.ts`. The factory is bound to one authenticated owner and receives credentials, template IDs, a local cache root and a durable `ComputerAllocationStore`. Its browser and shell use separate sandboxes. No API key or sandbox traffic token is exposed to an agent or web client.
+The hosted E2B adapter assigns one private sandbox to each authenticated owner. Its browser and workspace share that sandbox while using separate Linux users: `sidekick-browser` (UID 1001) owns the browser, and `node` (UID 1000) runs workspace commands. The server holds the E2B key, selects the template and chooses the execution user. Users do not choose providers or receive sandbox credentials.
 
-The trusted browser template runs the existing Chromium/Xvfb worker with its private Unix socket. Credential input and native sign-in frames use the existing private bridge methods. The workspace template runs commands through the same Python process-group supervisor as local Docker. Commands and file contents travel over stdin; artifact reads retain descriptor-based traversal and size checks.
+The browser uses the existing Chromium/Xvfb worker and `/data/control.sock`. Its home and profile root are mode 0700; the socket and Xauthority files are mode 0600. App source and helpers are root-owned. Workspace files live under `/workspace`, with user-installed tools under `/home/node/.local`. Credential input, masked frames, supervised process-group cancellation and bounded artifact reads retain the existing adapter protocols.
 
-## Build templates
+## Build and local validation
 
-Use Node 24.21 or later and install the repository lockfile with `npm ci`. The builder uses the pinned `e2b` 2.51.0 SDK. First run the offline preflight without loading credentials:
-
-```sh
-node --import tsx deployment/e2b/build.ts browser --check
-node --import tsx deployment/e2b/build.ts workspace --check
-```
-
-Preflight prepares exactly the context the live builder will use, parses the Dockerfile through the SDK and hashes its inputs. It prints source paths, sizes and hashes, makes no network request and creates no provider resource. Browser source is limited to the worker, stdin bridge, readiness probe and their approved TypeScript import closure. Server, runtime, UI, environment files and user data are excluded. Symlinks, out-of-scope imports and oversized inputs fail before a build can start. The temporary context is removed on success or failure.
-
-After confirming which E2B project owns the development key, store it as `E2B_API_KEY` in the ignored development environment file and run the two builds explicitly. Use unique, versioned names so rebuilding does not silently change a previously released template name:
+Use Node 24.21 or later, Docker, and `npm ci`. The builder uses E2B SDK 2.51.0. Check the exact bounded context without loading credentials:
 
 ```sh
-node --env-file=.local/cloud/development.env --import tsx deployment/e2b/build.ts browser sidekick-browser-development-v1
-node --env-file=.local/cloud/development.env --import tsx deployment/e2b/build.ts workspace sidekick-workspace-development-v1
-```
-
-These commands contact E2B and create provider resources subject to the project's pricing. Each request has a 30-second timeout and the overall build wait is bounded to 30 minutes. A timeout can leave a provider build running: inspect its state in the dashboard before retrying. The JSON result contains the template ID, build ID, name, role and source hash; errors use fixed text without raw provider bodies. Copy the browser result's `templateId` into `E2B_BROWSER_TEMPLATE` and the workspace result into `E2B_WORKSPACE_TEMPLATE`, with `COMPUTER_PROVIDER=e2b`, in the same development environment file. A successful build is not a runtime or sign-in acceptance check.
-
-Build production templates separately with the production project's key and versioned `sidekick-browser-production-v1` / `sidekick-workspace-production-v1` names. Template names do not verify the key's project or change its permissions. Keep the returned IDs with that environment's configuration; never substitute a development key or allocation for production. The builder uploads package manifests and approved source, not host environment variables. Registry/package downloads use public Docker, Debian and npm sources; do not add private registry credentials or package URLs to the template context.
-
-The browser template has two virtual CPUs and 2 GiB memory; the workspace has two virtual CPUs and 1 GiB memory. Browser build checks require Chromium, Xvfb, xauth, xdotool, ffmpeg, the Linux x64 agent-browser executable and the bridge source. Readiness validates the owned mode-0600 Unix socket and completes a bounded protocol exchange with the worker; it neither opens Chromium nor creates an account namespace. The SDK's regular-file readiness helper cannot check a Unix socket. Workspace checks validate the generated Python supervisor, required executables and writable workspace. Its explicit PATH avoids unexpanded Dockerfile variables in the SDK parser.
-
-The browser worker starts during template construction, with no owner identity, credentials or authenticated profile. Templates and allocations are recorded by ID; changing server configuration does not migrate an existing computer automatically. At runtime the SDK disables public sandbox traffic and uses separate browser/workspace allocations. This is an inbound-access restriction, not an outbound Internet firewall. Commands retain the server-selected provider policy, and shell access never shares the trusted browser's files or socket. [Template start/readiness reference](https://e2b.dev/docs/sdk-reference/js-sdk/v2.4.3/template-readycmd).
-
-## Ownership and lifecycle
-
-`ComputerAllocationStore.compareAndSwap` must atomically match owner, role and expected version. A missing record uses expected version `null`. Only trusted server code may read or write resource IDs. Keep this store in PostgreSQL for hosted environments; an in-memory implementation is suitable only for isolated fixtures.
-
-An allocation has a generation, exclusive lease and monotonically increasing version. New allocations are lazy. The default lease lasts 90 seconds and renews every 30 seconds. Commands also renew ownership before execution. A failed heartbeat, interrupted transport or missing terminal acknowledgement fences the allocation. A second actor cannot claim a leased or uncertain record, including an expired lease, until recovery has confirmed the old work stopped. Do not clear that state merely to make a retry succeed.
-
-Normal shutdown drains accepted commands, closes the browser namespace and pauses each allocated sandbox before releasing its lease. Reconnection restores the same resource ID and generation. A failed pause retains ownership and supports a cleanup retry. An unused role creates no sandbox during shutdown. The allocation heartbeat renews the database lease and the running sandbox's default 30-minute timeout. With no command handles active, a role pauses after two idle minutes. The next request explicitly resumes its existing sandbox and generation. After 45 minutes of continuous operation, new requests wait for existing commands to drain before a pause/resume cycle; this keeps the default below the Hobby plan's continuous runtime limit. Never pause in-flight commands or repeat an uncertain operation.
-
-The SDK creates sandboxes with `lifecycle: { onTimeout: 'pause', autoResume: false }`: loss of the actor heartbeat preserves provider state on expiry without allowing incoming traffic to resume it. Browser bridge commands are separate, single-request processes with a 180-second transport bound; the browser worker is the persistent template process. The Python supervisor continues to enforce its independent 120-second command limit and drain acknowledgement. E2B can fall back to a filesystem-only auto-pause after a prolonged snapshot backlog, so restored disk does not guarantee restored processes. Missing acknowledgements or unavailable runtime state remain fenced. [Provider lifecycle reference](https://docs.e2b.dev/sandbox/persistence).
-
-Paused sandboxes retain private data at the provider. The operator must implement retention, deletion and explicit recovery for uncertain resources. Provider snapshots are not an artifact backup or a transcript store. Keep publication metadata and durable copies in the application's owned storage.
-
-## Validation
-
-```sh
+node --import tsx deployment/e2b/build.ts computer --check
 node --import tsx --test tests/e2b-templates.test.ts
-node --import tsx --test tests/e2b-adapters.test.ts tests/e2b-client.test.ts tests/container-browser.test.ts tests/workspace-command.test.ts
 ```
 
-Template fixtures exercise the actual worker readiness exchange and reject regular files, unsafe permissions, silent/malformed services and symlinked source. The remaining fixtures exercise the real local Unix-socket bridge and Python supervisor through an injected E2B transport. They cover owner separation, credential/frame routing, process-group drain, output acknowledgement, lease races, idle heartbeat/pause, command drain before runtime recycling, same-resource reconnect and fixed error messages. They do not create E2B resources or establish live Google sign-in, native browser restoration, provider isolation or production readiness. Run those checks with development templates and synthetic accounts before enabling production.
+The context contains package manifests, the browser worker/bridge/readiness import closure, the generated Python workspace supervisor and the root-only computer guard. It excludes server/runtime/UI code, environment files and user data. Symlinks, unapproved imports and oversized source fail before any upload. Preflight prints only source paths, sizes and hashes and removes its temporary context.
 
-The live development gate must create one browser and one workspace through the adapter, inspect a synthetic page, exercise private input and masked screenshots, cancel a shell process with a child process, import and publish a bounded artifact, pause/resume both roles with the same IDs, and confirm profile restoration after an actor restart. Rejected or uncertain commands must stay fenced without replay. Keep sandbox IDs and private frames out of public test reports, and pause or delete only the test resources owned by that run. Only then repeat the approved production journey using production configuration.
+Build the same combined image locally, then pass the returned image tag to the boundary fixture:
+
+```sh
+node --import tsx deployment/e2b/build-local.ts
+node deployment/e2b/validate-computer.mjs sidekick-e2b-computer:<source-hash-prefix>
+```
+
+The build downloads public Docker, Debian and npm dependencies; it does not forward application environment variables into Docker. The fixture creates only its own temporary Docker container, with NET_ADMIN as the only added capability, no host network or bind mounts, and synthetic files. It checks real Chromium CDP and authenticated Xvfb access as the browser user; workspace denial of CDP, IPv4/IPv6 loopback, the container's own address, synthetic metadata addresses, the control port, browser files/socket, process access, helper writes and privilege escalation. Workspace DNS, HTTPS and ordinary file writes must still work. Missing NET_ADMIN and a changed firewall must fail readiness. The fixture removes only its own container. These checks do not prove the live E2B kernel, networking or pause/resume behavior.
+
+On 2026-09-27, the combined linux/amd64 image passed that local fixture, including the positive browser and workspace checks, six denied network targets, eight denied file/process operations, and both readiness failures. The five template/readiness tests and TypeScript check also passed. No live E2B template or sandbox was created for this evidence.
+
+After confirming the development key's project, build a versioned template explicitly:
+
+```sh
+node --env-file=.local/cloud/development.env --import tsx deployment/e2b/build.ts computer sidekick-computer-development-v1
+```
+
+This contacts E2B and creates billable provider resources according to the project's plan. Requests have a 30-second timeout; the whole build wait is bounded to 30 minutes. A timeout can leave a build running: inspect its existing state before retrying. Store the returned `templateId` as `E2B_COMPUTER_TEMPLATE`, with `COMPUTER_PROVIDER=e2b`, in that development configuration. Build production separately using its own project key and versioned name. Never substitute development keys or allocations for production. The template has two virtual CPUs and 3 GiB memory. Old `browser` and `workspace` build targets remain for legacy fixtures; the combined hosted configuration rejects their old template environment keys and does not adopt their allocations.
+
+## Startup and isolation gate
+
+`computer-guard.py start` runs as root, installs a dedicated nftables `inet` OUTPUT chain, records its exact accepted rules, then drops groups and switches to `sidekick-browser` before starting the browser worker. The rules match workspace UID 1000 across IPv4 and IPv6. They reject local interface addresses, loopback, private/link-local/metadata networks and TCP port 49983. Only DNS on port 53 to the sandbox's configured resolvers is exempted before those denies. Browser traffic uses its existing trusted browser policy.
+
+The image removes setuid/setgid bits and file capabilities and contains no sudo. Workspace execution additionally uses `setpriv --no-new-privs`. The workspace cannot change root-owned files or firewall rules. Public sandbox traffic is disabled separately by the SDK; that setting alone does not isolate processes inside a sandbox.
+
+Before making a created or resumed sandbox available, the trusted client runs this fixed command as root:
+
+```sh
+python3 /opt/sidekick/computer-guard.py check
+```
+
+Only exit zero, exactly `{"ready":true}` plus a newline, and empty stderr establish readiness. The check verifies private/root-owned paths, current interface/resolver inputs, unchanged firewall rules and an actual browser-worker socket exchange as the browser user. It does not reinstall a lost firewall, restart a missing browser, clear an uncertainty fence or adopt another resource. A filesystem-only provider resume may lose processes and network rules; that case must fail readiness.
+
+The E2B runtime's published default kernel configuration enables nftables and `NFT_META`, while legacy `NETFILTER_XT_MATCH_OWNER` is disabled. This is why the guard uses native nftables `meta skuid`. Published source is not proof of the deployed project's guest capabilities: a live development build must verify NET_ADMIN, the complete deny matrix, DNS/Internet and pause/resume before enabling the template in production. Missing support is a blocker; never skip the guard. E2B's in-VM `envd` exposes process/file control on port 49983, which must remain unreachable by workspace commands. Sources checked 2026-09-27: [E2B runtime architecture](https://github.com/e2b-dev/runtime/blob/main/docs/ARCHITECTURE.md), [default kernel selection](https://github.com/e2b-dev/runtime/blob/main/packages/shared/pkg/featureflags/flags.go), [kernel configuration](https://github.com/e2b-dev/runtime/blob/main/firecracker/fc-kernels/configs/x86_64/6.1.158.config).
+
+## Ownership, recovery and acceptance
+
+The durable allocation store binds owner, resource, generation and version. Shared browser/workspace activity must use that single allocation's lease and active-command accounting. A lost heartbeat, interrupted transport, failed readiness check or missing terminal acknowledgement fences the allocation. Never create a replacement, adopt an expired lease or clear uncertainty merely to make a retry succeed.
+
+Normal shutdown drains accepted commands and closes the browser namespace before confirming pause and releasing ownership. Reconnect must retain the same sandbox ID and generation. Idle pause and continuous-runtime recycling must wait for both browser and workspace commands. SDK creation disables traffic auto-resume and selects pause on timeout. Provider disk or memory snapshots do not replace owned transcript/artifact storage. Operators still need retention, deletion and explicit uncertain-resource recovery procedures. [E2B persistence reference](https://docs.e2b.dev/sandbox/persistence).
+
+Local fixtures and image checks establish only their tested boundaries. Live development acceptance must verify one sandbox ID across browser and shell, the full isolation matrix, synthetic navigation and private input, cancellation with a surviving child, artifact publication, same-resource pause/resume and profile recovery after an actor restart. A readiness or receipt failure must remain fenced without replay. Only then repeat the approved journey with production keys. Keep sandbox IDs, credentials, private frames and user content out of public reports.

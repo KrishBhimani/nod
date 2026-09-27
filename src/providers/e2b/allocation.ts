@@ -89,7 +89,17 @@ export function createE2BAllocation(options: {
       throw unavailable();
     }
   }
-  async function open() {
+  async function previousAllocation() {
+    if (
+      options.role === 'computer' &&
+      (
+        await Promise.all([
+          options.store.read(options.ownerId, 'browser'),
+          options.store.read(options.ownerId, 'workspace'),
+        ])
+      ).some(Boolean)
+    )
+      throw unavailable();
     const previous = await options.store.read(options.ownerId, options.role);
     if (
       previous &&
@@ -102,6 +112,10 @@ export function createE2BAllocation(options: {
         !previous.resourceId)
     )
       throw unavailable();
+    return previous;
+  }
+  async function open() {
+    const previous = await previousAllocation();
     const next: ComputerAllocation = {
       ownerId: options.ownerId,
       role: options.role,
@@ -127,6 +141,9 @@ export function createE2BAllocation(options: {
       sandbox = value;
       if (!value.id || (previous?.resourceId && value.id !== previous.resourceId))
         throw unavailable();
+      if (fenced || disposed) throw unavailable();
+      await exclusive(() => update({ resourceId: value.id, state: 'allocating' }));
+      await value.ready();
       if (fenced || disposed) throw unavailable();
       await exclusive(() => update({ resourceId: value.id, state: 'ready' }));
       activeSince = Date.now();
@@ -187,6 +204,7 @@ export function createE2BAllocation(options: {
         if (paused) {
           const resumed = await options.client.connect(sandbox.id);
           if (resumed.id !== sandbox.id) throw unavailable();
+          await resumed.ready();
           sandbox = resumed;
           activeSince = Date.now();
           paused = false;
@@ -222,6 +240,34 @@ export function createE2BAllocation(options: {
   }
   return {
     acquire,
+    async pause() {
+      if (fenced || disposed) throw unavailable();
+      if (!opening) {
+        await previousAllocation();
+        return;
+      }
+      await opening;
+      await transition(async () => {
+        if (fenced || disposed || users) throw unavailable();
+        await renew();
+        try {
+          await pause();
+        } catch {
+          fence();
+          await serial;
+          throw unavailable();
+        }
+      });
+    },
+    async resume() {
+      await transitioning;
+      await serial;
+      if (fenced || disposed) throw unavailable();
+      if (opening) {
+        await opening;
+        await renew();
+      } else await previousAllocation();
+    },
     async get() {
       const acquired = await acquire();
       acquired.release();
@@ -237,7 +283,10 @@ export function createE2BAllocation(options: {
       disposing ??= (async () => {
         disposed = true;
         clearInterval(timer);
-        if (!opening) return;
+        if (!opening) {
+          await previousAllocation();
+          return;
+        }
         await opening.catch(() => {});
         await transitioning;
         await serial;

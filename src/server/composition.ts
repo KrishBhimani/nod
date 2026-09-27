@@ -31,6 +31,7 @@ import {
 import { createGoogleAuthentication } from '../providers/better-auth/index.ts';
 import { createCloudflareRuntimeTransport } from '../providers/runtime-host/cloudflare.ts';
 import { createLocalRuntimeTransport } from '../providers/runtime-host/local.ts';
+import { createComputerShutdownConfirmation } from '../providers/runtime-host/computer-shutdown.ts';
 import { createJevBrowserChooser } from '../providers/jev/browser.ts';
 import { createJevRelevanceClassifier } from '../providers/jev/relevance.ts';
 import { createKeychainKeyStore } from '../providers/keychain/key-store.ts';
@@ -106,6 +107,9 @@ import {
 
 export interface ApplicationAdapters {
   initialize?(): Promise<void>;
+  prepareComputer?(): Promise<void>;
+  computerLifecycle?: { pause(): Promise<void>; resume(): Promise<void> };
+  confirmComputerShutdown?(): Promise<void>;
   objectStore?: PrivateObjectStore;
   channelAccounts?: ChannelAccountRegistry;
   createConversationRouter?(onUsage: RecordProviderUsage): ConversationRouter;
@@ -154,11 +158,27 @@ export function createDefaultAdapters(
     computerProvider === 'e2b'
       ? createComputerAllocationStore({ database: pool, ownerId })
       : undefined;
+  if (computerProvider === 'e2b' && (!env.E2B_API_KEY || !env.E2B_COMPUTER_TEMPLATE))
+    throw new Error('The remote computer configuration is incomplete.');
   if (
     computerProvider === 'e2b' &&
-    (!env.E2B_API_KEY || !env.E2B_BROWSER_TEMPLATE || !env.E2B_WORKSPACE_TEMPLATE)
+    (env.E2B_BROWSER_TEMPLATE !== undefined || env.E2B_WORKSPACE_TEMPLATE !== undefined)
   )
-    throw new Error('The remote computer configuration is incomplete.');
+    throw new Error(
+      'Split E2B templates are no longer supported. Configure E2B_COMPUTER_TEMPLATE.',
+    );
+  const e2b = allocations
+    ? createE2BAdapters({
+        apiKey: env.E2B_API_KEY!,
+        ownerId,
+        allocations,
+        templateId: env.E2B_COMPUTER_TEMPLATE!,
+        workspaceRoot: join(dataRoot, 'workspaces'),
+        ...(env.E2B_SANDBOX_TIMEOUT_MS
+          ? { sandboxTimeoutMs: Number(env.E2B_SANDBOX_TIMEOUT_MS) }
+          : {}),
+      })
+    : undefined;
   const remote =
     computerProvider === 'cloudflare'
       ? createCloudflareAdapters({
@@ -166,21 +186,7 @@ export function createDefaultAdapters(
           generation: runtimeGeneration,
           workspaceRoot: join(dataRoot, 'workspaces'),
         })
-      : allocations
-        ? createE2BAdapters({
-            apiKey: env.E2B_API_KEY!,
-            ownerId,
-            allocations,
-            templates: {
-              browser: env.E2B_BROWSER_TEMPLATE!,
-              workspace: env.E2B_WORKSPACE_TEMPLATE!,
-            },
-            workspaceRoot: join(dataRoot, 'workspaces'),
-            ...(env.E2B_SANDBOX_TIMEOUT_MS
-              ? { sandboxTimeoutMs: Number(env.E2B_SANDBOX_TIMEOUT_MS) }
-              : {}),
-          })
-        : undefined;
+      : e2b;
   const databaseObjects =
     env.OBJECT_STORAGE_PROVIDER === 'postgres'
       ? createPostgresObjectStore({ database: pool, ownerId })
@@ -202,6 +208,20 @@ export function createDefaultAdapters(
       await allocations?.initialize();
       await databaseObjects?.initialize();
     },
+    ...(e2b
+      ? {
+          prepareComputer: e2b.prepare,
+          computerLifecycle: { pause: e2b.pause, resume: e2b.resume },
+        }
+      : {}),
+    ...(e2b && runtimeMode === 'tenant' && env.SIDEKICK_COMPUTER_CONTROL_URL
+      ? {
+          confirmComputerShutdown: createComputerShutdownConfirmation({
+            endpoint: env.SIDEKICK_COMPUTER_CONTROL_URL,
+            generation: runtimeGeneration,
+          }),
+        }
+      : {}),
     objectStore,
     ...(runtimeMode === 'tenant'
       ? {
@@ -275,7 +295,11 @@ export async function createApplication(
 ) {
   const admission = createWorkAdmission();
   const consumers = createWorkConsumers();
-  const deploymentDrain = createTenantDrain({ admission, consumers });
+  const deploymentDrain = createTenantDrain({
+    admission,
+    consumers,
+    computer: adapters.computerLifecycle,
+  });
   const privacyNotice =
     runtimeMode === 'local'
       ? await loadPrivacyNoticeFile(process.env.SIDEKICK_PRIVACY_NOTICE_FILE)
@@ -589,7 +613,16 @@ export async function createApplication(
       origin: publicOrigin,
       localUser: { id: ownerId, name: 'You', email: null, avatarUrl: null },
       developerIds: configuration().inspectorEnabled ? new Set([ownerId]) : new Set(),
+      prepare: async () => adapters.prepareComputer?.(),
     }).register(app);
+  } else {
+    app.post('/api/account/prepare', async (request) => {
+      z.object({})
+        .strict()
+        .parse(request.body ?? {});
+      await adapters.prepareComputer?.();
+      return { ok: true };
+    });
   }
   providerUsage.registerRoutes(app);
   promptInspector.registerRoutes(app);
@@ -726,7 +759,10 @@ export async function createApplication(
       () => channels?.close(),
       () => stopTasks(),
       finishWork,
-      () => runtime.dispose(),
+      async () => {
+        await runtime.dispose();
+        await adapters.confirmComputerShutdown?.();
+      },
       () => inspector.close(),
       () => promptInspector.close(),
       () => providerUsage.close(),

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Sandbox } from 'e2b';
-import { createE2BClient } from '../src/providers/e2b/client.ts';
+import { createE2BClient, type E2BCommandRole } from '../src/providers/e2b/client.ts';
 
 test('E2B SDK configuration keeps keys server-side, blocks public traffic and bounds command transport', async (t) => {
   const calls: Array<{ action: string; args: unknown[] }> = [];
@@ -10,6 +10,8 @@ test('E2B SDK configuration keeps keys server-side, blocks public traffic and bo
     commands: {
       async run(...args: unknown[]) {
         calls.push({ action: 'run', args });
+        if (args[0] === 'python3 /opt/sidekick/computer-guard.py check')
+          return { exitCode: 0, stdout: '{"ready":true}\n', stderr: '' };
         return {
           sendStdin: async (...args: unknown[]) => {
             calls.push({ action: 'stdin', args });
@@ -43,7 +45,7 @@ test('E2B SDK configuration keeps keys server-side, blocks public traffic and bo
     requestTimeoutMs: 1234,
     sandboxTimeoutMs: 60_000,
   });
-  const sandbox = await client.create('browser-template', { role: 'browser' });
+  const sandbox = await client.create('computer-template', { role: 'computer' });
   assert.equal(sandbox.id, 'fixture-sandbox');
   const created = calls.find((call) => call.action === 'create')!.args[1] as Record<
     string,
@@ -53,13 +55,22 @@ test('E2B SDK configuration keeps keys server-side, blocks public traffic and bo
   assert.deepEqual(created.envs, {});
   assert.deepEqual(created.lifecycle, { onTimeout: 'pause', autoResume: false });
   assert.equal(created.apiKey, 'synthetic-server-key');
+  await sandbox.ready();
+  assert.deepEqual(calls.find((call) => call.action === 'run')!.args, [
+    'python3 /opt/sidekick/computer-guard.py check',
+    { user: 'root', envs: {}, timeoutMs: 30_000, requestTimeoutMs: 1234 },
+  ]);
   const command = await sandbox.start({
+    role: 'browser',
     command: 'fixed-command',
     stdout: () => {},
     stderr: () => {},
   });
-  const started = calls.find((call) => call.action === 'run')!.args[1] as Record<string, unknown>;
-  assert.equal(started.user, 'node');
+  const started = calls.find((call) => call.args[0] === 'fixed-command')!.args[1] as Record<
+    string,
+    unknown
+  >;
+  assert.equal(started.user, 'sidekick-browser');
   assert.equal(started.stdin, true);
   assert.equal(started.background, true);
   assert.equal(started.requestTimeoutMs, 1234);
@@ -69,6 +80,29 @@ test('E2B SDK configuration keeps keys server-side, blocks public traffic and bo
   await command.sendStdin(Buffer.from('synthetic private input'));
   await command.closeStdin();
   await command.wait();
+  await sandbox.start({
+    role: 'workspace',
+    command: 'fixed-workspace',
+    stdout: () => {},
+    stderr: () => {},
+  });
+  const workspace = calls.find((call) => call.args[0] === 'fixed-workspace')!.args[1] as Record<
+    string,
+    unknown
+  >;
+  assert.equal(workspace.user, 'node');
+  assert.deepEqual(workspace.envs, {});
+  const beforeInvalid = calls.length;
+  await assert.rejects(
+    sandbox.start({
+      role: 'root' as E2BCommandRole,
+      command: 'forbidden',
+      stdout: () => {},
+      stderr: () => {},
+    }),
+    /invalid/,
+  );
+  assert.equal(calls.length, beforeInvalid);
   await sandbox.keepAlive();
   await sandbox.pause();
   await client.connect('fixture-sandbox');
@@ -83,4 +117,36 @@ test('E2B SDK configuration keeps keys server-side, blocks public traffic and bo
   ]);
   assert.equal('getHost' in sandbox, false);
   assert.equal('trafficAccessToken' in sandbox, false);
+});
+
+test('E2B readiness refuses missing, malformed or failed protected-computer proof with fixed errors', async (t) => {
+  let result: unknown;
+  let failure = false;
+  const fake = {
+    sandboxId: 'synthetic',
+    commands: {
+      async run() {
+        if (failure) throw new Error('synthetic provider secret');
+        return result;
+      },
+    },
+  };
+  t.mock.method(Sandbox, 'create', async () => fake);
+  const sandbox = await createE2BClient({ apiKey: 'synthetic-key' }).create('computer', {});
+  for (const value of [
+    undefined,
+    { exitCode: 1, stdout: '{"ready":true}\n', stderr: '' },
+    { exitCode: 0, stdout: '{"ready":false}\n', stderr: '' },
+    { exitCode: 0, stdout: '{"ready":true}\nextra', stderr: '' },
+    { exitCode: 0, stdout: '{"ready":true}\n', stderr: 'synthetic private detail' },
+  ]) {
+    result = value;
+    await assert.rejects(sandbox.ready(), {
+      message: 'The remote computer did not pass its readiness check.',
+    });
+  }
+  failure = true;
+  await assert.rejects(sandbox.ready(), {
+    message: 'The remote computer did not pass its readiness check.',
+  });
 });

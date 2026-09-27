@@ -149,6 +149,35 @@ jobs:
             trap - EXIT
           done
 
+  e2b-computer:
+    name: Combined E2B computer isolation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js 24.21.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24.21.0'
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Build and verify the combined computer image
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --import tsx deployment/e2b/build-local.ts | tee "$RUNNER_TEMP/sidekick-e2b-build.log"
+          image="$(tail -n 1 "$RUNNER_TEMP/sidekick-e2b-build.log" | node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const { image } = JSON.parse(readFileSync(0, "utf8"));
+            if (typeof image !== "string" || !/^sidekick-e2b-computer:[a-f0-9]{12}$/.test(image)) throw new Error("The combined computer image is invalid.");
+            process.stdout.write(image);
+          ')"
+          node deployment/e2b/validate-computer.mjs "$image"
+
   secrets:
     name: Secret scanning
     runs-on: ubuntu-24.04

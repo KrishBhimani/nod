@@ -1,0 +1,17 @@
+FROM node:24.21.0-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends chromium xvfb xauth xdotool ffmpeg fonts-liberation ca-certificates python3 python-is-python3 python3-pip python3-venv pipx curl git unzip nftables iproute2 libcap2-bin util-linux && rm -rf /var/lib/apt/lists/*
+RUN groupadd --gid 1001 sidekick-browser && useradd --uid 1001 --gid 1001 --create-home --shell /usr/sbin/nologin sidekick-browser
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci && npm cache clean --force
+COPY src ./src
+COPY deployment/e2b/browser-ready.ts ./deployment/e2b/browser-ready.ts
+COPY workspace-command.py /opt/sidekick/workspace-command.py
+COPY deployment/e2b/computer-guard.py /opt/sidekick/computer-guard.py
+RUN mkdir -p /data /workspace /home/node/.local/bin /run/sidekick && chown sidekick-browser:sidekick-browser /data /home/sidekick-browser && chmod 700 /data /home/sidekick-browser /run/sidekick && chown -R node:node /workspace /home/node && chown -R root:root /app /opt/sidekick && chmod -R go-w /app /opt/sidekick && chmod 555 /opt/sidekick && chmod 444 /opt/sidekick/*.py && find / -xdev -type f -perm /6000 -exec chmod a-s {} + && getcap -r /usr /opt /app 2>/dev/null | cut -d ' ' -f 1 | xargs -r setcap -r
+ENV NPM_CONFIG_PREFIX=/home/node/.local
+ENV PIPX_HOME=/home/node/.local/pipx
+ENV PIPX_BIN_DIR=/home/node/.local/bin
+ENV PATH=/home/node/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+USER root
+CMD ["python3", "/opt/sidekick/computer-guard.py", "start"]

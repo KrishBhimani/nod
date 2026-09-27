@@ -63,8 +63,7 @@ test(
           SIDEKICK_PUBLIC_URL: 'http://localhost:4330',
           COMPUTER_PROVIDER: 'e2b',
           E2B_API_KEY: 'synthetic-unused-key',
-          E2B_BROWSER_TEMPLATE: 'synthetic-browser',
-          E2B_WORKSPACE_TEMPLATE: 'synthetic-workspace',
+          E2B_COMPUTER_TEMPLATE: 'synthetic-computer',
         },
       });
     host = create();

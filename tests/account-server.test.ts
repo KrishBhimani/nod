@@ -5,9 +5,15 @@ import type { AuthenticationProvider } from '../src/ports/authentication.ts';
 import type { AccountStore, StoredAccount } from '../src/server/account-store.ts';
 import { createAccountSession } from '../src/server/account.ts';
 
-async function fixture() {
+async function fixture(prepare?: (ownerId: string) => Promise<void>) {
   const records = new Map<string, StoredAccount>();
-  const calls = { signIn: 0, signOut: 0, callback: '', writes: [] as string[] };
+  const calls = {
+    signIn: 0,
+    signOut: 0,
+    callback: '',
+    writes: [] as string[],
+    prepared: [] as string[],
+  };
   let enabled = true;
   const accounts: AccountStore = {
     async read(owner) {
@@ -70,6 +76,10 @@ async function fixture() {
     origin: 'https://sidekick.example.test',
     authentication,
     developerIds: new Set(['alex']),
+    async prepare(owner) {
+      calls.prepared.push(owner);
+      await prepare?.(owner);
+    },
   });
   account.register(app);
   await app.ready();
@@ -112,6 +122,143 @@ test('session response uses the cookie identity and owned settings without expos
   } finally {
     await app.close();
   }
+});
+
+test('account preparation requires a current same-origin principal and never accepts provider or owner input', async (t) => {
+  const f = await fixture();
+  t.after(() => f.app.close());
+  const headers = { origin: 'https://sidekick.example.test', cookie: 'fixture=alex' };
+  for (const input of [
+    { headers: { origin: headers.origin }, payload: {}, status: 401 },
+    { headers: { ...headers, origin: 'https://foreign.example.test' }, payload: {}, status: 403 },
+    { headers: { ...headers, 'sec-fetch-site': 'cross-site' }, payload: {}, status: 403 },
+    { headers: { ...headers, 'x-sidekick-account': 'sam' }, payload: {}, status: 401 },
+    { headers, payload: { ownerId: 'sam' }, status: 400 },
+    { headers, payload: { provider: 'e2b' }, status: 400 },
+    { headers, payload: { templateId: 'override' }, status: 400 },
+  ]) {
+    const response = await f.app.inject({
+      method: 'POST',
+      url: '/api/account/prepare',
+      headers: input.headers,
+      payload: input.payload,
+    });
+    assert.equal(response.statusCode, input.status);
+  }
+  assert.deepEqual(f.calls.prepared, []);
+  for (const owner of ['alex', 'sam']) {
+    const response = await f.app.inject({
+      method: 'POST',
+      url: '/api/account/prepare',
+      headers: { ...headers, cookie: `fixture=${owner}` },
+      payload: {},
+    });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), { ok: true });
+    assert.equal(response.headers['cache-control'], 'no-store');
+  }
+  assert.deepEqual(f.calls.prepared, ['alex', 'sam']);
+  assert.deepEqual(f.calls.writes, []);
+});
+
+test('onboarding completion waits for preparation and failure cannot change any account settings', async (t) => {
+  let finish!: () => void;
+  let fail = false;
+  const waiting = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const f = await fixture(async () => {
+    await waiting;
+    if (fail) throw new Error('synthetic private provider failure');
+  });
+  t.after(() => f.app.close());
+  const headers = { origin: 'https://sidekick.example.test', cookie: 'fixture=alex' };
+  const pending = f.app.inject({
+    method: 'PATCH',
+    url: '/api/account',
+    headers,
+    payload: { name: 'Changed', onboardingCompleted: true },
+  });
+  let complete = false;
+  void pending.then(() => {
+    complete = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(complete, false);
+  assert.deepEqual(f.calls.writes, []);
+  fail = true;
+  finish();
+  const rejected = await pending;
+  assert.equal(rejected.statusCode, 503);
+  assert.deepEqual(rejected.json(), { error: 'Setup could not be completed. Try again.' });
+  assert.equal(f.records.size, 0);
+  fail = false;
+  const retry = await f.app.inject({
+    method: 'PATCH',
+    url: '/api/account',
+    headers,
+    payload: { onboardingCompleted: true },
+  });
+  assert.equal(retry.statusCode, 200);
+  assert.equal(f.records.get('alex')?.onboardingCompleted, true);
+  assert.equal(f.records.has('sam'), false);
+  assert.deepEqual(f.calls.prepared, ['alex', 'alex']);
+});
+
+test('a revoked session cannot finish onboarding after a late successful preparation', async (t) => {
+  let finish!: () => void;
+  let started!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const entered = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const f = await fixture(async () => {
+    started();
+    await pending;
+  });
+  t.after(() => f.app.close());
+  const response = f.app.inject({
+    method: 'PATCH',
+    url: '/api/account',
+    headers: { origin: 'https://sidekick.example.test', cookie: 'fixture=alex' },
+    payload: { onboardingCompleted: true },
+  });
+  void response.then(() => {});
+  await entered;
+  f.revoke();
+  finish();
+  assert.equal((await response).statusCode, 401);
+  assert.deepEqual(f.calls.writes, []);
+});
+
+test('Google identity, session reads and appearance changes do not prepare a computer', async (t) => {
+  const f = await fixture(async () => {
+    throw new Error('Preparation unavailable');
+  });
+  t.after(() => f.app.close());
+  const headers = { origin: 'https://sidekick.example.test', cookie: 'fixture=alex' };
+  assert.equal(
+    (await f.app.inject({ method: 'GET', url: '/api/session', headers })).statusCode,
+    200,
+  );
+  assert.equal(
+    (await f.app.inject({ method: 'GET', url: '/api/auth/callback/google', headers })).statusCode,
+    302,
+  );
+  assert.equal(
+    (
+      await f.app.inject({
+        method: 'PATCH',
+        url: '/api/account',
+        headers,
+        payload: { theme: 'dark' },
+      })
+    ).statusCode,
+    200,
+  );
+  assert.deepEqual(f.calls.prepared, []);
 });
 
 test('account changes require same origin and matching principal and reject identity overrides', async () => {

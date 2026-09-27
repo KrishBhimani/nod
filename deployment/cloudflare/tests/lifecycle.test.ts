@@ -120,6 +120,121 @@ test('tenant bootstrap binds the SQL namespace, runtime identity and environment
     await assert.rejects(bootstrap({ ...input, env: { ...input.env, ...change } }, 'development'));
 });
 
+test('tenant bootstrap binds its computer provider and forces the private E2B stop callback', async () => {
+  const input = configuration();
+  const external = await bootstrap(
+    {
+      ...input,
+      env: {
+        ...input.env,
+        COMPUTER_PROVIDER: 'e2b',
+        SIDEKICK_COMPUTER_CONTROL_URL: 'https://foreign.example.test',
+      },
+    },
+    'development',
+  );
+  assert.equal(external.identity.computerProvider, 'e2b');
+  assert.equal(external.env.SIDEKICK_COMPUTER_CONTROL_URL, 'http://sidekick.computer/v1/stopped');
+  const legacy = await bootstrap(input, 'development');
+  assert.equal(legacy.identity.computerProvider, 'cloudflare');
+  assert.equal(legacy.env.SIDEKICK_COMPUTER_CONTROL_URL, undefined);
+  await assert.rejects(
+    bootstrap({ ...input, env: { ...input.env, COMPUTER_PROVIDER: 'unknown' } }, 'development'),
+  );
+});
+
+test('physical tenant termination does not confirm an unacknowledged remote computer stop', async () => {
+  let saved: TenantIdentity | undefined;
+  let state: 'stopped' | 'healthy' = 'stopped';
+  let acknowledged = false;
+  const calls: string[] = [];
+  const lifecycle = createTenantLifecycle({
+    environment: 'development',
+    read: async () => saved,
+    write: async (identity) => {
+      saved = identity;
+    },
+    status: async () => state,
+    start: async () => {
+      state = 'healthy';
+    },
+    stop: async () => {
+      state = 'stopped';
+      calls.push('node-stopped');
+    },
+    confirmComputersStopped: async () => {
+      calls.push('computer-inspected');
+      if (!acknowledged) throw new Error('Remote stop is unconfirmed.');
+    },
+  });
+  const input = configuration();
+  await lifecycle.start({ ...input, env: { ...input.env, COMPUTER_PROVIDER: 'e2b' } });
+  await assert.rejects(lifecycle.stop(input.ownerId, '1'));
+  assert.equal(saved?.stopped, false);
+  assert.equal(saved?.revoking, true);
+  assert.deepEqual(calls, ['node-stopped', 'computer-inspected']);
+  acknowledged = true;
+  assert.equal((await lifecycle.stop(input.ownerId, '1')).stopped, true);
+});
+
+test('a physically stopped E2B generation cannot restart while its previous computer evidence is delayed', async (t) => {
+  for (const stoppedState of ['stopped', 'stopped_with_code'] as const) {
+    await t.test(stoppedState, async () => {
+      let saved: TenantIdentity | undefined;
+      let state: 'healthy' | 'stopped' | 'stopped_with_code' = 'stopped';
+      const starts: string[] = [];
+      const evidenceRequested = deferred();
+      const oldEvidence = deferred();
+      const lifecycle = createTenantLifecycle({
+        environment: 'development',
+        read: async () => saved,
+        write: async (identity) => {
+          saved = { ...identity };
+        },
+        status: async () => state,
+        start: async (env) => {
+          starts.push(env.SIDEKICK_RUNTIME_GENERATION);
+          state = 'healthy';
+        },
+        stop: async () => {
+          state = stoppedState;
+        },
+        confirmComputersStopped: async (identity) => {
+          assert.equal(identity.generation, '1');
+          evidenceRequested.resolve();
+          await oldEvidence.promise;
+        },
+      });
+      const original = configuration();
+      const first = { ...original, env: { ...original.env, COMPUTER_PROVIDER: 'e2b' } };
+      const next = { ...first, env: { ...first.env, SIDEKICK_RUNTIME_GENERATION: '2' } };
+      await lifecycle.start(first);
+      await lifecycle.start(first);
+      assert.deepEqual(starts, ['1', '1']);
+      state = stoppedState;
+      const before = structuredClone(saved);
+      await assert.rejects(lifecycle.start(first), { status: 409 });
+      await assert.rejects(lifecycle.start(next), { status: 409 });
+      assert.deepEqual(saved, before);
+      assert.deepEqual(starts, ['1', '1']);
+      const stopped = lifecycle.stop(first.ownerId, '1');
+      await evidenceRequested.promise;
+      assert.equal(saved?.revoking, true);
+      assert.equal(saved?.stopped, false);
+      const replacement = lifecycle.start(next);
+      assert.deepEqual(starts, ['1', '1']);
+      oldEvidence.resolve();
+      assert.deepEqual(await stopped, { ok: true, generation: '1', stopped: true });
+      assert.deepEqual(await replacement, { ok: true, generation: '2' });
+      assert.deepEqual(starts, ['1', '1', '2']);
+      const current = structuredClone(saved);
+      await assert.rejects(lifecycle.stop(first.ownerId, '1'), { status: 409 });
+      await assert.rejects(lifecycle.start(first), { status: 409 });
+      assert.deepEqual(saved, current);
+    });
+  }
+});
+
 test('tenant startup and replacement require one fixed identity and a confirmed stopped generation', async () => {
   let saved: TenantIdentity | undefined;
   let state: 'stopped' | 'healthy' | 'stopping' = 'stopped';

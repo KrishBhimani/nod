@@ -2,9 +2,13 @@ import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
 import type { CommandProcess } from '../command-process.ts';
 import type { E2BAllocation } from './allocation.ts';
-import type { E2BCommand } from './client.ts';
+import type { E2BCommand, E2BCommandRole } from './client.ts';
 
-export function launchE2BCommand(allocation: E2BAllocation, command: string): CommandProcess {
+export function launchE2BCommand(
+  allocation: E2BAllocation,
+  role: E2BCommandRole,
+  command: string,
+): CommandProcess {
   const events = new EventEmitter();
   const stdout = new PassThrough();
   const stderr = new PassThrough();
@@ -71,6 +75,7 @@ export function launchE2BCommand(allocation: E2BAllocation, command: string): Co
           throw error();
         }
         const value = await sandbox.start({
+          role,
           command,
           stdout: (data) => output(stdout, data),
           stderr: (data) => output(stderr, data),

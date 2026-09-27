@@ -12,6 +12,7 @@ import {
   runtimeRoutingGeneration,
 } from './runtime-forwarding.ts';
 import {
+  computerProvider,
   controlBody,
   environmentName,
   environmentValues,
@@ -256,12 +257,21 @@ const computerOutbound: OutboundHandler<Bindings> = async (request, env, context
   try {
     if (context.className !== 'TenantContainer') throw new RuntimeControlError(403);
     const version = generation(request.headers.get('x-sidekick-generation'));
+    const tenant = env.TENANTS.get(env.TENANTS.idFromString(context.containerId));
+    const url = new URL(request.url);
+    if (url.pathname === '/v1/stopped') {
+      if (request.method !== 'POST' || url.search || url.hash) throw new RuntimeControlError(400);
+      const body = await controlBody(request);
+      if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length)
+        throw new RuntimeControlError(400);
+      await tenant.recordExternalComputerStopped(version);
+      return Response.json({ ok: true }, { headers: { 'cache-control': 'no-store' } });
+    }
     const role = request.headers.get('x-sidekick-computer-role');
     if (role !== 'browser' && role !== 'workspace') throw new RuntimeControlError(400);
-    const identity = await env.TENANTS.get(
-      env.TENANTS.idFromString(context.containerId),
-    ).storageIdentity(version);
+    const identity = await tenant.storageIdentity(version);
     if (
+      computerProvider(identity) !== 'cloudflare' ||
       identity.environment !== env.SIDEKICK_ENVIRONMENT ||
       context.containerId !== env.TENANTS.idFromName(tenantName(env, identity.ownerId)).toString()
     )
@@ -398,10 +408,15 @@ export class TenantContainer extends Container<Bindings> {
       assertContainerStartupSettled(this);
       return state.status;
     },
-    start: (envVars) => startContainer(this, { envVars }),
+    start: async (envVars) => {
+      await this.ctx.storage.delete('external-computer-stopped');
+      if (envVars.COMPUTER_PROVIDER === 'e2b') await this.ctx.storage.delete('deployment-proof');
+      await startContainer(this, { envVars });
+    },
     stop: () => stopContainer(this, { running: () => this.ctx.container?.running === true }),
     leaseUpdated: () => this.leaseAlarm.update(),
     stopComputers: async (identity) => {
+      if (computerProvider(identity) === 'e2b') return;
       const results = await Promise.allSettled(
         (['browser', 'workspace'] as const).map(async (role) => {
           const namespace =
@@ -414,7 +429,52 @@ export class TenantContainer extends Container<Bindings> {
       if (results.some((result) => result.status !== 'fulfilled' || result.value?.stopped !== true))
         throw new RuntimeControlError(503);
     },
+    confirmComputersStopped: async (identity) => {
+      if (computerProvider(identity) === 'e2b' && !(await this.externalComputerStopped(identity)))
+        throw new RuntimeControlError(503);
+    },
   });
+
+  async recordExternalComputerStopped(version: string) {
+    const expected = generation(version);
+    await this.ctx.storage.transaction(async (storage) => {
+      const identity = await storage.get<TenantIdentity>('identity');
+      if (
+        !identity ||
+        computerProvider(identity) !== 'e2b' ||
+        identity.generation !== expected ||
+        identity.environment !== this.env.SIDEKICK_ENVIRONMENT ||
+        this.ctx.id.toString() !==
+          this.env.TENANTS.idFromName(tenantName(this.env, identity.ownerId)).toString()
+      )
+        throw new RuntimeControlError(409);
+      await storage.put('external-computer-stopped', {
+        ownerId: identity.ownerId,
+        environment: identity.environment,
+        generation: identity.generation,
+        configurationHash: identity.configurationHash,
+      });
+    });
+  }
+
+  private async externalComputerStopped(identity: TenantIdentity) {
+    const stopped = await this.ctx.storage.get<Partial<TenantIdentity>>(
+      'external-computer-stopped',
+    );
+    if (
+      stopped?.ownerId === identity.ownerId &&
+      stopped.environment === identity.environment &&
+      stopped.generation === identity.generation &&
+      stopped.configurationHash === identity.configurationHash
+    )
+      return true;
+    const proof = await this.ctx.storage.get<RuntimeDeploymentProof>('deployment-proof');
+    return Boolean(
+      proof?.computerPaused === true &&
+      deploymentProof(proof, proof, identity.generation) &&
+      !deploymentProof(await this.ctx.storage.get('deployment-resume'), proof, identity.generation),
+    );
+  }
 
   expireRuntimeLease() {
     return this.leaseAlarm.run();
@@ -446,6 +506,7 @@ export class TenantContainer extends Container<Bindings> {
     version: string,
     input: DeploymentInput,
     requireAttempt = false,
+    computerPaused = false,
   ) {
     await this.ctx.storage.transaction(async (storage) => {
       const identity = await storage.get<TenantIdentity>('identity');
@@ -462,7 +523,11 @@ export class TenantContainer extends Container<Bindings> {
           deploymentProof(await storage.get('deployment-resume'), input, version))
       )
         throw new RuntimeControlError(409);
-      await storage.put('deployment-proof', { ...input, generation: version });
+      await storage.put('deployment-proof', {
+        ...input,
+        generation: version,
+        ...(computerPaused && { computerPaused: true }),
+      });
     });
   }
 
@@ -527,6 +592,12 @@ export class TenantContainer extends Container<Bindings> {
     const ownerId = ownerIdentity(owner);
     const expected = version === null ? null : generation(version);
     if (!(await this.deploymentStoppedIdentity(ownerId, expected))) return false;
+    const identity = await this.ctx.storage.get<TenantIdentity>('identity');
+    if (identity && computerProvider(identity) === 'e2b')
+      return (
+        (await this.externalComputerStopped(identity)) &&
+        (await this.deploymentStoppedIdentity(ownerId, expected))
+      );
     for (const role of ['browser', 'workspace'] as const) {
       const namespace =
         role === 'browser' ? this.env.BROWSER_COMPUTERS : this.env.WORKSPACE_COMPUTERS;
@@ -570,10 +641,18 @@ export class TenantContainer extends Container<Bindings> {
       this.env.TENANTS.idFromName(tenantName(this.env, ownerId)).toString()
     )
       throw new RuntimeControlError(403);
-    if (await this.physicallyStopped()) await this.storeDeploymentProof(ownerId, expected, input);
+    const identity = await this.ctx.storage.get<TenantIdentity>('identity');
+    const external = identity && computerProvider(identity) === 'e2b';
+    if (await this.physicallyStopped()) {
+      if (external && !(await this.externalComputerStopped(identity)))
+        throw new RuntimeControlError(503);
+      await this.storeDeploymentProof(ownerId, expected, input, false, Boolean(external));
+    }
     await this.deploymentComputerIdentity(ownerId, expected, input);
     let progressed = false;
-    for (const role of ['browser', 'workspace'] as const) {
+    if (external && !(await this.externalComputerStopped(identity)))
+      throw new RuntimeControlError(503);
+    for (const role of external ? [] : (['browser', 'workspace'] as const)) {
       const namespace =
         role === 'browser' ? this.env.BROWSER_COMPUTERS : this.env.WORKSPACE_COMPUTERS;
       const result = await namespace
@@ -621,6 +700,7 @@ export class TenantContainer extends Container<Bindings> {
       : await this.lifecycle.identity(expected);
     if (
       !identity ||
+      computerProvider(identity) !== 'cloudflare' ||
       identity.ownerId !== ownerId ||
       identity.environment !== this.env.SIDEKICK_ENVIRONMENT ||
       identity.generation !== expected ||
@@ -638,7 +718,11 @@ export class TenantContainer extends Container<Bindings> {
     return {
       generation: identity?.generation ?? null,
       stopped:
-        !this.ctx.container?.running && ['stopped', 'stopped_with_code'].includes(state.status),
+        !this.ctx.container?.running &&
+        ['stopped', 'stopped_with_code'].includes(state.status) &&
+        (!identity ||
+          computerProvider(identity) !== 'e2b' ||
+          (await this.externalComputerStopped(identity))),
       status: state.status,
     };
   }
@@ -670,9 +754,16 @@ export class TenantContainer extends Container<Bindings> {
           input,
           generation,
           action,
+          computerProvider(identity) === 'e2b',
         );
         if (action === 'drain') {
-          await this.storeDeploymentProof(identity.ownerId, generation, input, true);
+          await this.storeDeploymentProof(
+            identity.ownerId,
+            generation,
+            input,
+            true,
+            computerProvider(identity) === 'e2b',
+          );
           const token = {};
           this.deploymentWitness = { proof: { ...input, generation }, token };
           void this.ctx

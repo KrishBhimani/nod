@@ -14,7 +14,14 @@ export type TenantIdentity = {
   leaseExpiresAt: number;
   revoking: boolean;
   stopped: boolean;
+  computerProvider?: 'cloudflare' | 'e2b';
 };
+
+export function computerProvider(identity: Pick<TenantIdentity, 'computerProvider'>) {
+  const provider = identity.computerProvider ?? 'cloudflare';
+  if (provider !== 'cloudflare' && provider !== 'e2b') throw new RuntimeControlError();
+  return provider;
+}
 
 export function ownerIdentity(value: unknown): string {
   if (
@@ -83,6 +90,9 @@ export async function bootstrap(value: unknown, environment: string, now: () => 
     throw new RuntimeControlError();
   const ownerId = ownerIdentity(input.ownerId);
   const env = environmentValues(input.env);
+  const provider = computerProvider({
+    computerProvider: env.COMPUTER_PROVIDER as TenantIdentity['computerProvider'],
+  });
   const runtimeGeneration = generation(env.SIDEKICK_RUNTIME_GENERATION);
   const leaseExpiresAt = leaseExpiry(env.SIDEKICK_RUNTIME_LEASE_EXPIRES, now);
   if (
@@ -109,7 +119,7 @@ export async function bootstrap(value: unknown, environment: string, now: () => 
     env.PGBOSS_SCHEMA !== `sk_jobs_${suffix}`
   )
     throw new RuntimeControlError();
-  const configured = {
+  const configured: Record<string, string> = {
     ...env,
     SIDEKICK_CONTROL_URL: 'http://sidekick.control',
     SIDEKICK_DATA_ROOT: '/data',
@@ -118,6 +128,9 @@ export async function bootstrap(value: unknown, environment: string, now: () => 
     PORT: '4310',
     HOST: '0.0.0.0',
   };
+  delete configured.SIDEKICK_COMPUTER_CONTROL_URL;
+  if (provider === 'e2b')
+    configured.SIDEKICK_COMPUTER_CONTROL_URL = 'http://sidekick.computer/v1/stopped';
   const configurationHash = await hash(JSON.stringify(Object.entries(configured).sort()));
   const identity: TenantIdentity = {
     ownerId,
@@ -127,6 +140,7 @@ export async function bootstrap(value: unknown, environment: string, now: () => 
     leaseExpiresAt,
     revoking: false,
     stopped: false,
+    computerProvider: provider,
   };
   return { env: configured, identity };
 }

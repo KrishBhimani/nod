@@ -59,11 +59,14 @@ export function deploymentPlan({ environment, release, accountId, publicUrl, gat
     throw new Error('Set COMPUTER_PROVIDER to cloudflare or e2b for this deployment.');
   if (
     values.COMPUTER_PROVIDER === 'e2b' &&
-    ['E2B_API_KEY', 'E2B_BROWSER_TEMPLATE', 'E2B_WORKSPACE_TEMPLATE'].some(
-      (key) => !values[key]?.trim(),
-    )
+    ['E2B_API_KEY', 'E2B_COMPUTER_TEMPLATE'].some((key) => !values[key]?.trim())
   )
-    throw new Error('Configure the E2B API key and both computer templates.');
+    throw new Error('Configure the E2B API key and computer template.');
+  if (
+    values.COMPUTER_PROVIDER === 'e2b' &&
+    (values.E2B_BROWSER_TEMPLATE || values.E2B_WORKSPACE_TEMPLATE)
+  )
+    throw new Error('Migrate the separate E2B templates to E2B_COMPUTER_TEMPLATE.');
   if (
     values.OBJECT_STORAGE_PROVIDER !== 'http' ||
     values.OBJECT_STORAGE_ENDPOINT !== 'http://sidekick.storage/v1/objects/'

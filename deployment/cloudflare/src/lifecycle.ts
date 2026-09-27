@@ -1,5 +1,6 @@
 import {
   bootstrap,
+  computerProvider,
   generation,
   leaseExpiry,
   ownerIdentity,
@@ -17,6 +18,7 @@ export function createTenantLifecycle(options: {
   start(env: Record<string, string>): Promise<void>;
   stop(): Promise<void>;
   stopComputers?(identity: TenantIdentity): Promise<void>;
+  confirmComputersStopped?(identity: TenantIdentity): Promise<void>;
   leaseUpdated?(identity: TenantIdentity): Promise<void>;
   now?: () => number;
 }) {
@@ -56,6 +58,7 @@ export function createTenantLifecycle(options: {
     await options.stop();
     const state = await options.status();
     if (state !== 'stopped' && state !== 'stopped_with_code') throw new RuntimeControlError(503);
+    await options.confirmComputersStopped?.(revoking);
     await write({ ...revoking, stopped: true });
     return { ok: true, generation: identity.generation, stopped: true };
   }
@@ -74,7 +77,11 @@ export function createTenantLifecycle(options: {
           )
             throw new RuntimeControlError(409);
           if (previous.generation === next.identity.generation) {
-            if (previous.configurationHash !== next.identity.configurationHash || !active(previous))
+            if (
+              previous.configurationHash !== next.identity.configurationHash ||
+              !active(previous) ||
+              (stopped && computerProvider(previous) === 'e2b')
+            )
               throw new RuntimeControlError(409);
             next.identity = previous;
           } else if (

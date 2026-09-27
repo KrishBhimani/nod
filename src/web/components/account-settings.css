@@ -507,17 +507,27 @@
 }
 @media (max-width: 640px) {
   .account-settings.dialog-content {
-    width: calc(100vw - 24px);
+    inset: 0;
+    width: 100%;
+    height: 100dvh;
+    max-height: none;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+      env(safe-area-inset-left);
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    transform: none;
   }
   .account-settings .dialog-close {
-    top: 12px;
-    right: 12px;
+    top: calc(12px + env(safe-area-inset-top));
+    right: calc(12px + env(safe-area-inset-right));
     width: 44px;
     height: 44px;
   }
   .account-settings-layout {
     grid-template-columns: 58px minmax(0, 1fr);
-    height: 440px;
+    height: 100%;
+    max-height: none;
   }
   .account-settings-layout > nav {
     padding: 16px 7px;

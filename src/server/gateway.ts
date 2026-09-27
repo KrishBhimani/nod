@@ -124,7 +124,28 @@ export async function createGateway(options: {
     trustProxy: false,
     forceCloseConnections: true,
   });
-  const accounts = createAccountSession({ ...options, origin: origin.origin });
+  const accounts = createAccountSession({
+    ...options,
+    origin: origin.origin,
+    async prepare(ownerId) {
+      const response = await options.runtimes.fetch(
+        ownerId,
+        new Request(new URL('/api/account/prepare', origin), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+        }),
+        { developer: false },
+      );
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new Error('Account preparation failed.');
+      }
+      z.object({ ok: z.literal(true) })
+        .strict()
+        .parse(await response.json());
+    },
+  });
   const deployment = options.deployment
     ? createDeploymentControl({ ...options.deployment, runtimes: options.runtimes })
     : undefined;
@@ -171,7 +192,9 @@ export async function createGateway(options: {
   });
   app.addHook('preValidation', async (request) => {
     if (
-      ['/api/login', '/api/logout', '/api/account'].includes(request.url.split('?')[0]) &&
+      ['/api/login', '/api/logout', '/api/account', '/api/account/prepare'].includes(
+        request.url.split('?')[0],
+      ) &&
       Buffer.isBuffer(request.body)
     ) {
       try {

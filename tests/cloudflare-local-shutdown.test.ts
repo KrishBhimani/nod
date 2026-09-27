@@ -678,8 +678,7 @@ test('hosted CLI refuses check/resume ambiguity and resume for the other provide
     GOOGLE_CLIENT_SECRET: 'synthetic',
     COMPUTER_PROVIDER: 'e2b',
     E2B_API_KEY: 'synthetic',
-    E2B_BROWSER_TEMPLATE: 'synthetic',
-    E2B_WORKSPACE_TEMPLATE: 'synthetic',
+    E2B_COMPUTER_TEMPLATE: 'synthetic',
   };
   await writeFile(
     file,

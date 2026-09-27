@@ -15,7 +15,9 @@ const entries = [
   'deployment/e2b/browser-ready.ts',
 ];
 
-export async function prepareE2BContext(options: { role: 'browser' | 'workspace'; root?: string }) {
+export type E2BTemplateRole = 'browser' | 'workspace' | 'computer';
+
+export async function prepareE2BContext(options: { role: E2BTemplateRole; root?: string }) {
   const root = await realpath(
     options.root ?? resolve(dirname(fileURLToPath(import.meta.url)), '../..'),
   );
@@ -55,9 +57,11 @@ export async function prepareE2BContext(options: { role: 'browser' | 'workspace'
   }
   try {
     const dockerfile = await read(
-      options.role === 'browser' ? 'Dockerfile.browser' : 'deployment/e2b/Dockerfile.workspace',
+      options.role === 'browser'
+        ? 'Dockerfile.browser'
+        : `deployment/e2b/Dockerfile.${options.role}`,
     );
-    if (options.role === 'browser') {
+    if (options.role !== 'workspace') {
       for (const name of ['package.json', 'package-lock.json']) await add(name, await read(name));
       const queued = [...entries];
       const visited = new Set<string>();
@@ -77,9 +81,12 @@ export async function prepareE2BContext(options: { role: 'browser' | 'workspace'
           }
         }
       }
-    } else {
+    }
+    if (options.role !== 'browser') {
       await add('workspace-command.py', Buffer.from(workspaceCommandProgram));
     }
+    if (options.role === 'computer')
+      await add('deployment/e2b/computer-guard.py', await read('deployment/e2b/computer-guard.py'));
     files.sort((a, b) => a.path.localeCompare(b.path));
     return {
       path,

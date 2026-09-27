@@ -5,6 +5,7 @@ import { boundedBody, generation, RuntimeControlError } from './protocol.ts';
 
 const proofSchema = deploymentInputSchema.extend({
   generation: z.string().regex(/^[1-9]\d{0,18}$/),
+  computerPaused: z.literal(true).optional(),
 });
 
 export type RuntimeDeploymentProof = z.infer<typeof proofSchema>;
@@ -37,6 +38,7 @@ export async function runtimeDeploymentAcknowledgement(
   input: DeploymentInput,
   version: string,
   action: 'drain' | 'resume',
+  requireComputerPaused = false,
 ) {
   if (response.status !== 200 || !response.body) {
     await response.body?.cancel().catch(() => {});
@@ -69,6 +71,7 @@ export async function runtimeDeploymentAcknowledgement(
         targetRelease: z.literal(input.targetRelease),
         generation: z.literal(generation(version)),
         drained: z.literal(true),
+        computerPaused: requireComputerPaused ? z.literal(true) : z.literal(true).optional(),
       })
         .strict()
         .parse(value);

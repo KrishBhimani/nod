@@ -23,8 +23,7 @@ const values = () => ({
   GOOGLE_CLIENT_ID: 'synthetic-client',
   GOOGLE_CLIENT_SECRET: 'synthetic-google-secret',
   E2B_API_KEY: 'synthetic-e2b-key',
-  E2B_BROWSER_TEMPLATE: 'fixture-browser',
-  E2B_WORKSPACE_TEMPLATE: 'fixture-workspace',
+  E2B_COMPUTER_TEMPLATE: 'fixture-computer',
 });
 
 test('hosted development isolates process, dotenv, data and server configuration', () => {
@@ -50,6 +49,18 @@ test('hosted development isolates process, dotenv, data and server configuration
   assert.equal(environment.NODE_OPTIONS, undefined);
   assert.equal(environment.OBJECT_STORAGE_PROVIDER, 'postgres');
   assert.equal(environment.COMPUTER_PROVIDER, 'e2b');
+});
+
+test('hosted E2B requires the combined template and rejects legacy split configuration without disclosing values', () => {
+  const input = values();
+  delete (input as Partial<typeof input>).E2B_COMPUTER_TEMPLATE;
+  assert.throws(() => hostedEnvironment(input), {
+    message: 'Missing configuration: E2B_COMPUTER_TEMPLATE.',
+  });
+  for (const key of ['E2B_BROWSER_TEMPLATE', 'E2B_WORKSPACE_TEMPLATE'])
+    assert.throws(() => hostedEnvironment({ ...values(), [key]: 'private-legacy-template' }), {
+      message: 'Split E2B templates are no longer supported. Configure E2B_COMPUTER_TEMPLATE.',
+    });
 });
 
 test('hosted launcher refuses production, shared local database and invalid configuration without printing values', () => {
@@ -113,8 +124,7 @@ test('local Cloudflare uses development bindings and private runtime configurati
     SIDEKICK_IMAGE_RELEASE: 'untrusted-image-release',
   };
   delete (input as Partial<typeof input>).E2B_API_KEY;
-  delete (input as Partial<typeof input>).E2B_BROWSER_TEMPLATE;
-  delete (input as Partial<typeof input>).E2B_WORKSPACE_TEMPLATE;
+  delete (input as Partial<typeof input>).E2B_COMPUTER_TEMPLATE;
   const environment = hostedEnvironment(input, {
     root: '/fixture',
     inherited: { PATH: '/bin', OPENAI_API_KEY: 'inherited-secret' },

@@ -12,7 +12,7 @@ import { launchE2BCommand } from './transport.ts';
 export function createE2BAdapters(options: {
   apiKey: string;
   ownerId: string;
-  templates: { browser: string; workspace: string };
+  templateId: string;
   workspaceRoot: string;
   allocations: ComputerAllocationStore;
   sandboxTimeoutMs?: number;
@@ -23,30 +23,45 @@ export function createE2BAdapters(options: {
   browserTimeoutMs?: number;
   drainTimeoutMs?: number;
   client?: E2BClient;
-}): { computer: Computer; workspace: Workspace } {
+}): {
+  computer: Computer;
+  workspace: Workspace;
+  prepare(): Promise<void>;
+  pause(): Promise<void>;
+  resume(): Promise<void>;
+  dispose(): Promise<void>;
+} {
   const client = options.client ?? createE2BClient(options);
-  const allocation = (role: 'browser' | 'workspace') =>
-    createE2BAllocation({
-      ownerId: options.ownerId,
-      role,
-      templateId: options.templates[role],
-      store: options.allocations,
-      client,
-      leaseMs: options.leaseMs,
-      idlePauseMs: options.idlePauseMs,
-      maxActiveMs: options.maxActiveMs,
-    });
-  const browser = allocation('browser');
-  const shell = allocation('workspace');
+  const allocation = createE2BAllocation({
+    ownerId: options.ownerId,
+    role: 'computer',
+    templateId: options.templateId,
+    store: options.allocations,
+    client,
+    leaseMs: options.leaseMs,
+    idlePauseMs: options.idlePauseMs,
+    maxActiveMs: options.maxActiveMs,
+  });
   let browserUsed = false;
   let browserDisposed = false;
+  let workspaceDisposed = false;
+  let closing = false;
+  let draining = false;
+  let preparing: Promise<void> | undefined;
+  let pausing: Promise<void> | undefined;
+  let browserDisposal: Promise<void> | undefined;
+  let workspaceDisposal: Promise<void> | undefined;
+  let disposal: Promise<void> | undefined;
   const computer = createBridgeComputer({
     namespace: `sk-${createHash('sha256').update(options.ownerId).digest('hex').slice(0, 24)}`,
-    launch: () => {
-      if (browserDisposed) throw new Error('The remote browser is stopped.');
+    available: (input) => !draining || input.method === 'quiesce',
+    launch: (input) => {
+      if (browserDisposed || (draining && input.method !== 'quiesce' && input.method !== 'dispose'))
+        throw new Error('The remote browser is stopped.');
       browserUsed = true;
       return launchE2BCommand(
-        browser,
+        allocation,
+        'browser',
         'cd /app && exec node --import tsx /app/src/providers/container-browser/bridge.ts',
       );
     },
@@ -57,35 +72,107 @@ export function createE2BAdapters(options: {
     workspaceRoot: options.workspaceRoot,
     status: 'Remote Linux workspace is ready.',
     instructions:
-      'This is your own remote Linux workspace, separate from the user’s device and the trusted browser. Node, Python, pipx, git, curl, and ffmpeg are installed. You are an unprivileged user and cannot use sudo. Install trusted command-line tools with npm install -g <package> or pipx install <package>. Internet access follows the server-selected provider policy. There is no graphical display; use a supported CLI or the browser web app. Keep task outputs under this task workspace.',
-    runCommand: (id, args, input) =>
-      runSupervisedCommand({
+      'This is your own remote Linux workspace, separate from the user’s device. Browser profiles and controls are protected from workspace commands. Node, Python, pipx, git, curl, and ffmpeg are installed. You are an unprivileged user and cannot use sudo. Install trusted command-line tools with npm install -g <package> or pipx install <package>. Internet access follows the server-selected provider policy. There is no graphical display; use a supported CLI or the browser web app. Keep task outputs under this task workspace.',
+    runCommand: (id, args, input) => {
+      if (draining) return Promise.reject(new Error('The remote computer is paused.'));
+      return runSupervisedCommand({
         args,
         ...input,
         drainTimeoutMs: options.drainTimeoutMs,
         launch: () =>
           launchE2BCommand(
-            shell,
-            `mkdir -p /workspace/${taskId(id)} && cd /workspace/${taskId(id)} && exec python3 -u /opt/sidekick/workspace-command.py`,
+            allocation,
+            'workspace',
+            `mkdir -p /workspace/${taskId(id)} && cd /workspace/${taskId(id)} && exec /usr/bin/setpriv --no-new-privs python3 -u /opt/sidekick/workspace-command.py`,
           ),
-      }),
+      });
+    },
   });
+  async function release() {
+    if (browserDisposed && workspaceDisposed) {
+      await preparing?.catch(() => {});
+      await allocation.dispose();
+    }
+  }
+  function disposeComputer() {
+    closing = true;
+    browserDisposal ??= (async () => {
+      if (browserUsed) await computer.dispose();
+      browserDisposed = true;
+      await release();
+    })().catch((error) => {
+      browserDisposal = undefined;
+      throw error;
+    });
+    return browserDisposal;
+  }
+  function disposeWorkspace() {
+    closing = true;
+    workspaceDisposal ??= (async () => {
+      await workspace.dispose();
+      workspaceDisposed = true;
+      await release();
+    })().catch((error) => {
+      workspaceDisposal = undefined;
+      throw error;
+    });
+    return workspaceDisposal;
+  }
+  const { quiesce, ...browserComputer } = computer;
   return {
     computer: {
-      ...computer,
+      ...browserComputer,
       status: () => (browserDisposed ? 'Workspace browser is stopped.' : computer.status()),
-      async dispose() {
-        if (browserUsed) await computer.dispose();
-        browserDisposed = true;
-        await browser.dispose();
-      },
+      dispose: disposeComputer,
     },
     workspace: {
       ...workspace,
-      async dispose() {
-        await workspace.dispose();
-        await shell.dispose();
-      },
+      dispose: disposeWorkspace,
+    },
+    prepare() {
+      if (closing || draining) return Promise.reject(new Error('The remote computer is stopped.'));
+      preparing ??= allocation.get().then(
+        () => {
+          preparing = undefined;
+        },
+        (error) => {
+          preparing = undefined;
+          throw error;
+        },
+      );
+      return preparing;
+    },
+    pause() {
+      if (closing) return Promise.reject(new Error('The remote computer is stopped.'));
+      draining = true;
+      pausing ??= (async () => {
+        await preparing;
+        if (browserUsed) {
+          if (!(await quiesce())) throw new Error('The remote browser is busy.');
+          browserUsed = false;
+        }
+        await allocation.pause();
+      })();
+      return pausing;
+    },
+    async resume() {
+      if (closing) throw new Error('The remote computer is stopped.');
+      await pausing?.catch(() => {});
+      await allocation.resume();
+      draining = false;
+      pausing = undefined;
+    },
+    dispose() {
+      disposal ??= (async () => {
+        const results = await Promise.allSettled([disposeComputer(), disposeWorkspace()]);
+        if (results.some((result) => result.status === 'rejected'))
+          throw new Error('The remote computer needs recovery before continuing.');
+        await release();
+      })().catch((error) => {
+        disposal = undefined;
+        throw error;
+      });
+      return disposal;
     },
   };
 }

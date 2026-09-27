@@ -65,7 +65,7 @@ export function createComputerAllocationStore(options: {
   const ownerId = options.ownerId;
 
   function identity(owner: string, role: ComputerAllocationRole) {
-    if (owner !== ownerId || !['browser', 'workspace'].includes(role))
+    if (owner !== ownerId || !['browser', 'workspace', 'computer'].includes(role))
       throw new ComputerAllocationError('invalid_allocation');
   }
 
@@ -111,7 +111,7 @@ export function createComputerAllocationStore(options: {
           );
           await client.query(`CREATE TABLE IF NOT EXISTS computer_allocations (
           owner_id text NOT NULL,
-          role text NOT NULL CHECK (role IN ('browser','workspace')),
+          role text NOT NULL CHECK (role IN ('browser','workspace','computer')),
           provider text NOT NULL,
           template_id text NOT NULL,
           resource_id text,
@@ -125,6 +125,12 @@ export function createComputerAllocationStore(options: {
           CHECK (lease_expires_at IS NULL OR lease_expires_at>=0),
           CHECK (state<>'ready' OR resource_id IS NOT NULL)
         )`);
+          await client.query(
+            'ALTER TABLE computer_allocations DROP CONSTRAINT IF EXISTS computer_allocations_role_check',
+          );
+          await client.query(
+            "ALTER TABLE computer_allocations ADD CONSTRAINT computer_allocations_role_check CHECK (role IN ('browser','workspace','computer'))",
+          );
           await client.query('REVOKE ALL ON TABLE computer_allocations FROM PUBLIC');
           await client.query('COMMIT');
         } catch (error) {

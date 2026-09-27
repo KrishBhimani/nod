@@ -30,12 +30,21 @@ test('E2B templates use bounded build contexts and the trusted browser and shell
     name: 'synthetic-workspace',
     apiKey: 'synthetic-key',
   });
+  const computer = await buildE2BTemplate({
+    role: 'computer',
+    name: 'synthetic-computer',
+    apiKey: 'synthetic-key',
+  });
   assert.equal(browser.templateId, 'synthetic-browser-id');
   assert.equal(workspace.templateId, 'synthetic-workspace-id');
+  assert.equal(computer.templateId, 'synthetic-computer-id');
   assert.match(builds[0].template, /container-browser\/worker\.ts/);
   assert.match(builds[0].template, /browser-ready\.ts/);
   assert.equal(browser.buildId, 'synthetic-browser-build');
   assert.match(builds[1].template, /workspace-command\.py/);
+  const combined = JSON.parse(builds[2].template);
+  assert.equal(combined.startCmd, 'exec python3 /opt/sidekick/computer-guard.py start');
+  assert.equal(combined.readyCmd, 'python3 /opt/sidekick/computer-guard.py check');
   assert.equal(
     builds.some((build) => build.template.includes('synthetic-key')),
     false,
@@ -80,6 +89,13 @@ test('offline E2B preflight includes the complete browser import closure and no 
   assert.match(JSON.stringify(description), /\/usr\/local\/bin:\/usr\/sbin:\/usr\/bin/);
   assert.doesNotMatch(JSON.stringify(description), /\$PATH/);
   assert.match(description.readyCmd, /test -w \/workspace/);
+  const computer = await prepareE2BTemplate('computer');
+  t.after(computer.close);
+  const combinedPaths = computer.summary.files.map((file) => file.path);
+  assert.ok(paths.every((path) => combinedPaths.includes(path)));
+  assert.ok(combinedPaths.includes('workspace-command.py'));
+  assert.ok(combinedPaths.includes('deployment/e2b/computer-guard.py'));
+  assert.ok(combinedPaths.every((path) => !/(src\/(server|runtime|web)|\.env|\.local)/.test(path)));
 });
 
 test('template contexts reject symlinked source and do not copy unrelated local files', async (t) => {

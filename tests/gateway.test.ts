@@ -169,6 +169,43 @@ test('deployment gateway accepts only purpose-signed exact control bodies withou
   assert.equal(f.calls.length, 0);
 });
 
+test('onboarding preparation routes only the authenticated owner with a fixed private request', async (t) => {
+  const f = await fixture();
+  t.after(() => f.app.close());
+  f.reply(async () => Response.json({ ok: true }));
+  for (const index of [0, 1]) {
+    const response = await f.app.inject({
+      method: 'POST',
+      url: '/api/account/prepare',
+      headers: {
+        ...f.headers(index),
+        origin,
+        'x-sidekick-owner': f.users[1 - index],
+        'x-sidekick-generation': '999',
+      },
+      payload: {},
+    });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), { ok: true });
+    const forwarded = f.calls[index];
+    assert.equal(forwarded.owner, f.users[index]);
+    assert.equal(forwarded.url, `${origin}/api/account/prepare`);
+    assert.equal(forwarded.method, 'POST');
+    assert.equal(forwarded.body, '{}');
+    assert.equal(forwarded.developer, false);
+    assert.deepEqual([...forwarded.headers], [['content-type', 'application/json']]);
+  }
+  f.reply(async () => Response.json({ ok: true, sandboxId: 'private' }));
+  const failed = await f.app.inject({
+    method: 'POST',
+    url: '/api/account/prepare',
+    headers: { ...f.headers(), origin },
+    payload: {},
+  });
+  assert.equal(failed.statusCode, 503);
+  assert.doesNotMatch(failed.body, /private|sandboxId/);
+});
+
 test('gateway routes two signed users only by their cookie identity and strips client routing credentials', async () => {
   const f = await fixture();
   try {

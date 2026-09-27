@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { Template } from 'e2b';
-import { prepareE2BContext } from './context.ts';
+import { prepareE2BContext, type E2BTemplateRole } from './context.ts';
 
-export async function prepareE2BTemplate(role: 'browser' | 'workspace') {
+export async function prepareE2BTemplate(role: E2BTemplateRole) {
   const context = await prepareE2BContext({ role });
   try {
     const template = Template({ fileContextPath: context.path }).fromDockerfile(context.dockerfile);
@@ -21,11 +21,21 @@ export async function prepareE2BTemplate(role: 'browser' | 'workspace') {
               'cd /app && exec node --import tsx /app/src/providers/container-browser/worker.ts',
               'cd /app && node --import tsx /app/deployment/e2b/browser-ready.ts',
             )
-        : template
-            .runCmd(
-              'python3 -c "import ast; ast.parse(open(\'/opt/sidekick/workspace-command.py\').read())" && test -w /workspace && test -x /usr/local/bin/node && test -x /usr/bin/python3 && test -x /usr/bin/pipx && test -x /usr/bin/ffmpeg',
-            )
-            .setReadyCmd('test -r /opt/sidekick/workspace-command.py && test -w /workspace');
+        : role === 'computer'
+          ? template
+              .setUser('root')
+              .runCmd(
+                'test -x /usr/bin/chromium && test -x /usr/bin/Xvfb && test -x /usr/sbin/nft && test -x /usr/sbin/ip && test -x /usr/bin/setpriv && test -r /app/src/providers/container-browser/bridge.ts && test -r /opt/sidekick/workspace-command.py',
+              )
+              .setStartCmd(
+                'exec python3 /opt/sidekick/computer-guard.py start',
+                'python3 /opt/sidekick/computer-guard.py check',
+              )
+          : template
+              .runCmd(
+                'python3 -c "import ast; ast.parse(open(\'/opt/sidekick/workspace-command.py\').read())" && test -w /workspace && test -x /usr/local/bin/node && test -x /usr/bin/python3 && test -x /usr/bin/pipx && test -x /usr/bin/ffmpeg',
+              )
+              .setReadyCmd('test -r /opt/sidekick/workspace-command.py && test -w /workspace');
     const description = await Template.toJSON(final);
     return {
       template: final,
@@ -44,7 +54,7 @@ export async function prepareE2BTemplate(role: 'browser' | 'workspace') {
 }
 
 export async function buildE2BTemplate(options: {
-  role: 'browser' | 'workspace';
+  role: E2BTemplateRole;
   name: string;
   apiKey: string;
 }) {
@@ -55,7 +65,7 @@ export async function buildE2BTemplate(options: {
     const result = await Template.build(prepared.template, options.name, {
       apiKey: options.apiKey,
       cpuCount: 2,
-      memoryMB: options.role === 'browser' ? 2048 : 1024,
+      memoryMB: options.role === 'computer' ? 3072 : options.role === 'browser' ? 2048 : 1024,
       requestTimeoutMs: 30_000,
       signal: AbortSignal.timeout(30 * 60_000),
     });
@@ -73,8 +83,8 @@ export async function buildE2BTemplate(options: {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const role = process.argv[2];
-  if (role !== 'browser' && role !== 'workspace') {
-    process.stderr.write('Choose a browser or workspace template.\n');
+  if (role !== 'browser' && role !== 'workspace' && role !== 'computer') {
+    process.stderr.write('Choose a computer, browser or workspace template.\n');
     process.exitCode = 1;
   } else {
     try {

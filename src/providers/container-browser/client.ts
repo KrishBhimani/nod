@@ -17,10 +17,11 @@ import {
 
 export function createBridgeComputer(options: {
   namespace: string;
-  launch(): CommandProcess;
+  launch(input: BrowserCall): CommandProcess;
+  available?(input: BrowserCall): boolean;
   timeoutMs?: number;
   drainTimeoutMs?: number;
-}): Computer {
+}): Computer & { quiesce(): Promise<boolean> } {
   let disposed = false;
   let uncertain = false;
   let sequence = 0;
@@ -60,7 +61,10 @@ export function createBridgeComputer(options: {
 
   function call(input: BrowserCall, signal?: AbortSignal): Promise<unknown> {
     signal?.throwIfAborted();
-    if (input.method !== 'dispose' && (disposed || uncertain))
+    if (
+      input.method !== 'dispose' &&
+      (disposed || uncertain || options.available?.(input) === false)
+    )
       return Promise.reject(
         new Error('The workspace browser is unavailable. Restart Sidekick before continuing.'),
       );
@@ -76,7 +80,7 @@ export function createBridgeComputer(options: {
     const result = new Promise<unknown>((resolve, reject) => {
       let child: CommandProcess;
       try {
-        child = options.launch();
+        child = options.launch(input);
       } catch {
         uncertain = true;
         return reject(
@@ -183,6 +187,16 @@ export function createBridgeComputer(options: {
   }
 
   return {
+    async quiesce() {
+      const result = await call({ method: 'quiesce' });
+      if (typeof result !== 'boolean')
+        throw new Error('The workspace browser could not pause safely.');
+      if (result) {
+        currentSession = undefined;
+        screens.clear();
+      }
+      return result;
+    },
     currentSession: () => currentSession,
     screenStatus: (id) => screens.get(taskId(id))?.value ?? { state: 'unavailable' },
     status: () => (uncertain ? 'Workspace browser needs a restart.' : status),

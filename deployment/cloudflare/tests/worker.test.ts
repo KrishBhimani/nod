@@ -153,6 +153,10 @@ function fixture() {
           async storageIdentity() {
             return identity;
           },
+          async recordExternalComputerStopped(generation: string) {
+            assert.equal(generation, identity.generation);
+            calls.push({ target: 'external-computer-stopped' });
+          },
         };
       },
     },
@@ -427,6 +431,104 @@ test('gateway forces the actual Node bind setting and safely restarts after beco
     error: 'This request could not be completed. Try again.',
   });
   assert.deepEqual(current.counts(), { starts: 3, forwards: 2 });
+});
+
+test('E2B stop acknowledgement is owner and generation bound and required after physical shutdown', async () => {
+  const current = processFixture('tenant');
+  const instance = current.instance as InstanceType<typeof TenantContainer>;
+  const identity: TenantIdentity = { ...current.identity, computerProvider: 'e2b' };
+  current.persisted.set('identity', identity);
+  current.stop();
+  assert.equal((await instance.runtimeStatus()).stopped, false);
+  await assert.rejects(instance.recordExternalComputerStopped('2'));
+  assert.equal(current.persisted.has('external-computer-stopped'), false);
+  await instance.recordExternalComputerStopped('1');
+  assert.equal((await instance.runtimeStatus()).stopped, true);
+  current.persisted.set('identity', { ...identity, generation: '2' });
+  assert.equal((await instance.runtimeStatus()).stopped, false);
+  current.persisted.set('identity', { ...identity, ownerId: randomUUID() });
+  await assert.rejects(instance.recordExternalComputerStopped('1'));
+  current.persisted.set('identity', { ...identity, computerProvider: 'cloudflare' });
+  await assert.rejects(instance.recordExternalComputerStopped('1'));
+});
+
+test('E2B journal-loss inspection requires the exact pause receipt and never visits Cloudflare computers', async () => {
+  const current = processFixture('tenant');
+  const instance = current.instance as InstanceType<typeof TenantContainer>;
+  const identity: TenantIdentity = { ...current.identity, computerProvider: 'e2b' };
+  current.persisted.set('identity', identity);
+  current.stop();
+  Object.assign(instance, { deploymentStoppedIdentity: async () => true });
+  for (const key of ['BROWSER_COMPUTERS', 'WORKSPACE_COMPUTERS'] as const)
+    current.env[key] = {
+      getByName: () => {
+        assert.fail('E2B must not access Cloudflare computers.');
+      },
+    } as never;
+  assert.equal(await instance.deploymentStopped(current.ownerId, '1'), false);
+  const proof = {
+    nonce: randomUUID(),
+    targetRelease: 'a'.repeat(40),
+    deadline: Date.now() + 60_000,
+    generation: '1',
+    computerPaused: true,
+  };
+  current.persisted.set('deployment-proof', { ...proof, generation: '2' });
+  assert.equal(await instance.deploymentStopped(current.ownerId, '1'), false);
+  current.persisted.set('deployment-proof', proof);
+  assert.equal(await instance.deploymentStopped(current.ownerId, '1'), true);
+  current.persisted.set('deployment-resume', proof);
+  assert.equal(await instance.deploymentStopped(current.ownerId, '1'), false);
+});
+
+test('an E2B tenant cannot use the Cloudflare computer command broker', async () => {
+  const current = fixture();
+  Object.assign(current.identity, { computerProvider: 'e2b' });
+  const response = await TenantContainer.outboundByHost!['sidekick.computer'](
+    new Request('http://sidekick.computer/v1/commands', {
+      method: 'POST',
+      headers: { 'x-sidekick-generation': '1', 'x-sidekick-computer-role': 'browser' },
+      body: '{}',
+    }),
+    current.env,
+    current.tenantContext,
+  );
+  assert.equal(response.status, 403);
+  assert.equal(current.calls.length, 0);
+});
+
+test('only the calling tenant can acknowledge its E2B shutdown through the private broker', async () => {
+  const current = fixture();
+  const outbound = TenantContainer.outboundByHost!['sidekick.computer'];
+  const request = (body = '{}', version = '1', method = 'POST') =>
+    new Request('http://sidekick.computer/v1/stopped', {
+      method,
+      headers: { 'x-sidekick-generation': version },
+      ...(method === 'POST' ? { body } : {}),
+    });
+  assert.equal((await outbound(request(), current.env, current.gatewayContext)).status, 403);
+  assert.equal(
+    (
+      await outbound(
+        request(JSON.stringify({ ownerId: randomUUID() })),
+        current.env,
+        current.tenantContext,
+      )
+    ).status,
+    400,
+  );
+  assert.equal(
+    (await outbound(request('{}', '2'), current.env, current.tenantContext)).status,
+    503,
+  );
+  assert.equal(
+    (await outbound(request('{}', '1', 'GET'), current.env, current.tenantContext)).status,
+    400,
+  );
+  assert.equal(current.calls.length, 0);
+  const response = await outbound(request(), current.env, current.tenantContext);
+  assert.deepEqual(await response.json(), { ok: true });
+  assert.deepEqual(current.calls, [{ target: 'external-computer-stopped' }]);
 });
 
 test('anonymous gateway startup and both TCP proxy failures return fixed errors', async () => {

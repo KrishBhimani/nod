@@ -17,9 +17,9 @@ const forwardedEnvironment = [
   'SIDEKICK_PUBLIC_URL',
   'SIDEKICK_RELEASE',
   'COMPUTER_PROVIDER',
+  'SIDEKICK_COMPUTER_CONTROL_URL',
   'E2B_API_KEY',
-  'E2B_BROWSER_TEMPLATE',
-  'E2B_WORKSPACE_TEMPLATE',
+  'E2B_COMPUTER_TEMPLATE',
   'E2B_SANDBOX_TIMEOUT_MS',
   'LLM_PROVIDER',
   'LLM_MODEL',
@@ -289,6 +289,7 @@ export function createTenantRuntimeHost(options: {
         targetRelease: z.literal(input.targetRelease),
         generation: z.literal(entry.lease.generation),
         drained: z.literal(true),
+        computerPaused: z.literal(true).optional(),
       })
         .strict()
         .parse(result);

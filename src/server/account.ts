@@ -39,6 +39,7 @@ export function createAccountSession(options: {
   authentication?: AuthenticationProvider;
   localUser?: AccountUser;
   developerIds?: ReadonlySet<string>;
+  prepare?(ownerId: string): Promise<void>;
 }) {
   const origin = new URL(options.origin).origin;
   const mode = options.authentication ? 'google' : 'local';
@@ -89,6 +90,31 @@ export function createAccountSession(options: {
     if (request.headers.origin !== origin || request.headers['sec-fetch-site'] === 'cross-site') {
       reply.code(403).send({ error: 'This origin is not permitted.' });
       return false;
+    }
+    return true;
+  }
+  async function prepare(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    session: AuthenticatedSession,
+  ) {
+    try {
+      await options.prepare?.(session.user.id);
+    } catch {
+      reply.code(503).send({ error: 'Setup could not be completed. Try again.' });
+      return false;
+    }
+    if (options.authentication) {
+      const current = await options.authentication.session(authenticationHeaders(request));
+      if (
+        !current ||
+        current.id !== session.id ||
+        current.user.id !== session.user.id ||
+        current.expiresAt <= new Date()
+      ) {
+        reply.code(401).send({ error: 'Sign in to continue.' });
+        return false;
+      }
     }
     return true;
   }
@@ -162,11 +188,23 @@ export function createAccountSession(options: {
       }
       return { ok: true };
     });
+    app.post('/api/account/prepare', async (request, reply) => {
+      if (!sameOrigin(request, reply)) return;
+      const session = await requirePrincipal(request, reply);
+      if (!session) return;
+      z.object({})
+        .strict()
+        .parse(request.body ?? {});
+      if (!(await prepare(request, reply, session))) return;
+      reply.header('cache-control', 'no-store');
+      return { ok: true };
+    });
     app.patch('/api/account', async (request, reply) => {
       if (!sameOrigin(request, reply)) return;
       const session = await requirePrincipal(request, reply);
       if (!session) return;
       const input = accountUpdate.parse(request.body);
+      if (input.onboardingCompleted && !(await prepare(request, reply, session))) return;
       await options.accounts.update(session.user.id, input);
       reply.header('cache-control', 'no-store');
       return response(request);

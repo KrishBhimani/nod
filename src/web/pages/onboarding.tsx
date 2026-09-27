@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Check, LoaderCircle } from 'lucide-react';
-import type { AccountUser } from '../../shared/account';
+import type { AccountPreparationResponse, AccountUser } from '../../shared/account';
 import type { Connection } from '../../shared/contracts';
 import {
   integrationServiceIds,
@@ -29,6 +29,8 @@ export function Onboarding({
   const [connecting, setConnecting] = useState<IntegrationService | null>(null);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [preparation, setPreparation] = useState<'pending' | 'ready' | 'failed'>('pending');
+  const preparationRequest = useRef<AbortController | null>(null);
   const action = useRef<AbortController | null>(null);
   const active = useRef(false);
   useEffect(() => {
@@ -38,11 +40,32 @@ export function Onboarding({
     if (result === 'failed' || result === 'expired')
       setError('The app could not connect. Try again.');
     if (result) window.history.replaceState(null, '', window.location.pathname);
+    void prepare();
     return () => {
       active.current = false;
       action.current?.abort();
+      preparationRequest.current?.abort();
     };
-  }, []);
+  }, [user.id]);
+  async function prepare() {
+    preparationRequest.current?.abort();
+    const request = new AbortController();
+    preparationRequest.current = request;
+    setPreparation('pending');
+    try {
+      const response = await api<AccountPreparationResponse>('/api/account/prepare', {
+        method: 'POST',
+        body: '{}',
+        signal: request.signal,
+      });
+      if (response.ok !== true) throw new Error('Setup could not be completed.');
+      if (!request.signal.aborted) setPreparation('ready');
+    } catch {
+      if (!request.signal.aborted) setPreparation('failed');
+    } finally {
+      if (preparationRequest.current === request) preparationRequest.current = null;
+    }
+  }
   async function connect(slug: IntegrationService) {
     if (action.current || saving) return;
     const request = new AbortController();
@@ -67,7 +90,7 @@ export function Onboarding({
     }
   }
   async function complete() {
-    if (saving || connecting) return;
+    if (saving || connecting || preparation !== 'ready') return;
     setSaving(true);
     setError('');
     try {
@@ -148,13 +171,28 @@ export function Onboarding({
               );
             })}
         </div>
+        {preparation === 'failed' && (
+          <Notice>
+            Setup could not be completed.{' '}
+            <Button variant="ghost" onClick={() => void prepare()}>
+              Try again
+            </Button>
+          </Notice>
+        )}
         <div className="account-onboarding-actions">
-          <Button disabled={saving || Boolean(connecting)} onClick={() => void complete()}>
-            {saving ? 'Opening Sidekick…' : 'Continue to Sidekick'}
+          <Button
+            disabled={saving || Boolean(connecting) || preparation !== 'ready'}
+            onClick={() => void complete()}
+          >
+            {preparation === 'pending'
+              ? 'Preparing…'
+              : saving
+                ? 'Opening Sidekick…'
+                : 'Continue to Sidekick'}
           </Button>
           <Button
             variant="ghost"
-            disabled={saving || Boolean(connecting)}
+            disabled={saving || Boolean(connecting) || preparation !== 'ready'}
             onClick={() => void complete()}
           >
             I’ll do this later

@@ -153,3 +153,59 @@ test(
     });
   },
 );
+
+test(
+  'combined-computer migration retains legacy resources and their uncertainty without adopting either role',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async (t) => {
+    const schema = `test_allocations_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 1 });
+    const database = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+      max: 2,
+    });
+    t.after(async () => {
+      await database.end();
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await admin.end();
+    });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const ownerId = randomUUID();
+    const store = createComputerAllocationStore({ database, ownerId });
+    await store.initialize();
+    await database.query(
+      'ALTER TABLE computer_allocations DROP CONSTRAINT computer_allocations_role_check',
+    );
+    await database.query(
+      "ALTER TABLE computer_allocations ADD CONSTRAINT computer_allocations_role_check CHECK (role IN ('browser','workspace'))",
+    );
+    const browser = {
+      ...initial(ownerId),
+      state: 'uncertain' as const,
+      resourceId: 'retained-browser',
+    };
+    const workspace = {
+      ...initial(ownerId),
+      role: 'workspace' as const,
+      state: 'ready' as const,
+      resourceId: 'retained-workspace',
+    };
+    assert.equal(await store.compareAndSwap(null, browser), true);
+    assert.equal(await store.compareAndSwap(null, workspace), true);
+    const computer = { ...initial(ownerId), role: 'computer' as const, templateId: 'combined' };
+    await assert.rejects(store.compareAndSwap(null, computer), { code: 'unavailable' });
+    await store.initialize();
+    await store.initialize();
+    assert.deepEqual(await store.read(ownerId, 'browser'), browser);
+    assert.deepEqual(await store.read(ownerId, 'workspace'), workspace);
+    assert.equal(await store.read(ownerId, 'computer'), undefined);
+    assert.equal(await store.compareAndSwap(null, computer), true);
+    assert.deepEqual(await store.read(ownerId, 'computer'), computer);
+    assert.equal(
+      (await database.query('SELECT COUNT(*)::int AS count FROM computer_allocations')).rows[0]
+        .count,
+      3,
+    );
+  },
+);

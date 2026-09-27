@@ -18,4 +18,5 @@ export interface TenantDrain {
   prepare(input: DeploymentInput): Promise<void>;
   resume(input: DeploymentInput): Promise<void>;
   active(): boolean;
+  computerPaused?(): boolean;
 }

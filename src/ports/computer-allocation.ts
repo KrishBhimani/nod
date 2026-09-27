@@ -1,4 +1,4 @@
-export type ComputerAllocationRole = 'browser' | 'workspace';
+export type ComputerAllocationRole = 'browser' | 'workspace' | 'computer';
 
 export interface ComputerAllocation {
   ownerId: string;

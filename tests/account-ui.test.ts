@@ -189,10 +189,12 @@ test('sign-in hides an old callback error while retrying and reports a failed ne
 test('onboarding distinguishes an initial load from unavailable integrations and can retry', async () => {
   const previous = globalThis.fetch;
   const requests: Array<(response: Response) => void> = [];
-  globalThis.fetch = async () =>
-    new Promise((resolve) => {
-      requests.push(resolve);
-    });
+  globalThis.fetch = async (path) =>
+    String(path) === '/api/account/prepare'
+      ? Response.json({ ok: true })
+      : new Promise((resolve) => {
+          requests.push(resolve);
+        });
   pageDataCache.clear();
   const element = document.createElement('div');
   document.body.append(element);
@@ -266,6 +268,7 @@ test('onboarding shows seven concise states and starts consent directly with a f
   let resolve!: (response: Response) => void;
   let signal: AbortSignal | null | undefined;
   globalThis.fetch = async (path, options) => {
+    if (String(path) === '/api/account/prepare') return Response.json({ ok: true });
     if (options?.method === 'POST') {
       posts.push({ path: String(path), body: JSON.parse(String(options.body)) });
       signal = options.signal;
@@ -307,6 +310,114 @@ test('onboarding shows seven concise states and starts consent directly with a f
     await act(async () => resolve(Response.json({ url: 'https://accounts.example.test/consent' })));
   } finally {
     await act(async () => root.unmount());
+    element.remove();
+    pageDataCache.clear();
+    globalThis.fetch = previous;
+  }
+});
+
+test('onboarding keeps app connections usable while preparation gates completion and supports a quiet retry', async () => {
+  const previous = globalThis.fetch;
+  const preparations: Array<{
+    resolve(response: Response): void;
+    signal: AbortSignal | null | undefined;
+  }> = [];
+  const connections: Connection[] = integrationServiceIds.map((slug) => ({
+    slug,
+    name: integrationServices[slug].name,
+    status: 'disconnected',
+    triggersEnabled: false,
+  }));
+  globalThis.fetch = async (path, options) => {
+    if (String(path) === '/api/account/prepare') {
+      assert.equal(options?.method, 'POST');
+      assert.equal(options.body, '{}');
+      return new Promise((resolve) => preparations.push({ resolve, signal: options.signal }));
+    }
+    return Response.json(connections);
+  };
+  pageDataCache.clear();
+  const element = document.createElement('div');
+  document.body.append(element);
+  const root = createRoot(element);
+  let completions = 0;
+  const props = {
+    user,
+    onComplete: async () => {
+      completions++;
+    },
+    onLogout() {},
+    canLogout: true,
+  };
+  const primary = () =>
+    element.querySelector<HTMLButtonElement>('.account-onboarding-actions button')!;
+  try {
+    await act(async () => root.render(createElement(Onboarding, props)));
+    assert.equal(preparations.length, 1);
+    assert.equal(primary().disabled, true);
+    assert.equal(primary().textContent, 'Preparing…');
+    assert.equal(
+      element.querySelector<HTMLButtonElement>('[aria-label="Connect Gmail"]')!.disabled,
+      false,
+    );
+    await act(async () => primary().click());
+    assert.equal(completions, 0);
+    await act(async () =>
+      preparations[0].resolve(Response.json({ error: 'private provider detail' }, { status: 503 })),
+    );
+    assert.equal(primary().disabled, true);
+    assert.equal(element.textContent?.includes('private provider detail'), false);
+    assert.ok(element.textContent?.includes('Setup could not be completed.'));
+    await act(async () =>
+      Array.from(element.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Try again')!
+        .click(),
+    );
+    assert.equal(preparations.length, 2);
+    await act(async () => preparations[1].resolve(Response.json({ ok: true })));
+    assert.equal(primary().disabled, false);
+    assert.equal(element.querySelector('[role="alert"]'), null);
+    await act(async () => primary().click());
+    assert.equal(completions, 1);
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
+    pageDataCache.clear();
+    globalThis.fetch = previous;
+  }
+});
+
+test('onboarding cancels preparation on account replacement and ignores its late completion', async () => {
+  const previous = globalThis.fetch;
+  const preparations: Array<{
+    resolve(response: Response): void;
+    signal: AbortSignal | null | undefined;
+  }> = [];
+  globalThis.fetch = async (path, options) =>
+    String(path) === '/api/account/prepare'
+      ? new Promise((resolve) => preparations.push({ resolve, signal: options?.signal }))
+      : Response.json([]);
+  pageDataCache.clear();
+  const element = document.createElement('div');
+  document.body.append(element);
+  const root = createRoot(element);
+  const props = { user, onComplete: async () => {}, onLogout() {}, canLogout: true };
+  try {
+    await act(async () => root.render(createElement(Onboarding, props)));
+    await act(async () =>
+      root.render(createElement(Onboarding, { ...props, user: { ...user, id: 'sam' } })),
+    );
+    assert.equal(preparations.length, 2);
+    assert.equal(preparations[0].signal?.aborted, true);
+    await act(async () => preparations[0].resolve(Response.json({ ok: true })));
+    assert.equal(
+      element.querySelector<HTMLButtonElement>('.account-onboarding-actions button')!.disabled,
+      true,
+    );
+    await act(async () => root.unmount());
+    assert.equal(preparations[1].signal?.aborted, true);
+    await act(async () => preparations[1].resolve(Response.json({ ok: true })));
+  } finally {
     element.remove();
     pageDataCache.clear();
     globalThis.fetch = previous;

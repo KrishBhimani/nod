@@ -20,7 +20,7 @@ function gate() {
   return { promise, resolve };
 }
 
-function fixture() {
+function fixture(computer?: { pause(): Promise<void>; resume(): Promise<void> }) {
   const app = Fastify();
   const identity = {
     secret: randomBytes(32).toString('base64url'),
@@ -30,7 +30,7 @@ function fixture() {
   };
   const admission = createWorkAdmission();
   const consumers = createWorkConsumers();
-  const drain = createTenantDrain({ admission, consumers });
+  const drain = createTenantDrain({ admission, consumers, computer });
   registerRuntimeAccess(app, identity);
   registerTenantDrain(app, { admission, drain, generation: identity.generation });
   app.setErrorHandler((error, _request, reply) => {
@@ -282,3 +282,148 @@ test(
     }
   },
 );
+
+test('computer pause follows natural work drain and its acknowledgement precedes the signed receipt', async () => {
+  const entered = gate();
+  const finish = gate();
+  const order: string[] = [];
+  const f = fixture({
+    async pause() {
+      order.push('pause');
+      entered.resolve();
+      await finish.promise;
+    },
+    async resume() {
+      order.push('resume');
+      assert.equal(f.admission.paused, true);
+    },
+  });
+  let workerId = 0;
+  await f.consumers.register({
+    start: async () => {
+      order.push('consumer-start');
+      return `worker-${++workerId}`;
+    },
+    stop: async () => {
+      order.push('consumer-stop');
+    },
+  });
+  const release = f.admission.enter()!;
+  const input = { nonce: randomUUID(), targetRelease: 'c'.repeat(40), deadline: Date.now() + 2000 };
+  const preparing = f.request('/api/runtime/drain', input, 'deployment');
+  let replied = false;
+  void preparing.then(() => {
+    replied = true;
+  });
+  try {
+    await delay(5);
+    assert.equal(order.includes('pause'), false);
+    release();
+    await entered.promise;
+    assert.equal(replied, false);
+    finish.resolve();
+    const response = await preparing;
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().computerPaused, true);
+    assert.equal(f.drain.computerPaused?.(), true);
+    assert.equal((await f.request('/api/runtime/resume', input, 'deployment')).statusCode, 200);
+    assert.equal(f.drain.computerPaused?.(), false);
+    assert.deepEqual(order, [
+      'consumer-start',
+      'consumer-stop',
+      'pause',
+      'resume',
+      'consumer-start',
+    ]);
+  } finally {
+    release();
+    finish.resolve();
+    await f.app.close();
+  }
+});
+
+test('abort cannot reopen admission while a timed-out computer pause is still pending', async () => {
+  const entered = gate();
+  const finish = gate();
+  let resumes = 0;
+  const f = fixture({
+    async pause() {
+      entered.resolve();
+      await finish.promise;
+    },
+    async resume() {
+      resumes++;
+    },
+  });
+  const input = { nonce: randomUUID(), targetRelease: 'd'.repeat(40), deadline: Date.now() + 1000 };
+  const preparing = f.request('/api/runtime/drain', input, 'deployment');
+  void preparing.then(() => {});
+  try {
+    await entered.promise;
+    assert.equal((await preparing).statusCode, 503);
+    const resuming = f.request('/api/runtime/resume', input, 'deployment');
+    let resumed = false;
+    void resuming.then(() => {
+      resumed = true;
+    });
+    await delay(5);
+    assert.equal(resumed, false);
+    assert.equal(resumes, 0);
+    assert.equal(f.admission.paused, true);
+    finish.resolve();
+    assert.equal((await resuming).statusCode, 200);
+    assert.equal(resumes, 1);
+    assert.equal(f.admission.paused, false);
+    assert.equal(f.drain.computerPaused?.(), false);
+  } finally {
+    finish.resolve();
+    await f.app.close();
+  }
+});
+
+test('uncertain computer pause and resume cannot emit a clean receipt or restart consumers', async () => {
+  let starts = 0;
+  const f = fixture({
+    async pause() {
+      throw new Error('Private pause uncertainty');
+    },
+    async resume() {
+      throw new Error('Private retained fence');
+    },
+  });
+  await f.consumers.register({ start: async () => `worker-${++starts}`, stop: async () => {} });
+  const input = { nonce: randomUUID(), targetRelease: 'e'.repeat(40), deadline: Date.now() + 1000 };
+  try {
+    const response = await f.request('/api/runtime/drain', input, 'deployment');
+    assert.equal(response.statusCode, 503);
+    assert.equal(response.json().computerPaused, undefined);
+    assert.equal((await f.request('/api/runtime/resume', input, 'deployment')).statusCode, 503);
+    assert.equal(f.admission.paused, true);
+    assert.equal(starts, 1);
+  } finally {
+    await f.app.close();
+  }
+});
+
+test('failed computer resume invalidates its previous pause receipt', async () => {
+  const f = fixture({
+    pause: async () => {},
+    resume: async () => {
+      throw new Error('Private resume uncertainty');
+    },
+  });
+  const input = { nonce: randomUUID(), targetRelease: 'a'.repeat(40), deadline: Date.now() + 2000 };
+  try {
+    const prepared = await f.request('/api/runtime/drain', input, 'deployment');
+    assert.equal(prepared.statusCode, 200);
+    assert.equal(prepared.json().computerPaused, true);
+    assert.equal((await f.request('/api/runtime/resume', input, 'deployment')).statusCode, 503);
+    assert.equal(f.drain.computerPaused?.(), false);
+    assert.equal(f.admission.paused, true);
+    const repeated = await f.request('/api/runtime/drain', input, 'deployment');
+    assert.equal(repeated.statusCode, 503);
+    assert.equal(repeated.json().computerPaused, undefined);
+  } finally {
+    await f.app.close();
+  }
+});

@@ -38,6 +38,10 @@ test(
     const screen = Buffer.from('fixture-screen');
     let callback = '';
     let disposed = false;
+    let prepared = 0;
+    let computerDisposed = false;
+    let workspaceDisposed = false;
+    let shutdownConfirmed = false;
     const session: IntegrationSession = {
       id: 'replacement-session',
       authorize: async (_service, url) => {
@@ -227,7 +231,18 @@ test(
       {
         agent,
         integrations,
+        prepareComputer: async () => {
+          prepared++;
+        },
+        confirmComputerShutdown: async () => {
+          assert.equal(computerDisposed, true);
+          assert.equal(workspaceDisposed, true);
+          shutdownConfirmed = true;
+        },
         computer: fakeComputer({
+          dispose: async () => {
+            computerDisposed = true;
+          },
           act: async (id) => {
             browserTasks.push(id);
             return { text: 'Replacement page body', url: 'https://example.com', candidates: [] };
@@ -236,7 +251,9 @@ test(
         }),
         workspace: {
           status: () => 'replacement workspace',
-          dispose: () => {},
+          dispose: () => {
+            workspaceDisposed = true;
+          },
           readArtifact: async (id, path) => readFile(join(dataRoot, 'workspaces', id, path)),
           open: (input) => ({
             path: `/replacement/${input.taskId}`,
@@ -269,8 +286,11 @@ test(
       { channels: false },
     );
     const headers = { host: `localhost:${port}`, origin: `http://localhost:${port}` };
-    const request = (method: 'GET' | 'POST', url: string, payload?: Record<string, unknown>) =>
-      application.app.inject({ method, url, headers, payload });
+    const request = (
+      method: 'GET' | 'POST' | 'PATCH',
+      url: string,
+      payload?: Record<string, unknown>,
+    ) => application.app.inject({ method, url, headers, payload });
     const onEvent = (
       event: { type: 'refresh' } | ({ type: 'delta' } & (typeof streams)[number]),
     ) => {
@@ -287,6 +307,14 @@ test(
     };
     events.on('event', onEvent);
     try {
+      assert.equal(prepared, 0);
+      assert.equal((await request('POST', '/api/account/prepare', {})).statusCode, 200);
+      assert.equal(prepared, 1);
+      assert.equal(
+        (await request('PATCH', '/api/account', { onboardingCompleted: true })).statusCode,
+        200,
+      );
+      assert.equal(prepared, 2);
       assert.equal((await request('POST', '/api/apps/gmail/connect')).statusCode, 200);
       const connected = new URL(callback);
       connected.searchParams.set('account_ref', 'replacement-account');
@@ -519,6 +547,7 @@ test(
       events.off('event', onEvent);
       await application.app.close();
       assert.equal(disposed, true);
+      assert.equal(shutdownConfirmed, true);
       const files = (await pool.query('SELECT storage_path FROM artifacts')).rows;
       await Promise.all(files.map((file) => rm(String(file.storage_path), { force: true })));
       await Promise.all(
