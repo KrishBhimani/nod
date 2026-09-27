@@ -23,6 +23,7 @@ import {
 } from './protocol.ts';
 import { storageRequest } from './storage.ts';
 import { assertContainerStartupSettled, startContainer } from './container-startup.ts';
+import { stopContainer } from './container-stop.ts';
 import type { DeploymentInput } from '../../../src/ports/deployment.ts';
 import {
   DeploymentControlError,
@@ -398,11 +399,7 @@ export class TenantContainer extends Container<Bindings> {
       return state.status;
     },
     start: (envVars) => startContainer(this, { envVars }),
-    stop: async () => {
-      assertContainerStartupSettled(this);
-      await this.stop();
-      assertContainerStartupSettled(this);
-    },
+    stop: () => stopContainer(this, { running: () => this.ctx.container?.running === true }),
     leaseUpdated: () => this.leaseAlarm.update(),
     stopComputers: async (identity) => {
       const results = await Promise.allSettled(
