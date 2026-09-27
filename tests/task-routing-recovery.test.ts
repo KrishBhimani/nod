@@ -221,6 +221,32 @@ test(
         assert.deepEqual(await snapshot(), before);
       });
       await t.test(
+        'explicit older targets cannot bypass the latest failed or recovery task in their outcome',
+        async () => {
+          for (const [status, reason] of [
+            ['failed', null],
+            ['waiting_user', 'recovery'],
+          ] as const) {
+            const older = await create('succeeded');
+            await db.pool.query("UPDATE tasks SET updated_at='2000-01-01' WHERE id=$1", [
+              older.taskId,
+            ]);
+            await create(status, reason, older.outcomeId);
+            const before = await snapshot();
+            for (const target of [{ taskId: older.taskId }, { replyToMessageId: older.messageId }])
+              await assert.rejects(
+                service.submit('Continue the earlier action', [], {
+                  ...target,
+                  clientMessageId: randomUUID(),
+                  sourceId: randomUUID(),
+                }),
+                blocked,
+              );
+            assert.deepEqual(await snapshot(), before);
+          }
+        },
+      );
+      await t.test(
         'router failure cannot turn an uncertain continuation into new executable work',
         async () => {
           await create('failed');

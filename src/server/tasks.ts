@@ -707,6 +707,20 @@ export async function submitUserMessage(
         throw Object.assign(new Error('Task not found in this conversation.'), { statusCode: 404 });
       if (taskNeedsReview(selected.status, selected.waiting_reason))
         throw new TaskReviewRequiredError();
+      if (selected.outcome_id) {
+        const latest = (
+          await client.query(
+            `SELECT status,waiting_reason FROM tasks t
+             WHERE outcome_id=$1 AND owner_id=$2 AND channel=$3 AND ${currentConversationSql()}
+             ORDER BY updated_at DESC,id DESC LIMIT 1 FOR UPDATE`,
+            [selected.outcome_id, ownerId, channel],
+          )
+        ).rows[0];
+        if (!latest)
+          throw Object.assign(new Error('This work is no longer available.'), { statusCode: 409 });
+        if (taskNeedsReview(latest.status, latest.waiting_reason))
+          throw new TaskReviewRequiredError();
+      }
       if (!selected.outcome_id) {
         if (selected.status === 'waiting_credentials')
           throw Object.assign(new Error('Complete the secure sign-in form to continue.'), {
