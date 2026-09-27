@@ -228,6 +228,7 @@ export async function deploy(environment, variables = process.env, dependencies 
         ['containers', 'push', image, '--env', environment, '--config', configPath],
         childEnvironment,
       );
+    report('Verifying the published image digests.');
     await pinDeploymentImages(plan, environment, childEnvironment, digest);
     await writeFile(configPath, JSON.stringify(plan.config), { mode: 0o600 });
     report('Pausing admission and waiting for clean tenant checkpoints.');

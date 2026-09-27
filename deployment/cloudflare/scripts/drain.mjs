@@ -96,8 +96,39 @@ export function inspectImageDigest(image, environment = process.env) {
       try {
         if (invalid || code !== 0) throw unavailable();
         const manifest = JSON.parse(output);
-        const digest = manifest?.Descriptor?.digest;
-        if (!/^sha256:[a-f0-9]{64}$/.test(digest ?? '')) throw unavailable();
+        const entries = Array.isArray(manifest) ? manifest : [manifest];
+        if (
+          entries.length === 0 ||
+          entries.length > 128 ||
+          entries.some(
+            (entry) =>
+              !entry?.Descriptor ||
+              typeof entry.Descriptor.platform?.os !== 'string' ||
+              typeof entry.Descriptor.platform?.architecture !== 'string' ||
+              typeof entry.Descriptor.digest !== 'string' ||
+              !/^sha256:[a-f0-9]{64}$/.test(entry.Descriptor.digest ?? ''),
+          )
+        )
+          throw unavailable();
+        const candidates = entries.filter(
+          (entry) =>
+            entry.Descriptor.platform.os === 'linux' &&
+            entry.Descriptor.platform.architecture === 'amd64',
+        );
+        if (candidates.length !== 1) throw unavailable();
+        const selected = candidates[0];
+        const descriptor = selected.Descriptor;
+        if (
+          ![
+            'application/vnd.oci.image.manifest.v1+json',
+            'application/vnd.docker.distribution.manifest.v2+json',
+          ].includes(descriptor.mediaType) ||
+          descriptor.platform.variant !== undefined ||
+          descriptor.annotations?.['vnd.docker.reference.type'] === 'attestation-manifest' ||
+          selected.OCIManifest?.artifactType !== undefined
+        )
+          throw unavailable();
+        const digest = descriptor.digest;
         resolve(`${image.slice(0, image.lastIndexOf(':'))}@${digest}`);
       } catch {
         reject(unavailable());
