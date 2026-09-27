@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import test, { type TestContext } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { Sandbox } from 'e2b';
 import type { Computer } from '../src/ports/computer.ts';
@@ -612,10 +613,34 @@ for (const pauseDuringHold of [false, true])
       assert.equal(f.calls.filter((call) => call === 'pause').length, 3);
       assert.ok(resumed >= 3);
       const childPid = Number(await readFile(join(f.root, 'workspace/cancel-child.pid'), 'utf8'));
-      assert.throws(
-        () => process.kill(childPid, 0),
-        (error: NodeJS.ErrnoException) => error.code === 'ESRCH',
-      );
+      assert.ok(Number.isSafeInteger(childPid) && childPid > 0);
+      let stopped = false;
+      const stopDeadline = performance.now() + 5_000;
+      while (performance.now() < stopDeadline) {
+        try {
+          process.kill(childPid, 0);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+          stopped = true;
+          break;
+        }
+        if (process.platform === 'linux') {
+          const status = await readFile(`/proc/${childPid}/stat`, 'utf8').catch((error) => {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+            return undefined;
+          });
+          if (status !== undefined) {
+            const match = status.match(/^(\d+) \([\s\S]*\) ([RSDZTtXxKWPI]) /);
+            assert.ok(match && Number(match[1]) === childPid, 'Invalid child process status');
+            if (match[2] === 'Z') {
+              stopped = true;
+              break;
+            }
+          }
+        }
+        await delay(25);
+      }
+      assert.equal(stopped, true, 'The cancelled child is still running');
       const starts = f.journal.entries.filter((entry) => entry.type === 'command-start');
       const completed = f.journal.entries.filter((entry) => entry.type === 'command-complete');
       assert.ok(starts.length > 10);
