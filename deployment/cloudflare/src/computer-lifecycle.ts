@@ -144,7 +144,7 @@ export function createComputerLifecycle(options: {
       throw unavailable();
     }
     if (previous && matches(previous, expected) && booted && options.running()) return previous;
-    loaded = previous;
+    loaded = previous?.generation === expected.generation ? previous : undefined;
     await destroy();
     const next: ComputerState = {
       ...expected,

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { registerHooks } from 'node:module';
-import { setTimeout as delay } from 'node:timers/promises';
+import { setImmediate as nextTurn, setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import type { ComputerState } from '../src/computer-lifecycle.ts';
 
@@ -85,6 +85,7 @@ function fixture(
   };
   const values = new Map<string, unknown>(phase ? [['computer', state]] : []);
   const events: string[] = [];
+  const authorizations: string[] = [];
   const pending: Promise<unknown>[] = [];
   let authorizedGeneration = '1';
   let exec = async (_args: string[]): Promise<ExecProcess> => nativeProcess().process;
@@ -112,6 +113,7 @@ function fixture(
         assert.equal(name, `tenant:development:${ownerId}`);
         return {
           async computerIdentity(owner: string, generation: string) {
+            authorizations.push(generation);
             assert.equal(owner, ownerId);
             assert.equal(generation, authorizedGeneration);
           },
@@ -160,6 +162,7 @@ function fixture(
     computer,
     ownerId,
     events,
+    authorizations,
     container,
     generation: (value: string) => {
       authorizedGeneration = value;
@@ -255,6 +258,94 @@ test('the same controller can launch a new generation after stopping an unused r
     });
   }
 });
+
+for (const revoked of [false, true]) {
+  test(
+    revoked
+      ? 'authority lost during prior-generation destruction prevents startup and dispatch'
+      : 'authorization remains current while a stopped prior generation is destroyed',
+    async (t) => {
+      for (const role of ['browser', 'workspace'] as const) {
+        await t.test(role, async (t) => {
+          const current = fixture(role, undefined);
+          await current.computer.stopComputer(current.ownerId, '1');
+          const previous = current.state();
+          current.generation('3');
+          const entered = deferred<void>();
+          const release = deferred<void>();
+          const destroy = current.computer.destroy.bind(current.computer);
+          let held = false;
+          Object.assign(current.computer, {
+            destroy: async () => {
+              if (!held) {
+                held = true;
+                entered.resolve();
+                await release.promise;
+              }
+              await destroy();
+            },
+          });
+          const exit = deferred<number>();
+          const command = nativeProcess();
+          command.process = { ...command.process, exitCode: exit.promise };
+          current.exec(async (args) =>
+            args.includes('/app/src/providers/container-browser/bridge.ts') ||
+            args.includes('/opt/sidekick/workspace-command.py')
+              ? command.process
+              : nativeProcess().process,
+          );
+          t.after(async () => {
+            release.resolve();
+            exit.resolve(137);
+            current.generation('3');
+            await current.computer.stopComputer(current.ownerId, '3').catch(() => {});
+          });
+          t.mock.timers.enable({ apis: ['setTimeout'] });
+          const created = current.request('/v1/commands', {
+            method: 'POST',
+            body: JSON.stringify({
+              id: randomUUID(),
+              role,
+              ...(role === 'workspace' ? { taskId: 'task' } : {}),
+            }),
+          });
+          await entered.promise;
+          const authorizations = current.authorizations.length;
+          if (revoked) current.generation('4');
+          t.mock.timers.tick(1000);
+          await nextTurn();
+          assert.ok(current.authorizations.length > authorizations);
+          assert.equal(current.authorizations.at(-1), '3');
+          assert.deepEqual(current.state(), previous);
+          assert.equal(current.events.includes('start'), false);
+          release.resolve();
+          const response = await created;
+          assert.equal(response.status, revoked ? 503 : 201);
+          assert.equal(current.events.filter((event) => event === 'start').length, revoked ? 0 : 1);
+          assert.equal(
+            current.events.filter(
+              (event) =>
+                event.includes('/app/src/providers/container-browser/bridge.ts') ||
+                event.includes('/opt/sidekick/workspace-command.py'),
+            ).length,
+            revoked ? 0 : 1,
+          );
+          assert.equal(current.container.running, !revoked);
+          if (!revoked) {
+            assert.equal(current.state().generation, '3');
+            assert.equal(current.state().phase, 'dirty');
+            assert.deepEqual(command.killed, []);
+            const saved = current.state();
+            const events = [...current.events];
+            await assert.rejects(current.computer.stopComputer(current.ownerId, '1'));
+            assert.deepEqual(current.state(), saved);
+            assert.deepEqual(current.events, events);
+          }
+        });
+      }
+    },
+  );
+}
 
 test('an idle alarm hydrates an evicted controller before retiring its running computer', async (t) => {
   for (const phase of ['ready', 'restoring', 'dirty'] as const) {
