@@ -320,9 +320,11 @@ test('health retries stop at the readiness deadline and explicit cancellation ne
       const f = await fixture(subtest);
       const entered = deferred();
       let calls = 0;
+      let now = Date.now();
       const control = await f.open(false, {
         requestMs: 30,
         readinessMs: 120,
+        ...(condition === 'deadline' ? { now: () => now } : {}),
         fetcher: () => {
           calls++;
           entered.resolve();
@@ -332,12 +334,12 @@ test('health retries stop at the readiness deadline and explicit cancellation ne
       const recovering = control.recover();
       await entered.promise;
       if (condition === 'cancel') control.cancel();
+      else now += 120;
       await assert.rejects(recovering, {
         name: 'Error',
         message: 'Local Cloudflare control could not confirm a safe state.',
       });
-      if (condition === 'cancel') assert.equal(calls, 1);
-      else assert.ok(calls > 1 && calls <= 4);
+      assert.equal(calls, 1);
       assert.deepEqual(f.actions, []);
       await assert.rejects(readFile(join(f.directory, 'local-shutdown.json')), { code: 'ENOENT' });
     });
