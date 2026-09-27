@@ -5,6 +5,7 @@ import {
 } from 'node:child_process';
 import { serviceEnvironment } from '../process.ts';
 import { taskId } from '../../ports/task-identity.ts';
+import type { CommandProcess } from '../command-process.ts';
 
 export const workspaceCommandProgram = `import os,sys,json,base64,selectors,subprocess,signal,time,threading
 line=sys.stdin.buffer.raw.readline(1048577)
@@ -105,7 +106,7 @@ export type WorkspaceCommandLauncher = (
   options: SpawnOptionsWithoutStdio,
 ) => ChildProcessWithoutNullStreams;
 
-export function runWorkspaceCommand(options: {
+export async function runWorkspaceCommand(options: {
   container: string;
   taskId: string;
   args: string[];
@@ -116,20 +117,13 @@ export function runWorkspaceCommand(options: {
   spawn?: WorkspaceCommandLauncher;
   drainTimeoutMs?: number;
 }): Promise<{ stdout: Buffer; stderr: Buffer; exitCode: number }> {
-  options.signal?.throwIfAborted();
   if (!/^sidekick-workspace(?:-[a-zA-Z0-9_-]+)?$/.test(options.container))
     throw new Error('WORKSPACE_CONTAINER must identify a Sidekick workspace.');
-  const timeoutMs = Math.max(1, Math.min(options.timeoutMs ?? 30_000, 120_000));
-  const maxBytes = Math.max(1, Math.min(options.maxBytes ?? 64 * 1024, 16 * 1024 * 1024));
-  const request =
-    JSON.stringify({ args: options.args, input: options.input ?? '', timeoutMs, maxBytes }) + '\n';
-  if (Buffer.byteLength(request) > 1024 * 1024)
-    throw new Error('The workspace command is too large.');
-  return new Promise((resolve, reject) => {
-    const launch = options.spawn ?? spawn;
-    let child: ChildProcessWithoutNullStreams;
-    try {
-      child = launch(
+  const id = taskId(options.taskId);
+  return runSupervisedCommand({
+    ...options,
+    launch: () =>
+      (options.spawn ?? spawn)(
         'docker',
         [
           'exec',
@@ -137,7 +131,7 @@ export function runWorkspaceCommand(options: {
           '--user',
           'node',
           '--workdir',
-          `/workspace/${taskId(options.taskId)}`,
+          `/workspace/${id}`,
           options.container,
           'python3',
           '-u',
@@ -145,7 +139,34 @@ export function runWorkspaceCommand(options: {
           workspaceCommandProgram,
         ],
         { env: serviceEnvironment(), shell: false },
-      );
+      ),
+  });
+}
+
+export function runSupervisedCommand(options: {
+  args: string[];
+  input?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  maxBytes?: number;
+  drainTimeoutMs?: number;
+  transportGraceMs?: number;
+  launch(): CommandProcess;
+}): Promise<{ stdout: Buffer; stderr: Buffer; exitCode: number }> {
+  options.signal?.throwIfAborted();
+  const transportGraceMs = options.transportGraceMs ?? 0;
+  if (!Number.isInteger(transportGraceMs) || transportGraceMs < 0 || transportGraceMs > 300_000)
+    throw new Error('The workspace transport grace period is invalid.');
+  const timeoutMs = Math.max(1, Math.min(options.timeoutMs ?? 30_000, 120_000));
+  const maxBytes = Math.max(1, Math.min(options.maxBytes ?? 64 * 1024, 16 * 1024 * 1024));
+  const request =
+    JSON.stringify({ args: options.args, input: options.input ?? '', timeoutMs, maxBytes }) + '\n';
+  if (Buffer.byteLength(request) > 1024 * 1024)
+    throw new Error('The workspace command is too large.');
+  return new Promise((resolve, reject) => {
+    let child: CommandProcess;
+    try {
+      child = options.launch();
     } catch {
       return reject(
         new WorkspaceCommandError(
@@ -162,7 +183,7 @@ export function runWorkspaceCommand(options: {
     let cancelling = false;
     let response: { code: number; reason: string | null } | undefined;
     let drain: ReturnType<typeof setTimeout> | undefined;
-    const timer = setTimeout(() => cancel(), timeoutMs + 1000);
+    const timer = setTimeout(() => cancel(), transportGraceMs + timeoutMs + 1000);
     const cleanup = () => {
       clearTimeout(timer);
       clearTimeout(drain);

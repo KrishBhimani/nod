@@ -19,6 +19,24 @@ import {
 import { startContainerBrowserWorker } from '../src/providers/container-browser/worker.ts';
 import { runBrowserBridge } from '../src/providers/container-browser/bridge.ts';
 
+test('a failed browser bridge launch cannot create an active session', async () => {
+  let launches = 0;
+  const computer = createContainerBrowserComputer({
+    dataRoot: '/synthetic/failed-launch',
+    spawn: () => {
+      launches++;
+      throw new Error('synthetic private bridge failure');
+    },
+  });
+  await assert.rejects(computer.act('task', { action: 'snapshot' }), {
+    message: 'The workspace browser is unavailable. Start its container and try again.',
+  });
+  assert.equal(computer.currentSession?.(), undefined);
+  assert.match(computer.status(), /needs a restart/);
+  await assert.rejects(computer.act('task', { action: 'snapshot' }), /unavailable/);
+  assert.equal(launches, 1);
+});
+
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => {

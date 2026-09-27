@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import pg from 'pg';
@@ -34,6 +33,8 @@ test(
     });
     const { createTriage } = await import('../src/server/triage.ts');
     const { dataRoot } = await import('../src/server/config.ts');
+    const { storeArtifact } = await import('../src/server/artifacts.ts');
+    const artifactIds: string[] = [];
     let release: () => void = () => {};
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -41,6 +42,8 @@ test(
     let captured: RuntimeContext | undefined;
     let eventMemoryBlocked = false;
     let copiedAttachmentRead = false;
+    let remoteAttachmentRead = false;
+    const remoteUploads = new Map<string, Uint8Array>();
     const classifications: Array<{
       kind: string;
       now: string;
@@ -50,7 +53,6 @@ test(
     }> = [];
     const ran = new Set<string>();
     let rolledBackTask = '';
-    const fixtureDirectory = await mkdtemp(join(tmpdir(), 'sidekick-task-fixture-'));
     const triage = createTriage({
       getProfile: personal.getProfile,
       listGoals: personal.listGoals,
@@ -96,6 +98,15 @@ test(
             false,
           );
           copiedAttachmentRead = true;
+        }
+        if (context.prompt === 'remote-attachment-fixture') {
+          assert.equal(context.attachments.length, 1);
+          assert.equal(
+            Buffer.from(remoteUploads.get(context.taskId)!).toString(),
+            'remote synthetic bytes',
+          );
+          await assert.rejects(readFile(context.attachments[0].path), { code: 'ENOENT' });
+          remoteAttachmentRead = true;
         }
         return { status: 'succeeded' };
       },
@@ -537,23 +548,32 @@ test(
       await t.test(
         'runtime receives the copied attachment and excludes the current prompt from history',
         async () => {
-          const id = randomUUID();
-          const storagePath = join(fixtureDirectory, 'source.txt');
-          await writeFile(storagePath, 'synthetic attachment bytes');
-          await db.pool.query(
-            'INSERT INTO artifacts(id,owner_id,name,mime_type,size,storage_path) VALUES($1,$2,$3,$4,$5,$6)',
-            [id, 'local-development', 'source.txt', 'text/plain', 26, storagePath],
+          const artifact = await storeArtifact(
+            Buffer.from('synthetic attachment bytes'),
+            'source.txt',
+            'text/plain',
           );
-          await tasks.submitTask('attachment-fixture', [
-            {
-              id,
-              name: 'source.txt',
-              mimeType: 'text/plain',
-              size: 26,
-              url: `/api/artifacts/${id}`,
-            },
-          ]);
+          artifactIds.push(artifact.id);
+          await tasks.submitTask('attachment-fixture', [artifact]);
           await waitFor(async () => copiedAttachmentRead);
+        },
+      );
+      await t.test(
+        'task uploads reach the configured remote workspace before execution',
+        async () => {
+          dependencies.writeArtifact = async (taskId, path, bytes, signal) => {
+            assert.match(path, /^[a-f0-9-]{36}-remote.txt$/);
+            assert.equal(signal?.aborted, false);
+            remoteUploads.set(taskId, bytes);
+          };
+          const artifact = await storeArtifact(
+            Buffer.from('remote synthetic bytes'),
+            'remote.txt',
+            'text/plain',
+          );
+          artifactIds.push(artifact.id);
+          await tasks.submitTask('remote-attachment-fixture', [artifact]);
+          await waitFor(async () => remoteAttachmentRead);
         },
       );
     } finally {
@@ -563,7 +583,7 @@ test(
       await db.pool.end();
       for (const id of ids)
         await rm(join(dataRoot, 'workspaces', id), { recursive: true, force: true });
-      await rm(fixtureDirectory, { recursive: true, force: true });
+      for (const id of artifactIds) await rm(join(dataRoot, 'artifacts', id), { force: true });
       await admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`);
       await admin.query(`DROP SCHEMA ${schema} CASCADE`);
       await admin.end();

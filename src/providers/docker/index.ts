@@ -1,5 +1,7 @@
 import { relative, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import type { Workspace } from '../../ports/computer.ts';
+import { WorkspaceExitError } from '../../ports/computer.ts';
 import { taskId } from '../../ports/task-identity.ts';
 import {
   runWorkspaceCommand,
@@ -49,10 +51,78 @@ finally:
  for fd in reversed(fds): os.close(fd)
 `;
 
+export const artifactWriteProgram = `import os,sys,json,stat,base64
+r=json.load(sys.stdin)
+fds=[]
+try:
+ parts=r['path'].split('/')
+ if not parts or any(p in ['', '.', '..'] for p in parts): raise ValueError()
+ temporary=r['temporary']
+ if not temporary.startswith('.sidekick-upload-') or '/' in temporary: raise ValueError()
+ fd=os.open(r['base'],os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+ fds.append(fd)
+ for part in parts[:-1]:
+  try: os.mkdir(part,mode=0o700,dir_fd=fd)
+  except FileExistsError: pass
+  fd=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
+  fds.append(fd)
+ if r.get('remove'):
+  try: os.unlink(temporary,dir_fd=fd)
+  except FileNotFoundError: pass
+ else:
+  offset=int(r['offset'])
+  data=base64.b64decode(r['data'],validate=True)
+  if offset<0 or len(data)>524288 or offset+len(data)>15728640: raise ValueError()
+  flags=os.O_WRONLY|os.O_NOFOLLOW|os.O_NONBLOCK
+  flags=flags|(os.O_CREAT|os.O_EXCL if offset==0 else os.O_APPEND)
+  file=os.open(temporary,flags,mode=0o600,dir_fd=fd)
+  fds.append(file)
+  info=os.fstat(file)
+  if not stat.S_ISREG(info.st_mode) or info.st_size!=offset: raise ValueError()
+  while data:
+   written=os.write(file,data)
+   if written<1: raise ValueError()
+   data=data[written:]
+  if r['done']:
+   os.fsync(file)
+   os.replace(temporary,parts[-1],src_dir_fd=fd,dst_dir_fd=fd)
+   os.fsync(fd)
+except Exception:
+ sys.exit(1)
+finally:
+ for fd in reversed(fds): os.close(fd)
+`;
+
 export function createDockerWorkspace(options: {
   container: string;
   workspaceRoot: string;
   spawn?: WorkspaceCommandLauncher;
+}): Workspace {
+  return createCommandWorkspace({
+    workspaceRoot: options.workspaceRoot,
+    status: `${options.container}; Linux · internet enabled`,
+    instructions:
+      'This is your own Linux computer, not the user’s personal device. It uses normal Docker networking with no Sidekick egress firewall. Internet and other reachable destinations follow the host and Docker network configuration. Node, Python, pipx, git, curl, and ffmpeg are installed. Install trusted CLI tools with npm install -g <package> or pipx install <package>; /home/node persists across tasks and restarts. You are an unprivileged user and cannot use sudo. There is no graphical desktop or display, so native GUI applications cannot run here; use a supported CLI or the browser web app. Keep task outputs under this task workspace; do not ask the user to install your tools on their device.',
+    runCommand: (id, args, input) =>
+      runWorkspaceCommand({
+        container: options.container,
+        taskId: id,
+        args,
+        ...input,
+        spawn: options.spawn,
+      }),
+  });
+}
+
+export function createCommandWorkspace(options: {
+  workspaceRoot: string;
+  status: string;
+  instructions: string;
+  runCommand(
+    id: string,
+    args: string[],
+    input: { input?: string; signal?: AbortSignal; timeoutMs?: number; maxBytes?: number },
+  ): Promise<{ stdout: Buffer; stderr: Buffer; exitCode: number }>;
 }): Workspace {
   let unavailable = false;
   let disposed = false;
@@ -65,20 +135,17 @@ export function createDockerWorkspace(options: {
   ) {
     if (unavailable || disposed)
       throw new Error('The workspace is unavailable. Restart Sidekick before continuing.');
-    const operation = runWorkspaceCommand({
-      container: options.container,
-      taskId: id,
-      args,
+    const operation = options.runCommand(id, args, {
       ...input,
-      spawn: options.spawn,
       signal: input.signal ? AbortSignal.any([input.signal, lifecycle.signal]) : lifecycle.signal,
     });
     pending.add(operation);
     try {
       const result = await operation;
       if (result.exitCode)
-        throw new Error(
-          `Workspace command failed (${result.exitCode}).\n${Buffer.concat([result.stdout, result.stderr]).toString('utf8').slice(0, 20_000)}`,
+        throw new WorkspaceExitError(
+          result.exitCode,
+          Buffer.concat([result.stdout, result.stderr]).toString('utf8'),
         );
       return result;
     } catch (error) {
@@ -101,12 +168,42 @@ export function createDockerWorkspace(options: {
     return Buffer.concat([result.stdout, result.stderr]).toString('utf8');
   }
   return {
-    status: () =>
-      unavailable ? 'Workspace needs a restart.' : `${options.container}; Linux · internet enabled`,
+    status: () => (unavailable ? 'Workspace needs a restart.' : options.status),
     dispose: async () => {
       disposed = true;
       lifecycle.abort();
       await Promise.allSettled([...pending]);
+    },
+    async writeArtifact(id, path, bytes, signal) {
+      taskId(id);
+      if (!bytes.byteLength || bytes.byteLength > 15 * 1024 * 1024)
+        throw new Error('Files must be between 1 byte and 15 MB.');
+      const base = `/workspace/${id}`;
+      const target = relative(base, workspaceFile(id, path));
+      const temporary = `.sidekick-upload-${randomUUID()}`;
+      try {
+        for (let offset = 0; offset < bytes.byteLength; offset += 512 * 1024) {
+          const chunk = bytes.subarray(offset, offset + 512 * 1024);
+          await command(id, ['python3', '-c', artifactWriteProgram], {
+            input: JSON.stringify({
+              base,
+              path: target,
+              temporary,
+              offset,
+              data: Buffer.from(chunk).toString('base64'),
+              done: offset + chunk.byteLength === bytes.byteLength,
+            }),
+            maxBytes: 1024,
+            signal,
+          });
+        }
+      } catch (error) {
+        await command(id, ['python3', '-c', artifactWriteProgram], {
+          input: JSON.stringify({ base, path: target, temporary, remove: true }),
+          maxBytes: 1024,
+        }).catch(() => {});
+        throw error;
+      }
     },
     async readArtifact(id, path, maxBytes) {
       taskId(id);
@@ -131,8 +228,7 @@ export function createDockerWorkspace(options: {
         });
       return {
         path: base,
-        instructions:
-          'This is your own Linux computer, not the user’s personal device. It uses normal Docker networking with no Sidekick egress firewall. Internet and other reachable destinations follow the host and Docker network configuration. Node, Python, pipx, git, curl, and ffmpeg are installed. Install trusted CLI tools with npm install -g <package> or pipx install <package>; /home/node persists across tasks and restarts. You are an unprivileged user and cannot use sudo. There is no graphical desktop or display, so native GUI applications cannot run here; use a supported CLI or the browser web app. Keep task outputs under this task workspace; do not ask the user to install your tools on their device.',
+        instructions: options.instructions,
         execute: (command, timeoutSeconds = 30) =>
           textCommand(id, ['sh', '-c', command], {
             signal: input.signal,

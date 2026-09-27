@@ -227,6 +227,7 @@ export interface Approval {
 export interface Preferences {
   notificationRule: string;
   timeZone: string;
+  quietHoursEnabled: boolean;
   quietStart: string;
   quietEnd: string;
 }

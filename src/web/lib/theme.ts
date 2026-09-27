@@ -1,8 +1,19 @@
 export type Theme = 'light' | 'dark';
+export type ThemePreference = Theme | 'system';
 
 const storageKey = 'sidekick.theme';
 const changeEvent = 'sidekick:theme';
 let chosenTheme: Theme | undefined;
+let accountTheme: ThemePreference | undefined;
+
+function resolvedTheme(): Theme {
+  const preference = accountTheme ?? chosenTheme;
+  return preference === 'light' || preference === 'dark'
+    ? preference
+    : window.matchMedia?.('(prefers-color-scheme: dark)').matches
+      ? 'dark'
+      : 'light';
+}
 
 function savedTheme(): Theme | undefined {
   try {
@@ -26,12 +37,17 @@ function applyTheme(theme: Theme) {
   window.dispatchEvent(new Event(changeEvent));
 }
 
-export function setTheme(theme: Theme) {
-  chosenTheme = theme;
+export function setTheme(theme: ThemePreference) {
+  chosenTheme = theme === 'system' ? undefined : theme;
   try {
     window.localStorage.setItem(storageKey, theme);
   } catch {}
-  applyTheme(theme);
+  applyTheme(resolvedTheme());
+}
+
+export function applyAccountTheme(theme?: ThemePreference) {
+  accountTheme = theme;
+  applyTheme(resolvedTheme());
 }
 
 export function subscribeTheme(listener: () => void) {
@@ -41,7 +57,8 @@ export function subscribeTheme(listener: () => void) {
 
 export function initializeTheme() {
   const system = window.matchMedia?.('(prefers-color-scheme: dark)');
-  const update = () => applyTheme(chosenTheme ?? (system?.matches ? 'dark' : 'light'));
+  accountTheme = undefined;
+  const update = () => applyTheme(resolvedTheme());
   chosenTheme = savedTheme();
   update();
   const storage = (event: StorageEvent) => {

@@ -44,13 +44,13 @@ export function createPromptInspector(
     const result = redact(value);
     return typeof result === 'string' ? result : JSON.stringify(result);
   }
-  async function initialize() {
-    await pool.query(`CREATE TABLE IF NOT EXISTS inspector_prompts (
+  async function initialize(migrationPool: Pool = pool) {
+    await migrationPool.query(`CREATE TABLE IF NOT EXISTS inspector_prompts (
       id uuid PRIMARY KEY, owner_id text NOT NULL, task_id uuid NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
       revision integer NOT NULL, payload jsonb NOT NULL, provider text NOT NULL, model text NOT NULL,
       created_at timestamptz NOT NULL DEFAULT now()
     ); CREATE INDEX IF NOT EXISTS inspector_prompts_owner ON inspector_prompts(owner_id, created_at DESC, id DESC);`);
-    await prune(true);
+    await prune(true, migrationPool);
     if (accepting && !retentionTimer) {
       retentionTimer = setInterval(() => {
         void prune(true).catch(() => {});
@@ -58,10 +58,10 @@ export function createPromptInspector(
       retentionTimer.unref();
     }
   }
-  async function prune(force = false) {
+  async function prune(force = false, database: Pool = pool) {
     if (pruning) return pruning;
     if (!force && Date.now() - lastPruned < 60 * 60_000) return;
-    pruning = pool
+    pruning = database
       .query(
         "DELETE FROM inspector_prompts WHERE owner_id=$1 AND created_at < now()-interval '7 days'",
         [options.ownerId],

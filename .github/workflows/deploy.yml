@@ -1,0 +1,104 @@
+name: Deploy production
+
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sidekick-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      approved: ${{ steps.revision.outputs.approved }}
+      sha: ${{ steps.revision.outputs.sha }}
+    steps:
+      - name: Require the tested revision to remain the current main branch
+        id: revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$TESTED_SHA" =~ ^[a-f0-9]{40}$ ]]; then exit 1; fi
+          current_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          if [[ "$TESTED_SHA" == "$current_sha" ]]; then
+            echo "approved=true" >> "$GITHUB_OUTPUT"
+            echo "sha=$TESTED_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "approved=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    needs: gate
+    if: needs.gate.outputs.approved == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment:
+      name: production
+      url: ${{ vars.SIDEKICK_PUBLIC_URL }}
+    env:
+      CI: 'true'
+      WRANGLER_SEND_METRICS: 'false'
+      SIDEKICK_RELEASE: ${{ needs.gate.outputs.sha }}
+    steps:
+      - name: Check out the exact revision that passed CI
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: Set up Node.js 24.21.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24.21.0'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            deployment/cloudflare/package-lock.json
+      - name: Install locked dependencies without production secrets
+        run: |
+          npm ci
+          npm --prefix deployment/cloudflare ci
+      - name: Check and rebuild the release
+        run: |
+          npm run check
+          npm run build
+          npm --prefix deployment/cloudflare run check
+          npm --prefix deployment/cloudflare test
+      - name: Build the verified runtime and computer images
+        run: |
+          docker build --platform linux/amd64 --build-arg "SIDEKICK_RELEASE=$SIDEKICK_RELEASE" --file deployment/cloudflare/Dockerfile --tag "sidekick-production:$SIDEKICK_RELEASE" .
+          docker build --platform linux/amd64 --file deployment/cloudflare/Dockerfile.browser --tag "sidekick-production-browser:$SIDEKICK_RELEASE" .
+          docker build --platform linux/amd64 --file deployment/cloudflare/Dockerfile.workspace --tag "sidekick-production-workspace:$SIDEKICK_RELEASE" .
+      - name: Publish images, deploy code and secrets together, and verify production
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GATEWAY_ENV: ${{ secrets.GATEWAY_ENV }}
+          SIDEKICK_PUBLIC_URL: ${{ vars.SIDEKICK_PUBLIC_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$SIDEKICK_RELEASE" =~ ^[a-f0-9]{40}$ ]]; then exit 1; fi
+          current_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          if [[ "$SIDEKICK_RELEASE" != "$current_sha" ]]; then
+            echo "Skipping a release superseded on main."
+            exit 0
+          fi
+          unset GH_TOKEN
+          node deployment/cloudflare/scripts/deploy.mjs production

@@ -1,10 +1,33 @@
 import { resolve } from 'node:path';
 import { pool } from './db.ts';
-import { port } from './config.ts';
-import { createApplication, createDefaultAdapters } from './composition.ts';
+import { port, ownerId, runtimeMode, runtimeGeneration } from './config.ts';
+import {
+  createApplication,
+  createDefaultAdapters,
+  createGatewayApplication,
+} from './composition.ts';
+import { createRuntimeLease } from './runtime-lease.ts';
 
-const { app } = await createApplication(createDefaultAdapters());
-if (process.env.NODE_ENV !== 'production') {
+let stopping = false;
+let closeApplication: (() => Promise<void>) | undefined;
+const lease =
+  runtimeMode === 'tenant'
+    ? createRuntimeLease({
+        expiresAt: process.env.SIDEKICK_RUNTIME_LEASE_EXPIRES || '',
+        fence: () => {
+          const timer = setTimeout(() => process.exit(1), 2_000);
+          timer.unref();
+          void shutdown(true);
+        },
+      })
+    : undefined;
+const { app } =
+  runtimeMode === 'gateway'
+    ? await createGatewayApplication()
+    : await createApplication(createDefaultAdapters());
+closeApplication = () => app.close();
+lease?.register(app);
+if (runtimeMode !== 'tenant' && process.env.NODE_ENV !== 'production') {
   const { createServer } = await import('vite');
   const vite = await createServer({
     server: {
@@ -34,7 +57,7 @@ if (process.env.NODE_ENV !== 'production') {
   app.addHook('preClose', async () => {
     await vite.close();
   });
-} else {
+} else if (runtimeMode !== 'tenant') {
   await app.register((await import('@fastify/static')).default, {
     root: resolve('dist/web'),
     index: 'index.html',
@@ -46,18 +69,18 @@ if (process.env.NODE_ENV !== 'production') {
       : reply.sendFile('index.html'),
   );
 }
-let stopping = false;
-async function shutdown() {
+async function shutdown(fenced = false) {
   if (stopping) return;
   stopping = true;
-  let failed = false;
-  for (const close of [() => app.close(), () => pool.end()]) {
+  let failed = fenced;
+  for (const close of [() => closeApplication?.(), () => pool.end()]) {
     try {
       await close();
     } catch {
       failed = true;
     }
   }
+  lease?.close();
   if (failed) console.error('Some application resources could not close.');
   process.exit(failed ? 1 : 0);
 }
@@ -67,5 +90,24 @@ process.on('SIGINT', () => {
 process.on('SIGTERM', () => {
   void shutdown();
 });
-await app.listen({ port, host: '127.0.0.1' });
-console.log(`Sidekick is ready at http://localhost:${port}`);
+if (runtimeMode === 'tenant')
+  process.on('disconnect', () => {
+    void shutdown(true);
+  });
+await app.listen({
+  port,
+  host:
+    runtimeMode === 'local' || process.env.SIDEKICK_BIND_HOST === '127.0.0.1'
+      ? '127.0.0.1'
+      : '0.0.0.0',
+});
+const address = app.server?.address();
+const listeningPort = address && typeof address === 'object' ? address.port : port;
+if (runtimeMode === 'tenant')
+  process.send?.({
+    type: 'sidekick-ready',
+    port: listeningPort,
+    ownerId,
+    generation: runtimeGeneration,
+  });
+else console.log(`Sidekick is ready at http://localhost:${listeningPort}`);

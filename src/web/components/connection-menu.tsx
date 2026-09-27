@@ -36,7 +36,7 @@ export function ConnectionMenu({
   };
   useEffect(() => {
     if (!open) return;
-    container.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus();
+    container.current?.querySelector<HTMLElement>('[role^="menuitem"]:not(:disabled)')?.focus();
     const outside = (event: Event) => {
       if (!event.composedPath().includes(container.current!)) setOpen(false);
     };
@@ -74,7 +74,7 @@ export function ConnectionMenu({
         }
         const items = [
           ...event.currentTarget.querySelectorAll<HTMLButtonElement>(
-            '[role="menuitem"]:not(:disabled)',
+            '[role^="menuitem"]:not(:disabled)',
           ),
         ];
         const current = items.indexOf(document.activeElement as HTMLButtonElement);

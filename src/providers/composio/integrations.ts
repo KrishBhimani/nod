@@ -318,11 +318,15 @@ export function createComposioProvider(options: {
     },
     parseCallback(query) {
       const result = z
-        .object({ state: z.string(), connected_account_id: z.string(), status: z.string() })
+        .object({
+          state: z.string(),
+          connected_account_id: z.string().optional(),
+          status: z.string(),
+        })
         .parse(query);
       return {
         state: result.state,
-        accountId: result.connected_account_id,
+        accountId: result.connected_account_id ?? '',
         success: result.status === 'success',
       };
     },

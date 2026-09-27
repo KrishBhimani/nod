@@ -155,7 +155,7 @@ test(
         },
       });
     try {
-      settings = await createChannelSettings(pool, options);
+      settings = await createChannelSettings(pool, { ...options, ownerId: 'local-development' });
       settings.registerRoutes(app);
       assert.equal((await save(false)).statusCode, 200);
       const original = await settings.environment();
@@ -182,7 +182,7 @@ test(
         original.TELEGRAM_WEBHOOK_SECRET_TOKEN,
       );
       failApply = false;
-      settings = await createChannelSettings(pool, options);
+      settings = await createChannelSettings(pool, { ...options, ownerId: 'local-development' });
       assert.equal(await settings.recover(), true);
       assert.deepEqual(registrations, [pending.TELEGRAM_WEBHOOK_SECRET_TOKEN]);
       assert.equal((await settings.status()).channels[0]?.webhookStatus, 'registered');
@@ -195,7 +195,7 @@ test(
       assert.equal((await settings.status()).channels[0]?.webhookStatus, 'registration_pending');
       assert.equal((await settings.environment()).TELEGRAM_WEBHOOK_SECRET_TOKEN, registrations[1]);
       await pool.query('DROP TRIGGER reject_channel_write ON channel_settings');
-      settings = await createChannelSettings(pool, options);
+      settings = await createChannelSettings(pool, { ...options, ownerId: 'local-development' });
       assert.equal(await settings.recover(), true);
       assert.equal(registrations.length, 3);
       assert.equal(registrations[2], registrations[1]);
@@ -204,7 +204,7 @@ test(
       const uncertain = await save();
       assert.equal(uncertain.statusCode, 503);
       assert.equal(uncertain.body.includes('fixture response lost'), false);
-      settings = await createChannelSettings(pool, options);
+      settings = await createChannelSettings(pool, { ...options, ownerId: 'local-development' });
       assert.equal(await settings.recover(), false);
       assert.equal(registrations[4], registrations[3]);
       assert.equal((await settings.status()).channels[0]?.webhookStatus, 'registration_pending');
@@ -226,7 +226,7 @@ test(
       );
       assert.deepEqual(await settings.environment(), { TELEGRAM_ENABLED: 'false' });
       const attempts = registrations.length;
-      settings = await createChannelSettings(pool, options);
+      settings = await createChannelSettings(pool, { ...options, ownerId: 'local-development' });
       assert.equal(await settings.recover(), true);
       assert.equal(registrations.length, attempts);
       assert.equal(
@@ -281,7 +281,10 @@ test(
       },
     };
     try {
-      const settings = await createChannelSettings(pool, options);
+      const settings = await createChannelSettings(pool, {
+        ...options,
+        ownerId: 'local-development',
+      });
       settings.registerRoutes(app);
       const saved = await app.inject({
         method: 'PUT',
@@ -307,7 +310,10 @@ test(
       assert.equal(failed.body.includes('secret-provider-error'), false);
       assert.equal(applyCount, 1);
       assert.equal((await settings.environment()).TELEGRAM_BOT_TOKEN, token);
-      const restored = await createChannelSettings(pool, options);
+      const restored = await createChannelSettings(pool, {
+        ...options,
+        ownerId: 'local-development',
+      });
       assert.equal((await restored.environment()).TELEGRAM_BOT_TOKEN, token);
       await pool.query("UPDATE channel_settings SET provider='whatsapp'");
       await assert.rejects(settings.environment());
@@ -460,7 +466,7 @@ test(
       const task = randomUUID();
       const message = randomUUID();
       await pool.query(
-        "INSERT INTO channel_inbox(source_id,provider,account_id,sender_id,thread_id,text,received_at,task_id,state) VALUES('fixture','telegram','bot','123','telegram:123','Fixture',now(),$1,'submitted')",
+        "INSERT INTO channel_inbox(source_id,provider,account_id,sender_id,thread_id,text,received_at,task_id,state,owner_id) VALUES('fixture','telegram','bot','123','telegram:123','Fixture',now(),$1,'submitted','local-development')",
         [task],
       );
       await pool.query(

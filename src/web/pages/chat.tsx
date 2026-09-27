@@ -6,13 +6,12 @@ import { MessageBubble } from '../components/message';
 import { ChatTurnRail } from '../components/chat-turn-rail';
 import { BrandMark } from '../components/brand';
 import { Button, Notice } from '../components/ui';
-import { api, errorMessage, post } from '../lib/api';
+import { api, apiResponse, errorMessage, post } from '../lib/api';
 import {
   hasVisibleChatActivity,
   messagesAreGrouped,
   visibleConversationTurns,
 } from '../lib/chat-messages';
-import './chat.css';
 
 function dayLabel(date: string) {
   const value = new Date(date);
@@ -217,7 +216,7 @@ export function Chat({
     stickToBottom.current = true;
     const replyId = reply?.id;
     try {
-      const response = await fetch('/api/messages', {
+      const response = await apiResponse('/api/messages', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },

@@ -2,7 +2,13 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { JSDOM } from 'jsdom';
-import { currentTheme, initializeTheme, setTheme, subscribeTheme } from '../src/web/lib/theme.ts';
+import {
+  applyAccountTheme,
+  currentTheme,
+  initializeTheme,
+  setTheme,
+  subscribeTheme,
+} from '../src/web/lib/theme.ts';
 
 const bootstrap = await readFile(new URL('../public/theme-init.js', import.meta.url), 'utf8');
 
@@ -46,6 +52,7 @@ test('theme is selected before app rendering from a saved choice or OS preferenc
     [true, 'light', 'light', false],
     [false, 'dark', 'dark', false],
     [true, 'invalid', 'dark', false],
+    [true, 'system', 'dark', false],
     [true, undefined, 'dark', true],
   ] as const) {
     const { dom } = page(dark, saved, blocked);
@@ -107,6 +114,37 @@ test('an explicit theme remains usable for the session when browser storage is d
     setTheme('dark');
     change(false);
     assert.equal(currentTheme(), 'dark');
+  } finally {
+    dispose();
+    dom.window.close();
+  }
+});
+
+test('account themes override the device without leaking the choice to another account', () => {
+  const { dom, change } = page(false, 'dark');
+  for (const key of ['window', 'document', 'Event'] as const)
+    Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
+  const dispose = initializeTheme();
+  try {
+    applyAccountTheme('light');
+    assert.equal(currentTheme(), 'light');
+    assert.equal(dom.window.localStorage.getItem('sidekick.theme'), 'dark');
+    change(true);
+    assert.equal(currentTheme(), 'light');
+    applyAccountTheme('system');
+    change(false);
+    assert.equal(currentTheme(), 'light');
+    change(true);
+    assert.equal(currentTheme(), 'dark');
+    dom.window.localStorage.setItem('sidekick.theme', 'light');
+    dom.window.dispatchEvent(new dom.window.StorageEvent('storage', { key: 'sidekick.theme' }));
+    assert.equal(currentTheme(), 'dark');
+    applyAccountTheme(undefined);
+    assert.equal(currentTheme(), 'light');
+    setTheme('system');
+    assert.equal(currentTheme(), 'dark');
+    change(false);
+    assert.equal(currentTheme(), 'light');
   } finally {
     dispose();
     dom.window.close();

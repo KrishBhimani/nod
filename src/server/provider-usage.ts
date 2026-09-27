@@ -62,10 +62,10 @@ export function createProviderUsageStore(
   let pruning: Promise<void> | undefined;
   let retentionTimer: ReturnType<typeof setInterval> | undefined;
   let stopped = false;
-  function prune(force = false): Promise<void> {
+  function prune(force = false, database: Pool = pool): Promise<void> {
     if (pruning) return pruning;
     if (!force && Date.now() - lastPruned < 3_600_000) return Promise.resolve();
-    pruning = pool
+    pruning = database
       .query(
         "DELETE FROM provider_usage WHERE owner_id=$1 AND recorded_at < now()-interval '7 days'",
         [options.ownerId],
@@ -78,8 +78,8 @@ export function createProviderUsageStore(
       });
     return pruning;
   }
-  async function initialize() {
-    await pool.query(`CREATE TABLE IF NOT EXISTS provider_usage (
+  async function initialize(migrationPool: Pool = pool) {
+    await migrationPool.query(`CREATE TABLE IF NOT EXISTS provider_usage (
       id uuid PRIMARY KEY, owner_id text NOT NULL, task_id uuid REFERENCES tasks(id) ON DELETE SET NULL,
       provider text NOT NULL, category text NOT NULL, operation text NOT NULL, model text,
       status text NOT NULL, duration_ms double precision NOT NULL, metrics jsonb NOT NULL,
@@ -89,7 +89,7 @@ export function createProviderUsageStore(
     CREATE INDEX IF NOT EXISTS provider_usage_owner_time_idx ON provider_usage(owner_id,recorded_at);
     CREATE INDEX IF NOT EXISTS provider_usage_tool_idx ON provider_usage(owner_id,tool_call_id) WHERE tool_call_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS provider_usage_task_idx ON provider_usage(owner_id,task_id,recorded_at);`);
-    await prune(true);
+    await prune(true, migrationPool);
     if (!stopped && !retentionTimer) {
       retentionTimer = setInterval(() => {
         void prune(true).catch(() => {});

@@ -18,6 +18,27 @@ function fixture() {
   return { cache, requests };
 }
 
+test('account invalidation aborts every pending read and prevents old private data returning', async () => {
+  const { cache, requests } = fixture();
+  cache.update('/api/vault', () => [{ id: 'alex-private' }]);
+  cache.update('/api/apps', () => [{ id: 'alex-account' }]);
+  const pending = [cache.refresh('/api/vault'), cache.refresh('/api/apps')];
+  await Promise.resolve();
+  cache.clear();
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].signal.aborted, true);
+  assert.equal(requests[1].signal.aborted, true);
+  assert.equal(cache.getSnapshot('/api/vault').data, null);
+  assert.equal(cache.getSnapshot('/api/apps').data, null);
+  cache.update('/api/vault', () => [{ id: 'sam-private' }]);
+  cache.update('/api/apps', () => [{ id: 'sam-account' }]);
+  requests[0].resolve([{ id: 'alex-private' }]);
+  requests[1].resolve([{ id: 'alex-account' }]);
+  await Promise.all(pending);
+  assert.deepEqual(cache.getSnapshot('/api/vault').data, [{ id: 'sam-private' }]);
+  assert.deepEqual(cache.getSnapshot('/api/apps').data, [{ id: 'sam-account' }]);
+});
+
 test('page cache retains last-good data across subscribers and deduplicates overlapping reads', async () => {
   const { cache, requests } = fixture();
   assert.equal(cache.getSnapshot('/goals').loading, true);

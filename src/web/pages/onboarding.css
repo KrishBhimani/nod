@@ -1,0 +1,99 @@
+.account-onboarding {
+  min-height: 100dvh;
+  padding: 30px 48px 70px;
+}
+.account-onboarding > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+.account-onboarding-content {
+  max-width: 800px;
+  margin: 52px auto 0;
+}
+.account-onboarding-content > h1 {
+  margin: 23px 0 8px;
+  font-size: 32px;
+  font-weight: 600;
+  letter-spacing: -1px;
+}
+.account-onboarding-content > p {
+  margin-bottom: 28px;
+  font-size: 17px;
+}
+.account-onboarding-content > .notice {
+  margin: 20px 0;
+}
+.onboarding-integrations {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 28px;
+}
+.onboarding-integration {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  min-height: 82px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.onboarding-integration img {
+  flex-shrink: 0;
+}
+.onboarding-integration h2 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.onboarding-integration.connected {
+  border-color: color-mix(in srgb, var(--success) 30%, var(--border));
+  background: var(--success-soft);
+}
+.onboarding-connected {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--success);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.account-onboarding-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 26px;
+}
+.account-onboarding-actions > .button {
+  min-height: 42px;
+}
+@media (max-width: 760px) {
+  .account-onboarding {
+    padding: 24px 20px 50px;
+  }
+  .account-onboarding-content {
+    margin-top: 40px;
+  }
+  .account-onboarding-content > h1 {
+    font-size: 28px;
+  }
+  .onboarding-integrations {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+  .onboarding-integration {
+    min-height: 72px;
+    padding: 14px;
+    gap: 12px;
+  }
+  .onboarding-integration h2 {
+    font-size: 13px;
+  }
+}

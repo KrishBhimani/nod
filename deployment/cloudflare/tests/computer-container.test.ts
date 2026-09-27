@@ -1,0 +1,484 @@
+import assert from 'node:assert/strict';
+import { createHash, randomUUID } from 'node:crypto';
+import { registerHooks } from 'node:module';
+import { setImmediate as nextTurn, setTimeout as delay } from 'node:timers/promises';
+import test from 'node:test';
+import type { ComputerState } from '../src/computer-lifecycle.ts';
+
+const stub = `export class DurableObject { constructor(ctx,env) { this.ctx=ctx;this.env=env; } } export class WorkerEntrypoint {}`;
+registerHooks({
+  resolve(specifier, context, next) {
+    if (specifier === 'cloudflare:workers')
+      return { url: `data:text/javascript,${encodeURIComponent(stub)}`, shortCircuit: true };
+    return next(specifier, context);
+  },
+});
+const { BrowserComputerContainer, WorkspaceComputerContainer, computerName } =
+  await import('../src/computer-container.ts');
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function nativeProcess() {
+  const killed: number[] = [];
+  return {
+    killed,
+    process: {
+      pid: 1,
+      isPty: false,
+      stdin: new WritableStream(),
+      stdout: new ReadableStream({
+        start(controller) {
+          controller.close();
+        },
+      }),
+      stderr: new ReadableStream({
+        start(controller) {
+          controller.close();
+        },
+      }),
+      exitCode: Promise.resolve(0),
+      kill(signal: number) {
+        killed.push(signal);
+      },
+      resize() {},
+      async output() {
+        throw new Error('Unused fixture');
+      },
+    } as ExecProcess,
+  };
+}
+
+function fixture(
+  role: 'browser' | 'workspace',
+  phase: ComputerState['phase'] | undefined,
+  checkpoint = false,
+) {
+  const ownerId = randomUUID();
+  const data = new Uint8Array(1024);
+  const state: ComputerState = {
+    ownerId,
+    environment: 'development',
+    generation: '1',
+    role,
+    phase: phase ?? 'ready',
+    stopped: false,
+    ...(checkpoint
+      ? {
+          checkpoint: {
+            format: 'sidekick-computer-tar-v1',
+            id: randomUUID(),
+            ownerId,
+            environment: 'development',
+            role,
+            bytes: data.length,
+            sha256: createHash('sha256').update(data).digest('hex'),
+            etag: 'fixture',
+          },
+        }
+      : {}),
+  };
+  const values = new Map<string, unknown>(phase ? [['computer', state]] : []);
+  const events: string[] = [];
+  const authorizations: string[] = [];
+  const pending: Promise<unknown>[] = [];
+  let authorizedGeneration = '1';
+  let exec = async (_args: string[], _options: ContainerExecOptions): Promise<ExecProcess> =>
+    nativeProcess().process;
+  const storage = {
+    get: async (key: string) => structuredClone(values.get(key)),
+    put: async (key: string, value: unknown) => {
+      values.set(key, structuredClone(value));
+    },
+    transaction: async <T>(operation: (storage: unknown) => Promise<T>) => operation(storage),
+  };
+  const container = {
+    running: phase !== undefined,
+    exec: (args: string[], options: ContainerExecOptions) => {
+      events.push(`exec:${args.join(' ')}`);
+      return exec(args, options);
+    },
+  };
+  const namespace = { idFromName: (name: string) => ({ toString: () => name }) };
+  const env = {
+    SIDEKICK_ENVIRONMENT: 'development',
+    BROWSER_COMPUTERS: namespace,
+    WORKSPACE_COMPUTERS: namespace,
+    TENANTS: {
+      getByName(name: string) {
+        assert.equal(name, `tenant:development:${ownerId}`);
+        return {
+          async computerIdentity(owner: string, generation: string) {
+            authorizations.push(generation);
+            assert.equal(owner, ownerId);
+            assert.equal(generation, authorizedGeneration);
+          },
+        };
+      },
+    },
+    TENANT_FILES: {
+      async get(key: string) {
+        return {
+          key,
+          size: data.length,
+          etag: 'fixture',
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(data);
+              controller.close();
+            },
+          }),
+        };
+      },
+    },
+  };
+  const Computer = role === 'browser' ? BrowserComputerContainer : WorkspaceComputerContainer;
+  const computer = Object.assign(Object.create(Computer.prototype), {
+    role,
+    env,
+    ctx: {
+      storage,
+      container,
+      id: { toString: () => computerName('development', ownerId, role) },
+      waitUntil: (promise: Promise<unknown>) => pending.push(promise),
+    },
+    destroy: async () => {
+      events.push('destroy');
+      container.running = false;
+    },
+    startAndWaitForPorts: async () => {
+      events.push('start');
+      container.running = true;
+    },
+    renewActivityTimeout: () => {
+      events.push('renew');
+    },
+  }) as InstanceType<typeof Computer>;
+  return {
+    computer,
+    ownerId,
+    events,
+    authorizations,
+    container,
+    generation: (value: string) => {
+      authorizedGeneration = value;
+    },
+    state: () => structuredClone(values.get('computer')) as ComputerState,
+    exec: (value: typeof exec) => {
+      exec = value;
+    },
+    request: (path: string, init: RequestInit = {}) =>
+      computer.request(
+        ownerId,
+        authorizedGeneration,
+        new Request(`http://sidekick.computer${path}`, {
+          ...init,
+          headers: {
+            ...Object.fromEntries(new Headers(init.headers)),
+            'x-sidekick-generation': authorizedGeneration,
+            'x-sidekick-computer-role': role,
+          },
+        }),
+      ),
+  };
+}
+
+test('both computer roles preserve the pinned image user for restore helpers and commands', async (t) => {
+  for (const role of ['browser', 'workspace'] as const) {
+    await t.test(role, async (t) => {
+      const current = fixture(role, 'ready', true);
+      const exit = deferred<number>();
+      const calls: { args: string[]; options: ContainerExecOptions }[] = [];
+      const command = nativeProcess().process;
+      current.exec(async (args, options) => {
+        calls.push({ args, options });
+        assert.equal(Object.hasOwn(options, 'user'), false);
+        return args.includes('/app/src/providers/container-browser/bridge.ts') ||
+          args.includes('/opt/sidekick/workspace-command.py')
+          ? { ...command, exitCode: exit.promise }
+          : nativeProcess().process;
+      });
+      t.after(async () => {
+        await current.computer.stopComputer(current.ownerId, '1');
+        exit.resolve(137);
+      });
+      const response = await current.request('/v1/commands', {
+        method: 'POST',
+        body: JSON.stringify({
+          id: randomUUID(),
+          role,
+          ...(role === 'workspace' ? { taskId: 'task' } : {}),
+        }),
+      });
+      assert.equal(response.status, 201);
+      assert.equal(current.state().phase, 'dirty');
+      assert.equal(calls.length, role === 'browser' ? 3 : 4);
+      const restore = calls[0]!;
+      assert.deepEqual(restore.args.slice(0, 4), [
+        'python3',
+        '-u',
+        '/opt/sidekick/checkpoint.py',
+        'restore',
+      ]);
+      assert.ok(restore.options.stdin instanceof ReadableStream);
+      assert.equal(restore.options.stdout, 'ignore');
+      assert.equal(restore.options.stderr, 'ignore');
+      for (const helper of calls.slice(1, -1)) {
+        assert.deepEqual(helper.args.slice(0, 2), ['python3', '-c']);
+        assert.equal(helper.options.cwd, role === 'browser' ? '/app' : '/home/node');
+        assert.equal(helper.options.stderr, 'ignore');
+      }
+      const launched = calls.at(-1)!;
+      assert.equal(launched.options.cwd, role === 'browser' ? '/app' : '/workspace/task');
+      assert.equal(launched.options.stdin, 'pipe');
+      for (const call of calls) {
+        assert.equal(Object.hasOwn(call.options, 'user'), false);
+        assert.ok(call.options.signal instanceof AbortSignal);
+      }
+    });
+  }
+});
+
+test('the same controller can launch a new generation after stopping an unused role', async (t) => {
+  for (const role of ['browser', 'workspace'] as const) {
+    await t.test(role, async (t) => {
+      const current = fixture(role, undefined);
+      assert.equal(current.state(), undefined);
+      assert.deepEqual(await current.computer.stopComputer(current.ownerId, '1'), {
+        stopped: true,
+      });
+      assert.equal(current.state().generation, '1');
+      assert.equal(current.state().phase, 'ready');
+      assert.equal(current.state().stopped, true);
+      assert.deepEqual(current.events, ['destroy']);
+
+      current.generation('2');
+      const exit = deferred<number>();
+      const command = nativeProcess();
+      command.process = {
+        ...command.process,
+        exitCode: exit.promise,
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('synthetic generation two'));
+            controller.close();
+          },
+        }),
+      };
+      current.exec(async (args) =>
+        args.includes('/app/src/providers/container-browser/bridge.ts') ||
+        args.includes('/opt/sidekick/workspace-command.py')
+          ? command.process
+          : nativeProcess().process,
+      );
+      t.after(async () => {
+        await current.computer.stopComputer(current.ownerId, '2');
+        exit.resolve(137);
+      });
+      const id = randomUUID();
+      const created = await current.request('/v1/commands', {
+        method: 'POST',
+        body: JSON.stringify({ id, role, ...(role === 'workspace' ? { taskId: 'task' } : {}) }),
+      });
+      assert.equal(created.status, 201);
+      assert.deepEqual(await created.json(), { id });
+      const output = await current.request(`/v1/commands/${id}/output`);
+      assert.equal(output.status, 200);
+      const reader = output.body!.getReader();
+      t.after(() => reader.cancel().catch(() => {}));
+      const first = await Promise.race([
+        reader.read(),
+        delay(500).then(() => assert.fail('The replacement command did not produce output')),
+      ]);
+      assert.equal(first.done, false);
+      assert.deepEqual(JSON.parse(new TextDecoder().decode(first.value)), {
+        type: 'stdout',
+        data: Buffer.from('synthetic generation two').toString('base64'),
+      });
+      assert.equal(current.state().generation, '2');
+      assert.equal(current.state().phase, 'dirty');
+      assert.equal(current.state().stopped, false);
+      assert.equal(current.container.running, true);
+      assert.equal(current.events.filter((event) => event === 'start').length, 1);
+      const saved = current.state();
+      const events = [...current.events];
+      await assert.rejects(current.computer.stopComputer(current.ownerId, '1'));
+      assert.deepEqual(current.state(), saved);
+      assert.deepEqual(current.events, events);
+      assert.equal(current.container.running, true);
+      assert.deepEqual(command.killed, []);
+    });
+  }
+});
+
+for (const revoked of [false, true]) {
+  test(
+    revoked
+      ? 'authority lost during prior-generation destruction prevents startup and dispatch'
+      : 'authorization remains current while a stopped prior generation is destroyed',
+    async (t) => {
+      for (const role of ['browser', 'workspace'] as const) {
+        await t.test(role, async (t) => {
+          const current = fixture(role, undefined);
+          await current.computer.stopComputer(current.ownerId, '1');
+          const previous = current.state();
+          current.generation('3');
+          const entered = deferred<void>();
+          const release = deferred<void>();
+          const destroy = current.computer.destroy.bind(current.computer);
+          let held = false;
+          Object.assign(current.computer, {
+            destroy: async () => {
+              if (!held) {
+                held = true;
+                entered.resolve();
+                await release.promise;
+              }
+              await destroy();
+            },
+          });
+          const exit = deferred<number>();
+          const command = nativeProcess();
+          command.process = { ...command.process, exitCode: exit.promise };
+          current.exec(async (args) =>
+            args.includes('/app/src/providers/container-browser/bridge.ts') ||
+            args.includes('/opt/sidekick/workspace-command.py')
+              ? command.process
+              : nativeProcess().process,
+          );
+          t.after(async () => {
+            release.resolve();
+            exit.resolve(137);
+            current.generation('3');
+            await current.computer.stopComputer(current.ownerId, '3').catch(() => {});
+          });
+          t.mock.timers.enable({ apis: ['setTimeout'] });
+          const created = current.request('/v1/commands', {
+            method: 'POST',
+            body: JSON.stringify({
+              id: randomUUID(),
+              role,
+              ...(role === 'workspace' ? { taskId: 'task' } : {}),
+            }),
+          });
+          await entered.promise;
+          const authorizations = current.authorizations.length;
+          if (revoked) current.generation('4');
+          t.mock.timers.tick(1000);
+          await nextTurn();
+          assert.ok(current.authorizations.length > authorizations);
+          assert.equal(current.authorizations.at(-1), '3');
+          assert.deepEqual(current.state(), previous);
+          assert.equal(current.events.includes('start'), false);
+          release.resolve();
+          const response = await created;
+          assert.equal(response.status, revoked ? 503 : 201);
+          assert.equal(current.events.filter((event) => event === 'start').length, revoked ? 0 : 1);
+          assert.equal(
+            current.events.filter(
+              (event) =>
+                event.includes('/app/src/providers/container-browser/bridge.ts') ||
+                event.includes('/opt/sidekick/workspace-command.py'),
+            ).length,
+            revoked ? 0 : 1,
+          );
+          assert.equal(current.container.running, !revoked);
+          if (!revoked) {
+            assert.equal(current.state().generation, '3');
+            assert.equal(current.state().phase, 'dirty');
+            assert.deepEqual(command.killed, []);
+            const saved = current.state();
+            const events = [...current.events];
+            await assert.rejects(current.computer.stopComputer(current.ownerId, '1'));
+            assert.deepEqual(current.state(), saved);
+            assert.deepEqual(current.events, events);
+          }
+        });
+      }
+    },
+  );
+}
+
+test('an idle alarm hydrates an evicted controller before retiring its running computer', async (t) => {
+  for (const phase of ['ready', 'restoring', 'dirty'] as const) {
+    await t.test(phase, async () => {
+      const current = fixture('browser', phase, true);
+      const checkpoint = current.state().checkpoint;
+      await current.computer.onActivityExpired();
+      assert.equal(current.container.running, false);
+      assert.deepEqual(current.events, ['destroy']);
+      assert.equal(current.state().phase, phase === 'dirty' ? 'uncertain' : phase);
+      assert.deepEqual(current.state().checkpoint, checkpoint);
+    });
+  }
+});
+
+test('restore process creation is bounded and a late native handle cannot revive the failed computer', async (t) => {
+  const original = globalThis.setTimeout;
+  t.mock.method(globalThis, 'setTimeout', (callback: () => void, duration: number) =>
+    original(callback, duration === 120_000 ? 10 : duration),
+  );
+  const launch = deferred<ExecProcess>();
+  const current = fixture('workspace', 'ready', true);
+  current.exec(async (args) => {
+    assert.equal(args[3], 'restore');
+    return launch.promise;
+  });
+  const response = await Promise.race([
+    current.request('/v1/commands', {
+      method: 'POST',
+      body: JSON.stringify({ id: randomUUID(), role: 'workspace', taskId: 'task' }),
+    }),
+    delay(500).then(() => assert.fail('Restoration did not respect its deadline')),
+  ]);
+  assert.equal(response.status, 503);
+  assert.equal(current.container.running, false);
+  assert.equal(current.state().phase, 'uncertain');
+  const late = nativeProcess();
+  launch.resolve(late.process);
+  await delay(0);
+  assert.deepEqual(late.killed, [9]);
+  assert.equal(current.events.filter((event) => event.startsWith('exec:')).length, 1);
+});
+
+test('checkpoint process creation is bounded and never emits a clean command exit after failure', async (t) => {
+  const original = globalThis.setTimeout;
+  t.mock.method(globalThis, 'setTimeout', (callback: () => void, duration: number) =>
+    original(callback, duration === 120_000 ? 10 : duration),
+  );
+  const checkpoint = deferred<ExecProcess>();
+  const current = fixture('workspace', 'ready');
+  current.exec(async (args) =>
+    args[3] === 'create' ? checkpoint.promise : nativeProcess().process,
+  );
+  const id = randomUUID();
+  assert.equal(
+    (
+      await current.request('/v1/commands', {
+        method: 'POST',
+        body: JSON.stringify({ id, role: 'workspace', taskId: 'task' }),
+      })
+    ).status,
+    201,
+  );
+  const response = await current.request(`/v1/commands/${id}/output`);
+  assert.equal(response.status, 200);
+  await assert.rejects(
+    Promise.race([
+      response.text(),
+      delay(500).then(() => assert.fail('Checkpointing did not respect its deadline')),
+    ]),
+  );
+  await delay(0);
+  assert.equal(current.container.running, false);
+  assert.equal(current.state().phase, 'uncertain');
+  const late = nativeProcess();
+  checkpoint.resolve(late.process);
+  await delay(0);
+  assert.deepEqual(late.killed, [9]);
+});

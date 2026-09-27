@@ -840,7 +840,9 @@ test(
               "SELECT state,reason FROM channel_outbox WHERE source_id='channel:telegram:fixture-account:atomic-retry'",
             )
           ).rows[0],
-          { state: 'blocked', reason: change.reason },
+          change.ownerId
+            ? { state: 'pending', reason: null }
+            : { state: 'blocked', reason: change.reason },
         );
       }
     } finally {
@@ -886,7 +888,7 @@ test('channel replies keep secure credential and approval links in the local app
   );
   assert.equal(reply.includes('secret-token'), false);
   assert.equal(reply.includes('private-id'), false);
-  assert.match(reply, /Open Sidekick on your Mac/);
+  assert.match(reply, /Open Sidekick/);
   assert.match(reply, /https:\/\/example.com\/docs/);
   assert.match(reply, /Attachments are available/);
   const imageReply = channelReply(

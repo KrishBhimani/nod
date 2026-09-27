@@ -39,7 +39,7 @@ const whatsappInput = z
   })
   .strict();
 
-function publicWebhook(value: string | undefined, provider: string) {
+function publicWebhook(value: string | undefined, provider: string, expected?: string) {
   if (!value) return undefined;
   const url = new URL(value);
   if (
@@ -51,16 +51,32 @@ function publicWebhook(value: string | undefined, provider: string) {
     isIP(url.hostname.replace(/^\[|\]$/g, '')) ||
     !url.hostname.includes('.') ||
     /(^|\.)(localhost|local|internal|test|invalid)$/.test(url.hostname) ||
-    url.pathname !== `/api/webhooks/${provider}`
+    (expected
+      ? url.href !== expected ||
+        !new RegExp(`^/api/webhooks/${provider}/[A-Za-z0-9_-]{32,256}$`).test(url.pathname)
+      : url.pathname !== `/api/webhooks/${provider}`)
   )
     throw new ChannelSetupFailure('invalid_input');
   return url.href;
 }
 
 export function createChatSdkSetupVerifier(
-  options: { fetch?: typeof fetch } = {},
+  options: {
+    fetch?: typeof fetch;
+    webhookUrl?: (provider: 'telegram' | 'whatsapp') => string;
+  } = {},
 ): ChannelSetupVerifier {
   const request = options.fetch ?? fetch;
+  function endpoint(value: string | undefined, provider: 'telegram' | 'whatsapp') {
+    const expected = options.webhookUrl?.(provider);
+    if (expected && value && new URL(value).href !== new URL(expected).href)
+      throw new ChannelSetupFailure('invalid_input');
+    return publicWebhook(
+      expected ?? value,
+      provider,
+      expected ? new URL(expected).href : undefined,
+    );
+  }
   async function json(url: string, init: RequestInit = {}) {
     const response = await request(url, { ...init, signal: AbortSignal.timeout(15_000) });
     if (!response.ok) throw new ChannelSetupFailure('verification_failed');
@@ -73,7 +89,7 @@ export function createChatSdkSetupVerifier(
           const parsed = telegramInput.safeParse(input);
           if (!parsed.success) throw new ChannelSetupFailure('invalid_input');
           const value = parsed.data;
-          const endpoint = publicWebhook(value.webhookUrl, provider);
+          const webhookEndpoint = endpoint(value.webhookUrl, provider);
           const base = `https://api.telegram.org/bot${value.botToken}`;
           const me = await json(`${base}/getMe`);
           const account = z
@@ -89,7 +105,7 @@ export function createChatSdkSetupVerifier(
           const existing = await json(`${base}/getWebhookInfo`);
           const webhook = z.object({ url: z.string() }).parse(existing.result);
           if (existing.ok !== true) throw new ChannelSetupFailure('verification_failed');
-          if (!endpoint && webhook.url) throw new ChannelSetupFailure('existing_webhook');
+          if (!webhookEndpoint && webhook.url) throw new ChannelSetupFailure('existing_webhook');
           const secret = randomBytes(32).toString('base64url');
           return {
             environment: {
@@ -97,16 +113,16 @@ export function createChatSdkSetupVerifier(
               TELEGRAM_BOT_TOKEN: value.botToken,
               TELEGRAM_ALLOWED_USER_ID: value.allowedUserId,
               TELEGRAM_WEBHOOK_SECRET_TOKEN: secret,
-              TELEGRAM_MODE: endpoint ? 'webhook' : 'polling',
+              TELEGRAM_MODE: webhookEndpoint ? 'webhook' : 'polling',
             },
             summary: {
               provider,
               enabled: true,
               accountName: account.first_name,
               accountHandle: `@${account.username}`,
-              mode: endpoint ? 'webhook' : 'polling',
-              ...(endpoint
-                ? { webhookUrl: endpoint, webhookStatus: 'registration_pending' as const }
+              mode: webhookEndpoint ? 'webhook' : 'polling',
+              ...(webhookEndpoint
+                ? { webhookUrl: webhookEndpoint, webhookStatus: 'registration_pending' as const }
                 : {}),
             },
           };
@@ -114,7 +130,7 @@ export function createChatSdkSetupVerifier(
         const parsed = whatsappInput.safeParse(input);
         if (!parsed.success) throw new ChannelSetupFailure('invalid_input');
         const value = parsed.data;
-        const endpoint = publicWebhook(value.webhookUrl, provider);
+        const webhookEndpoint = endpoint(value.webhookUrl, provider);
         const url = new URL(`https://graph.facebook.com/v25.0/${value.phoneNumberId}`);
         url.searchParams.set('fields', 'id,display_phone_number,verified_name');
         url.searchParams.set(
@@ -150,7 +166,7 @@ export function createChatSdkSetupVerifier(
             accountHandle: account.display_phone_number,
             mode: 'webhook',
             webhookStatus: 'manual_setup',
-            ...(endpoint ? { webhookUrl: endpoint } : {}),
+            ...(webhookEndpoint ? { webhookUrl: webhookEndpoint } : {}),
           },
         };
       } catch (error) {
@@ -167,17 +183,17 @@ export function createChatSdkSetupVerifier(
           allowedUserId: environment.TELEGRAM_ALLOWED_USER_ID,
           webhookUrl: summary.webhookUrl,
         });
-        const endpoint = publicWebhook(value.webhookUrl, provider);
+        const webhookEndpoint = endpoint(value.webhookUrl, provider);
         const secret = z
           .string()
           .regex(/^[A-Za-z0-9_-]{32,256}$/)
           .parse(environment.TELEGRAM_WEBHOOK_SECRET_TOKEN);
-        if (!endpoint) throw new ChannelSetupFailure('invalid_input');
+        if (!webhookEndpoint) throw new ChannelSetupFailure('invalid_input');
         const registered = await json(`https://api.telegram.org/bot${value.botToken}/setWebhook`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            url: endpoint,
+            url: webhookEndpoint,
             secret_token: secret,
             allowed_updates: ['message'],
             drop_pending_updates: false,

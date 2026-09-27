@@ -1,0 +1,112 @@
+.privacy-page {
+  min-height: 100dvh;
+  padding: 42px 56px 80px;
+}
+.privacy-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+.privacy-back,
+.sign-in-privacy {
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+.privacy-back:hover,
+.sign-in-privacy:hover {
+  color: var(--foreground);
+}
+.sign-in-privacy {
+  align-self: flex-start;
+}
+.privacy-document {
+  width: 100%;
+  max-width: 680px;
+  margin: 76px auto 0;
+}
+.privacy-document > h1 {
+  margin-bottom: 36px;
+  font-size: 34px;
+  font-weight: 600;
+  letter-spacing: -1.2px;
+}
+.privacy-content,
+.privacy-empty {
+  color: var(--muted-foreground);
+  font-size: 15px;
+  line-height: 1.85;
+  overflow-wrap: anywhere;
+}
+.privacy-content h2,
+.privacy-content h3,
+.privacy-content h4 {
+  color: var(--foreground);
+  font-weight: 600;
+  line-height: 1.45;
+}
+.privacy-content h2 {
+  margin: 34px 0 12px;
+  font-size: 20px;
+  letter-spacing: -0.4px;
+}
+.privacy-content h3,
+.privacy-content h4 {
+  margin: 24px 0 10px;
+  font-size: 16px;
+}
+.privacy-content p + p {
+  margin-top: 14px;
+}
+.privacy-content ul,
+.privacy-content ol {
+  margin: 12px 0;
+  padding-left: 22px;
+  list-style-position: outside;
+}
+.privacy-content ul {
+  list-style-type: disc;
+}
+.privacy-content ol {
+  list-style-type: decimal;
+}
+.privacy-content li + li {
+  margin-top: 6px;
+}
+.privacy-content a {
+  color: var(--foreground);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.privacy-content blockquote {
+  margin: 16px 0;
+  padding-left: 18px;
+  border-left: 2px solid var(--border);
+}
+.privacy-unavailable {
+  display: grid;
+  justify-items: start;
+  gap: 16px;
+}
+@media (max-width: 640px) {
+  .privacy-page {
+    padding: 24px 22px 48px;
+  }
+  .privacy-header {
+    gap: 16px;
+  }
+  .privacy-header .sign-in-brand {
+    font-size: 20px;
+  }
+  .privacy-back {
+    font-size: 12px;
+    text-align: right;
+  }
+  .privacy-document {
+    margin-top: 48px;
+  }
+  .privacy-document > h1 {
+    margin-bottom: 28px;
+    font-size: 30px;
+  }
+}

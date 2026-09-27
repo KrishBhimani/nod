@@ -12,6 +12,118 @@ Ctrl-C stops the web process. `docker compose stop` retains data. Do not use `do
 
 The launcher prepares PostgreSQL before browser/workspace services. It generates `SIDEKICK_POSTGRES_PASSWORD` only when absent, saves it with the matching local `DATABASE_URL` in private `.env`, starts PostgreSQL, updates only the `sidekick` role password through local psql stdin, verifies authentication, then starts the remaining services. Repeating startup retains the generated password. If rotation fails, startup stops before the app starts; retrying can repair the role through the same Unix-socket path. Existing tables and rows are not reset. An explicitly configured external server database is preserved. The launcher removes the old network-guard orphan after recreating services.
 
+## Hosted mode on your computer
+
+The selected production architecture as of **2026-09-27** is Cloudflare application hosting with one E2B computer per user. Local E2B/process mode exercises the same provider without a Cloudflare deployment. Its live execution remains unverified; development has 100 credits, production has 0 credits and a card gate, and runtime-key authorization is pending. Keep the earlier Cloudflare-computer local evidence separate.
+
+Hosted development uses real Google login, account isolation and per-user runtimes, with the web app at [localhost:4330](http://localhost:4330). It is separate from ordinary local mode on port 4310, the synthetic E2E harness on port 4320, the design prototype on port 4318 and the UI fixture on port 4346. Node.js 24.21.0 or newer is required. Install dependencies with `npm ci` first.
+
+Create a private `.env.hosted.local` in the repository root, or keep it elsewhere and pass `--env /absolute/path/to/file`. The launcher reads only that file; it does not fall back to `.env` or inherit provider credentials from the shell. `COMPUTER_PROVIDER` chooses the launch path:
+
+| Provider     | Local execution                                                                                           | Requirements                                                                                                                                |
+| ------------ | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cloudflare` | Wrangler Worker, gateway/tenant containers, separate browser/workspace containers and local R2 emulation  | Running Docker engine, built web assets and installed Cloudflare package dependencies; no Cloudflare account or E2B key for local execution |
+| `e2b`        | Loopback Node gateway, private tenant child processes and PostgreSQL object storage; computers run on E2B | Development E2B key and one combined `E2B_COMPUTER_TEMPLATE`                                                                                |
+
+Neither path deploys, creates a tunnel or configures provider webhooks. Cloudflare uses `scripts/start-cloudflare-local.mjs` automatically; do not launch it separately. Generated configuration and an owner-only temporary `GATEWAY_ENV` file live under `.local/cloudflare-development`; the secret file is removed on normal shutdown. Local emulator state and all private environment files must remain ignored.
+
+Run only one Wrangler container stack at a time when images are shared. Wrangler 4.141 removes containers by Docker image ancestry on exit and rebuild, without restricting cleanup to its Worker name. Different ports, container names or image tags do not isolate identical images: a second probe built with only `FROM` the active app image can remove the app's gateway and tenant containers when it exits. Stop the main stack before such probes, preserve its emulator state, and let one operator own restarts. Name-scoped manual cleanup does not prevent Wrangler's automatic cleanup.
+
+Container startup has a 40-second overall deadline for gateway/tenant runtimes and 45 seconds for computers. The SDK receives a retry budget twice that deadline so the caller aborts before Containers SDK 0.3.7 exhausts its default eight-second instance budget and waits indefinitely for an existing process to exit. Timeout remains an unknown outcome: aborting the wait does not certify that native startup stopped. No stopped/clean receipt or generation replacement is allowed until the original SDK promise settles, followed by separate physical-stop confirmation. The helper does not destroy a container or clear a lifecycle fence.
+
+Use a dedicated development PostgreSQL database. A separate Neon development branch works, as does a separate local PostgreSQL instance on port 54331. Its setup role must be able to create schemas and tenant roles; use the direct database connection for migrations and provisioning. Do not point hosted development at the ordinary local database or a production database. The launcher explicitly rejects local port 54329 and `SIDEKICK_ENVIRONMENT=production`.
+
+For a new local database, this optional setup creates a dedicated container and volume. Run it once from the repository root; it refuses to overwrite existing configuration files:
+
+```sh
+node --input-type=module <<'JS'
+import { randomBytes } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
+await mkdir('.local', { recursive: true });
+const password = randomBytes(32).toString('hex');
+await writeFile('.local/hosted-postgres.env', `POSTGRES_USER=sidekick_hosted\nPOSTGRES_DB=sidekick_hosted\nPOSTGRES_PASSWORD=${password}\n`, { mode: 0o600, flag: 'wx' });
+await writeFile('.env.hosted.local', `DATABASE_URL=postgresql://sidekick_hosted:${password}@localhost:54331/sidekick_hosted\nSIDEKICK_MASTER_KEY=${randomBytes(32).toString('base64')}\nBETTER_AUTH_SECRET=${randomBytes(32).toString('base64')}\n`, { mode: 0o600, flag: 'wx' });
+JS
+docker run --detach --name sidekick-hosted-postgres \
+  --env-file .local/hosted-postgres.env \
+  --publish 127.0.0.1:54331:5432 \
+  --volume sidekick-hosted-postgres:/var/lib/postgresql \
+  postgres:18-alpine
+```
+
+For the Cloudflare path, PostgreSQL must be reachable from Docker containers: with Docker Desktop and the local database above, use `host.docker.internal:54331` instead of `localhost:54331` in the private connection URL. `localhost` remains suitable for the E2B/process path. For Neon, use the dedicated development direct connection string. Generate independent random 32-byte `SIDEKICK_MASTER_KEY` and `BETTER_AUTH_SECRET` values and retain them across restarts: replacing them does not migrate existing tenant credentials or encrypted data. Set file permissions to `600`; the launcher warns only when its owner or permissions are actually insecure.
+
+Complete the file with your development provider configuration:
+
+```dotenv
+SIDEKICK_ENVIRONMENT=development
+COMPUTER_PROVIDER=cloudflare
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+LLM_PROVIDER=openai
+OPENAI_API_KEY=
+COMPOSIO_API_KEY=
+COMPOSIO_WEBHOOK_SECRET=
+```
+
+The database, both server keys and Google credentials are required. The hosted environment example selects E2B. Legacy split-template keys are rejected; retained browser/workspace allocation rows are preserved and block automatic migration to a new combined resource. For E2B, set `COMPUTER_PROVIDER=e2b` and add `E2B_API_KEY` and `E2B_COMPUTER_TEMPLATE`; see [template setup](../deployment/e2b/README.md). Create a Web application OAuth client with `http://localhost:4330/api/auth/callback/google` as an authorized redirect URI. This server-side OAuth flow does not require a JavaScript origin. Google login grants only account identity; app connections use the development Composio project and its separate auth configurations. See [Composio](composio.md) for each `COMPOSIO_*_AUTH_CONFIG_ID` override.
+
+```sh
+npm run build
+npm --prefix deployment/cloudflare ci
+node scripts/start-hosted.mjs --check
+node scripts/start-hosted.mjs
+```
+
+The build and Cloudflare install are needed only for the Cloudflare path. `--check` validates configuration without connecting to a provider or database and reports field names without values. Cloudflare serves `dist/web`; rebuild it after frontend edits. The E2B/process path uses Vite during development. Cloudflare's compact gateway configuration has a 5 KiB limit; it includes only explicitly configured values, and model/integration credentials stay outside both computer roles.
+
+On macOS and Linux, Ctrl-C or SIGTERM asks the Cloudflare launcher to stop safely. It keeps Wrangler running while the existing signed deployment control pauses new work, lets accepted work finish, checkpoints both computer roles and confirms termination of each exact tenant generation. The drain has a five-minute deadline. Only a verified prepared receipt permits the launcher to signal Wrangler; admission remains closed across shutdown. Manual browser holds, unknown outcomes, mismatched state or timeouts leave the stack running. Repeated signals never force termination. The E2B/process launcher retains its ordinary signal shutdown, which must dispose both capabilities and acknowledge provider pause before releasing its allocation lease. Deployment drain uses reversible pause/resume and refuses active browser holds or uncertain state.
+
+The local installation has a stable random 40-character hexadecimal identity in `.local/cloudflare-development/local-installation.json`, bound to the development database URL, environment and master key. The launcher supplies it to both runtime image builds and gateway configuration. Its health `release` value identifies this local installation, not a Git commit or deployed version. An owner-only, fsynced `local-shutdown.json` records the exact shutdown operation and prepared receipts. On the next launch, matching image health and durable state allow the same operation's abort to reopen admission only after clean-stop recovery checks. Keep these files and their matching environment configuration with the R2 emulator state; changing the database URL or master key is a migration, not a way to bypass recovery.
+
+If a stop is refused, inspect the cause and explicitly resume the recorded operation against the still-running stack before another stop request:
+
+```sh
+node scripts/start-hosted.mjs --env /absolute/path/to/private.env --resume
+```
+
+This command starts no Wrangler process and is Cloudflare-only. It uses the existing journal and signing key; it cannot adopt another operation, replay computer actions, clear fences or repair an uncertain role. Unknown or still-running control operations retain the journal. `--check` and `--resume` cannot be combined. `launcher.lock` prevents a second launcher and `local-control.lock` excludes concurrent drain/resume operations; successful prepare retains the latter until Wrangler exits. An external kill can leave these locks behind. Preserve their contents, the journal and emulator state, verify that the recorded process and its Wrangler child are gone, and reconcile that exact lock before another launch. Never delete `.local`, journals or computer state to get past a refusal.
+
+Stop cleanly before editing watched server/Worker sources or restarting after configuration changes. Automatic Wrangler rebuilds, Docker termination, SIGKILL and host failure bypass the launcher handshake and can still leave uncertainty fences. The control fixtures exercise signed local HTTP, private files and isolated signal groups. Actual local acceptance also verified two Google accounts with dirty browsers: SIGINT checkpointed both before stopping Wrangler, the next launch recovered the same prepared operation, and both original tasks read only their own persistent cookie in new runtime generations. This covers local Docker/R2 emulation, not deployed Cloudflare or arbitrary website sessions. See the [acceptance record](testing/results/2026-09-26-cloud-hosting.md#actual-local-launcher-shutdown-and-restart).
+
+The launcher selects PostgreSQL private object storage for E2B/process mode and the private HTTP/R2 broker for Cloudflare. Actor-local directories are caches. Each artifact and transcript is limited to 15 MiB. Cloudflare computer checkpoints are separate archives with a 256 MiB total limit, 64 MiB per file and 20,000 entries including the root. They preserve workspace/tool files and browser profile data, not live page state. Browser holds and active native sign-in prevent idle quiescence; ordinary shutdown may close browser sessions before checkpointing. Unknown outcomes quarantine the computer instead of replaying work. Keep the local R2 emulator's state for restart tests, and development databases separate from production.
+
+For a local privacy notice, use `SIDEKICK_PRIVACY_NOTICE_FILE=dist/web/privacy-notice.md` with Cloudflare after building the reviewed `public/privacy-notice.md`. The E2B/process path can read `public/privacy-notice.md` directly. Do not place notice contents in the gateway environment. [Privacy setup](production.md#privacy-and-google-sign-in).
+
+The explicit filesystem object adapter remains available for custom setups. A process crash while holding its exclusive lock leaves the object fenced until the operator confirms the old process stopped and reconciles that lock. Use PostgreSQL or the HTTP broker for automatic restart testing. Storage-provider changes require explicit byte and metadata migration, and an interrupted external action without a durable result receipt must be reconciled before resuming its task.
+
+Authenticated onboarding calls `/api/account/prepare` on mount; it prepares one durable E2B allocation per owner without launching model work. App connections stay available, but completion waits for preparation and offers a concise retry. Tests inject provider transports; synthetic keys must never trigger real sandbox creation merely by booting a tenant.
+
+The server configuration selects the computer provider. Hosted mode supports Cloudflare and E2B; ordinary local mode supports Docker or E2B. Users do not select providers or enter operator API keys. Model customization uses `LLM_PROVIDER`, `LLM_MODEL`, `ROUTING_MODEL` and `TRIAGE_MODEL`; set `ANTHROPIC_API_KEY` when selecting Anthropic. Missing model or integration keys leave those capabilities unavailable. `SIDEKICK_DEVELOPER_IDS` is a comma-separated list of signed-in user UUIDs allowed to inspect the computer; ordinary users see chat, apps, channels and account settings. [Replacing modules](replacing-modules.md) describes the adapter boundaries.
+
+`SIDEKICK_MAX_USERS` controls admission to the hosted instance. The pilot default is 8; accepted values are 1–400. Existing users retain their accounts when admission is full. Cloudflare's checked-in limits are one gateway, eight tenants, eight browser computers and eight workspace computers. Raising admission requires matching all role limits and reviewing database connections and cost.
+
+### Receiving real webhooks locally
+
+The optional relay listens on loopback port 4331 and forwards only `POST /api/webhooks/composio`, opaque Telegram/WhatsApp callback URLs, and WhatsApp's GET verification challenge to the gateway on 4330. It excludes login, account, chat, internal control and all other routes. It strips cookies and client identity headers and preserves the raw body and provider signature headers. The application still verifies provider authentication.
+
+In separate terminals, start the relay and your chosen tunnel:
+
+```sh
+node scripts/webhook-relay.mjs
+cloudflared tunnel --url http://127.0.0.1:4331
+```
+
+Copy the resulting HTTPS origin into `SIDEKICK_WEBHOOK_ORIGIN` in the hosted environment file and restart the gateway. Configure the development Composio webhook destination as `<tunnel-origin>/api/webhooks/composio` with the matching development webhook secret. Telegram setup through Channels uses the server-generated opaque callback URL. When a temporary tunnel URL changes, update the origin and re-register affected development callbacks. Google sign-in remains on localhost:4330; the tunnel exposes no login page. The launcher never starts a tunnel or changes provider webhooks automatically.
+
+### What local checks establish
+
+`tests/hosted-development.test.ts` verifies provider selection, launcher isolation, compact local Worker configuration and the relay allowlist with synthetic values. `gateway`, `tenant-control`, `runtime-host`, `hosted-webhooks`, `channel-account-leases` and `better-auth-session` exercise ownership, signatures, revocation, lease races and SDK database behavior with injected providers or disposable PostgreSQL. Cloudflare adapter/transport and computer-checkpoint fixtures cover separate roles, immutable generation, cancellation, archive integrity and uncertainty. They do not prove real OAuth consent, webhook registration or message delivery.
+
+Separate actual local checks have exercised Wrangler, R2 emulation and Linux amd64 Docker images on an ARM64 host: native exec streams/exit, TERM-resistant process drain, browser navigation/screenshots, checkpoint restoration after container destruction and old-generation denial. The isolated image proof also preserved synthetic Chromium cookies/local storage. These checks used synthetic authority and disposable data, not a deployed Cloudflare account. The complete development Google/Neon/assistant journey and production acceptance remain separate in the [acceptance record](testing/results/2026-09-26-cloud-hosting.md).
+
+The separate `scripts/hosted-ui-fixture.ts` runs the actual web app against synthetic account and integration adapters on port 4346, with no database or real provider access. Use `node --import tsx scripts/hosted-ui-fixture.ts` for repeatable login, onboarding, settings and responsive UI review. Its simulated consent route exists only in that script and is never imported by the application. Real provider acceptance instead uses `start-hosted.mjs`, development accounts and actual callbacks; production verification remains a separate step.
+
 ## Code and local state
 
 Read the relevant [area guide](../AGENTS.md), then use [architecture](architecture.md) and [API contract](api-contract.md) for cross-layer changes. Provider replacement starts in [replacing modules](replacing-modules.md). Keep provider keys in `.env` or the secure channel forms, never in React or model context.
@@ -38,19 +150,20 @@ Database fixtures create random schemas and their own pg-boss schema, then remov
 
 Run focused checks while changing a boundary:
 
-| Boundary                                      | Tests under `tests/`                                                                                                                        |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Local database setup and role migration       | `local-database`                                                                                                                            |
-| App composition and replacement adapters      | `application-adapters`, `runtime-adapters`, `provider-adapters`                                                                             |
-| Task continuation, cancellation, and recovery | `task-continuation`, `task-durability`, `runtime-session`, `pi-agent`                                                                       |
-| HTTP, approvals, and access                   | `access`, `server-boundaries`, `chat-api`                                                                                                   |
-| Credential stages and browser recovery        | `vault`, `vault-staged`, `browser-login`, `browser-recovery`, `runtime-credentials`                                                         |
-| Container browser and native desktop          | `container-browser`, `browser-desktop`, `browser-sign-in`, `browser-sign-in-handoff`, `browser-manual`                                      |
-| Google accounts and events                    | `integrations`, `provider-adapters`                                                                                                         |
-| Channel verification, polling, and delivery   | `channel-settings`, `channels`, `channel-application`, `messaging-transport`                                                                |
-| Personal learning and quiet work              | `personal`, `triage-preferences`, `task-durability`                                                                                         |
-| Web content, streaming, links, and audio      | `web-markdown`, `web-streams`, `message-links`, `web-speech`, `speech`                                                                      |
-| Inspector catalog, private records and usage  | `inspector-redaction`, `inspector-store`, `inspector-observations`, `provider-usage`, `runtime-session`, `pi-agent`, `application-adapters` |
+| Boundary                                      | Tests under `tests/`                                                                                                                            |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Local database setup and role migration       | `local-database`                                                                                                                                |
+| App composition and replacement adapters      | `application-adapters`, `runtime-adapters`, `provider-adapters`                                                                                 |
+| Task continuation, cancellation, and recovery | `task-continuation`, `task-durability`, `runtime-session`, `pi-agent`                                                                           |
+| HTTP, approvals, and access                   | `access`, `server-boundaries`, `chat-api`                                                                                                       |
+| Credential stages and browser recovery        | `vault`, `vault-staged`, `browser-login`, `browser-recovery`, `runtime-credentials`                                                             |
+| Container browser and native desktop          | `container-browser`, `browser-desktop`, `browser-sign-in`, `browser-sign-in-handoff`, `browser-manual`                                          |
+| Cloudflare computers and checkpoints          | `cloudflare-computer-adapters`, `cloudflare-computer-transport`, `computer-checkpoint`, `browser-checkpoint`; also the Cloudflare package tests |
+| Google accounts and events                    | `integrations`, `provider-adapters`                                                                                                             |
+| Channel verification, polling, and delivery   | `channel-settings`, `channels`, `channel-application`, `messaging-transport`                                                                    |
+| Personal learning and quiet work              | `personal`, `triage-preferences`, `task-durability`                                                                                             |
+| Web content, streaming, links, and audio      | `web-markdown`, `web-streams`, `message-links`, `web-speech`, `speech`                                                                          |
+| Inspector catalog, private records and usage  | `inspector-redaction`, `inspector-store`, `inspector-observations`, `provider-usage`, `runtime-session`, `pi-agent`, `application-adapters`     |
 
 Each name has a `.test.ts` suffix. For example, use the configured local database for all integration fixtures:
 

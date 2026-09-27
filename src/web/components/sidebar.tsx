@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { BrandMark } from './brand';
 import { ConnectionMenu } from './connection-menu';
+import { AccountMenu, AccountMenuItems, type AccountControls } from './account-menu';
 import { currentTheme, setTheme, subscribeTheme } from '../lib/theme';
 import {
   isEditingTarget,
@@ -29,6 +30,7 @@ export function Sidebar({
   inspectorEnabled = false,
   inspectorOpen = false,
   onToggleInspector,
+  account,
 }: {
   path: string;
   collapsed: boolean;
@@ -39,6 +41,7 @@ export function Sidebar({
   inspectorEnabled?: boolean;
   inspectorOpen?: boolean;
   onToggleInspector?(): void;
+  account?: AccountControls;
 }) {
   const [hints, setHints] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -78,6 +81,11 @@ export function Sidebar({
         event.defaultPrevented ||
         event.isComposing ||
         event.composedPath().some(isEditingTarget) ||
+        event
+          .composedPath()
+          .some(
+            (target) => target instanceof Element && Boolean(target.closest('[role="dialog"]')),
+          ) ||
         isEditingTarget(document.activeElement)
       ) {
         clear();
@@ -290,62 +298,66 @@ export function Sidebar({
         >
           {(close) => (
             <>
-              {navigationItems
-                .filter((item) => item.path !== '/')
-                .map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <a
-                      key={item.path}
-                      href={item.path}
-                      role="menuitem"
-                      aria-current={path === item.path ? 'page' : undefined}
-                      onClick={(event) => {
-                        if (
-                          event.metaKey ||
-                          event.ctrlKey ||
-                          event.shiftKey ||
-                          event.altKey ||
-                          event.button !== 0
-                        )
-                          return;
-                        event.preventDefault();
-                        close();
-                        onNavigate(item.path);
-                      }}
-                    >
-                      <Icon size={18} aria-hidden="true" />
-                      <span>{item.label}</span>
-                    </a>
-                  );
-                })}
+              {navigationItems.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <a
+                    key={item.path}
+                    href={item.path}
+                    role="menuitem"
+                    aria-current={path === item.path ? 'page' : undefined}
+                    onClick={(event) => {
+                      if (
+                        event.metaKey ||
+                        event.ctrlKey ||
+                        event.shiftKey ||
+                        event.altKey ||
+                        event.button !== 0
+                      )
+                        return;
+                      event.preventDefault();
+                      close();
+                      onNavigate(item.path);
+                    }}
+                  >
+                    <Icon size={18} aria-hidden="true" />
+                    <span>{item.label}</span>
+                  </a>
+                );
+              })}
               <div className="mobile-menu-separator" role="separator" />
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  toggleTheme();
-                  close();
-                }}
-              >
-                <ThemeIcon size={18} aria-hidden="true" /> {themeLabel}
-              </button>
+              {account ? (
+                <AccountMenuItems account={account} close={close} />
+              ) : (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    toggleTheme();
+                    close();
+                  }}
+                >
+                  <ThemeIcon size={18} aria-hidden="true" /> {themeLabel}
+                </button>
+              )}
               {appActions(close)}
             </>
           )}
         </ConnectionMenu>
       </div>
       <div className="sidebar-bottom">
-        <button
-          type="button"
-          className="nav-link theme-toggle"
-          aria-label={themeLabel}
-          title={themeLabel}
-          onClick={toggleTheme}
-        >
-          <ThemeIcon size={22} aria-hidden="true" />
-          <span className="nav-label">{theme === 'dark' ? 'Light theme' : 'Dark theme'}</span>
-        </button>
+        {!account && (
+          <button
+            type="button"
+            className="nav-link theme-toggle"
+            aria-label={themeLabel}
+            title={themeLabel}
+            onClick={toggleTheme}
+          >
+            <ThemeIcon size={22} aria-hidden="true" />
+            <span className="nav-label">{theme === 'dark' ? 'Light theme' : 'Dark theme'}</span>
+          </button>
+        )}
         {development && inspectorEnabled && (
           <button
             type="button"
@@ -414,6 +426,7 @@ export function Sidebar({
             B
           </kbd>
         </button>
+        {account && <AccountMenu account={account} />}
       </div>
     </aside>
   );

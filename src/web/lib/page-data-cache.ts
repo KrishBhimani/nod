@@ -107,6 +107,19 @@ export function createPageDataCache(
       };
     },
     refresh,
+    clear() {
+      for (const value of entries.values()) {
+        value.generation++;
+        value.controller?.abort();
+        clearTimeout(value.timer);
+        value.controller = undefined;
+        value.pending = undefined;
+        value.timer = undefined;
+        value.needsRefresh = false;
+        publish(value, { data: null, error: '', loading: true, refreshing: false });
+      }
+      entries.clear();
+    },
     revalidateActive() {
       for (const [path, value] of entries) {
         if (!value.listeners.size) continue;

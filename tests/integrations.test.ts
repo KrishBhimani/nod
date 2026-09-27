@@ -76,6 +76,7 @@ test(
     };
     const provider = fakeProvider(session);
     const integrations = await createIntegrations(pool, {
+      ownerId: 'local-development',
       provider,
       baseUrl: 'http://localhost:4310',
       wake: async (prompt, id) => {
@@ -252,6 +253,7 @@ for (const operation of ['execute', 'download'] as const)
         return session;
       };
       const integrations = await createIntegrations(pool, {
+        ownerId: 'local-development',
         provider,
         baseUrl: 'http://localhost:4310',
         wake: async () => {},
@@ -320,6 +322,7 @@ test(
     });
     const app = Fastify();
     const integrations = await createIntegrations(pool, {
+      ownerId: 'local-development',
       provider,
       baseUrl: 'http://localhost:4310',
       wake: async () => {},
@@ -333,12 +336,19 @@ test(
       const url = new URL(callback);
       url.searchParams.set('outcome', 'ok');
       url.searchParams.set('account_ref', 'ca-other-user');
-      assert.equal((await app.inject({ url: `${url.pathname}${url.search}` })).statusCode, 409);
+      const foreignAccount = await app.inject({ url: `${url.pathname}${url.search}` });
+      assert.equal(foreignAccount.statusCode, 302, foreignAccount.body);
+      assert.equal(foreignAccount.headers.location, '/apps?connection=failed');
       url.searchParams.set('account_ref', 'ca-fixture');
-      assert.equal((await app.inject({ url: `${url.pathname}${url.search}` })).statusCode, 409);
+      const inactiveAccount = await app.inject({ url: `${url.pathname}${url.search}` });
+      assert.equal(inactiveAccount.statusCode, 302, inactiveAccount.body);
+      assert.equal(inactiveAccount.headers.location, '/apps?connection=failed');
       providerStatus = 'ACTIVE';
       assert.equal((await app.inject({ url: `${url.pathname}${url.search}` })).statusCode, 302);
-      assert.equal((await app.inject({ url: `${url.pathname}${url.search}` })).statusCode, 409);
+      assert.equal(
+        (await app.inject({ url: `${url.pathname}${url.search}` })).headers.location,
+        '/apps?connection=expired',
+      );
       const connection = (await integrations.list()).find((item) => item.slug === 'gmail');
       assert.equal(connection?.status, 'connected');
       assert.equal(connection?.triggersEnabled, true);
@@ -384,6 +394,7 @@ test(
     let replacementApp: ReturnType<typeof Fastify> | undefined;
     try {
       const original = await createIntegrations(pool, {
+        ownerId: 'local-development',
         provider,
         baseUrl: 'http://localhost:4310',
         wake: async () => {},
@@ -404,6 +415,7 @@ test(
       );
       app = Fastify();
       const migrated = await createIntegrations(pool, {
+        ownerId: 'local-development',
         provider,
         baseUrl: 'http://localhost:4310',
         wake: async () => {},
@@ -421,6 +433,7 @@ test(
         'composio',
       );
       const replacement = await createIntegrations(pool, {
+        ownerId: 'local-development',
         provider: fakeProvider(session),
         baseUrl: 'http://localhost:4310',
         wake: async () => {},
@@ -495,6 +508,7 @@ test(
     };
     const delivered: string[] = [];
     const integrations = await createIntegrations(pool, {
+      ownerId: 'local-development',
       provider,
       baseUrl: 'http://localhost:4310',
       wake: async (prompt) => {
@@ -700,6 +714,7 @@ test(
         assert.fail('No watch without a signed webhook');
       };
       const integrations = await createIntegrations(pool, {
+        ownerId: 'local-development',
         provider,
         baseUrl: 'http://localhost:4310',
         wake: async () => {},
@@ -720,6 +735,7 @@ test(
       assert.equal(gmail.triggerStatus, 'unavailable');
       const uuid = gmail.connectionId;
       const restarted = await createIntegrations(pool, {
+        ownerId: 'local-development',
         provider,
         baseUrl: 'http://localhost:4310',
         wake: async () => {},
@@ -762,6 +778,7 @@ test(
       execute: async () => ({}),
     });
     const integrations = await createIntegrations(pool, {
+      ownerId: 'local-development',
       provider,
       baseUrl: 'http://localhost:4310',
       wake: async () => {},
@@ -886,6 +903,7 @@ test(
       return { id: 'recovered-watch' };
     };
     const integrations = await createIntegrations(pool, {
+      ownerId: 'local-development',
       provider,
       baseUrl: 'http://localhost:4310',
       wake: async () => {},

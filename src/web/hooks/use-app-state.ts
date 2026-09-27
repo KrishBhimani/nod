@@ -3,8 +3,9 @@ import type { AppState } from '../../shared/contracts';
 import { api, errorMessage, post } from '../lib/api';
 import { initialStreamState, streamReducer } from '../lib/streams';
 import { pageDataCache } from '../lib/page-data-cache';
+import { sessionStore } from '../lib/session';
 
-export function useAppState() {
+export function useAppState(accountId?: string) {
   const [state, setState] = useState<AppState | null>(null);
   const [streamState, dispatchStream] = useReducer(streamReducer, initialStreamState);
   const [error, setError] = useState('');
@@ -12,6 +13,8 @@ export function useAppState() {
   const requestVersion = useRef(0);
   const conversationRevision = useRef(0);
   const resetRequest = useRef<Promise<number> | null>(null);
+  const active = useRef(false);
+  const stateRequest = useRef<AbortController | null>(null);
   const advanceConversation = useCallback((revision: number) => {
     if (revision <= conversationRevision.current) return;
     conversationRevision.current = revision;
@@ -29,10 +32,15 @@ export function useAppState() {
     );
   }, []);
   const refresh = useCallback(async () => {
+    if (!active.current) return;
     const version = ++requestVersion.current;
+    stateRequest.current?.abort();
+    const controller = new AbortController();
+    stateRequest.current = controller;
     try {
-      const next = await api<AppState>('/api/state');
-      if (version !== requestVersion.current) return;
+      const next = await api<AppState>('/api/state', { signal: controller.signal });
+      if (!active.current || controller.signal.aborted || version !== requestVersion.current)
+        return;
       const revision = next.conversationRevision ?? 0;
       if (revision < conversationRevision.current) return;
       advanceConversation(revision);
@@ -47,7 +55,8 @@ export function useAppState() {
       setState(next);
       setError('');
     } catch (cause) {
-      if (version === requestVersion.current) setError(errorMessage(cause));
+      if (active.current && !controller.signal.aborted && version === requestVersion.current)
+        setError(errorMessage(cause));
     }
   }, [advanceConversation]);
 
@@ -60,6 +69,7 @@ export function useAppState() {
       );
       if (!Number.isSafeInteger(result.conversationRevision) || result.conversationRevision < 0)
         throw new Error('The conversation could not be restarted. Try again.');
+      if (!active.current) return result.conversationRevision;
       advanceConversation(result.conversationRevision);
       setError('');
       return result.conversationRevision;
@@ -74,14 +84,24 @@ export function useAppState() {
   }, [advanceConversation]);
 
   useEffect(() => {
+    active.current = true;
+    let subscribed = true;
     void refresh();
-    const events = new EventSource('/api/events');
+    const events = new EventSource(
+      accountId ? `/api/events?account=${encodeURIComponent(accountId)}` : '/api/events',
+    );
     events.onopen = () => {
+      if (!subscribed) return;
       setConnected(true);
       void refresh();
     };
-    events.onerror = () => setConnected(false);
+    events.onerror = () => {
+      if (!subscribed || !active.current) return;
+      setConnected(false);
+      void sessionStore.refresh();
+    };
     events.onmessage = (event) => {
+      if (!subscribed || !active.current) return;
       try {
         const data = JSON.parse(event.data) as {
           type: string;
@@ -119,8 +139,14 @@ export function useAppState() {
         setError('An update could not be read. Refresh the page to reconnect.');
       }
     };
-    return () => events.close();
-  }, [refresh, advanceConversation]);
+    return () => {
+      active.current = false;
+      subscribed = false;
+      requestVersion.current++;
+      stateRequest.current?.abort();
+      events.close();
+    };
+  }, [refresh, advanceConversation, accountId]);
 
   const streams = Object.fromEntries(
     Object.entries(streamState.active).map(([id, stream]) => [id, stream.text]),

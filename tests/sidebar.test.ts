@@ -82,7 +82,7 @@ test('sidebar exposes navigation shortcuts, keyboard focus and modifier hints wi
     const more = element.querySelector<HTMLButtonElement>('[aria-label="Navigation menu"]')!;
     await act(async () => more.click());
     const menu = element.querySelector('[role="menu"]')!;
-    assert.equal(menu.querySelectorAll('[role="menuitem"]').length, 8);
+    assert.equal(menu.querySelectorAll('[role="menuitem"]').length, 9);
     await act(async () =>
       [...menu.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')]
         .find((button) => button.textContent?.includes('Inspector'))!
@@ -291,16 +291,16 @@ test('sidebar preserves all shortcuts inside editable fields, including nested a
   }
 });
 
-test('mobile navigation keeps secondary pages in a dismissible menu and preserves native link actions', async () => {
+test('mobile navigation includes Chat with current-page state and preserves native link actions', async () => {
   const element = document.createElement('div');
   document.body.append(element);
   const root = createRoot(element);
   const navigations: string[] = [];
-  try {
-    await act(async () =>
+  const render = (path: string) =>
+    act(async () =>
       root.render(
         createElement(Sidebar, {
-          path: '/vault',
+          path,
           collapsed: true,
           onToggle() {},
           onRestart() {},
@@ -310,6 +310,8 @@ test('mobile navigation keeps secondary pages in a dismissible menu and preserve
         }),
       ),
     );
+  try {
+    await render('/vault');
     const trigger = element.querySelector<HTMLButtonElement>('[aria-label="Navigation menu"]')!;
     assert.ok(trigger);
     assert.equal(trigger.getAttribute('aria-expanded'), 'false');
@@ -323,9 +325,11 @@ test('mobile navigation keeps secondary pages in a dismissible menu and preserve
     ];
     assert.deepEqual(
       links.map((link) => link.getAttribute('href')),
-      ['/goals', '/schedule', '/apps', '/channels', '/vault'],
+      ['/', '/goals', '/schedule', '/apps', '/channels', '/vault'],
     );
-    assert.equal(links[4]!.getAttribute('aria-current'), 'page');
+    assert.equal(links[0]!.textContent, 'Chat');
+    assert.equal(links[0]!.getAttribute('aria-current'), null);
+    assert.equal(links[5]!.getAttribute('aria-current'), 'page');
     assert.equal(document.activeElement, links[0]);
     assert.deepEqual(
       [...element.querySelectorAll<HTMLButtonElement>('[role="menu"] button[role="menuitem"]')].map(
@@ -361,13 +365,25 @@ test('mobile navigation keeps secondary pages in a dismissible menu and preserve
     assert.equal(element.querySelector('[role="menu"]'), null);
     assert.equal(document.activeElement, trigger);
     await open();
+    await act(async () =>
+      element.querySelector<HTMLAnchorElement>('[role="menu"] a[href="/"]')!.click(),
+    );
+    assert.deepEqual(navigations, ['/goals', '/']);
+    assert.equal(element.querySelector('[role="menu"]'), null);
+    assert.equal(document.activeElement, trigger);
+    await render('/');
+    await open();
+    const current = element.querySelectorAll('[role="menu"] [aria-current="page"]');
+    assert.equal(current.length, 1);
+    assert.equal(current[0]!.getAttribute('href'), '/');
     await act(async () => window.dispatchEvent(new Event('resize')));
     assert.equal(element.querySelector('[role="menu"]'), null);
     const chat = element.querySelector<HTMLAnchorElement>('.mobile-chat-link')!;
     assert.ok(chat);
     assert.equal(chat.getAttribute('href'), '/');
+    assert.equal(chat.getAttribute('aria-current'), 'page');
     await act(async () => chat.click());
-    assert.deepEqual(navigations, ['/goals', '/']);
+    assert.deepEqual(navigations, ['/goals', '/', '/']);
   } finally {
     await act(async () => root.unmount());
     element.remove();
@@ -453,7 +469,7 @@ test('sidebar shortcut opens and closes the mobile menu without changing the des
     document.getElementById('workspace')!.focus();
     await press();
     assert.ok(element.querySelector('[role="menu"]'));
-    assert.equal(document.activeElement?.getAttribute('href'), '/goals');
+    assert.equal(document.activeElement?.getAttribute('href'), '/');
     await press();
     assert.equal(element.querySelector('[role="menu"]'), null);
     assert.equal(document.activeElement?.getAttribute('aria-label'), 'Navigation menu');

@@ -5,6 +5,7 @@ import { ownerId } from './config.ts';
 import { boss, submitTask } from './tasks.ts';
 import type { FastifyInstance } from 'fastify';
 import type { PoolClient } from 'pg';
+import type { WorkConsumers } from './work-admission.ts';
 import { refresh } from './events.ts';
 import { currentConversationSql } from './conversations.ts';
 import type {
@@ -36,6 +37,7 @@ const relevancePolicy: RelevancePolicy = {
   minWakeConfidence: 0.8,
 };
 export function isQuietTime(preferences: Preferences, now = new Date()) {
+  if (!preferences.quietHoursEnabled) return false;
   const current = new Intl.DateTimeFormat('en-GB', {
     timeZone: preferences.timeZone,
     hour: '2-digit',
@@ -82,6 +84,7 @@ async function savedUpdates(client: Pick<PoolClient, 'query'> = pool, lock = fal
   ).rows;
 }
 export function createTriage(options: {
+  consumers?: WorkConsumers;
   classifier: RelevanceClassifier;
   getProfile(): Promise<{ location: string; preferences: string }>;
   listGoals(): Promise<GoalContext[]>;
@@ -210,7 +213,7 @@ export function createTriage(options: {
   ) {
     if (notification.decision !== 'wake' || notification.task_id) return;
     const current = await client.query(
-      'SELECT notification_rule AS "notificationRule",time_zone AS "timeZone",quiet_start AS "quietStart",quiet_end AS "quietEnd" FROM preferences WHERE owner_id=$1',
+      'SELECT notification_rule AS "notificationRule",time_zone AS "timeZone",quiet_hours_enabled AS "quietHoursEnabled",quiet_start AS "quietStart",quiet_end AS "quietEnd" FROM preferences WHERE owner_id=$1',
       [ownerId],
     );
     const preferences: Preferences = current.rows[0] || defaultPreferences;
@@ -275,18 +278,27 @@ export function createTriage(options: {
     await recoverPendingNotifications();
     await boss.createQueue('heartbeat', { retryLimit: 0 });
     await boss.schedule('heartbeat', '0 * * * *', {}, { tz: 'UTC' });
-    await boss.work('heartbeat', async (jobs) => {
-      await recoverPendingNotifications();
-      for (const job of jobs) await reviewHeartbeat(job.id);
-    });
+    const start = () =>
+      boss.work('heartbeat', async (jobs) => {
+        await recoverPendingNotifications();
+        for (const job of jobs) await reviewHeartbeat(job.id);
+      });
+    if (options.consumers)
+      await options.consumers.register({
+        start,
+        stop: (id) => boss.offWork('heartbeat', { id, wait: true }),
+      });
+    else await start();
   }
   function registerTriageRoutes(app: FastifyInstance) {
     app.get('/api/preferences', getPreferences);
     app.put('/api/preferences', async (request) => {
-      const input = preferencesSchema.parse(request.body);
-      await updatePreferences(input);
-      return input;
+      const input = preferencesSchema
+        .extend({ quietHoursEnabled: z.boolean().optional() })
+        .parse(request.body);
+      return updatePreferences(input);
     });
+    app.patch('/api/preferences', async (request) => updatePreferences(request.body));
     app.get(
       '/api/notifications',
       async () =>

@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { copyFile, mkdir } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { PgBoss } from 'pg-boss';
 import type { PoolClient } from 'pg';
 import { pool, transaction } from './db.ts';
-import { dataRoot, databaseUrl, ownerId } from './config.ts';
+import { dataRoot, databaseUrl, ownerId, runtimeMode } from './config.ts';
 import { delta, refresh } from './events.ts';
-import { publishArtifact, storeArtifact } from './artifacts.ts';
+import { localArtifacts, type ArtifactService } from './artifacts.ts';
 import type { SpeechService } from './speech.ts';
 import type { Artifact, MessageReaction } from '../shared/contracts.ts';
 import type { RuntimeContext, RuntimeObservation, RuntimeResult } from '../ports/agent.ts';
@@ -24,13 +25,17 @@ import {
   routingMessageDigest,
   type PreparedUserRoute,
 } from './outcomes.ts';
+import type { WorkConsumers } from './work-admission.ts';
 
 const queue = 'assistant-task';
 export const boss = new PgBoss({
   connectionString: databaseUrl,
   schema: process.env.PGBOSS_SCHEMA || 'pgboss',
+  createSchema: runtimeMode !== 'tenant',
+  max: runtimeMode === 'tenant' ? 2 : 10,
 });
 const running = new Map<string, AbortController>();
+let stopping = false;
 type TaskSource = 'user' | 'schedule' | 'event';
 export interface SubmitTaskOptions {
   sourceId?: string;
@@ -47,6 +52,14 @@ type ConfirmAction = (
 ) => Promise<{ taskId: string; continued: boolean; messageId?: string } | undefined>;
 
 export interface TaskDependencies {
+  consumers?: WorkConsumers;
+  artifacts?: ArtifactService;
+  writeArtifact?: (
+    taskId: string,
+    path: string,
+    bytes: Uint8Array,
+    signal?: AbortSignal,
+  ) => Promise<void>;
   readArtifact?: (taskId: string, path: string, maxBytes: number) => Promise<Uint8Array>;
   executeConfirmation?: (
     taskId: string,
@@ -956,6 +969,7 @@ export async function retryTaskCredentials(taskId: string, expectedRevision: num
   refresh();
 }
 export async function initializeTasks() {
+  stopping = false;
   await initializeTaskSchema();
   boss.on('error', () =>
     console.error('The task queue reported an error. Check database availability.'),
@@ -989,15 +1003,23 @@ export async function startTaskWorkers(dependencies: TaskDependencies) {
       { taskId: task.id, revision: task.revision },
       { retryLimit: 0, expireInSeconds: 1800 },
     );
-  await boss.work<{ taskId: string; revision: number }>(
-    queue,
-    { localConcurrency: 4, pollingIntervalSeconds: 0.5 },
-    async (jobs) => {
-      for (const job of jobs) await executeTask(job.data.taskId, job.data.revision, dependencies);
-    },
-  );
+  const start = () =>
+    boss.work<{ taskId: string; revision: number }>(
+      queue,
+      { localConcurrency: 4, pollingIntervalSeconds: 0.5 },
+      async (jobs) => {
+        for (const job of jobs) await executeTask(job.data.taskId, job.data.revision, dependencies);
+      },
+    );
+  if (dependencies.consumers)
+    await dependencies.consumers.register({
+      start,
+      stop: (id) => boss.offWork(queue, { id, wait: true }),
+    });
+  else await start();
 }
 async function executeTask(taskId: string, revision: number, dependencies: TaskDependencies) {
+  if (stopping) return;
   if (running.has(taskId)) {
     await boss.send(
       queue,
@@ -1014,6 +1036,7 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
   const task = selected.rows[0];
   const controller = new AbortController();
   running.set(taskId, controller);
+  if (stopping) controller.abort();
   const timeout = setTimeout(() => controller.abort(), 20 * 60 * 1000);
   const current = async <T>(operation: (client: PoolClient) => Promise<T>) => {
     if (controller.signal.aborted) throw taskStopped();
@@ -1087,11 +1110,17 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
     );
     const workspacePath = join(dataRoot, 'workspaces', taskId);
     await mkdir(workspacePath, { recursive: true });
-    for (const upload of uploads.rows)
-      await copyFile(
-        upload.storage_path,
-        join(workspacePath, `${upload.id}-${basename(upload.name)}`),
-      );
+    for (const upload of uploads.rows) {
+      const name = `${upload.id}-${basename(upload.name)}`;
+      const bytes = await (dependencies.artifacts ?? localArtifacts).readArtifact(upload.id);
+      if (dependencies.writeArtifact)
+        await dependencies.writeArtifact(taskId, name, bytes, controller.signal);
+      else
+        await writeFile(join(workspacePath, name), bytes, {
+          mode: 0o600,
+          flag: constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW,
+        });
+    }
     await addEvent(taskId, 'started', 'Task started.', revision);
     const result = await dependencies.runTask({
       taskId,
@@ -1180,14 +1209,24 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
       publish: async (path, name) => {
         if (!dependencies.readArtifact) throw new Error('Workspace file delivery is unavailable.');
         const artifact = await current(async () =>
-          publishArtifact(taskId, path, name, dependencies.readArtifact!),
+          (dependencies.artifacts ?? localArtifacts).publishArtifact(
+            taskId,
+            path,
+            name,
+            dependencies.readArtifact!,
+          ),
         );
         await reply(taskId, `Created ${artifact.name}.`, [artifact], revision);
         return artifact;
       },
       publishScreenshot: async (bytes) => {
         const artifact = await current(async () =>
-          storeArtifact(Buffer.from(bytes), 'screenshot.png', 'image/png', taskId),
+          (dependencies.artifacts ?? localArtifacts).storeArtifact(
+            Buffer.from(bytes),
+            'screenshot.png',
+            'image/png',
+            taskId,
+          ),
         );
         await reply(taskId, 'Browser screenshot.', [artifact], revision);
         return artifact;
@@ -1196,7 +1235,12 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
         await ensureCurrent();
         const audio = await dependencies.speech.synthesize(text, controller.signal);
         const artifact = await current(async () =>
-          storeArtifact(audio.bytes, audio.fileName, audio.mimeType, taskId),
+          (dependencies.artifacts ?? localArtifacts).storeArtifact(
+            audio.bytes,
+            audio.fileName,
+            audio.mimeType,
+            taskId,
+          ),
         );
         await reply(taskId, 'Audio generated by AI.', [artifact], revision);
         return artifact;
@@ -1232,7 +1276,12 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
               controller.signal,
             );
             const artifact = await current(async () =>
-              storeArtifact(Buffer.from(file.bytes), file.name, file.mimeType, taskId),
+              (dependencies.artifacts ?? localArtifacts).storeArtifact(
+                Buffer.from(file.bytes),
+                file.name,
+                file.mimeType,
+                taskId,
+              ),
             );
             await reply(taskId, '', [artifact], revision);
             return artifact;
@@ -1320,6 +1369,7 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
   }
 }
 export async function stopTasks() {
+  stopping = true;
   for (const control of running.values()) control.abort();
   await boss.stop({ graceful: true, timeout: 5000 });
 }

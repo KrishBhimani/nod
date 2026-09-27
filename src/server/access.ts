@@ -12,6 +12,8 @@ export function registerLocalAccess(app: FastifyInstance, port: number) {
     '/you',
     '/dev',
     '/browser',
+    '/privacy',
+    '/privacy/',
   ]);
   app.addHook('onRequest', async (request, reply) => {
     reply

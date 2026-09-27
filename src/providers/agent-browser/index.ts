@@ -131,7 +131,7 @@ export function createAgentBrowserComputer(options: {
   daemonCommand?: typeof existingDaemonCommand;
   signInLauncher?: ReturnType<typeof createBrowserSignIn>;
   resolveSignInBrowser?: typeof resolveSignInBrowser;
-}): Computer {
+}): Computer & { canCheckpoint(): boolean } {
   const browsers = new Map<string, BrowserState>();
   let lastSession: { taskId: string; lastActivityAt: string } | undefined;
   const markActivity = (id: string) => {
@@ -159,7 +159,18 @@ export function createAgentBrowserComputer(options: {
     ? async () => options.browserExecutable!
     : (options.resolveSignInBrowser ?? resolveSignInBrowser);
   let disposed = false;
+  let activeCalls = 0;
   let allocationQueue: Promise<void> = Promise.resolve();
+  function tracked<Args extends unknown[], Result>(operation: (...args: Args) => Promise<Result>) {
+    return async (...args: Args): Promise<Result> => {
+      activeCalls += 1;
+      try {
+        return await operation(...args);
+      } finally {
+        activeCalls -= 1;
+      }
+    };
+  }
   function stateFor(id: string): BrowserState {
     if (disposed) throw new Error('The browser service has stopped.');
     taskId(id);
@@ -1241,6 +1252,22 @@ export function createAgentBrowserComputer(options: {
   );
   cleanup.unref();
   return {
+    canCheckpoint: () => {
+      const now = Date.now();
+      return (
+        !disposed &&
+        !activeCalls &&
+        [...browsers.values()].every(
+          (state) =>
+            !state.busy &&
+            !state.closing &&
+            !state.injecting &&
+            state.heldUntil <= now &&
+            state.manualUntil <= now &&
+            (!state.signInWindow || state.signInWindow.closed),
+        )
+      );
+    },
     currentSession: () => {
       const manual = [...browsers.values()].find(
         (state) => state.saved.url && state.manualUntil > Date.now(),
@@ -1249,21 +1276,21 @@ export function createAgentBrowserComputer(options: {
         ? { taskId: manual.id, lastActivityAt: new Date(manual.lastUsed).toISOString() }
         : lastSession;
     },
-    takeControl,
-    openSignIn,
-    finishSignIn,
-    signInScreenshot,
-    signInControl,
-    control: manualControl,
-    releaseControl,
-    act: browserAction,
-    screenshot: getScreenshot,
+    takeControl: tracked(takeControl),
+    openSignIn: tracked(openSignIn),
+    finishSignIn: tracked(finishSignIn),
+    signInScreenshot: tracked(signInScreenshot),
+    signInControl: tracked(signInControl),
+    control: tracked(manualControl),
+    releaseControl: tracked(releaseControl),
+    act: tracked(browserAction),
+    screenshot: tracked(getScreenshot),
     screenStatus: (id) => screenStatuses.get(taskId(id)) ?? { state: 'unavailable' },
-    injectCredentials,
-    inspectLogin,
-    selectLoginMethod,
-    hold,
-    close: closeBrowser,
+    injectCredentials: tracked(injectCredentials),
+    inspectLogin: tracked(inspectLogin),
+    selectLoginMethod: tracked(selectLoginMethod),
+    hold: tracked(hold),
+    close: tracked(closeBrowser),
     status: browserStatus,
     dispose: async () => {
       disposed = true;

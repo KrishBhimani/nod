@@ -1,13 +1,20 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import multipart from '@fastify/multipart';
 import { randomUUID } from 'node:crypto';
-import { createReadStream } from 'node:fs';
 import type { ServerResponse } from 'node:http';
 import { z } from 'zod';
 import { pool } from './db.ts';
-import { configuration, ownerId, port } from './config.ts';
+import {
+  configuration,
+  ownerId,
+  port,
+  runtimeMode,
+  runtimeSecret,
+  runtimeEnvironment,
+  runtimeGeneration,
+} from './config.ts';
 import { events } from './events.ts';
-import { artifactView, maxFileSize, storeArtifact } from './artifacts.ts';
+import { artifactView, maxFileSize, localArtifacts, type ArtifactService } from './artifacts.ts';
 import {
   cancelTask,
   reactToAssistantMessage,
@@ -17,6 +24,8 @@ import {
 import { conversationRevision, currentConversationSql } from './conversations.ts';
 import { isMessageReaction } from '../shared/emoji.ts';
 import { registerLocalAccess } from './access.ts';
+import { registerRuntimeAccess } from './runtime-auth.ts';
+import { createMultipartReader } from './multipart.ts';
 import type { SpeechService } from './speech.ts';
 import { BrowserActionError, type Computer } from '../ports/computer.ts';
 import { browserErrorMessage } from '../shared/browser-errors.ts';
@@ -24,6 +33,9 @@ import type { Configuration, Message, MessageReaction } from '../shared/contract
 import type { AgentToolMetadata } from '../ports/agent.ts';
 import { inspectorPayloadLimit, inspectorRetentionDays, type InspectorStore } from './inspector.ts';
 import type { createChatVerification } from './chat-verification.ts';
+import { registerTenantDrain } from './tenant-drain.ts';
+import type { WorkAdmission } from './work-admission.ts';
+import type { TenantDrain } from '../ports/deployment.ts';
 
 const messageFields = `m.id,m.role,m.text,m.task_id AS "taskId",m.created_at AS "createdAt",m.attachments,m.stream_id AS "streamId",m.reaction,m.assistant_reaction AS "assistantReaction",m.reply_to_message_id AS "replyToMessageId",
  CASE WHEN target.id IS NULL THEN NULL ELSE json_build_object('id',target.id,'role',target.role,'text',left(target.text,1000)) END AS "replyTo"`;
@@ -39,6 +51,9 @@ function messageView(row: Message & { assistantReaction?: MessageReaction | null
 }
 
 export interface AppDependencies {
+  admission?: WorkAdmission;
+  deploymentDrain?: TenantDrain;
+  artifacts?: ArtifactService;
   submitMessage?: typeof submitUserMessage;
   verification?: Awaited<ReturnType<typeof createChatVerification>>;
   speech?: SpeechService;
@@ -54,6 +69,7 @@ export interface AppDependencies {
 
 export async function createApp(dependencies: AppDependencies = {}) {
   const publicConfiguration = dependencies.configuration ?? configuration;
+  const artifacts = dependencies.artifacts ?? localArtifacts;
   const speech = () => {
     if (!dependencies.speech)
       throw Object.assign(new Error('Speech is not configured.'), { statusCode: 503 });
@@ -69,7 +85,26 @@ export async function createApp(dependencies: AppDependencies = {}) {
   app.addHook('preClose', async () => {
     for (const stream of streams) stream.end();
   });
-  registerLocalAccess(app, port);
+  const runtimeAccess =
+    runtimeMode === 'tenant'
+      ? registerRuntimeAccess(app, {
+          secret: runtimeSecret,
+          ownerId,
+          environment: runtimeEnvironment,
+          generation: runtimeGeneration,
+        })
+      : undefined;
+  if (!runtimeAccess) registerLocalAccess(app, port);
+  if (runtimeAccess && dependencies.admission && dependencies.deploymentDrain)
+    registerTenantDrain(app, {
+      admission: dependencies.admission,
+      drain: dependencies.deploymentDrain,
+      generation: runtimeGeneration,
+    });
+  const uploads = createMultipartReader({
+    maxFileSize,
+    verifiedBody: runtimeAccess?.takeBody,
+  });
   app.setErrorHandler((error, _request, reply) => {
     const known = error instanceof Error ? (error as Error & { statusCode?: number }) : undefined;
     const status = error instanceof z.ZodError ? 400 : known?.statusCode || 500;
@@ -82,10 +117,11 @@ export async function createApp(dependencies: AppDependencies = {}) {
             : 'This request could not be completed. Check the local service and try again.',
     });
   });
-  await app.register(multipart, { limits: { fileSize: maxFileSize, files: 1, fields: 5 } });
+  await app.register(multipart, { limits: uploads.limits });
   app.get('/api/health', async () => {
     await pool.query('SELECT 1');
-    return { ok: true };
+    const release = process.env.SIDEKICK_IMAGE_RELEASE || process.env.SIDEKICK_RELEASE;
+    return { ok: true, ...(release ? { release } : {}) };
   });
   app.get('/api/state', async () => {
     const revision = await conversationRevision(pool, ownerId);
@@ -262,9 +298,9 @@ export async function createApp(dependencies: AppDependencies = {}) {
     });
   });
   app.post('/api/uploads', async (request) => {
-    const file = await request.file();
+    const file = await uploads.readFile(request);
     if (!file) throw Object.assign(new Error('Choose a file to upload.'), { statusCode: 400 });
-    return storeArtifact(await file.toBuffer(), file.filename, file.mimetype);
+    return artifacts.storeArtifact(file.bytes, file.filename, file.mimetype);
   });
   app.get<{ Params: { id: string } }>('/api/artifacts/:id', async (request, reply) => {
     const result = await pool.query('SELECT * FROM artifacts WHERE id=$1 AND owner_id=$2', [
@@ -307,19 +343,18 @@ export async function createApp(dependencies: AppDependencies = {}) {
         .code(206)
         .header('Content-Range', `bytes ${start}-${end}/${file.size}`)
         .header('Content-Length', end - start + 1)
-        .send(createReadStream(file.storage_path, { start, end }));
+        .send((await artifacts.readArtifact(file.id)).subarray(start, end + 1));
     }
     reply.header('Content-Length', file.size);
-    return reply.send(createReadStream(file.storage_path));
+    return reply.send(await artifacts.readArtifact(file.id));
   });
   app.post('/api/speech/transcribe', async (request) => {
-    const file = await request.file();
+    const file = await uploads.readFile(request);
     if (!file || !file.mimetype.startsWith('audio/'))
       throw Object.assign(new Error('Choose an audio recording.'), { statusCode: 400 });
-    const bytes = await file.toBuffer();
     return {
       text: await speech().transcribe({
-        bytes,
+        bytes: file.bytes,
         mimeType: file.mimetype,
         fileName: file.filename || 'recording.webm',
       }),
@@ -328,7 +363,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
   app.post('/api/speech/speak', async (request) => {
     const { text } = z.object({ text: z.string().min(1).max(3000) }).parse(request.body);
     const audio = await speech().synthesize(text);
-    return storeArtifact(audio.bytes, audio.fileName, audio.mimeType);
+    return artifacts.storeArtifact(audio.bytes, audio.fileName, audio.mimeType);
   });
   app.get('/api/inspector/tools', async (_request, reply) => {
     if (!publicConfiguration().inspectorEnabled)
