@@ -37,7 +37,7 @@ function fixture() {
       calls.push('prepare');
       return receipts;
     },
-    abort: async () => {
+    resume: async () => {
       calls.push('abort');
     },
   };
@@ -148,7 +148,7 @@ test('abort waits for actual work completion and failed resume does not open adm
   await preparation;
   const broken = createDeploymentBarrier({
     ...f.options,
-    abort: async () => {
+    resume: async () => {
       throw new Error();
     },
   });

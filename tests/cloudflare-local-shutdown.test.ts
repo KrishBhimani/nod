@@ -220,7 +220,7 @@ async function fixture(t: TestContext) {
       },
       currentRelease: release,
       prepare: () => hooks.prepare(),
-      abort: () => hooks.abort(),
+      resume: () => hooks.abort(),
     });
     return control;
   };

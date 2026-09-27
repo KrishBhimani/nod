@@ -34,7 +34,7 @@ export function createDeploymentBarrier(options: {
   currentRelease: string;
   requireInitialization?: boolean;
   prepare(input: DeploymentInput, request: Request): Promise<DeploymentReceipt[]>;
-  abort(input: DeploymentInput, request: Request): Promise<void>;
+  resume(input: DeploymentInput, request: Request): Promise<void>;
   now?: () => number;
 }) {
   const now = options.now ?? Date.now;
@@ -181,7 +181,7 @@ export function createDeploymentBarrier(options: {
         });
         if (state.phase === 'aborted') return { ok: true as const, state };
         try {
-          await options.abort(input, request);
+          await options.resume(input, request);
           return await exclusive(async () => {
             const state = await read();
             if (!matches(state, input) || !['aborting', 'aborted'].includes(state!.phase))
@@ -212,6 +212,14 @@ export function createDeploymentBarrier(options: {
           !['activating', 'complete'].includes(state!.phase)
         )
           throw new DeploymentControlError(409);
+        if (state!.phase === 'complete') return { ok: true as const, state: state! };
+        if (input.previousRelease === input.targetRelease) {
+          try {
+            await options.resume(input, request);
+          } catch {
+            throw new DeploymentControlError();
+          }
+        }
         const next: DeploymentState = { ...state!, phase: 'complete' };
         await options.write(next);
         return { ok: true as const, state: next };

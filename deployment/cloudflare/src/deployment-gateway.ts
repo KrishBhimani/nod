@@ -48,7 +48,7 @@ export function createGatewayDeployment(options: {
         .parse(result);
       return parsed.receipts as DeploymentReceipt[];
     },
-    abort: async (_input, request) => {
+    resume: async (_input, request) => {
       const response = await options.forward(request);
       if (!response.ok) {
         await response.body?.cancel();

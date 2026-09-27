@@ -34,7 +34,7 @@ On macOS and Linux, local Ctrl-C/SIGTERM first uses the existing signed prepare 
 
 ## Environments and secrets
 
-`wrangler.jsonc` has separate `development` and `production` Workers, four Durable Object classes, EU R2 buckets and container applications. The production Worker is named `sidekick`; the repository targets `https://sidekick-development.n8n-maintenance.workers.dev` and `https://sidekick.n8n-maintenance.workers.dev`. Neither destination has been deployed. Provider projects, buckets and image tags keep their existing development/production names. The additional computer provider uses Jan's existing Cloudflare plan and avoids requiring an E2B paid account. No plan change was made; normal Cloudflare compute, storage and request usage still applies. E2B remains an optional provider.
+`wrangler.jsonc` has separate `development` and `production` Workers, four Durable Object classes, EU R2 buckets and container applications. The production Worker is named `sidekick`; the repository targets `https://sidekick-development.n8n-maintenance.workers.dev` and `https://sidekick.n8n-maintenance.workers.dev`. Production was manually deployed on 2026-09-27 and passed release health, anonymous authorization checks and Google login. First-user onboarding exposed a deployment completion bug; full production acceptance remains in progress. The cloud development destination has not been deployed. Provider projects, buckets and image tags keep their existing development/production names. The additional computer provider uses Jan's existing Cloudflare plan and avoids requiring an E2B paid account. No plan change was made; normal Cloudflare compute, storage and request usage still applies. E2B remains an optional provider.
 
 For self-hosting in another account, change the Worker/resource names as needed and replace each `SIDEKICK_PUBLIC_URL` with that deployment's canonical HTTPS origin. Keep the corresponding `GATEWAY_ENV`, Google OAuth callbacks, integration callbacks and GitHub environment variable consistent with it. Set the selected Cloudflare account through the deployment environment, rather than committing account credentials. Create both private R2 buckets in the configured EU jurisdiction.
 
@@ -75,6 +75,8 @@ The SDK's SIGTERM acknowledgement does not establish tenant termination. A tenan
 Only tenant containers may call `http://sidekick.control`, and only `POST /api/internal/channels/claim` or `/release`. The handler checks the platform identity, forwards the signed runtime header and body, and fixes the owner and canonical Host. The gateway independently verifies the owner's signature, request body and current SQL lease. Tenant containers cannot call runtime lifecycle operations.
 
 Channel claim requests include a durable account revision. The registry retains released revisions to reject delayed mutations after cleanup or re-enabling. An upgrade from the earlier unversioned protocol must drain and confirm termination of old gateway/tenant processes before activating this version. Existing claims migrate at revision zero; keep tenant counters and control tombstones together during recovery.
+
+When bootstrap or a same-release rollout prepares the already-running gateway, completion resumes its exact signed Node deployment operation before reopening the durable admission barrier. Failed resume leaves the barrier closed; completion retries use the same operation. A different-release rollout uses the newly started gateway process.
 
 ## Private files
 

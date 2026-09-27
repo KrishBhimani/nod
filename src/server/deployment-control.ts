@@ -22,7 +22,11 @@ export function createDeploymentControl(options: {
     };
     if (input.action === 'prepare' && options.runtimes.prepareDeployment)
       return { ok: true, receipts: await options.runtimes.prepareDeployment(operation) };
-    if (input.action === 'abort' && options.runtimes.resumeDeployment) {
+    if (
+      (input.action === 'abort' ||
+        (input.action === 'complete' && input.previousRelease === input.targetRelease)) &&
+      options.runtimes.resumeDeployment
+    ) {
       await options.runtimes.resumeDeployment(operation);
       return { ok: true };
     }
