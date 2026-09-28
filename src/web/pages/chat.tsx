@@ -268,11 +268,14 @@ export function Chat({
           id: crypto.randomUUID(),
           role: 'assistant',
           text: `I stopped earlier and may have already done part of “${result.summary || 'that'}”. Please check it, then tell me what you see.`,
-          taskId: result.taskId ?? null,
+          taskId: null,
           attachments: [],
           createdAt: new Date().toISOString(),
         };
-        setOptimistic((current) => [...current, { revision: sentRevision, message: reviewReply }]);
+        setOptimistic((current) => [
+          ...current.filter((item) => item.message.id !== id),
+          { revision: sentRevision, message: reviewReply },
+        ]);
         setReplyTo((current) => (current?.id === replyId ? null : current));
         return { sent: true };
       }

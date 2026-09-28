@@ -311,9 +311,10 @@ test('Pi routing marks retryable failures apart from blocked outside actions', a
       objective: 'Read the current weather.',
       status: 'failed',
       waitingReason: null,
+      recency: 2,
       recentMessages: [{ role: 'assistant', text: 'I couldn’t finish that.' }],
     },
-    { ...context().candidates[0] },
+    { ...context().candidates[0], recency: 3 },
   ];
   input.blockedCandidates = [
     {
@@ -323,6 +324,7 @@ test('Pi routing marks retryable failures apart from blocked outside actions', a
       objective: 'Send the confirmation email.',
       status: 'failed',
       waitingReason: null,
+      recency: 1,
       recentMessages: [],
     },
   ];
@@ -339,6 +341,12 @@ test('Pi routing marks retryable failures apart from blocked outside actions', a
       ],
     );
     assert.equal(data.blockedCandidates[0].retryable, false);
+    assert.deepEqual(
+      [...data.candidates, ...data.blockedCandidates].map(
+        (item: { recency: number }) => item.recency,
+      ),
+      [2, 3, 1],
+    );
     assert.match(request.systemPrompt ?? '', /retryable true failed before Otto took any outside/);
     assert.match(request.systemPrompt ?? '', /may have already taken an outside action/);
     return response('{"kind":"continue","outcomeId":"retryable-read"}');

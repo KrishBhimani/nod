@@ -244,7 +244,7 @@ const app = await createGateway({
       if (url.pathname === '/api/messages/history')
         return Response.json({ messages: [], hasMore: false });
       if (url.pathname === '/api/messages' && request.method === 'GET') return Response.json([]);
-      if (url.pathname === '/api/messages') {
+      if (url.pathname === '/api/messages' && request.method === 'POST') {
         const work = conversation(owner);
         const input = (await request.json()) as { text: string; clientMessageId?: string };
         const taskId = randomUUID();

@@ -119,6 +119,12 @@ test(
             ),
           );
           assert.ok(prepared.blockedOutcomeIds.every((id) => !prepared.candidateIds.includes(id)));
+          assert.deepEqual(
+            [...observed.candidates, ...observed.blockedCandidates!]
+              .map((candidate) => candidate.recency)
+              .sort((a, b) => a! - b!),
+            [1, 2, 3, 4, 5, 6, 7, 8],
+          );
         },
       );
       await t.test(

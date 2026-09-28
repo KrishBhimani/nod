@@ -42,14 +42,7 @@ function publicLoginInspection(inspection: LoginInspection) {
   return result;
 }
 
-const outcomeCheckTools = [
-  'browser',
-  'browser_screenshot',
-  'apps',
-  'read_file',
-  'web_search',
-  'ask_user',
-];
+const outcomeCheckTools = ['browser', 'browser_screenshot', 'apps', 'read_file', 'web_search'];
 
 const outsideActionTools = [
   'browser_fast_step',

@@ -128,7 +128,7 @@ export function createConversationRouting(options: {
     );
     const candidateMessageIds: string[] = [];
     const outcomes = await Promise.all(
-      rows.rows.map(async ({ externalAction, ...row }) => {
+      rows.rows.map(async ({ externalAction, ...row }, index) => {
         const messages = await options.pool.query<{
           id: string;
           role: 'user' | 'assistant';
@@ -145,6 +145,7 @@ export function createConversationRouting(options: {
         return {
           ...row,
           blocked: taskNeedsReview(row.status, row.waitingReason, externalAction),
+          recency: index + 1,
           title: String(row.title).slice(0, 100),
           objective: String(row.objective).slice(0, 2000),
           recentMessages: messages.rows.map(({ role, text }) => ({ role, text })),

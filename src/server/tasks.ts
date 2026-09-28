@@ -1265,11 +1265,6 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
   );
   if (!selected.rowCount) return;
   const task = selected.rows[0];
-  if (task.fresh_session)
-    await pool.query('UPDATE tasks SET fresh_session=false WHERE id=$1 AND revision=$2', [
-      taskId,
-      revision,
-    ]);
   const checkOutcome = task.recovery_mode === 'verify';
   const controller = new AbortController();
   running.set(taskId, controller);
@@ -1281,6 +1276,11 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
   };
   const ensureCurrent = () => current(async () => {});
   try {
+    if (task.fresh_session)
+      await pool.query('UPDATE tasks SET fresh_session=false WHERE id=$1 AND revision=$2', [
+        taskId,
+        revision,
+      ]);
     const confirmed = await dependencies.executeConfirmation?.(taskId, revision, controller.signal);
     if (confirmed) task.prompt = confirmed.prompt;
     await ensureCurrent();
@@ -1457,7 +1457,7 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
                 );
                 if (task.source === 'user')
                   await client.query(
-                    "INSERT INTO messages(id,owner_id,role,text,task_id,stream_id) VALUES($1,$2,'assistant',$3,$4,$5)",
+                    "INSERT INTO messages(id,owner_id,role,text,task_id,stream_id,created_at) VALUES($1,$2,'assistant',$3,$4,$5,clock_timestamp())",
                     [
                       randomUUID(),
                       ownerId,
@@ -1469,7 +1469,7 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
                 return;
               }
               await client.query(
-                "UPDATE tasks SET status='queued',revision=$2,prompt=$3,recovery_mode=NULL,external_action=false,fresh_session=false,recovery_attempts=recovery_attempts+$4,waiting_reason=NULL,waiting_question=NULL,updated_at=now() WHERE id=$1",
+                "UPDATE tasks SET status='queued',revision=$2,prompt=$3,recovery_mode=NULL,external_action=false,fresh_session=$4=1,recovery_attempts=recovery_attempts+$4,waiting_reason=NULL,waiting_question=NULL,updated_at=now() WHERE id=$1",
                 [
                   taskId,
                   next,

@@ -2340,7 +2340,6 @@ test('browser writes, shell commands and sign-in steps mark an outside action be
       await call(tools, 'browser', { action: 'snapshot' });
       await call(tools, 'browser', { action: 'scroll', direction: 'down' }).catch(() => {});
       await call(tools, 'browser', { action: 'click', ref: 'e1' });
-      order.push('shell');
       await call(tools, 'shell', { command: 'curl -X POST https://example.com' });
       order.push('select');
       await call(tools, 'select_login_method', {
@@ -2367,10 +2366,21 @@ test('browser writes, shell commands and sign-in steps mark an outside action be
           return { text: 'Fixture page', url: 'https://example.com', candidates: [] };
         },
       }),
+      workspace: fakeWorkspace({
+        open: () => ({
+          path: '/fixture/workspace',
+          instructions: 'Fixture workspace only.',
+          execute: async () => {
+            order.push('shell');
+            return 'Fixture output';
+          },
+          readFile: async () => 'Fixture content',
+          writeFile: async () => 'File saved',
+        }),
+      }),
     },
   );
-  assert.deepEqual(order.slice(0, 5), ['snapshot', 'scroll', 'marked', 'click', 'shell']);
-  assert.equal(order[5], 'marked');
+  assert.deepEqual(order.slice(0, 6), ['snapshot', 'scroll', 'marked', 'click', 'marked', 'shell']);
   assert.equal(order[order.indexOf('select') + 1], 'marked');
   assert.equal(order[order.indexOf('credentials') + 1], 'marked');
 });
@@ -2382,7 +2392,7 @@ test('an outcome check exposes only read tools, refuses writes and reports once'
     async (tools) => {
       assert.deepEqual(
         [...tools.keys()].sort(),
-        ['apps', 'ask_user', 'browser', 'browser_screenshot', 'read_file', 'report_outcome'].sort(),
+        ['apps', 'browser', 'browser_screenshot', 'read_file', 'report_outcome'].sort(),
       );
       await call(tools, 'browser', { action: 'open', url: 'https://example.com/sent' });
       await call(tools, 'browser', { action: 'snapshot' });
