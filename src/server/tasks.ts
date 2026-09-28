@@ -1216,7 +1216,7 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
     }
     const stagedFiles = new Map(staged.map((row) => [row.id, `${row.id}-${basename(row.name)}`]));
     const withAttachments = ({ attachments, ...row }: Record<string, any>): any => {
-      const files = Array.isArray(attachments) ? attachments.slice(0, 10) : [];
+      const files = Array.isArray(attachments) ? attachments.slice(0, 5) : [];
       return files.length
         ? {
             ...row,

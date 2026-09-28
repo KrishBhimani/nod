@@ -672,6 +672,26 @@ test(
           assert.equal(JSON.stringify([...fileContexts.values()]).includes(foreignArtifact), false);
         },
       );
+      await t.test('staging stops at the total size budget without failing the task', async () => {
+        const large = [];
+        for (const index of [1, 2, 3, 4]) {
+          const artifact = await storeArtifact(
+            Buffer.alloc(13 * 1024 * 1024, index),
+            `large-${index}.bin`,
+            'application/octet-stream',
+          );
+          artifactIds.push(artifact.id);
+          large.push(artifact);
+        }
+        const task = await tasks.submitTask('budget-file-fixture', large);
+        await waitFor(async () => fileContexts.has('budget-file-fixture'));
+        assert.equal(fileContexts.get('budget-file-fixture')!.attachments.length, 3);
+        await waitFor(
+          async () =>
+            (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [task])).rows[0]
+              ?.status === 'succeeded',
+        );
+      });
     } finally {
       release();
       await tasks.stopTasks();
