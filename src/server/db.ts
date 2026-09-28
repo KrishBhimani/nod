@@ -75,6 +75,7 @@ export async function initializeDatabase() {
       created_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS messages_owner_time ON messages(owner_id,created_at);
+    CREATE INDEX IF NOT EXISTS messages_task_time ON messages(task_id,created_at);
     CREATE INDEX IF NOT EXISTS task_events_task_time ON task_events(task_id,created_at);
     CREATE TABLE IF NOT EXISTS inspector_records (
       id uuid PRIMARY KEY, owner_id text NOT NULL, task_id uuid NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,

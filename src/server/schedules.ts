@@ -84,11 +84,18 @@ interface RunRow {
   createdAt: Date;
   status: TaskStatus;
   error: string | null;
+  messageId: string | null;
+  messageText: string | null;
   cursorAt: string;
 }
 
 function invalid(message: string) {
   return Object.assign(new Error(message), { statusCode: 400 });
+}
+
+function preview(text: string) {
+  const value = text.replace(/\s+/g, ' ').trim();
+  return value.length > 160 ? `${value.slice(0, 159).trimEnd()}…` : value;
 }
 
 function runValue(row: RunRow): ScheduleRun {
@@ -102,6 +109,9 @@ function runValue(row: RunRow): ScheduleRun {
     createdAt: row.createdAt.toISOString(),
     status: row.status,
     error: row.error,
+    messageId: row.messageId,
+    messagePreview: row.messageText && preview(row.messageText),
+    messageText: row.messageText,
   };
 }
 
@@ -357,8 +367,15 @@ export function createSchedules(dependencies: ScheduleDependencies) {
       await pool.query<RunRow>(
         `SELECT r.id,r.schedule_id AS "scheduleId",r.title,r.task_id AS "taskId",
            r.scheduled_for AS "scheduledFor",r.time_zone AS "timeZone",r.created_at AS "createdAt",
-           t.status,t.error,to_char(r.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "cursorAt"
+           t.status,t.error,m.id AS "messageId",m.text AS "messageText",
+           to_char(r.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "cursorAt"
          FROM schedule_runs r JOIN tasks t ON t.id=r.task_id AND t.owner_id=r.owner_id
+         LEFT JOIN LATERAL (
+           SELECT m.id,left(m.text,4000) AS text FROM messages m
+           WHERE m.task_id=t.id AND m.owner_id=t.owner_id AND m.role='assistant'
+             AND t.channel='web' AND ${currentConversationSql()}
+           ORDER BY date_trunc('milliseconds',m.created_at),m.id LIMIT 1
+         ) m ON true
          WHERE r.owner_id=$1 AND ($2::uuid IS NULL OR r.schedule_id=$2)
            AND ($3::timestamptz IS NULL OR (r.created_at,r.id)<($3::timestamptz,$4::uuid))
          ORDER BY r.created_at DESC,r.id DESC LIMIT $5`,

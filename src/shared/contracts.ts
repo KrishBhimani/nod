@@ -216,6 +216,9 @@ export interface ScheduleRun {
   createdAt: string;
   status: TaskStatus;
   error: string | null;
+  messageId: string | null;
+  messagePreview: string | null;
+  messageText: string | null;
 }
 export interface ScheduleHistory {
   runs: ScheduleRun[];
