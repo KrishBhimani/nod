@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
+import { readFile } from 'node:fs/promises';
 import { JSDOM } from 'jsdom';
 import { act, createElement } from 'react';
 import { Sidebar } from '../src/web/components/sidebar.tsx';
@@ -22,9 +23,15 @@ for (const key of [
 ] as const)
   Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
 Object.defineProperty(dom.window.navigator, 'platform', { value: 'MacIntel' });
+const cancelOnEscape = (event: KeyboardEvent) => {
+  const dialog = event.currentTarget as HTMLDialogElement;
+  if (event.key !== 'Escape' || event.defaultPrevented) return;
+  if (dialog.dispatchEvent(new dom.window.Event('cancel', { cancelable: true }))) dialog.close();
+};
 Object.assign(dom.window.HTMLDialogElement.prototype, {
   showModal(this: HTMLDialogElement) {
     this.setAttribute('open', '');
+    this.addEventListener('keydown', cancelOnEscape);
   },
   close(this: HTMLDialogElement) {
     if (!this.hasAttribute('open')) return;
@@ -91,6 +98,8 @@ test('sidebar exposes navigation shortcuts, keyboard focus and modifier hints wi
     assert.equal(document.activeElement, links[0]);
     const more = element.querySelector<HTMLButtonElement>('[aria-label="Navigation menu"]')!;
     const sheet = element.querySelector<HTMLDialogElement>('dialog.mobile-sheet')!;
+    const desktopWidth = window.innerWidth;
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
     await act(async () => more.click());
     assert.equal(sheet.open, true);
     const actions = [
@@ -132,6 +141,15 @@ test('sidebar exposes navigation shortcuts, keyboard focus and modifier hints wi
     await act(async () => sheet.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     assert.equal(sheet.open, false);
     assert.equal(document.activeElement, more);
+    await act(async () => more.click());
+    await act(async () =>
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'i', metaKey: true, bubbles: true, cancelable: true }),
+      ),
+    );
+    assert.equal(sheet.open, false);
+    assert.equal(inspections, 2);
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: desktopWidth });
     inspections = 0;
     const press = async (key: string, extra: KeyboardEventInit = {}) => {
       const event = new KeyboardEvent('keydown', {
@@ -308,11 +326,14 @@ test('sidebar preserves all shortcuts inside editable fields, including nested a
 });
 
 test('small screens use a chat-first top bar and a section sheet without shortcut hints', async () => {
+  const initialWidth = window.innerWidth;
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
   const element = document.createElement('div');
   document.body.append(element);
   const root = createRoot(element);
   const navigations: string[] = [];
   const settings: string[] = [];
+  const triggers: unknown[] = [];
   const render = (path: string) =>
     act(async () =>
       root.render(
@@ -329,8 +350,9 @@ test('small screens use a chat-first top bar and a section sheet without shortcu
             theme: 'system',
             saving: false,
             canLogout: true,
-            onSettings(tab) {
+            onSettings(tab, trigger) {
               settings.push(tab);
+              triggers.push(trigger);
             },
             async onTheme() {},
             onLogout() {},
@@ -372,7 +394,14 @@ test('small screens use a chat-first top bar and a section sheet without shortcu
       assert.equal(event.defaultPrevented, false);
       assert.deepEqual(navigations, []);
     }
-    await act(async () => sheet.close());
+    await act(async () =>
+      sheet
+        .querySelector('.mobile-sheet-body')!
+        .dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+        ),
+    );
+    assert.equal(sheet.open, false);
     assert.equal(trigger.getAttribute('aria-expanded'), 'false');
     assert.equal(document.activeElement, trigger);
     await open();
@@ -393,13 +422,17 @@ test('small screens use a chat-first top bar and a section sheet without shortcu
     );
     assert.equal(sheet.open, false);
     assert.deepEqual(settings, ['Preferences']);
+    assert.deepEqual(triggers, [trigger]);
     await render('/');
     await open();
     const current = sheet.querySelectorAll('[aria-current="page"]');
     assert.equal(current.length, 1);
     assert.equal(current[0]!.getAttribute('href'), '/');
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 });
     await act(async () => window.dispatchEvent(new Event('resize')));
     assert.equal(sheet.open, false);
+    assert.equal(document.activeElement, document.getElementById('workspace'));
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: initialWidth });
     const chat = element.querySelector<HTMLAnchorElement>('.mobile-chat-link')!;
     assert.equal(chat.getAttribute('href'), '/');
     assert.equal(chat.getAttribute('aria-current'), 'page');
@@ -409,6 +442,7 @@ test('small screens use a chat-first top bar and a section sheet without shortcu
   } finally {
     await act(async () => root.unmount());
     element.remove();
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: initialWidth });
   }
 });
 
@@ -632,4 +666,16 @@ test('production keeps Inspector in the app menu and hides More when it is empty
     await act(async () => root.unmount());
     element.remove();
   }
+});
+
+test('the small-screen sheet scrolls on short screens and keeps touch-sized theme controls', async () => {
+  const css = await readFile(new URL('../src/web/styles.css', import.meta.url), 'utf8');
+  const rule = (selector: string) => {
+    const start = css.indexOf(`  ${selector} {`);
+    assert.ok(start >= 0, selector);
+    return css.slice(start, css.indexOf('}', start));
+  };
+  assert.match(rule('.mobile-sheet'), /max-height: min\(86dvh, 680px\);/);
+  assert.match(rule('.mobile-sheet'), /overflow-y: auto;/);
+  assert.match(rule('.mobile-sheet-actions .account-menu-themes button'), /min-height: 44px;/);
 });

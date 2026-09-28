@@ -60,7 +60,10 @@ export function Sidebar({
   toggles.current = { onToggle, onToggleInspector, inspectorEnabled };
   const closeMobileMenu = () => {
     setMobileMenuOpen(false);
-    mobileTrigger.current?.focus();
+    (window.innerWidth <= 640
+      ? mobileTrigger.current
+      : document.getElementById('workspace')
+    )?.focus();
   };
   useEffect(() => {
     const sheet = mobileSheet.current;
@@ -129,6 +132,7 @@ export function Sidebar({
         return;
       }
       if (action.type === 'inspector') {
+        setMobileMenuOpen(false);
         toggles.current.onToggleInspector?.();
         return;
       }
@@ -320,7 +324,15 @@ export function Sidebar({
             </nav>
             <div className="mobile-sheet-actions">
               {account ? (
-                <AccountMenuItems account={account} close={closeMobileMenu} shortcuts={false} />
+                <AccountMenuItems
+                  account={{
+                    ...account,
+                    onSettings: (tab) =>
+                      account.onSettings(tab, mobileTrigger.current ?? undefined),
+                  }}
+                  close={closeMobileMenu}
+                  shortcuts={false}
+                />
               ) : (
                 <button type="button" onClick={toggleTheme}>
                   <ThemeIcon size={18} aria-hidden="true" /> {themeLabel}
