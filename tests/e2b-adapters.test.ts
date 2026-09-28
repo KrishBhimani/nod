@@ -151,7 +151,9 @@ async function fixture() {
               disconnect: async () => {},
             };
           }
-          const task = input.command.match(/mkdir -p \/workspace\/([a-zA-Z0-9_-]+)/)?.[1];
+          const task =
+            input.command.match(/(?:mkdir -p|cd) \/workspace\/([a-zA-Z0-9_-]+)/)?.[1] ??
+            (input.role === 'connected' ? 'connected' : undefined);
           assert.ok(task);
           const directory = join(root, id, task);
           await mkdir(directory, { recursive: true });
@@ -261,6 +263,26 @@ test('E2B shares one owned sandbox across private browser and supervised workspa
       signal: new AbortController().signal,
     });
     assert.equal(await workspace.execute('printf "héllo"'), 'héllo');
+    assert.equal(first.workspace.connectedCliAvailable, true);
+    assert.deepEqual(
+      await workspace.executeProgram?.(
+        'python3',
+        ['-c', 'import os;print(os.environ.get("FIXTURE_TOKEN")=="synthetic-private-token")'],
+        { FIXTURE_TOKEN: 'synthetic-private-token' },
+      ),
+      { exitCode: 0, output: 'True\n' },
+    );
+    const connectedAbort = new AbortController();
+    const connected = first.workspace.open({
+      taskId: 'task-one',
+      workspacePath: join(f.root, 'workspaces/task-one'),
+      signal: connectedAbort.signal,
+    });
+    const stopped = connected.executeProgram!('python3', ['-c', 'import time;time.sleep(30)'], {
+      FIXTURE_TOKEN: 'synthetic-private-token',
+    });
+    setTimeout(() => connectedAbort.abort(), 50);
+    await assert.rejects(stopped, /cancelled/);
     await second.computer.act('task-two', { action: 'snapshot' });
     assert.equal(f.state.records.size, 2);
     const rows = [...f.state.records.values()];
@@ -269,7 +291,13 @@ test('E2B shares one owned sandbox across private browser and supervised workspa
     const owned = f.requests.filter((request) => request.resourceId === rows[0].resourceId);
     assert.deepEqual(
       new Set(owned.map((request) => request.role)),
-      new Set(['browser', 'workspace']),
+      new Set(['browser', 'workspace', 'connected']),
+    );
+    assert.ok(
+      owned.some(
+        (request) =>
+          request.role === 'connected' && request.command.includes('cd /home/otto-connected'),
+      ),
     );
     assert.equal(
       f.metadata.some((value) => JSON.stringify(value).includes('owner-one')),
@@ -281,6 +309,10 @@ test('E2B shares one owned sandbox across private browser and supervised workspa
     );
     assert.equal(
       f.requests.some((request) => request.command.includes('printf')),
+      false,
+    );
+    assert.equal(
+      f.requests.some((request) => request.command.includes('synthetic-private-token')),
       false,
     );
     assert.equal(

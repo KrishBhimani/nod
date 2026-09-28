@@ -22,6 +22,7 @@ const labels: Record<string, string> = {
   OTTO_memory_propose: 'Remember this',
   CONNECTED_HTTP: 'Call this connected API',
   CONNECTED_MCP_CALL: 'Use this connected tool',
+  CONNECTED_CLI: 'Run this connected command',
 };
 
 function plain(value: string) {
@@ -50,6 +51,24 @@ function connectedText(value: unknown) {
   const safe = redactConnected(value);
   const serialized = typeof safe === 'string' ? safe : JSON.stringify(safe);
   return plain(serialized.length > 1800 ? `${serialized.slice(0, 1800)} [truncated]` : serialized);
+}
+
+function cliArguments(value: unknown) {
+  if (!Array.isArray(value)) return connectedText(value);
+  const masked = value.map((part, index) => {
+    if (typeof part !== 'string') return part;
+    const previous = value[index - 1];
+    if (
+      typeof previous === 'string' &&
+      /^(?:--?)(?:api[-_]?key|auth|authorization|password|secret|token)$/i.test(previous)
+    )
+      return '[redacted]';
+    return part.replace(
+      /^(--?(?:api[-_]?key|auth|authorization|password|secret|token)=).+$/i,
+      '$1[redacted]',
+    );
+  });
+  return connectedText(masked);
 }
 
 export function actionConfirmation(
@@ -86,6 +105,10 @@ export function actionConfirmation(
   if (action === 'CONNECTED_MCP_CALL') {
     add('Tool', connectedText(args.tool));
     if (args.input !== undefined) add('Input', connectedText(args.input));
+  }
+  if (action === 'CONNECTED_CLI') {
+    add('Program', text(connection?.command));
+    add('Arguments', cliArguments(args.argv));
   }
   for (const [key, label] of [
     ['title', 'Title'],

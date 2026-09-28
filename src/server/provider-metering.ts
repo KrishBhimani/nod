@@ -152,6 +152,21 @@ export function meterWorkspace(workspace: Workspace, usage: ProviderUsageStore):
         ...session,
         execute: (command, timeout) =>
           usage.track({ ...base, operation: 'execute' }, () => session.execute(command, timeout)),
+        ...(session.executeProgram
+          ? {
+              executeProgram: (
+                program: string,
+                args: string[],
+                environment: Record<string, string>,
+                timeout?: number,
+              ) =>
+                usage.track(
+                  { ...base, operation: 'execute' },
+                  () => session.executeProgram!(program, args, environment, timeout),
+                  (result) => ({ status: result.exitCode === 0 ? 'succeeded' : 'failed' }),
+                ),
+            }
+          : {}),
         readFile: (path) =>
           usage.track({ ...base, operation: 'read_file' }, () => session.readFile(path)),
         writeFile: (path, content) =>
