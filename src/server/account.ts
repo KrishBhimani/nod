@@ -40,7 +40,7 @@ export function createAccountSession(options: {
   localUser?: AccountUser;
   developerIds?: ReadonlySet<string>;
   prepare?(ownerId: string): Promise<void>;
-  start?(ownerId: string, name: string): Promise<void>;
+  start?(ownerId: string, name?: string): Promise<void>;
 }) {
   const origin = new URL(options.origin).origin;
   const mode = options.authentication ? 'google' : 'local';
@@ -213,8 +213,8 @@ export function createAccountSession(options: {
             (
               input.name ??
               (await options.accounts.read(session.user.id)).displayName ??
-              session.user.name
-            ).slice(0, 100),
+              (options.authentication ? session.user.name : undefined)
+            )?.slice(0, 100),
           );
         } catch {
           return reply.code(503).send({ error: 'Setup could not be completed. Try again.' });

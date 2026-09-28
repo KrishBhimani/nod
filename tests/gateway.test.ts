@@ -215,6 +215,14 @@ test('completing onboarding starts the welcome in the authenticated owner runtim
       ? Response.json({ error: 'Setup is unavailable.' }, { status: start })
       : Response.json({ ok: true }),
   );
+  const direct = await f.app.inject({
+    method: 'POST',
+    url: '/api/onboarding/start',
+    headers: { ...f.headers(1), origin },
+    payload: { name: 'Forged' },
+  });
+  assert.equal(direct.statusCode, 404);
+  assert.equal(f.calls.length, 0);
   const complete = () =>
     f.app.inject({
       method: 'PATCH',

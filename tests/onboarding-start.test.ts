@@ -33,7 +33,7 @@ test(
     createAccountSession({
       accounts,
       origin: `http://localhost:${port}`,
-      localUser: { id: ownerId, name: 'Alex Example', email: null, avatarUrl: null },
+      localUser: { id: ownerId, name: 'You', email: null, avatarUrl: null },
       start: async (_owner, name) => {
         await tasks.startOnboarding(name);
       },
@@ -42,6 +42,17 @@ test(
     try {
       const earlier = await tasks.submitTask('Earlier synthetic request');
       const before = (await app.inject({ url: '/api/state', headers })).json();
+      assert.equal(
+        (
+          await app.inject({
+            method: 'PATCH',
+            url: '/api/account',
+            headers,
+            payload: { name: 'Alex Example' },
+          })
+        ).statusCode,
+        200,
+      );
       const complete = () =>
         app.inject({
           method: 'PATCH',

@@ -124,7 +124,11 @@ export async function createGateway(options: {
     trustProxy: false,
     forceCloseConnections: true,
   });
-  async function setup(ownerId: string, path: string, body: Record<string, string> = {}) {
+  async function setup(
+    ownerId: string,
+    path: string,
+    body: Record<string, string | undefined> = {},
+  ) {
     const response = await options.runtimes.fetch(
       ownerId,
       new Request(new URL(path, origin), {
@@ -308,7 +312,8 @@ export async function createGateway(options: {
       url.pathname.startsWith('/api/auth/') ||
       url.pathname.startsWith('/api/webhooks/') ||
       url.pathname.startsWith('/api/internal/') ||
-      url.pathname.startsWith('/api/runtime/')
+      url.pathname.startsWith('/api/runtime/') ||
+      url.pathname === '/api/onboarding/start'
     )
       return reply.code(404).send({ error: 'Route not found.' });
     if (url.pathname === '/api/events' && url.searchParams.get('account') !== session.user.id)

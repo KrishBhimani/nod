@@ -733,7 +733,7 @@ export async function createApplication(
       localUser: { id: ownerId, name: 'You', email: null, avatarUrl: null },
       developerIds: configuration().inspectorEnabled ? new Set([ownerId]) : new Set(),
       prepare: async () => adapters.prepareComputer?.(),
-      start: () => welcome(),
+      start: (_owner, name) => welcome(name),
     }).register(app);
   } else {
     app.post('/api/account/prepare', async (request) => {

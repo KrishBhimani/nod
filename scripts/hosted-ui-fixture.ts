@@ -30,23 +30,35 @@ const connections = new Map<string, Set<IntegrationService>>([
   [users[0].id, new Set<IntegrationService>(['gmail', 'googlecalendar', 'slack'])],
 ]);
 const welcomes = new Map<string, { startedAt: number; taskId: string; messageId: string }>();
-const welcomeFindings: Partial<Record<IntegrationService, string>> = {
-  gmail:
-    '**The Q4 vendor contract from Maria Lopez.** It has waited four days for your reply, and she asked again this morning. I can read the 12-page draft, list what changed and write a reply for you to approve.',
-  googlecalendar:
-    '**Tomorrow at 09:30, budget review with Finance.** You have no notes yet. I can pull the numbers from your thread with Tom and prepare a one-page brief.',
-  slack:
-    '**Six mentions in #launch since Friday.** Two ask you to decide the release date. I can summarize both threads and draft your answer.',
+const welcomeFindings: Partial<Record<IntegrationService, { text: string; start: string }>> = {
+  gmail: {
+    text: '**The Q4 vendor contract from Maria Lopez.** It has waited four days for your reply, and she asked again this morning. I can read the 12-page draft, list what changed and write a reply for you to approve.',
+    start: 'the contract',
+  },
+  googlecalendar: {
+    text: '**Tomorrow at 09:30, budget review with Finance.** You have no notes yet. I can pull the numbers from your thread with Tom and prepare a one-page brief.',
+    start: 'the budget brief',
+  },
+  slack: {
+    text: '**Six mentions in #launch since Friday.** Two ask you to decide the release date. I can summarize both threads and draft your answer.',
+    start: 'the release date',
+  },
 };
 function welcomeText(owner: string) {
   const name = users.find((user) => user.id === owner)?.name.split(' ')[0];
   const apps = integrationServiceIds.filter((slug) => connections.get(owner)?.has(slug));
-  const findings = apps.flatMap((slug) => welcomeFindings[slug] ?? []);
-  if (!findings.length)
+  if (!apps.length)
     return `Hi ${name}, good to meet you. No apps are connected yet, so I cannot see your work. I can still help now: plan your week around your top three priorities, or research a topic and give you a one-page summary.\n\nIf you connect Gmail in Apps, I will find the threads that wait for your reply and draft the answers for you to approve.\n\nWhere should I start?`;
-  return `Hi ${name}. I went through your ${apps.length > 1 ? 'apps' : integrationServices[apps[0]].name}, and ${findings.length > 1 ? `${['two', 'three'][findings.length - 2]} things stand out` : 'one thing stands out'}. I can take each one off your plate:\n\n${findings
-    .map((finding, index) => `${index + 1}. ${finding}`)
-    .join('\n')}\n\nShould I start with the contract?`;
+  const findings = apps.slice(0, 3).map(
+    (slug) =>
+      welcomeFindings[slug] ?? {
+        text: `**New activity in ${integrationServices[slug].name}.** Four items changed this week. I can check which ones need you and list the next step for each.`,
+        start: integrationServices[slug].name,
+      },
+  );
+  return `Hi ${name}. I went through your ${apps.length > 1 ? 'apps' : integrationServices[apps[0]].name}, and ${['one thing stands', 'two things stand', 'three things stand'][findings.length - 1]} out. I can take ${findings.length > 1 ? 'each one' : 'it'} off your plate:\n\n${findings
+    .map((finding, index) => `${index + 1}. ${finding.text}`)
+    .join('\n')}\n\nShould I start with ${findings[0].start}?`;
 }
 const consent = new Map<
   string,
