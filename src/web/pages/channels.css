@@ -250,3 +250,23 @@
     min-height: 40px;
   }
 }
+
+.channels-page .channel-coming-soon {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.channels-page .channel-option.is-coming-soon .channel-option-heading > img,
+.channels-page .channel-option.is-coming-soon h3,
+.channels-page .channel-option.is-coming-soon .channel-option-benefit {
+  opacity: 0.6;
+}

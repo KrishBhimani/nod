@@ -517,8 +517,8 @@ test('pending channel removal blocks dismissal and repeated requests until the s
     assert.equal(Boolean(document.querySelector('[role="dialog"]')), false);
     assert.equal(Boolean(element.querySelector('[data-channel-remove="whatsapp"]')), false);
     assert.ok(element.querySelector('[data-channel-remove="telegram"]'));
-    assert.ok(element.querySelector('[aria-label="Connect WhatsApp"]'));
-    assert.equal(document.activeElement?.getAttribute('aria-label'), 'Connect WhatsApp');
+    assert.equal(element.querySelector('[aria-label="Connect WhatsApp"]'), null);
+    assert.match(element.textContent ?? '', /WhatsAppChat with Otto in WhatsApp\.Coming soon/);
   } finally {
     await act(async () => root.unmount());
     element.remove();

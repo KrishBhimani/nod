@@ -34,6 +34,7 @@ const providers = [
     id: 'whatsapp' as const,
     name: 'WhatsApp',
     description: 'Chat with Otto in WhatsApp.',
+    comingSoon: true,
   },
 ];
 const steps = {
@@ -514,7 +515,9 @@ export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
       <div className="channel-options">
         {items.map(({ provider, setup, configured, connected: isConnected }) => (
           <article
-            className={`channel-option${isConnected ? ' is-connected' : ''}`}
+            className={`channel-option${isConnected ? ' is-connected' : ''}${
+              !isConnected && 'comingSoon' in provider ? ' is-coming-soon' : ''
+            }`}
             key={provider.id}
             aria-labelledby={`channel-${provider.id}`}
           >
@@ -524,18 +527,22 @@ export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
                 <h3 id={`channel-${provider.id}`}>{provider.name}</h3>
                 <p className="channel-option-benefit">{provider.description}</p>
               </div>
-              {!isConnected && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="channel-connect"
-                  aria-label={`Connect ${provider.name}`}
-                  data-connect-channel={provider.id}
-                  disabled={busy || !settings?.ready}
-                  onClick={() => open(provider.id)}
-                >
-                  Connect
-                </Button>
+              {!isConnected && 'comingSoon' in provider ? (
+                <span className="channel-coming-soon">Coming soon</span>
+              ) : (
+                !isConnected && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="channel-connect"
+                    aria-label={`Connect ${provider.name}`}
+                    data-connect-channel={provider.id}
+                    disabled={busy || !settings?.ready}
+                    onClick={() => open(provider.id)}
+                  >
+                    Connect
+                  </Button>
+                )
               )}
             </div>
             {isConnected && (
@@ -615,11 +622,11 @@ export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
             const trigger = removeTrigger.current;
             if (trigger?.isConnected) trigger.focus();
             else
-              page.current
-                ?.querySelector<HTMLButtonElement>(
+              (
+                page.current?.querySelector<HTMLButtonElement>(
                   `[data-connect-channel="${removeProvider.current}"]`,
-                )
-                ?.focus();
+                ) ?? document.querySelector<HTMLElement>('#workspace')
+              )?.focus();
           }}
         >
           <DialogTitle>
