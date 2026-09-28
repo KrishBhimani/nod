@@ -12,7 +12,7 @@ export function hostedEnvironment(
   values,
   { root = repository, envFile, inherited = process.env } = {},
 ) {
-  const computerProvider = values.COMPUTER_PROVIDER || 'e2b';
+  const computerProvider = values.COMPUTER_PROVIDER || 'cloudflare';
   if (
     computerProvider === 'e2b' &&
     (values.E2B_BROWSER_TEMPLATE !== undefined || values.E2B_WORKSPACE_TEMPLATE !== undefined)
