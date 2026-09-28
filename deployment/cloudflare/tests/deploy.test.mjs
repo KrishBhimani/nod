@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { readFile, stat } from 'node:fs/promises';
 import test from 'node:test';
-import { deploy, deploymentPlan } from '../scripts/deploy.mjs';
+import {
+  deploy as deployRelease,
+  deploymentPlan,
+  ensureStorageBucket,
+  renameGatewayEnvironment,
+} from '../scripts/deploy.mjs';
 import { verifyDeployment } from '../scripts/smoke.mjs';
 import { recoverDeployment } from '../scripts/recover.mjs';
 
@@ -45,6 +50,9 @@ function configuration(computers = true) {
     env: {
       production: {
         name: 'otto',
+        r2_buckets: [
+          { binding: 'TENANT_FILES', bucket_name: 'otto-production-files', jurisdiction: 'eu' },
+        ],
         containers: classes.map((class_name) => ({
           class_name,
           image: './Dockerfile',
@@ -54,6 +62,13 @@ function configuration(computers = true) {
       },
     },
   };
+}
+
+function deploy(environment, environmentVariables, dependencies) {
+  return deployRelease(environment, environmentVariables, {
+    ensureBucket: async () => {},
+    ...dependencies,
+  });
 }
 
 function lifecycle(events = [], failures = {}) {
@@ -82,6 +97,51 @@ function planInput(config = configuration()) {
     config,
   };
 }
+
+test('the rename converts the private gateway settings for a new Otto deployment', () => {
+  const old = JSON.stringify({
+    SIDEKICK_ENVIRONMENT: 'production',
+    SIDEKICK_PUBLIC_URL: 'https://sidekick.example.test',
+    SIDEKICK_MASTER_KEY: 'synthetic-key',
+    OBJECT_STORAGE_ENDPOINT: 'http://sidekick.storage/v1/objects/',
+    COMPUTER_PROVIDER: 'cloudflare',
+  });
+  const converted = JSON.parse(renameGatewayEnvironment(old, origin));
+  assert.equal(converted.OTTO_ENVIRONMENT, 'production');
+  assert.equal(converted.OTTO_PUBLIC_URL, origin);
+  assert.equal(converted.OTTO_MASTER_KEY, 'synthetic-key');
+  assert.equal(converted.OBJECT_STORAGE_ENDPOINT, 'http://otto.storage/v1/objects/');
+  assert.equal(converted.COMPUTER_PROVIDER, 'cloudflare');
+  assert.equal('SIDEKICK_MASTER_KEY' in converted, false);
+  assert.throws(() =>
+    renameGatewayEnvironment(
+      JSON.stringify({ SIDEKICK_MASTER_KEY: 'old', OTTO_MASTER_KEY: 'new' }),
+      origin,
+    ),
+  );
+});
+
+test('the deployment creates a missing EU object bucket before publication', async () => {
+  const requests = [];
+  const request = async (url, options) => {
+    requests.push({ url, options });
+    if (requests.length === 1) return new Response(null, { status: 404 });
+    if (requests.length === 2) return Response.json({ success: true });
+    return Response.json({ result: { jurisdiction: 'eu' } });
+  };
+  await ensureStorageBucket(accountId, 'synthetic-token', 'otto-production-files', request);
+  assert.equal(requests.length, 3);
+  assert.equal(requests[0].options.headers['cf-r2-jurisdiction'], 'eu');
+  assert.equal(requests[1].options.method, 'POST');
+  assert.deepEqual(JSON.parse(requests[1].options.body), { name: 'otto-production-files' });
+  assert.equal(requests[2].url, requests[0].url);
+  await assert.rejects(
+    ensureStorageBucket(accountId, 'synthetic-token', 'otto-production-files', async () =>
+      Response.json({ result: { jurisdiction: 'default' } }),
+    ),
+    { message: 'The private object bucket is unavailable or has the wrong jurisdiction.' },
+  );
+});
 
 test('deployment validation rejects another environment, origin and invalid revision before publishing', () => {
   const input = planInput();

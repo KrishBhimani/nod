@@ -9,6 +9,48 @@ import { createDeploymentClient, inspectImageDigest, pinDeploymentImages } from 
 
 const packageDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
+export function renameGatewayEnvironment(source, publicUrl) {
+  let values;
+  try {
+    values = JSON.parse(source);
+  } catch {
+    return source;
+  }
+  if (!values || Array.isArray(values) || typeof values !== 'object') return source;
+  const oldKeys = Object.keys(values).filter((key) => key.startsWith('SIDEKICK_'));
+  if (oldKeys.length === 0) return source;
+  for (const key of oldKeys) {
+    const replacement = `OTTO_${key.slice('SIDEKICK_'.length)}`;
+    if (replacement in values) throw new Error('The gateway environment mixes old and new names.');
+    values[replacement] = values[key];
+    delete values[key];
+  }
+  values.OTTO_PUBLIC_URL = publicUrl;
+  if (values.OBJECT_STORAGE_ENDPOINT === 'http://sidekick.storage/v1/objects/')
+    values.OBJECT_STORAGE_ENDPOINT = 'http://otto.storage/v1/objects/';
+  return JSON.stringify(values);
+}
+
+export async function ensureStorageBucket(accountId, token, bucket, request = fetch) {
+  const collection = `https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/buckets`;
+  const endpoint = `${collection}/${bucket}`;
+  const headers = { authorization: `Bearer ${token}`, 'cf-r2-jurisdiction': 'eu' };
+  const read = () => request(endpoint, { headers, signal: AbortSignal.timeout(10_000) });
+  let response = await read();
+  if (response.status === 404) {
+    const created = await request(collection, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: bucket }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!created.ok) throw new Error('The private object bucket could not be created.');
+    response = await read();
+  }
+  if (!response.ok || (await response.json()).result?.jurisdiction !== 'eu')
+    throw new Error('The private object bucket is unavailable or has the wrong jurisdiction.');
+}
+
 export function deploymentPlan({ environment, release, accountId, publicUrl, gatewayEnv, config }) {
   if (!['development', 'production'].includes(environment))
     throw new Error('Choose the development or production deployment environment.');
@@ -195,17 +237,23 @@ export async function deploy(environment, variables = process.env, dependencies 
   }
   if (!variables.CLOUDFLARE_API_TOKEN)
     throw new Error('Configure the Cloudflare deployment token.');
+  const renamedVariables = {
+    ...variables,
+    GATEWAY_ENV: renameGatewayEnvironment(variables.GATEWAY_ENV, variables.OTTO_PUBLIC_URL),
+  };
   const plan = deploymentPlan({
     environment,
-    release: variables.OTTO_RELEASE,
-    accountId: variables.CLOUDFLARE_ACCOUNT_ID,
-    publicUrl: variables.OTTO_PUBLIC_URL,
-    gatewayEnv: variables.GATEWAY_ENV,
+    release: renamedVariables.OTTO_RELEASE,
+    accountId: renamedVariables.CLOUDFLARE_ACCOUNT_ID,
+    publicUrl: renamedVariables.OTTO_PUBLIC_URL,
+    gatewayEnv: renamedVariables.GATEWAY_ENV,
     config: configuration,
   });
   const lifecycle =
-    dependencies.deploymentControl ?? createDeploymentClient({ environment, plan, variables });
+    dependencies.deploymentControl ??
+    createDeploymentClient({ environment, plan, variables: renamedVariables });
   const digest = dependencies.imageDigest ?? inspectImageDigest;
+  const ensureBucket = dependencies.ensureBucket ?? ensureStorageBucket;
   const privateDirectory = await mkdtemp(join(tmpdir(), 'otto-deploy-'));
   await chmod(privateDirectory, 0o700);
   try {
@@ -225,6 +273,17 @@ export async function deploy(environment, variables = process.env, dependencies 
     childEnvironment.CI = 'true';
     childEnvironment.WRANGLER_SEND_METRICS = 'false';
     childEnvironment.WRANGLER_LOG_PATH = join(privateDirectory, 'wrangler.log');
+    const storage = plan.config.env[environment].r2_buckets?.find(
+      (binding) => binding.binding === 'TENANT_FILES',
+    );
+    if (!storage?.bucket_name || storage.jurisdiction !== 'eu')
+      throw new Error('The deployment has no EU private object bucket.');
+    report('Preparing the private object bucket.');
+    await ensureBucket(
+      variables.CLOUDFLARE_ACCOUNT_ID,
+      variables.CLOUDFLARE_API_TOKEN,
+      storage.bucket_name,
+    );
     report('Publishing the verified container images.');
     for (const image of plan.localImages)
       await run(
