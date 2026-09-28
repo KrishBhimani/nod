@@ -227,7 +227,7 @@ test('completing onboarding starts the welcome in the authenticated owner runtim
     f.calls.map((call) => [call.owner, call.url, call.method, call.body, call.developer]),
     [
       [f.users[1], `${origin}/api/account/prepare`, 'POST', '{}', false],
-      [f.users[1], `${origin}/api/onboarding/start`, 'POST', '{}', false],
+      [f.users[1], `${origin}/api/onboarding/start`, 'POST', '{"name":"Synthetic user"}', false],
     ],
   );
   start = 503;

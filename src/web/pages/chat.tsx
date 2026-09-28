@@ -1,18 +1,23 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowDown } from 'lucide-react';
-import type { AppState, Artifact, Message, SubmitMessageResponse } from '../../shared/contracts';
-import { integrationServices } from '../../shared/integrations';
+import { ArrowDown, ArrowUpRight } from 'lucide-react';
+import type {
+  AppState,
+  Artifact,
+  Connection,
+  Message,
+  SubmitMessageResponse,
+} from '../../shared/contracts';
+import {
+  integrationServiceIds,
+  integrationServices,
+  type IntegrationService,
+} from '../../shared/integrations';
 import { Composer, type ComposerHandle, type ComposerSendResult } from '../components/composer';
 import { MessageBubble } from '../components/message';
 import { ChatTurnRail } from '../components/chat-turn-rail';
 import { BrandMark } from '../components/brand';
 import { Button, Notice } from '../components/ui';
-import {
-  ChatWelcome,
-  FirstMessageSuggestions,
-  WelcomeVariantSwitcher,
-  welcomeVariant,
-} from './chat-welcome-prototype';
+import { usePageData } from '../hooks/use-page-data';
 import { api, apiResponse, errorMessage, post } from '../lib/api';
 import {
   hasVisibleChatActivity,
@@ -43,6 +48,57 @@ function verificationFailure(
   if (status === 'unavailable')
     return 'That verification request is no longer available. Wait for a new code request.';
   return 'The verification code could not be confirmed. Check the sign-in request and try again.';
+}
+const appSuggestions: Record<IntegrationService, string> = {
+  gmail: 'Find the email I still need to answer',
+  googlecalendar: 'Prepare me for my next meeting',
+  googledrive: 'Find a file in Google Drive',
+  googlesheets: 'Review a spreadsheet',
+  googledocs: 'Summarize a document',
+  slack: 'Catch me up on my Slack mentions',
+  notion: 'Summarize my recent Notion pages',
+  linear: 'Review my open Linear issues',
+};
+const starterSuggestions = ['Plan my day', 'Help me research something', 'Start a goal'];
+function Welcome({ status, onPick }: { status?: string; onPick(label: string): void }) {
+  const { data, loading } = usePageData<Connection[]>('/api/apps');
+  if (status)
+    return (
+      <div className="welcome-pending thinking" role="status" aria-label={status}>
+        <div className="assistant-mark">
+          <BrandMark small />
+        </div>
+        <span className="thinking-dots" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </span>
+        <span>Otto is looking through your apps.</span>
+      </div>
+    );
+  const connected = integrationServiceIds.filter((slug) =>
+    data?.some((connection) => connection.slug === slug && connection.status === 'connected'),
+  );
+  const labels = [...connected.map((slug) => appSuggestions[slug]), ...starterSuggestions].slice(
+    0,
+    3,
+  );
+  return (
+    <div className="welcome">
+      <BrandMark />
+      <h1>What’s on your mind?</h1>
+      {!loading && (
+        <div className="starter-actions">
+          {labels.map((label) => (
+            <button key={label} onClick={() => onPick(label)}>
+              {label}
+              <ArrowUpRight size={15} />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 export function Chat({
   state,
@@ -101,7 +157,6 @@ export function Chat({
       .map((item) => item.message),
   ];
   const working = hasVisibleChatActivity(state.tasks);
-  const variant = welcomeVariant();
   const pick = (label: string) => {
     setText(label);
     composer.current?.focus();
@@ -413,7 +468,6 @@ export function Chat({
   setupAction.current = () => void startOnboarding();
   return (
     <div className="chat-page">
-      {import.meta.env?.DEV && <WelcomeVariantSwitcher variant={variant} />}
       <ChatTurnRail
         messages={allMessages}
         activeId={activeTurn}
@@ -461,8 +515,7 @@ export function Chat({
             </div>
           )}
           {visibleMessages.length === 0 && (
-            <ChatWelcome
-              variant={variant}
+            <Welcome
               status={
                 resetting ? 'Starting setup' : working || sending ? 'Otto is typing' : undefined
               }
@@ -526,9 +579,6 @@ export function Chat({
                 </div>
               )}
           </div>
-          {allMessages.length === 1 && allMessages[0].role === 'assistant' && !working && (
-            <FirstMessageSuggestions variant={variant} text={allMessages[0].text} onPick={pick} />
-          )}
           <div ref={bottom} />
         </div>
       </div>

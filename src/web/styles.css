@@ -1062,6 +1062,9 @@ a svg {
 .starter-actions button:hover {
   background: var(--surface-subtle);
 }
+.chat-page .thinking.welcome-pending {
+  padding-top: 104px;
+}
 .task-drawer {
   position: absolute;
   bottom: calc(100% + 4px);
@@ -2383,6 +2386,9 @@ a svg {
   .starter-actions {
     flex-direction: column;
     align-items: stretch;
+  }
+  .chat-page .thinking.welcome-pending {
+    padding-top: 64px;
   }
 }
 @media (prefers-reduced-motion: reduce) {

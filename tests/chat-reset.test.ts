@@ -416,7 +416,7 @@ test('empty chat shows typing while the first message is on its way and app sugg
       [...fixture.element.querySelectorAll('.starter-actions button')].map(
         (button) => button.textContent,
       ),
-      ['Summarize my unread email', 'Catch me up on Slack', 'Plan my day'],
+      ['Find the email I still need to answer', 'Catch me up on my Slack mentions', 'Plan my day'],
     );
     assert.doesNotMatch(text(), /Make Otto yours|Get started/);
   } finally {

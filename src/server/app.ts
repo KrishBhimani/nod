@@ -66,7 +66,7 @@ export interface AppDependencies {
   inspector?: Pick<InspectorStore, 'read'>;
   configuration?: () => Configuration;
   onboard?: (timeZone?: string, conversationRevision?: number) => Promise<unknown>;
-  startOnboarding?: () => Promise<unknown>;
+  startOnboarding?: (name?: string) => Promise<unknown>;
 }
 
 export async function createApp(dependencies: AppDependencies = {}) {
@@ -214,12 +214,13 @@ export async function createApp(dependencies: AppDependencies = {}) {
     return dependencies.onboard(timeZone, conversationRevision);
   });
   app.post('/api/onboarding/start', async (request) => {
-    z.object({})
+    const { name } = z
+      .object({ name: z.string().trim().max(100).optional() })
       .strict()
       .parse(request.body ?? {});
     if (!dependencies.startOnboarding)
       throw Object.assign(new Error('Setup is unavailable.'), { statusCode: 503 });
-    await dependencies.startOnboarding();
+    await dependencies.startOnboarding(name);
     return { ok: true };
   });
   app.post('/api/messages', async (request) => {

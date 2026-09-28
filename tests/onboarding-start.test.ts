@@ -33,9 +33,9 @@ test(
     createAccountSession({
       accounts,
       origin: `http://localhost:${port}`,
-      localUser: { id: ownerId, name: 'You', email: null, avatarUrl: null },
-      start: async () => {
-        await tasks.startOnboarding();
+      localUser: { id: ownerId, name: 'Alex Example', email: null, avatarUrl: null },
+      start: async (_owner, name) => {
+        await tasks.startOnboarding(name);
       },
     }).register(app);
     const headers = { host: `localhost:${port}`, origin: `http://localhost:${port}` };
@@ -62,10 +62,24 @@ test(
         { ok: true },
       );
       const welcome = await db.pool.query(
-        "SELECT id,source,source_message_id,channel,conversation_revision FROM tasks WHERE source_id LIKE 'onboarding:%'",
+        "SELECT id,source,source_id,source_message_id,channel,conversation_revision,prompt FROM tasks WHERE source_id LIKE 'onboarding:%'",
       );
       assert.equal(welcome.rowCount, 1);
       assert.equal(welcome.rows[0].source, 'event');
+      assert.equal(welcome.rows[0].source_id, 'onboarding:welcome');
+      const prompt = welcome.rows[0].prompt as string;
+      assert.match(prompt, /"firstName":"Alex"/);
+      assert.ok(prompt.indexOf('read-only tools only') < prompt.indexOf('send_message'));
+      assert.match(prompt, /Before you write anything, look into each connected app/);
+      assert.match(prompt, /Do not send, create, change or delete anything in any app/);
+      assert.match(prompt, /normal approvals still apply/);
+      assert.match(prompt, /hardest or most tedious one first/);
+      assert.match(prompt, /connect one app/);
+      assert.doesNotMatch(tasks.welcomePrompt(), /firstName/);
+      assert.equal(
+        tasks.welcomePrompt(' Sam   Rivera ').includes(JSON.stringify({ firstName: 'Sam' })),
+        true,
+      );
       assert.equal(welcome.rows[0].source_message_id, null);
       assert.equal(welcome.rows[0].channel, 'web');
       assert.equal(welcome.rows[0].conversation_revision, before.conversationRevision);

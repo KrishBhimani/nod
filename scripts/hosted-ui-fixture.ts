@@ -30,24 +30,23 @@ const connections = new Map<string, Set<IntegrationService>>([
   [users[0].id, new Set<IntegrationService>(['gmail', 'googlecalendar', 'slack'])],
 ]);
 const welcomes = new Map<string, { startedAt: number; taskId: string; messageId: string }>();
-const welcomeIdeas: Partial<Record<IntegrationService, string>> = {
-  gmail: 'Draft replies to the three emails that wait for your answer.',
-  googlecalendar: 'Prepare notes for your 14:00 design review.',
-  slack: 'Summarize what changed in #launch since yesterday.',
+const welcomeFindings: Partial<Record<IntegrationService, string>> = {
+  gmail:
+    '**The Q4 vendor contract from Maria Lopez.** It has waited four days for your reply, and she asked again this morning. I can read the 12-page draft, list what changed and write a reply for you to approve.',
+  googlecalendar:
+    '**Tomorrow at 09:30, budget review with Finance.** You have no notes yet. I can pull the numbers from your thread with Tom and prepare a one-page brief.',
+  slack:
+    '**Six mentions in #launch since Friday.** Two ask you to decide the release date. I can summarize both threads and draft your answer.',
 };
 function welcomeText(owner: string) {
   const name = users.find((user) => user.id === owner)?.name.split(' ')[0];
   const apps = integrationServiceIds.filter((slug) => connections.get(owner)?.has(slug));
-  if (!apps.length)
-    return `Hi ${name}. No apps are connected yet, so here are good ways to start:\n\n1. Plan my week around three priorities.\n2. Research a topic and give me a short summary.\n3. Set a goal and check in on it each week.\n\nConnect Gmail or Google Calendar in Apps, and I can do more for you.`;
-  const names = apps.map((slug) => integrationServices[slug].name);
-  return `Hi ${name}. I looked at ${names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0]}. Here is what I can do now:\n\n${apps
-    .slice(0, 3)
-    .map(
-      (slug, index) =>
-        `${index + 1}. **${integrationServices[slug].name}:** ${welcomeIdeas[slug] ?? 'Find what changed this week.'}`,
-    )
-    .join('\n')}\n\nPick one, or ask me something else.`;
+  const findings = apps.flatMap((slug) => welcomeFindings[slug] ?? []);
+  if (!findings.length)
+    return `Hi ${name}, good to meet you. No apps are connected yet, so I cannot see your work. I can still help now: plan your week around your top three priorities, or research a topic and give you a one-page summary.\n\nIf you connect Gmail in Apps, I will find the threads that wait for your reply and draft the answers for you to approve.\n\nWhere should I start?`;
+  return `Hi ${name}. I went through your ${apps.length > 1 ? 'apps' : integrationServices[apps[0]].name}, and ${findings.length > 1 ? `${['two', 'three'][findings.length - 2]} things stand out` : 'one thing stands out'}. I can take each one off your plate:\n\n${findings
+    .map((finding, index) => `${index + 1}. ${finding}`)
+    .join('\n')}\n\nShould I start with the contract?`;
 }
 const consent = new Map<
   string,
@@ -295,8 +294,7 @@ app.get('/fixture/chat', async (request, reply) => {
       taskId: randomUUID(),
       messageId: randomUUID(),
     });
-  const variant = search.get('variant');
-  return reply.redirect(variant && /^[ABC]$/.test(variant) ? `/?variant=${variant}` : '/');
+  return reply.redirect('/');
 });
 app.get('/fixture/connect', async (request, reply) => {
   const token = new URL(request.url, origin).searchParams.get('token') ?? '';

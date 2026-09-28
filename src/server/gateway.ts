@@ -124,13 +124,13 @@ export async function createGateway(options: {
     trustProxy: false,
     forceCloseConnections: true,
   });
-  async function setup(ownerId: string, path: string) {
+  async function setup(ownerId: string, path: string, body: Record<string, string> = {}) {
     const response = await options.runtimes.fetch(
       ownerId,
       new Request(new URL(path, origin), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: '{}',
+        body: JSON.stringify(body),
       }),
       { developer: false },
     );
@@ -146,7 +146,7 @@ export async function createGateway(options: {
     ...options,
     origin: origin.origin,
     prepare: (ownerId) => setup(ownerId, '/api/account/prepare'),
-    start: (ownerId) => setup(ownerId, '/api/onboarding/start'),
+    start: (ownerId, name) => setup(ownerId, '/api/onboarding/start', { name }),
   });
   const deployment = options.deployment
     ? createDeploymentControl({ ...options.deployment, runtimes: options.runtimes })
