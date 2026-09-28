@@ -358,6 +358,30 @@ test('typed browser failures survive the bridge while unexpected errors remain f
       (error) => error instanceof BrowserActionError && error.code === 'browser_navigation_failed',
     );
     instance.setAct(async () => {
+      const error = new BrowserActionError('browser_click_intercepted');
+      error.message = 'Synthetic secret blocker detail';
+      throw error;
+    });
+    await assert.rejects(
+      computer.act('task', { action: 'click', selector: '@e1' }),
+      (error) =>
+        error instanceof BrowserActionError &&
+        error.code === 'browser_click_intercepted' &&
+        !error.message.includes('secret'),
+    );
+    instance.setAct(async () => {
+      throw Object.assign(new Error('Synthetic secret blocker detail'), {
+        code: 'browser_click_intercepted',
+      });
+    });
+    await assert.rejects(
+      computer.act('task', { action: 'click', selector: '@e1' }),
+      (error) =>
+        error instanceof Error &&
+        !(error instanceof BrowserActionError) &&
+        !error.message.includes('secret'),
+    );
+    instance.setAct(async () => {
       throw Object.assign(new Error('Synthetic private value'), { statusCode: 423 });
     });
     await assert.rejects(

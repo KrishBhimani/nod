@@ -425,6 +425,17 @@ export function createAgentRuntime(dependencies: {
                 : undefined;
             const browserFailure =
               error instanceof BrowserActionError ? browserErrorMessage(error.code) : undefined;
+            const blockedClick =
+              !context.signal.aborted &&
+              !stopped &&
+              status === 'succeeded' &&
+              name === 'browser' &&
+              typeof params === 'object' &&
+              params !== null &&
+              'action' in params &&
+              params.action === 'click' &&
+              error instanceof BrowserActionError &&
+              error.code === 'browser_click_intercepted';
             const failure = context.signal.aborted
               ? 'The action was cancelled.'
               : workspaceFailure
@@ -451,6 +462,10 @@ export function createAgentRuntime(dependencies: {
             if (workspaceFailure && !stopped && status === 'succeeded') {
               context.signal.throwIfAborted();
               return textResult(workspaceFailure);
+            }
+            if (blockedClick && !stopped && status === 'succeeded') {
+              context.signal.throwIfAborted();
+              return textResult({ status: 'blocked', code: error.code, message: browserFailure });
             }
             throw new Error(failure);
           }

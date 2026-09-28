@@ -136,7 +136,7 @@ export const browserResponse = z.discriminatedUnion('ok', [
     .object({
       id: z.uuid(),
       ok: z.literal(false),
-      error: z.enum(['cancelled', 'locked', 'navigation', 'unavailable']),
+      error: z.enum(['cancelled', 'locked', 'navigation', 'click_intercepted', 'unavailable']),
       metadata: browserMetadata,
     })
     .strict(),

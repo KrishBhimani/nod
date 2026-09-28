@@ -266,11 +266,13 @@ export async function startContainerBrowserWorker(
           ok: false,
           error: controller.signal.aborted
             ? 'cancelled'
-            : error instanceof BrowserActionError
-              ? 'navigation'
-              : error instanceof Error && 'statusCode' in error && error.statusCode === 423
-                ? 'locked'
-                : 'unavailable',
+            : error instanceof BrowserActionError && error.code === 'browser_click_intercepted'
+              ? 'click_intercepted'
+              : error instanceof BrowserActionError && error.code === 'browser_navigation_failed'
+                ? 'navigation'
+                : error instanceof Error && 'statusCode' in error && error.statusCode === 423
+                  ? 'locked'
+                  : 'unavailable',
           metadata: metadata(await entry?.computer.catch(() => undefined), input),
         };
       } finally {

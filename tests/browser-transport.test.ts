@@ -27,6 +27,7 @@ async function fixture() {
   const sockets = new Set<Socket>();
   let before = async (_action: string, _command: Record<string, unknown>) => {};
   let failedAction: string | undefined;
+  let failedMessage = 'Navigation failed: net::ERR_HTTP_RESPONSE_CODE_FAILURE PRIVATE-UPSTREAM';
   const server = createServer((socket) => {
     sockets.add(socket);
     socket.on('error', () => {});
@@ -43,7 +44,7 @@ async function fixture() {
         socket.end(
           JSON.stringify({
             success: false,
-            error: 'Navigation failed: net::ERR_HTTP_RESPONSE_CODE_FAILURE PRIVATE-UPSTREAM',
+            error: failedMessage,
           }) + '\n',
         );
         return;
@@ -91,8 +92,9 @@ async function fixture() {
     computer,
     actions,
     launches,
-    fail(action?: string) {
+    fail(action?: string, message?: string) {
       failedAction = action;
+      if (message !== undefined) failedMessage = message;
     },
     before(value: typeof before) {
       before = value;
@@ -116,6 +118,61 @@ test('warm browser commands use one private socket request and reuse the launche
     assert.deepEqual(f.launches, ['open', 'info']);
     assert.equal(f.actions.filter((action) => action === 'navigate').length, 1);
     assert.equal(f.actions.filter((action) => action === 'screenshot').length, 1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+const interceptedMessage = (target: string, blocker = 'div#private-fixture-secret') =>
+  `Element '${target}' is covered by <${blocker}> at its click point, so the input would land on that element instead. Dismiss or interact with the covering element first (it is often a dialog, banner, or sticky header).`;
+
+test('only exact matching native click interception is classified as a safe refusal', async () => {
+  const f = await fixture();
+  try {
+    await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    for (const blocker of [
+      'div',
+      'div#private-fixture-secret',
+      'div inside div#private-fixture-secret',
+    ]) {
+      f.fail('click', interceptedMessage('@e1', blocker));
+      await assert.rejects(
+        f.computer.act('fixture', { action: 'click', selector: '@e1' }),
+        (error: unknown) => {
+          assert.ok(error instanceof BrowserActionError);
+          assert.equal(error.code, 'browser_click_intercepted');
+          assert.doesNotMatch(error.message, /private-fixture-secret|@e1/);
+          return true;
+        },
+      );
+    }
+    for (const message of [
+      interceptedMessage('@other'),
+      `Prefix ${interceptedMessage('@e1')}`,
+      `${interceptedMessage('@e1')} suffix`,
+      "Element '@e1' is covered by <div>",
+      'Private failure after mouse dispatch',
+    ]) {
+      f.fail('click', message);
+      await assert.rejects(
+        f.computer.act('fixture', { action: 'click', selector: '@e1' }),
+        (error: unknown) => error instanceof Error && !(error instanceof BrowserActionError),
+      );
+    }
+    f.fail('evaluate', interceptedMessage('@e1'));
+    await assert.rejects(
+      f.computer.act('fixture', { action: 'snapshot' }),
+      (error: unknown) => error instanceof Error && !(error instanceof BrowserActionError),
+    );
+    await assert.rejects(
+      f.computer.act('fixture', { action: 'click', selector: '@e1' }),
+      (error: unknown) => error instanceof Error && !(error instanceof BrowserActionError),
+    );
+    f.fail();
+    assert.match((await f.computer.act('fixture', { action: 'snapshot' })).text, /Sign in/);
+    assert.equal(f.actions.filter((action) => action === 'click').length, 9);
+    assert.equal(f.actions.includes('close'), false);
+    assert.deepEqual(f.launches, ['open', 'info']);
   } finally {
     await f.cleanup();
   }
