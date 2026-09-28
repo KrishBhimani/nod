@@ -85,9 +85,11 @@ In local Docker mode, the trusted browser has a separate container and private d
 
 ## Quiet work and current limits
 
-Hourly reviews need Jev or an OpenAI relevance key, including when Anthropic runs the main agent. Default notification rules favor time-sensitive requests, meaningful calendar changes, and concrete goal progress. Quiet hours block automatic task starts; an hourly review can still save a decision for later. At most two automatic event/review tasks start per hour. Background work suppresses streamed prose and automatic final replies, with explicit messages reserved for useful results or necessary questions. There is no guaranteed digest delivery.
+Hourly reviews need Jev or an OpenAI relevance key, including when Anthropic runs the main agent. Default notification rules favor time-sensitive requests, meaningful calendar changes, and concrete goal progress. Quiet hours suppress automatic event and hourly-review task starts, but do not defer explicitly requested schedules; an hourly review can still save a decision for later. At most two automatic event/review tasks start per hour. Background work suppresses streamed prose and automatic final replies, with explicit messages reserved for useful results or necessary questions. There is no guaranteed digest delivery.
 
 Schedules, polling and reviews require the selected runtime to stay available: the local app and Mac, or the hosted pilot's active gateway/tenant containers. Interrupted external actions need review before retry. WhatsApp sends only within the accepted sender's 24-hour reply window; templates and delayed proactive messages are not implemented. Vault stores encrypted website logins and payment cards with explicit secret reveal. Passkeys, hardware-key interaction and card autofill are not implemented. Developer browser takeover pauses agent work through a revision-bound lease. Synthetic container/private-control fixtures do not establish live website login or 2FA acceptance.
+
+A [production one-off reminder](docs/testing/results/2026-09-28-unattended-schedule.md) completed with Sidekick clients closed, persisted one web message and displayed Finished in history. This does not establish cold-start recovery, recurrence or external-channel delivery.
 
 ## Validation
 
