@@ -1442,6 +1442,7 @@ export function createAgentBrowserComputer(options: {
       stopManual(state);
     }
     const close = async () => {
+      if (browsers.get(id) !== state) return;
       if (
         idleAt !== undefined &&
         (state.lastUsed !== idleAt ||

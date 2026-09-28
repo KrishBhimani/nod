@@ -16,16 +16,16 @@ The launcher prepares PostgreSQL before browser/workspace services. It generates
 
 Keep hosted development data separate from production. A fresh-signup recording can use an explicitly authorized [environment reset](environment-reset.md); conversation reset preserves accounts and historical data. Automated tests should continue using disposable schemas and synthetic accounts instead of resetting a normal profile or production.
 
-The selected production architecture as of **2026-09-27** is Cloudflare application hosting with one E2B computer per user. Local E2B/process mode exercises the same provider without a Cloudflare deployment. Its live execution remains unverified; development has 100 credits, production has 0 credits and a card gate, and runtime-key authorization is pending. Keep the earlier Cloudflare-computer local evidence separate.
+The selected hosted architecture as of **2026-09-28** uses Cloudflare Containers for the gateway, per-owner tenant runtimes and separate browser/workspace roles. These are separate containers, not one physical VM per user. Computer roles start lazily on first use, without allocation during signup. Hosted development defaults to the local Wrangler/Docker/R2 version of this path. E2B remains an optional, deferred provider whose live execution is unverified.
 
 Hosted development uses real Google login, account isolation and per-user runtimes, with the web app at [localhost:4330](http://localhost:4330). It is separate from ordinary local mode on port 4310, the synthetic E2E harness on port 4320, the design prototype on port 4318 and the UI fixture on port 4346. Node.js 24.21.0 or newer is required. Install dependencies with `npm ci` first.
 
 Create a private `.env.hosted.local` in the repository root, or keep it elsewhere and pass `--env /absolute/path/to/file`. The launcher reads only that file; it does not fall back to `.env` or inherit provider credentials from the shell. `COMPUTER_PROVIDER` chooses the launch path:
 
-| Provider     | Local execution                                                                                           | Requirements                                                                                                                                |
-| ------------ | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cloudflare` | Wrangler Worker, gateway/tenant containers, separate browser/workspace containers and local R2 emulation  | Running Docker engine, built web assets and installed Cloudflare package dependencies; no Cloudflare account or E2B key for local execution |
-| `e2b`        | Loopback Node gateway, private tenant child processes and PostgreSQL object storage; computers run on E2B | Development E2B key and one combined `E2B_COMPUTER_TEMPLATE`                                                                                |
+| Provider               | Local execution                                                                                           | Requirements                                                                                                                                |
+| ---------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cloudflare` (default) | Wrangler Worker, gateway/tenant containers, separate browser/workspace containers and local R2 emulation  | Running Docker engine, built web assets and installed Cloudflare package dependencies; no Cloudflare account or E2B key for local execution |
+| `e2b` (optional)       | Loopback Node gateway, private tenant child processes and PostgreSQL object storage; computers run on E2B | Development E2B key and one combined `E2B_COMPUTER_TEMPLATE`                                                                                |
 
 Neither path deploys, creates a tunnel or configures provider webhooks. Cloudflare uses `scripts/start-cloudflare-local.mjs` automatically; do not launch it separately. Generated configuration and an owner-only temporary `GATEWAY_ENV` file live under `.local/cloudflare-development`; the secret file is removed on normal shutdown. Local emulator state and all private environment files must remain ignored.
 
@@ -44,7 +44,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 await mkdir('.local', { recursive: true });
 const password = randomBytes(32).toString('hex');
 await writeFile('.local/hosted-postgres.env', `POSTGRES_USER=otto_hosted\nPOSTGRES_DB=otto_hosted\nPOSTGRES_PASSWORD=${password}\n`, { mode: 0o600, flag: 'wx' });
-await writeFile('.env.hosted.local', `DATABASE_URL=postgresql://otto_hosted:${password}@localhost:54331/otto_hosted\nOTTO_MASTER_KEY=${randomBytes(32).toString('base64')}\nBETTER_AUTH_SECRET=${randomBytes(32).toString('base64')}\n`, { mode: 0o600, flag: 'wx' });
+await writeFile('.env.hosted.local', `DATABASE_URL=postgresql://otto_hosted:${password}@host.docker.internal:54331/otto_hosted\nOTTO_MASTER_KEY=${randomBytes(32).toString('base64')}\nBETTER_AUTH_SECRET=${randomBytes(32).toString('base64')}\n`, { mode: 0o600, flag: 'wx' });
 JS
 docker run --detach --name otto-hosted-postgres \
   --env-file .local/hosted-postgres.env \
@@ -53,13 +53,15 @@ docker run --detach --name otto-hosted-postgres \
   postgres:18-alpine
 ```
 
-For the Cloudflare path, PostgreSQL must be reachable from Docker containers: with Docker Desktop and the local database above, use `host.docker.internal:54331` instead of `localhost:54331` in the private connection URL. `localhost` remains suitable for the E2B/process path. For Neon, use the dedicated development direct connection string. Generate independent random 32-byte `OTTO_MASTER_KEY` and `BETTER_AUTH_SECRET` values and retain them across restarts: replacing them does not migrate existing tenant credentials or encrypted data. Set file permissions to `600`; the launcher warns only when its owner or permissions are actually insecure.
+For the Cloudflare path, PostgreSQL must be reachable from Docker containers: the setup above uses Docker Desktop's `host.docker.internal:54331` in the private connection URL. Use `localhost:54331` instead for the optional E2B/process path. For Neon, use the dedicated development direct connection string. Generate independent random 32-byte `OTTO_MASTER_KEY` and `BETTER_AUTH_SECRET` values and retain them across restarts: replacing them does not migrate existing tenant credentials or encrypted data. Set file permissions to `600`; the launcher warns only when its owner or permissions are actually insecure.
 
 Complete the file with your development provider configuration:
 
 ```dotenv
 OTTO_ENVIRONMENT=development
 COMPUTER_PROVIDER=cloudflare
+OBJECT_STORAGE_PROVIDER=http
+OBJECT_STORAGE_ENDPOINT=http://otto.storage/v1/objects/
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 LLM_PROVIDER=openai
@@ -68,7 +70,9 @@ COMPOSIO_API_KEY=
 COMPOSIO_WEBHOOK_SECRET=
 ```
 
-The database, both server keys and Google credentials are required. The hosted environment example selects E2B. Legacy split-template keys are rejected; retained browser/workspace allocation rows are preserved and block automatic migration to a new combined resource. For E2B, set `COMPUTER_PROVIDER=e2b` and add `E2B_API_KEY` and `E2B_COMPUTER_TEMPLATE`; see [template setup](../deployment/e2b/README.md). Create a Web application OAuth client with `http://localhost:4330/api/auth/callback/google` as an authorized redirect URI. This server-side OAuth flow does not require a JavaScript origin. Google login grants only account identity. New Notion and Linear connections use direct MCP OAuth; Google and Slack app connections use the development Composio project and its separate auth configurations. See [connections](connections.md) and [Composio](composio.md) for each `COMPOSIO_*_AUTH_CONFIG_ID` override.
+The database, both server keys and Google credentials are required. The hosted launcher and environment example default to Cloudflare computers and the private HTTP/R2 storage broker. Create a Web application OAuth client with `http://localhost:4330/api/auth/callback/google` as an authorized redirect URI. This server-side OAuth flow does not require a JavaScript origin. Google login grants only account identity. New Notion and Linear connections use direct MCP OAuth; Google and Slack app connections use the development Composio project and its separate auth configurations. See [connections](connections.md) and [Composio](composio.md) for each `COMPOSIO_*_AUTH_CONFIG_ID` override.
+
+For the optional E2B/process path, explicitly set `COMPUTER_PROVIDER=e2b` and `OBJECT_STORAGE_PROVIDER=postgres`, remove `OBJECT_STORAGE_ENDPOINT`, and add `E2B_API_KEY` and `E2B_COMPUTER_TEMPLATE`; see [template setup](../deployment/e2b/README.md). Legacy E2B split-template keys are rejected; retained browser/workspace allocation rows are preserved and block automatic migration to a new combined resource. Changing providers does not migrate existing computer files, profiles or storage, and must preserve their recovery fences.
 
 ```sh
 npm run build
@@ -99,11 +103,11 @@ For a local privacy notice, use `OTTO_PRIVACY_NOTICE_FILE=dist/web/privacy-notic
 
 The explicit filesystem object adapter remains available for custom setups. A process crash while holding its exclusive lock leaves the object fenced until the operator confirms the old process stopped and reconciles that lock. Use PostgreSQL or the HTTP broker for automatic restart testing. Storage-provider changes require explicit byte and metadata migration, and an interrupted external action without a durable result receipt must be reconciled before resuming its task.
 
-Authenticated onboarding calls `/api/account/prepare` on mount; it prepares one durable E2B allocation per owner without launching model work. App connections stay available, but completion waits for preparation and offers a concise retry. Tests inject provider transports; synthetic keys must never trigger real sandbox creation merely by booting a tenant.
+Authenticated onboarding calls `/api/account/prepare` on mount. With Cloudflare, preparation does not allocate browser/workspace roles; each starts on first use. If E2B is explicitly selected, preparation creates or reuses one durable owner allocation without launching model work. App connections stay available, and completion waits for provider preparation with a concise retry on failure. Tests inject provider transports; synthetic keys must never trigger real sandbox creation merely by booting a tenant.
 
 The server configuration selects the computer provider. Hosted mode supports Cloudflare and E2B; ordinary local mode supports Docker or E2B. Users do not select providers or enter operator API keys. Model customization uses `LLM_PROVIDER`, `LLM_MODEL`, `ROUTING_MODEL` and `TRIAGE_MODEL`; set `ANTHROPIC_API_KEY` when selecting Anthropic. Missing model or integration keys leave those capabilities unavailable. `OTTO_DEVELOPER_IDS` is a comma-separated list of signed-in user UUIDs allowed to inspect the computer; ordinary users see chat, apps, channels and account settings. [Replacing modules](replacing-modules.md) describes the adapter boundaries.
 
-`OTTO_MAX_USERS` controls admission to the hosted instance. The pilot default is 8; accepted values are 1–400. Existing users retain their accounts when admission is full. Cloudflare's checked-in limits are one gateway, eight tenants, eight browser computers and eight workspace computers. Raising admission requires matching all role limits and reviewing database connections and cost.
+`OTTO_MAX_USERS` controls the total number of provisioned users in the hosted instance. The pilot default remains 8; accepted values are 1–400. Existing users retain their accounts when admission is full. Cloudflare's checked-in limits remain one gateway, eight tenants, eight browser computers and eight workspace computers. Browser/workspace roles start only when used. Raising admission requires matching all role limits and reviewing database connections and cost.
 
 ### Receiving real webhooks locally
 
@@ -116,7 +120,7 @@ node scripts/webhook-relay.mjs
 cloudflared tunnel --url http://127.0.0.1:4331
 ```
 
-Copy the resulting HTTPS origin into `OTTO_WEBHOOK_ORIGIN` in the hosted environment file and restart the gateway. Configure the development Composio webhook destination as `<tunnel-origin>/api/webhooks/composio` with the matching development webhook secret. Telegram setup through Channels uses the server-generated opaque callback URL. When a temporary tunnel URL changes, update the origin and re-register affected development callbacks. Google sign-in remains on localhost:4330; the tunnel exposes no login page. The launcher never starts a tunnel or changes provider webhooks automatically.
+Copy the resulting HTTPS origin into `OTTO_WEBHOOK_ORIGIN` in the hosted environment file and restart the gateway. Configure the development Composio webhook destination as `<tunnel-origin>/api/webhooks/composio` with the matching development webhook secret. New hosted watches receive that deployment's callback override. When a temporary tunnel URL changes, update the origin and use the [scoped Composio repair procedure](composio.md) to read back and update each affected saved watch; changing the project destination alone does not replace existing overrides. Telegram setup through Channels uses the server-generated opaque callback URL, and its affected development callbacks must also be re-registered after a tunnel change. Google sign-in remains on localhost:4330; the tunnel exposes no login page. The launcher never starts a tunnel or rewrites saved provider callbacks automatically.
 
 ### What local checks establish
 
