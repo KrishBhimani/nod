@@ -4,11 +4,19 @@ The historical checks below exercised release `cfe9bb3defa3c29107a7503d3a85192ee
 
 The [production reset](2026-09-28-production-reset.md) completed before this check. One fresh authorized work account and its activity are subsequent data, separate from the verified empty reset state.
 
-## Current release follow-up
+## 2026-09-28 follow-up on f79924a
+
+Release `f79924aec7c045628f95cdd95bc351b95d6706dd` passed manual deployment from 02:12:18 to 02:15:10 UTC, including natural drain, image rollout and authorization/health checks. The local suite passed 1,326 tests total: 1,323 passed, three native-only skips and zero failures; root checks and build passed, as did 19 focused metadata tests. See [PR #5 checks](https://github.com/n8n-io/sidekick/pull/5/checks) for authoritative current-head CI status; it remains a separate merge gate.
+
+A fresh Notion read returned the changed fixture value, which was withheld from the prompt, and the correct page link. The read-only observer confirmed task success for the expected owner and current web channel, eight delta frames and exact-release health; the UI response matched the fixture. This establishes the scoped synthetic-page read on this release, not broad workspace access, writes or event delivery.
+
+The public PDF recheck also succeeded: the observer confirmed terminal task success, three delta frames and one owned artifact in the correct channel on the exact release. The viewer rendered page 1. A supported browser link-download API saved 13,264 bytes with SHA256 `3df79d34abbca99308e79cb94461c1893582604d68329a41fd4bec1885e6adb4`, matching the public reference. The preceding native accessibility click and download-event wait timed out, so the ordinary click-download path remains unverified. This public-file check did not exercise authenticated Via Verde access or the concurrent cleanup race; native fixtures cover that race. Private observer evidence, download-method evidence and screenshots remain outside Git.
+
+## Historical 98dfa8d failure
 
 Production `98dfa8d5b6d55ef1ef4b86dfbbf55c1cc30c36cc` passed manual deployment and all CI jobs. It continues to use separate Cloudflare browser/workspace containers. The selected E2B conversion remains pending funding, keys and live acceptance.
 
-A Notion refresh read on this release failed on its third app call. Discovery returned a `schemaRef` requiring `COMPOSIO_GET_TOOL_SCHEMAS`; Sidekick rejected that metadata action locally, so no Notion page-get request was dispatched. The preceding execution result was 13,235 bytes, below the 18,000-byte limit, and was not omitted. This is a confirmed dispatch gap, separate from the earlier successful synthetic-page read and earlier empty provider searches. Its source fix and live recheck remain pending.
+A Notion refresh read on this release failed on its third app call. Discovery returned a `schemaRef` requiring `COMPOSIO_GET_TOOL_SCHEMAS`; Sidekick rejected that metadata action locally, so no Notion page-get request was dispatched. The preceding execution result was 13,235 bytes, below the 18,000-byte limit, and was not omitted. This confirmed dispatch gap is separate from the earlier successful synthetic-page read and earlier empty provider searches. The later fix resolves advertised missing schemas inside the adapter; its scoped live read passed on `f79924a` above.
 
 ## Historical cfe9bb3 results
 
@@ -37,6 +45,6 @@ Private evidence remains under `.local/cloud/production-channel-attachment-obser
 - Broader Notion access and write flows, Slack demo acceptance and the requested recorded demo.
 - Gmail custom OAuth repair and successful user consent.
 - E2B funding, separate project keys and combined templates, live guest isolation and same-resource recovery. This release still used Cloudflare computers.
-- Live acceptance of the newer download-cleanup behavior and the pending metadata-dispatch fix. Deployment and CI success do not complete broader hosted acceptance.
+- The ordinary click-download path. Scoped Notion and public-PDF success do not complete broader hosted acceptance.
 
 See [production requirements](../../production.md), [provider setup](../../research/provider-account-setup.md) and the [earlier production chat record](2026-09-27-production-chat.md).
