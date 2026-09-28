@@ -1,5 +1,9 @@
 # Validation
 
+`browser-connections`, `browser-profile-connection`, `browser-connection-task` and `browser-connection-ui` check saved website sessions, secure sign-in, task reuse and private profile removal. Include task-bound reconnect, cancelled credential entry, same-site port checks and profile restoration after a service restart. The LinkedIn 50-offer task uses synthetic pages and a scripted agent. A separate headless public page check confirms login fields, but no automated fixture signs in to an owned account or reads private messages.
+
+`browser-view` checks that a control after 5,000 DOM nodes remains visible through control pages. It checks generic controls, scrollable areas, scoped text and input-value exclusion. `browser-manual` checks scoped snapshots and targeted scroll commands. `container-browser` checks that a full browser selector crosses the private bridge. These checks use synthetic pages.
+
 `inspector-initialization` uses disposable PostgreSQL and a local TCP proxy that delays the handshake beyond the former 500 ms budget. Verify that startup DDL/owned retention use the migration pool without opening the recording pool, then prove recording reconnects, retains the 500 ms statement/750 ms query limits and cancels slow SQL without occupying the task pool. Preserve the separate nonblocking and bounded-pending recording checks in `provider-usage` and `inspector-prompts`.
 
 `npm test` runs deterministic tests and skips PostgreSQL cases without `TEST_DATABASE_URL`. `npm run test:integration` runs every fixture with the local database by default. Each database fixture creates a random schema, sets its own pg-boss schema, and removes only those schemas afterward. Never reset the normal local profile or database.

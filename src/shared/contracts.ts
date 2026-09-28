@@ -144,6 +144,9 @@ export interface Connection {
   description?: string;
   supportsTriggers?: boolean;
   accessPaths?: Array<{ id: string; kind: 'http' | 'mcp' | 'browser' | 'cli'; endpoint: string }>;
+  browserState?: 'pending' | 'saved' | 'needs_sign_in' | 'disconnecting';
+  checkedAt?: string;
+  browserUrl?: string;
 }
 export interface Configuration {
   provider: string;

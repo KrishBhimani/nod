@@ -100,6 +100,7 @@ import {
 import { createTriage } from './triage.ts';
 import { createVault } from './vault.ts';
 import { createTakeover } from './takeover.ts';
+import { createBrowserConnections } from './browser-connections.ts';
 import { createProviderUsageStore } from './provider-usage.ts';
 import { createLinkPreviews } from './link-previews.ts';
 import {
@@ -528,6 +529,7 @@ export async function createApplication(
     refresh,
   });
   let vault!: Awaited<ReturnType<typeof createVault>>;
+  let browserConnections!: Awaited<ReturnType<typeof createBrowserConnections>>;
   const integrations = await createIntegrations(pool, {
     admission,
     ownerId,
@@ -549,6 +551,8 @@ export async function createApplication(
     discovered,
     browserAccounts: () => vault.list(ownerId),
     removeBrowserAccount: (id) => vault.removeLogin(id),
+    browserConnections: () => browserConnections.list(),
+    removeBrowserConnection: (id) => browserConnections.disconnect(id),
   });
   vault = await createVault(pool, {
     admission,
@@ -560,6 +564,14 @@ export async function createApplication(
     hold: computer.hold,
     selectMethod: computer.selectLoginMethod,
     emailCode: (input, signal) => integrations.emailCode(ownerId, input, signal),
+  });
+  browserConnections = await createBrowserConnections(pool, {
+    ownerId,
+    computer,
+    resume: resumeConnectedTask,
+    saveLogin: async (origin, label, username, password) =>
+      (await vault.saveLogin({ origin, label, username, password })).id,
+    refresh,
   });
   const chatVerification = await createChatVerification(pool, {
     ownerId,
@@ -611,6 +623,14 @@ export async function createApplication(
       inspectPrompt: promptInspector.record,
       finishObservationSegment: inspector.finishSegment,
       connections: integrations.manageConnections,
+      browserConnection: (request, task, signal) =>
+        request.action === 'connect'
+          ? browserConnections.begin(
+              { url: request.url, connectionId: request.connectionId, label: request.label },
+              task,
+              signal,
+            )
+          : browserConnections.use(request.connectionId, task, request.url, signal),
       speech,
       manage: async (taskId, action, args, provenance) => {
         if (
@@ -757,6 +777,7 @@ export async function createApplication(
     }).registerRoutes(app);
   }
   vault.registerRoutes(app);
+  browserConnections.registerRoutes(app);
   integrations.registerRoutes(app);
   personal.registerRoutes(app);
   triage.registerRoutes(app);

@@ -13,6 +13,7 @@ import { Button, Loading, Notice } from './components/ui';
 import { Sidebar } from './components/sidebar';
 import { navigationItems } from './lib/navigation';
 import { BrowserWindow } from './pages/browser';
+import { BrowserConnection } from './pages/browser-connection';
 import { readUiPreference, writeUiPreference } from './lib/ui-preferences';
 import type { AccountUpdate, SessionResponse } from '../shared/account';
 import { useSession } from './hooks/use-session';
@@ -235,7 +236,8 @@ function AccountApp({ path, setPath }: { path: string; setPath(path: string): vo
   const { session } = sessionState;
   useEffect(() => {
     if (sessionState.loading || !session?.user || !session.settings) return;
-    const secure = /^\/(?:vault|credentials)\/[^/]+\/?$/.test(path) || path === '/browser';
+    const secure =
+      /^\/(?:vault|credentials|browser-connect)\/[^/]+\/?$/.test(path) || path === '/browser';
     const next =
       !session.settings.onboardingCompleted && !secure
         ? '/onboarding'
@@ -311,6 +313,11 @@ function AccountApp({ path, setPath }: { path: string; setPath(path: string): vo
   }
   const match = /^\/(?:vault|credentials)\/([^/]+)\/?$/.exec(path);
   if (match) return <Credentials key={`${key}:${match[1]}`} id={match[1]} />;
+  const browserConnection = /^\/browser-connect\/([A-Za-z0-9_-]{43})\/?$/.exec(path);
+  if (browserConnection)
+    return (
+      <BrowserConnection key={`${key}:${browserConnection[1]}`} token={browserConnection[1]} />
+    );
   if (!session.settings.onboardingCompleted)
     return (
       <Onboarding

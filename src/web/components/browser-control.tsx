@@ -30,6 +30,10 @@ export function BrowserControl({
   onEnlarge,
   actions,
   onControlChange,
+  controlPath,
+  startLabel,
+  finishLabel,
+  onCompleted,
 }: {
   taskId?: string;
   screen: string | null;
@@ -37,9 +41,17 @@ export function BrowserControl({
   live: boolean;
   onEnlarge(): void;
   actions?: ReactNode;
-  onControlChange?(active: boolean, privateView: boolean): void;
+  onControlChange?(
+    active: boolean,
+    privateView: boolean,
+    phase: 'opening' | 'open' | 'checking' | 'closed',
+  ): void;
+  controlPath?: string;
+  startLabel?: string;
+  finishLabel?: string;
+  onCompleted?(result: { loginSaved?: boolean }): void;
 }) {
-  const path = `/api/browser/control/${encodeURIComponent(taskId ?? 'workspace')}`;
+  const path = controlPath ?? `/api/browser/control/${encodeURIComponent(taskId ?? 'workspace')}`;
   const [control, setControl] = useState({ path, value: initialState });
   const state = control.path === path ? control.value : initialState;
   const setState = (value: ControlState | ((previous: ControlState) => ControlState)) => {
@@ -60,6 +72,7 @@ export function BrowserControl({
   const operation = useRef(0);
   const busyRef = useRef(false);
   const signIn = useSignInScreen(path, state.revision, signingIn);
+  const signInScreenReady = Boolean(signIn.screen);
   const currentScreen = signingIn ? signIn.screen : screen;
   const currentLive = signingIn ? Boolean(signIn.screen) : live;
   const canInteract = Boolean(currentScreen) && currentLive && !busy;
@@ -70,10 +83,22 @@ export function BrowserControl({
     onError: setError,
     onExit: () => controls.current?.querySelector('button')?.focus(),
   });
-  const placeholder = signingIn ? signIn.error || 'Opening the workspace browser…' : emptyMessage;
+  const placeholder = signingIn ? signIn.error || 'Opening the private browser…' : emptyMessage;
   useEffect(() => {
-    onControlChange?.(state.active || busy, signingIn || (busy && !state.active));
-  }, [state.active, signingIn, busy, onControlChange]);
+    onControlChange?.(
+      state.active || busy,
+      signingIn || (busy && !state.active),
+      busy
+        ? state.active
+          ? 'checking'
+          : 'opening'
+        : state.active
+          ? signingIn && !signInScreenReady
+            ? 'opening'
+            : 'open'
+          : 'closed',
+    );
+  }, [state.active, signingIn, signInScreenReady, busy, onControlChange]);
   useEffect(() => {
     let stopped = false;
     operation.current++;
@@ -107,7 +132,7 @@ export function BrowserControl({
       return;
     }
     if (operation.current !== version) return;
-    if (kind === 'start') onControlChange?.(true, true);
+    if (kind === 'start') onControlChange?.(true, true, 'opening');
     setBusy(true);
     setError('');
     try {
@@ -116,6 +141,7 @@ export function BrowserControl({
         revision?: number;
         mode?: ControlState['mode'];
         resumable?: boolean;
+        loginSaved?: boolean;
       }>(`${path}/${kind}`, kind === 'start' ? {} : { revision: state.revision });
       if (operation.current !== version) return;
       if (result.ok === false) throw new Error('The browser could not continue. Try again.');
@@ -128,8 +154,14 @@ export function BrowserControl({
           mode: result.mode ?? (previous.signInAvailable ? 'sign_in' : 'manual'),
           resumable: result.resumable,
         }));
+      if (kind === 'resume' && controlPath) {
+        setState(initialState);
+        onCompleted?.(result);
+        return;
+      }
       const next = await api<ControlState>(path);
       if (operation.current === version) setState(next);
+      if (kind === 'resume' && operation.current === version) onCompleted?.(result);
     } catch (cause) {
       if (operation.current === version) setError(errorMessage(cause));
     } finally {
@@ -159,10 +191,10 @@ export function BrowserControl({
             : state.active
               ? resumable
                 ? 'Resume agent'
-                : 'Done'
+                : (finishLabel ?? 'Done')
               : state.paused
                 ? 'Take control again'
-                : 'Take control'}
+                : (startLabel ?? 'Take control')}
         </Button>
         {state.paused && !state.active && (
           <Button variant="ghost" size="sm" disabled={busy} onClick={() => void action('resume')}>

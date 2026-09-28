@@ -183,6 +183,17 @@ test('container browser routes through the private bridge and preserves images, 
       text: 'Olá 🌍',
     });
     assert.equal(observation.text, 'Olá 🌍');
+    await computer.act('task-1', { action: 'press', key: 'Enter', waitMs: 10 });
+    const longSelector = 'main > div:nth-of-type(1) > '.repeat(8) + 'button';
+    fixture.instance('/synthetic/private-app').setAct(async () => ({
+      text: 'Synthetic controls',
+      url: 'https://example.com/',
+      candidates: [{ id: longSelector, label: 'button "Jobs"' }],
+    }));
+    assert.equal(
+      (await computer.act('task-1', { action: 'snapshot', controlOffset: 80 })).candidates[0].id,
+      longSelector,
+    );
     assert.equal(computer.currentSession?.()?.taskId, 'task-1');
     assert.equal(computer.status(), 'Synthetic workspace browser');
     assert.equal((await computer.screenshot('task-1'))?.toString(), 'masked synthetic image');
@@ -199,6 +210,17 @@ test('container browser routes through the private bridge and preserves images, 
       password: 'Synthetic 🔑',
     });
     const inputs = fixture.instance('/synthetic/private-app').calls;
+    assert.deepEqual(
+      inputs.find(
+        (entry) =>
+          entry.method === 'act' && (entry.input as { action?: string })?.action === 'press',
+      )?.input,
+      {
+        action: 'press',
+        key: 'Enter',
+        waitMs: 10,
+      },
+    );
     assert.deepEqual(inputs.find((entry) => entry.method === 'injectCredentials')?.input, {
       taskId: 'task-1',
       origin: 'https://example.com',
