@@ -574,7 +574,15 @@ test('Composio adapter normalizes sessions without exposing SDK metadata and aut
     }),
     execute: async () => ({ data: [] }),
     search: async () => ({
-      toolSchemas: { GMAIL_FETCH_EMAILS: {} },
+      success: true,
+      error: null,
+      toolSchemas: {
+        GMAIL_FETCH_EMAILS: {
+          toolSlug: 'GMAIL_FETCH_EMAILS',
+          toolkit: 'gmail',
+          inputSchema: { type: 'object' },
+        },
+      },
       results: [{ useCase: 'Find email', primaryToolSlugs: ['GMAIL_FETCH_EMAILS'] }],
       session: { token: 'do-not-expose' },
     }),
