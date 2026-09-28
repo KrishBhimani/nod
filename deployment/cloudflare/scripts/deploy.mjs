@@ -36,7 +36,7 @@ function storageTarget(config, environment) {
   const bindings = selected?.r2_buckets;
   if (
     typeof selected?.name !== 'string' ||
-    !/^[a-zA-Z0-9_-]{1,63}$/.test(selected.name) ||
+    !/^[a-z0-9][a-z0-9-]{0,62}$/.test(selected.name) ||
     !Array.isArray(bindings) ||
     bindings.length !== 1 ||
     bindings[0]?.binding !== 'TENANT_FILES' ||

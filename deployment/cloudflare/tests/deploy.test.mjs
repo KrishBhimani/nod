@@ -176,7 +176,15 @@ test('deployment requires one explicit EU object binding before publication', ()
     config.env.production.r2_buckets = bindings;
     assert.throws(() => deploymentPlan(planInput(config)));
   }
-  for (const name of [undefined, '', '../other-worker', 'worker?other=true']) {
+  for (const name of [
+    undefined,
+    '',
+    '../other-worker',
+    'worker?other=true',
+    'Otto',
+    'otto_production',
+    '-otto',
+  ]) {
     const config = configuration();
     config.env.production.name = name;
     assert.throws(() => deploymentPlan(planInput(config)));
