@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, open, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { browserDownloadBytes, type BrowserDownload } from '../../ports/computer.ts';
 
 export function downloadName(value: string | undefined, pdf = false): string {
@@ -58,6 +59,67 @@ export async function completedDownloads(directory: string): Promise<string[]> {
   return entries
     .filter((entry) => entry.isFile() && !entry.name.endsWith('.crdownload'))
     .map((entry) => entry.name);
+}
+
+export async function waitForDownload(
+  directory: string,
+  signal?: AbortSignal,
+  timeoutMs = 5000,
+): Promise<string> {
+  const deadline = performance.now() + timeoutMs;
+  let identity: { dev: number; ino: number } | undefined;
+  for (;;) {
+    signal?.throwIfAborted();
+    const root = await lstat(directory).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT' && !identity) return undefined;
+      throw new Error('The browser download directory is unavailable.');
+    });
+    if (root) {
+      if (
+        !root.isDirectory() ||
+        root.isSymbolicLink() ||
+        (identity && (identity.dev !== root.dev || identity.ino !== root.ino))
+      )
+        throw new Error('The browser download directory changed.');
+      identity ??= { dev: root.dev, ino: root.ino };
+      const names = await readdir(directory);
+      if (names.length > 64) throw new Error('There are too many browser downloads.');
+      if (names.length > 1) throw new Error('Choose the specific download link or URL.');
+      if (names.length === 1) {
+        const file = await lstat(join(directory, names[0])).catch((error) => {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+          throw error;
+        });
+        if (file) {
+          if (
+            !file.isFile() ||
+            file.isSymbolicLink() ||
+            file.nlink !== 1 ||
+            file.size > browserDownloadBytes
+          )
+            throw new Error('The browser file is unavailable or exceeds 12 MiB.');
+          if (!names[0].endsWith('.crdownload')) {
+            const current = await lstat(directory);
+            if (
+              !current.isDirectory() ||
+              current.isSymbolicLink() ||
+              current.dev !== identity.dev ||
+              current.ino !== identity.ino
+            )
+              throw new Error('The browser download directory changed.');
+            signal?.throwIfAborted();
+            if (performance.now() >= deadline) break;
+            return names[0];
+          }
+        }
+      }
+    }
+    signal?.throwIfAborted();
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) break;
+    await delay(Math.min(25, remaining), undefined, { signal });
+  }
+  throw new Error('The browser download did not finish.');
 }
 
 export async function readDownload(directory: string, file: string, name?: string) {

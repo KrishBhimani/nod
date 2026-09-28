@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import {
   mkdtemp,
   mkdir,
+  link,
   readdir,
   readFile,
   rename,
@@ -12,7 +13,8 @@ import {
 } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
-import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
+import test, { type TestContext } from 'node:test';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { browserDownloadBytes } from '../src/ports/computer.ts';
 import { createAgentBrowserComputer } from '../src/providers/agent-browser/index.ts';
@@ -22,7 +24,9 @@ import {
   decodeDownload,
   downloadFile,
   readDownload,
+  waitForDownload,
 } from '../src/providers/agent-browser/downloads.ts';
+import { existingDaemonCommand } from '../src/providers/agent-browser/screens.ts';
 import {
   createContainerBrowserComputer,
   type BrowserBridgeLauncher,
@@ -30,6 +34,88 @@ import {
 import { startContainerBrowserWorker } from '../src/providers/container-browser/worker.ts';
 import { runBrowserBridge } from '../src/providers/container-browser/bridge.ts';
 import { browserDownloadPdf, createBrowserDownloadFixture } from './browser-download-fixture.ts';
+
+function downloadWaitProbe(t: TestContext) {
+  const controller = new AbortController();
+  let scanned!: () => void;
+  const scan = new Promise<void>((resolve) => {
+    scanned = resolve;
+  });
+  const check = controller.signal.throwIfAborted.bind(controller.signal);
+  let checks = 0;
+  t.mock.method(controller.signal, 'throwIfAborted', () => {
+    check();
+    if (++checks === 2) scanned();
+  });
+  return { controller, scan };
+}
+
+async function createDownloadBrowser(root: string, captureStarted?: () => void) {
+  const socketPath = join(root, 'control.sock');
+  let browserRoot = '';
+  const worker = await startContainerBrowserWorker({
+    socketPath,
+    dataRoot: root,
+    createComputer: (dataRoot) => {
+      browserRoot = dataRoot;
+      return createAgentBrowserComputer({
+        dataRoot,
+        browserExecutable: process.env.SIDEKICK_TEST_BROWSER_EXECUTABLE,
+        headless: true,
+        daemonCommand: async (...args) => {
+          const result = await existingDaemonCommand(...args);
+          if (args[1].action === 'evaluate' && args[1].script === 'document.contentType')
+            captureStarted?.();
+          return result;
+        },
+      });
+    },
+  });
+  const launch: BrowserBridgeLauncher = () => {
+    const process = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      kill: () => true,
+    });
+    void runBrowserBridge({ socketPath, input: process.stdin, output: process.stdout }).then(
+      () => process.emit('close', 0),
+      () => process.emit('close', 1),
+    );
+    return process as unknown as ChildProcessWithoutNullStreams;
+  };
+  const value = createContainerBrowserComputer({
+    dataRoot: join(root, 'owner'),
+    spawn: launch,
+  });
+  const step = async <T>(name: string, run: () => Promise<T>): Promise<T> => {
+    try {
+      return await run();
+    } catch (error) {
+      throw new Error(`Native browser fixture stage: ${name}`, { cause: error });
+    }
+  };
+  const computer = {
+    ...value,
+    act: (...args: Parameters<typeof value.act>) =>
+      step(`act:${args[0]}:${args[1].action}`, () => value.act(...args)),
+    download: (...args: Parameters<NonNullable<typeof value.download>>) =>
+      step(`download:${args[0]}`, () => value.download!(...args)),
+    close: (...args: Parameters<typeof value.close>) =>
+      step(`close:${args[0]}`, () => value.close(...args)),
+  };
+  return {
+    computer,
+    browserRoot: () => browserRoot,
+    close: async () => {
+      try {
+        await computer.dispose();
+      } finally {
+        await worker.close();
+      }
+    },
+  };
+}
 
 test('browser file validation bounds encoded bytes and rejects unsafe metadata', async () => {
   assert.deepEqual(
@@ -53,6 +139,121 @@ test('browser file validation bounds encoded bytes and rejects unsafe metadata',
   for (const name of ['../private', 'folder/file', 'folder\\file', '.', '..', 'file\nname'])
     assert.throws(() => downloadFile(browserDownloadPdf, name));
   assert.throws(() => downloadFile(Buffer.from('text'), 'file', 'text/html\r\nX-Header: value'));
+});
+
+test('no-target capture waits through absent, partial and completed native files', async (t) => {
+  const root = await mkdtemp('/tmp/sk-download-wait-');
+  const directory = join(root, 'downloads');
+  const probe = downloadWaitProbe(t);
+  const pending = waitForDownload(directory, probe.controller.signal);
+  void pending.catch(() => {});
+  try {
+    await probe.scan;
+    await mkdir(directory);
+    await writeFile(join(directory, 'invoice.pdf.crdownload'), browserDownloadPdf);
+    assert.equal(
+      await Promise.race([pending.then(() => 'complete'), delay(50).then(() => 'pending')]),
+      'pending',
+    );
+    await rename(join(directory, 'invoice.pdf.crdownload'), join(directory, 'invoice.pdf'));
+    const file = await pending;
+    assert.equal(file, 'invoice.pdf');
+    assert.deepEqual((await readDownload(directory, file)).bytes, browserDownloadPdf);
+  } finally {
+    await pending.catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('no-target capture cancellation preserves partial and later completed files', async (t) => {
+  const root = await mkdtemp('/tmp/sk-download-cancel-');
+  const probe = downloadWaitProbe(t);
+  const abort = probe.controller;
+  try {
+    await writeFile(join(root, 'invoice.pdf.crdownload'), browserDownloadPdf);
+    const pending = waitForDownload(root, abort.signal);
+    await probe.scan;
+    const reason = new Error('Stopped capture.');
+    abort.abort(reason);
+    await assert.rejects(
+      pending,
+      (error: unknown) =>
+        error instanceof Error && error.name === 'AbortError' && error.cause === reason,
+    );
+    assert.deepEqual(await readdir(root), ['invoice.pdf.crdownload']);
+    await rename(join(root, 'invoice.pdf.crdownload'), join(root, 'invoice.pdf'));
+    assert.deepEqual(await readFile(join(root, 'invoice.pdf')), browserDownloadPdf);
+    await assert.rejects(waitForDownload(root, abort.signal), (error: unknown) => error === reason);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('no-target capture bounds stalled and empty directories without deleting files', async () => {
+  const root = await mkdtemp('/tmp/sk-download-stalled-');
+  try {
+    await assert.rejects(waitForDownload(root, undefined, 50), /did not finish/);
+    await writeFile(join(root, 'invoice.pdf.crdownload'), browserDownloadPdf);
+    await assert.rejects(waitForDownload(root, undefined, 50), /did not finish/);
+    assert.deepEqual(await readdir(root), ['invoice.pdf.crdownload']);
+    assert.deepEqual(await readFile(join(root, 'invoice.pdf.crdownload')), browserDownloadPdf);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('no-target capture refuses an older file beside partial or completed downloads', async () => {
+  const root = await mkdtemp('/tmp/sk-download-ambiguous-');
+  try {
+    await writeFile(join(root, 'previous.pdf'), browserDownloadPdf);
+    await writeFile(join(root, 'invoice.pdf.crdownload'), browserDownloadPdf);
+    await assert.rejects(waitForDownload(root), /Choose the specific/);
+    await rename(join(root, 'invoice.pdf.crdownload'), join(root, 'invoice.pdf'));
+    await assert.rejects(waitForDownload(root), /Choose the specific/);
+    assert.deepEqual((await readdir(root)).sort(), ['invoice.pdf', 'previous.pdf']);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('no-target capture refuses replaced directories and unsafe native files', async (t) => {
+  const root = await mkdtemp('/tmp/sk-download-unsafe-');
+  try {
+    for (const kind of ['symlink', 'hardlink', 'oversized', 'entries', 'directory'] as const) {
+      await t.test(kind, async () => {
+        const directory = join(root, kind);
+        await mkdir(directory);
+        await writeFile(join(root, `${kind}.pdf`), browserDownloadPdf);
+        if (kind === 'symlink') await symlink(join(root, `${kind}.pdf`), join(directory, 'file'));
+        if (kind === 'hardlink') await link(join(root, `${kind}.pdf`), join(directory, 'file'));
+        if (kind === 'oversized')
+          await writeFile(
+            join(directory, 'file.crdownload'),
+            Buffer.alloc(browserDownloadBytes + 1),
+          );
+        if (kind === 'entries')
+          await Promise.all(
+            Array.from({ length: 65 }, (_, index) => writeFile(join(directory, `${index}`), 'x')),
+          );
+        if (kind === 'directory') await mkdir(join(directory, 'file'));
+        await assert.rejects(waitForDownload(directory));
+      });
+    }
+    const directory = join(root, 'replaced');
+    await mkdir(directory);
+    await writeFile(join(directory, 'file.crdownload'), browserDownloadPdf);
+    const probe = downloadWaitProbe(t);
+    const pending = waitForDownload(directory, probe.controller.signal);
+    void pending.catch(() => {});
+    await probe.scan;
+    await rename(directory, join(root, 'original'));
+    await mkdir(directory);
+    await writeFile(join(directory, 'replacement.pdf'), browserDownloadPdf);
+    await assert.rejects(pending, /directory/);
+    assert.deepEqual(await readFile(join(root, 'original', 'file.crdownload')), browserDownloadPdf);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('capture cleanup preserves existing files and their renamed identities after validation failure', async () => {
@@ -119,38 +320,9 @@ test(
   },
   async (t) => {
     const root = await mkdtemp('/tmp/sk-download-bridge-');
-    const socketPath = join(root, 'control.sock');
-    let browserRoot = '';
     const fixture = await createBrowserDownloadFixture();
-    const worker = await startContainerBrowserWorker({
-      socketPath,
-      dataRoot: root,
-      createComputer: (dataRoot) => {
-        browserRoot = dataRoot;
-        return createAgentBrowserComputer({
-          dataRoot,
-          browserExecutable: process.env.SIDEKICK_TEST_BROWSER_EXECUTABLE,
-          headless: true,
-        });
-      },
-    });
-    const launch: BrowserBridgeLauncher = () => {
-      const process = Object.assign(new EventEmitter(), {
-        stdin: new PassThrough(),
-        stdout: new PassThrough(),
-        stderr: new PassThrough(),
-        kill: () => true,
-      });
-      void runBrowserBridge({ socketPath, input: process.stdin, output: process.stdout }).then(
-        () => process.emit('close', 0),
-        () => process.emit('close', 1),
-      );
-      return process as unknown as ChildProcessWithoutNullStreams;
-    };
-    const computer = createContainerBrowserComputer({
-      dataRoot: join(root, 'owner'),
-      spawn: launch,
-    });
+    const bridge = await createDownloadBrowser(root);
+    const computer = bridge.computer;
     try {
       assert.equal((await fetch(`${fixture.origin}/invoice.pdf`)).status, 403);
       for (const [id, input] of [
@@ -214,7 +386,7 @@ test(
         });
       }
       await computer.act('large', { action: 'open', url: `${fixture.origin}/session` });
-      const downloads = join(browserRoot, 'runtime', 'downloads', 'large');
+      const downloads = join(bridge.browserRoot(), 'runtime', 'downloads', 'large');
       await mkdir(downloads, { recursive: true });
       await writeFile(join(downloads, 'previous.pdf'), browserDownloadPdf);
       await writeFile(join(downloads, 'previous.crdownload'), 'preexisting partial');
@@ -226,7 +398,7 @@ test(
         'preexisting partial',
       );
       await computer.act('slow', { action: 'open', url: `${fixture.origin}/session` });
-      const slowDirectory = join(browserRoot, 'runtime', 'downloads', 'slow');
+      const slowDirectory = join(bridge.browserRoot(), 'runtime', 'downloads', 'slow');
       await mkdir(slowDirectory, { recursive: true });
       await writeFile(join(slowDirectory, 'previous.pdf'), browserDownloadPdf);
       const abort = new AbortController();
@@ -240,16 +412,74 @@ test(
       assert.deepEqual(await readFile(join(slowDirectory, 'previous.pdf')), browserDownloadPdf);
     } finally {
       try {
-        await computer.dispose();
+        await bridge.close();
       } finally {
         try {
-          await worker.close();
+          await fixture.close();
         } finally {
-          try {
-            await fixture.close();
-          } finally {
-            await rm(root, { recursive: true, force: true });
-          }
+          await rm(root, { recursive: true, force: true });
+        }
+      }
+    }
+  },
+);
+
+test(
+  'an authenticated native download waits for the original clicked response to finish',
+  { skip: !process.env.SIDEKICK_TEST_BROWSER_EXECUTABLE, timeout: 30_000 },
+  async (t) => {
+    const root = await mkdtemp('/tmp/sk-download-held-');
+    const fixture = await createBrowserDownloadFixture();
+    let captureStarted!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      captureStarted = resolve;
+    });
+    const bridge = await createDownloadBrowser(root, captureStarted);
+    let pending: ReturnType<typeof bridge.computer.download> | undefined;
+    try {
+      await bridge.computer.act('held', { action: 'open', url: `${fixture.origin}/session` });
+      await bridge.computer.act('held', { action: 'click', selector: '#held' });
+      await fixture.heldDownloadStarted();
+      const directory = join(bridge.browserRoot(), 'runtime', 'downloads', 'held');
+      const deadline = performance.now() + 5000;
+      for (;;) {
+        const files = await readdir(directory).catch((error) => {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+          throw error;
+        });
+        if (files.length === 1 && files[0].endsWith('.crdownload')) break;
+        assert.ok(performance.now() < deadline, 'The native partial download was not observed.');
+        await delay(10, undefined, { signal: t.signal });
+      }
+      assert.deepEqual(await completedDownloads(directory), []);
+      pending = bridge.computer.download('held', {}, t.signal);
+      void pending.catch(() => {});
+      await Promise.race([
+        entered,
+        pending.then(() => assert.fail('Capture completed before its response.')),
+      ]);
+      assert.equal(
+        await Promise.race([pending.then(() => 'complete'), delay(500).then(() => 'pending')]),
+        'pending',
+      );
+      fixture.releaseHeldDownload();
+      assert.deepEqual(await pending, {
+        bytes: browserDownloadPdf,
+        name: 'download.pdf',
+        mimeType: 'application/pdf',
+      });
+      assert.equal(fixture.authenticatedDownloads(), 1);
+      assert.equal(fixture.unauthenticatedDownloads(), 0);
+    } finally {
+      fixture.releaseHeldDownload();
+      await pending?.catch(() => {});
+      try {
+        await bridge.close();
+      } finally {
+        try {
+          await fixture.close();
+        } finally {
+          await rm(root, { recursive: true, force: true });
         }
       }
     }
