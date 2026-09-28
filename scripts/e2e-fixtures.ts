@@ -326,6 +326,7 @@ const names: Record<IntegrationService, string> = {
   googledocs: 'Google Docs',
   slack: 'Slack',
   notion: 'Notion',
+  linear: 'Linear',
 };
 const toolDefinitions = [
   {

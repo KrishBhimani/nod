@@ -19,6 +19,7 @@ import { createChatSdkTransport } from '../providers/chat-sdk/index.ts';
 import { createChatSdkSetupVerifier } from '../providers/chat-sdk/settings.ts';
 import { createContainerBrowserComputer } from '../providers/container-browser/index.ts';
 import { createComposioProvider } from '../providers/composio/integrations.ts';
+import { createDirectProvider } from '../providers/direct/integrations.ts';
 import { createDockerWorkspace } from '../providers/docker/index.ts';
 import { createE2BAdapters } from '../providers/e2b/index.ts';
 import { createCloudflareAdapters } from '../providers/cloudflare-computer/index.ts';
@@ -84,6 +85,7 @@ import {
   pauseOwnedTaskForControl,
   resumeOwnedTaskFromControl,
   resumeTask,
+  resumeConnectedTask,
   restartOnboarding,
   retryTaskCredentials,
   startTaskWorkers,
@@ -118,6 +120,7 @@ export interface ApplicationAdapters {
   workspace: Workspace;
   speech: SpeechProvider;
   integrations: IntegrationProvider;
+  directIntegrations?: (pool: pg.Pool, keyStore: CredentialKeyStore) => IntegrationProvider;
   keyStore: CredentialKeyStore;
   relevance: RelevanceClassifier;
   messaging?: MessagingTransport;
@@ -263,6 +266,12 @@ export function createDefaultAdapters(
       webhookSecret: env.COMPOSIO_WEBHOOK_SECRET,
       authConfigs,
     }),
+    ...(['local', 'tenant'].includes(runtimeMode)
+      ? {
+          directIntegrations: (pool: pg.Pool, keyStore: CredentialKeyStore) =>
+            createDirectProvider({ pool, keyStore }),
+        }
+      : {}),
     keyStore: env.OTTO_VAULT_KEY
       ? createEnvironmentKeyStore(env.OTTO_VAULT_KEY)
       : process.platform === 'darwin'
@@ -455,6 +464,14 @@ export async function createApplication(
     admission,
     ownerId,
     provider: integrationProvider,
+    resumeConnection: resumeConnectedTask,
+    ...(adapters.directIntegrations
+      ? {
+          additionalProviders: [
+            meterIntegrations(adapters.directIntegrations(pool, adapters.keyStore), providerUsage),
+          ],
+        }
+      : {}),
     wake: triage.triageEvent,
     refresh,
     baseUrl: publicOrigin,

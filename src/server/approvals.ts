@@ -144,7 +144,7 @@ export async function createApprovals(
       const resumedSource =
         !action.startsWith('OTTO_') &&
         explicit &&
-        ['credentials', 'manual_control'].includes(task.action_resume_kind) &&
+        ['credentials', 'manual_control', 'connection'].includes(task.action_resume_kind) &&
         task.action_resume_revision === expected.revision;
       if (!scheduled && !currentSource && !resumedSource)
         throw new Error('This action needs a direct request from the user.');

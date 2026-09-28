@@ -90,7 +90,11 @@ export interface TaskDependencies {
     args: Record<string, unknown>,
     options: { readOnly: boolean; revision: number },
   ) => Promise<unknown>;
-  connections?: (action: 'list' | 'connect', service?: string) => Promise<unknown>;
+  connections?: (
+    action: 'list' | 'connect',
+    service?: string,
+    task?: { id: string; revision: number },
+  ) => Promise<unknown>;
   reactToMessage?: (
     input: AgentReactionInput,
   ) => ReturnType<NonNullable<RuntimeContext['reactToMessage']>>;
@@ -914,6 +918,40 @@ export async function resumeTask(taskId: string, expectedRevision: number) {
   });
   refresh();
 }
+export async function resumeConnectedTask(
+  taskId: string,
+  expectedRevision: number,
+  service: string,
+) {
+  const resumed = await transaction(async (client) => {
+    const result = await client.query(
+      `UPDATE tasks t SET status='queued',action_resume_kind='connection',action_resume_revision=revision+1,
+       revision=revision+1,waiting_reason=NULL,waiting_question=NULL,
+       prompt=$4,updated_at=now()
+       WHERE id=$1 AND owner_id=$2 AND revision=$3 AND status='waiting_user'
+       AND waiting_reason='question' AND ${currentConversationSql()} RETURNING revision`,
+      [
+        taskId,
+        ownerId,
+        expectedRevision,
+        `The ${service} connection completed. Continue the original request with this account. Check the connected account and its tools before acting. Do not repeat completed external actions.`,
+      ],
+    );
+    if (!result.rowCount) return false;
+    await boss.send(
+      queue,
+      { taskId, revision: result.rows[0].revision },
+      {
+        db: { executeSql: (sql, values) => client.query(sql, values) },
+        retryLimit: 0,
+        expireInSeconds: 1800,
+      },
+    );
+    return true;
+  });
+  if (resumed) refresh();
+  return resumed;
+}
 export async function cancelTask(taskId: string) {
   await transaction(async (client) => {
     await client.query(
@@ -1204,7 +1242,10 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
       connections: dependencies.connections
         ? async (action, service) => {
             await ensureCurrent();
-            const result = await dependencies.connections!(action, service);
+            const result = await dependencies.connections!(action, service, {
+              id: taskId,
+              revision,
+            });
             await ensureCurrent();
             return result;
           }

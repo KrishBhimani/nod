@@ -6,5 +6,7 @@
 !index.html
 !public/
 !public/**
+!plugins/
+!plugins/**
 !src/
 !src/**

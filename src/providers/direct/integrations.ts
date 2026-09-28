@@ -1,0 +1,269 @@
+import type { Pool } from 'pg';
+import { z } from 'zod';
+import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import type { IntegrationProvider, IntegrationSession } from '../../ports/integrations.ts';
+import type { CredentialKeyStore } from '../../ports/key-store.ts';
+import { createDirectOAuth, type Service } from './oauth.ts';
+import { withDirectMcp } from './mcp.ts';
+
+const linearTools = {
+  LINEAR_LIST_PROJECTS: 'list_projects',
+  LINEAR_GET_PROJECT: 'get_project',
+  LINEAR_LIST_ISSUES: 'list_issues',
+  LINEAR_GET_ISSUE: 'get_issue',
+  LINEAR_LIST_TEAMS: 'list_teams',
+  LINEAR_GET_STATUS_UPDATES: 'get_status_updates',
+} as const;
+export function createDirectProvider(options: {
+  pool: Pool;
+  keyStore: CredentialKeyStore;
+  request?: typeof fetch;
+}): IntegrationProvider {
+  const request: typeof fetch = (input, init) =>
+    (options.request ?? fetch)(input, {
+      ...init,
+      redirect: 'error',
+      signal: init?.signal
+        ? AbortSignal.any([init.signal, AbortSignal.timeout(30_000)])
+        : AbortSignal.timeout(30_000),
+    });
+  const supportedServices: Service[] = ['notion', 'linear'];
+  const oauth = createDirectOAuth({ pool: options.pool, keyStore: options.keyStore, request });
+  const mcp = <T>(service: Service, token: string, operation: (client: Client) => Promise<T>) =>
+    withDirectMcp(service, token, request, operation);
+
+  async function execute(
+    ownerId: string,
+    action: string,
+    args: Record<string, unknown>,
+    id?: string,
+  ) {
+    if (!id) throw new Error('Choose a connected account.');
+    const account = await oauth.access(ownerId, id);
+    if (account.service === 'notion') {
+      const searching = action === 'NOTION_SEARCH_NOTION_PAGE';
+      if (!searching && !['NOTION_RETRIEVE_PAGE', 'NOTION_GET_PAGE_MARKDOWN'].includes(action))
+        throw new Error('This Notion action is unavailable.');
+      return mcp('notion', account.accessToken, async (client) => {
+        const tools = (await client.listTools()).tools;
+        let toolName = searching ? 'notion-search' : 'notion-fetch';
+        if (searching) {
+          if (!tools.some((tool) => tool.name === 'notion-get-tool-access'))
+            throw new Error('The Notion search access check is unavailable.');
+          const access = await client.callTool({ name: 'notion-get-tool-access', arguments: {} });
+          if (access.isError) throw new Error('The Notion search access check failed.');
+          const blocks = Array.isArray(access.content)
+            ? (access.content as Array<{ type: string; text?: string }>)
+            : [];
+          const content =
+            access.structuredContent ??
+            JSON.parse(blocks.find((item) => item.type === 'text')?.text ?? '{}');
+          const map =
+            content && typeof content === 'object' && 'current_tool_access' in content
+              ? content.current_tool_access
+              : undefined;
+          const ai =
+            map && typeof map === 'object' && 'ai_search' in map
+              ? (map.ai_search as { status?: string })
+              : undefined;
+          if (ai?.status === 'available' && tools.some((tool) => tool.name === 'notion-ai-search'))
+            toolName = 'notion-ai-search';
+          else if (
+            !tools.some((tool) => tool.name === toolName) &&
+            ['upgrade_required', 'plan_required'].includes(ai?.status ?? '') &&
+            tools.some((tool) => tool.name === 'notion-ai-search')
+          )
+            toolName = 'notion-ai-search';
+        }
+        const selected = tools.find((tool) => tool.name === toolName);
+        if (!selected) throw new Error('The Notion read tool is unavailable.');
+        const input = !searching
+          ? { id: args.id ?? args.page_id ?? args.pageId }
+          : { query: args.query ?? args.search_query ?? args.searchQuery };
+        const result = await client.callTool({ name: selected.name, arguments: input });
+        if (result.isError) throw new Error('The Notion read failed.');
+        return result;
+      });
+    }
+    if (account.service === 'linear') {
+      const toolName = linearTools[action as keyof typeof linearTools];
+      if (!toolName) throw new Error('This Linear action is unavailable.');
+      return mcp('linear', account.accessToken, async (client) => {
+        if (!(await client.listTools()).tools.some((tool) => tool.name === toolName))
+          throw new Error('The Linear read tool is unavailable.');
+        const result = await client.callTool({ name: toolName, arguments: args });
+        if (result.isError) throw new Error('The Linear read failed.');
+        return result;
+      });
+    }
+    throw new Error('This service action is unavailable.');
+  }
+
+  const tools = {
+    NOTION_SEARCH_NOTION_PAGE: {
+      description: 'Search Notion pages and projects by text.',
+      parameters: { query: 'Search text.' },
+    },
+    NOTION_RETRIEVE_PAGE: {
+      description: 'Read a Notion page by ID or URL.',
+      parameters: { id: 'Page ID or URL.' },
+    },
+    NOTION_GET_PAGE_MARKDOWN: {
+      description: 'Read a Notion page by ID or URL.',
+      parameters: { id: 'Page ID or URL.' },
+    },
+    LINEAR_LIST_PROJECTS: {
+      description: 'List Linear projects. Use query to find a project by name.',
+      parameters: { query: 'Optional project name.', limit: 'Optional result limit.' },
+    },
+    LINEAR_GET_PROJECT: {
+      description: 'Read a Linear project by ID or name.',
+      parameters: { query: 'Project ID or name.' },
+    },
+    LINEAR_LIST_ISSUES: {
+      description: 'List Linear issues. Filter by project and status to find next work.',
+      parameters: { project: 'Project ID or name.', limit: 'Optional result limit.' },
+    },
+    LINEAR_GET_ISSUE: {
+      description: 'Read a Linear issue by ID or identifier.',
+      parameters: { id: 'Issue ID or identifier.' },
+    },
+    LINEAR_LIST_TEAMS: { description: 'List Linear teams.', parameters: {} },
+    LINEAR_GET_STATUS_UPDATES: {
+      description: 'Read recent Linear project status updates.',
+      parameters: { project: 'Project ID or name.' },
+    },
+  };
+
+  return {
+    id: 'direct',
+    configured: options.keyStore.configured,
+    supportedServices,
+    webhooksConfigured: false,
+    supportsSubscriptions: [],
+    async createSession(ownerId) {
+      const session: IntegrationSession = {
+        id: ownerId,
+        authorize: (service, callbackUrl) =>
+          oauth.authorize(ownerId, service as Service, callbackUrl),
+        async search(query) {
+          const words = query.toLowerCase();
+          const matches: Record<string, unknown> = Object.fromEntries(
+            Object.entries(tools).filter(([name]) =>
+              words.includes('notion')
+                ? name.startsWith('NOTION_')
+                : words.includes('linear') || words.includes('project') || words.includes('issue')
+                  ? name.startsWith('LINEAR_')
+                  : true,
+            ),
+          );
+          for (const service of supportedServices) {
+            if (!Object.keys(matches).some((name) => name.startsWith(`${service.toUpperCase()}_`)))
+              continue;
+            const id = await oauth.connectedAccount(ownerId, service);
+            if (!id) continue;
+            try {
+              const account = await oauth.access(ownerId, id);
+              const available = await mcp(service, account.accessToken, (client) =>
+                client.listTools(),
+              );
+              const names =
+                service === 'linear'
+                  ? linearTools
+                  : {
+                      NOTION_SEARCH_NOTION_PAGE: available.tools.some(
+                        (entry) => entry.name === 'notion-search',
+                      )
+                        ? 'notion-search'
+                        : 'notion-ai-search',
+                      NOTION_RETRIEVE_PAGE: 'notion-fetch',
+                      NOTION_GET_PAGE_MARKDOWN: 'notion-fetch',
+                    };
+              for (const [action, toolName] of Object.entries(names)) {
+                const tool = available.tools.find((entry) => entry.name === toolName);
+                if (tool && matches[action])
+                  matches[action] = {
+                    description: tool.description,
+                    inputSchema: tool.inputSchema,
+                  };
+              }
+            } catch {}
+          }
+          return { tools: matches, suggestions: [] };
+        },
+        execute: (action, args, accountId) => execute(ownerId, action, args, accountId),
+      };
+      return session;
+    },
+    async restoreSession(id) {
+      return this.createSession(id, {});
+    },
+    async deleteSession() {},
+    async inspectAccount(id, ownerId) {
+      const account = await oauth.access(ownerId, id);
+      const details = await mcp(account.service, account.accessToken, async (client) => {
+        const available = await client.listTools();
+        if (
+          account.service !== 'notion' ||
+          !available.tools.some((tool) => tool.name === 'notion-get-users')
+        )
+          return {};
+        try {
+          const result = await client.callTool({
+            name: 'notion-get-users',
+            arguments: { user_id: 'self' },
+          });
+          if (result.isError) return {};
+          const blocks = Array.isArray(result.content)
+            ? (result.content as Array<{ type: string; text?: string }>)
+            : [];
+          const content =
+            result.structuredContent ??
+            JSON.parse(blocks.find((item) => item.type === 'text')?.text ?? '{}');
+          const data =
+            content && typeof content === 'object' && 'self' in content ? content.self : content;
+          if (!data || typeof data !== 'object') return {};
+          const record = data as Record<string, unknown>;
+          const workspace = record.workspace as Record<string, unknown> | undefined;
+          const user = (
+            record.user && typeof record.user === 'object' ? record.user : record
+          ) as Record<string, unknown>;
+          const name = z
+            .string()
+            .trim()
+            .min(1)
+            .max(200)
+            .safeParse(workspace?.name ?? user.name);
+          const email = z
+            .email()
+            .max(320)
+            .safeParse(user.email ?? (user.person as Record<string, unknown> | undefined)?.email);
+          return {
+            ...(name.success ? { accountName: name.data } : {}),
+            ...(email.success ? { accountEmail: email.data } : {}),
+          };
+        } catch {
+          return {};
+        }
+      });
+      return {
+        active: true,
+        service: account.service,
+        accountName:
+          details.accountName ??
+          `${account.service === 'notion' ? 'Notion' : 'Linear'} account ${id.slice(0, 8)}`,
+        ...(details.accountEmail ? { accountEmail: details.accountEmail } : {}),
+      };
+    },
+    deleteAccount: oauth.deleteAccount,
+    parseCallback: oauth.parseCallback,
+    async subscribe() {
+      throw new Error('Subscriptions are unavailable.');
+    },
+    async unsubscribe() {},
+    async verifyWebhook() {
+      throw new Error('Webhooks are unavailable.');
+    },
+    matchesSubscription: () => false,
+  };
+}

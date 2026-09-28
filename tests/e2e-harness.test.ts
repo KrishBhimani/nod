@@ -605,7 +605,7 @@ test('synthetic consent submits a nonempty form once, follows the verified callb
     (_request, body, done) => done(null, new URLSearchParams(String(body))),
   );
   app.get('/api/apps/callback', async (request, reply) => {
-    const callback = fixture.provider.parseCallback(request.query);
+    const callback = await fixture.provider.parseCallback(request.query);
     assert.equal(callback.state, 'synthetic-nonce');
     assert.equal(callback.success, true);
     assert.equal(

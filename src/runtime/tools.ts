@@ -46,7 +46,7 @@ export const toolDefinitions = {
   ),
   manage_apps: defineTool(
     'manage_apps',
-    'List available apps and connected accounts, or create a secure connection link for one app. Use list first. Present useful connection options directly in chat; the user completes consent. During onboarding, inspect a small amount of already-connected data read-only and propose concrete help without profile questions. Watches are requested automatically where supported, but only report them active when the returned state confirms delivery.',
+    'List available apps and connected accounts, or start one app connection. Use list first. Connect posts the provider sign-in link in chat and pauses this task. The task resumes after successful consent. Do not post a second link. During onboarding, inspect a small amount of already-connected data read-only and propose concrete help without profile questions. Watches are requested automatically where supported, but only report them active when the returned state confirms delivery.',
     Type.Object({
       action: Type.Union([Type.Literal('list'), Type.Literal('connect')]),
       service: Type.Optional(Type.String({ maxLength: 80 })),

@@ -631,6 +631,36 @@ test(
       );
 
       await t.test(
+        'a connection callback resumes only its current waiting task revision',
+        async () => {
+          const taskId = await newTask();
+          await db.pool.query(
+            "UPDATE tasks SET status='waiting_user',waiting_reason='question' WHERE id=$1",
+            [taskId],
+          );
+          assert.equal(await tasks.resumeConnectedTask(taskId, 1, 'linear'), false);
+          let task = (await db.pool.query('SELECT * FROM tasks WHERE id=$1', [taskId])).rows[0];
+          assert.equal(task.status, 'waiting_user');
+          assert.equal(await tasks.resumeConnectedTask(taskId, 0, 'linear'), true);
+          task = (await db.pool.query('SELECT * FROM tasks WHERE id=$1', [taskId])).rows[0];
+          assert.equal(task.status, 'queued');
+          assert.equal(task.revision, 1);
+          assert.equal(task.action_resume_kind, 'connection');
+          assert.equal(task.action_resume_revision, 1);
+          assert.match(task.prompt, /linear connection completed/);
+          assert.equal(await tasks.resumeConnectedTask(taskId, 0, 'linear'), false);
+          assert.equal(
+            (
+              await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [
+                taskId,
+              ])
+            ).rowCount,
+            1,
+          );
+        },
+      );
+
+      await t.test(
         'an old secure-entry callback cannot resume a newer credential wait',
         async () => {
           const taskId = await newTask();

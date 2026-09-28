@@ -9,7 +9,7 @@ import type {
   IntegrationSession,
 } from '../../ports/integrations.ts';
 
-const toolkits = [...integrationServiceIds];
+const toolkits = integrationServiceIds.filter((service) => service !== 'linear');
 const subscriptions = {
   gmail: {
     trigger: 'GMAIL_NEW_GMAIL_MESSAGE',

@@ -218,7 +218,7 @@ test(
     const another = await f.connect('slack');
     const notion = await f.connect('notion');
     assert.equal((await f.app.inject({ url: '/api/connections' })).statusCode, 404);
-    assert.equal((await f.service.list()).length, 8);
+    assert.equal((await f.service.list()).length, 9);
     assert.equal(slack.triggerStatus, 'active');
     assert.equal(notion.triggerStatus, 'active');
     await assert.rejects(
