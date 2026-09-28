@@ -204,6 +204,7 @@ test(
         },
       );
       await tasks.startTaskWorkers({
+        recoveryDelaysSeconds: [0, 0],
         async runTask(context) {
           seen.push(context);
           contextByPrompt.set(context.prompt, context);

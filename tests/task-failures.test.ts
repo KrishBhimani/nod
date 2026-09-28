@@ -6,6 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import Fastify from 'fastify';
 import pg from 'pg';
+import type { RuntimeContext } from '../src/ports/agent.ts';
 
 test(
   'execution failures report once through normal messages while obsolete and cancelled segments stay quiet',
@@ -29,6 +30,8 @@ test(
     const held = new Map<string, () => void>();
     const attempted = new Set<string>();
     const diagnostics: Array<{ taskId: string; revision: number; error: unknown }> = [];
+    const contexts: RuntimeContext[] = [];
+    const runs = new Map<string, number>();
     const sent: Array<{ text: string; threadId: string }> = [];
     let channels: Awaited<ReturnType<typeof createChannels>> | undefined;
     const waitFor = async (check: () => Promise<boolean> | boolean) => {
@@ -60,11 +63,39 @@ test(
       await tasks.startTaskWorkers({
         async runTask(context) {
           attempted.add(context.taskId);
-          if (context.prompt.startsWith('held:'))
+          contexts.push(context);
+          const run = (runs.get(context.taskId) ?? 0) + 1;
+          runs.set(context.taskId, run);
+          if (context.checkOutcome) {
+            await assert.rejects(context.startExternalAction!(), /earlier outcome/);
+            await assert.rejects(context.manage('goal_create', {}), /earlier outcome/);
+            if (context.prompt.includes('verify-done')) {
+              await context.reportOutcome!('completed', 'The synthetic send went through.');
+              return { status: 'succeeded' };
+            }
+            if (context.prompt.includes('verify-redo')) {
+              await context.reportOutcome!('not_completed', 'The synthetic send did not happen.');
+              return { status: 'succeeded' };
+            }
+            if (context.prompt.includes('verify-unknown')) {
+              await context.waitForUser!('Did the synthetic send arrive?');
+              return {
+                status: 'waiting_user',
+                waitingFor: 'question',
+                question: 'Did the synthetic send arrive?',
+              };
+            }
+          } else if (context.prompt.startsWith('The earlier step went through.'))
+            return { status: 'succeeded' };
+          else if (context.prompt.startsWith('flaky:') && run > 1) return { status: 'succeeded' };
+          else if (context.prompt.startsWith('verify-redo') && run > 2)
+            return { status: 'succeeded' };
+          else if (/^(?:write|verify-)/.test(context.prompt)) await context.startExternalAction!();
+          if (context.prompt.startsWith('held:') && run === 1)
             await new Promise<void>((resolve) => held.set(context.taskId, resolve));
-          if (context.prompt.startsWith('write:')) await context.startExternalAction!();
           throw new Error('PRIVATE-FIXTURE-KEY provider implementation /private/fixture/path');
         },
+        recoveryDelaysSeconds: [0, 0],
         recordFailure: async (taskId, revision, error) => {
           diagnostics.push({ taskId, revision, error });
           return new Promise<void>(() => {});
@@ -105,8 +136,9 @@ test(
           assert.equal(attempted.has(id), false);
           const replies = await messages(id);
           assert.equal(replies.length, 1);
-          assert.equal(replies[0].text, 'I couldn’t finish that.');
-          assert.equal(replies[0].stream_id, `failure:${id}:0`);
+          assert.equal(replies[0].text, tasks.recoveryFailure);
+          assert.equal(replies[0].stream_id, `failure:${id}:2`);
+          assert.equal((await row(id)).revision, 2);
           assert.equal(replies[0].owner_id, 'local-development');
         },
       );
@@ -130,9 +162,9 @@ test(
           const replies = await messages(id);
           assert.deepEqual(
             replies.map((item) => item.stream_id),
-            [`failure:${id}:0`],
+            [`failure:${id}:2`],
           );
-          assert.equal((await row(id)).revision, 0);
+          assert.equal((await row(id)).revision, 2);
           assert.equal(
             (await db.pool.query('SELECT id FROM pending_task_inputs WHERE task_id=$1', [id]))
               .rowCount,
@@ -148,20 +180,109 @@ test(
           assert.ok(diagnostics.some((item) => item.taskId === id && item.revision === 0));
         },
       );
-      await t.test('a failure after a started outside action stays blocked', async () => {
-        const id = await tasks.submitTask('write:Send the synthetic confirmation');
-        await waitFor(async () => (await row(id)).status === 'failed');
-        assert.equal((await row(id)).external_action, true);
-        const first = (await messages(id))[0];
-        for (const target of [{ replyToMessageId: first.id }, { taskId: id }])
-          await assert.rejects(tasks.submitUserMessage('Try again', [], target), {
-            statusCode: 409,
-            code: 'task_review_required',
-            taskId: id,
-            summary: 'write:Send the synthetic confirmation',
+      const segments = (id: string) => contexts.filter((context) => context.taskId === id);
+      await t.test(
+        'a read-only failure retries quietly in a fresh session and succeeds',
+        async () => {
+          const id = await tasks.submitTask('flaky:Read the synthetic weather');
+          await waitFor(async () => (await row(id)).status === 'succeeded');
+          assert.deepEqual(
+            segments(id).map((context) => [
+              context.prompt,
+              context.freshSession,
+              context.checkOutcome,
+            ]),
+            [
+              ['flaky:Read the synthetic weather', false, false],
+              ['flaky:Read the synthetic weather', true, false],
+            ],
+          );
+          assert.equal(segments(id)[1].currentMessageId, segments(id)[0].currentMessageId);
+          assert.deepEqual(await messages(id), []);
+          const task = await row(id);
+          assert.deepEqual(
+            [task.revision, task.recovery_attempts, task.fresh_session],
+            [1, 1, false],
+          );
+        },
+      );
+      await t.test(
+        'a failure after a started outside action checks the outcome first',
+        async () => {
+          const id = await tasks.submitTask('write:Send the synthetic confirmation');
+          await waitFor(async () => (await row(id)).status === 'waiting_user');
+          const [first, ...checks] = segments(id);
+          assert.equal(first.checkOutcome, false);
+          assert.equal(checks.length, 2);
+          for (const check of checks) {
+            assert.equal(check.checkOutcome, true);
+            assert.equal(check.freshSession, true);
+            assert.match(check.prompt, /check with read-only steps/);
+            assert.match(check.prompt, /write:Send the synthetic confirmation/);
+          }
+          const task = await row(id);
+          assert.equal(task.waiting_reason, 'question');
+          assert.deepEqual(
+            (await messages(id)).map((item) => item.text),
+            [
+              'I couldn’t check whether “write:Send the synthetic confirmation” went through. Can you check it and tell me?',
+            ],
+          );
+          const answer = await tasks.submitUserMessage('It did not arrive', [], {
+            replyToMessageId: (await messages(id))[0].id,
           });
-        assert.equal((await row(id)).revision, 0);
-        assert.equal((await messages(id)).length, 1);
+          assert.equal(answer.taskId, id);
+          assert.equal(answer.continued, true);
+          const continued = await row(id);
+          assert.deepEqual(
+            [continued.external_action, continued.recovery_attempts, continued.recovery_mode],
+            [false, 0, null],
+          );
+        },
+      );
+      await t.test('a verified outside action continues without a redo', async () => {
+        const id = await tasks.submitTask('verify-done:Send the synthetic reminder');
+        await waitFor(
+          async () =>
+            (await row(id)).status === 'succeeded' &&
+            segments(id).some((context) => context.prompt.startsWith('The earlier step')),
+        );
+        const prompts = segments(id).map((context) => context.prompt);
+        assert.equal(prompts.length, 3);
+        assert.equal(prompts[0], 'verify-done:Send the synthetic reminder');
+        assert.equal(segments(id)[1].checkOutcome, true);
+        assert.match(prompts[2], /^The earlier step went through\./);
+        assert.equal(
+          prompts.filter((prompt) => prompt === 'verify-done:Send the synthetic reminder').length,
+          1,
+        );
+        assert.deepEqual(
+          (await messages(id)).map((item) => item.text),
+          ['The synthetic send went through.'],
+        );
+        assert.equal((await row(id)).external_action, false);
+      });
+      await t.test('a verified missing action is redone through the original request', async () => {
+        const id = await tasks.submitTask('verify-redo:Send the synthetic note');
+        await waitFor(async () => (await row(id)).status === 'succeeded');
+        assert.deepEqual(
+          segments(id).map((context) => [context.prompt.slice(0, 11), context.checkOutcome]),
+          [
+            ['verify-redo', false],
+            ['An earlier ', true],
+            ['verify-redo', false],
+          ],
+        );
+        assert.equal(segments(id)[2].currentMessageId, segments(id)[0].currentMessageId);
+      });
+      await t.test('an outcome that cannot be checked asks one plain question', async () => {
+        const id = await tasks.submitTask('verify-unknown:Send the synthetic invite');
+        await waitFor(async () => (await row(id)).status === 'waiting_user');
+        assert.equal(segments(id).length, 2);
+        assert.deepEqual(
+          (await messages(id)).map((item) => item.text),
+          ['Did the synthetic send arrive?'],
+        );
       });
       await t.test(
         'an already accepted follow-up remains held when its active segment fails',
@@ -172,21 +293,13 @@ test(
           held.get(id)!();
           await waitFor(async () => (await row(id)).status === 'failed');
           await delay(100);
-          assert.equal((await row(id)).revision, 0);
+          assert.equal((await row(id)).revision, 2);
           assert.deepEqual(
             (await db.pool.query('SELECT state FROM pending_task_inputs WHERE task_id=$1', [id]))
               .rows,
             [{ state: 'pending' }],
           );
-          assert.equal(
-            (
-              await db.pool.query(
-                `SELECT id FROM ${bossSchema}.job WHERE name='assistant-task' AND data->>'taskId'=$1 AND (data->>'revision')::int>0`,
-                [id],
-              )
-            ).rowCount,
-            0,
-          );
+          assert.ok(segments(id).every((context) => context.prompt.startsWith('held:')));
           assert.equal((await messages(id)).length, 1);
         },
       );
@@ -275,7 +388,7 @@ test(
           await channels.drain();
           await app.inject({ method: 'POST', url: '/api/webhooks/telegram', payload: {} });
           await channels.drain();
-          assert.deepEqual(sent, [{ text: 'I couldn’t finish that.', threadId: 'fixture-dm' }]);
+          assert.deepEqual(sent, [{ text: tasks.recoveryFailure, threadId: 'fixture-dm' }]);
           assert.equal((await db.pool.query('SELECT * FROM channel_outbox')).rowCount, 1);
         },
       );

@@ -32,50 +32,65 @@ const consent = new Map<
   string,
   { ownerId: string; service: IntegrationService; returnTo: string }
 >();
-const blockedWork = new Map<
-  string,
-  { taskId: string; closed: boolean; messages: Message[]; tasks: Task[] }
->();
-function conversation(owner: string) {
-  const existing = blockedWork.get(owner);
-  if (existing) return existing;
-  const taskId = randomUUID();
-  const started = Date.now() - 6 * 60_000;
-  const title = 'Send the April invoice to Sam';
-  const value = {
-    taskId,
-    closed: false,
-    messages: [
+const recoveryScenarios = {
+  recovered: [
+    'What’s on my calendar tomorrow?',
+    'Tomorrow you have two meetings: **Design review** at 10:00 and **Lunch with Sam** at 13:00.',
+  ],
+  verified: [
+    'Send the April invoice to Sam at sam@example.test.',
+    'The April invoice email to Sam went through. It is in your Sent folder.',
+  ],
+  unfinished: [
+    'Download last month’s statement from the bank portal.',
+    'I tried a few times and couldn’t finish this. Tell me when you want me to try again, or give me another way to do it.',
+  ],
+  unverified: [
+    'Post the release note in #launch on Slack.',
+    'I couldn’t check whether “Post the release note in #launch” went through. Can you check it and tell me?',
+  ],
+};
+type RecoveryScenario = keyof typeof recoveryScenarios;
+const conversations = new Map<string, { messages: Message[]; tasks: Task[] }>();
+function conversation(owner: string, scenario?: RecoveryScenario) {
+  const existing = conversations.get(owner);
+  if (existing && !scenario) return existing;
+  const value = { messages: [] as Message[], tasks: [] as Task[] };
+  const selected = scenario ? [scenario] : (Object.keys(recoveryScenarios) as RecoveryScenario[]);
+  selected.forEach((name, index) => {
+    const taskId = randomUUID();
+    const started = Date.now() - (selected.length - index) * 5 * 60_000;
+    const [request, reply] = recoveryScenarios[name];
+    value.messages.push(
       {
         id: randomUUID(),
-        role: 'user' as const,
-        text: 'Send the April invoice to Sam at sam@example.test from the billing portal.',
+        role: 'user',
+        text: request,
         taskId,
         attachments: [],
         createdAt: new Date(started).toISOString(),
       },
       {
         id: randomUUID(),
-        role: 'assistant' as const,
-        text: 'I couldn’t finish that.',
+        role: 'assistant',
+        text: reply,
         taskId,
         attachments: [],
-        createdAt: new Date(started + 90_000).toISOString(),
+        createdAt: new Date(started + 70_000).toISOString(),
       },
-    ],
-    tasks: [
-      {
-        id: taskId,
-        title,
-        status: 'failed' as const,
-        error: 'I couldn’t finish that.',
-        createdAt: new Date(started).toISOString(),
-        updatedAt: new Date(started + 90_000).toISOString(),
-        showTyping: true,
-      },
-    ],
-  };
-  blockedWork.set(owner, value);
+    );
+    value.tasks.unshift({
+      id: taskId,
+      title: request,
+      status:
+        name === 'unfinished' ? 'failed' : name === 'unverified' ? 'waiting_user' : 'succeeded',
+      error: null,
+      createdAt: new Date(started).toISOString(),
+      updatedAt: new Date(started + 70_000).toISOString(),
+      showTyping: true,
+    });
+  });
+  conversations.set(owner, value);
   return value;
 }
 const avatar = new Uint8Array(
@@ -231,21 +246,7 @@ const app = await createGateway({
       if (url.pathname === '/api/messages' && request.method === 'GET') return Response.json([]);
       if (url.pathname === '/api/messages') {
         const work = conversation(owner);
-        const input = (await request.json()) as {
-          text: string;
-          clientMessageId?: string;
-          forceNew?: boolean;
-        };
-        if (!input.forceNew && !work.closed)
-          return Response.json(
-            {
-              error: 'I can’t safely repeat the earlier action because its outcome is unknown.',
-              code: 'task_review_required',
-              taskId: work.taskId,
-              summary: work.tasks[0].title,
-            },
-            { status: 409 },
-          );
+        const input = (await request.json()) as { text: string; clientMessageId?: string };
         const taskId = randomUUID();
         const messageId = input.clientMessageId ?? randomUUID();
         const now = new Date().toISOString();
@@ -261,27 +262,13 @@ const app = await createGateway({
           {
             id: randomUUID(),
             role: 'assistant',
-            text: 'The UI fixture accepted this as new work. It does not run an assistant.',
+            text: 'The UI fixture does not run an assistant.',
             taskId,
             attachments: [],
             createdAt: now,
           },
         );
-        work.tasks.unshift({
-          id: taskId,
-          title: input.text.slice(0, 100),
-          status: 'succeeded',
-          error: null,
-          createdAt: now,
-          updatedAt: now,
-          showTyping: true,
-        });
         return Response.json({ taskId, continued: false, messageId });
-      }
-      const close = /^\/api\/tasks\/([^/]+)\/close$/.exec(url.pathname);
-      if (close && request.method === 'POST' && close[1] === conversation(owner).taskId) {
-        conversation(owner).closed = true;
-        return Response.json({ ok: true });
       }
       return Response.json(
         { error: 'This capability is unavailable in the UI fixture.' },
@@ -325,6 +312,16 @@ app.get('/fixture/sign-in/:index', async (request, reply) => {
   return reply
     .header('set-cookie', `${cookieName}=${token}; Path=/; HttpOnly; SameSite=Lax`)
     .redirect('/');
+});
+app.get('/fixture/recovery/:scenario', async (request, reply) => {
+  const scenario = (request.params as { scenario: string }).scenario;
+  const owner = session(new Headers({ cookie: request.headers.cookie ?? '' }))?.user.id;
+  if (!owner) return reply.code(401).send('Sign in to use this fixture.');
+  if (scenario !== 'all' && !Object.hasOwn(recoveryScenarios, scenario))
+    return reply.code(404).send('Unknown fixture scenario.');
+  conversations.delete(owner);
+  conversation(owner, scenario === 'all' ? undefined : (scenario as RecoveryScenario));
+  return reply.redirect('/');
 });
 app.get('/fixture/connect', async (request, reply) => {
   const token = new URL(request.url, origin).searchParams.get('token') ?? '';

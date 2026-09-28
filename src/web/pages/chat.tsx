@@ -13,8 +13,6 @@ import { MessageBubble } from '../components/message';
 import { ChatTurnRail } from '../components/chat-turn-rail';
 import { BrandMark } from '../components/brand';
 import { Button, Notice } from '../components/ui';
-import { TaskReview, type TaskReviewState } from '../components/task-review';
-import { taskReviewVariant } from '../components/task-review-prototype';
 import { api, apiResponse, errorMessage, post } from '../lib/api';
 import {
   hasVisibleChatActivity,
@@ -65,10 +63,6 @@ export function Chat({
   const [error, setError] = useState('');
   const [connectionNotice, setConnectionNotice] = useState('');
   const [replyTo, setReplyTo] = useState<Message | null>(null);
-  const [review, setReview] = useState<TaskReviewState | null>(null);
-  const [reviewBusy, setReviewBusy] = useState(false);
-  const [reviewError, setReviewError] = useState('');
-  const reviewVariant = taskReviewVariant();
   const [optimistic, setOptimistic] = useState<Array<{ revision: number; message: Message }>>([]);
   const composer = useRef<ComposerHandle>(null);
   const sendLock = useRef<{ id: string; revision: number } | null>(null);
@@ -152,8 +146,6 @@ export function Chat({
     setVisibleTurns([]);
     setScrolledUp(false);
     setReplyTo(null);
-    setReview(null);
-    setReviewError('');
     setOptimistic([]);
     sendLock.current = null;
     retry.current = null;
@@ -202,14 +194,10 @@ export function Chat({
     window.addEventListener('otto:compose', compose);
     return () => window.removeEventListener('otto:compose', compose);
   }, []);
-  async function send(
-    value: string,
-    attachments: Artifact[],
-    forceNew = false,
-  ): Promise<ComposerSendResult> {
+  async function send(value: string, attachments: Artifact[]): Promise<ComposerSendResult> {
     if (sendLock.current || resetLock.current) return { sent: false, restoreText: true };
     const sentRevision = revision;
-    const reply = forceNew ? null : replyTo;
+    const reply = replyTo;
     const verificationRequests = (state.verificationRequests ?? []).filter(
       (request) =>
         Date.parse(request.expiresAt) > Date.now() && (!reply || request.taskId === reply.taskId),
@@ -267,29 +255,25 @@ export function Chat({
           attachmentIds: attachments.map((item) => item.id),
           ...(replyId ? { replyToMessageId: replyId } : {}),
           ...(verificationRequestId ? { verificationRequestId } : {}),
-          ...(forceNew ? { forceNew: true } : {}),
         }),
       });
       const result = (await response.json()) as Partial<SubmitMessageResponse> &
         Partial<TaskReviewRequired>;
       verificationStatus = result.verificationStatus;
       privateVerification ||= verificationStatus !== undefined;
-      if (
-        response.status === 409 &&
-        result.code === 'task_review_required' &&
-        typeof result.taskId === 'string' &&
-        revisionRef.current === sentRevision
-      ) {
+      if (response.status === 409 && result.code === 'task_review_required') {
+        if (revisionRef.current !== sentRevision) return { sent: true };
         retry.current = null;
-        setOptimistic((current) => current.filter((item) => item.message.id !== id));
+        const reviewReply: Message = {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          text: `I stopped earlier and may have already done part of “${result.summary || 'that'}”. Please check it, then tell me what you see.`,
+          taskId: result.taskId ?? null,
+          attachments: [],
+          createdAt: new Date().toISOString(),
+        };
+        setOptimistic((current) => [...current, { revision: sentRevision, message: reviewReply }]);
         setReplyTo((current) => (current?.id === replyId ? null : current));
-        setReviewError('');
-        setReview({
-          taskId: result.taskId,
-          summary: result.summary ?? '',
-          text: value,
-          attachments,
-        });
         return { sent: true };
       }
       if (!response.ok) {
@@ -350,50 +334,6 @@ export function Chat({
       }
     }
   }
-  async function closeReview(held: TaskReviewState) {
-    await post(`/api/tasks/${encodeURIComponent(held.taskId)}/close`);
-  }
-  async function restartReview() {
-    if (!review || reviewBusy) return;
-    const held = review;
-    setReviewBusy(true);
-    setReviewError('');
-    try {
-      await closeReview(held);
-      if ((await send(held.text, held.attachments, true)).sent)
-        setReview((current) => (current === held ? null : current));
-    } catch (cause) {
-      setReviewError(errorMessage(cause));
-    } finally {
-      setReviewBusy(false);
-    }
-  }
-  async function leaveReview() {
-    if (!review || reviewBusy) return;
-    const held = review;
-    setReviewBusy(true);
-    setReviewError('');
-    try {
-      await closeReview(held);
-      setReview((current) => (current === held ? null : current));
-      composer.current?.focus();
-      void refresh().catch(() => {});
-    } catch (cause) {
-      setReviewError(errorMessage(cause));
-    } finally {
-      setReviewBusy(false);
-    }
-  }
-  const reviewPanel = review && (
-    <TaskReview
-      variant={reviewVariant}
-      review={review}
-      busy={reviewBusy || sending}
-      error={reviewError}
-      onRestart={() => void restartReview()}
-      onLeave={() => void leaveReview()}
-    />
-  );
   async function history() {
     const version = ++historyVersion.current;
     setLoadingHistory(true);
@@ -587,7 +527,6 @@ export function Chat({
                 />
               </Fragment>
             ))}
-            {reviewVariant !== 'B' && reviewPanel}
             {(sending || resetting || working) && streamEntries.length === 0 && (
               <div
                 className="thinking"
@@ -644,7 +583,6 @@ export function Chat({
             Back to latest
           </Button>
         )}
-        {reviewVariant === 'B' && reviewPanel}
         {error && <Notice>{error}</Notice>}
         {connectionNotice && <Notice kind="info">{connectionNotice}</Notice>}
         {!state.configuration.llmReady && (

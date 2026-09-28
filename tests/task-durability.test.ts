@@ -52,6 +52,7 @@ test(
       feedback: Array<{ feedback: string }>;
     }> = [];
     const ran = new Set<string>();
+    const segments: RuntimeContext[] = [];
     let rolledBackTask = '';
     const triage = createTriage({
       getProfile: personal.getProfile,
@@ -72,8 +73,10 @@ test(
           throw new Error('Unused fixture');
         },
       },
+      recoveryDelaysSeconds: [0, 0],
       runTask: async (context) => {
         ran.add(context.taskId);
+        segments.push(context);
         assert.equal(context.personalContext?.profile.phone, 'PRIVATE-PHONE-FIXTURE');
         assert.equal(context.personalContext?.profile.name, 'Fixture Person');
         if (context.prompt === 'cancel-fence-fixture') {
@@ -465,7 +468,7 @@ test(
       );
 
       await t.test(
-        'restart requeues queued work, reviews interrupted outside actions and fails read-only work',
+        'restart recovers interrupted work once: outside actions are checked and reads retry',
         async () => {
           const missingJob = await tasks.submitTask('recovery-fixture', [], undefined, true, {
             sourceId: 'recovery-fixture',
@@ -486,46 +489,48 @@ test(
               (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [missingJob])).rows[0]
                 .status === 'succeeded',
           );
-          const state = async (id: string) =>
+          await waitFor(async () =>
             (
-              await db.pool.query(
-                'SELECT status,waiting_reason,revision,error FROM tasks WHERE id=$1',
-                [id],
-              )
-            ).rows[0];
-          for (const id of [interrupted, legacy])
-            assert.deepEqual(await state(id), {
-              status: 'waiting_user',
-              waiting_reason: 'recovery',
-              revision: 1,
-              error:
-                'The server stopped during this task. Review its last action before continuing.',
-            });
-          assert.deepEqual(await state(readOnly), {
-            status: 'failed',
-            waiting_reason: null,
-            revision: 1,
-            error: 'The task stopped.',
-          });
-          assert.deepEqual(
-            (
-              await db.pool.query(
-                "SELECT text,stream_id FROM messages WHERE task_id=$1 AND role='assistant'",
-                [readOnly],
-              )
-            ).rows,
-            [{ text: 'I couldn’t finish that.', stream_id: `failure:${readOnly}:1` }],
+              await db.pool.query('SELECT status FROM tasks WHERE id=ANY($1::uuid[])', [
+                [interrupted, legacy, readOnly],
+              ])
+            ).rows.every((row) => row.status === 'succeeded'),
           );
-          await assert.rejects(tasks.submitUserMessage('Continue', [], { taskId: interrupted }), {
-            statusCode: 409,
-            code: 'task_review_required',
-            taskId: interrupted,
-          });
-          const retried = await tasks.submitUserMessage('Try again', [], { taskId: readOnly });
-          assert.notEqual(retried.taskId, readOnly);
-          assert.equal(ran.has(interrupted), false);
-          assert.equal(ran.has(legacy), false);
-          assert.equal(ran.has(readOnly), false);
+          const recovered = (id: string) =>
+            segments
+              .filter((context) => context.taskId === id)
+              .map((context) => [
+                context.checkOutcome,
+                context.freshSession,
+                context.prompt.slice(0, 22),
+              ]);
+          assert.deepEqual(recovered(interrupted), [[true, true, 'An earlier attempt at ']]);
+          assert.deepEqual(recovered(legacy), [[true, true, 'An earlier attempt at ']]);
+          assert.deepEqual(recovered(readOnly), [[false, true, 'Read the synthetic pag']]);
+          for (const id of [interrupted, legacy, readOnly]) {
+            const task = (
+              await db.pool.query('SELECT revision,recovery_attempts FROM tasks WHERE id=$1', [id])
+            ).rows[0];
+            assert.deepEqual(task, { revision: 1, recovery_attempts: 1 });
+            assert.equal(
+              (
+                await db.pool.query(
+                  "SELECT id FROM task_events WHERE task_id=$1 AND type='recovering'",
+                  [id],
+                )
+              ).rowCount,
+              1,
+            );
+            assert.equal(
+              (
+                await db.pool.query(
+                  "SELECT id FROM messages WHERE task_id=$1 AND role='assistant'",
+                  [id],
+                )
+              ).rowCount,
+              0,
+            );
+          }
         },
       );
 

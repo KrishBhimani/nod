@@ -17,7 +17,6 @@ import { events, type ServerEvent } from './events.ts';
 import { artifactView, maxFileSize, localArtifacts, type ArtifactService } from './artifacts.ts';
 import {
   cancelTask,
-  closeReviewedTask,
   reactToAssistantMessage,
   resetConversation,
   submitUserMessage,
@@ -284,12 +283,6 @@ export async function createApp(dependencies: AppDependencies = {}) {
   app.post<{ Params: { id: string } }>('/api/tasks/:id/cancel', async (request) => {
     await cancelTask(z.uuid().parse(request.params.id));
     return { ok: true };
-  });
-  app.post<{ Params: { id: string } }>('/api/tasks/:id/close', async (request) => {
-    z.object({})
-      .strict()
-      .parse(request.body ?? {});
-    return closeReviewedTask(z.uuid().parse(request.params.id));
   });
   app.get('/api/events', async (request, reply) => {
     reply.hijack();
