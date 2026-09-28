@@ -2,7 +2,7 @@
 
 The repository includes Google login, account settings, isolated per-user Node runtimes, private tenant SQL roles, a Cloudflare container adapter and production CI/CD. This is a bounded pilot implementation. Automated fixtures and local process tests do not establish a working public deployment or live provider delivery; record those checks separately before sharing a production signup link.
 
-The prior pilot remains reachable under its former Worker name. The Otto Worker, buckets and container applications in this repository are new resources. No live Otto cloud deployment has been checked. The historical results below apply to the prior release and must not be used as proof of an Otto cutover.
+The prior pilot has a separate Worker name. The Otto Worker, buckets and container applications in this repository are new resources. The historical results below apply to the prior release and must not be used as proof of an Otto cutover. Check the Otto release, Google login, connected apps, files and computer tasks live after the new deployment.
 
 **Selected architecture, 2026-09-27:** host the application on Cloudflare and allocate one combined E2B computer per user during authenticated onboarding. Live E2B execution and its same-VM boundary are not yet validated; development shows 100 credits, production shows 0 credits with a payment-card gate, and runtime-key authorization is pending.
 
