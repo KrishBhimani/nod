@@ -37,7 +37,7 @@ const providers = [
   },
 ];
 const steps = {
-  telegram: ['Create your bot', 'Keep it just for you', 'Ready to connect'],
+  telegram: ['Create your bot', 'Press Start in Telegram'],
   whatsapp: [
     'Before you begin',
     'Choose the numbers',
@@ -76,48 +76,17 @@ export function ChannelSetupStep({
     value: fields[name] ?? '',
     onChange: (event: React.ChangeEvent<HTMLInputElement>) => onField(name, event.target.value),
   });
-  if (provider === 'telegram') {
-    if (step === 0)
-      return (
-        <>
-          <p>
-            Open <ExternalLinkText href="https://t.me/BotFather">BotFather</ExternalLinkText> in
-            Telegram and send <code>/newbot</code>. Choose a name and username, then paste the token
-            it gives you.
-          </p>
-          <Field label="Bot token" hint="This stays outside chat and is encrypted when saved.">
-            <Input type="password" autoComplete="off" required autoFocus {...field('botToken')} />
-          </Field>
-        </>
-      );
-    if (step === 1)
-      return (
-        <>
-          <p>Only this Telegram account will be able to ask your bot to do things.</p>
-          <Field
-            label="Your Telegram user ID"
-            hint="Your numeric account ID, not your phone number or @username."
-          >
-            <Input
-              inputMode="numeric"
-              pattern="[0-9]{1,16}"
-              required
-              autoFocus
-              {...field('allowedUserId')}
-            />
-          </Field>
-        </>
-      );
+  if (provider === 'telegram')
     return (
       <>
-        <div className="channel-setup-review">
-          <Check size={18} />
-          <div>
-            <strong>One private conversation</strong>
-            <p>Messages from Telegram user {fields.allowedUserId} will reach Otto.</p>
-          </div>
-        </div>
-        <p>After connecting, open your bot in Telegram, press Start, and send a short message.</p>
+        <p>
+          Open <ExternalLinkText href="https://t.me/BotFather">BotFather</ExternalLinkText> in
+          Telegram and send <code>/newbot</code>. Choose a name and username, then paste the token
+          it gives you.
+        </p>
+        <Field label="Bot token" hint="This stays outside chat and is encrypted when saved.">
+          <Input type="password" autoComplete="off" required autoFocus {...field('botToken')} />
+        </Field>
         {!hosted && (
           <details className="channel-advanced">
             <summary>Advanced: use a webhook</summary>
@@ -133,7 +102,6 @@ export function ChannelSetupStep({
         )}
       </>
     );
-  }
   if (step === 0)
     return (
       <>
@@ -252,6 +220,7 @@ export function ChannelAccount({
   setup,
   configured,
   onDisconnect,
+  onPair,
   busy,
   hosted = false,
 }: {
@@ -259,6 +228,7 @@ export function ChannelAccount({
   setup?: ChannelSetup;
   configured: boolean;
   onDisconnect(trigger: HTMLButtonElement): void;
+  onPair?(): void;
   busy: boolean;
   hosted?: boolean;
 }) {
@@ -272,6 +242,9 @@ export function ChannelAccount({
   const needsDelivery = Boolean(
     setup?.enabled && setup.mode === 'webhook' && setup.webhookStatus !== 'registered',
   );
+  const needsPairing = Boolean(
+    setup?.enabled && setup.pairingExpiresAt && setup.webhookStatus !== 'registration_pending',
+  );
   const statusLabel = channelLabel(setup, configured);
   return (
     <div className="channel-account">
@@ -282,7 +255,9 @@ export function ChannelAccount({
             {distinctHandle && <span>{handle}</span>}
           </div>
           {statusLabel && (
-            <p className={`channel-account-status${needsDelivery ? ' needs-setup' : ''}`}>
+            <p
+              className={`channel-account-status${needsDelivery || needsPairing ? ' needs-setup' : ''}`}
+            >
               {statusLabel}
             </p>
           )}
@@ -319,6 +294,11 @@ export function ChannelAccount({
               )}
             </DialogContent>
           </Dialog>
+        ) : needsPairing ? (
+          <Button variant="outline" size="sm" disabled={busy} onClick={onPair}>
+            Finish setup
+            <ArrowRight size={13} />
+          </Button>
         ) : botUrl ? (
           <Button asChild size="sm">
             <a href={botUrl} target="_blank" rel="noopener noreferrer">
@@ -354,7 +334,7 @@ export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
   const [step, setStep] = useState(0);
   const [fields, setFields] = useState<Record<string, string>>({});
   const [policy, setPolicy] = useState(false);
-  const [telegramStartUrl, setTelegramStartUrl] = useState<string | null>(null);
+  const [pairingUrl, setPairingUrl] = useState<string | null>(null);
   const [removing, setRemoving] = useState<ChannelProvider | null>(null);
   const [removeError, setRemoveError] = useState('');
   const telegramStartLink = useRef<HTMLAnchorElement>(null);
@@ -370,6 +350,15 @@ export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
     );
     return { provider, setup, configured, connected: Boolean(setup?.enabled || configured) };
   });
+  const telegramSetup = channels[0].setup;
+  const paired = Boolean(
+    pairingUrl &&
+    telegramSetup?.enabled &&
+    telegramSetup.pairedUser &&
+    !telegramSetup.pairingExpiresAt,
+  );
+  const pairingExpiry = pairingUrl && !paired ? telegramSetup?.pairingExpiresAt : undefined;
+  const expired = Boolean(pairingExpiry && Date.parse(pairingExpiry) <= Date.now());
   const connected = channels.filter((channel) => channel.connected);
   const available = channels.filter((channel) => !channel.connected);
   async function load() {
@@ -404,15 +393,20 @@ export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
     };
   }, []);
   useEffect(() => {
-    if (telegramStartUrl) telegramStartLink.current?.focus();
-  }, [telegramStartUrl]);
+    if (pairingUrl) telegramStartLink.current?.focus();
+  }, [pairingUrl, paired]);
+  useEffect(() => {
+    if (!pairingUrl || paired || expired) return;
+    const timer = setInterval(() => void load(), 2000);
+    return () => clearInterval(timer);
+  }, [pairingUrl, paired, expired]);
   function close() {
     setEditing(null);
     setFields({});
     setPolicy(false);
     setStep(0);
     setError('');
-    setTelegramStartUrl(null);
+    setPairingUrl(null);
   }
   function open(provider: ChannelProvider) {
     setFields({});
@@ -454,7 +448,7 @@ export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (!editing || actionRequest.current || busy) return;
-    if (step < steps[editing].length - 1) {
+    if (step < (editing === 'telegram' ? 0 : steps[editing].length - 1)) {
       setStep((value) => value + 1);
       return;
     }
@@ -463,22 +457,47 @@ export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
     setBusy(true);
     setError('');
     try {
-      const result = await api<{ channel: ChannelSetup }>(`/api/channel-settings/${editing}`, {
-        method: 'PUT',
-        body: JSON.stringify(channelSetupBody(editing, fields, policy)),
-        signal: current.signal,
-      });
+      const result = await api<{ channel: ChannelSetup; pairingUrl?: string }>(
+        `/api/channel-settings/${editing}`,
+        {
+          method: 'PUT',
+          body: JSON.stringify(channelSetupBody(editing, fields, policy)),
+          signal: current.signal,
+        },
+      );
       if (current.signal.aborted) return;
       acceptedSetup(result.channel);
-      const botUrl =
-        editing === 'telegram' && result.channel.provider === 'telegram' && result.channel.enabled
-          ? telegramBotUrl(result.channel.accountHandle)
-          : null;
-      if (botUrl) {
+      if (editing === 'telegram' && result.pairingUrl) {
         setFields({});
-        setTelegramStartUrl(botUrl);
+        setStep(1);
+        setPairingUrl(result.pairingUrl);
       } else close();
       void load();
+    } catch (cause) {
+      if (!current.signal.aborted) setError(errorMessage(cause));
+    } finally {
+      if (actionRequest.current === current) actionRequest.current = null;
+      if (!current.signal.aborted) setBusy(false);
+    }
+  }
+  async function startPairing() {
+    if (actionRequest.current || busy) return;
+    const current = new AbortController();
+    actionRequest.current = current;
+    setBusy(true);
+    setError('');
+    try {
+      const result = await api<{ channel: ChannelSetup; pairingUrl: string }>(
+        '/api/channel-settings/telegram/pairing',
+        { method: 'POST', body: '{}', signal: current.signal },
+      );
+      if (current.signal.aborted) return;
+      acceptedSetup(result.channel);
+      setFields({});
+      setPolicy(false);
+      setStep(1);
+      setEditing('telegram');
+      setPairingUrl(result.pairingUrl);
     } catch (cause) {
       if (!current.signal.aborted) setError(errorMessage(cause));
     } finally {
@@ -550,6 +569,7 @@ export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
                   setRemoveError('');
                   setRemoving(provider.id);
                 }}
+                onPair={() => void startPairing()}
                 busy={busy || !settings?.ready}
               />
             )}
@@ -654,42 +674,84 @@ export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
           <div className="channel-wizard-heading">
             <img src={`/logos/${editing ?? 'telegram'}.svg`} alt="" width={25} height={25} />
             <span>{editing === 'whatsapp' ? 'WhatsApp' : 'Telegram'}</span>
-            {!telegramStartUrl && (
+            {!paired && (
               <small>
                 Step {step + 1} of {steps[editing ?? 'telegram'].length}
               </small>
             )}
           </div>
           <DialogTitle>
-            {telegramStartUrl ? 'Telegram is connected' : steps[editing ?? 'telegram'][step]}
+            {paired ? 'Telegram is connected' : steps[editing ?? 'telegram'][step]}
           </DialogTitle>
           <DialogDescription className="channel-wizard-description">
-            {telegramStartUrl
-              ? hosted
-                ? 'Open your bot, press Start if prompted, then send your first request.'
-                : 'Open your bot, press Start if prompted, then send your first request. Otto must be running to reply.'
+            {pairingUrl
+              ? paired
+                ? hosted
+                  ? 'Send your bot a message to start.'
+                  : 'Send your bot a message to start. Otto must be running to reply.'
+                : 'Open your bot and press Start. Otto connects the first Telegram account that uses this link.'
               : step === 0
                 ? 'Connect in a few small steps. Otto checks your credentials before saving.'
                 : 'Credentials stay in this secure form, outside the conversation.'}
           </DialogDescription>
           {error && <Notice>{error}</Notice>}
-          {telegramStartUrl ? (
-            <div className="channel-wizard-actions">
-              <Button variant="ghost" size="sm" onClick={close}>
-                Done
-              </Button>
-              <Button asChild>
-                <a
-                  ref={telegramStartLink}
-                  href={telegramStartUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
+          {pairingUrl ? (
+            <>
+              <div className="channel-wizard-step">
+                <div
+                  className={`channel-pairing${paired ? ' is-paired' : expired ? ' is-expired' : ''}`}
+                  role="status"
                 >
-                  Start conversation
-                  <ExternalLink size={14} />
-                </a>
-              </Button>
-            </div>
+                  {paired ? (
+                    <Check size={16} aria-hidden="true" />
+                  ) : (
+                    <span className="channel-pairing-signal" aria-hidden="true" />
+                  )}
+                  <div>
+                    <strong>
+                      {paired
+                        ? `Connected as ${telegramSetup?.pairedUser}`
+                        : expired
+                          ? 'This link has expired'
+                          : 'Waiting for Start'}
+                    </strong>
+                    <p>
+                      {paired
+                        ? 'Only this Telegram account can use your bot.'
+                        : expired
+                          ? 'Get a new link, then press Start again.'
+                          : `The link works once. It expires at ${new Date(pairingExpiry!).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`}
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <div className="channel-wizard-actions">
+                <Button variant="ghost" size="sm" disabled={busy} onClick={close}>
+                  {paired ? 'Done' : 'Close'}
+                </Button>
+                {expired ? (
+                  <Button disabled={busy} onClick={() => void startPairing()}>
+                    {busy ? 'Creating link…' : 'Get a new link'}
+                  </Button>
+                ) : (
+                  <Button asChild>
+                    <a
+                      ref={telegramStartLink}
+                      href={
+                        paired
+                          ? (telegramBotUrl(telegramSetup?.accountHandle) ?? pairingUrl)
+                          : pairingUrl
+                      }
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {paired ? 'Start conversation' : 'Open Telegram'}
+                      <ExternalLink size={14} />
+                    </a>
+                  </Button>
+                )}
+              </div>
+            </>
           ) : (
             <form onSubmit={(event) => void submit(event)}>
               <div className="channel-wizard-step" key={`${editing}:${step}`}>
@@ -718,9 +780,7 @@ export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
                   {busy
                     ? 'Verifying…'
                     : step === steps[editing ?? 'telegram'].length - 1
-                      ? editing === 'telegram'
-                        ? 'Connect Telegram'
-                        : 'Verify and save'
+                      ? 'Verify and save'
                       : 'Continue'}
                   {!busy && step < steps[editing ?? 'telegram'].length - 1 && (
                     <ArrowRight size={14} />

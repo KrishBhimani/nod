@@ -356,28 +356,6 @@
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-.channel-setup-review {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-  padding: 15px;
-  border-radius: 8px;
-  background: var(--secondary);
-}
-.channel-setup-review > svg {
-  flex-shrink: 0;
-  margin-top: 1px;
-}
-.channel-setup-review strong {
-  font-size: 13px;
-  font-weight: 500;
-}
-.channel-setup-review p {
-  margin-top: 5px;
-  color: var(--muted-foreground);
-  font-size: 12px;
-  line-height: 1.6;
-}
 .channel-advanced > summary {
   color: var(--muted-foreground);
   font-size: 12px;

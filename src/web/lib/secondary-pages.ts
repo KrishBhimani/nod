@@ -81,13 +81,17 @@ export type ChannelSetup = {
   mode?: 'polling' | 'webhook';
   webhookStatus?: 'registered' | 'manual_setup' | 'registration_pending';
   webhookUrl?: string;
+  pairedUser?: string;
+  pairingExpiresAt?: string;
 };
 export type ChannelSettings = { ready: boolean; channels: ChannelSetup[] };
 
 export function channelLabel(setup: ChannelSetup | undefined, configured: boolean) {
   if (!setup?.enabled) return configured ? 'Configuration present' : 'Not connected';
-  if (setup.mode === 'polling') return null;
   if (setup.webhookStatus === 'registration_pending') return 'Setup needs a retry';
+  if (setup.pairingExpiresAt) return 'Waiting for Start in Telegram';
+  if (setup.pairedUser) return `Connected as ${setup.pairedUser}`;
+  if (setup.mode === 'polling') return null;
   return setup.webhookStatus === 'registered' ? 'Webhook registered' : 'Finish delivery setup';
 }
 
@@ -104,7 +108,6 @@ export function channelSetupBody(
   if (provider === 'telegram')
     return {
       botToken: fields.botToken?.trim(),
-      allowedUserId: fields.allowedUserId?.trim(),
       webhookUrl,
     };
   return {

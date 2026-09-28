@@ -1,4 +1,10 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  randomBytes,
+  timingSafeEqual,
+} from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import { z } from 'zod';
@@ -11,6 +17,7 @@ import {
   type ChannelAccountRegistry,
 } from '../ports/channel-settings.ts';
 import type { CredentialKeyStore } from '../ports/key-store.ts';
+import type { ChannelPairingRequest } from '../ports/messaging.ts';
 
 const providerSchema = z.enum(['telegram', 'whatsapp']);
 const summarySchema = z.object({
@@ -21,7 +28,10 @@ const summarySchema = z.object({
   mode: z.enum(['polling', 'webhook']).optional(),
   webhookStatus: z.enum(['registered', 'manual_setup', 'registration_pending']).optional(),
   webhookUrl: z.url().max(2048).optional(),
+  pairedUser: z.string().min(1).max(200).optional(),
+  pairingExpiresAt: z.iso.datetime().optional(),
 });
+const pairingLifetimeMs = 15 * 60 * 1000;
 const fields: Record<ChannelProvider, Set<string>> = {
   telegram: new Set([
     'TELEGRAM_ENABLED',
@@ -29,6 +39,8 @@ const fields: Record<ChannelProvider, Set<string>> = {
     'TELEGRAM_ALLOWED_USER_ID',
     'TELEGRAM_WEBHOOK_SECRET_TOKEN',
     'TELEGRAM_MODE',
+    'TELEGRAM_PAIRING_CODE_HASH',
+    'TELEGRAM_PAIRING_EXPIRES_AT',
   ]),
   whatsapp: new Set([
     'WHATSAPP_ENABLED',
@@ -61,6 +73,24 @@ function seal(
   cipher.setAAD(binding(owner, provider));
   const encrypted = Buffer.concat([cipher.update(JSON.stringify(environment)), cipher.final()]);
   return Buffer.concat([nonce, cipher.getAuthTag(), encrypted]).toString('base64');
+}
+function pairingHash(code: string) {
+  return createHash('sha256').update(code).digest('hex');
+}
+function issuePairing(summary: ChannelSetupSummary) {
+  const handle = summary.accountHandle;
+  if (!handle || !/^@[A-Za-z0-9_]{1,64}$/.test(handle))
+    throw new ChannelSetupFailure('verification_failed');
+  const code = randomBytes(24).toString('base64url');
+  const expiresAt = new Date(Date.now() + pairingLifetimeMs);
+  return {
+    environment: {
+      TELEGRAM_PAIRING_CODE_HASH: pairingHash(code),
+      TELEGRAM_PAIRING_EXPIRES_AT: String(expiresAt.getTime()),
+    },
+    summary: { ...summary, pairingExpiresAt: expiresAt.toISOString() },
+    pairingUrl: `https://t.me/${handle.slice(1)}?start=${code}`,
+  };
 }
 function open(key: Buffer, owner: string, row: SettingsRow) {
   const encoded = Buffer.from(row.ciphertext!, 'base64');
@@ -251,6 +281,7 @@ export async function createChannelSettings(
         let ciphertext: string | null = null;
         let summary: ChannelSetupSummary = { provider, enabled: false };
         let configured: Record<string, string> = { [`${provider.toUpperCase()}_ENABLED`]: 'false' };
+        let pairingUrl: string | undefined;
         if (input !== undefined) {
           const encryption = await encryptionKey();
           const verified = await options.verifier.verify(provider, input);
@@ -258,6 +289,12 @@ export async function createChannelSettings(
           if (Object.keys(configured).some((key) => !fields[provider].has(key)))
             throw new Error('Invalid channel configuration.');
           summary = summarySchema.parse({ ...verified.summary, provider, enabled: true });
+          if (provider === 'telegram' && !configured.TELEGRAM_ALLOWED_USER_ID) {
+            const pairing = issuePairing(summary);
+            Object.assign(configured, pairing.environment);
+            summary = pairing.summary;
+            pairingUrl = pairing.pairingUrl;
+          }
           const nextAccount = accountId(provider, configured);
           if (options.accounts) {
             if (!nextAccount || !/^\d{1,30}$/.test(nextAccount))
@@ -283,7 +320,7 @@ export async function createChannelSettings(
           } catch {
             throw new ChannelSetupFailure('activation_pending');
           }
-          return { ok: true, channel: summary };
+          return { ok: true, channel: summary, ...(pairingUrl ? { pairingUrl } : {}) };
         }
         const client = await pool.connect();
         try {
@@ -304,10 +341,98 @@ export async function createChannelSettings(
         } finally {
           client.release();
         }
-        return { ok: true, channel: summary };
+        return { ok: true, channel: summary, ...(pairingUrl ? { pairingUrl } : {}) };
       } finally {
         await reconcileClaims().catch(() => false);
       }
+    });
+  }
+  async function telegramRow() {
+    const { rows } = await pool.query<SettingsRow>(
+      "SELECT * FROM channel_settings WHERE owner_id=$1 AND provider='telegram' AND enabled=true",
+      [owner],
+    );
+    const row = rows[0];
+    return row?.ciphertext
+      ? { row, configured: open(await encryptionKey(), owner, row) }
+      : undefined;
+  }
+  async function pair(request: ChannelPairingRequest) {
+    return exclusive(async () => {
+      const current = await telegramRow();
+      if (!current || request.channelId !== 'telegram' || !/^\d{1,16}$/.test(request.senderId))
+        return false;
+      const { row, configured } = current;
+      const expected = Buffer.from(configured.TELEGRAM_PAIRING_CODE_HASH ?? '', 'hex');
+      const actual = Buffer.from(pairingHash(request.code), 'hex');
+      if (
+        configured.TELEGRAM_ALLOWED_USER_ID ||
+        accountId('telegram', configured) !== request.accountId ||
+        !(Number(configured.TELEGRAM_PAIRING_EXPIRES_AT) > Date.now()) ||
+        expected.length !== actual.length ||
+        !timingSafeEqual(expected, actual)
+      )
+        return false;
+      const next = Object.fromEntries(
+        Object.entries(configured).filter(([key]) => !key.startsWith('TELEGRAM_PAIRING_')),
+      );
+      next.TELEGRAM_ALLOWED_USER_ID = request.senderId;
+      const { pairingExpiresAt: _expired, ...rest } = summarySchema.parse(row.summary);
+      const summary = summarySchema.parse({ ...rest, pairedUser: request.senderName });
+      const oldEnvironment = await environment();
+      const nextEnvironment = {
+        ...Object.fromEntries(
+          Object.entries(oldEnvironment).filter(([key]) => !fields.telegram.has(key)),
+        ),
+        ...next,
+      };
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const updated = await client.query(
+          "UPDATE channel_settings SET ciphertext=$2,summary=$3,updated_at=now() WHERE owner_id=$1 AND provider='telegram' AND enabled=true AND ciphertext=$4",
+          [
+            owner,
+            seal(await encryptionKey(), owner, 'telegram', next),
+            JSON.stringify(summary),
+            row.ciphertext,
+          ],
+        );
+        if (updated.rowCount !== 1) throw new ChannelSetupFailure('pairing_unavailable');
+        await options.apply(nextEnvironment);
+        await client.query('COMMIT');
+        return true;
+      } catch (error) {
+        await client.query('ROLLBACK');
+        try {
+          await options.apply(oldEnvironment);
+        } catch {}
+        throw error;
+      } finally {
+        client.release();
+      }
+    });
+  }
+  async function restartPairing() {
+    return exclusive(async () => {
+      const current = await telegramRow();
+      if (!current || current.configured.TELEGRAM_ALLOWED_USER_ID)
+        throw new ChannelSetupFailure('pairing_unavailable');
+      const pairing = issuePairing(summarySchema.parse(current.row.summary));
+      const updated = await pool.query(
+        "UPDATE channel_settings SET ciphertext=$2,summary=$3,updated_at=now() WHERE owner_id=$1 AND provider='telegram' AND enabled=true AND ciphertext=$4",
+        [
+          owner,
+          seal(await encryptionKey(), owner, 'telegram', {
+            ...current.configured,
+            ...pairing.environment,
+          }),
+          JSON.stringify(pairing.summary),
+          current.row.ciphertext,
+        ],
+      );
+      if (updated.rowCount !== 1) throw new ChannelSetupFailure('pairing_unavailable');
+      return { ok: true, channel: pairing.summary, pairingUrl: pairing.pairingUrl };
     });
   }
   function registerRoutes(app: FastifyInstance) {
@@ -325,6 +450,8 @@ export async function createChannelSettings(
             'Telegram did not confirm the webhook registration. Check the public URL and try again.',
           activation_pending:
             'The setup was saved, but activation did not finish. Restart Otto to retry the saved setup, or replace it.',
+          pairing_unavailable:
+            'A new start link is not available. Remove Telegram and connect it again.',
         };
         reply
           .code(
@@ -347,11 +474,12 @@ export async function createChannelSettings(
         { bodyLimit: 16_384 },
         async (request) => change(providerSchema.parse(request.params.provider), request.body),
       );
+      scope.post('/api/channel-settings/telegram/pairing', { bodyLimit: 1024 }, restartPairing);
       scope.delete<{ Params: { provider: string } }>(
         '/api/channel-settings/:provider',
         async (request) => change(providerSchema.parse(request.params.provider)),
       );
     });
   }
-  return { registerRoutes, environment, status, recover };
+  return { registerRoutes, environment, status, recover, pair };
 }

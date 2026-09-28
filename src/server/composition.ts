@@ -828,6 +828,7 @@ export async function createApplication(
       admission,
       ownerId,
       resolveAttachments: artifacts.readTaskArtifacts,
+      ...(channelSettings ? { pair: channelSettings.pair } : {}),
       transport: meterMessaging(messaging, providerUsage),
       acceptVerification: (text, input) => chatVerification.accept(text, input),
       subscribe(listener) {
