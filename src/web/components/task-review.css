@@ -1,0 +1,132 @@
+.task-review h2 {
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+.task-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.task-review-error {
+  margin-top: 8px;
+  color: var(--error);
+  font-size: 12px;
+}
+.task-review-card {
+  display: grid;
+  gap: 12px;
+  margin-left: 40px;
+  max-width: min(100% - 40px, 62ch);
+  padding: 16px 18px 16px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warning);
+  border-radius: 6px 14px 14px 6px;
+  background: var(--surface);
+}
+.task-review-card header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.task-review-badge {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border-radius: 8px;
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.task-review-card > p {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.task-review-card strong {
+  color: var(--foreground);
+  font-weight: 600;
+}
+.task-review-held {
+  margin: 0;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--surface-inset);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.task-review-held span {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.task-review-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 10px;
+  padding: 11px 12px 11px 14px;
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border));
+  border-radius: 12px;
+  background: var(--warning-soft);
+}
+.task-review-banner .task-review-icon {
+  flex: none;
+  color: var(--warning);
+}
+.task-review-banner .task-review-copy {
+  flex: 1;
+  min-width: 0;
+}
+.task-review-banner h2 {
+  font-size: 13px;
+}
+.task-review-banner p {
+  margin-top: 1px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.task-review-banner .task-review-actions {
+  flex: none;
+}
+.task-review-message .message-content {
+  display: grid;
+  gap: 10px;
+}
+.task-review-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  justify-self: start;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 11px;
+  font-weight: 600;
+}
+@container (max-width: 560px) {
+  .task-review-card {
+    margin-left: 0;
+    max-width: none;
+  }
+  .task-review-banner {
+    flex-wrap: wrap;
+  }
+  .task-review-banner .task-review-actions {
+    width: 100%;
+    padding-left: 28px;
+  }
+}

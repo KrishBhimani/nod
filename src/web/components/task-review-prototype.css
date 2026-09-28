@@ -1,0 +1,39 @@
+.task-review-prototype-switcher {
+  position: fixed;
+  top: 10px;
+  left: 50%;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  transform: translateX(-50%);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 6px 24px color-mix(in srgb, var(--foreground) 12%, transparent);
+  font-size: 12px;
+}
+.task-review-prototype-switcher > span {
+  padding: 0 6px;
+  color: var(--muted-foreground);
+}
+.task-review-prototype-switcher a {
+  padding: 4px 9px;
+  border-radius: 7px;
+  color: var(--foreground);
+  font-weight: 600;
+}
+.task-review-prototype-switcher a small {
+  font-weight: 400;
+  color: var(--muted-foreground);
+}
+.task-review-prototype-switcher a[aria-current] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+@media (max-width: 560px) {
+  .task-review-prototype-switcher a small {
+    display: none;
+  }
+}

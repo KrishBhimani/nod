@@ -6,6 +6,7 @@ import { createGateway } from '../src/server/gateway.ts';
 import type { AuthenticatedSession, AuthenticationProvider } from '../src/ports/authentication.ts';
 import type { StoredAccount } from '../src/server/account-store.ts';
 import { defaultPreferences, preferencesSchema } from '../src/server/preferences.ts';
+import type { Message, Task } from '../src/shared/contracts.ts';
 import {
   integrationServiceIds,
   integrationServices,
@@ -31,6 +32,52 @@ const consent = new Map<
   string,
   { ownerId: string; service: IntegrationService; returnTo: string }
 >();
+const blockedWork = new Map<
+  string,
+  { taskId: string; closed: boolean; messages: Message[]; tasks: Task[] }
+>();
+function conversation(owner: string) {
+  const existing = blockedWork.get(owner);
+  if (existing) return existing;
+  const taskId = randomUUID();
+  const started = Date.now() - 6 * 60_000;
+  const title = 'Send the April invoice to Sam';
+  const value = {
+    taskId,
+    closed: false,
+    messages: [
+      {
+        id: randomUUID(),
+        role: 'user' as const,
+        text: 'Send the April invoice to Sam at sam@example.test from the billing portal.',
+        taskId,
+        attachments: [],
+        createdAt: new Date(started).toISOString(),
+      },
+      {
+        id: randomUUID(),
+        role: 'assistant' as const,
+        text: 'I couldn’t finish that.',
+        taskId,
+        attachments: [],
+        createdAt: new Date(started + 90_000).toISOString(),
+      },
+    ],
+    tasks: [
+      {
+        id: taskId,
+        title,
+        status: 'failed' as const,
+        error: 'I couldn’t finish that.',
+        createdAt: new Date(started).toISOString(),
+        updatedAt: new Date(started + 90_000).toISOString(),
+        showTyping: true,
+      },
+    ],
+  };
+  blockedWork.set(owner, value);
+  return value;
+}
 const avatar = new Uint8Array(
   await readFile(new URL('../public/apple-touch-icon.png', import.meta.url)),
 );
@@ -109,8 +156,8 @@ const app = await createGateway({
       if (url.pathname === '/api/state')
         return Response.json({
           conversationRevision: 0,
-          messages: [],
-          tasks: [],
+          messages: conversation(owner).messages,
+          tasks: conversation(owner).tasks,
           configuration: {
             provider: 'fixture',
             model: 'Synthetic UI fixture',
@@ -181,11 +228,61 @@ const app = await createGateway({
       }
       if (url.pathname === '/api/messages/history')
         return Response.json({ messages: [], hasMore: false });
-      if (url.pathname === '/api/messages')
-        return Response.json(
-          { error: 'The UI fixture does not run an assistant.' },
-          { status: 503 },
+      if (url.pathname === '/api/messages' && request.method === 'GET') return Response.json([]);
+      if (url.pathname === '/api/messages') {
+        const work = conversation(owner);
+        const input = (await request.json()) as {
+          text: string;
+          clientMessageId?: string;
+          forceNew?: boolean;
+        };
+        if (!input.forceNew && !work.closed)
+          return Response.json(
+            {
+              error: 'I can’t safely repeat the earlier action because its outcome is unknown.',
+              code: 'task_review_required',
+              taskId: work.taskId,
+              summary: work.tasks[0].title,
+            },
+            { status: 409 },
+          );
+        const taskId = randomUUID();
+        const messageId = input.clientMessageId ?? randomUUID();
+        const now = new Date().toISOString();
+        work.messages.push(
+          {
+            id: messageId,
+            role: 'user',
+            text: input.text,
+            taskId,
+            attachments: [],
+            createdAt: now,
+          },
+          {
+            id: randomUUID(),
+            role: 'assistant',
+            text: 'The UI fixture accepted this as new work. It does not run an assistant.',
+            taskId,
+            attachments: [],
+            createdAt: now,
+          },
         );
+        work.tasks.unshift({
+          id: taskId,
+          title: input.text.slice(0, 100),
+          status: 'succeeded',
+          error: null,
+          createdAt: now,
+          updatedAt: now,
+          showTyping: true,
+        });
+        return Response.json({ taskId, continued: false, messageId });
+      }
+      const close = /^\/api\/tasks\/([^/]+)\/close$/.exec(url.pathname);
+      if (close && request.method === 'POST' && close[1] === conversation(owner).taskId) {
+        conversation(owner).closed = true;
+        return Response.json({ ok: true });
+      }
       return Response.json(
         { error: 'This capability is unavailable in the UI fixture.' },
         { status: 404 },

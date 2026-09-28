@@ -37,6 +37,12 @@ export interface SubmitMessageResponse {
   messageText?: string;
   verificationStatus?: 'pending' | 'submitted' | 'rejected' | 'unavailable';
 }
+export interface TaskReviewRequired {
+  error: string;
+  code: 'task_review_required';
+  taskId: string;
+  summary: string;
+}
 export interface VerificationRequest {
   id: string;
   taskId: string;
