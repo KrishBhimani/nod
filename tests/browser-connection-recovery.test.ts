@@ -54,20 +54,15 @@ async function fixture(
   const observations: RuntimeObservation[] = [];
   const questions: string[] = [];
   const queries: string[] = [];
-  const foreignId = randomUUID();
-  const foreignOwner = randomUUID();
   const pool = {
     query: async (sql: string, params: unknown[] = []) => {
       if (sql.includes('CREATE TABLE IF NOT EXISTS browser_connections'))
         return { rows: [], rowCount: 0 };
       queries.push(sql);
       if (options.fail === 'database') throw new Error('Private database fixture detail');
-      if (sql === 'SELECT id FROM browser_connections WHERE id=$1 AND owner_id=$2') {
+      if (sql === 'SELECT id,origin FROM browser_connections WHERE id=$1 AND owner_id=$2') {
         assert.equal(params[1], owner);
-        return {
-          rows: params[0] === foreignId && params[1] === foreignOwner ? [{ id: foreignId }] : [],
-          rowCount: 0,
-        };
+        return { rows: [], rowCount: 0 };
       }
       if (sql === 'SELECT status,revision FROM tasks WHERE id=$1 AND owner_id=$2') {
         assert.deepEqual(params, [taskId, owner]);
@@ -217,7 +212,6 @@ async function fixture(
     observations,
     questions,
     modelResults,
-    foreignId,
     store,
     run: () => runtime.runTask(context),
     saved: async () =>
@@ -233,10 +227,12 @@ const receipts = (text: string, state: 'pending' | 'completed') =>
     .map((line) => JSON.parse(line))
     .filter((entry) => entry.customType === `otto_tool_${state}`);
 
-test('saved credentials and browser sessions have explicit model metadata while UI IDs stay unchanged', async (t) => {
+test('saved credentials and reconnectable browser sessions have explicit model metadata while UI IDs stay unchanged', async (t) => {
   const owner = randomUUID(),
-    vaultId = randomUUID(),
-    sessionId = randomUUID();
+    vaultId = randomUUID();
+  const sessions = (['saved', 'needs_sign_in', 'pending', 'disconnecting'] as const).map(
+    (state) => ({ id: randomUUID(), state }),
+  );
   const app = Fastify();
   t.after(() => app.close());
   const pool = {
@@ -285,18 +281,17 @@ test('saved credentials and browser sessions have explicit model metadata while 
         updatedAt: new Date().toISOString(),
       },
     ],
-    browserConnections: async () => [
-      {
-        slug: 'browser-example',
-        name: 'example.test',
-        status: 'connected',
-        connectionId: sessionId,
-        browserState: 'saved',
-        browserUrl: 'https://example.test/private',
+    browserConnections: async () =>
+      sessions.map(({ id, state }) => ({
+        slug: `browser-${state}`,
+        name: `${state}.example.test`,
+        status: 'connected' as const,
+        connectionId: id,
+        browserState: state,
+        browserUrl: `https://${state}.example.test/private`,
         triggersEnabled: false,
-        accessPaths: [{ id: sessionId, kind: 'browser', endpoint: 'https://example.test' }],
-      },
-    ],
+        accessPaths: [{ id, kind: 'browser' as const, endpoint: `https://${state}.example.test` }],
+      })),
   });
   integrations.registerRoutes(app);
   await app.ready();
@@ -306,10 +301,17 @@ test('saved credentials and browser sessions have explicit model metadata while 
     listed.find((entry) => entry.connectionId === vaultId)?.browserAccess,
     'credentials_saved',
   );
-  assert.equal(
-    listed.find((entry) => entry.connectionId === sessionId)?.browserAccess,
-    'browser_session',
-  );
+  for (const { id, state } of sessions) {
+    const connection = listed.find((entry) => entry.connectionId === id);
+    assert.ok(connection);
+    assert.equal(connection.browserState, state);
+    if (state === 'saved' || state === 'needs_sign_in')
+      assert.equal(connection.browserAccess, 'browser_session');
+    else assert.equal('browserAccess' in connection, false);
+    assert.deepEqual(ui.find((entry) => entry.connectionId === id)?.accessPaths, [
+      { id, kind: 'browser', endpoint: `https://${state}.example.test` },
+    ]);
+  }
   assert.deepEqual(ui.find((entry) => entry.connectionId === vaultId)?.accessPaths, [
     { id: vaultId, kind: 'browser', endpoint: 'https://example.test' },
   ]);
@@ -356,22 +358,20 @@ for (const [name, input] of Object.entries({
 }
 
 for (const action of ['connect', 'use']) {
-  test(`${action} rejects a foreign or absent session ID without browser work`, async (t) => {
+  test(`${action} rejects an absent session ID without browser work`, async (t) => {
     const f = await fixture(t, async (execute) => {
-      for (const [index, connectionId] of [f.foreignId, randomUUID()].entries()) {
-        const rejected = (await execute(`missing-${index}`, 'browser_connection', {
-          action,
-          connectionId,
-          url: 'https://example.test',
-        })) as { status: string; code: string };
-        assert.equal(rejected.status, 'rejected');
-        assert.equal(rejected.code, 'browser_connection_unavailable');
-      }
+      const rejected = (await execute('missing', 'browser_connection', {
+        action,
+        connectionId: randomUUID(),
+        url: 'https://example.test',
+      })) as { status: string; code: string };
+      assert.equal(rejected.status, 'rejected');
+      assert.equal(rejected.code, 'browser_connection_unavailable');
     });
     assert.deepEqual(await f.run(), { status: 'succeeded' });
     assert.deepEqual(f.calls, []);
-    assert.equal(f.queries.length, 2);
-    assert.equal(receipts(await f.saved(), 'completed').length, 2);
+    assert.equal(f.queries.length, 1);
+    assert.equal(receipts(await f.saved(), 'completed').length, 1);
     assert.deepEqual(f.questions, []);
   });
 }

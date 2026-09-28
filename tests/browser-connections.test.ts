@@ -319,6 +319,32 @@ connectionTest(
     );
     assert.ok('status' in rejected);
     assert.equal(rejected.status, 'rejected');
+    const before = (
+      await pool.query('SELECT * FROM browser_connections WHERE id=$1', [connectionId])
+    ).rows[0];
+    const bindingCount = bindings.length;
+    const closeCount = closed.length;
+    for (const action of ['connect', 'use'] as const) {
+      for (const url of [
+        'https://www.technogym.com/en-IE/',
+        'https://api.linkedin.com/jobs/',
+        'https://www.linkedin.com:8443/jobs/',
+      ]) {
+        const mismatch = await service.request(
+          { action, connectionId, url },
+          { id: randomUUID(), revision: 0 },
+        );
+        assert.ok('code' in mismatch);
+        assert.equal(mismatch.status, 'rejected');
+        assert.equal(mismatch.code, 'browser_connection_origin_mismatch');
+      }
+    }
+    assert.equal(bindings.length, bindingCount);
+    assert.equal(closed.length, closeCount);
+    assert.deepEqual(
+      (await pool.query('SELECT * FROM browser_connections WHERE id=$1', [connectionId])).rows[0],
+      before,
+    );
     await pool.query("UPDATE browser_connections SET checked_at='2000-01-01' WHERE id=$1", [
       connectionId,
     ]);

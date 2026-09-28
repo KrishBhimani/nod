@@ -492,15 +492,16 @@ export async function createBrowserConnections(
         'Use connect with a secure website URL, or use with a saved browser session UUID and URL. Saved Vault credentials require the browser and request_credentials after fresh inspection. No browser action was started.',
     };
     if (!input.success) return invalid;
+    let address: URL;
     try {
-      site(input.data.url);
+      address = site(input.data.url);
     } catch (error) {
       if (error instanceof BrowserConnectionError && error.statusCode === 400) return invalid;
       throw error;
     }
     if (input.data.connectionId) {
-      const found = await pool.query<{ id: string }>(
-        'SELECT id FROM browser_connections WHERE id=$1 AND owner_id=$2',
+      const found = await pool.query<{ id: string; origin: string }>(
+        'SELECT id,origin FROM browser_connections WHERE id=$1 AND owner_id=$2',
         [input.data.connectionId, options.ownerId],
       );
       signal?.throwIfAborted();
@@ -510,6 +511,13 @@ export async function createBrowserConnections(
           code: 'browser_connection_unavailable',
           message:
             'The selected saved browser session is unavailable. Check manage_apps for browserAccess: browser_session. Entries marked credentials_saved require the browser and request_credentials after fresh inspection. No browser action was started.',
+        };
+      if (found.rows[0].origin !== address.origin)
+        return {
+          status: 'rejected' as const,
+          code: 'browser_connection_origin_mismatch',
+          message:
+            'The selected saved browser session belongs to another website origin. Use its saved origin or connect to the requested website separately. No browser action was started.',
         };
     }
     signal?.throwIfAborted();

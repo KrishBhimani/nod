@@ -1492,9 +1492,12 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         return (await list()).map(
           ({ accountId: _accountId, browserUrl: _browserUrl, ...connection }) => ({
             ...connection,
-            ...(connection.accessPaths?.some((path) => path.kind === 'browser') && {
-              browserAccess: connection.browserState ? 'browser_session' : 'credentials_saved',
-            }),
+            ...(connection.accessPaths?.some((path) => path.kind === 'browser') &&
+              (connection.browserState === undefined
+                ? { browserAccess: 'credentials_saved' }
+                : ['saved', 'needs_sign_in'].includes(connection.browserState)
+                  ? { browserAccess: 'browser_session' }
+                  : {})),
           }),
         );
       if (action === 'propose') {

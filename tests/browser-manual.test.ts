@@ -383,6 +383,7 @@ test('queued browser closes cannot persist a retired session after disposal', as
       closing[1].then(() => 'closed'),
       detachedWrite.promise.then(() => 'detached write'),
     ]);
+    writeAllowed.resolve();
     await f.computer.dispose();
     assert.equal(outcome, 'closed');
     assert.equal(closedWrites, 1);
