@@ -520,7 +520,7 @@ export function createAgentRuntime(dependencies: {
           const connection = result as { name?: unknown; url?: unknown };
           if (typeof connection.name !== 'string' || typeof connection.url !== 'string')
             throw new Error('The app did not provide a sign-in link.');
-          question = `I need an account connection for this task. [Connect ${connection.name}](${connection.url}) securely, then I will continue here.`;
+          question = `I need access to your ${connection.name} account for this task. [Connect ${connection.name}](${connection.url}) and I will continue here.`;
           status = 'waiting_user';
           waitingFor = 'question';
           stopped = true;
@@ -560,8 +560,8 @@ export function createAgentRuntime(dependencies: {
             throw new Error('The website did not provide a sign-in link.');
           question =
             p.action === 'use'
-              ? `This website needs sign-in again. [Continue sign-in](${connection.url}) securely, then I will continue this task.`
-              : `I opened the website in Otto’s private browser. [Connect website](${connection.url}) securely, then I will continue this task.`;
+              ? `This website needs you to sign in again. [Continue sign-in](${connection.url}) and I will continue the task.`
+              : `I opened the website in Otto’s private browser. [Connect website](${connection.url}) to sign in, then I will continue the task.`;
           status = 'waiting_user';
           waitingFor = 'question';
           stopped = true;

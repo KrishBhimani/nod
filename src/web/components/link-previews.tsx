@@ -17,7 +17,7 @@ export function MessageLinkPreviews({
     const links = [...(content.current?.querySelectorAll<HTMLAnchorElement>('a[href]') ?? [])].map(
       (anchor) => safeMessageLink(anchor.getAttribute('href') ?? '', window.location.origin),
     );
-    const urls = links.some((link) => link?.kind === 'credential')
+    const urls = content.current?.querySelector('[data-setup]')
       ? []
       : [
           ...new Set(

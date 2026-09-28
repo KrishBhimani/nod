@@ -323,7 +323,7 @@ test('Vault invitations name the broker-observed site and step without using unt
       { origin: 'https://www.example.com', kind: 'identifier', methodSelection: true },
       '/vault/fixture',
     ),
-    'https://www.example.com needs you to sign in. [Choose a sign-in method](/vault/fixture).',
+    'https://www.example.com needs you to sign in. [Choose a sign-in method](/vault/fixture) and I will continue the task.',
   );
   assert.equal(
     vaultInvitation(
@@ -333,7 +333,7 @@ test('Vault invitations name the broker-observed site and step without using unt
       },
       '/vault/fixture',
     ),
-    'https://accounts.example.com:8443 needs you to sign in. [Enter login details](/vault/fixture).',
+    'https://accounts.example.com:8443 needs you to sign in. [Enter login details](/vault/fixture) and I will continue the task.',
   );
   for (const link of [
     'https://attacker.test/secret',
@@ -369,7 +369,7 @@ test('Vault invitations name the broker-observed site and step without using unt
     },
   );
   assert.deepEqual(result.replies, [
-    'https://example.com needs you to sign in. [Enter login details](/vault/fixture).',
+    'https://example.com needs you to sign in. [Enter login details](/vault/fixture) and I will continue the task.',
   ]);
 });
 
@@ -516,7 +516,7 @@ test('chat login solicitations use an inspected identifier step and a Vault link
     assert.equal(requests[0].kind, 'identifier');
     assert.equal(requests[0].origin, 'https://x.com');
     assert.deepEqual(result.replies, [
-      'https://x.com needs you to sign in. [Enter login details](/vault/fixture).',
+      'https://x.com needs you to sign in. [Enter login details](/vault/fixture) and I will continue the task.',
     ]);
     assert.equal(result.deltas.join('').includes('username'), false);
   }
@@ -609,7 +609,7 @@ test('chat connection shows one sign-in link and waits for its callback', async 
   assert.equal(result.aborted, true);
   assert.deepEqual(result.replies, []);
   assert.deepEqual(questions, [
-    'I need an account connection for this task. [Connect Linear](https://mcp.linear.app/authorize) securely, then I will continue here.',
+    'I need access to your Linear account for this task. [Connect Linear](https://mcp.linear.app/authorize) and I will continue here.',
   ]);
 });
 
@@ -843,7 +843,7 @@ test('background runs can still pause with one credential or approval request', 
   );
   assert.equal(credentials.result.status, 'waiting_credentials');
   assert.deepEqual(credentials.replies, [
-    'https://example.com needs you to sign in. [Enter login details](/credentials/fixture).',
+    'https://example.com needs you to sign in. [Enter login details](/credentials/fixture) and I will continue the task.',
   ]);
   const approval = await fixture(
     async (tools) => {
