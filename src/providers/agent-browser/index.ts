@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, readdir, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type {
@@ -12,7 +12,7 @@ import type {
   LoginInspection,
   ManualBrowserInput,
 } from '../../ports/computer.ts';
-import { BrowserActionError, browserDownloadBytes } from '../../ports/computer.ts';
+import { BrowserActionError } from '../../ports/computer.ts';
 import { taskId } from '../../ports/task-identity.ts';
 import { runProcess, serviceEnvironment } from '../process.ts';
 import { createBrowserProxy, browserUrl } from './network.ts';
@@ -39,6 +39,7 @@ import { createBrowserSignIn, resolveSignInBrowser, type BrowserSignInHandle } f
 import { createSignInDesktop, type SignInDesktop } from './desktop.ts';
 import {
   completedDownloads,
+  createDownloadCapture,
   decodeDownload,
   downloadName,
   fetchDownloadScript,
@@ -1024,7 +1025,7 @@ export function createAgentBrowserComputer(options: {
       const current = await currentUrl(state, signal);
       const directory = resolve(runtimeRoot, 'downloads', state.id);
       const existing = await completedDownloads(directory);
-      const target = input.selector ? selector(input.selector) : undefined;
+      let target = input.selector ? selector(input.selector) : undefined;
       let url = input.url;
       if (target) {
         const href = await command(state, ['get', 'attr', target, 'href'], { signal });
@@ -1051,8 +1052,11 @@ export function createAgentBrowserComputer(options: {
           return result;
         }
       }
+      const crossOrigin = url && new URL(url).origin !== new URL(current).origin;
       if (url) {
         if (!url.startsWith(`blob:${new URL(current).origin}/`)) browserUrl(url);
+      }
+      if (url && !crossOrigin) {
         const result = await command(state, ['eval', '--stdin'], {
           input: fetchDownloadScript(url),
           signal,
@@ -1062,46 +1066,64 @@ export function createAgentBrowserComputer(options: {
         return decodeDownload(result.result, input.name);
       }
       await mkdir(directory, { recursive: true, mode: 0o700 });
-      const file = `capture-${randomUUID()}`;
+      const capture = await createDownloadCapture(directory);
+      const anchor = !target ? `sidekick-download-${randomUUID()}` : undefined;
       const controller = new AbortController();
       const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
-      let watching = false;
+      let watching: Promise<void> | undefined;
+      let completed = false;
       const watch = setInterval(() => {
         if (watching) return;
-        watching = true;
-        void (async () => {
-          const names = await readdir(directory);
-          if (names.length > 64) throw new Error();
-          let size = 0;
-          for (const name of names.filter((name) => !existing.includes(name))) {
-            const info = await lstat(resolve(directory, name)).catch((error) => {
-              if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-              throw error;
-            });
-            if (!info) continue;
-            if (!info.isFile() || info.isSymbolicLink()) throw new Error();
-            size += info.size;
-          }
-          if (size > browserDownloadBytes) throw new Error();
-        })()
+        watching = capture
+          .inspect()
+          .then(() => {})
           .catch(() => controller.abort())
           .finally(() => {
-            watching = false;
+            watching = undefined;
           });
       }, 25);
       try {
-        await command(state, ['download', target!, resolve(directory, file)], { signal: combined });
+        if (anchor) {
+          await evaluate(
+            state,
+            `(() => {
+            const anchor = document.createElement('a');
+            anchor.id = ${JSON.stringify(anchor)};
+            anchor.href = ${JSON.stringify(url)};
+            anchor.textContent = 'Download file';
+            anchor.style.cssText = 'position:fixed;top:0;left:0;z-index:2147483647;background:white;color:black;padding:8px';
+            document.documentElement.append(anchor);
+          })()`,
+            combined,
+          );
+          target = `#${anchor}`;
+        }
+        await command(state, ['download', target!, resolve(directory, capture.file)], {
+          signal: combined,
+        });
         combined.throwIfAborted();
-        const files = (await completedDownloads(directory)).filter(
-          (name) => !existing.includes(name),
-        );
-        if (files.length !== 1) throw new Error('The browser download did not finish.');
-        const result = await readDownload(directory, files[0], input.name);
+        const files = await capture.inspect();
+        if (files.length !== 1 || files[0] !== capture.file)
+          throw new Error('The browser download did not finish.');
+        const result = await readDownload(directory, capture.file, input.name);
         combined.throwIfAborted();
-        await unlink(resolve(directory, files[0]));
+        completed = true;
         return result;
+      } catch (error) {
+        if (!completed && !state.closed && !state.closing)
+          await drainInterruptedCommand(state, 'download', async () => {
+            throw new Error('The browser download did not finish.');
+          });
+        throw error;
       } finally {
         clearInterval(watch);
+        await watching;
+        try {
+          if (anchor && !state.closed && !state.closing)
+            await evaluate(state, `document.getElementById(${JSON.stringify(anchor)})?.remove()`);
+        } finally {
+          if (completed || state.closed) await capture.cleanup();
+        }
       }
     });
   }

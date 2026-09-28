@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -31,25 +31,45 @@ test(
     assert.ok(process.env.TEST_DATABASE_URL, 'A disposable test database is required.');
     if (native)
       assert.ok(process.env.SIDEKICK_TEST_BROWSER_EXECUTABLE, 'A native browser is required.');
+    const cleanup: Array<() => Promise<unknown>> = [];
+    t.after(async () => {
+      const failures: unknown[] = [];
+      for (const dispose of cleanup.reverse()) {
+        try {
+          await dispose();
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (failures.length) throw new AggregateError(failures, 'Fixture cleanup failed.');
+    });
     const suffix = randomUUID().replaceAll('-', '').slice(0, 16);
     const schema = `test_browser_delivery_${suffix}`;
     const bossSchema = `test_browser_delivery_boss_${suffix}`;
     const dataRoot = await mkdtemp(join(tmpdir(), 'sidekick-browser-delivery-'));
+    cleanup.push(() => rm(dataRoot, { recursive: true, force: true }));
     const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    cleanup.push(() => admin.end());
     await admin.query(`CREATE SCHEMA ${schema}`);
+    cleanup.push(() => admin.query(`DROP SCHEMA ${schema} CASCADE`));
+    cleanup.push(() => admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`));
     const database = new URL(process.env.TEST_DATABASE_URL);
     database.searchParams.set('options', `-c search_path=${schema}`);
+    database.searchParams.set('application_name', schema);
     process.env.DATABASE_URL = database.href;
+    process.env.DATABASE_POOL_MAX = '4';
     process.env.PGBOSS_SCHEMA = bossSchema;
     process.env.SIDEKICK_DATA_ROOT = dataRoot;
     process.env.SIDEKICK_MODE = 'local';
     const db = await import('../src/server/db.ts');
+    cleanup.push(() => db.pool.end());
     const tasks = await import('../src/server/tasks.ts');
     const { createApp } = await import('../src/server/app.ts');
     const { createPersonalService } = await import('../src/server/personal.ts');
     const { createArtifactService, localArtifacts } = await import('../src/server/artifacts.ts');
     const { ownerId, port } = await import('../src/server/config.ts');
     const app = await createApp();
+    cleanup.push(() => app.close());
     const headers = { host: `localhost:${port}` };
     const sent: Array<{ chat: string; name: string; mimeType: string; bytes: Buffer }> = [];
     const fetchLocal = globalThis.fetch.bind(globalThis);
@@ -57,6 +77,18 @@ test(
     const held = new Map<string, RuntimeContext>();
     const release = new Map<string, () => void>();
     const runtimes = new Map<string, ReturnType<typeof createAgentRuntime>>();
+    const publications = new Map<
+      string,
+      { stored: (artifact: Artifact) => void; resume: Promise<void> }
+    >();
+    const publicationStarts = new Map<string, { enter: () => void; resume: Promise<void> }>();
+    cleanup.push(async () => {
+      const results = await Promise.allSettled(
+        [...runtimes.values()].map((runtime) => runtime.dispose()),
+      );
+      for (const result of results) if (result.status === 'rejected') throw result.reason;
+    });
+    cleanup.push(() => tasks.stopTasks());
     let channels: Awaited<ReturnType<typeof createChannels>> | undefined;
     const forbidden = async () => {
       throw new Error('Unused fixture capability.');
@@ -132,8 +164,26 @@ test(
         submit: (text, sourceId, client, channel, _prepared, messageId) =>
           tasks.submitTask(text, [], undefined, false, { sourceId, client, channel, messageId }),
       });
+      cleanup.push(() => channels!.close());
       channels.registerRoutes(app);
       await tasks.startTaskWorkers({
+        artifacts: {
+          ...localArtifacts,
+          async storeArtifact(...args) {
+            const starting = args[3] ? publicationStarts.get(args[3]) : undefined;
+            if (starting) {
+              starting.enter();
+              await starting.resume;
+            }
+            const artifact = await localArtifacts.storeArtifact(...args);
+            const publication = args[3] ? publications.get(args[3]) : undefined;
+            if (publication) {
+              publication.stored(artifact);
+              await publication.resume;
+            }
+            return artifact;
+          },
+        },
         runTask: async (context) => {
           if (context.prompt.startsWith('Held ')) {
             held.set(context.taskId, context);
@@ -151,8 +201,9 @@ test(
       });
       let updateId = 0;
       for (const mode of ['adapter fixture', 'authenticated native Chromium'] as const) {
-        await t.test(mode, { skip: mode !== 'adapter fixture' && !native }, async () => {
+        await t.test(mode, { skip: mode !== 'adapter fixture' && !native }, async (test) => {
           const fixture = await createBrowserDownloadFixture();
+          test.after(() => fixture.close());
           assert.equal(
             (
               await fetchLocal(`${fixture.origin}/invoice.pdf`, {
@@ -355,10 +406,71 @@ test(
           } finally {
             await runtime.dispose();
             runtimes.delete(prompt);
-            await fixture.close();
           }
         });
       }
+      await t.test(
+        'four concurrent browser publications share their four transaction clients',
+        async () => {
+          const ids = await Promise.all(
+            Array.from({ length: 4 }, (_, index) =>
+              tasks.submitTask(`Held concurrent browser publication ${index}`),
+            ),
+          );
+          await waitFor(() => ids.every((id) => held.has(id)));
+          const entered = new Set<string>();
+          let resume!: () => void;
+          const resumed = new Promise<void>((resolve) => {
+            resume = resolve;
+          });
+          for (const id of ids)
+            publicationStarts.set(id, { enter: () => entered.add(id), resume: resumed });
+          const publishing = Promise.allSettled(
+            ids.map((id) =>
+              held.get(id)!.publishBrowserFile!({
+                bytes: browserDownloadPdf,
+                name: 'invoice.pdf',
+                mimeType: 'application/pdf',
+              }),
+            ),
+          );
+          try {
+            await waitFor(() => entered.size === 4);
+            assert.equal(db.pool.totalCount, 4);
+            assert.equal(db.pool.idleCount, 0);
+            resume();
+            const results = await publishing;
+            assert.deepEqual(
+              results.map((result) => result.status),
+              Array(4).fill('fulfilled'),
+            );
+            for (const [index, result] of results.entries()) {
+              assert.equal(result.status, 'fulfilled');
+              const messages = (
+                await db.pool.query(
+                  "SELECT attachments FROM messages WHERE task_id=$1 AND owner_id=$2 AND role='assistant'",
+                  [ids[index], ownerId],
+                )
+              ).rows;
+              assert.deepEqual(
+                messages.map((message) => message.attachments),
+                [[result.value]],
+              );
+              assert.deepEqual(
+                await localArtifacts.readArtifact(result.value.id),
+                browserDownloadPdf,
+              );
+            }
+          } finally {
+            resume();
+            await publishing;
+            for (const id of ids) {
+              publicationStarts.delete(id);
+              release.get(id)!();
+            }
+          }
+        },
+      );
       await t.test(
         'cancelled and obsolete task callbacks cannot publish captured bytes',
         async () => {
@@ -397,17 +509,160 @@ test(
           }
         },
       );
+      await t.test(
+        'failed message insertion rolls back metadata without deleting retained bytes',
+        async () => {
+          const id = await tasks.submitTask('Held rejected browser publication');
+          await waitFor(() => held.has(id));
+          let artifact: Artifact | undefined;
+          publications.set(id, {
+            stored: (file) => {
+              artifact = file;
+            },
+            resume: Promise.resolve(),
+          });
+          await db.pool.query(
+            `ALTER TABLE messages ADD CONSTRAINT reject_browser_publication CHECK (role<>'assistant' OR task_id IS DISTINCT FROM '${id}'::uuid)`,
+          );
+          try {
+            await assert.rejects(
+              held.get(id)!.publishBrowserFile!({
+                bytes: browserDownloadPdf,
+                name: 'invoice.pdf',
+                mimeType: 'application/pdf',
+              }),
+              { code: '23514' },
+            );
+            assert.ok(artifact);
+            assert.equal(
+              (await db.pool.query('SELECT id FROM artifacts WHERE task_id=$1', [id])).rowCount,
+              0,
+            );
+            assert.equal(
+              (
+                await db.pool.query(
+                  "SELECT id FROM messages WHERE task_id=$1 AND role='assistant'",
+                  [id],
+                )
+              ).rowCount,
+              0,
+            );
+            await assert.rejects(localArtifacts.readArtifact(artifact.id), /unavailable/);
+            assert.deepEqual(
+              await readFile(join(dataRoot, 'artifacts', artifact.id)),
+              browserDownloadPdf,
+            );
+          } finally {
+            await db.pool.query('ALTER TABLE messages DROP CONSTRAINT reject_browser_publication');
+            publications.delete(id);
+            release.get(id)!();
+          }
+        },
+      );
+      await t.test(
+        'committed attachment bytes survive a failed refresh acknowledgement',
+        async () => {
+          const id = await tasks.submitTask('Held committed browser publication');
+          await waitFor(() => held.has(id));
+          const { events } = await import('../src/server/events.ts');
+          const failure = new Error('Synthetic refresh acknowledgement failure.');
+          const rejectRefresh = () => {
+            throw failure;
+          };
+          events.once('event', rejectRefresh);
+          try {
+            await assert.rejects(
+              held.get(id)!.publishBrowserFile!({
+                bytes: browserDownloadPdf,
+                name: 'invoice.pdf',
+                mimeType: 'application/pdf',
+              }),
+              failure,
+            );
+            const rows = (
+              await db.pool.query(
+                "SELECT a.id FROM artifacts a JOIN messages m ON m.task_id=a.task_id AND m.attachments @> jsonb_build_array(jsonb_build_object('id',a.id)) WHERE a.task_id=$1 AND a.owner_id=$2 AND m.owner_id=$2 AND m.role='assistant'",
+                [id, ownerId],
+              )
+            ).rows;
+            assert.equal(rows.length, 1);
+            assert.deepEqual(await localArtifacts.readArtifact(rows[0].id), browserDownloadPdf);
+          } finally {
+            events.off('event', rejectRefresh);
+            release.get(id)!();
+          }
+        },
+      );
+      await t.test(
+        'publication keeps its message when cancellation or reset waits on stored bytes',
+        async () => {
+          for (const action of ['cancel', 'reset'] as const) {
+            const id = await tasks.submitTask(`Held ${action} during browser publication`);
+            await waitFor(() => held.has(id));
+            let markStored!: (artifact: Artifact) => void;
+            const stored = new Promise<Artifact>((resolve) => {
+              markStored = resolve;
+            });
+            let resume!: () => void;
+            const resumed = new Promise<void>((resolve) => {
+              resume = resolve;
+            });
+            publications.set(id, { stored: markStored, resume: resumed });
+            const publishing = held.get(id)!.publishBrowserFile!({
+              bytes: browserDownloadPdf,
+              name: 'invoice.pdf',
+              mimeType: 'application/pdf',
+            }).then(
+              (artifact) => ({ artifact }),
+              (error: unknown) => ({ error }),
+            );
+            const artifact = await stored;
+            const cancelling =
+              action === 'cancel' ? tasks.cancelTask(id) : tasks.resetConversation();
+            try {
+              assert.equal(
+                (await admin.query(`SELECT id FROM ${schema}.artifacts WHERE id=$1`, [artifact.id]))
+                  .rowCount,
+                0,
+              );
+              await waitFor(async () => {
+                const blocked = await admin.query(
+                  "SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock' AND query LIKE 'UPDATE tasks SET status=''cancelled''%'",
+                  [schema],
+                );
+                return blocked.rowCount === 1;
+              });
+              resume();
+              const result = await publishing;
+              await cancelling;
+              assert.deepEqual(result, { artifact });
+              const messages = (
+                await db.pool.query(
+                  "SELECT attachments FROM messages WHERE task_id=$1 AND owner_id=$2 AND role='assistant'",
+                  [id, ownerId],
+                )
+              ).rows;
+              assert.deepEqual(
+                messages.map((message) => message.attachments),
+                [[artifact]],
+              );
+              assert.equal(
+                (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [id])).rows[0].status,
+                'cancelled',
+              );
+              assert.deepEqual(await localArtifacts.readArtifact(artifact.id), browserDownloadPdf);
+            } finally {
+              resume();
+              await publishing;
+              await cancelling;
+              publications.delete(id);
+              release.get(id)!();
+            }
+          }
+        },
+      );
     } finally {
       for (const finish of release.values()) finish();
-      await channels?.close();
-      await tasks.stopTasks();
-      await Promise.all([...runtimes.values()].map((runtime) => runtime.dispose()));
-      await app.close();
-      await db.pool.end();
-      await admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`);
-      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
-      await admin.end();
-      await rm(dataRoot, { recursive: true, force: true });
     }
   },
 );

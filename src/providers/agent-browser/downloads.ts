@@ -1,5 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, open, readdir } from 'node:fs/promises';
+import { lstat, open, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { browserDownloadBytes, type BrowserDownload } from '../../ports/computer.ts';
 
@@ -103,6 +104,60 @@ export async function readDownload(directory: string, file: string, name?: strin
   } finally {
     await handle.close();
   }
+}
+
+export async function createDownloadCapture(directory: string) {
+  const root = await lstat(directory);
+  if (!root.isDirectory() || root.isSymbolicLink())
+    throw new Error('The browser download directory is unavailable.');
+  const entries = async () => {
+    const current = await lstat(directory);
+    if (
+      !current.isDirectory() ||
+      current.isSymbolicLink() ||
+      current.dev !== root.dev ||
+      current.ino !== root.ino
+    )
+      throw new Error('The browser download directory changed.');
+    const names = await readdir(directory);
+    if (names.length > 64) throw new Error('There are too many browser downloads.');
+    const files = await Promise.all(
+      names.map(async (name) => {
+        const info = await lstat(join(directory, name)).catch((error) => {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+          throw error;
+        });
+        return info ? { name, info } : undefined;
+      }),
+    );
+    return files.filter((file) => file !== undefined);
+  };
+  const previous = await entries();
+  const names = new Set(previous.map((file) => file.name));
+  const identities = new Set(previous.map(({ info }) => `${info.dev}:${info.ino}`));
+  const created = async () =>
+    (await entries()).filter(
+      ({ name, info }) => !names.has(name) && !identities.has(`${info.dev}:${info.ino}`),
+    );
+  return {
+    file: `capture-${randomUUID()}`,
+    async inspect() {
+      const files = await created();
+      if (
+        files.some(({ info }) => !info.isFile() || info.isSymbolicLink()) ||
+        files.reduce((size, { info }) => size + info.size, 0) > browserDownloadBytes
+      )
+        throw new Error('The browser download is unavailable or exceeds 12 MiB.');
+      return files.map((file) => file.name);
+    },
+    async cleanup() {
+      for (const { name, info } of await created()) {
+        if (!info.isFile() || info.isSymbolicLink())
+          throw new Error('The browser download cleanup is unavailable.');
+        await unlink(join(directory, name));
+      }
+    },
+  };
 }
 
 export function fetchDownloadScript(url: string) {

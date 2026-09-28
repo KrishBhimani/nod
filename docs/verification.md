@@ -1,5 +1,11 @@
 # Local verification
 
+## Channel isolation and browser downloads — 2026-09-28
+
+The follow-up channel/download changes passed the full local integration suite: **1,307 passed, zero failed, two native-only skips**. Root type/import/format checks and the production build passed. A separate Linux amd64 browser run passed **14 native checks with zero failures or skips**. The checks cover channel-specific web streams, authenticated browser downloads, cross-origin native attachments, current-PDF capture, download cleanup, cancellation/reset serialization and artifact publication without exhausting the database pool.
+
+These results validate the working change and its native browser fixture. They do not establish deployment of that change, live Telegram attachment delivery or E2B execution. Production release evidence remains in [the production chat record](testing/results/2026-09-27-production-chat.md); live-provider gaps are listed in [production](production.md). An authorized [environment reset](environment-reset.md) is a separate maintenance operation. Record its empty-state verification before subsequent authorized signup, acceptance or demo activity.
+
 Earlier browser validation: [Native browser sign-in checks](testing/results/2026-09-25-browser-sign-in.md). That report predates the current container-only browser architecture.
 
 Local UX and app-action validation: [Apps, chat and Inspector checks](testing/results/2026-09-25-apps-and-chat.md).
@@ -145,7 +151,7 @@ Live checks found and fixed a Composio SDK validation failure caused by absent a
 
 ## Still requiring setup or additional implementation
 
-Anthropic, Jev, live Telegram/WhatsApp delivery, new Google Drive/Docs/Sheets consent, external Google event delivery and real website credential/OTP flows are not live-verified. Telegram owned image/file delivery has synthetic transport and full-application coverage. WhatsApp media retains local-app guidance. iMessage, general host desktop control and public multi-user authentication are not implemented. Encrypted payment-card storage and optional security-code storage are implemented; card autofill and purchases are not. The private container browser sign-in view is distinct from general desktop control. Prompt instructions and HTML filtering are not a guarantee against every disclosure or prompt-injection attack. See [production requirements](production.md), [channels](channels.md) and [vault boundaries](vault.md).
+Anthropic, Jev, live Telegram/WhatsApp attachment delivery, new Google Drive/Docs/Sheets consent, external Google event delivery and the remaining real website credential/OTP flows are not live-verified. Telegram owned image/file delivery has synthetic transport and full-application coverage; production text replies exposed the channel-isolation defect addressed above. WhatsApp media retains local-app guidance. Hosted Google authentication and per-user isolation are implemented and have the scoped production evidence linked above; broader public rollout and complete provider acceptance remain incomplete. iMessage and general host desktop control are not implemented. Encrypted payment-card storage and optional security-code storage are implemented; card autofill and purchases are not. The private container browser sign-in view is distinct from general desktop control. Prompt instructions and HTML filtering are not a guarantee against every disclosure or prompt-injection attack. See [production requirements](production.md), [channels](channels.md) and [vault boundaries](vault.md).
 
 ## Historical tool and model inspection follow-up
 

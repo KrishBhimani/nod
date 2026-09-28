@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
@@ -9,6 +18,7 @@ import { browserDownloadBytes } from '../src/ports/computer.ts';
 import { createAgentBrowserComputer } from '../src/providers/agent-browser/index.ts';
 import {
   completedDownloads,
+  createDownloadCapture,
   decodeDownload,
   downloadFile,
   readDownload,
@@ -45,6 +55,25 @@ test('browser file validation bounds encoded bytes and rejects unsafe metadata',
   assert.throws(() => downloadFile(Buffer.from('text'), 'file', 'text/html\r\nX-Header: value'));
 });
 
+test('capture cleanup preserves existing files and their renamed identities after validation failure', async () => {
+  const root = await mkdtemp('/tmp/sk-download-cleanup-');
+  try {
+    await writeFile(join(root, 'previous.pdf'), browserDownloadPdf);
+    await writeFile(join(root, 'previous.crdownload'), 'previous partial');
+    const capture = await createDownloadCapture(root);
+    await rename(join(root, 'previous.crdownload'), join(root, 'previous-finished.pdf'));
+    await writeFile(join(root, capture.file), Buffer.alloc(browserDownloadBytes + 1));
+    await assert.rejects(capture.inspect());
+    await assert.rejects(readDownload(root, capture.file));
+    await capture.cleanup();
+    assert.deepEqual((await readdir(root)).sort(), ['previous-finished.pdf', 'previous.pdf']);
+    assert.equal(await readFile(join(root, 'previous-finished.pdf'), 'utf8'), 'previous partial');
+    assert.deepEqual(await readFile(join(root, 'previous.pdf')), browserDownloadPdf);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('browser captures refuse symlinks, partial files, multiple links and excessive file size', async () => {
   const root = await mkdtemp('/tmp/sk-download-files-');
   try {
@@ -71,21 +100,24 @@ test(
   'authenticated browser PDFs cross the real private bridge without sharing the profile',
   {
     skip: !process.env.SIDEKICK_TEST_BROWSER_EXECUTABLE,
-    timeout: 120_000,
+    timeout: 180_000,
   },
-  async () => {
+  async (t) => {
     const root = await mkdtemp('/tmp/sk-download-bridge-');
     const socketPath = join(root, 'control.sock');
+    let browserRoot = '';
     const fixture = await createBrowserDownloadFixture();
     const worker = await startContainerBrowserWorker({
       socketPath,
       dataRoot: root,
-      createComputer: (dataRoot) =>
-        createAgentBrowserComputer({
+      createComputer: (dataRoot) => {
+        browserRoot = dataRoot;
+        return createAgentBrowserComputer({
           dataRoot,
           browserExecutable: process.env.SIDEKICK_TEST_BROWSER_EXECUTABLE,
           headless: true,
-        }),
+        });
+      },
     });
     const launch: BrowserBridgeLauncher = () => {
       const process = Object.assign(new EventEmitter(), {
@@ -122,6 +154,19 @@ test(
           mimeType: 'application/pdf',
         });
       }
+      await computer.act('cross-inline', { action: 'open', url: `${fixture.origin}/session` });
+      const redirected = fixture.authenticatedDownloads();
+      await assert.rejects(
+        computer.download!('cross-inline', { url: `${fixture.origin}/redirect.pdf` }),
+      );
+      assert.equal(fixture.authenticatedDownloads(), redirected + 1);
+      await computer.act('cross-inline', {
+        action: 'open',
+        url: `${fixture.crossOrigin}/inline.pdf`,
+      });
+      assert.deepEqual((await computer.download!('cross-inline', {})).bytes, browserDownloadPdf);
+      await computer.act('blob-anchor', { action: 'click', selector: '#download' });
+      assert.deepEqual((await computer.download!('blob-anchor', {})).bytes, browserDownloadPdf);
       await computer.act('current-inline', { action: 'open', url: `${fixture.origin}/session` });
       await computer.act('current-inline', { action: 'click', selector: '#download' });
       await computer.act('current-inline', {
@@ -142,11 +187,56 @@ test(
       await assert.rejects(computer.download!('unrelated-task', {}));
       await assert.rejects(computer.download!('popup', { url: 'file:///etc/passwd' }));
       assert.equal(fixture.unauthenticatedDownloads(), 1);
+      for (const [id, input] of [
+        ['cross-selector', { selector: '#cross-origin', name: 'hosted.pdf' }],
+        ['cross-url', { url: `${fixture.crossOrigin}/invoice.pdf`, name: 'hosted.pdf' }],
+      ] as const) {
+        await t.test(id, async () => {
+          await computer.act(id, { action: 'open', url: `${fixture.origin}/session` });
+          const before = fixture.authenticatedDownloads();
+          assert.deepEqual((await computer.download!(id, input)).bytes, browserDownloadPdf);
+          assert.equal(fixture.authenticatedDownloads(), before + 1);
+        });
+      }
+      await computer.act('large', { action: 'open', url: `${fixture.origin}/session` });
+      const downloads = join(browserRoot, 'runtime', 'downloads', 'large');
+      await mkdir(downloads, { recursive: true });
+      await writeFile(join(downloads, 'previous.pdf'), browserDownloadPdf);
+      await writeFile(join(downloads, 'previous.crdownload'), 'preexisting partial');
+      await assert.rejects(computer.download!('large', { selector: '#large' }));
+      assert.deepEqual((await readdir(downloads)).sort(), ['previous.crdownload', 'previous.pdf']);
+      assert.deepEqual(await readFile(join(downloads, 'previous.pdf')), browserDownloadPdf);
+      assert.equal(
+        await readFile(join(downloads, 'previous.crdownload'), 'utf8'),
+        'preexisting partial',
+      );
+      await computer.act('slow', { action: 'open', url: `${fixture.origin}/session` });
+      const slowDirectory = join(browserRoot, 'runtime', 'downloads', 'slow');
+      await mkdir(slowDirectory, { recursive: true });
+      await writeFile(join(slowDirectory, 'previous.pdf'), browserDownloadPdf);
+      const abort = new AbortController();
+      const failed = assert.rejects(
+        computer.download!('slow', { selector: '#slow' }, abort.signal),
+      );
+      await fixture.slowDownloadStarted();
+      abort.abort();
+      await failed;
+      assert.deepEqual(await readdir(slowDirectory), ['previous.pdf']);
+      assert.deepEqual(await readFile(join(slowDirectory, 'previous.pdf')), browserDownloadPdf);
     } finally {
-      await computer.dispose();
-      await worker.close();
-      await fixture.close();
-      await rm(root, { recursive: true, force: true });
+      try {
+        await computer.dispose();
+      } finally {
+        try {
+          await worker.close();
+        } finally {
+          try {
+            await fixture.close();
+          } finally {
+            await rm(root, { recursive: true, force: true });
+          }
+        }
+      }
     }
   },
 );

@@ -232,15 +232,18 @@ test(
       });
     } finally {
       controller.abort();
-      await read;
-      for (const release of releases.values()) release({ status: 'succeeded' });
-      await app.close();
-      await tasks.stopTasks();
-      await db.pool.end();
-      await admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`);
-      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
-      await admin.end();
-      await rm(dataRoot, { recursive: true, force: true });
+      try {
+        await read;
+      } finally {
+        for (const release of releases.values()) release({ status: 'succeeded' });
+        await app.close();
+        await tasks.stopTasks();
+        await db.pool.end();
+        await admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`);
+        await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+        await admin.end();
+        await rm(dataRoot, { recursive: true, force: true });
+      }
     }
   },
 );

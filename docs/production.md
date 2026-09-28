@@ -70,6 +70,8 @@ Keep basic login separate from Gmail, Calendar and other app grants managed by C
 
 ## Durability and external actions
 
+For an authorized reset, follow [Resetting an environment](environment-reset.md). Deleting authentication rows or truncating the database alone leaves object storage, computer state and remote integration connections behind. Keep admission closed until all selected user resources have been removed and verified.
+
 Tasks, jobs, schedules, event inbox/outbox and ownership live in PostgreSQL. Artifacts and Pi checkpoints use bounded private object storage with conditional writes. A stale checkpoint writer fails; a saved pre-action journal without a confirmed result prevents automatic replay. Failed conditional cleanup can leave a private orphan for reconciliation rather than delete a newer object. Cloudflare container disks are ephemeral working space.
 
 The optional Cloudflare computer provider preserves separate owner/role filesystem checkpoints in R2. The browser archive contains its private profile directory; the workspace archive includes task files and installed CLI tools. Archives are limited to 256 MiB, individual files to 64 MiB and entries to 20,000 including the root. SHA checks and atomic restoration preserve file modes and safe internal relative symlinks. Workspace terminal completion waits for process-group drain and a durable checkpoint. Browser idle shutdown requires quiescence; active holds and native sign-in may decline it. Normal stop may close browser sessions before checkpointing. These are file snapshots, not preservation of a live DOM, process memory or an unfinished external action.

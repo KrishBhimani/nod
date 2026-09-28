@@ -108,7 +108,7 @@ export const toolDefinitions = {
   ),
   download_browser_file: defineTool(
     'download_browser_file',
-    'Download a file using this task’s authenticated browser and send it as a private attachment in this conversation. Supply an observed file URL or download selector, never a filesystem path. With neither, retrieve this task’s sole completed browser download or the currently displayed PDF. Use this for website invoices and PDFs; publish_artifact only reads workspace files. Downloads are limited to 12 MiB. The server keeps cookies, file bytes and private paths out of model context. A successful call already sends the attachment; do not repeat a link or confirmation.',
+    'Download a file using this task’s authenticated browser and send it as a private attachment in this conversation. Supply an observed file URL or download selector, never a filesystem path. With neither, retrieve the currently displayed PDF, otherwise this task’s sole completed browser download. Open an inline PDF in the browser before capturing it. Use this for website invoices and PDFs; publish_artifact only reads workspace files. Downloads are limited to 12 MiB. The server keeps cookies, file bytes and private paths out of model context. A successful call already sends the attachment; do not repeat a link or confirmation.',
     Type.Object({
       selector: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
       url: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),

@@ -10,6 +10,10 @@ E2B remains the selected next production computer. Its combined-template isolati
 
 Use [hosted setup](#run-the-hosted-pilot) for deployment configuration and [production](docs/production.md) for current limits and release evidence. The separate `npm run prototype:cloud` preview remains a synthetic design artifact, not a production test.
 
+For a fresh signup/demo environment, follow the [full environment reset procedure](docs/environment-reset.md). It removes users, tenant data, files, computer state and owned integration connections while preserving the installation. The in-app **Get started** action only archives the current web conversation.
+
+The [2026-09-28 production reset](docs/testing/results/2026-09-28-production-reset.md) verified empty live SQL/object data and removed old integration connections. Subsequent signup, provider acceptance and demo activity are recorded separately.
+
 The [system guide](docs/system-guide.md) is the living reference for product behavior, the exact stack, data flows, trust boundaries, costs, validation gaps, and module replacement. The [internal team brief](docs/team-brief.md) summarizes the implementation and remaining work.
 
 ## Run locally

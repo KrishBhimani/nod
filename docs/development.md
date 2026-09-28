@@ -14,6 +14,8 @@ The launcher prepares PostgreSQL before browser/workspace services. It generates
 
 ## Hosted mode on your computer
 
+Keep hosted development data separate from production. A fresh-signup recording can use an explicitly authorized [environment reset](environment-reset.md); conversation reset preserves accounts and historical data. Automated tests should continue using disposable schemas and synthetic accounts instead of resetting a normal profile or production.
+
 The selected production architecture as of **2026-09-27** is Cloudflare application hosting with one E2B computer per user. Local E2B/process mode exercises the same provider without a Cloudflare deployment. Its live execution remains unverified; development has 100 credits, production has 0 credits and a card gate, and runtime-key authorization is pending. Keep the earlier Cloudflare-computer local evidence separate.
 
 Hosted development uses real Google login, account isolation and per-user runtimes, with the web app at [localhost:4330](http://localhost:4330). It is separate from ordinary local mode on port 4310, the synthetic E2E harness on port 4320, the design prototype on port 4318 and the UI fixture on port 4346. Node.js 24.21.0 or newer is required. Install dependencies with `npm ci` first.
