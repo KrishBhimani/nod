@@ -818,6 +818,7 @@ export async function createApplication(
           if (!channels) throw new Error('Messaging is not ready.');
           await channels.replaceTransport(meterMessaging(setup.create(environment), providerUsage));
         },
+        paired: async (candidate) => channels?.announcePairing(candidate),
       });
       channelSettings.registerRoutes(app);
     }

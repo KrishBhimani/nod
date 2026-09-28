@@ -504,7 +504,7 @@ test(
 
 for (const mode of ['polling', 'webhook'] as const)
   test(
-    `Telegram ${mode} setup binds only the first sender with the one-time start code`,
+    `Telegram ${mode} setup binds only the Start sender that the owner confirms`,
     { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
     async (t) => {
       const schema = `test_channel_pairing_${randomUUID().replaceAll('-', '')}`;
@@ -567,6 +567,7 @@ for (const mode of ['polling', 'webhook'] as const)
         verifier: createChatSdkSetupVerifier(),
         apply: async (environment) =>
           channels!.replaceTransport(createChatSdkTransport(pool, environment)),
+        paired: async (candidate) => channels!.announcePairing(candidate),
       });
       channels = await createChannels(pool, {
         ownerId: 'local-development',
@@ -676,30 +677,67 @@ for (const mode of ['polling', 'webhook'] as const)
         } finally {
           Date.now = now;
         }
+        assert.equal((await telegram())?.pairingCandidate, undefined);
+        const confirm = () =>
+          app.inject({
+            method: 'POST',
+            url: '/api/channel-settings/telegram/confirm',
+            payload: {},
+          });
+        assert.equal((await confirm()).statusCode, 400);
+
+        await deliver(555, `/start ${code}`, 'fixture_stranger');
+        await waitFor(async () => (await telegram())?.pairingCandidate?.id === '555');
+        assert.equal((await telegram())?.pairingCandidate?.name, '@fixture_stranger');
+        assert.equal((await settings.environment()).TELEGRAM_ALLOWED_USER_ID, '');
+        await deliver(555, 'Fixture stranger request after Start');
+        const rejected = await app.inject({
+          method: 'POST',
+          url: '/api/channel-settings/telegram/pairing',
+          payload: {},
+        });
+        assert.equal(rejected.statusCode, 200);
+        assert.equal(rejected.json().channel.pairingCandidate, undefined);
+        const secondCode = new URL(rejected.json().pairingUrl).searchParams.get('start')!;
+        assert.equal((await confirm()).statusCode, 400);
+        await deliver(123, `/start ${code}`, 'fixture_owner');
+        assert.equal((await telegram())?.pairingCandidate, undefined);
+
+        await deliver(123, `/start ${secondCode}`, 'fixture_owner');
+        await waitFor(async () => (await telegram())?.pairingCandidate?.id === '123');
+        await deliver(123, 'Fixture request before confirmation');
         assert.equal((await pool.query('SELECT * FROM channel_inbox')).rowCount, 0);
         assert.equal(sent.length, 0);
-        assert.equal((await telegram())?.pairedUser, undefined);
+        assert.equal(submitted.length, 0);
 
-        await deliver(123, `/start ${code}`, 'fixture_owner');
-        await waitFor(async () => (await telegram())?.pairedUser === '@fixture_owner');
-        assert.equal((await telegram())?.pairingExpiresAt, undefined);
+        const confirmed = await confirm();
+        assert.equal(confirmed.statusCode, 200);
+        assert.equal(confirmed.json().channel.allowedUserId, '123');
+        assert.equal(confirmed.json().channel.pairedUser, '@fixture_owner');
+        assert.equal(confirmed.json().channel.pairingExpiresAt, undefined);
+        assert.equal(confirmed.json().channel.pairingCandidate, undefined);
         const bound = await settings.environment();
         assert.equal(bound.TELEGRAM_ALLOWED_USER_ID, '123');
-        assert.equal(bound.TELEGRAM_PAIRING_CODE_HASH, undefined);
+        assert.equal(
+          Object.keys(bound).some((key) => key.startsWith('TELEGRAM_PAIRING_')),
+          false,
+        );
         await waitFor(() => sent.length === 1);
         assert.equal(String(sent[0].chat_id), '123');
         assert.match(JSON.stringify(sent[0]), /Otto is connected/);
+        assert.equal((await confirm()).statusCode, 400);
 
-        await deliver(999, `/start ${code}`);
+        await deliver(999, `/start ${secondCode}`);
         await deliver(999, 'Fixture intruder request');
-        await deliver(123, `/start ${code}`);
+        await deliver(123, `/start ${secondCode}`);
         assert.equal((await settings.environment()).TELEGRAM_ALLOWED_USER_ID, '123');
         await deliver(123, 'Fixture owner request');
         await waitFor(() => submitted.length === 1);
         assert.deepEqual(submitted, ['Fixture owner request']);
         const inbox = JSON.stringify((await pool.query('SELECT * FROM channel_inbox')).rows);
-        assert.equal(inbox.includes(code), false);
+        assert.equal(inbox.includes(secondCode), false);
         assert.equal(inbox.includes('Fixture intruder request'), false);
+        assert.equal(inbox.includes('before confirmation'), false);
         assert.equal(sent.length, 1);
         assert.equal(
           (
@@ -719,3 +757,84 @@ for (const mode of ['polling', 'webhook'] as const)
       }
     },
   );
+
+test(
+  'Telegram setup accepts a manually entered positive user ID as the only sender',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async () => {
+    const schema = `test_channel_manual_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+    });
+    const app = Fastify();
+    const key = randomBytes(32);
+    let applied: Record<string, string> = {};
+    const settings = await createChannelSettings(pool, {
+      ownerId: 'local-development',
+      keyStore: { id: 'fixture', configured: true, getKey: async () => key },
+      verifier: {
+        verify: async () => ({
+          environment: {
+            TELEGRAM_ENABLED: 'true',
+            TELEGRAM_BOT_TOKEN: token,
+            TELEGRAM_ALLOWED_USER_ID: '',
+            TELEGRAM_WEBHOOK_SECRET_TOKEN: 'fixture-webhook-secret-long-enough',
+            TELEGRAM_MODE: 'polling',
+          },
+          summary: {
+            provider: 'telegram' as const,
+            enabled: true,
+            mode: 'polling' as const,
+            accountHandle: '@fixture_bot',
+          },
+        }),
+      },
+      apply: async (environment) => {
+        applied = environment;
+      },
+    });
+    settings.registerRoutes(app);
+    const enter = (allowedUserId: unknown) =>
+      app.inject({
+        method: 'POST',
+        url: '/api/channel-settings/telegram/user',
+        payload: { allowedUserId },
+      });
+    try {
+      assert.equal((await enter('4242')).statusCode, 400);
+      assert.equal(
+        (
+          await app.inject({
+            method: 'PUT',
+            url: '/api/channel-settings/telegram',
+            payload: { botToken: token },
+          })
+        ).statusCode,
+        200,
+      );
+      for (const invalid of ['0', '-4', '12.5', 'abc', '@fixture', '12345678901234567', 4242])
+        assert.equal((await enter(invalid)).statusCode, 400);
+      assert.equal(applied.TELEGRAM_ALLOWED_USER_ID, '');
+      const saved = await enter(' 4242 ');
+      assert.equal(saved.statusCode, 200);
+      assert.equal(saved.json().channel.allowedUserId, '4242');
+      assert.equal(saved.json().channel.pairedUser, undefined);
+      assert.equal(saved.json().channel.pairingExpiresAt, undefined);
+      assert.equal(applied.TELEGRAM_ALLOWED_USER_ID, '4242');
+      assert.equal(applied.TELEGRAM_PAIRING_EXPIRES_AT, undefined);
+      const transport = createChatSdkTransport(pool, applied);
+      assert.deepEqual(transport.channels[0].allowedSenderIds, ['4242']);
+      await transport.close();
+      assert.equal((await enter('5353')).statusCode, 400);
+      assert.equal((await settings.environment()).TELEGRAM_ALLOWED_USER_ID, '4242');
+    } finally {
+      await app.close();
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);

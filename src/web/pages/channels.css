@@ -251,34 +251,11 @@
   }
 }
 
-.channel-pairing {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 15px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface-subtle);
-}
-
-.channel-pairing strong {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.channel-pairing p {
-  margin-top: 4px;
-  color: var(--muted-foreground);
-  font-size: 12px;
-  line-height: 1.55;
-}
-
 .channel-pairing-signal {
   position: relative;
-  flex: none;
+  display: block;
   width: 10px;
   height: 10px;
-  margin: 4px 3px 0;
   border-radius: 50%;
   background: var(--accent);
 }
@@ -293,25 +270,6 @@
   animation: channel-pairing-signal 1.8s ease-out infinite;
 }
 
-.channel-pairing.is-expired .channel-pairing-signal {
-  background: var(--muted-foreground);
-}
-
-.channel-pairing.is-expired .channel-pairing-signal::after {
-  animation: none;
-}
-
-.channel-pairing.is-paired {
-  border-color: transparent;
-  background: var(--success-soft);
-}
-
-.channel-pairing.is-paired > svg {
-  flex: none;
-  margin-top: 1px;
-  color: var(--success);
-}
-
 @keyframes channel-pairing-signal {
   0% {
     opacity: 0.7;
@@ -323,66 +281,8 @@
   }
 }
 
-.telegram-prototype-switcher {
-  position: fixed;
-  top: 10px;
-  left: 50%;
-  z-index: 60;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
-  box-shadow: 0 4px 24px #0000001a;
-  transform: translateX(-50%);
-  white-space: nowrap;
-}
-
-.telegram-prototype-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0 8px;
-  color: var(--muted-foreground);
-  font-size: 10px;
-}
-
-.telegram-prototype-switcher a {
-  display: inline-flex;
-  gap: 6px;
-  padding: 6px 9px;
-  border-radius: 8px;
-  color: var(--muted-foreground);
-  font-size: 11px;
-  font-weight: 600;
-  text-decoration: none;
-}
-
-.telegram-prototype-switcher a span {
-  font-weight: 400;
-}
-
-.telegram-prototype-switcher a[aria-current='page'] {
-  background: var(--accent-soft);
-  color: var(--foreground);
-}
-
-.telegram-prototype-hint {
-  color: var(--muted-foreground);
-  font-size: 13px;
-  line-height: 1.65;
-}
-
-.telegram-prototype-hint code {
-  color: var(--foreground);
-  font-size: 12px;
-}
-
 .telegram-checklist {
   display: grid;
-  gap: 0;
   margin: 22px 0;
   padding: 0;
   list-style: none;
@@ -437,22 +337,39 @@
   opacity: 0.55;
 }
 
-.telegram-checklist .channel-pairing-signal {
-  margin: 0;
-}
-
-.telegram-checklist strong {
+.telegram-checklist li > div > strong {
   display: block;
   padding-top: 3px;
   font-size: 14px;
   font-weight: 600;
 }
 
-.telegram-checklist li > div > p {
+.telegram-checklist li > div > p,
+.telegram-checklist-form > p {
   margin-top: 5px;
   color: var(--muted-foreground);
   font-size: 12px;
   line-height: 1.6;
+}
+
+.telegram-checklist-form > p code {
+  color: var(--foreground);
+  font-size: 12px;
+}
+
+.telegram-checklist .telegram-candidate {
+  margin-top: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--foreground);
+  font-size: 13px;
+}
+
+.telegram-candidate strong {
+  font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 .telegram-checklist-form {
@@ -474,23 +391,18 @@
   margin-top: 12px;
 }
 
-.channels-page .telegram-inline {
-  display: grid;
-  gap: 14px;
-  margin: 0 16px 16px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
+.telegram-manual-toggle {
+  margin-top: 12px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
 }
 
-.telegram-inline-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-@media (max-width: 600px) {
-  .telegram-prototype-switcher a span,
-  .telegram-prototype-label {
-    display: none;
-  }
+.telegram-manual-toggle:hover:not(:disabled) {
+  color: var(--foreground);
 }

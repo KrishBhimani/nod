@@ -228,9 +228,33 @@ const app = await createGateway({
         return telegramChannels.get(owner)?.pairingExpiresAt
           ? Response.json(startTelegramPairing(owner))
           : Response.json(
-              { error: 'A new start link is not available. Remove Telegram and connect it again.' },
+              {
+                error:
+                  'This Telegram setup step is no longer available. Refresh Channels and try again.',
+              },
               { status: 400 },
             );
+      if (
+        ['/api/channel-settings/telegram/confirm', '/api/channel-settings/telegram/user'].includes(
+          url.pathname,
+        ) &&
+        request.method === 'POST'
+      ) {
+        const channel = telegramChannels.get(owner);
+        const input = (await request.json()) as { allowedUserId?: string };
+        const candidate = channel?.pairingCandidate as { id: string; name: string } | undefined;
+        const id = url.pathname.endsWith('/user') ? input.allowedUserId?.trim() : candidate?.id;
+        if (!channel?.pairingExpiresAt || !id || !/^[1-9]\d{0,15}$/.test(id))
+          return Response.json(
+            { error: 'Check the Telegram user ID. It is a positive number.' },
+            { status: 400 },
+          );
+        delete channel.pairingExpiresAt;
+        delete channel.pairingCandidate;
+        channel.allowedUserId = id;
+        if (url.pathname.endsWith('/confirm')) channel.pairedUser = candidate!.name;
+        return Response.json({ ok: true, channel });
+      }
       if (url.pathname === '/api/channel-settings/telegram' && request.method === 'DELETE') {
         telegramChannels.delete(owner);
         return Response.json({ ok: true, channel: { provider: 'telegram', enabled: false } });
@@ -306,11 +330,13 @@ app.get('/fixture/telegram/start', async (request, reply) => {
     return reply.code(400).send('This fixture start link is not valid.');
   telegramCodes.delete(code);
   const name = users.find((user) => user.id === owner)?.name ?? 'Fixture';
-  delete channel.pairingExpiresAt;
-  channel.pairedUser = `@${name.toLowerCase().replaceAll(' ', '_')}`;
+  channel.pairingCandidate = {
+    id: '123456789',
+    name: `@${name.toLowerCase().replaceAll(' ', '_')}`,
+  };
   return reply
     .type('text/html')
-    .send(page('Otto is connected', '<p>Send a message to start. You can return to Otto.</p>'));
+    .send(page('Start sent', '<p>Return to Otto and confirm that this is your account.</p>'));
 });
 app.get('/fixture/telegram/expire', async (request, reply) => {
   const owner = session(new Headers({ cookie: request.headers.cookie ?? '' }))?.user.id;

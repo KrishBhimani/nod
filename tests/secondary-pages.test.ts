@@ -281,10 +281,24 @@ test('channel status separates saved configuration from delivery and limits bot 
         mode: 'webhook',
         webhookStatus: 'registered',
         pairedUser: '@fixture_owner',
+        allowedUserId: '123456789',
       },
       true,
     ),
-    'Connected as @fixture_owner',
+    'Only @fixture_owner, ID 123456789 can message Otto',
+  );
+  assert.equal(
+    channelLabel(
+      {
+        provider: 'telegram',
+        enabled: true,
+        mode: 'polling',
+        pairingExpiresAt: '2026-09-28T12:00:00.000Z',
+        pairingCandidate: { id: '123456789', name: '@fixture_owner' },
+      },
+      true,
+    ),
+    'Confirm your Telegram account',
   );
   assert.equal(telegramBotUrl('@fixture_bot'), 'https://t.me/fixture_bot');
   assert.equal(telegramBotUrl('@fixture/../private'), null);

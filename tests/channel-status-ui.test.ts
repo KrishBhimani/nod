@@ -184,39 +184,74 @@ test('a rejected channel removal preserves the saved account and leaves the dial
   }
 });
 
-test('Telegram setup shows a one-time start link, waits for Start and then shows the bound account', async () => {
+const typeInDialog = async (value: string) =>
+  act(async () => {
+    const input = document.querySelector<HTMLInputElement>('[role="dialog"] input')!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+const submitDialogForm = async () =>
+  act(async () => {
+    document
+      .querySelector('[role="dialog"] form')!
+      .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  });
+const clickInDialog = async (label: string) =>
+  act(async () => {
+    const control = [
+      ...document.querySelectorAll<HTMLElement>('[role="dialog"] button, [role="dialog"] a'),
+    ].find((candidate) => candidate.textContent?.trim() === label);
+    assert.ok(control, `Expected dialog control: ${label}`);
+    control.click();
+  });
+
+test('Telegram setup asks the owner to confirm the account that pressed Start before binding it', async () => {
   const priorFetch = globalThis.fetch;
   const priorOpen = window.open;
-  const startUrl = 'https://t.me/fixture_bot?start=synthetic-one-time-code-000000000';
-  let saved: 'none' | 'pending' | 'paired' = 'none';
+  const startUrl = (index: number) =>
+    `https://t.me/fixture_bot?start=synthetic-one-time-code-${index}-0000000000`;
+  let saved: 'none' | 'waiting' | 'candidate' | 'bound' = 'none';
+  let links = 0;
   let reject = true;
-  let writes = 0;
   let opened = 0;
+  const writes: string[] = [];
   window.open = () => {
     opened++;
     return null;
   };
+  const expiry = new Date(Date.now() + 600000).toISOString();
   const telegram = () => ({
     ...settings.channels[0],
-    ...(saved === 'pending'
-      ? { pairingExpiresAt: new Date(Date.now() + 600000).toISOString() }
-      : { pairedUser: '@fixture_owner' }),
+    ...(saved === 'bound'
+      ? { allowedUserId: '123456789', pairedUser: '@fixture_owner' }
+      : { pairingExpiresAt: expiry }),
+    ...(saved === 'candidate'
+      ? { pairingCandidate: { id: '123456789', name: '@fixture_owner' } }
+      : {}),
   });
   globalThis.fetch = async (input, init) => {
-    if (init?.method === 'PUT') {
-      assert.equal(String(input), '/api/channel-settings/telegram');
-      assert.deepEqual(JSON.parse(String(init.body)), { botToken: 'synthetic-fixture-token' });
-      writes++;
-      if (reject) return Response.json({ error: 'Verification failed.' }, { status: 503 });
-      saved = 'pending';
-      return Response.json({ channel: telegram(), pairingUrl: startUrl });
+    const path = String(input);
+    if (init?.method) {
+      writes.push(`${init.method} ${path}`);
+      if (init.method === 'PUT') {
+        assert.deepEqual(JSON.parse(String(init.body)), { botToken: 'synthetic-fixture-token' });
+        if (reject) return Response.json({ error: 'Verification failed.' }, { status: 503 });
+        saved = 'waiting';
+        return Response.json({ channel: telegram(), pairingUrl: startUrl(++links) });
+      }
+      if (path.endsWith('/pairing')) {
+        saved = 'waiting';
+        return Response.json({ channel: telegram(), pairingUrl: startUrl(++links) });
+      }
+      saved = 'bound';
+      return Response.json({ channel: telegram() });
     }
     return Response.json(
       saved === 'none'
-        ? String(input) === '/api/channels'
+        ? path === '/api/channels'
           ? { channels: [], error: null }
           : { ready: true, channels: [] }
-        : String(input) === '/api/channels'
+        : path === '/api/channels'
           ? status
           : { ...settings, channels: [telegram(), settings.channels[1]] },
     );
@@ -224,54 +259,51 @@ test('Telegram setup shows a one-time start link, waits for Start and then shows
   const element = document.createElement('div');
   document.body.append(element);
   const root = createRoot(element);
-  const submit = async () =>
-    act(async () => {
-      document
-        .querySelector('form')!
-        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-    });
-  const type = async (value: string) =>
-    act(async () => {
-      const input = document.querySelector<HTMLInputElement>('[role="dialog"] input')!;
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+  const dialogText = () => document.querySelector('[role="dialog"]')!.textContent!;
+  const refresh = () => act(async () => window.dispatchEvent(new Event('focus')));
   try {
     await act(async () => root.render(createElement(Channels)));
     await act(async () =>
       element.querySelector<HTMLButtonElement>('[aria-label="Connect Telegram"]')!.click(),
     );
-    assert.doesNotMatch(document.querySelector('[role="dialog"]')!.textContent!, /user ID/);
-    await type('synthetic-fixture-token');
-    await submit();
-    assert.match(document.querySelector('[role="dialog"]')!.textContent!, /Verification failed/);
-    assert.equal(writes, 1);
+    assert.match(dialogText(), /Add your bot/);
+    assert.doesNotMatch(dialogText(), /user ID/);
+    await typeInDialog('synthetic-fixture-token');
+    await submitDialogForm();
+    assert.match(dialogText(), /Verification failed/);
     reject = false;
-    await submit();
-    let dialog = document.querySelector('[role="dialog"]')!;
-    assert.match(dialog.textContent!, /Step 2 of 2/);
-    assert.match(dialog.textContent!, /Press Start in Telegram/);
-    assert.match(dialog.textContent!, /Waiting for Start/);
-    assert.equal(Boolean(dialog.querySelector('input')), false);
-    const link = dialog.querySelector<HTMLAnchorElement>(`a[href="${startUrl}"]`)!;
-    assert.equal(link.target, '_blank');
-    assert.equal(link.rel, 'noopener noreferrer');
-    assert.equal(document.activeElement?.getAttribute('href'), startUrl);
-    assert.equal(opened, 0);
-    saved = 'paired';
-    await act(async () => window.dispatchEvent(new Event('focus')));
-    dialog = document.querySelector('[role="dialog"]')!;
-    assert.match(dialog.textContent!, /Telegram is connected/);
-    assert.match(dialog.textContent!, /Connected as @fixture_owner/);
-    assert.equal(document.activeElement?.getAttribute('href'), 'https://t.me/fixture_bot');
-    assert.equal(writes, 2);
-    await act(async () =>
-      [...dialog.querySelectorAll('button')]
-        .find((button) => button.textContent === 'Done')!
-        .click(),
+    await submitDialogForm();
+    assert.match(dialogText(), /@fixture_bot is ready/);
+    assert.match(dialogText(), /Press Start in Telegram/);
+    assert.match(dialogText(), /Enter your user ID instead/);
+    assert.equal(document.activeElement?.getAttribute('href'), startUrl(1));
+    assert.equal(document.activeElement?.getAttribute('target'), '_blank');
+
+    saved = 'candidate';
+    await refresh();
+    assert.match(
+      dialogText(),
+      /Only this Telegram account can message Otto: @fixture_owner, ID 123456789\. Is this you\?/,
     );
+    assert.equal(document.activeElement?.textContent, 'Confirm');
+    await clickInDialog('Not me');
+    assert.equal(writes.at(-1), 'POST /api/channel-settings/telegram/pairing');
+    assert.doesNotMatch(dialogText(), /Is this you/);
+    assert.equal(document.activeElement?.getAttribute('href'), startUrl(2));
+
+    saved = 'candidate';
+    await refresh();
+    await clickInDialog('Confirm');
+    assert.equal(writes.at(-1), 'POST /api/channel-settings/telegram/confirm');
+    assert.match(dialogText(), /Telegram is connected/);
+    assert.match(
+      dialogText(),
+      /Only this Telegram account can message Otto: @fixture_owner, ID 123456789\./,
+    );
+    assert.equal(document.activeElement?.getAttribute('href'), 'https://t.me/fixture_bot');
+    await clickInDialog('Done');
     assert.equal(Boolean(document.querySelector('[role="dialog"]')), false);
-    assert.match(element.textContent!, /Connected as @fixture_owner/);
+    assert.match(element.textContent!, /Only @fixture_owner, ID 123456789 can message Otto/);
     assert.equal(
       element.querySelector('a[href="https://t.me/fixture_bot"]')?.textContent,
       'Start conversation',
@@ -285,25 +317,37 @@ test('Telegram setup shows a one-time start link, waits for Start and then shows
   }
 });
 
-test('an unpaired Telegram channel offers a fresh start link from its row', async () => {
+test('an unpaired Telegram channel can bind a user ID found with @userinfobot', async () => {
   const priorFetch = globalThis.fetch;
-  const writes: string[] = [];
-  const pending = {
+  const writes: Array<{ path: string; body: unknown }> = [];
+  let bound = false;
+  const pending = () => ({
     ...settings.channels[0],
-    pairingExpiresAt: new Date(Date.now() - 1000).toISOString(),
-  };
+    ...(bound
+      ? { allowedUserId: '4242' }
+      : { pairingExpiresAt: new Date(Date.now() - 1000).toISOString() }),
+  });
   globalThis.fetch = async (input, init) => {
+    const path = String(input);
     if (init?.method) {
-      writes.push(`${init.method} ${String(input)}`);
-      return Response.json({
-        channel: { ...pending, pairingExpiresAt: new Date(Date.now() + 600000).toISOString() },
-        pairingUrl: 'https://t.me/fixture_bot?start=synthetic-fresh-code-0000000000000',
-      });
+      writes.push({ path, body: JSON.parse(String(init.body)) });
+      if (path.endsWith('/user')) bound = true;
+      return Response.json(
+        path.endsWith('/pairing')
+          ? {
+              channel: {
+                ...pending(),
+                pairingExpiresAt: new Date(Date.now() + 600000).toISOString(),
+              },
+              pairingUrl: 'https://t.me/fixture_bot?start=synthetic-fresh-code-0000000000000',
+            }
+          : { channel: pending() },
+      );
     }
     return Response.json(
-      String(input) === '/api/channels'
+      path === '/api/channels'
         ? status
-        : { ...settings, channels: [pending, settings.channels[1]] },
+        : { ...settings, channels: [pending(), settings.channels[1]] },
     );
   };
   const element = document.createElement('div');
@@ -319,10 +363,25 @@ test('an unpaired Telegram channel offers a fresh start link from its row', asyn
         .find((button) => button.textContent?.startsWith('Finish setup'))!
         .click(),
     );
-    assert.deepEqual(writes, ['POST /api/channel-settings/telegram/pairing']);
+    assert.deepEqual(writes, [{ path: '/api/channel-settings/telegram/pairing', body: {} }]);
     const dialog = document.querySelector('[role="dialog"]')!;
-    assert.match(dialog.textContent!, /Waiting for Start/);
     assert.ok(dialog.querySelector('a[href$="synthetic-fresh-code-0000000000000"]'));
+    await clickInDialog('Enter your user ID instead');
+    assert.match(dialog.textContent!, /@userinfobot/);
+    const input = dialog.querySelector<HTMLInputElement>('input')!;
+    assert.equal(input.inputMode, 'numeric');
+    assert.equal(input.pattern, '[1-9][0-9]{0,15}');
+    assert.equal(input.required, true);
+    await typeInDialog(' 4242 ');
+    await submitDialogForm();
+    assert.deepEqual(writes.at(-1), {
+      path: '/api/channel-settings/telegram/user',
+      body: { allowedUserId: '4242' },
+    });
+    assert.match(
+      document.querySelector('[role="dialog"]')!.textContent!,
+      /Only this Telegram account can message Otto: ID 4242\./,
+    );
   } finally {
     await act(async () => root.unmount());
     element.remove();
@@ -376,7 +435,7 @@ test('leaving Channels aborts a single pending setup and ignores its late comple
       submit();
     });
     assert.deepEqual(writes, ['/api/channel-settings/telegram']);
-    assert.equal(dialogButton('Verifying…').disabled, true);
+    assert.equal(dialogButton('Checking…').disabled, true);
     await act(async () => root.render(null));
     await act(async () => delay(0));
     assert.equal(signal?.aborted, true);

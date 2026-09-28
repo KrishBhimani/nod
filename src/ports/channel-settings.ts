@@ -8,6 +8,8 @@ export interface ChannelSetupSummary {
   webhookStatus?: 'registered' | 'manual_setup' | 'registration_pending';
   webhookUrl?: string;
   pairedUser?: string;
+  allowedUserId?: string;
+  pairingCandidate?: { id: string; name: string };
   pairingExpiresAt?: string;
 }
 export interface ChannelSetupConfiguration {

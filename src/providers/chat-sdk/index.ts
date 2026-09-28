@@ -69,7 +69,7 @@ export function channelConfiguration(env: Environment) {
   const telegramMissing = [
     'TELEGRAM_BOT_TOKEN',
     'TELEGRAM_WEBHOOK_SECRET_TOKEN',
-    ...(env.TELEGRAM_PAIRING_CODE_HASH ? [] : ['TELEGRAM_ALLOWED_USER_ID']),
+    ...(env.TELEGRAM_PAIRING_EXPIRES_AT ? [] : ['TELEGRAM_ALLOWED_USER_ID']),
   ].filter((key) => !env[key]);
   if (env.TELEGRAM_ALLOWED_USER_ID && !/^\d{1,16}$/.test(env.TELEGRAM_ALLOWED_USER_ID))
     telegramMissing.push('TELEGRAM_ALLOWED_USER_ID');
