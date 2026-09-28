@@ -65,6 +65,22 @@ export class DaemonCommandError extends Error {
   }
 }
 
+function interceptedClick(command: Record<string, unknown>, error: unknown): boolean {
+  if (
+    command.action !== 'click' ||
+    typeof command.selector !== 'string' ||
+    typeof error !== 'string'
+  )
+    return false;
+  const prefix = `Element '${command.selector}' is covered by <`;
+  const suffix =
+    '> at its click point, so the input would land on that element instead. Dismiss or interact with the covering element first (it is often a dialog, banner, or sticky header).';
+  if (!error.startsWith(prefix) || !error.endsWith(suffix)) return false;
+  return /^[a-z][a-z0-9-]*(?:[#.][^<>\u0000-\u001f]{1,512}| inside [a-z][a-z0-9-]*#[^<>\u0000-\u001f]{1,512})?$/.test(
+    error.slice(prefix.length, -suffix.length),
+  );
+}
+
 export function existingDaemonCommand(
   path: string,
   command: Record<string, unknown>,
@@ -105,6 +121,8 @@ export function existingDaemonCommand(
       try {
         const response = JSON.parse(received.slice(0, end));
         if (response.success === false) {
+          if (interceptedClick(command, response.error))
+            return stop(new BrowserActionError('browser_click_intercepted'));
           if (
             command.action === 'navigate' &&
             typeof response.error === 'string' &&

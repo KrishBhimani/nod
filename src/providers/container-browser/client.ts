@@ -155,6 +155,8 @@ export function createBridgeComputer(options: {
         if (response.ok) return resolve(response.result);
         if (response.error === 'navigation')
           return reject(new BrowserActionError('browser_navigation_failed'));
+        if (response.error === 'click_intercepted')
+          return reject(new BrowserActionError('browser_click_intercepted'));
         if (response.error === 'locked') {
           const error = new Error('Browser observations are paused during credential entry.');
           return reject(Object.assign(error, { statusCode: 423 }));

@@ -1,4 +1,6 @@
 const browserErrors = {
+  browser_click_intercepted:
+    'The click was not performed because another element covers the target. Inspect the page again and dismiss the covering dialog or choose another visible control before retrying.',
   browser_navigation_failed:
     'The website did not load successfully. Open another public page or retry navigation later; taking screenshots cannot recover a failed page.',
 } as const;
