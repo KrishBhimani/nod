@@ -122,7 +122,7 @@ export const toolDefinitions = {
   ),
   publish_artifact: defineTool(
     'publish_artifact',
-    'Publish a completed workspace file as a conversation attachment and return its protected download link. First inspect the saved file with read_file or a shell parser. Check its actual item count, requested fields and drafts against the user request; correct mismatches before this call. A successful call already sends the attachment to the user. If this completes the request, finish without another confirmation or repeated link.',
+    'Publish a completed workspace file as a conversation attachment and return its protected download link. First inspect the saved file with read_file or a shell parser. Check its actual item count, requested fields and drafts against the user request; correct mismatches before this call. For a research file, link direct sources beside key claims in the chat summary even when the file lists sources. A successful call already sends the attachment to the user. If this completes the request, finish without another confirmation or repeated link.',
     Type.Object({
       path: Type.String(),
       name: Type.Optional(Type.String({ maxLength: 200 })),
