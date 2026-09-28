@@ -1,6 +1,8 @@
 # Local verification
 
-The [event-stream recovery follow-up](testing/results/2026-09-28-event-stream-recovery.md) passed 1,337 local tests with zero failures and three native-only skips, plus build and type/import/format checks. A real-browser loopback fixture confirmed automatic recovery after three HTTP 503 responses, retaining the earlier streamed text without reloading or resubmitting work. These are local recovery checks; deployment and live account acceptance are tracked separately below.
+The [event-stream recovery follow-up](testing/results/2026-09-28-event-stream-recovery.md) passed 1,337 local tests with zero failures and three native-only skips, plus build and type/import/format checks. A real-browser loopback fixture confirmed automatic recovery after three HTTP 503 responses, retaining the earlier streamed text without reloading or resubmitting work. The same record separately dates successful main CI, automatic production publication and fresh streamed, persisted chat in existing IAB and Arc clients without reload. The production check did not capture `EventSource` entering `CLOSED`; the actual HTTP 503 reproduction remains local-fixture evidence.
+
+A separate [unattended production reminder](testing/results/2026-09-28-unattended-schedule.md) completed once with all observed Sidekick clients closed, saved the exact web reply and displayed Finished in schedule history. The original checkpoint verified one completed local message operation and no other tool calls. This does not establish cold-start Cron recovery or external-channel delivery.
 
 ## Channel isolation and browser downloads — 2026-09-28
 

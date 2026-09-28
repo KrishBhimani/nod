@@ -166,10 +166,11 @@ test('synchronous SDK failure cannot leave a stale startup fence', async () => {
 });
 
 test('late SDK success cannot outrun a deadline whose timer has not run', async (t) => {
-  const now = Date.now();
+  let now = Date.now();
+  t.mock.method(Date, 'now', () => now);
   const container = {
     startAndWaitForPorts: async () => {
-      t.mock.method(Date, 'now', () => now + 1000);
+      now += 1000;
     },
   };
   await assert.rejects(startContainer(container, { timeoutMs: 1000 }), RuntimeControlError);
