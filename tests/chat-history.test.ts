@@ -29,8 +29,11 @@ test(
     const { ownerId, port } = await import('../src/server/config.ts');
     const app = await createApp();
     const headers = { host: `localhost:${port}` };
-    const get = async <T>(url: string) =>
-      (await app.inject({ method: 'GET', url, headers })).json<T>();
+    const get = async <T>(url: string) => {
+      const response = await app.inject({ method: 'GET', url, headers });
+      assert.equal(response.statusCode, 200, `${url} -> ${response.statusCode}: ${response.body}`);
+      return response.json<T>();
+    };
     const add = async (taskId: string, count: number, start: number) =>
       db.pool.query(
         `INSERT INTO messages(id,owner_id,role,text,task_id,created_at)

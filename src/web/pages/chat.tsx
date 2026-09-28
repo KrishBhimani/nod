@@ -142,6 +142,7 @@ export function Chat({
   useLayoutEffect(() => {
     if (stickToBottom.current)
       bottom.current?.scrollIntoView({ behavior: 'instant', block: 'end' });
+    else updateAway();
   }, [state.messages, streams, sending, resetting, optimistic]);
   useEffect(() => {
     const ids = new Set(state.messages.map((message) => message.id));
@@ -362,6 +363,23 @@ export function Chat({
       if (version === historyVersion.current) setLoadingHistory(false);
     }
   }
+  function cancelReturn() {
+    returning.current = 0;
+  }
+  function updateAway() {
+    const element = scroll.current;
+    if (!element) return;
+    const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
+    if (distance >= 160 && Date.now() < returning.current) return;
+    returning.current = 0;
+    stickToBottom.current = distance < 160;
+    const since = Date.parse(allMessages.at(-1)?.createdAt ?? '') || Date.now();
+    setAway((current) => {
+      if (distance < 160) return null;
+      const shown = Boolean(current?.shown) || distance > element.clientHeight;
+      return current?.shown === shown ? current : { since: current?.since ?? since, shown };
+    });
+  }
   function updateActiveTurn() {
     const element = scroll.current;
     if (!element) return;
@@ -442,20 +460,13 @@ export function Chat({
         className="conversation-scroll"
         ref={scroll}
         onScroll={() => {
-          const element = scroll.current;
-          if (!element) return;
           updateActiveTurn();
-          const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
-          if (distance >= 160 && Date.now() < returning.current) return;
-          returning.current = 0;
-          stickToBottom.current = distance < 160;
-          const since = Date.parse(persistedMessages.at(-1)?.createdAt ?? '');
-          setAway((current) => {
-            if (distance < 160) return null;
-            const shown = Boolean(current?.shown) || distance > element.clientHeight;
-            return current?.shown === shown ? current : { since: current?.since ?? since, shown };
-          });
+          updateAway();
         }}
+        onWheel={cancelReturn}
+        onTouchStart={cancelReturn}
+        onPointerDown={cancelReturn}
+        onKeyDown={cancelReturn}
       >
         <div className="conversation-column">
           {loadingHistory ? (

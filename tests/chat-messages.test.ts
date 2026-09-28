@@ -699,9 +699,16 @@ test('message actions follow hover and keyboard focus, and narrow chat hides the
   assert.doesNotMatch(styles, /\.message:focus-within/);
   assert.doesNotMatch(styles, /pointer: coarse\)\s*\{[^}]*message-more-action/);
   assert.match(styles, /\.chat-page \.message:has\(:focus-visible\) \.message-actions/);
-  assert.match(
-    styles,
-    /@container \(max-width: 640px\)[\s\S]*\.chat-turn-rail \{\s*display: none;/,
+  const start = styles.indexOf('{', styles.indexOf('@container (max-width: 640px)'));
+  let end = start;
+  for (let depth = 0; end < styles.length; end++) {
+    if (styles[end] === '{') depth++;
+    if (styles[end] === '}' && --depth === 0) break;
+  }
+  assert.match(styles.slice(start, end), /\.chat-turn-rail \{\s*display: none;/);
+  assert.doesNotMatch(
+    styles.slice(0, start) + styles.slice(end),
+    /\.chat-turn-rail \{[^}]*display: none;/,
   );
 });
 
