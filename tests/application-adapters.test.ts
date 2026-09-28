@@ -138,6 +138,13 @@ test(
               });
               return;
             }
+            if (currentInstruction.startsWith('Start the first conversation')) {
+              await call('manage_apps', { action: 'list' });
+              await call('send_message', {
+                text: 'Hi. Connect Gmail and I can find your replies.',
+              });
+              return;
+            }
             if (phase > 0) {
               assert.match(currentInstruction, /Do not repeat/);
               input.onEvent({ type: 'message_start' });
@@ -315,6 +322,15 @@ test(
         200,
       );
       assert.equal(prepared, 2);
+      const welcome = (
+        await pool.query("SELECT id FROM tasks WHERE source_id='onboarding:welcome'")
+      ).rows[0].id as string;
+      taskIds.push(welcome);
+      await waitFor(welcome, 'succeeded');
+      assert.deepEqual(
+        (await pool.query('SELECT role,text FROM messages WHERE task_id=$1', [welcome])).rows,
+        [{ role: 'assistant', text: 'Hi. Connect Gmail and I can find your replies.' }],
+      );
       assert.equal((await request('POST', '/api/apps/gmail/connect')).statusCode, 200);
       const connected = new URL(callback);
       connected.searchParams.set('account_ref', 'replacement-account');
