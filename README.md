@@ -96,7 +96,7 @@ A [production one-off reminder](docs/testing/results/2026-09-28-unattended-sched
 
 The [validation record](docs/verification.md) separates automated fixtures, browser flows, and live providers. Historical checks include OpenAI conversation/images, browser/file work, Inspector, speech APIs, synthetic Keychain storage and Google consent/reads. Earlier workspace checks covered public HTTP, registry access, CLI installation and the now-removed network guard. Those dated results describe their source versions; earlier host-browser and synthetic authentication runs do not validate the new container browser. Check the validation record for current container evidence.
 
-Calendar actions, Drive/Docs/Sheets account flows and actions, Slack actions, broader Notion access and writes, external app event delivery, Jev, Anthropic, and Telegram/WhatsApp recipient delivery still require separate live verification. No new paid plan was purchased. Configuration and passing fixtures do not prove a live connection.
+Gmail remains blocked by managed-app Google consent; custom OAuth repair and successful consent are pending. Calendar actions, Drive/Docs/Sheets account flows and actions, Slack actions, broader Notion access and writes, external app event delivery, Jev, Anthropic, and Telegram/WhatsApp recipient delivery still require separate live verification. No new paid plan was purchased. Configuration and passing fixtures do not prove a live connection.
 
 ```sh
 npm run check
