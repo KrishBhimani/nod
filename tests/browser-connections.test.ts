@@ -9,139 +9,152 @@ import { createBrowserConnections } from '../src/server/browser-connections.ts';
 async function fixture() {
   const schema = `browser_connections_${randomUUID().replaceAll('-', '')}`;
   const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
-  await admin.query(`CREATE SCHEMA ${schema}`);
-  const pool = new pg.Pool({
-    connectionString: process.env.TEST_DATABASE_URL,
-    options: `-c search_path=${schema}`,
-  });
-  const app = Fastify();
-  const bindings: Array<{ taskId: string; profileId: string; origin?: string }> = [];
-  const inputs: CredentialInput[] = [];
-  const closed: string[] = [];
-  const removed: string[] = [];
-  const savedLogins: Array<{ origin: string; username: string; password: string }> = [];
-  const state: {
-    failDelete: boolean;
-    signedIn: boolean;
-    technogymLoginOpen: boolean;
-    blocked: boolean;
-    verificationRequired: boolean;
-    verificationVisible: boolean;
-    loginOrigin: string;
-    pageUrl: string;
-    waitForInjection?: Promise<void>;
-    injectionEntered?: () => void;
-  } = {
-    failDelete: false,
-    signedIn: false,
-    technogymLoginOpen: false,
-    blocked: false,
-    verificationRequired: false,
-    verificationVisible: false,
-    loginOrigin: 'https://api.linkedin.com',
-    pageUrl: 'https://www.linkedin.com/messaging/',
-  };
-  const computer = {
-    async bindProfile(taskId: string, profileId: string, origin?: string) {
-      bindings.push({ taskId, profileId, origin });
-    },
-    async deleteProfile(profileId: string) {
-      if (state.failDelete) throw new Error('Synthetic profile removal failed.');
-      removed.push(profileId);
-    },
-    async act(_taskId: string, input: { action: string; url?: string }) {
-      if (input.action === 'click' && input.url === undefined) {
-        state.technogymLoginOpen = true;
-        state.pageUrl = 'https://www.technogym.com/login';
-      } else state.pageUrl = input.url ?? state.pageUrl;
-      return {
-        url: state.pageUrl,
-        text: state.blocked ? '403 ERROR Request blocked' : 'Synthetic page',
-        candidates:
-          state.pageUrl === 'https://www.technogym.com/en-IE/' && !state.technogymLoginOpen
-            ? [{ id: '@login', label: 'Log in' }]
-            : [],
-      };
-    },
-    async inspectLogin(): Promise<LoginInspection> {
-      const ready =
-        !state.pageUrl.startsWith('https://www.technogym.com') || state.technogymLoginOpen;
-      return {
-        origin: state.loginOrigin,
-        url: `${state.loginOrigin}/checkpoint/lg/login`,
-        fields:
-          state.signedIn || !ready
-            ? []
-            : state.verificationVisible
-              ? [{ kind: 'otp', selector: '#code', label: 'Verification code' }]
-              : [
-                  { kind: 'identifier', selector: '#username', label: 'Email or phone' },
-                  { kind: 'password', selector: '#password', label: 'Password' },
-                ],
-        methods:
-          state.signedIn || !ready
-            ? []
-            : [{ id: 'credentials', label: 'Email', kind: 'credentials', supported: true }],
-        submitSelector: '#sign-in',
-      };
-    },
-    async injectCredentials(input: CredentialInput) {
-      inputs.push(input);
-      state.injectionEntered?.();
-      if (state.waitForInjection) await state.waitForInjection;
-      if (input.kind === 'otp') {
-        state.verificationRequired = false;
-        state.verificationVisible = false;
-        state.signedIn = true;
-      } else if (state.verificationRequired) {
-        state.verificationVisible = true;
-        state.pageUrl = 'https://api.linkedin.com/checkpoint/challenge';
-      } else state.signedIn = true;
-      return { status: 'submitted' as const };
-    },
-    async hold() {},
-    async close(taskId: string) {
-      closed.push(taskId);
-    },
-    async openSignIn() {},
-    async finishSignIn() {},
-    async signInScreenshot() {
-      return Buffer.from('synthetic-image');
-    },
-    async signInControl() {},
-    async releaseControl() {},
-  } as unknown as Computer;
-  await pool.query(
-    'CREATE TABLE tasks (id uuid PRIMARY KEY,owner_id text,status text,revision integer)',
-  );
-  const service = await createBrowserConnections(pool, {
-    ownerId: 'owner-a',
-    computer,
-    async saveLogin(origin, _label, username, password) {
-      savedLogins.push({ origin, username, password });
-      return randomUUID();
-    },
-  });
-  service.registerRoutes(app);
-  await app.ready();
-  return {
-    app,
-    pool,
-    service,
-    computer,
-    state,
-    bindings,
-    inputs,
-    closed,
-    removed,
-    savedLogins,
-    async close() {
-      await app.close();
-      await pool.end();
-      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
-      await admin.end();
-    },
-  };
+  const cleanup: Array<() => Promise<unknown>> = [() => admin.end()];
+  try {
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    cleanup.unshift(() => admin.query(`DROP SCHEMA ${schema} CASCADE`));
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+    });
+    cleanup.unshift(() => pool.end());
+    const app = Fastify();
+    cleanup.unshift(() => app.close());
+    const bindings: Array<{ taskId: string; profileId: string; origin?: string }> = [];
+    const inputs: CredentialInput[] = [];
+    const closed: string[] = [];
+    const removed: string[] = [];
+    const savedLogins: Array<{ origin: string; username: string; password: string }> = [];
+    const state: {
+      failDelete: boolean;
+      signedIn: boolean;
+      technogymLoginOpen: boolean;
+      blocked: boolean;
+      verificationRequired: boolean;
+      verificationVisible: boolean;
+      loginOrigin: string;
+      pageUrl: string;
+      waitForInjection?: Promise<void>;
+      injectionEntered?: () => void;
+    } = {
+      failDelete: false,
+      signedIn: false,
+      technogymLoginOpen: false,
+      blocked: false,
+      verificationRequired: false,
+      verificationVisible: false,
+      loginOrigin: 'https://api.linkedin.com',
+      pageUrl: 'https://www.linkedin.com/messaging/',
+    };
+    const computer = {
+      async bindProfile(taskId: string, profileId: string, origin?: string) {
+        bindings.push({ taskId, profileId, origin });
+      },
+      async deleteProfile(profileId: string) {
+        if (state.failDelete) throw new Error('Synthetic profile removal failed.');
+        removed.push(profileId);
+      },
+      async act(_taskId: string, input: { action: string; url?: string }) {
+        if (input.action === 'click' && input.url === undefined) {
+          state.technogymLoginOpen = true;
+          state.pageUrl = 'https://www.technogym.com/login';
+        } else state.pageUrl = input.url ?? state.pageUrl;
+        return {
+          url: state.pageUrl,
+          text: state.blocked ? '403 ERROR Request blocked' : 'Synthetic page',
+          candidates:
+            state.pageUrl === 'https://www.technogym.com/en-IE/' && !state.technogymLoginOpen
+              ? [{ id: '@login', label: 'Log in' }]
+              : [],
+        };
+      },
+      async inspectLogin(): Promise<LoginInspection> {
+        const ready =
+          !state.pageUrl.startsWith('https://www.technogym.com') || state.technogymLoginOpen;
+        return {
+          origin: state.loginOrigin,
+          url: `${state.loginOrigin}/checkpoint/lg/login`,
+          fields:
+            state.signedIn || !ready
+              ? []
+              : state.verificationVisible
+                ? [{ kind: 'otp', selector: '#code', label: 'Verification code' }]
+                : [
+                    { kind: 'identifier', selector: '#username', label: 'Email or phone' },
+                    { kind: 'password', selector: '#password', label: 'Password' },
+                  ],
+          methods:
+            state.signedIn || !ready
+              ? []
+              : [{ id: 'credentials', label: 'Email', kind: 'credentials', supported: true }],
+          submitSelector: '#sign-in',
+        };
+      },
+      async injectCredentials(input: CredentialInput) {
+        inputs.push(input);
+        state.injectionEntered?.();
+        if (state.waitForInjection) await state.waitForInjection;
+        if (input.kind === 'otp') {
+          state.verificationRequired = false;
+          state.verificationVisible = false;
+          state.signedIn = true;
+        } else if (state.verificationRequired) {
+          state.verificationVisible = true;
+          state.pageUrl = 'https://api.linkedin.com/checkpoint/challenge';
+        } else state.signedIn = true;
+        return { status: 'submitted' as const };
+      },
+      async hold() {},
+      async close(taskId: string) {
+        closed.push(taskId);
+      },
+      async openSignIn() {},
+      async finishSignIn() {},
+      async signInScreenshot() {
+        return Buffer.from('synthetic-image');
+      },
+      async signInControl() {},
+      async releaseControl() {},
+    } as unknown as Computer;
+    await pool.query(
+      'CREATE TABLE tasks (id uuid PRIMARY KEY,owner_id text,status text,revision integer)',
+    );
+    const service = await createBrowserConnections(pool, {
+      ownerId: 'owner-a',
+      computer,
+      async saveLogin(origin, _label, username, password) {
+        savedLogins.push({ origin, username, password });
+        return randomUUID();
+      },
+    });
+    service.registerRoutes(app);
+    await app.ready();
+    return {
+      app,
+      pool,
+      service,
+      computer,
+      state,
+      bindings,
+      inputs,
+      closed,
+      removed,
+      savedLogins,
+      async close() {
+        let failure: unknown;
+        for (const dispose of cleanup)
+          try {
+            await dispose();
+          } catch (error) {
+            failure ??= error;
+          }
+        if (failure) throw failure;
+      },
+    };
+  } catch (error) {
+    for (const dispose of cleanup) await dispose().catch(() => {});
+    throw error;
+  }
 }
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
