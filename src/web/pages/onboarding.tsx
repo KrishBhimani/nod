@@ -9,10 +9,18 @@ import {
 } from '../../shared/integrations';
 import { AccountAvatar } from '../components/account-avatar';
 import { BrandMark } from '../components/brand';
-import { Button, Loading, Notice } from '../components/ui';
+import { Button, Notice } from '../components/ui';
 import { usePageData } from '../hooks/use-page-data';
 import { api, errorMessage } from '../lib/api';
 import { connectionUrl } from '../lib/connection-url';
+
+type Pending = 'opening' | 'waiting';
+
+function connectionMessage(result: string | null) {
+  if (result === 'cancelled') return 'Connection cancelled. You can try again.';
+  if (result === 'failed' || result === 'expired') return 'The app could not connect. Try again.';
+  return '';
+}
 
 export function Onboarding({
   user,
@@ -26,24 +34,40 @@ export function Onboarding({
   canLogout: boolean;
 }) {
   const { data, error: loadError, loading, refresh } = usePageData<Connection[]>('/api/apps');
-  const [connecting, setConnecting] = useState<IntegrationService | null>(null);
+  const [pending, setPending] = useState<Partial<Record<IntegrationService, Pending>>>({});
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [preparation, setPreparation] = useState<'pending' | 'ready' | 'failed'>('pending');
   const preparationRequest = useRef<AbortController | null>(null);
-  const action = useRef<AbortController | null>(null);
+  const actions = useRef(new Map<IntegrationService, AbortController>());
   const active = useRef(false);
   useEffect(() => {
     active.current = true;
     const result = new URLSearchParams(window.location.search).get('connection');
-    if (result === 'cancelled') setError('Connection cancelled. You can try again.');
-    if (result === 'failed' || result === 'expired')
-      setError('The app could not connect. Try again.');
+    setError(connectionMessage(result));
     if (result) window.history.replaceState(null, '', window.location.pathname);
+    const settle = () =>
+      setPending((current) => {
+        const next = { ...current };
+        for (const slug of integrationServiceIds) if (next[slug] === 'waiting') delete next[slug];
+        return next;
+      });
+    const channel =
+      typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel('otto.apps');
+    if (channel)
+      channel.onmessage = (event: MessageEvent<{ connection?: string } | null>) => {
+        setError(connectionMessage(event.data?.connection ?? null));
+        settle();
+        void refresh();
+      };
+    window.addEventListener('focus', settle);
     void prepare();
     return () => {
       active.current = false;
-      action.current?.abort();
+      channel?.close();
+      window.removeEventListener('focus', settle);
+      for (const request of actions.current.values()) request.abort();
+      actions.current.clear();
       preparationRequest.current?.abort();
     };
   }, [user.id]);
@@ -66,31 +90,52 @@ export function Onboarding({
       if (preparationRequest.current === request) preparationRequest.current = null;
     }
   }
+  function track(slug: IntegrationService, state?: Pending) {
+    setPending((current) => {
+      const next = { ...current };
+      if (state) next[slug] = state;
+      else delete next[slug];
+      return next;
+    });
+  }
   async function connect(slug: IntegrationService) {
-    if (action.current || saving) return;
+    if (actions.current.has(slug) || saving) return;
+    const popup = window.open('', `otto-connect-${slug}`, 'popup,width=520,height=720');
+    try {
+      if (popup) popup.opener = null;
+    } catch {}
     const request = new AbortController();
-    action.current = request;
-    setConnecting(slug);
+    actions.current.set(slug, request);
+    track(slug, 'opening');
     setError('');
+    let next: Pending | undefined;
     try {
       const response = await api<{ url: string }>(`/api/apps/${slug}/connect`, {
         method: 'POST',
-        body: JSON.stringify({ returnTo: 'onboarding' }),
+        body: JSON.stringify({ returnTo: popup ? 'window' : 'onboarding' }),
         signal: request.signal,
       });
-      if (!request.signal.aborted)
-        window.location.assign(connectionUrl(response.url, window.location.origin));
-    } catch (cause) {
-      if (!request.signal.aborted) {
-        setError(errorMessage(cause));
-        setConnecting(null);
+      if (request.signal.aborted) throw new DOMException('Cancelled.', 'AbortError');
+      const url = connectionUrl(response.url, window.location.origin);
+      if (!popup) {
+        next = 'opening';
+        window.location.assign(url);
+      } else if (!popup.closed) {
+        next = 'waiting';
+        popup.location.href = url;
       }
+    } catch (cause) {
+      popup?.close();
+      if (!request.signal.aborted) setError(errorMessage(cause));
     } finally {
-      if (action.current === request) action.current = null;
+      if (next !== 'opening' && actions.current.get(slug) === request) {
+        actions.current.delete(slug);
+        if (active.current) track(slug, next);
+      }
     }
   }
   async function complete() {
-    if (saving || connecting || preparation !== 'ready') return;
+    if (saving || preparation !== 'ready') return;
     setSaving(true);
     setError('');
     try {
@@ -124,52 +169,58 @@ export function Onboarding({
             Try again
           </Button>
         )}
-        {loading && !data && <Loading />}
         <div className="onboarding-integrations" aria-busy={loading}>
-          {data &&
-            integrationServiceIds.map((slug) => {
-              const service = integrationServices[slug];
-              const rows = data.filter((connection) => connection.slug === slug);
-              const connected = rows.some((connection) => connection.status === 'connected');
-              const unavailable =
-                !rows.length || rows.every((connection) => connection.status === 'not_configured');
-              const reconnect = rows.some((connection) => connection.connectionId) && !connected;
-              return (
-                <article
-                  key={slug}
-                  className={`onboarding-integration${connected ? ' connected' : ''}`}
-                  aria-labelledby={`onboarding-${slug}`}
-                >
-                  <img src={`/logos/${slug}.svg`} alt="" width={27} height={27} />
+          {integrationServiceIds.map((slug) => {
+            const service = integrationServices[slug];
+            const rows = data?.filter((connection) => connection.slug === slug) ?? [];
+            const connected = rows.some((connection) => connection.status === 'connected');
+            const unavailable =
+              !rows.length || rows.every((connection) => connection.status === 'not_configured');
+            const label =
+              rows.some((connection) => connection.connectionId) && !connected
+                ? 'Reconnect'
+                : 'Connect';
+            const state = pending[slug];
+            return (
+              <article
+                key={slug}
+                className={`onboarding-integration${connected ? ' connected' : ''}${state ? ` ${state}` : ''}`}
+                aria-labelledby={`onboarding-${slug}`}
+              >
+                <span className="onboarding-logo">
+                  <img src={`/logos/${slug}.svg`} alt="" width={24} height={24} />
+                </span>
+                <div className="onboarding-integration-copy">
                   <h2 id={`onboarding-${slug}`}>{service.name}</h2>
-                  {connected ? (
-                    <span className="onboarding-connected">
-                      <Check size={16} aria-hidden="true" />
-                      Connected
-                    </span>
-                  ) : (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      aria-label={`${reconnect ? 'Reconnect' : 'Connect'} ${service.name}`}
-                      disabled={unavailable || Boolean(connecting) || saving}
-                      onClick={() => void connect(slug)}
-                    >
-                      {connecting === slug ? (
-                        <>
-                          <LoaderCircle className="spin" size={14} aria-hidden="true" />
-                          Opening…
-                        </>
-                      ) : reconnect ? (
-                        'Reconnect'
-                      ) : (
-                        'Connect'
-                      )}
-                    </Button>
-                  )}
-                </article>
-              );
-            })}
+                  <p>{state === 'waiting' ? 'Continue in the new window.' : service.description}</p>
+                </div>
+                {connected ? (
+                  <span className="onboarding-connected">
+                    <Check size={16} aria-hidden="true" />
+                    Connected
+                  </span>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="onboarding-connect"
+                    aria-label={`${label} ${service.name}`}
+                    disabled={!data || unavailable || state === 'opening' || saving}
+                    onClick={() => void connect(slug)}
+                  >
+                    {state === 'opening' ? (
+                      <>
+                        <LoaderCircle className="spin" size={14} aria-hidden="true" />
+                        Opening…
+                      </>
+                    ) : (
+                      label
+                    )}
+                  </Button>
+                )}
+              </article>
+            );
+          })}
         </div>
         {preparation === 'failed' && (
           <Notice>
@@ -180,10 +231,7 @@ export function Onboarding({
           </Notice>
         )}
         <div className="account-onboarding-actions">
-          <Button
-            disabled={saving || Boolean(connecting) || preparation !== 'ready'}
-            onClick={() => void complete()}
-          >
+          <Button disabled={saving || preparation !== 'ready'} onClick={() => void complete()}>
             {preparation === 'pending'
               ? 'Preparing…'
               : saving
@@ -192,7 +240,7 @@ export function Onboarding({
           </Button>
           <Button
             variant="ghost"
-            disabled={saving || Boolean(connecting) || preparation !== 'ready'}
+            disabled={saving || preparation !== 'ready'}
             onClick={() => void complete()}
           >
             I’ll do this later
