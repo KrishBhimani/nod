@@ -2,7 +2,7 @@ import * as React from 'react';
 import { Slot } from '@radix-ui/react-slot';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { cva, type VariantProps } from 'class-variance-authority';
-import { X, LoaderCircle } from 'lucide-react';
+import { LoaderCircle, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 const buttonVariants = cva('button', {
@@ -101,10 +101,40 @@ export function Notice({
 }
 
 export function Loading({ label = 'Loading…' }: { label?: string }) {
+  React.useLayoutEffect(() => {
+    const shown = performance.now();
+    return () => {
+      if (performance.now() - shown > 300) revealContent();
+    };
+  }, []);
   return (
     <div className="loading">
-      <LoaderCircle size={17} className="spin" />
-      <span>{label}</span>
+      <span className="loading-ghost" aria-hidden="true">
+        {[58, 44, 51].map((width) => (
+          <span key={width} className="resource-row">
+            <Skeleton className="ghost-icon" />
+            <span className="skeleton-lines">
+              <Skeleton style={{ width: `${width}%` }} />
+              <Skeleton style={{ width: `${width - 20}%` }} />
+            </span>
+          </span>
+        ))}
+      </span>
+      <span className="loading-label">
+        <LoaderCircle size={17} className="spin" />
+        <span>{label}</span>
+      </span>
     </div>
   );
+}
+
+let revealTimer: ReturnType<typeof setTimeout> | undefined;
+function revealContent() {
+  document.documentElement.dataset.reveal = 'true';
+  clearTimeout(revealTimer);
+  revealTimer = setTimeout(() => delete document.documentElement.dataset.reveal, 700);
+}
+
+export function Skeleton({ className, ...props }: React.HTMLAttributes<HTMLSpanElement>) {
+  return <span aria-hidden="true" className={cn('skeleton', className)} {...props} />;
 }

@@ -2828,3 +2828,211 @@ a svg {
     padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   }
 }
+@keyframes startup-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes startup-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@keyframes startup-leave {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes startup-unghost {
+  from {
+    opacity: 0.4;
+  }
+}
+@keyframes startup-sheen {
+  from {
+    background-position: 100vw 0;
+  }
+  to {
+    background-position: -100vw 0;
+  }
+}
+.skeleton {
+  display: block;
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(
+      100deg,
+      var(--muted) 30%,
+      color-mix(in srgb, var(--muted), var(--foreground) 7%) 50%,
+      var(--muted) 70%
+    )
+    fixed;
+  background-size: 200vw 100%;
+  animation: startup-sheen 1.9s linear infinite;
+}
+.skeleton-lines {
+  flex: 1;
+  max-width: min(90%, 86ch);
+  display: grid;
+  gap: 11px;
+  padding-top: 7px;
+}
+.loading {
+  animation: startup-fade 0.24s ease-out 0.4s backwards;
+}
+.loading-ghost {
+  display: none;
+}
+.loading-label {
+  display: contents;
+}
+.secondary-page .loading {
+  display: block;
+  padding: 0;
+}
+.secondary-page .loading-ghost {
+  display: block;
+  border-top: 1px solid var(--border);
+}
+.secondary-page .loading-label {
+  position: absolute;
+  display: block;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.loading-ghost .skeleton-lines {
+  padding-top: 0;
+  gap: 10px;
+}
+.ghost-icon {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+}
+.apps-page .loading-ghost {
+  display: grid;
+  gap: 14px;
+  padding-top: 38px;
+  border-top: 0;
+}
+.apps-page .loading-ghost .resource-row {
+  padding: 26px 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+html[data-reveal]
+  .secondary-page
+  :is(.resource-list > *, .saved-plan-list > *, .app-grid > *, .secondary-empty) {
+  animation: startup-rise 0.4s cubic-bezier(0.2, 0.7, 0.2, 1) backwards;
+}
+html[data-reveal] .secondary-page :is(.resource-list, .saved-plan-list, .app-grid) > :nth-child(2) {
+  animation-delay: 0.04s;
+}
+html[data-reveal] .secondary-page :is(.resource-list, .saved-plan-list, .app-grid) > :nth-child(3) {
+  animation-delay: 0.08s;
+}
+html[data-reveal]
+  .secondary-page
+  :is(.resource-list, .saved-plan-list, .app-grid)
+  > :nth-child(n + 4) {
+  animation-delay: 0.12s;
+}
+.chat-route {
+  position: relative;
+}
+.shell-entering .sidebar :is(.main-nav, .mobile-navigation, .sidebar-bottom) {
+  animation: startup-unghost 0.4s ease-out backwards;
+}
+.startup-leaving {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: var(--canvas);
+  pointer-events: none;
+  animation: startup-leave 0.28s ease-in forwards;
+}
+.startup-leaving .skeleton-note {
+  visibility: hidden;
+}
+.chat-entering > .chat-page:not(.chat-skeleton) :is(.messages > *, .welcome, .onboarding-card) {
+  animation: startup-rise 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) 0.06s backwards;
+}
+.chat-entering > .chat-page:not(.chat-skeleton) .messages > :nth-last-child(2) {
+  animation-delay: 0.11s;
+}
+.chat-entering > .chat-page:not(.chat-skeleton) .messages > :nth-last-child(3) {
+  animation-delay: 0.16s;
+}
+.chat-entering > .chat-page:not(.chat-skeleton) .messages > :nth-last-child(n + 4) {
+  animation-delay: 0.21s;
+}
+.chat-entering > .chat-page:not(.chat-skeleton) .welcome {
+  animation-name: startup-unghost;
+}
+.startup-shell .sidebar :is(.nav-link, .mobile-navigation) {
+  opacity: 0.4;
+}
+.ghost-nav-icon {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+}
+.ghost-nav-label {
+  width: 84px;
+}
+.ghost-account {
+  width: 150px;
+  height: 36px;
+  margin: 0 10px;
+  border-radius: 10px;
+}
+.ghost-bubble {
+  height: 44px;
+  border-radius: 16px 16px 4px 16px;
+}
+.ghost-welcome h1 {
+  opacity: 0.4;
+}
+.ghost-chip {
+  height: 38px;
+  border-radius: 8px;
+}
+.skeleton-note {
+  position: absolute;
+  inset: auto 0 100%;
+  margin: 0;
+  padding-bottom: 6px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+.skeleton-note > span {
+  display: inline-block;
+  animation: startup-rise 0.4s ease-out backwards;
+}
+.ghost-composer p {
+  margin: 0;
+  padding: 0 4px;
+  min-height: 34px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--placeholder);
+  opacity: 0.6;
+}
+.ghost-composer .composer-left .button {
+  opacity: 0.6;
+}
+.ghost-send {
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+}
+@media (max-width: 640px) {
+  .startup-shell .sidebar {
+    min-height: calc(57px + env(safe-area-inset-top));
+  }
+}

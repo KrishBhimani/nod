@@ -122,3 +122,24 @@ test('first-load failures remain explicit and active update bursts queue one sil
   await delay(5);
   assert.equal(requests.length, 3);
 });
+
+test('a prefetched read serves the first page visit without a second loading state', async () => {
+  const { cache, requests } = fixture();
+  const prefetch = cache.refresh('/api/vault');
+  const stop = cache.subscribe('/api/vault', () => {});
+  assert.equal(cache.refresh('/api/vault'), prefetch);
+  await Promise.resolve();
+  assert.equal(requests.length, 1);
+  requests[0].resolve([]);
+  await prefetch;
+  stop();
+  const visit = cache.subscribe('/api/vault', () => {});
+  void cache.refresh('/api/vault');
+  assert.deepEqual(cache.getSnapshot('/api/vault'), {
+    data: [],
+    error: '',
+    loading: false,
+    refreshing: true,
+  });
+  visit();
+});
