@@ -42,7 +42,8 @@ export function registerLocalAccess(app: FastifyInstance, port: number) {
     }
     const pageNavigation =
       request.method === 'GET' &&
-      (pages.has(path) || /^\/(vault|credentials|approvals)\/[A-Za-z0-9_-]+\/?$/.test(path)) &&
+      (pages.has(path) ||
+        /^\/(vault|credentials|approvals|browser-connect)\/[A-Za-z0-9_-]+\/?$/.test(path)) &&
       request.headers['sec-fetch-mode'] === 'navigate' &&
       request.headers['sec-fetch-dest'] === 'document';
     const appCallback = request.method === 'GET' && path === '/api/apps/callback';

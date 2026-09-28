@@ -218,6 +218,8 @@ export class LoginPage {
             return page.text();
           },
         },
+        querySelector: (selector: string) =>
+          selector === 'body' ? { innerText: page.text() } : null,
         querySelectorAll: (selector: string) => this.nodes(selector),
         createTreeWalker: () => {
           let first = true;

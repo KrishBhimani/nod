@@ -23,11 +23,15 @@ export class WorkspaceExitError extends Error {
 }
 
 export interface BrowserAction {
-  action: 'open' | 'snapshot' | 'click' | 'fill' | 'scroll';
+  action: 'open' | 'snapshot' | 'click' | 'fill' | 'press' | 'scroll';
   url?: string;
   selector?: string;
   text?: string;
+  key?: 'Enter' | 'Escape' | 'Tab' | 'ArrowDown' | 'ArrowUp' | 'PageDown' | 'PageUp';
   direction?: 'up' | 'down';
+  waitMs?: number;
+  offset?: number;
+  controlOffset?: number;
 }
 export interface BrowserCandidate {
   id: string;
@@ -89,6 +93,8 @@ export interface CredentialSubmission {
 export type ManualBrowserInput = import('../shared/browser-input.ts').BrowserInput;
 export interface Computer {
   currentSession?(): { taskId: string; lastActivityAt: string } | undefined;
+  bindProfile?(taskId: string, profileId: string, allowedOrigin?: string): Promise<void>;
+  deleteProfile?(profileId: string): Promise<void>;
   takeControl?(taskId: string): Promise<void>;
   openSignIn?(taskId: string): Promise<void>;
   finishSignIn?(taskId: string): Promise<void>;

@@ -21,6 +21,7 @@ import {
   type createDiscoveredConnections,
 } from './discovered-connections.ts';
 import type { WorkAdmission } from './work-admission.ts';
+import { BrowserConnectionError } from './browser-connections.ts';
 import {
   normalizedEmail,
   verificationCode,
@@ -67,6 +68,8 @@ type IntegrationOptions = {
   discovered?: Awaited<ReturnType<typeof createDiscoveredConnections>>;
   browserAccounts?: () => Promise<VaultLoginEntry[]>;
   removeBrowserAccount?: (id: string) => Promise<void>;
+  browserConnections?: () => Promise<Connection[]>;
+  removeBrowserConnection?: (id: string) => Promise<unknown>;
 };
 
 function browserService(origin: string) {
@@ -505,6 +508,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     return [
       ...result,
       ...((await options.discovered?.list()) ?? []),
+      ...((await options.browserConnections?.()) ?? []),
       ...browserAccounts.map((entry): Connection => {
         const service = browserService(entry.origin);
         return {
@@ -1266,14 +1270,18 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     app.register(async (scope) => {
       scope.setErrorHandler((error, _request, reply) => {
         const status =
-          error instanceof IntegrationError || error instanceof DiscoveredConnectionError
+          error instanceof IntegrationError ||
+          error instanceof DiscoveredConnectionError ||
+          error instanceof BrowserConnectionError
             ? error.statusCode
             : error instanceof z.ZodError
               ? 400
               : 502;
         reply.code(status).send({
           error:
-            error instanceof IntegrationError || error instanceof DiscoveredConnectionError
+            error instanceof IntegrationError ||
+            error instanceof DiscoveredConnectionError ||
+            error instanceof BrowserConnectionError
               ? error.message
               : status === 400
                 ? 'Check the connection request.'
@@ -1368,6 +1376,17 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         '/api/apps/:slug/accounts/:connectionId/disconnect',
         async (request) => {
           const id = z.uuid().parse(request.params.connectionId);
+          if (
+            (await options.browserConnections?.())?.some(
+              (entry) => entry.connectionId === id && entry.slug === request.params.slug,
+            )
+          ) {
+            if (!options.removeBrowserConnection)
+              throw new IntegrationError('This account is unavailable.', 503);
+            await options.removeBrowserConnection(id);
+            options.refresh?.();
+            return { ok: true };
+          }
           const browser = ((await options.browserAccounts?.()) ?? []).find(
             (entry) => entry.id === id && browserService(entry.origin).slug === request.params.slug,
           );
@@ -1470,7 +1489,9 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       proposal?: unknown,
     ) => {
       if (action === 'list')
-        return (await list()).map(({ accountId: _accountId, ...connection }) => connection);
+        return (await list()).map(
+          ({ accountId: _accountId, browserUrl: _browserUrl, ...connection }) => connection,
+        );
       if (action === 'propose') {
         if (!options.discovered)
           throw new IntegrationError('Discovered connections are unavailable.', 503);

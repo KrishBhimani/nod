@@ -199,6 +199,13 @@ export function createBridgeComputer(options: {
       return result;
     },
     currentSession: () => currentSession,
+    bindProfile: async (id, profileId, allowedOrigin) => {
+      await call({ method: 'bindProfile', taskId: taskId(id), profileId, allowedOrigin });
+      screens.delete(taskId(id));
+    },
+    deleteProfile: async (profileId) => {
+      await call({ method: 'deleteProfile', profileId });
+    },
     screenStatus: (id) => screens.get(taskId(id))?.value ?? { state: 'unavailable' },
     status: () => (uncertain ? 'Workspace browser needs a restart.' : status),
     act: async (id, input, signal) =>
@@ -207,7 +214,7 @@ export function createBridgeComputer(options: {
           text: z.string().max(256 * 1024),
           url: z.string().max(8192),
           candidates: z
-            .array(z.object({ id: z.string().max(128), label: z.string().max(350) }).strict())
+            .array(z.object({ id: z.string().max(500), label: z.string().max(350) }).strict())
             .max(100),
         })
         .strict()

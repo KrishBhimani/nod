@@ -180,7 +180,8 @@ export function registerRuntimeAccess(
     if (
       !verified.developer &&
       (path.startsWith('/api/inspector') ||
-        path.startsWith('/api/browser') ||
+        path === '/api/browser' ||
+        path.startsWith('/api/browser/') ||
         path === '/browser' ||
         path === '/dev')
     )

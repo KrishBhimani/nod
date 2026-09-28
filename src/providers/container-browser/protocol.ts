@@ -27,11 +27,17 @@ export const browserDownloadInput = z
   .refine((input) => !(input.selector && input.url));
 const browserAction = z
   .object({
-    action: z.enum(['open', 'snapshot', 'click', 'fill', 'scroll']),
+    action: z.enum(['open', 'snapshot', 'click', 'fill', 'press', 'scroll']),
     url: z.string().max(8192).optional(),
     selector: selector.optional(),
     text: z.string().max(20_000).optional(),
+    key: z
+      .enum(['Enter', 'Escape', 'Tab', 'ArrowDown', 'ArrowUp', 'PageDown', 'PageUp'])
+      .optional(),
     direction: z.enum(['up', 'down']).optional(),
+    waitMs: z.number().int().min(0).max(15_000).optional(),
+    offset: z.number().int().min(0).max(100_000).optional(),
+    controlOffset: z.number().int().min(0).max(100_000).optional(),
   })
   .strict();
 const credential = z
@@ -50,6 +56,16 @@ const credential = z
 
 export const browserRequest = z.discriminatedUnion('method', [
   z.object({ ...identity, method: z.literal('act'), taskId: task, input: browserAction }).strict(),
+  z
+    .object({
+      ...identity,
+      method: z.literal('bindProfile'),
+      taskId: task,
+      profileId: z.uuid(),
+      allowedOrigin: z.url().max(2048).optional(),
+    })
+    .strict(),
+  z.object({ ...identity, method: z.literal('deleteProfile'), profileId: z.uuid() }).strict(),
   z
     .object({
       ...identity,

@@ -145,6 +145,58 @@ test('a discovered account form shows reviewed addresses and clears a failed tok
   }
 });
 
+test('website setup reports the site check while its private browser opens', async () => {
+  const priorFetch = globalThis.fetch;
+  window.history.replaceState(null, '', '/apps');
+  let finish: ((response: Response) => void) | undefined;
+  globalThis.fetch = async (url, options) =>
+    String(url) === '/api/browser-connections' && options?.method === 'POST'
+      ? new Promise<Response>((resolve) => {
+          finish = resolve;
+        })
+      : Response.json([]);
+  pageDataCache.update('/api/apps', () => []);
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(createElement(Apps)));
+    await act(async () =>
+      click(
+        [...container.querySelectorAll('button')].find(
+          (button) => button.textContent === 'Connect website',
+        )!,
+      ),
+    );
+    const form = document.querySelector<HTMLFormElement>('.app-website-dialog form')!;
+    await act(async () =>
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+    );
+    assert.ok(finish);
+    assert.match(
+      document.querySelector('.app-website-progress')?.textContent ?? '',
+      /Opening the site and checking sign-in/,
+    );
+    assert.match(
+      document.querySelector('.app-website-progress')?.textContent ?? '',
+      /may ask for a code/,
+    );
+    await act(async () =>
+      finish?.(Response.json({ error: 'The website could not open.' }, { status: 503 })),
+    );
+    assert.equal(document.querySelector('.app-website-progress'), null);
+    assert.match(
+      document.querySelector('.app-website-dialog')?.textContent ?? '',
+      /The website could not open/,
+    );
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    pageDataCache.update('/api/apps', () => null);
+    globalThis.fetch = priorFetch;
+  }
+});
+
 test('a discovered CLI form shows the program and keeps the token private', async () => {
   const priorFetch = globalThis.fetch;
   window.history.replaceState(null, '', '/apps?connect=77777777-7777-4777-8777-777777777777');
