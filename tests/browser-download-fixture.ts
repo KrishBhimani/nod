@@ -88,7 +88,9 @@ export async function createBrowserDownloadFixture() {
         });
         response.write(browserDownloadPdf.subarray(0, 128));
         heldStarted();
-        releaseHeldDownload = () => response.end(browserDownloadPdf.subarray(128));
+        releaseHeldDownload = () => {
+          if (!response.writableEnded) response.end(browserDownloadPdf.subarray(128));
+        };
         return;
       }
       if (url.pathname === '/slow.pdf') {

@@ -20,6 +20,12 @@ For a non-PDF page, a download request without a selector or URL now waits up to
 
 The full local aggregate passed **1,347 of 1,351 tests, with four native-only skips and zero failures**, in 122.827 seconds. The production build and type/import/format checks passed. This aggregate began before the final test-only observed-scan barrier and cancellation-assertion refinements. The final focused browser-download file then passed **14 of 17 tests, with three native-only skips and zero failures**, under Node.js 24.21.0. Those refinements did not change the runtime or the native held-response handshake validated by attempt 06.
 
-This record ends at local validation. Later CI and deployment receipts are tracked by the follow-up PR and its workflow runs.
+## PR validation and rollout boundary
+
+[PR #8](https://github.com/n8n-io/sidekick/pull/8) revision `ff6017fc1ee6fb859269873512cccdb9f2b79366` passed all three jobs in [CI run 36380262444](https://github.com/n8n-io/sidekick/actions/runs/36380262444). Root integration checks passed **1,347 of 1,351 tests with four native-only skips**, Cloudflare checks passed **403/403**, and native browser delivery passed **27/27**.
+
+Three review corrections then normalized filesystem failures to fixed messages, made the held-response fixture release idempotent, and bounded its scan waits while propagating early rejection. The corrected local tree passed **1,347 of 1,351 integration tests with four native-only skips and zero failures**, plus build and type/import/format checks. Its separate native run passed **27/27**. These are local receipts for the corrections, not an exact-head CI result for them.
+
+The manual deployment did not complete: the workspace application LIST reported version 9 while DETAIL reported version 10, causing Wrangler to skip the rollout as unchanged. Deployment verification refused completion and admission remained closed. A guarded image-only workspace rollout corrected that mismatch without changing the original deployment identity or bypassing any fence. After refreshing short-lived registry pull credentials, the standard all-role verification and public smoke passed; the original operation reopened admission at **05:22:22 UTC**. This establishes deployment recovery, not authenticated production acceptance of the download change. Subsequent receipts belong to the PR and its workflow runs.
 
 Earlier successful public-PDF production checks remain dated separately in the [production download record](2026-09-28-production-downloads.md).

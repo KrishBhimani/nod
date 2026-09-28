@@ -82,13 +82,15 @@ export async function waitForDownload(
       )
         throw new Error('The browser download directory changed.');
       identity ??= { dev: root.dev, ino: root.ino };
-      const names = await readdir(directory);
+      const names = await readdir(directory).catch(() => {
+        throw new Error('The browser download directory is unavailable.');
+      });
       if (names.length > 64) throw new Error('There are too many browser downloads.');
       if (names.length > 1) throw new Error('Choose the specific download link or URL.');
       if (names.length === 1) {
         const file = await lstat(join(directory, names[0])).catch((error) => {
           if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-          throw error;
+          throw new Error('The browser file is unavailable.');
         });
         if (file) {
           if (
@@ -99,7 +101,9 @@ export async function waitForDownload(
           )
             throw new Error('The browser file is unavailable or exceeds 12 MiB.');
           if (!names[0].endsWith('.crdownload')) {
-            const current = await lstat(directory);
+            const current = await lstat(directory).catch(() => {
+              throw new Error('The browser download directory is unavailable.');
+            });
             if (
               !current.isDirectory() ||
               current.isSymbolicLink() ||

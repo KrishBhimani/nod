@@ -47,7 +47,26 @@ function downloadWaitProbe(t: TestContext) {
     check();
     if (++checks === 2) scanned();
   });
-  return { controller, scan };
+  return {
+    controller,
+    async scan(pending: Promise<unknown>) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          scan,
+          pending.then(() => assert.fail('Capture completed before its scan.')),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('The download scan did not start.')), 2000);
+          }),
+        ]);
+      } catch (error) {
+        controller.abort(error);
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
 }
 
 async function createDownloadBrowser(root: string, captureStarted?: () => void) {
@@ -148,7 +167,7 @@ test('no-target capture waits through absent, partial and completed native files
   const pending = waitForDownload(directory, probe.controller.signal);
   void pending.catch(() => {});
   try {
-    await probe.scan;
+    await probe.scan(pending);
     await mkdir(directory);
     await writeFile(join(directory, 'invoice.pdf.crdownload'), browserDownloadPdf);
     assert.equal(
@@ -172,7 +191,7 @@ test('no-target capture cancellation preserves partial and later completed files
   try {
     await writeFile(join(root, 'invoice.pdf.crdownload'), browserDownloadPdf);
     const pending = waitForDownload(root, abort.signal);
-    await probe.scan;
+    await probe.scan(pending);
     const reason = new Error('Stopped capture.');
     abort.abort(reason);
     await assert.rejects(
@@ -245,7 +264,7 @@ test('no-target capture refuses replaced directories and unsafe native files', a
     const probe = downloadWaitProbe(t);
     const pending = waitForDownload(directory, probe.controller.signal);
     void pending.catch(() => {});
-    await probe.scan;
+    await probe.scan(pending);
     await rename(directory, join(root, 'original'));
     await mkdir(directory);
     await writeFile(join(directory, 'replacement.pdf'), browserDownloadPdf);
