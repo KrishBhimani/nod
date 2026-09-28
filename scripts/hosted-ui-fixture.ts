@@ -166,7 +166,12 @@ const app = await createGateway({
         consent.set(token, {
           ownerId: owner,
           service: connect[1] as IntegrationService,
-          returnTo: input.returnTo === 'onboarding' ? '/onboarding' : '/apps',
+          returnTo:
+            input.returnTo === 'window'
+              ? '/connected.html'
+              : input.returnTo === 'onboarding'
+                ? '/onboarding'
+                : '/apps',
         });
         return Response.json({ url: `${origin}/fixture/connect?token=${token}` });
       }
