@@ -721,10 +721,6 @@ a svg {
   opacity: 0;
   transition: opacity 140ms;
 }
-.message:hover .message-actions,
-.message:focus-within .message-actions {
-  opacity: 1;
-}
 .message-actions .button {
   width: 27px;
   height: 26px;
@@ -829,8 +825,11 @@ a svg {
   display: flex;
   align-items: center;
   justify-content: center;
-  margin: 8px 0;
+  margin: 12px 0 -12px;
   gap: 18px;
+}
+.day-divider:first-child {
+  margin-top: 0;
 }
 .day-divider span {
   font-size: 11px;
@@ -1016,11 +1015,40 @@ a svg {
 }
 .jump-latest {
   position: absolute;
-  bottom: calc(100% + 4px);
-  left: 50%;
-  transform: translateX(-50%);
-  box-shadow: 0 3px 14px #00000007;
+  right: 0;
+  bottom: calc(100% + 10px);
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  box-shadow: 0 4px 18px #1b192414;
   z-index: 3;
+  animation: jump-latest-in 160ms ease-out;
+}
+.jump-latest-count {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--background);
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+@keyframes jump-latest-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.92);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .jump-latest {
+    animation: none;
+  }
 }
 .welcome {
   min-height: 40vh;
@@ -2231,9 +2259,6 @@ a svg {
   }
   .account-row {
     margin-left: 0;
-  }
-  .message-actions {
-    opacity: 1;
   }
   .message-text {
     font-size: 13px;

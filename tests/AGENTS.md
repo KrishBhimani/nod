@@ -32,6 +32,7 @@
 | Audio policy and cancellation                                          | `speech`, `provider-adapters`                                                                                 |
 | Streaming and safe links                                               | `web-streams`, `message-links`                                                                                |
 | Markdown composer, inline emoji, preview cards and reset UI            | `chat-composer`, `chat-messages`, `chat-reset`, `web-markdown`                                                |
+| Earlier-message flags, history skeleton and Back to latest             | `chat-history`, `chat-timeline`                                                                               |
 | Sidebar shortcuts, modifier hints and navigation focus                 | `sidebar`                                                                                                     |
 | Public metadata, pinned resolution, image proxy and caching            | `link-preview`                                                                                                |
 | Compact accounts, channel setup steps, and plan chat drafts            | `secondary-pages`, `secondary-page-layout`                                                                    |

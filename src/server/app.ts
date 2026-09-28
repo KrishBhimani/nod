@@ -29,7 +29,12 @@ import { createMultipartReader } from './multipart.ts';
 import type { SpeechService } from './speech.ts';
 import { BrowserActionError, type Computer } from '../ports/computer.ts';
 import { browserErrorMessage } from '../shared/browser-errors.ts';
-import type { Configuration, Message, MessageReaction } from '../shared/contracts.ts';
+import type {
+  Configuration,
+  Message,
+  MessageHistoryPage,
+  MessageReaction,
+} from '../shared/contracts.ts';
 import type { AgentToolMetadata } from '../ports/agent.ts';
 import { inspectorPayloadLimit, inspectorRetentionDays, type InspectorStore } from './inspector.ts';
 import type { createChatVerification } from './chat-verification.ts';
@@ -127,7 +132,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
     const revision = await conversationRevision(pool, ownerId);
     const [messages, tasks, verificationRequests] = await Promise.all([
       pool.query(
-        `SELECT ${messageFields} FROM (SELECT m.* FROM messages m JOIN tasks t ON t.id=m.task_id WHERE m.owner_id=$1 AND t.owner_id=$1 AND t.channel='web' AND ${currentConversationSql()} ORDER BY date_trunc('milliseconds',m.created_at) DESC,m.id DESC LIMIT 150) m
+        `SELECT ${messageFields} FROM (SELECT m.* FROM messages m JOIN tasks t ON t.id=m.task_id WHERE m.owner_id=$1 AND t.owner_id=$1 AND t.channel='web' AND ${currentConversationSql()} ORDER BY date_trunc('milliseconds',m.created_at) DESC,m.id DESC LIMIT 151) m
          LEFT JOIN messages target ON target.id=m.reply_to_message_id AND target.owner_id=m.owner_id ORDER BY date_trunc('milliseconds',m.created_at),m.id`,
         [ownerId],
       ),
@@ -137,9 +142,11 @@ export async function createApp(dependencies: AppDependencies = {}) {
       ),
       dependencies.verification?.pending() ?? [],
     ]);
+    const hasEarlierMessages = messages.rows.length > 150;
     return {
       conversationRevision: revision,
-      messages: messages.rows.map(messageView),
+      hasEarlierMessages,
+      messages: messages.rows.slice(hasEarlierMessages ? 1 : 0).map(messageView),
       tasks: tasks.rows,
       verificationRequests,
       configuration: publicConfiguration(),
@@ -170,10 +177,13 @@ export async function createApp(dependencies: AppDependencies = {}) {
       `SELECT ${messageFields} FROM messages m JOIN tasks t ON t.id=m.task_id
       LEFT JOIN messages target ON target.id=m.reply_to_message_id AND target.owner_id=m.owner_id
       WHERE m.owner_id=$1 AND t.owner_id=$1 AND t.channel='web' AND ${currentConversationSql()} AND ($2::timestamptz IS NULL OR date_trunc('milliseconds',m.created_at) < $2 OR (date_trunc('milliseconds',m.created_at) = $2 AND $3::uuid IS NOT NULL AND m.id < $3))
-      ORDER BY date_trunc('milliseconds',m.created_at) DESC,m.id DESC LIMIT 60`,
+      ORDER BY date_trunc('milliseconds',m.created_at) DESC,m.id DESC LIMIT 61`,
       [ownerId, query.before ?? null, query.beforeId ?? null],
     );
-    return rows.rows.reverse().map(messageView);
+    return {
+      messages: rows.rows.slice(0, 60).reverse().map(messageView),
+      hasMore: rows.rows.length > 60,
+    } satisfies MessageHistoryPage;
   });
   app.post<{ Params: { id: string } }>('/api/messages/:id/reaction', async (request, reply) => {
     const { reaction } = z
