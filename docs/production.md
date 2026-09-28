@@ -6,6 +6,8 @@ The repository includes Google login, account settings, isolated per-user Node r
 
 The running pilot still selects `COMPUTER_PROVIDER=cloudflare`, with separate private browser/workspace containers per owner. Its [production acceptance on `6e0a3aab`](testing/results/2026-09-27-production-chat.md) verifies ordinary chat, real browser/workspace tasks, two-account file isolation and persistence across the successful automatic deployment from `main`. It does not establish live E2B, integration-event delivery or completion of the broader hosted acceptance gates.
 
+The later [scoped production check on historical release `cfe9bb3`](testing/results/2026-09-28-production-downloads.md) passed fresh signup/onboarding, public PDF rendering/download with matching bytes, and a separate web text stream after the reset. Notion exact-title search and content read matched a withheld fixture value and correct link for one explicitly shared synthetic page; earlier empty searches and broader workspace access remain separate. Live Telegram attachment delivery, Gmail repair, E2B acceptance and the subsequent download-cleanup fix remain separate gates.
+
 ## Selected E2B deployment shape
 
 ```text

@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
+import { integrationResultSnapshot } from './integration-result.ts';
 import type { Approval, Connection } from '../shared/contracts.ts';
 import type {
   IntegrationFile,
@@ -760,7 +761,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       const result = await session.execute(action, providerArgs, row.account_id!);
       if (integrationActions.includes(action))
         rememberTargets(row.account_id!, row.slug, result, providerArgs);
-      return result;
+      return integrationResultSnapshot(result);
     } catch {
       throw new IntegrationError(
         'The app request failed. Check the connection and requested fields.',

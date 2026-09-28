@@ -141,6 +141,75 @@ async function fixture(t: TestContext) {
 }
 
 test(
+  'owned app reads omit oversized results while discovery preserves complete schemas',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async (t) => {
+    const f = await fixture(t);
+    const notion = await f.connect('notion');
+    const args = { connectionId: notion.connectionId, query: 'synthetic page', page_size: 100 };
+    const oversized = {
+      results: [
+        { title: 'Earlier unrelated page', description: 'x'.repeat(18_000) },
+        { title: 'Synthetic page beyond the old cutoff' },
+      ],
+      has_more: false,
+    };
+    let executions = 0;
+    f.session.execute = async (action, providerArgs, accountId) => {
+      executions += 1;
+      assert.equal(action, 'NOTION_SEARCH_NOTION_PAGE');
+      assert.equal(accountId, notion.accountId);
+      assert.deepEqual(providerArgs, { query: 'synthetic page', page_size: 100 });
+      return oversized;
+    };
+    const result = (await f.service.execute(
+      'local-development',
+      'NOTION_SEARCH_NOTION_PAGE',
+      args,
+    )) as Record<string, unknown>;
+    assert.equal(executions, 1);
+    assert.equal(result.truncated, true);
+    assert.equal(result.resultOmitted, true);
+    assert.equal(result.originalBytes, Buffer.byteLength(JSON.stringify(oversized)));
+    assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 18_000);
+    assert.equal(result.results, undefined);
+    assert.equal(result.resultPreview, undefined);
+    assert.match(String(result.message), /incomplete/i);
+    assert.match(String(result.message), /not.found/i);
+    assert.match(String(result.message), /narrower read-only/i);
+    assert.ok(!JSON.stringify(result).includes('Earlier unrelated page'));
+    const small = { results: [{ title: 'Synthetic page' }], has_more: true, next_cursor: 'next' };
+    f.session.execute = async () => small;
+    assert.deepEqual(
+      await f.service.execute('local-development', 'NOTION_SEARCH_NOTION_PAGE', args),
+      small,
+    );
+    const schema = {
+      description: 'x'.repeat(18_000),
+      parameters: {
+        type: 'object',
+        properties: { query: { type: 'string' } },
+        required: ['query'],
+      },
+    };
+    let searches = 0;
+    f.session.search = async () => {
+      searches += 1;
+      return { tools: { NOTION_SEARCH_NOTION_PAGE: schema }, suggestions: [] };
+    };
+    const discovered = (await f.service.execute('local-development', 'SEARCH_TOOLS', {
+      query: 'Search Notion pages',
+    })) as Record<string, unknown>;
+    assert.equal(searches, 1);
+    assert.ok(Buffer.byteLength(JSON.stringify(schema)) > 18_000);
+    assert.deepEqual(discovered.tools, { NOTION_SEARCH_NOTION_PAGE: schema });
+    assert.deepEqual(discovered.suggestions, []);
+    assert.equal(discovered.truncated, undefined);
+    assert.equal(discovered.resultOmitted, undefined);
+  },
+);
+
+test(
   'Slack and Notion preserve owned accounts, reviewed reads, exact write approvals and signed event boundaries',
   { skip: !process.env.TEST_DATABASE_URL },
   async (t) => {

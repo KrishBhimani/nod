@@ -14,6 +14,11 @@ export async function createBrowserDownloadFixture() {
   const slowDownloadStarted = new Promise<void>((resolve) => {
     slowStarted = resolve;
   });
+  let cleanupStarted!: () => void;
+  const cleanupWaiting = new Promise<void>((resolve) => {
+    cleanupStarted = resolve;
+  });
+  let releaseCleanup = () => {};
   let crossOrigin = '';
   const handle: RequestListener = (request, response) => {
     const url = new URL(request.url ?? '/', 'http://localhost');
@@ -31,7 +36,30 @@ export async function createBrowserDownloadFixture() {
         <a id="cross-origin" href="${crossOrigin}/invoice.pdf">Download hosted invoice</a>
         <button id="large" onclick="window.location='/large.pdf'">Download large invoice</button>
         <button id="slow" onclick="window.location='/slow.pdf'">Download slow invoice</button>
+        ${
+          url.searchParams.has('late')
+            ? `<script>
+          new MutationObserver(records => {
+            for (const record of records) for (const node of record.addedNodes) {
+              if (!(node instanceof Element) || !node.id.startsWith('sidekick-download-')) continue;
+              node.remove = async () => {
+                Element.prototype.remove.call(node);
+                await fetch('/cleanup-held');
+              };
+            }
+          }).observe(document.documentElement, { childList: true, subtree: true });
+        </script>`
+            : ''
+        }
         </body></html>`);
+    } else if (url.pathname === '/cleanup-held') {
+      cleanupStarted();
+      releaseCleanup = () => {
+        if (!response.writableEnded) {
+          response.writeHead(204);
+          response.end();
+        }
+      };
     } else if (url.pathname === '/redirect.pdf') {
       response.writeHead(302, { location: `${crossOrigin}/invoice.pdf` });
       response.end();
@@ -92,6 +120,8 @@ export async function createBrowserDownloadFixture() {
     origin: `http://127.0.0.1:${address.port}`,
     crossOrigin,
     slowDownloadStarted: () => slowDownloadStarted,
+    cleanupWaiting: () => cleanupWaiting,
+    releaseCleanup: () => releaseCleanup(),
     authenticatedDownloads: () => authenticated,
     unauthenticatedDownloads: () => unauthenticated,
     close: async () => {

@@ -28,6 +28,7 @@ test(
       sourceMessageId: string | null;
     }> = [];
     let rejectPreflight = false;
+    let executionResult: (() => unknown) | undefined;
     await db.initializeDatabase();
     await tasks.initializeTasks();
     await db.pool.query(
@@ -36,6 +37,7 @@ test(
     const approvals = await createApprovals(
       async (action, args, provenance) => {
         calls.push({ action, args, sourceMessageId: provenance.sourceMessageId });
+        if (executionResult) return executionResult();
         return { ok: true, fixtureReference: calls.length };
       },
       async () => {
@@ -512,6 +514,111 @@ test(
             );
             assert.equal((await row(id)).source_message_id, null);
             assert.equal((await proposal(id)).status, 'completed');
+          }
+        },
+      );
+
+      await t.test(
+        'an oversized confirmed result remains completed once with explicitly incomplete evidence',
+        async () => {
+          const id = await begin('Find the synthetic page.');
+          const oversized = {
+            results: [
+              { title: 'Unrelated page', description: 'x'.repeat(18_000) },
+              { title: 'Synthetic page beyond the old cutoff' },
+            ],
+            has_more: false,
+          };
+          await approvals.request(
+            id,
+            'NOTION_FETCH_DATA',
+            { connectionId: 'owned-notion', query: 'synthetic page', page_size: 100 },
+            { revision: 0 },
+          );
+          const saved = await proposal(id);
+          await messages.submit('Yes.', [], {
+            replyToMessageId: saved.confirmation_message_id,
+          });
+          const revision = (await row(id)).revision;
+          await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1", [id]);
+          const before = calls.length;
+          executionResult = () => oversized;
+          try {
+            const result = await approvals.executeConfirmed(
+              id,
+              revision,
+              new AbortController().signal,
+            );
+            const completed = await proposal(id);
+            assert.equal(completed.status, 'completed');
+            assert.equal(completed.result.truncated, true);
+            assert.equal(completed.result.resultOmitted, true);
+            assert.equal(
+              completed.result.originalBytes,
+              Buffer.byteLength(JSON.stringify(oversized)),
+            );
+            assert.ok(Buffer.byteLength(JSON.stringify(completed.result)) <= 18_000);
+            assert.equal(completed.result.resultPreview, undefined);
+            assert.equal(completed.result.results, undefined);
+            assert.ok(!JSON.stringify(completed.result).includes('Unrelated page'));
+            assert.match(result!.prompt, /incomplete/i);
+            assert.match(result!.prompt, /not.found/i);
+            assert.match(result!.prompt, /narrower read-only/i);
+            assert.match(result!.prompt, /Do not repeat it/);
+            assert.ok(!result!.prompt.includes('Synthetic page beyond the old cutoff'));
+            assert.equal((await row(id)).prompt, result!.prompt);
+            assert.equal(
+              await approvals.executeConfirmed(id, revision, new AbortController().signal),
+              undefined,
+            );
+            assert.equal(calls.length, before + 1);
+          } finally {
+            executionResult = undefined;
+          }
+        },
+      );
+
+      await t.test(
+        'cancellation and provider uncertainty cannot replay a confirmed action with large output',
+        async () => {
+          for (const outcome of ['cancelled', 'uncertain'] as const) {
+            const id = await begin('Find the synthetic page.');
+            await approvals.request(
+              id,
+              'NOTION_FETCH_DATA',
+              { connectionId: 'owned-notion', query: outcome },
+              { revision: 0 },
+            );
+            await messages.submit('Yes.', [], {
+              replyToMessageId: (await proposal(id)).confirmation_message_id,
+            });
+            const revision = (await row(id)).revision;
+            await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1", [id]);
+            const controller = new AbortController();
+            const before = calls.length;
+            executionResult = () => {
+              if (outcome === 'uncertain') throw new Error('Private provider uncertainty');
+              controller.abort();
+              return { data: 'x'.repeat(18_000) };
+            };
+            try {
+              await assert.rejects(
+                approvals.executeConfirmed(id, revision, controller.signal),
+                outcome === 'cancelled' ? { name: 'AbortError' } : { statusCode: 502 },
+              );
+              const completed = await proposal(id);
+              assert.equal(completed.status, outcome === 'cancelled' ? 'completed' : 'uncertain');
+              if (outcome === 'cancelled') assert.equal(completed.result.resultOmitted, true);
+              else assert.equal(completed.result, null);
+              assert.equal(
+                await approvals.executeConfirmed(id, revision, new AbortController().signal),
+                undefined,
+              );
+              assert.equal(calls.length, before + 1);
+              assert.ok(!JSON.stringify(completed.result).includes('Private provider uncertainty'));
+            } finally {
+              executionResult = undefined;
+            }
           }
         },
       );

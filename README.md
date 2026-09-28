@@ -6,6 +6,8 @@ Sidekick has two entry modes. The default local mode is a single-owner app bound
 
 **2026-09-27 production acceptance:** the Cloudflare-computer pilot passed ordinary chat, real browser/workspace tasks, two-account file isolation and file persistence across an automatic deployment from `main`. [Release `6e0a3aab` and its exact test scope](docs/testing/results/2026-09-27-production-chat.md) are recorded separately from the outstanding integration and account checks.
 
+**2026-09-28 scoped production check:** historical release `cfe9bb3` passed fresh Google signup/onboarding, public PDF rendering/download with exact-byte readback and a separate web text stream. Notion exact-title search and content read matched a withheld fixture value from one explicitly shared synthetic page; broader workspace access remains unverified. [Results and remaining gates](docs/testing/results/2026-09-28-production-downloads.md) distinguish this check from the later cleanup fix.
+
 E2B remains the selected next production computer. Its combined-template isolation and pause/resume have implementation/fixture coverage only; live E2B execution remains unverified. Development shows 100 credits, while production shows 0 credits and a payment-card gate; runtime-key authorization is pending. The current Cloudflare-computer results do not validate E2B.
 
 Use [hosted setup](#run-the-hosted-pilot) for deployment configuration and [production](docs/production.md) for current limits and release evidence. The separate `npm run prototype:cloud` preview remains a synthetic design artifact, not a production test.

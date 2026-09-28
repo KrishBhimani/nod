@@ -139,8 +139,9 @@ export async function createDownloadCapture(directory: string) {
     (await entries()).filter(
       ({ name, info }) => !names.has(name) && !identities.has(`${info.dev}:${info.ino}`),
     );
+  const file = `capture-${randomUUID()}`;
   return {
-    file: `capture-${randomUUID()}`,
+    file,
     async inspect() {
       const files = await created();
       if (
@@ -152,6 +153,7 @@ export async function createDownloadCapture(directory: string) {
     },
     async cleanup() {
       for (const { name, info } of await created()) {
+        if (name !== file) continue;
         if (!info.isFile() || info.isSymbolicLink())
           throw new Error('The browser download cleanup is unavailable.');
         await unlink(join(directory, name));

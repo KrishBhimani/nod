@@ -74,6 +74,21 @@ test('capture cleanup preserves existing files and their renamed identities afte
   }
 });
 
+test('capture cleanup does not adopt files created after its final inspection', async () => {
+  const root = await mkdtemp('/tmp/sk-download-late-file-');
+  try {
+    const capture = await createDownloadCapture(root);
+    await writeFile(join(root, capture.file), browserDownloadPdf);
+    assert.deepEqual(await capture.inspect(), [capture.file]);
+    await writeFile(join(root, 'unrelated.pdf'), 'unrelated bytes');
+    await capture.cleanup();
+    assert.deepEqual(await readdir(root), ['unrelated.pdf']);
+    assert.equal(await readFile(join(root, 'unrelated.pdf'), 'utf8'), 'unrelated bytes');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('browser captures refuse symlinks, partial files, multiple links and excessive file size', async () => {
   const root = await mkdtemp('/tmp/sk-download-files-');
   try {
@@ -235,6 +250,55 @@ test(
           } finally {
             await rm(root, { recursive: true, force: true });
           }
+        }
+      }
+    }
+  },
+);
+
+test(
+  'native capture cleanup preserves a late unrelated file after the one-file check',
+  {
+    skip: !process.env.SIDEKICK_TEST_BROWSER_EXECUTABLE,
+    timeout: 30_000,
+  },
+  async (t) => {
+    const root = await mkdtemp('/tmp/sk-download-late-');
+    const fixture = await createBrowserDownloadFixture();
+    const computer = createAgentBrowserComputer({
+      dataRoot: root,
+      browserExecutable: process.env.SIDEKICK_TEST_BROWSER_EXECUTABLE,
+      headless: true,
+    });
+    let pending: ReturnType<NonNullable<typeof computer.download>> | undefined;
+    try {
+      await computer.act('late', { action: 'open', url: `${fixture.origin}/session?late=true` });
+      pending = computer.download!('late', { url: `${fixture.crossOrigin}/invoice.pdf` }, t.signal);
+      void pending.catch(() => {});
+      await Promise.race([
+        fixture.cleanupWaiting(),
+        pending.then(() => {
+          throw new Error('The cleanup boundary was not reached.');
+        }),
+      ]);
+      const directory = join(root, 'runtime', 'downloads', 'late');
+      const files = await readdir(directory);
+      assert.equal(files.filter((name) => name.startsWith('capture-')).length, 1);
+      await writeFile(join(directory, 'unrelated.pdf'), browserDownloadPdf);
+      fixture.releaseCleanup();
+      assert.deepEqual((await pending).bytes, browserDownloadPdf);
+      assert.deepEqual(await readdir(directory), ['unrelated.pdf']);
+      assert.deepEqual(await readFile(join(directory, 'unrelated.pdf')), browserDownloadPdf);
+    } finally {
+      fixture.releaseCleanup();
+      await pending?.catch(() => {});
+      try {
+        await computer.dispose();
+      } finally {
+        try {
+          await fixture.close();
+        } finally {
+          await rm(root, { recursive: true, force: true });
         }
       }
     }
