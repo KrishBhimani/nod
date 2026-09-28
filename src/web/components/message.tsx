@@ -298,7 +298,7 @@ export function MessageBubble({
   function inspect() {
     setMenu(null);
     window.dispatchEvent(
-      new CustomEvent('sidekick:inspect-message', {
+      new CustomEvent('otto:inspect-message', {
         detail: { messageId: message.id, taskId: message.taskId },
       }),
     );
@@ -323,9 +323,7 @@ export function MessageBubble({
   return (
     <article
       className={`message message-${message.role}${streaming ? ' streaming-message' : ''}${grouped ? ' message-grouped' : ''}${!showTimestamp ? ' message-continuing' : ''}${selected ? ' message-selected' : ''}`}
-      aria-label={
-        streaming ? 'Sidekick is responding' : message.role === 'user' ? 'You' : 'Sidekick'
-      }
+      aria-label={streaming ? 'Otto is responding' : message.role === 'user' ? 'You' : 'Otto'}
       data-message-id={streaming ? undefined : message.id}
       onPointerUp={(event) => {
         if (!['touch', 'pen'].includes(event.pointerType)) return;
@@ -353,7 +351,7 @@ export function MessageBubble({
         <div className="message-body">
           {message.replyTo && (
             <blockquote className="message-reply-quote">
-              <strong>{message.replyTo.role === 'assistant' ? 'Sidekick' : 'You'}</strong>
+              <strong>{message.replyTo.role === 'assistant' ? 'Otto' : 'You'}</strong>
               <span>{message.replyTo.text || 'Attachment'}</span>
             </blockquote>
           )}
@@ -392,8 +390,8 @@ export function MessageBubble({
                 <span
                   className="selected-reaction agent-reaction"
                   role="img"
-                  aria-label={`Sidekick reacted: ${reactionName(agentReaction)}`}
-                  title={`Sidekick reacted: ${reactionName(agentReaction)}`}
+                  aria-label={`Otto reacted: ${reactionName(agentReaction)}`}
+                  title={`Otto reacted: ${reactionName(agentReaction)}`}
                 >
                   <ReactionGlyph value={agentReaction} />
                 </span>

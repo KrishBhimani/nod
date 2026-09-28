@@ -164,7 +164,7 @@ export function createSessionStore(
         method: 'POST',
         body: '{}',
         cache: 'no-store',
-        headers: logoutAccount ? { 'X-Sidekick-Account': logoutAccount } : undefined,
+        headers: logoutAccount ? { 'X-Otto-Account': logoutAccount } : undefined,
       });
       if (current === version) {
         logoutAccount = undefined;

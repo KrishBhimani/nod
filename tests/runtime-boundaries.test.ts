@@ -71,7 +71,7 @@ test('workspace paths cannot address host files or other task directories', () =
 });
 
 test('workspace artifact reads reject paths outside the container task', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-runtime-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-runtime-'));
   try {
     const workspace = join(directory, 'task-a');
     await mkdir(workspace);
@@ -79,7 +79,7 @@ test('workspace artifact reads reject paths outside the container task', async (
     await symlink(join(directory, 'private.txt'), join(workspace, 'escape.txt'));
     let launched = 0;
     const runner = createDockerWorkspace({
-      container: 'sidekick-workspace',
+      container: 'otto-workspace',
       workspaceRoot: directory,
       spawn: () => {
         launched++;

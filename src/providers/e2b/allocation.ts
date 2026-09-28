@@ -134,9 +134,9 @@ export function createE2BAllocation(options: {
       const value = previous?.resourceId
         ? await options.client.connect(previous.resourceId)
         : await options.client.create(options.templateId, {
-            sidekick_owner: createHash('sha256').update(options.ownerId).digest('hex'),
-            sidekick_role: options.role,
-            sidekick_generation: next.generation,
+            otto_owner: createHash('sha256').update(options.ownerId).digest('hex'),
+            otto_role: options.role,
+            otto_generation: next.generation,
           });
       sandbox = value;
       if (!value.id || (previous?.resourceId && value.id !== previous.resourceId))

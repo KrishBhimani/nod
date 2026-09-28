@@ -18,7 +18,7 @@ const { cloudflareLocalPlan } = await import(
 );
 const values = () => ({
   DATABASE_URL: 'postgresql://fixture:synthetic@localhost:54331/hosted',
-  SIDEKICK_MASTER_KEY: randomBytes(32).toString('base64'),
+  OTTO_MASTER_KEY: randomBytes(32).toString('base64'),
   BETTER_AUTH_SECRET: 'synthetic-auth-secret-with-32-characters',
   GOOGLE_CLIENT_ID: 'synthetic-client',
   GOOGLE_CLIENT_SECRET: 'synthetic-google-secret',
@@ -34,15 +34,15 @@ test('hosted development isolates process, dotenv, data and server configuration
       PATH: '/bin',
       DATABASE_URL: 'private-normal-app',
       OPENAI_API_KEY: 'private-old-provider',
-      SIDEKICK_MODE: 'local',
+      OTTO_MODE: 'local',
       NODE_OPTIONS: '--private',
     },
   });
-  assert.equal(environment.SIDEKICK_MODE, 'gateway');
-  assert.equal(environment.SIDEKICK_PUBLIC_URL, 'http://localhost:4330');
-  assert.equal(environment.SIDEKICK_BIND_HOST, '127.0.0.1');
+  assert.equal(environment.OTTO_MODE, 'gateway');
+  assert.equal(environment.OTTO_PUBLIC_URL, 'http://localhost:4330');
+  assert.equal(environment.OTTO_BIND_HOST, '127.0.0.1');
   assert.equal(environment.PORT, '4330');
-  assert.equal(environment.SIDEKICK_DATA_ROOT, '/fixture/.local/hosted');
+  assert.equal(environment.OTTO_DATA_ROOT, '/fixture/.local/hosted');
   assert.equal(environment.DOTENV_CONFIG_PATH, '/fixture/chosen.env');
   assert.equal(environment.PATH, '/bin');
   assert.equal(environment.OPENAI_API_KEY, undefined);
@@ -73,19 +73,19 @@ test('hosted launcher refuses production, shared local database and invalid conf
     },
   );
   for (const [key, value] of [
-    ['SIDEKICK_ENVIRONMENT', 'production'],
-    ['SIDEKICK_ENVIRONMENT', 'PRODUCTION'],
+    ['OTTO_ENVIRONMENT', 'production'],
+    ['OTTO_ENVIRONMENT', 'PRODUCTION'],
     ['DATABASE_URL', 'postgresql://fixture:synthetic-private-password@127.0.0.1:54329/old'],
-    ['SIDEKICK_MASTER_KEY', 'synthetic-private-invalid-key'],
-    ['SIDEKICK_MASTER_KEY', randomBytes(32).toString('base64').replace(/=+$/, '')],
-    ['SIDEKICK_MASTER_KEY', `${'A'.repeat(42)}B=`],
+    ['OTTO_MASTER_KEY', 'synthetic-private-invalid-key'],
+    ['OTTO_MASTER_KEY', randomBytes(32).toString('base64').replace(/=+$/, '')],
+    ['OTTO_MASTER_KEY', `${'A'.repeat(42)}B=`],
     ['BETTER_AUTH_SECRET', 'short-private-key'],
     ['PORT', '4320'],
-    ['SIDEKICK_PUBLIC_URL', 'https://private.example.test'],
-    ['SIDEKICK_RUNTIME_URL', 'http://sidekick.runtime'],
+    ['OTTO_PUBLIC_URL', 'https://private.example.test'],
+    ['OTTO_RUNTIME_URL', 'http://otto.runtime'],
     ['COMPUTER_PROVIDER', 'docker'],
-    ['SIDEKICK_WEBHOOK_ORIGIN', 'https://private.example.test/path?secret=private'],
-    ['SIDEKICK_MAX_USERS', '401'],
+    ['OTTO_WEBHOOK_ORIGIN', 'https://private.example.test/path?secret=private'],
+    ['OTTO_MAX_USERS', '401'],
   ])
     assert.throws(() => hostedEnvironment({ ...values(), [key]: value }), {
       message: `Invalid configuration: ${key}.`,
@@ -93,7 +93,7 @@ test('hosted launcher refuses production, shared local database and invalid conf
 });
 
 test('hosted environment files warn only for actual insecure permissions', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-hosted-config-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-hosted-config-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const file = join(directory, 'private.env');
   await writeFile(
@@ -121,7 +121,7 @@ test('local Cloudflare uses development bindings and private runtime configurati
     COMPUTER_PROVIDER: 'cloudflare',
     CLOUDFLARE_API_TOKEN: 'private-deployment-token',
     GOOGLE_CLIENT_SECRET: "synthetic's # quoted \\\\ value\nnext line",
-    SIDEKICK_IMAGE_RELEASE: 'untrusted-image-release',
+    OTTO_IMAGE_RELEASE: 'untrusted-image-release',
   };
   delete (input as Partial<typeof input>).E2B_API_KEY;
   delete (input as Partial<typeof input>).E2B_COMPUTER_TEMPLATE;
@@ -131,7 +131,7 @@ test('local Cloudflare uses development bindings and private runtime configurati
   });
   assert.equal(environment.COMPUTER_PROVIDER, 'cloudflare');
   assert.equal(environment.OBJECT_STORAGE_PROVIDER, 'http');
-  assert.equal(environment.OBJECT_STORAGE_ENDPOINT, 'http://sidekick.storage/v1/objects/');
+  assert.equal(environment.OBJECT_STORAGE_ENDPOINT, 'http://otto.storage/v1/objects/');
   const config = {
     main: 'src/worker.ts',
     assets: { directory: '../../dist/web' },
@@ -168,12 +168,12 @@ test('local Cloudflare uses development bindings and private runtime configurati
   assert.equal(plan.config.env, undefined);
   assert.equal(plan.config.dev.ip, '127.0.0.1');
   assert.equal(plan.config.dev.port, 4330);
-  assert.equal(plan.config.vars.SIDEKICK_PUBLIC_URL, 'http://localhost:4330');
+  assert.equal(plan.config.vars.OTTO_PUBLIC_URL, 'http://localhost:4330');
   assert.equal(plan.config.r2_buckets[0].bucket_name, 'development-files');
   assert.equal(plan.config.containers[0].image, '/fixture/deployment/cloudflare/Dockerfile');
   assert.equal(plan.config.containers[0].image_build_context, '/fixture');
-  assert.equal(plan.config.containers[0].image_vars.SIDEKICK_RELEASE, localRelease);
-  assert.equal(plan.config.containers[1].image_vars.SIDEKICK_RELEASE, localRelease);
+  assert.equal(plan.config.containers[0].image_vars.OTTO_RELEASE, localRelease);
+  assert.equal(plan.config.containers[1].image_vars.OTTO_RELEASE, localRelease);
   assert.equal(plan.config.containers[2].image_vars, undefined);
   assert.equal(plan.config.containers[3].image_vars, undefined);
   assert.doesNotMatch(JSON.stringify(plan.config), /synthetic|secret|production/);
@@ -183,19 +183,16 @@ test('local Cloudflare uses development bindings and private runtime configurati
   assert.deepEqual(JSON.parse(encodedValues), privateValues);
   assert.equal(privateValues.GOOGLE_CLIENT_SECRET, input.GOOGLE_CLIENT_SECRET);
   assert.equal(privateValues.DATABASE_URL, input.DATABASE_URL);
-  assert.equal(privateValues.SIDEKICK_RELEASE, localRelease);
-  assert.equal(privateValues.SIDEKICK_IMAGE_RELEASE, undefined);
+  assert.equal(privateValues.OTTO_RELEASE, localRelease);
+  assert.equal(privateValues.OTTO_IMAGE_RELEASE, undefined);
   for (const key of ['CLOUDFLARE_API_TOKEN', 'DOTENV_CONFIG_PATH', 'PATH', 'OPENAI_API_KEY'])
     assert.equal(privateValues[key], undefined);
   assert.deepEqual(plan.environment, { PATH: '/bin' });
   assert.throws(() =>
-    cloudflareLocalPlan({ ...environment, SIDEKICK_ENVIRONMENT: 'production' }, config),
+    cloudflareLocalPlan({ ...environment, OTTO_ENVIRONMENT: 'production' }, config),
   );
   assert.throws(() =>
-    cloudflareLocalPlan(
-      { ...environment, SIDEKICK_PUBLIC_URL: 'https://sidekick.example.test' },
-      config,
-    ),
+    cloudflareLocalPlan({ ...environment, OTTO_PUBLIC_URL: 'https://otto.example.test' }, config),
   );
 });
 
@@ -261,7 +258,7 @@ test('webhook relay forwards raw bodies and only signature headers without follo
       'webhook-signature': 'fixture-signature',
       cookie: 'private-cookie',
       authorization: 'Bearer private',
-      'x-sidekick-owner': 'forged',
+      'x-otto-owner': 'forged',
       origin: 'https://foreign.example.test',
     },
   });
@@ -273,7 +270,7 @@ test('webhook relay forwards raw bodies and only signature headers without follo
   assert.equal(calls[0].url, 'http://localhost:4330/api/webhooks/composio');
   assert.deepEqual(Buffer.from(await calls[0].arrayBuffer()), bytes);
   assert.equal(calls[0].headers.get('webhook-signature'), 'fixture-signature');
-  for (const key of ['cookie', 'authorization', 'x-sidekick-owner', 'origin'])
+  for (const key of ['cookie', 'authorization', 'x-otto-owner', 'origin'])
     assert.equal(calls[0].headers.get(key), null);
   assert.equal((await fetch(`${origin}/api/session`)).status, 404);
   assert.equal(

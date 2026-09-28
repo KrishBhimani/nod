@@ -50,7 +50,7 @@ test('the standalone browser mounts without waiting for unrelated application st
         capabilities: { developer: true },
       });
     assert.equal(
-      new Headers(init?.headers).get('X-Sidekick-Account'),
+      new Headers(init?.headers).get('X-Otto-Account'),
       '89628f27-7ed2-4bd3-93d4-b9f83194fcce',
     );
     if (path === '/api/state') throw new Error('Unrelated state is unavailable.');

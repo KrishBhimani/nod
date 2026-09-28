@@ -48,9 +48,9 @@ export async function runAcceptanceJourney(input: JourneyInput) {
       workspacePath: `/workspace/${plan.taskId}`,
       signal: selectedSignal,
     });
-  const marker = `sidekick-e2b-${plan.nonce}`;
+  const marker = `otto-e2b-${plan.nonce}`;
   const expected = Buffer.from(`marker,value\n${marker},144\n`);
-  const cookie = `sidekick_e2b=${marker}`;
+  const cookie = `otto_e2b=${marker}`;
   const observeCookie = async () => {
     const page = await adapters.computer.act(
       plan.taskId,
@@ -60,7 +60,7 @@ export async function runAcceptanceJourney(input: JourneyInput) {
     if (
       new URL(page.url).origin !== 'https://httpbin.org' ||
       !page.text.includes(marker) ||
-      !page.text.includes('sidekick_e2b')
+      !page.text.includes('otto_e2b')
     )
       throw fail();
   };

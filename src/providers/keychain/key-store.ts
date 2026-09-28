@@ -18,7 +18,7 @@ export function createKeychainKeyStore(
 ): CredentialKeyStore {
   const platform = options.platform ?? process.platform;
   const execute = options.run ?? run;
-  const service = 'dev.sidekick.vault';
+  const service = 'dev.otto.vault';
   const account = 'master-key-v1';
   let pending: Promise<Buffer> | undefined;
   const read = async () => {

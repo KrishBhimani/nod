@@ -109,7 +109,7 @@ test(
       proxied.port = String(address.port);
       proxied.searchParams.set('options', `-c search_path=${schema}`);
       process.env.DATABASE_URL = proxied.href;
-      process.env.DOTENV_CONFIG_PATH = '/tmp/sidekick-synthetic-missing-env';
+      process.env.DOTENV_CONFIG_PATH = '/tmp/otto-synthetic-missing-env';
       const database = await import('../src/server/db.ts');
       main = database.pool;
       observations = database.createInspectorPool();

@@ -74,7 +74,7 @@ test('secondary pages share layout, have one add action, and keep plan changes a
   const root = createRoot(element);
   const drafts: unknown[] = [];
   const onDraft = (event: Event) => drafts.push((event as CustomEvent).detail);
-  window.addEventListener('sidekick:compose', onDraft);
+  window.addEventListener('otto:compose', onDraft);
   try {
     await act(async () =>
       root.render(
@@ -118,7 +118,7 @@ test('secondary pages share layout, have one add action, and keep plan changes a
     assert.match(element.textContent!, /Newly saved login/);
     assert.equal(requests.filter(({ path }) => path === '/api/vault').length, 2);
   } finally {
-    window.removeEventListener('sidekick:compose', onDraft);
+    window.removeEventListener('otto:compose', onDraft);
     await act(async () => root.unmount());
     element.remove();
     style.remove();

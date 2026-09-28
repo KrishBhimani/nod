@@ -24,7 +24,7 @@ export function createGatewayDeployment(options: {
   const barrier = createDeploymentBarrier({
     read: () => options.storage.get('deployment-barrier'),
     write: (state: DeploymentState) => options.storage.put('deployment-barrier', state),
-    currentRelease: configured.SIDEKICK_RELEASE ?? '',
+    currentRelease: configured.OTTO_RELEASE ?? '',
     requireInitialization: options.requireInitialization,
     prepare: async (_input, request) => {
       const response = await options.forward(request);
@@ -63,7 +63,7 @@ export function createGatewayDeployment(options: {
     closed: () => barrier.closed(),
     async handle(request: Request) {
       verify ??= createDeploymentVerifier({
-        masterKey: parseCredentialKey(configured.SIDEKICK_MASTER_KEY ?? ''),
+        masterKey: parseCredentialKey(configured.OTTO_MASTER_KEY ?? ''),
         environment,
         claimNonce: (requestId, expiresAt) =>
           options.storage.transaction(async (storage) => {

@@ -40,7 +40,7 @@ function fixture(computer?: { pause(): Promise<void>; resume(): Promise<void> })
   app.post('/api/runtime/lease', async () => ({ ok: true }));
   const headers = (path: string, body: string, kind: RuntimeClaims['kind'] = 'user') => ({
     'content-type': 'application/json',
-    'x-sidekick-runtime': signRuntimeRequest({
+    'x-otto-runtime': signRuntimeRequest({
       ...identity,
       method: 'POST',
       target: path,

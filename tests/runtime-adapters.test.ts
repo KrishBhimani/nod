@@ -40,7 +40,7 @@ function browserFixture() {
 }
 
 test('computer observations retain body text, normalize controls, protect credentials and return screenshot bytes', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-computer-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-computer-'));
   const fixture = browserFixture();
   const protocol: Record<string, unknown>[] = [];
   const computer = createAgentBrowserComputer({
@@ -82,7 +82,7 @@ test('computer observations retain body text, normalize controls, protect creden
 });
 
 test('computer factories isolate browser namespaces and dispose idle state', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-lifecycle-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-lifecycle-'));
   const first = browserFixture();
   const second = browserFixture();
   const computer = createAgentBrowserComputer({
@@ -117,7 +117,7 @@ test('computer factories isolate browser namespaces and dispose idle state', asy
 });
 
 test('current browser changes when an accepted navigation starts and late completion cannot steal focus', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-current-browser-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-current-browser-'));
   const fixture = browserFixture();
   let release: () => void = () => {};
   let started: () => void = () => {};
@@ -175,7 +175,7 @@ test('browser proxy ownership includes its listener lifecycle', async () => {
 });
 
 test('a failed browser close blocks observations until the daemon can be closed', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-close-failure-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-close-failure-'));
   const fixture = browserFixture();
   let fail = true;
   const computer = createAgentBrowserComputer({
@@ -241,7 +241,7 @@ function context(directory: string): RuntimeContext {
 }
 
 test('shared runtime composes replacement agent, computer, workspace and chooser without vendor configuration', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-substitute-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-substitute-'));
   const actions: string[] = [];
   const agent: Agent = {
     open: async (input) => ({
@@ -302,7 +302,7 @@ test('shared runtime composes replacement agent, computer, workspace and chooser
 });
 
 test('runtime preserves incomplete app evidence and read-only narrowing guidance without replay', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-incomplete-integration-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-incomplete-integration-'));
   const omitted = integrationResultSnapshot({
     results: [
       { title: 'Unrelated page', description: 'x'.repeat(18_000) },
@@ -362,7 +362,7 @@ test('runtime preserves incomplete app evidence and read-only narrowing guidance
 });
 
 test('runtime disposal aborts an active task before releasing computer and workspace', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-abort-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-abort-'));
   let entered!: () => void;
   const started = new Promise<void>((resolve) => {
     entered = resolve;
@@ -413,7 +413,7 @@ test('runtime disposal aborts an active task before releasing computer and works
 test('stalled observations release active tasks on cancellation and disposal', async (t) => {
   for (const method of ['cancel', 'dispose'] as const) {
     await t.test(method, async () => {
-      const directory = await mkdtemp(join(tmpdir(), 'sidekick-stalled-observer-'));
+      const directory = await mkdtemp(join(tmpdir(), 'otto-stalled-observer-'));
       const controller = new AbortController();
       let entered!: () => void;
       const observed = new Promise<void>((resolve) => {
@@ -485,7 +485,7 @@ test('stalled observations release active tasks on cancellation and disposal', a
 });
 
 test('runtime shutdown drains tasks and releases every capability after adapter failures', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-disposal-failure-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-disposal-failure-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   let entered!: () => void;
   const started = new Promise<void>((resolve) => {

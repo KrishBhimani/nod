@@ -76,7 +76,7 @@ async function tunnel(context: TestContext, endpoint: string, port: number) {
 }
 
 async function fixture(context: TestContext, upstream: string) {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-proxy-lifecycle-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-proxy-lifecycle-'));
   const fixture = await createFixtureProxy(directory);
   fixture.nativeArgs([`--proxy-server=${upstream}`, 'about:blank']);
   context.after(async () => {

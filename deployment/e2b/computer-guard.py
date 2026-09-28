@@ -25,15 +25,15 @@ def trusted(path, uid=0, private=False):
 def identities():
     if os.geteuid() != 0:
         raise ValueError()
-    browser = pwd.getpwnam("sidekick-browser")
+    browser = pwd.getpwnam("otto-browser")
     workspace = pwd.getpwnam("node")
     if (browser.pw_uid, browser.pw_gid, workspace.pw_uid, workspace.pw_gid) != (1001, 1001, 1000, 1000):
         raise ValueError()
-    for path in ["/app", "/app/src", "/app/node_modules", "/opt/sidekick", "/opt/sidekick/computer-guard.py", "/opt/sidekick/workspace-command.py"]:
+    for path in ["/app", "/app/src", "/app/node_modules", "/opt/otto", "/opt/otto/computer-guard.py", "/opt/otto/workspace-command.py"]:
         trusted(path)
     trusted("/data", 1001, True)
-    trusted("/home/sidekick-browser", 1001, True)
-    trusted("/run/sidekick", 0, True)
+    trusted("/home/otto-browser", 1001, True)
+    trusted("/run/otto", 0, True)
     if pathlib.Path("/usr/bin/sudo").exists() or pathlib.Path("/bin/sudo").exists():
         raise ValueError()
 
@@ -52,7 +52,7 @@ def network_rules():
             resolvers[address.version].add(str(address))
     if not any(resolvers.values()):
         raise ValueError()
-    lines = ["table inet sidekick {", "chain workspace_output {", "type filter hook output priority -150; policy accept;", "meta skuid != 1000 return"]
+    lines = ["table inet otto {", "chain workspace_output {", "type filter hook output priority -150; policy accept;", "meta skuid != 1000 return"]
     for family, version in [("ip", 4), ("ip6", 6)]:
         if resolvers[version]:
             destinations = ", ".join(sorted(resolvers[version]))
@@ -70,7 +70,7 @@ def network_rules():
 
 
 def firewall_state():
-    value = json.loads(command(["/usr/sbin/nft", "--json", "list", "table", "inet", "sidekick"]))
+    value = json.loads(command(["/usr/sbin/nft", "--json", "list", "table", "inet", "otto"]))
     if not isinstance(value, dict) or set(value) != {"nftables"}:
         raise ValueError()
     def normalize(item):
@@ -84,16 +84,16 @@ def firewall_state():
 
 def install():
     identities()
-    if pathlib.Path("/run/sidekick/firewall.json").exists():
+    if pathlib.Path("/run/otto/firewall.json").exists():
         raise ValueError()
     tables = json.loads(command(["/usr/sbin/nft", "--json", "list", "tables"]))
-    if any(item.get("table", {}).get("family") == "inet" and item["table"].get("name") == "sidekick" for item in tables["nftables"]):
+    if any(item.get("table", {}).get("family") == "inet" and item["table"].get("name") == "otto" for item in tables["nftables"]):
         raise ValueError()
     rules = network_rules()
     command(["/usr/sbin/nft", "--check", "--file", "-"], rules)
     command(["/usr/sbin/nft", "--file", "-"], rules)
     saved = {"rules": hashlib.sha256(rules).hexdigest(), "state": firewall_state()}
-    descriptor = os.open("/run/sidekick/firewall.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    descriptor = os.open("/run/otto/firewall.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, "w") as output:
         json.dump(saved, output)
         output.flush()
@@ -101,7 +101,7 @@ def install():
 
 
 def browser_environment():
-    return {"HOME": "/home/sidekick-browser", "PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"}
+    return {"HOME": "/home/otto-browser", "PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"}
 
 
 def browser_identity():
@@ -113,8 +113,8 @@ def browser_identity():
 
 def check():
     identities()
-    trusted("/run/sidekick/firewall.json", 0, True)
-    saved = json.loads(pathlib.Path("/run/sidekick/firewall.json").read_text())
+    trusted("/run/otto/firewall.json", 0, True)
+    saved = json.loads(pathlib.Path("/run/otto/firewall.json").read_text())
     if saved != {"rules": hashlib.sha256(network_rules()).hexdigest(), "state": firewall_state()}:
         raise ValueError()
     result = subprocess.run(["/usr/local/bin/node", "--import", "tsx", "/app/deployment/e2b/browser-ready.ts"], cwd="/app", env=browser_environment(), preexec_fn=browser_identity, capture_output=True, timeout=5, check=True)

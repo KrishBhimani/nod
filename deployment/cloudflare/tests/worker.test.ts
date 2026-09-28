@@ -105,8 +105,8 @@ function fixture() {
     },
   });
   const env = {
-    SIDEKICK_ENVIRONMENT: 'development',
-    SIDEKICK_PUBLIC_URL: 'https://sidekick.example.test',
+    OTTO_ENVIRONMENT: 'development',
+    OTTO_PUBLIC_URL: 'https://otto.example.test',
     GATEWAY_ENV: '{}',
     GATEWAY: {
       idFromName: id,
@@ -206,34 +206,34 @@ function signedRequest(
     .update(payload)
     .digest('base64url');
   const headers = new Headers(init.headers);
-  headers.set('x-sidekick-runtime', `${payload}.${signature}`);
+  headers.set('x-otto-runtime', `${payload}.${signature}`);
   return new Request(url, { ...init, headers });
 }
 
 test('public ingress removes actor credentials and never dispatches internal control or bootstrap', async () => {
   const { env, calls } = fixture();
   const ordinary = await worker.fetch(
-    new Request('https://sidekick.example.test/api/state', {
+    new Request('https://otto.example.test/api/state', {
       headers: {
-        'x-sidekick-runtime': 'forged',
-        'x-sidekick-runtime-extra': 'forged',
+        'x-otto-runtime': 'forged',
+        'x-otto-runtime-extra': 'forged',
         cookie: 'session=fixture',
       },
     }),
     env,
   );
   assert.equal(await ordinary.text(), 'gateway');
-  assert.equal(calls[0].request?.headers.has('x-sidekick-runtime'), false);
-  assert.equal(calls[0].request?.headers.has('x-sidekick-runtime-extra'), false);
+  assert.equal(calls[0].request?.headers.has('x-otto-runtime'), false);
+  assert.equal(calls[0].request?.headers.has('x-otto-runtime-extra'), false);
   assert.equal(calls[0].request?.headers.get('cookie'), 'session=fixture');
   for (const path of [
     '/runtime/start',
     '/runtime/stop',
     '/api/internal/channels/claim',
-    '/__sidekick/start',
+    '/__otto/start',
   ])
     assert.equal(
-      (await worker.fetch(new Request(`https://sidekick.example.test${path}`), env)).status,
+      (await worker.fetch(new Request(`https://otto.example.test${path}`), env)).status,
       404,
     );
   assert.equal(
@@ -245,10 +245,10 @@ test('public ingress removes actor credentials and never dispatches internal con
 
 test('runtime bootstrap requires the fixed trusted gateway and forwarding preserves signed targets', async () => {
   const { env, calls, ownerId, gatewayContext, tenantContext } = fixture();
-  const outbound = GatewayContainer.outboundByHost!['sidekick.runtime'];
+  const outbound = GatewayContainer.outboundByHost!['otto.runtime'];
   for (const context of [tenantContext, { ...gatewayContext, containerId: 'other-gateway' }]) {
     const response = await outbound(
-      new Request('http://sidekick.runtime/runtime/start', {
+      new Request('http://otto.runtime/runtime/start', {
         method: 'POST',
         body: JSON.stringify({ ownerId, env: {} }),
       }),
@@ -259,7 +259,7 @@ test('runtime bootstrap requires the fixed trusted gateway and forwarding preser
   }
   assert.equal(calls.length, 0);
   const started = await outbound(
-    new Request('http://sidekick.runtime/runtime/start', {
+    new Request('http://otto.runtime/runtime/start', {
       method: 'POST',
       body: JSON.stringify({ ownerId, env: {} }),
     }),
@@ -268,30 +268,30 @@ test('runtime bootstrap requires the fixed trusted gateway and forwarding preser
   );
   assert.equal(started.status, 200);
   const response = await outbound(
-    new Request(`http://sidekick.runtime/${ownerId}/api/events?account=${ownerId}`, {
-      headers: { 'x-sidekick-runtime': 'signed-fixture' },
+    new Request(`http://otto.runtime/${ownerId}/api/events?account=${ownerId}`, {
+      headers: { 'x-otto-runtime': 'signed-fixture' },
     }),
     env,
     gatewayContext,
   );
   assert.equal(await response.text(), 'tenant');
   const forwarded = calls[1].request!;
-  assert.equal(forwarded.url, `https://sidekick.example.test/api/events?account=${ownerId}`);
-  assert.equal(forwarded.headers.get('host'), 'sidekick.example.test');
-  assert.equal(forwarded.headers.get('x-sidekick-runtime'), 'signed-fixture');
+  assert.equal(forwarded.url, `https://otto.example.test/api/events?account=${ownerId}`);
+  assert.equal(forwarded.headers.get('host'), 'otto.example.test');
+  assert.equal(forwarded.headers.get('x-otto-runtime'), 'signed-fixture');
 });
 
 test('tenant control permits only signed channel claims for the trusted owner', async () => {
   const { env, calls, ownerId, tenantContext } = fixture();
-  const control = TenantContainer.outboundByHost!['sidekick.control'];
+  const control = TenantContainer.outboundByHost!['otto.control'];
   const request = (path: string, owner = ownerId) =>
-    new Request(`http://sidekick.control${path}`, {
+    new Request(`http://otto.control${path}`, {
       method: 'POST',
       body: '{"provider":"telegram","accountId":"123456"}',
       headers: {
         'content-type': 'application/json',
-        'x-sidekick-owner': owner,
-        'x-sidekick-runtime': 'signed-fixture',
+        'x-otto-owner': owner,
+        'x-otto-runtime': 'signed-fixture',
         cookie: 'must-not-forward',
       },
     });
@@ -300,9 +300,9 @@ test('tenant control permits only signed channel claims for the trusted owner', 
     200,
   );
   const forwarded = calls[0].request!;
-  assert.equal(forwarded.headers.get('x-sidekick-owner'), ownerId);
+  assert.equal(forwarded.headers.get('x-otto-owner'), ownerId);
   assert.equal(forwarded.headers.get('cookie'), null);
-  assert.equal(forwarded.url, 'https://sidekick.example.test/api/internal/channels/claim');
+  assert.equal(forwarded.url, 'https://otto.example.test/api/internal/channels/claim');
   assert.equal(await forwarded.text(), '{"provider":"telegram","accountId":"123456"}');
   for (const path of [
     '/runtime/start',
@@ -345,7 +345,7 @@ function processFixture(
     },
   };
   const { env, ownerId, identity, calls } = fixture();
-  env.GATEWAY_ENV = JSON.stringify({ SIDEKICK_BIND_HOST: '127.0.0.1' });
+  env.GATEWAY_ENV = JSON.stringify({ OTTO_BIND_HOST: '127.0.0.1' });
   const persisted = new Map<string, unknown>();
   const storage = {
     get: async (key: string) => persisted.get(key),
@@ -415,9 +415,9 @@ function processFixture(
 
 test('gateway forces the actual Node bind setting and safely restarts after becoming ready', async () => {
   const current = processFixture('gateway');
-  const request = () => new Request('https://sidekick.example.test/api/health');
+  const request = () => new Request('https://otto.example.test/api/health');
   assert.equal((await worker.fetch(request(), current.publicEnv)).status, 200);
-  assert.equal((current.instance.envVars as Record<string, string>).SIDEKICK_BIND_HOST, '0.0.0.0');
+  assert.equal((current.instance.envVars as Record<string, string>).OTTO_BIND_HOST, '0.0.0.0');
   assert.deepEqual(current.counts(), { starts: 1, forwards: 1 });
   current.stop();
   assert.equal((await worker.fetch(request(), current.publicEnv)).status, 200);
@@ -484,10 +484,10 @@ test('E2B journal-loss inspection requires the exact pause receipt and never vis
 test('an E2B tenant cannot use the Cloudflare computer command broker', async () => {
   const current = fixture();
   Object.assign(current.identity, { computerProvider: 'e2b' });
-  const response = await TenantContainer.outboundByHost!['sidekick.computer'](
-    new Request('http://sidekick.computer/v1/commands', {
+  const response = await TenantContainer.outboundByHost!['otto.computer'](
+    new Request('http://otto.computer/v1/commands', {
       method: 'POST',
-      headers: { 'x-sidekick-generation': '1', 'x-sidekick-computer-role': 'browser' },
+      headers: { 'x-otto-generation': '1', 'x-otto-computer-role': 'browser' },
       body: '{}',
     }),
     current.env,
@@ -499,11 +499,11 @@ test('an E2B tenant cannot use the Cloudflare computer command broker', async ()
 
 test('only the calling tenant can acknowledge its E2B shutdown through the private broker', async () => {
   const current = fixture();
-  const outbound = TenantContainer.outboundByHost!['sidekick.computer'];
+  const outbound = TenantContainer.outboundByHost!['otto.computer'];
   const request = (body = '{}', version = '1', method = 'POST') =>
-    new Request('http://sidekick.computer/v1/stopped', {
+    new Request('http://otto.computer/v1/stopped', {
       method,
-      headers: { 'x-sidekick-generation': version },
+      headers: { 'x-otto-generation': version },
       ...(method === 'POST' ? { body } : {}),
     });
   assert.equal((await outbound(request(), current.env, current.gatewayContext)).status, 403);
@@ -535,7 +535,7 @@ test('anonymous gateway startup and both TCP proxy failures return fixed errors'
   const unavailable = processFixture('gateway');
   unavailable.failStartup();
   const initial = await worker.fetch(
-    new Request('https://sidekick.example.test/api/session'),
+    new Request('https://otto.example.test/api/session'),
     unavailable.publicEnv,
   );
   assert.equal(initial.status, 503);
@@ -545,7 +545,7 @@ test('anonymous gateway startup and both TCP proxy failures return fixed errors'
       throw new Error('synthetic private upstream credential');
     });
     const response = await current.instance.fetch(
-      current.request('https://sidekick.example.test/api/events'),
+      current.request('https://otto.example.test/api/events'),
     );
     assert.equal(response.status, 503);
     assert.equal(response.headers.get('cache-control'), 'no-store');
@@ -563,13 +563,13 @@ test('container forwarding preserves application status, body, cookies and strea
         headers: { 'set-cookie': 'synthetic-session=accepted; HttpOnly', 'retry-after': '12' },
       });
       const current = processFixture(role, async (url, request) => {
-        assert.equal(url.href, 'http://sidekick.example.test/api/session?fresh=true');
-        assert.equal(request.headers.get('x-sidekick-account'), 'fixture-account');
+        assert.equal(url.href, 'http://otto.example.test/api/session?fresh=true');
+        assert.equal(request.headers.get('x-otto-account'), 'fixture-account');
         return application;
       });
       const response = await current.instance.fetch(
-        current.request('https://sidekick.example.test/api/session?fresh=true', {
-          headers: { 'x-sidekick-account': 'fixture-account' },
+        current.request('https://otto.example.test/api/session?fresh=true', {
+          headers: { 'x-otto-account': 'fixture-account' },
         }),
       );
       assert.equal(response, application);
@@ -584,7 +584,7 @@ test('container forwarding preserves application status, body, cookies and strea
   });
   const current = processFixture('gateway', async () => application);
   const response = await current.instance.fetch(
-    new Request('https://sidekick.example.test/api/events'),
+    new Request('https://otto.example.test/api/events'),
   );
   assert.equal(response, application);
   const reader = response.body!.getReader();
@@ -609,13 +609,13 @@ test('persistent gateway maintenance denies work before startup while retaining 
   });
   for (const path of ['/api/tasks', '/api/settings', '/api/session?fresh=true'])
     assert.equal(
-      (await current.instance.fetch(new Request(`https://sidekick.example.test${path}`))).status,
+      (await current.instance.fetch(new Request(`https://otto.example.test${path}`))).status,
       503,
     );
   assert.equal(
     (
       await current.instance.fetch(
-        new Request('https://sidekick.example.test/api/session', {
+        new Request('https://otto.example.test/api/session', {
           headers: { cookie: 'fixture=private' },
         }),
       )
@@ -625,7 +625,7 @@ test('persistent gateway maintenance denies work before startup while retaining 
   assert.equal(
     (
       await current.instance.fetch(
-        new Request('https://sidekick.example.test/api/login', {
+        new Request('https://otto.example.test/api/login', {
           method: 'POST',
           headers: { origin: 'https://foreign.example.test' },
         }),
@@ -636,7 +636,7 @@ test('persistent gateway maintenance denies work before startup while retaining 
   assert.deepEqual(current.counts(), { starts: 0, forwards: 0 });
   for (const path of ['/api/health', '/api/session', '/api/state'])
     assert.equal(
-      (await current.instance.fetch(new Request(`https://sidekick.example.test${path}`))).status,
+      (await current.instance.fetch(new Request(`https://otto.example.test${path}`))).status,
       200,
     );
   assert.deepEqual(current.counts(), { starts: 1, forwards: 3 });
@@ -647,9 +647,9 @@ test('persistent gateway maintenance denies work before startup while retaining 
 test('private deployment status requires the fixed gateway and closed admission blocks runtime bootstrap', async () => {
   const f = fixture();
   Object.assign(f.env.GATEWAY, { getByName: () => ({ deploymentClosed: async () => true }) });
-  const outbound = GatewayContainer.outboundByHost!['sidekick.runtime'];
+  const outbound = GatewayContainer.outboundByHost!['otto.runtime'];
   const request = (path: string) =>
-    new Request(`http://sidekick.runtime${path}`, { method: 'POST', body: '{}' });
+    new Request(`http://otto.runtime${path}`, { method: 'POST', body: '{}' });
   const status = await outbound(request('/runtime/deployment-status'), f.env, f.gatewayContext);
   assert.deepEqual(await status.json(), { closed: true });
   assert.equal((await outbound(request('/runtime/start'), f.env, f.gatewayContext)).status, 503);
@@ -671,9 +671,9 @@ test('stopped deployment recovery RPC admits only exact gateway requests with st
       },
     }),
   });
-  const outbound = GatewayContainer.outboundByHost!['sidekick.runtime'];
+  const outbound = GatewayContainer.outboundByHost!['otto.runtime'];
   const request = (body: unknown) =>
-    new Request('http://sidekick.runtime/runtime/deployment-stopped', {
+    new Request('http://otto.runtime/runtime/deployment-stopped', {
       method: 'POST',
       body: JSON.stringify(body),
     });
@@ -760,7 +760,7 @@ function deploymentTenantFixture(
       instance.fetch(
         signedRequest(
           current.ownerId,
-          'https://sidekick.example.test/api/runtime/drain',
+          'https://otto.example.test/api/runtime/drain',
           { method: 'POST', body: JSON.stringify(input) },
           { kind: 'deployment' },
         ),
@@ -787,7 +787,7 @@ function retirementTenantFixture() {
   const f = deploymentTenantFixture();
   const gateway = processFixture('gateway');
   const previousRelease = 'b'.repeat(40);
-  gateway.env.GATEWAY_ENV = JSON.stringify({ SIDEKICK_RELEASE: previousRelease });
+  gateway.env.GATEWAY_ENV = JSON.stringify({ OTTO_RELEASE: previousRelease });
   gateway.persisted.set('deployment-barrier', {
     ...f.input,
     previousRelease,
@@ -940,7 +940,7 @@ test('failed drain acknowledgement retains an exact retryable resume attempt wit
       f.instance.fetch(
         signedRequest(
           f.ownerId,
-          'https://sidekick.example.test/api/runtime/resume',
+          'https://otto.example.test/api/runtime/resume',
           { method: 'POST', body: JSON.stringify(input) },
           { kind: 'deployment' },
         ),
@@ -978,7 +978,7 @@ test('resume revokes computer authority before reopening Node and can retry a lo
     f.instance.fetch(
       signedRequest(
         f.ownerId,
-        'https://sidekick.example.test/api/runtime/resume',
+        'https://otto.example.test/api/runtime/resume',
         { method: 'POST', body: JSON.stringify(f.input) },
         { kind: 'deployment' },
       ),
@@ -1012,7 +1012,7 @@ test('late drain acknowledgement cannot recreate computer authority after matchi
       await f.instance.fetch(
         signedRequest(
           f.ownerId,
-          'https://sidekick.example.test/api/runtime/resume',
+          'https://otto.example.test/api/runtime/resume',
           { method: 'POST', body: JSON.stringify(f.input) },
           { kind: 'deployment' },
         ),
@@ -1083,8 +1083,7 @@ test('tenant forwarding never starts a stopped actor or restarts one lost during
   const stopped = processFixture('tenant');
   stopped.stop();
   assert.equal(
-    (await stopped.instance.fetch(stopped.request('https://sidekick.example.test/api/state')))
-      .status,
+    (await stopped.instance.fetch(stopped.request('https://otto.example.test/api/state'))).status,
     503,
   );
   assert.deepEqual(stopped.counts(), { starts: 0, forwards: 0 });
@@ -1096,7 +1095,7 @@ test('tenant forwarding never starts a stopped actor or restarts one lost during
     },
   });
   assert.equal(
-    (await lost.instance.fetch(lost.request('https://sidekick.example.test/api/state'))).status,
+    (await lost.instance.fetch(lost.request('https://otto.example.test/api/state'))).status,
     503,
   );
   assert.deepEqual(lost.counts(), { starts: 0, forwards: 0 });
@@ -1178,7 +1177,7 @@ test('trusted gateway renewal extends persisted tenant authority only after the 
   const current = leasedProcessFixture(async (url, request) => {
     if (url.pathname !== '/api/runtime/lease') return new Response('active');
     body = await request.text();
-    signature = request.headers.get('x-sidekick-runtime')!;
+    signature = request.headers.get('x-otto-runtime')!;
     received.resolve();
     return acknowledged.promise;
   });
@@ -1188,12 +1187,12 @@ test('trusted gateway renewal extends persisted tenant authority only after the 
   const raw = ` { "expiresAt" : "${new Date(expiry).toISOString()}" } `;
   const request = signedRequest(
     current.ownerId,
-    `http://sidekick.runtime/${current.ownerId}/api/runtime/lease`,
+    `http://otto.runtime/${current.ownerId}/api/runtime/lease`,
     { method: 'POST', body: raw },
     { target: '/api/runtime/lease', kind: 'wake' },
   );
-  const header = request.headers.get('x-sidekick-runtime');
-  const outbound = GatewayContainer.outboundByHost!['sidekick.runtime'];
+  const header = request.headers.get('x-otto-runtime');
+  const outbound = GatewayContainer.outboundByHost!['otto.runtime'];
   const renewal = Promise.resolve(
     outbound(request, current.env, {
       className: 'GatewayContainer',
@@ -1218,14 +1217,12 @@ test('trusted gateway renewal extends persisted tenant authority only after the 
   assert.deepEqual(current.scheduled, [expiry]);
   time = original + 1;
   assert.equal(
-    (await current.instance.fetch(current.request('https://sidekick.example.test/api/state')))
-      .status,
+    (await current.instance.fetch(current.request('https://otto.example.test/api/state'))).status,
     200,
   );
   time = expiry;
   assert.equal(
-    (await current.instance.fetch(current.request('https://sidekick.example.test/api/state')))
-      .status,
+    (await current.instance.fetch(current.request('https://otto.example.test/api/state'))).status,
     503,
   );
   await current.instance.expireRuntimeLease();
@@ -1235,7 +1232,7 @@ test('trusted gateway renewal extends persisted tenant authority only after the 
 
 test('tenant routing rejects bounded invalid claims and stale generations before contacting Node', async () => {
   const current = leasedProcessFixture(async () => new Response('must not execute'));
-  const url = 'https://sidekick.example.test/api/state';
+  const url = 'https://otto.example.test/api/state';
   for (const change of [
     { ownerId: randomUUID() },
     { environment: 'production' },
@@ -1257,15 +1254,12 @@ test('tenant routing rejects bounded invalid claims and stale generations before
   );
   for (const header of ['invalid', 'x'.repeat(16_385)]) {
     assert.equal(
-      (
-        await current.instance.fetch(
-          new Request(url, { headers: { 'x-sidekick-runtime': header } }),
-        )
-      ).status,
+      (await current.instance.fetch(new Request(url, { headers: { 'x-otto-runtime': header } })))
+        .status,
       401,
     );
   }
-  const renewal = 'https://sidekick.example.test/api/runtime/lease';
+  const renewal = 'https://otto.example.test/api/runtime/lease';
   for (const [url, init, changes] of [
     [renewal, {}, {}],
     [renewal + '?other=true', { method: 'POST' }, {}],
@@ -1289,7 +1283,7 @@ test('rejected or oversized Node acknowledgements never extend persisted lease a
     await t.test(name, async () => {
       const current = leasedProcessFixture(async () => response());
       const original = current.saved().leaseExpiresAt;
-      const request = current.request('https://sidekick.example.test/api/runtime/lease', {
+      const request = current.request('https://otto.example.test/api/runtime/lease', {
         method: 'POST',
         body: JSON.stringify({ expiresAt: new Date(Date.now() + 60_000).toISOString() }),
       });
@@ -1313,7 +1307,7 @@ test('renewal request bounds and exact schema apply before forwarding its signed
     }),
   ]) {
     const response = await current.instance.fetch(
-      current.request('https://sidekick.example.test/api/runtime/lease', { method: 'POST', body }),
+      current.request('https://otto.example.test/api/runtime/lease', { method: 'POST', body }),
     );
     assert.equal(response.status, body.length > 1024 ? 413 : 400);
   }
@@ -1328,7 +1322,7 @@ test('late Node acknowledgement cannot extend a revoked or replaced tenant gener
     return acknowledged.promise;
   });
   const renewal = current.instance.fetch(
-    current.request('https://sidekick.example.test/api/runtime/lease', {
+    current.request('https://otto.example.test/api/runtime/lease', {
       method: 'POST',
       body: JSON.stringify({ expiresAt: new Date(Date.now() + 60_000).toISOString() }),
     }),
@@ -1393,21 +1387,21 @@ test('expired cleanup retries while revocation permits only exact-generation com
 
 test('computer routing derives owner and environment from the exact calling tenant and admits only fixed roles', async () => {
   const current = leasedProcessFixture(async () => new Response('tenant'));
-  const outbound = TenantContainer.outboundByHost!['sidekick.computer'];
+  const outbound = TenantContainer.outboundByHost!['otto.computer'];
   const context = {
     className: 'TenantContainer',
     containerId: `tenant:development:${current.ownerId}`,
   };
   const foreign = randomUUID();
   const request = (role: string, version = '1') =>
-    new Request('http://sidekick.computer/v1/commands', {
+    new Request('http://otto.computer/v1/commands', {
       method: 'POST',
       headers: {
-        'x-sidekick-generation': version,
-        'x-sidekick-computer-role': role,
-        'x-sidekick-owner': foreign,
-        'x-sidekick-environment': 'production',
-        'x-sidekick-container': `computer:production:${foreign}:${role}`,
+        'x-otto-generation': version,
+        'x-otto-computer-role': role,
+        'x-otto-owner': foreign,
+        'x-otto-environment': 'production',
+        'x-otto-container': `computer:production:${foreign}:${role}`,
       },
       body: JSON.stringify({ id: randomUUID(), role }),
     });
@@ -1444,7 +1438,7 @@ test('computer routing derives owner and environment from the exact calling tena
         request('browser'),
         {
           ...current.env,
-          SIDEKICK_ENVIRONMENT: 'production',
+          OTTO_ENVIRONMENT: 'production',
         },
         context,
       )
@@ -1465,9 +1459,9 @@ test('public routes and direct computer fetches cannot dispatch a private comman
   const { env, calls } = fixture();
   for (const path of ['/v1/commands', '/v1/commands/fixture/kill', '/api/v1/commands']) {
     const response = await worker.fetch(
-      new Request(`https://sidekick.example.test${path}`, {
+      new Request(`https://otto.example.test${path}`, {
         method: 'POST',
-        headers: { 'x-sidekick-generation': '1', 'x-sidekick-computer-role': 'browser' },
+        headers: { 'x-otto-generation': '1', 'x-otto-computer-role': 'browser' },
         body: '{}',
       }),
       env,
@@ -1476,7 +1470,7 @@ test('public routes and direct computer fetches cannot dispatch a private comman
     assert.ok(['assets', 'gateway'].includes(await response.text()));
   }
   assert.equal(
-    (await worker.fetch(new Request('http://sidekick.computer/v1/commands'), env)).status,
+    (await worker.fetch(new Request('http://otto.computer/v1/commands'), env)).status,
     403,
   );
   for (const Computer of [BrowserComputerContainer, WorkspaceComputerContainer]) {
@@ -1499,18 +1493,18 @@ test('private storage requires the current calling tenant generation before acce
       },
     },
   });
-  const outbound = TenantContainer.outboundByHost!['sidekick.storage'];
+  const outbound = TenantContainer.outboundByHost!['otto.storage'];
   const context = {
     className: 'TenantContainer',
     containerId: `tenant:development:${current.ownerId}`,
   };
   const object = randomUUID();
   const request = (version?: string) =>
-    new Request(`http://sidekick.storage/v1/objects/artifacts%2F${object}`, {
+    new Request(`http://otto.storage/v1/objects/artifacts%2F${object}`, {
       headers: {
-        ...(version === undefined ? {} : { 'x-sidekick-generation': version }),
-        'x-sidekick-owner': randomUUID(),
-        'x-sidekick-environment': 'production',
+        ...(version === undefined ? {} : { 'x-otto-generation': version }),
+        'x-otto-owner': randomUUID(),
+        'x-otto-environment': 'production',
       },
     });
   assert.equal((await outbound(request('1'), current.env, context)).status, 404);

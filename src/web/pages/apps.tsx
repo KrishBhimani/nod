@@ -227,7 +227,7 @@ export function Apps() {
       <header className="page-heading secondary-heading">
         <div>
           <PageTitle path="/apps" />
-          <p>Your tools, connected to Sidekick.</p>
+          <p>Your tools, connected to Otto.</p>
         </div>
       </header>
       {(error || loadError) && <Notice>{error || loadError}</Notice>}
@@ -279,7 +279,7 @@ export function Apps() {
           <DialogTitle>Disconnect from {disconnectAccount?.name}?</DialogTitle>
           <DialogDescription>
             {disconnectAccount && accountLabel(disconnectAccount)}
-            <span>Sidekick will lose access to this account. You can connect it again later.</span>
+            <span>Otto will lose access to this account. You can connect it again later.</span>
           </DialogDescription>
           {disconnectError && <Notice>{disconnectError}</Notice>}
           <div className="app-disconnect-actions">

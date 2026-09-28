@@ -48,17 +48,17 @@ export function SignIn({
       <div className="sign-in-main">
         <div className="sign-in-brand">
           <BrandMark />
-          <span>sidekick</span>
+          <span>otto</span>
         </div>
         <div className="sign-in-form">
           <span className="sign-in-mark">
             <BrandMark />
           </span>
-          <h1>Sign in to Sidekick</h1>
+          <h1>Sign in to Otto</h1>
           <p>
             Hand off the work you keep putting off.
             <br />
-            Sidekick gets it done while you sleep.
+            Otto gets it done while you sleep.
           </p>
           {visibleError && <Notice>{visibleError}</Notice>}
           {available ? (
@@ -84,7 +84,7 @@ export function SignIn({
           Privacy
         </a>
       </div>
-      <aside className="sign-in-story" aria-label="What Sidekick can help with">
+      <aside className="sign-in-story" aria-label="What Otto can help with">
         <div className="sign-in-note">
           <span className="sign-in-note-time">Today, 07:30</span>
           <h2>

@@ -15,7 +15,7 @@ import { createAgentRuntime } from '../src/runtime/index.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 
 async function fixture() {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-durable-pi-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-durable-pi-'));
   const store = createFilesystemObjectStore(join(directory, 'objects'));
   return {
     directory,
@@ -42,7 +42,7 @@ test('Pi restores durable tool results after losing the entire actor disk withou
     await checkpoint.execute('call-one', 'fixture_action', async () => {
       executions++;
       const saved = await f.store.read(`sessions/${f.taskId}.jsonl`, 1024 * 1024);
-      assert.match(saved!.bytes.toString(), /sidekick_tool_pending/);
+      assert.match(saved!.bytes.toString(), /otto_tool_pending/);
       return { content: [{ type: 'text', text: 'action receipt' }] };
     });
     const resumed = await createPiCheckpoint({
@@ -306,7 +306,7 @@ test('real Pi persists its user message and tool intent before a side effect and
           async execute() {
             const saved = await f.store.read(`sessions/${f.taskId}.jsonl`, 1024 * 1024);
             assert.match(saved!.bytes.toString(), /synthetic user request/);
-            assert.match(saved!.bytes.toString(), /sidekick_tool_pending/);
+            assert.match(saved!.bytes.toString(), /otto_tool_pending/);
             assert.match(saved!.bytes.toString(), /toolCall/);
             executed++;
             return { content: [{ type: 'text', text: 'durable receipt' }] };
@@ -418,8 +418,8 @@ test('the real runtime error wrapper leaves an uncertain browser action fenced a
     assert.equal(effects, 1);
     assert.equal(turns, 1);
     const saved = await f.store.read(`sessions/${f.taskId}.jsonl`, 1024 * 1024);
-    assert.match(saved!.bytes.toString(), /sidekick_tool_pending/);
-    assert.doesNotMatch(saved!.bytes.toString(), /sidekick_tool_completed/);
+    assert.match(saved!.bytes.toString(), /otto_tool_pending/);
+    assert.doesNotMatch(saved!.bytes.toString(), /otto_tool_completed/);
     await assert.rejects(
       createPiCheckpoint({
         store: f.store,

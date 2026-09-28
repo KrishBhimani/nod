@@ -32,7 +32,7 @@ async function fixture(
   } = {},
   resumed = false,
 ) {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-session-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-session-'));
   const replies: string[] = [];
   const events: string[] = [];
   const deltas: string[] = [];
@@ -166,7 +166,7 @@ test('app downloads publish through the trusted callback and reject external wri
   assert.equal(result.result.status, 'succeeded');
 });
 
-test('effective prompts use the Sidekick voice and inspection never blocks a reply', async () => {
+test('effective prompts use the Otto voice and inspection never blocks a reply', async () => {
   let snapshot: Parameters<NonNullable<RuntimeContext['inspectPrompt']>>[0] | undefined;
   const result = await fixture(async (_tools, emit) => emit({ type: 'final', text: 'Done.' }), {
     inspectPrompt: async (value) => {
@@ -316,7 +316,7 @@ test('saved profile and active goals have independent budgets when memory facts 
 test('Vault invitations name the broker-observed site and step without using untrusted labels or links', async () => {
   assert.equal(
     vaultInvitation({ origin: 'https://accounts.example.com', kind: 'otp' }, '/vault/fixture'),
-    'https://accounts.example.com needs a verification code. Reply here with the code to continue signing in. Sidekick will send it securely to the website.',
+    'https://accounts.example.com needs a verification code. Reply here with the code to continue signing in. Otto will send it securely to the website.',
   );
   assert.equal(
     vaultInvitation(
@@ -595,7 +595,7 @@ test('background work skips reactions while connection discovery remains quiet',
 });
 
 test('waitForTask drains an in-flight browser action even after the model prompt ends on abort', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-drain-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-drain-'));
   const controller = new AbortController();
   let started!: () => void;
   let release!: () => void;
@@ -1791,7 +1791,7 @@ test('task context carries dated conversation and narrow reaction feedback with 
   assert.match(result.supplied.systemPrompt, /not a global preference/);
   assert.match(
     result.supplied.systemPrompt,
-    /When the owner asks about Sidekick, explain nonsecret capabilities, setup and configuration/,
+    /When the owner asks about Otto, explain nonsecret capabilities, setup and configuration/,
   );
   assert.match(result.supplied.systemPrompt, /using only trusted available context/);
   assert.match(result.supplied.systemPrompt, /Do not invent model names, versions/);
@@ -2236,7 +2236,7 @@ test('API key requests stay out of chat and never inspect or open an unrelated l
 });
 
 test('unavailable or oversized image previews do not prevent the task from using other attachments', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'sidekick-image-input-'));
+  const root = await mkdtemp(join(tmpdir(), 'otto-image-input-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const reads: unknown[] = [];
   const result = await fixture(
@@ -2286,7 +2286,7 @@ test('unavailable or oversized image previews do not prevent the task from using
 });
 
 test('an image read interrupted by cancellation never starts the model prompt', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'sidekick-image-input-'));
+  const root = await mkdtemp(join(tmpdir(), 'otto-image-input-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const controller = new AbortController();
   let prompted = false;

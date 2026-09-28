@@ -12,7 +12,7 @@ export function runtimeRoutingGeneration(
   now: () => number = Date.now,
 ) {
   try {
-    const header = request.headers.get('x-sidekick-runtime');
+    const header = request.headers.get('x-otto-runtime');
     if (!header || header.length > 16_384) throw new Error();
     const parts = header.split('.');
     if (

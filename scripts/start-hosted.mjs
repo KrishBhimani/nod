@@ -22,7 +22,7 @@ export function hostedEnvironment(
     );
   const missing = [
     'DATABASE_URL',
-    'SIDEKICK_MASTER_KEY',
+    'OTTO_MASTER_KEY',
     'BETTER_AUTH_SECRET',
     'GOOGLE_CLIENT_ID',
     'GOOGLE_CLIENT_SECRET',
@@ -30,30 +30,29 @@ export function hostedEnvironment(
   ].filter((key) => !values[key]?.trim());
   if (missing.length) throw new Error(`Missing configuration: ${missing.join(', ')}.`);
   const invalid = new Set();
-  const environment = values.SIDEKICK_ENVIRONMENT || 'development';
+  const environment = values.OTTO_ENVIRONMENT || 'development';
   if (environment.toLowerCase() === 'production' || !/^[a-z][a-z0-9-]{0,31}$/.test(environment))
-    invalid.add('SIDEKICK_ENVIRONMENT');
-  if (values.SIDEKICK_MODE && values.SIDEKICK_MODE !== 'gateway') invalid.add('SIDEKICK_MODE');
-  if (values.SIDEKICK_RUNTIME_URL) invalid.add('SIDEKICK_RUNTIME_URL');
+    invalid.add('OTTO_ENVIRONMENT');
+  if (values.OTTO_MODE && values.OTTO_MODE !== 'gateway') invalid.add('OTTO_MODE');
+  if (values.OTTO_RUNTIME_URL) invalid.add('OTTO_RUNTIME_URL');
   if (values.PORT && values.PORT !== '4330') invalid.add('PORT');
-  if (values.SIDEKICK_PUBLIC_URL && values.SIDEKICK_PUBLIC_URL !== 'http://localhost:4330')
-    invalid.add('SIDEKICK_PUBLIC_URL');
+  if (values.OTTO_PUBLIC_URL && values.OTTO_PUBLIC_URL !== 'http://localhost:4330')
+    invalid.add('OTTO_PUBLIC_URL');
   if (!['e2b', 'cloudflare'].includes(computerProvider)) invalid.add('COMPUTER_PROVIDER');
   if (values.BETTER_AUTH_SECRET.length < 32) invalid.add('BETTER_AUTH_SECRET');
   if (
-    !/^[A-Za-z0-9+/]+={0,2}$/.test(values.SIDEKICK_MASTER_KEY) ||
-    Buffer.from(values.SIDEKICK_MASTER_KEY, 'base64').length !== 32 ||
-    Buffer.from(values.SIDEKICK_MASTER_KEY, 'base64').toString('base64') !==
-      values.SIDEKICK_MASTER_KEY
+    !/^[A-Za-z0-9+/]+={0,2}$/.test(values.OTTO_MASTER_KEY) ||
+    Buffer.from(values.OTTO_MASTER_KEY, 'base64').length !== 32 ||
+    Buffer.from(values.OTTO_MASTER_KEY, 'base64').toString('base64') !== values.OTTO_MASTER_KEY
   )
-    invalid.add('SIDEKICK_MASTER_KEY');
+    invalid.add('OTTO_MASTER_KEY');
   if (values.LLM_PROVIDER && !['openai', 'anthropic'].includes(values.LLM_PROVIDER))
     invalid.add('LLM_PROVIDER');
   if (
-    values.SIDEKICK_MAX_USERS &&
-    (!/^[1-9][0-9]*$/.test(values.SIDEKICK_MAX_USERS) || Number(values.SIDEKICK_MAX_USERS) > 400)
+    values.OTTO_MAX_USERS &&
+    (!/^[1-9][0-9]*$/.test(values.OTTO_MAX_USERS) || Number(values.OTTO_MAX_USERS) > 400)
   )
-    invalid.add('SIDEKICK_MAX_USERS');
+    invalid.add('OTTO_MAX_USERS');
   try {
     const database = new URL(values.DATABASE_URL);
     if (
@@ -66,9 +65,9 @@ export function hostedEnvironment(
   } catch {
     invalid.add('DATABASE_URL');
   }
-  if (values.SIDEKICK_WEBHOOK_ORIGIN) {
+  if (values.OTTO_WEBHOOK_ORIGIN) {
     try {
-      const origin = new URL(values.SIDEKICK_WEBHOOK_ORIGIN);
+      const origin = new URL(values.OTTO_WEBHOOK_ORIGIN);
       if (
         origin.protocol !== 'https:' ||
         origin.pathname !== '/' ||
@@ -77,9 +76,9 @@ export function hostedEnvironment(
         origin.username ||
         origin.password
       )
-        invalid.add('SIDEKICK_WEBHOOK_ORIGIN');
+        invalid.add('OTTO_WEBHOOK_ORIGIN');
     } catch {
-      invalid.add('SIDEKICK_WEBHOOK_ORIGIN');
+      invalid.add('OTTO_WEBHOOK_ORIGIN');
     }
   }
   if (invalid.size) throw new Error(`Invalid configuration: ${[...invalid].join(', ')}.`);
@@ -91,17 +90,17 @@ export function hostedEnvironment(
     ),
     ...values,
     DOTENV_CONFIG_PATH: envFile || resolve(root, '.env.hosted.local'),
-    SIDEKICK_MODE: 'gateway',
-    SIDEKICK_ENVIRONMENT: environment,
-    SIDEKICK_PUBLIC_URL: 'http://localhost:4330',
-    SIDEKICK_BIND_HOST: '127.0.0.1',
-    SIDEKICK_DATA_ROOT: resolve(root, '.local/hosted'),
+    OTTO_MODE: 'gateway',
+    OTTO_ENVIRONMENT: environment,
+    OTTO_PUBLIC_URL: 'http://localhost:4330',
+    OTTO_BIND_HOST: '127.0.0.1',
+    OTTO_DATA_ROOT: resolve(root, '.local/hosted'),
     PORT: '4330',
     NODE_ENV: 'development',
     COMPUTER_PROVIDER: computerProvider,
     OBJECT_STORAGE_PROVIDER: computerProvider === 'cloudflare' ? 'http' : 'postgres',
     ...(computerProvider === 'cloudflare'
-      ? { OBJECT_STORAGE_ENDPOINT: 'http://sidekick.storage/v1/objects/' }
+      ? { OBJECT_STORAGE_ENDPOINT: 'http://otto.storage/v1/objects/' }
       : {}),
   };
 }
@@ -161,7 +160,7 @@ export async function startHosted(args = process.argv.slice(2)) {
   } catch {
     throw new Error('Install repository dependencies with npm ci first.');
   }
-  await mkdir(environment.SIDEKICK_DATA_ROOT, { recursive: true, mode: 0o700 });
+  await mkdir(environment.OTTO_DATA_ROOT, { recursive: true, mode: 0o700 });
   if (environment.COMPUTER_PROVIDER === 'cloudflare') {
     const { startCloudflareLocal } = await import('./start-cloudflare-local.mjs');
     await startCloudflareLocal(environment);

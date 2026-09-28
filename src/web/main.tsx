@@ -34,7 +34,7 @@ class AppBoundary extends Component<{ children: ReactNode }, { failed: boolean }
             className="button button-primary button-default"
             onClick={() => window.location.reload()}
           >
-            Reload Sidekick
+            Reload Otto
           </button>
         </main>
       );

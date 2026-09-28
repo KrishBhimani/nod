@@ -167,7 +167,7 @@ test('Schedule shows cached upcoming work, lazy read-only history and keyboard t
   }));
   const drafts: unknown[] = [];
   const onDraft = (event: Event) => drafts.push((event as CustomEvent).detail);
-  window.addEventListener('sidekick:compose', onDraft);
+  window.addEventListener('otto:compose', onDraft);
   const element = document.createElement('div');
   document.body.append(element);
   const root = createRoot(element);
@@ -245,7 +245,7 @@ test('Schedule shows cached upcoming work, lazy read-only history and keyboard t
   } finally {
     await act(async () => root.unmount());
     element.remove();
-    window.removeEventListener('sidekick:compose', onDraft);
+    window.removeEventListener('otto:compose', onDraft);
     pageDataCache.update('/api/schedules', () => null);
     pageDataCache.update(historyPath, () => null);
     globalThis.fetch = priorFetch;
@@ -348,7 +348,7 @@ test('history refresh updates loaded older active runs, keeps existing rows and 
 test('named pause, resume, change and overdue reschedule actions keep the schedule name and scope in an unsent draft', async () => {
   const drafts: Array<{ text: string; send: boolean }> = [];
   const onDraft = (event: Event) => drafts.push((event as CustomEvent).detail);
-  window.addEventListener('sidekick:compose', onDraft);
+  window.addEventListener('otto:compose', onDraft);
   const element = document.createElement('div');
   document.body.append(element);
   const root = createRoot(element);
@@ -387,7 +387,7 @@ test('named pause, resume, change and overdue reschedule actions keep the schedu
   } finally {
     await act(async () => root.unmount());
     element.remove();
-    window.removeEventListener('sidekick:compose', onDraft);
+    window.removeEventListener('otto:compose', onDraft);
   }
 });
 

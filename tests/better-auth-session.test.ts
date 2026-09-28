@@ -63,7 +63,7 @@ test(
       );
       const signature = await makeSignature(token, secret);
       const headers = new Headers({
-        cookie: `sidekick-fixture.session_token=${encodeURIComponent(`${token}.${signature}`)}`,
+        cookie: `otto-fixture.session_token=${encodeURIComponent(`${token}.${signature}`)}`,
         origin,
       });
       const accepted = await authentication.session(headers);
@@ -72,7 +72,7 @@ test(
       assert.equal(accepted?.user.avatarUrl, null);
       assert.equal(accepted?.avatarSource, 'https://lh3.googleusercontent.com/synthetic-avatar');
       const tampered = new Headers({
-        cookie: `sidekick-fixture.session_token=${encodeURIComponent(`${token}.invalid`)}`,
+        cookie: `otto-fixture.session_token=${encodeURIComponent(`${token}.invalid`)}`,
         origin,
       });
       assert.equal(await authentication.session(tampered), null);

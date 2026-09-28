@@ -209,8 +209,8 @@ test('restart setup clears archived messages, history, replies and stale streams
       staleRefresh = fixture.app().refresh();
     });
     await act(async () => {
-      window.dispatchEvent(new CustomEvent('sidekick:restart-setup'));
-      window.dispatchEvent(new CustomEvent('sidekick:restart-setup'));
+      window.dispatchEvent(new CustomEvent('otto:restart-setup'));
+      window.dispatchEvent(new CustomEvent('otto:restart-setup'));
     });
     assert.equal(
       requests.filter((request) => request.path === '/api/conversation/reset').length,
@@ -287,7 +287,7 @@ test('Get started uses the same restart event and failed reset preserves the exi
   const fixture = await mount();
   try {
     await act(async () => {
-      window.dispatchEvent(new CustomEvent('sidekick:restart-setup'));
+      window.dispatchEvent(new CustomEvent('otto:restart-setup'));
       await tick();
     });
     assert.match(fixture.element.textContent ?? '', /Restart failed/);
@@ -295,7 +295,7 @@ test('Get started uses the same restart event and failed reset preserves the exi
     assert.equal(requests.includes('/api/onboarding'), false);
     failReset = false;
     await act(async () => {
-      window.dispatchEvent(new CustomEvent('sidekick:restart-setup'));
+      window.dispatchEvent(new CustomEvent('otto:restart-setup'));
       await tick();
     });
     assert.equal(requests.filter((path) => path === '/api/onboarding').length, 1);
@@ -368,7 +368,7 @@ test('setup cannot archive a conversation when its model is unavailable', async 
     )!;
     assert.equal(button.disabled, true);
     await act(async () => {
-      window.dispatchEvent(new CustomEvent('sidekick:restart-setup'));
+      window.dispatchEvent(new CustomEvent('otto:restart-setup'));
       await tick();
     });
     assert.equal(

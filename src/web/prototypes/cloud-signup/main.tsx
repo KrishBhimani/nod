@@ -238,7 +238,7 @@ function Logo({ word = true }: { word?: boolean }) {
   return (
     <div className="logo">
       <BrandMark />
-      {word && <span>sidekick</span>}
+      {word && <span>otto</span>}
     </div>
   );
 }
@@ -342,7 +342,7 @@ function App() {
     (connection) => connection.status !== 'attention',
   ).length;
   const telegramIdentity = account === 'sam' ? 'Sam Rivera' : 'Alex Morgan';
-  const telegramHandle = `@${account ?? 'alex'}_sidekick_demo_bot`;
+  const telegramHandle = `@${account ?? 'alex'}_otto_demo_bot`;
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
   const startConnection = (id: AppId, connectionId: string | null = null) => {
     if (connecting) return;
@@ -949,11 +949,11 @@ function App() {
               <span className="welcome-dot">
                 <BrandMark />
               </span>
-              <h1>Sign in to Sidekick</h1>
+              <h1>Sign in to Otto</h1>
               <p>
                 Hand off the work you keep putting off.
                 <br />
-                Sidekick gets it done while you sleep.
+                Otto gets it done while you sleep.
               </p>
               {authError && (
                 <div className="error-note" role="alert">
@@ -1040,7 +1040,7 @@ function App() {
                       else finishOnboarding();
                     }}
                   >
-                    Continue{variant === 'B' ? '' : ' to Sidekick'}
+                    Continue{variant === 'B' ? '' : ' to Otto'}
                     <ArrowRight size={16} />
                   </Button>
                   <button className="text-button" onClick={finishOnboarding}>
@@ -1298,8 +1298,8 @@ function App() {
                     }}
                   >
                     <textarea
-                      aria-label="Message Sidekick"
-                      placeholder="Ask Sidekick anything…"
+                      aria-label="Message Otto"
+                      placeholder="Ask Otto anything…"
                       value={draft}
                       onChange={(e) => setDraft(e.target.value)}
                       rows={2}
@@ -1462,7 +1462,7 @@ function App() {
                           <>
                             <Moon size={34} />
                             <h3>Nothing running right now</h3>
-                            <p>Sidekick starts the computer when a task needs it.</p>
+                            <p>Otto starts the computer when a task needs it.</p>
                           </>
                         ) : person.computer === 'unavailable' ? (
                           <>
@@ -1481,7 +1481,7 @@ function App() {
                             <p>
                               {person.computer === 'manual'
                                 ? 'The assistant waits while you use the browser. Resume it when you are ready.'
-                                : 'Ask Sidekick to look something up or work on a file.'}
+                                : 'Ask Otto to look something up or work on a file.'}
                             </p>
                           </>
                         )}
@@ -1519,7 +1519,7 @@ function App() {
                     <div className="quiet-empty">
                       <Goal size={30} />
                       <h3>Start with something you care about</h3>
-                      <p>Tell Sidekick what you are working towards.</p>
+                      <p>Tell Otto what you are working towards.</p>
                       <Button
                         onClick={() => {
                           go('Chat');
@@ -1543,7 +1543,7 @@ function App() {
                     <div className="quiet-empty">
                       <Clock3 size={30} />
                       <h3>No scheduled work yet</h3>
-                      <p>Ask Sidekick to check back on something for you.</p>
+                      <p>Ask Otto to check back on something for you.</p>
                       <Button
                         onClick={() => {
                           go('Chat');
@@ -1792,12 +1792,12 @@ function App() {
                 <h3 className="section-heading">
                   {person.telegram === 'tested' ? 'You’re connected.' : 'Try a conversation.'}
                 </h3>
-                {person.telegram !== 'tested' && <p>Send “Hello Sidekick” in Telegram.</p>}
+                {person.telegram !== 'tested' && <p>Send “Hello Otto” in Telegram.</p>}
                 <div className="telegram-transcript">
-                  <div>Hello Sidekick</div>
+                  <div>Hello Otto</div>
                   {person.telegram === 'tested' ? (
                     <>
-                      <p>Hi {telegramIdentity.split(' ')[0]}. You’re connected to your Sidekick.</p>
+                      <p>Hi {telegramIdentity.split(' ')[0]}. You’re connected to Otto.</p>
                       <div>I received your reply.</div>
                     </>
                   ) : (

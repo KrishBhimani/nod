@@ -98,8 +98,8 @@ function fixture(t: TestContext) {
     environment,
     requireInitialization: true,
     gatewayEnvironment: JSON.stringify({
-      SIDEKICK_MASTER_KEY: Buffer.from(masterKey).toString('base64'),
-      SIDEKICK_RELEASE: release,
+      OTTO_MASTER_KEY: Buffer.from(masterKey).toString('base64'),
+      OTTO_RELEASE: release,
     }),
     forward: async (request) => {
       const body = new Uint8Array(await request.arrayBuffer());
@@ -134,7 +134,7 @@ function fixture(t: TestContext) {
   const control = (changes: Partial<DeploymentRequest> = {}) => {
     const { body, token } = signed(changes);
     return gateway.handle(
-      new Request(`https://sidekick.example.test${deploymentPath}`, {
+      new Request(`https://otto.example.test${deploymentPath}`, {
         method: 'POST',
         headers: { [deploymentHeader]: token },
         body,
@@ -151,7 +151,7 @@ function fixture(t: TestContext) {
     control,
     state: () => values.get('deployment-barrier') as DeploymentState,
     request: () =>
-      host.fetch(ownerId, new Request('https://sidekick.example.test/api/apps'), {
+      host.fetch(ownerId, new Request('https://otto.example.test/api/apps'), {
         developer: false,
       }),
     nodeControl: (changes: Partial<DeploymentRequest>) => {

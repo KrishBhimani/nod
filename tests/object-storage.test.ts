@@ -36,7 +36,7 @@ test('private object keys use the same canonical UUID grammar as the hosted brok
 });
 
 test('filesystem storage validates missing reads before lookup and conceals filesystem failures', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'sidekick-object-errors-'));
+  const root = await mkdtemp(join(tmpdir(), 'otto-object-errors-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const store = createFilesystemObjectStore(root);
   for (const limit of [0, -1, 0.5, NaN, 16 * 1024 * 1024 + 1])
@@ -63,8 +63,8 @@ test('filesystem storage validates missing reads before lookup and conceals file
   );
 });
 test('private filesystem objects survive factory restart and preserve conditional writes and path bounds', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'sidekick-objects-'));
-  const outside = await mkdtemp(join(tmpdir(), 'sidekick-outside-'));
+  const root = await mkdtemp(join(tmpdir(), 'otto-objects-'));
+  const outside = await mkdtemp(join(tmpdir(), 'otto-outside-'));
   try {
     const first = createFilesystemObjectStore(root);
     assert.equal(await first.read(key, 100), undefined);
@@ -120,8 +120,8 @@ test('HTTP storage bounds responses, uses version conditions and never forwards 
   assert.equal(new Headers(requests[1].init.headers).get('if-match'), '"current"');
   assert.equal(new Headers(requests[1].init.headers).get('authorization'), null);
   assert.equal(new Headers(requests[1].init.headers).get('x-owner-id'), null);
-  assert.equal(new Headers(requests[1].init.headers).get('x-sidekick-generation'), null);
-  assert.equal(requests[0].url, 'http://sidekick.storage/v1/objects/' + encodeURIComponent(key));
+  assert.equal(new Headers(requests[1].init.headers).get('x-otto-generation'), null);
+  assert.equal(requests[0].url, 'http://otto.storage/v1/objects/' + encodeURIComponent(key));
   assert.equal(requests[0].init.redirect, 'manual');
   await assert.rejects(store.read(key, 3), /unavailable/);
   status = 412;
@@ -156,7 +156,7 @@ test('HTTP storage keeps one immutable generation on reads, writes and deletes',
     requests.map((request) => request.method),
     ['GET', 'PUT', 'DELETE'],
   );
-  assert.ok(requests.every((request) => request.headers.get('x-sidekick-generation') === '17'));
+  assert.ok(requests.every((request) => request.headers.get('x-otto-generation') === '17'));
   assert.equal(requests[1].headers.get('if-match'), '"current"');
   assert.equal(requests[2].headers.get('if-match'), '"next"');
   for (const generation of ['', '0', '-1', '1.5', 'synthetic-private-value'])

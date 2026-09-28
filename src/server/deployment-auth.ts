@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { DeploymentRequest } from '../ports/deployment.ts';
 
 export const deploymentPath = '/api/deployment';
-export const deploymentHeader = 'x-sidekick-deployment';
+export const deploymentHeader = 'x-otto-deployment';
 export const deploymentBodyLimit = 2048;
 export const deploymentMaximumDuration = 600_000;
 
@@ -49,7 +49,7 @@ export function deriveDeploymentKey(master: Uint8Array, environment: string) {
     hkdfSync(
       'sha256',
       master,
-      Buffer.from('sidekick-deployment-v1'),
+      Buffer.from('otto-deployment-v1'),
       Buffer.from(JSON.stringify([environment, 'deployment-control'])),
       32,
     ),

@@ -148,8 +148,8 @@ export function Chat({
   }, [revision]);
   useEffect(() => {
     const restart = () => setupAction.current();
-    window.addEventListener('sidekick:restart-setup', restart);
-    return () => window.removeEventListener('sidekick:restart-setup', restart);
+    window.addEventListener('otto:restart-setup', restart);
+    return () => window.removeEventListener('otto:restart-setup', restart);
   }, []);
   useEffect(() => {
     if (!composerDraft) return;
@@ -163,8 +163,8 @@ export function Chat({
       setText(detail.text);
       requestAnimationFrame(() => composer.current?.focus());
     };
-    window.addEventListener('sidekick:compose', compose);
-    return () => window.removeEventListener('sidekick:compose', compose);
+    window.addEventListener('otto:compose', compose);
+    return () => window.removeEventListener('otto:compose', compose);
   }, []);
   async function send(value: string, attachments: Artifact[]): Promise<ComposerSendResult> {
     if (sendLock.current || resetLock.current) return { sent: false, restoreText: true };
@@ -488,7 +488,7 @@ export function Chat({
                 className="thinking"
                 role="status"
                 aria-label={
-                  resetting ? 'Starting setup' : sending ? 'Sending message' : 'Sidekick is typing'
+                  resetting ? 'Starting setup' : sending ? 'Sending message' : 'Otto is typing'
                 }
               >
                 <div className="assistant-mark">
@@ -505,13 +505,13 @@ export function Chat({
           {onboardingVisible && (
             <section className="onboarding-card">
               <div>
-                <h2>Make Sidekick yours.</h2>
+                <h2>Make Otto yours.</h2>
                 <p>Connect your tools and pick something to work on.</p>
               </div>
               <Button
                 variant="outline"
                 disabled={sending || resetting || !state.configuration.llmReady}
-                onClick={() => window.dispatchEvent(new CustomEvent('sidekick:restart-setup'))}
+                onClick={() => window.dispatchEvent(new CustomEvent('otto:restart-setup'))}
               >
                 Get started
                 <ArrowUpRight size={15} />

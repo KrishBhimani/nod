@@ -193,7 +193,7 @@ export function Sidebar({
       <a
         href="/"
         className="brand"
-        aria-label="Sidekick"
+        aria-label="Otto"
         onClick={(event) => {
           if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
           event.preventDefault();
@@ -201,7 +201,7 @@ export function Sidebar({
         }}
       >
         <BrandMark />
-        <span>sidekick</span>
+        <span>otto</span>
       </a>
       <nav className="main-nav" aria-label="Main navigation" id="sidebar-navigation">
         <ul

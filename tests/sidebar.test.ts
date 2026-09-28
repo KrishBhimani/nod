@@ -104,7 +104,7 @@ test('sidebar exposes navigation shortcuts, keyboard focus and modifier hints wi
     assert.ok(darkTheme);
     await act(async () => darkTheme.click());
     assert.equal(document.documentElement.dataset.theme, 'dark');
-    assert.equal(window.localStorage.getItem('sidekick.theme'), 'dark');
+    assert.equal(window.localStorage.getItem('otto.theme'), 'dark');
     assert.ok(element.querySelector('.sidebar-bottom [aria-label="Switch to light theme"]'));
     await act(async () => more.click());
     const lightTheme = [...element.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
@@ -113,7 +113,7 @@ test('sidebar exposes navigation shortcuts, keyboard focus and modifier hints wi
     assert.ok(lightTheme);
     await act(async () => lightTheme.click());
     assert.equal(document.documentElement.dataset.theme, 'light');
-    assert.equal(window.localStorage.getItem('sidekick.theme'), 'light');
+    assert.equal(window.localStorage.getItem('otto.theme'), 'light');
     assert.equal(element.querySelector('[role="menu"]'), null);
     assert.equal(document.activeElement, more);
     inspections = 0;

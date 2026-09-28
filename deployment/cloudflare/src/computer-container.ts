@@ -89,9 +89,7 @@ abstract class ComputerContainer extends Container<Bindings> {
       this.role === 'browser' ? this.env.BROWSER_COMPUTERS : this.env.WORKSPACE_COMPUTERS;
     if (
       this.ctx.id.toString() !==
-      namespace
-        .idFromName(computerName(this.env.SIDEKICK_ENVIRONMENT, ownerId, this.role))
-        .toString()
+      namespace.idFromName(computerName(this.env.OTTO_ENVIRONMENT, ownerId, this.role)).toString()
     )
       throw new RuntimeControlError(403);
     return ownerId;
@@ -153,7 +151,7 @@ abstract class ComputerContainer extends Container<Bindings> {
     const ownerId = this.validate(owner, version);
     const expected: ComputerIdentity = {
       ownerId,
-      environment: environmentName(this.env.SIDEKICK_ENVIRONMENT),
+      environment: environmentName(this.env.OTTO_ENVIRONMENT),
       generation: version,
       role: this.role,
     };
@@ -255,7 +253,7 @@ abstract class ComputerContainer extends Container<Bindings> {
                   [
                     'python3',
                     '-u',
-                    '/opt/sidekick/checkpoint.py',
+                    '/opt/otto/checkpoint.py',
                     'restore',
                     path,
                     '--sha256',
@@ -287,7 +285,7 @@ abstract class ComputerContainer extends Container<Bindings> {
         return runComputerExec({
           timeoutMs: 120_000,
           launch: (signal) =>
-            this.exec(['python3', '-u', '/opt/sidekick/checkpoint.py', 'create', path], {
+            this.exec(['python3', '-u', '/opt/otto/checkpoint.py', 'create', path], {
               stderr: 'ignore',
               signal,
             }),
@@ -344,7 +342,7 @@ abstract class ComputerContainer extends Container<Bindings> {
         return launchComputerExec({
           timeoutMs: 30_000,
           launch: (signal) =>
-            this.exec(['python3', '-u', '/opt/sidekick/workspace-command.py'], {
+            this.exec(['python3', '-u', '/opt/otto/workspace-command.py'], {
               cwd: `/workspace/${taskId}`,
               stdin: 'pipe',
               signal,
@@ -400,14 +398,14 @@ abstract class ComputerContainer extends Container<Bindings> {
         {
           ownerId,
           generation: version,
-          environment: this.env.SIDEKICK_ENVIRONMENT,
+          environment: this.env.OTTO_ENVIRONMENT,
           role: this.role,
         },
         false,
       );
       if (
-        request.headers.get('x-sidekick-generation') !== version ||
-        request.headers.get('x-sidekick-computer-role') !== this.role
+        request.headers.get('x-otto-generation') !== version ||
+        request.headers.get('x-otto-computer-role') !== this.role
       )
         throw new RuntimeControlError(403);
       return await (await this.select(ownerId, version)).commands.fetch(request);
@@ -419,7 +417,7 @@ abstract class ComputerContainer extends Container<Bindings> {
   async stopComputer(ownerId: string, version: string) {
     this.validate(ownerId, version);
     await this.authorize(
-      { ownerId, generation: version, environment: this.env.SIDEKICK_ENVIRONMENT, role: this.role },
+      { ownerId, generation: version, environment: this.env.OTTO_ENVIRONMENT, role: this.role },
       true,
     );
     const current = await this.select(ownerId, version);
@@ -434,7 +432,7 @@ abstract class ComputerContainer extends Container<Bindings> {
     const input = deploymentInputSchema.parse(raw);
     const authorize = async () => {
       await this.env.TENANTS.getByName(
-        `tenant:${this.env.SIDEKICK_ENVIRONMENT}:${ownerId}`,
+        `tenant:${this.env.OTTO_ENVIRONMENT}:${ownerId}`,
       ).deploymentComputerIdentity(ownerId, version, input);
     };
     await authorize();
@@ -446,7 +444,7 @@ abstract class ComputerContainer extends Container<Bindings> {
           identity: {
             ownerId,
             generation: version,
-            environment: this.env.SIDEKICK_ENVIRONMENT,
+            environment: this.env.OTTO_ENVIRONMENT,
             role: this.role,
           },
           deployment: input,
@@ -454,7 +452,7 @@ abstract class ComputerContainer extends Container<Bindings> {
           transaction: (operation) => this.ctx.storage.transaction(operation),
           authorize: async () => {
             await this.env.TENANTS.getByName(
-              `tenant:${this.env.SIDEKICK_ENVIRONMENT}:${ownerId}`,
+              `tenant:${this.env.OTTO_ENVIRONMENT}:${ownerId}`,
             ).deploymentUnusedComputerIdentity(ownerId, version, input);
           },
           inactive: () => this.retiring && !this.current && !this.selection,
@@ -477,7 +475,7 @@ abstract class ComputerContainer extends Container<Bindings> {
     const authorize = async () => {
       if (
         !(await this.env.TENANTS.getByName(
-          `tenant:${this.env.SIDEKICK_ENVIRONMENT}:${ownerId}`,
+          `tenant:${this.env.OTTO_ENVIRONMENT}:${ownerId}`,
         ).deploymentStoppedIdentity(ownerId, expected))
       )
         throw unavailable();
@@ -505,7 +503,7 @@ abstract class ComputerContainer extends Container<Bindings> {
       state,
       ownerId,
       generation: expected,
-      environment: this.env.SIDEKICK_ENVIRONMENT,
+      environment: this.env.OTTO_ENVIRONMENT,
       role: this.role,
       active: 0,
       fenced: false,

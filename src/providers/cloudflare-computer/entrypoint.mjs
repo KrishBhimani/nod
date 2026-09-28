@@ -48,7 +48,7 @@ function stop(code) {
 }
 
 async function verifyHelper(name) {
-  const path = `/opt/sidekick/${name}`;
+  const path = `/opt/otto/${name}`;
   const file = await lstat(path);
   if (!file.isFile() || file.uid !== 0 || file.mode & 0o222) throw new Error();
   await access(path, constants.R_OK);

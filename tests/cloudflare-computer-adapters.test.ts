@@ -29,7 +29,7 @@ function deferred() {
 }
 
 async function fixture() {
-  const root = await mkdtemp('/tmp/sidekick-cloudflare-adapters-');
+  const root = await mkdtemp('/tmp/otto-cloudflare-adapters-');
   const socketPath = join(root, 'control.sock');
   const calls: Array<{ namespace: string; method: string; input?: unknown }> = [];
   const launches: Array<{
@@ -285,7 +285,7 @@ test('unused disposal never creates computers and uncertain workspace traffic st
   try {
     f.breakRole('workspace');
     await assert.rejects(session.execute('printf first'), /did not stop safely/);
-    await assert.rejects(session.execute('printf second'), /Restart Sidekick/);
+    await assert.rejects(session.execute('printf second'), /Restart Otto/);
     assert.equal(f.launches.length, 1);
     f.breakRole();
     assert.equal(
@@ -402,7 +402,7 @@ test('application composition selects Cloudflare only in tenant mode and binds b
       registerHooks({load(url, context, next){const source=modules.get(url);return source===undefined?next(url,context):{format:'module',source,shortCircuit:true}}});
       globalThis.fetch=()=>{throw new Error('Unexpected provider request')};
       const {createDefaultAdapters}=await import(${JSON.stringify(base + 'server/composition.ts')});
-      const environment={...process.env,COMPUTER_PROVIDER:'cloudflare',SIDEKICK_RUNTIME_GENERATION:'999',OBJECT_STORAGE_PROVIDER:'http',OBJECT_STORAGE_ENDPOINT:'http://sidekick.storage/v1/objects/',SIDEKICK_CONTROL_URL:'http://sidekick.control'};
+      const environment={...process.env,COMPUTER_PROVIDER:'cloudflare',OTTO_RUNTIME_GENERATION:'999',OBJECT_STORAGE_PROVIDER:'http',OBJECT_STORAGE_ENDPOINT:'http://otto.storage/v1/objects/',OTTO_CONTROL_URL:'http://otto.control'};
       if(${JSON.stringify(mode)}==='local')assert.throws(()=>createDefaultAdapters(environment),/isolated computer provider/);
       else {const adapters=createDefaultAdapters(environment);assert.equal(adapters.computer.status(),'cloudflare');assert.equal(globalThis.computerOptions.generation,'17');assert.equal(globalThis.computerOptions.ownerId,${JSON.stringify(ownerA)});assert.equal(globalThis.storageOptions.generation,'17');assert.equal(globalThis.computerOptions.origin,undefined);}
       process.stdout.write('composition passed');
@@ -416,14 +416,14 @@ test('application composition selects Cloudflare only in tenant mode and binds b
         env: {
           PATH: process.env.PATH,
           NODE_ENV: 'test',
-          DOTENV_CONFIG_PATH: '/tmp/sidekick-synthetic-missing-env',
-          SIDEKICK_MODE: mode,
-          SIDEKICK_OWNER_ID: ownerA,
-          SIDEKICK_ENVIRONMENT: 'development',
-          SIDEKICK_RUNTIME_GENERATION: '17',
-          SIDEKICK_RUNTIME_SECRET: Buffer.alloc(32, 1).toString('base64url'),
-          SIDEKICK_VAULT_KEY: Buffer.alloc(32, 2).toString('base64'),
-          SIDEKICK_DATA_ROOT: '/tmp/sidekick-synthetic-composition',
+          DOTENV_CONFIG_PATH: '/tmp/otto-synthetic-missing-env',
+          OTTO_MODE: mode,
+          OTTO_OWNER_ID: ownerA,
+          OTTO_ENVIRONMENT: 'development',
+          OTTO_RUNTIME_GENERATION: '17',
+          OTTO_RUNTIME_SECRET: Buffer.alloc(32, 1).toString('base64url'),
+          OTTO_VAULT_KEY: Buffer.alloc(32, 2).toString('base64'),
+          OTTO_DATA_ROOT: '/tmp/otto-synthetic-composition',
           DATABASE_URL: 'postgresql://synthetic:synthetic@127.0.0.1:1/synthetic',
           PGBOSS_SCHEMA: 'sk_jobs_' + 'a'.repeat(32),
         },

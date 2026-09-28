@@ -4,7 +4,7 @@ export function createComputerShutdownConfirmation(options: {
   fetch?: typeof fetch;
 }) {
   if (
-    options.endpoint !== 'http://sidekick.computer/v1/stopped' ||
+    options.endpoint !== 'http://otto.computer/v1/stopped' ||
     !/^[1-9]\d{0,19}$/.test(options.generation)
   )
     throw new Error('The computer shutdown configuration is invalid.');
@@ -12,11 +12,11 @@ export function createComputerShutdownConfirmation(options: {
   const request = options.fetch ?? fetch;
   return async () => {
     try {
-      const response = await request('http://sidekick.computer/v1/stopped', {
+      const response = await request('http://otto.computer/v1/stopped', {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-sidekick-generation': generation,
+          'x-otto-generation': generation,
         },
         body: '{}',
         redirect: 'error',

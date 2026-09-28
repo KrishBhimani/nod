@@ -64,7 +64,7 @@ async function fixture(prepare?: (ownerId: string) => Promise<void>) {
     },
     async callback(request) {
       calls.callback = request.url;
-      return Response.redirect('https://sidekick.example.test/');
+      return Response.redirect('https://otto.example.test/');
     },
   };
   const app = Fastify();
@@ -73,7 +73,7 @@ async function fixture(prepare?: (ownerId: string) => Promise<void>) {
   );
   const account = createAccountSession({
     accounts,
-    origin: 'https://sidekick.example.test',
+    origin: 'https://otto.example.test',
     authentication,
     developerIds: new Set(['alex']),
     async prepare(owner) {
@@ -100,7 +100,7 @@ test('session response uses the cookie identity and owned settings without expos
     const response = await app.inject({
       method: 'GET',
       url: '/api/session',
-      headers: { cookie: 'fixture=alex', 'x-sidekick-account': 'sam' },
+      headers: { cookie: 'fixture=alex', 'x-otto-account': 'sam' },
     });
     assert.equal(response.statusCode, 200);
     assert.equal(response.headers['cache-control'], 'no-store');
@@ -127,12 +127,12 @@ test('session response uses the cookie identity and owned settings without expos
 test('account preparation requires a current same-origin principal and never accepts provider or owner input', async (t) => {
   const f = await fixture();
   t.after(() => f.app.close());
-  const headers = { origin: 'https://sidekick.example.test', cookie: 'fixture=alex' };
+  const headers = { origin: 'https://otto.example.test', cookie: 'fixture=alex' };
   for (const input of [
     { headers: { origin: headers.origin }, payload: {}, status: 401 },
     { headers: { ...headers, origin: 'https://foreign.example.test' }, payload: {}, status: 403 },
     { headers: { ...headers, 'sec-fetch-site': 'cross-site' }, payload: {}, status: 403 },
-    { headers: { ...headers, 'x-sidekick-account': 'sam' }, payload: {}, status: 401 },
+    { headers: { ...headers, 'x-otto-account': 'sam' }, payload: {}, status: 401 },
     { headers, payload: { ownerId: 'sam' }, status: 400 },
     { headers, payload: { provider: 'e2b' }, status: 400 },
     { headers, payload: { templateId: 'override' }, status: 400 },
@@ -172,7 +172,7 @@ test('onboarding completion waits for preparation and failure cannot change any 
     if (fail) throw new Error('synthetic private provider failure');
   });
   t.after(() => f.app.close());
-  const headers = { origin: 'https://sidekick.example.test', cookie: 'fixture=alex' };
+  const headers = { origin: 'https://otto.example.test', cookie: 'fixture=alex' };
   const pending = f.app.inject({
     method: 'PATCH',
     url: '/api/account',
@@ -222,7 +222,7 @@ test('a revoked session cannot finish onboarding after a late successful prepara
   const response = f.app.inject({
     method: 'PATCH',
     url: '/api/account',
-    headers: { origin: 'https://sidekick.example.test', cookie: 'fixture=alex' },
+    headers: { origin: 'https://otto.example.test', cookie: 'fixture=alex' },
     payload: { onboardingCompleted: true },
   });
   void response.then(() => {});
@@ -238,7 +238,7 @@ test('Google identity, session reads and appearance changes do not prepare a com
     throw new Error('Preparation unavailable');
   });
   t.after(() => f.app.close());
-  const headers = { origin: 'https://sidekick.example.test', cookie: 'fixture=alex' };
+  const headers = { origin: 'https://otto.example.test', cookie: 'fixture=alex' };
   assert.equal(
     (await f.app.inject({ method: 'GET', url: '/api/session', headers })).statusCode,
     200,
@@ -264,15 +264,15 @@ test('Google identity, session reads and appearance changes do not prepare a com
 test('account changes require same origin and matching principal and reject identity overrides', async () => {
   const { app, calls, records } = await fixture();
   const headers = {
-    origin: 'https://sidekick.example.test',
+    origin: 'https://otto.example.test',
     cookie: 'fixture=alex',
-    'x-sidekick-account': 'alex',
+    'x-otto-account': 'alex',
   };
   try {
     const foreign = await app.inject({
       method: 'PATCH',
       url: '/api/account',
-      headers: { ...headers, 'x-sidekick-account': 'sam' },
+      headers: { ...headers, 'x-otto-account': 'sam' },
       payload: { name: 'Changed' },
     });
     assert.equal(foreign.statusCode, 401);
@@ -317,9 +317,9 @@ test('a stale account cannot log out a newer cookie principal', async () => {
       method: 'POST',
       url: '/api/logout',
       headers: {
-        origin: 'https://sidekick.example.test',
+        origin: 'https://otto.example.test',
         cookie: 'fixture=sam',
-        'x-sidekick-account': 'alex',
+        'x-otto-account': 'alex',
       },
       payload: {},
     });
@@ -329,9 +329,9 @@ test('a stale account cannot log out a newer cookie principal', async () => {
       method: 'POST',
       url: '/api/logout',
       headers: {
-        origin: 'https://sidekick.example.test',
+        origin: 'https://otto.example.test',
         cookie: 'fixture=sam',
-        'x-sidekick-account': 'sam',
+        'x-otto-account': 'sam',
       },
       payload: {},
     });
@@ -348,7 +348,7 @@ test('Google sign-in keeps the fixed flow, both state cookies and configured cal
     const rejected = await app.inject({
       method: 'POST',
       url: '/api/login',
-      headers: { origin: 'https://sidekick.example.test' },
+      headers: { origin: 'https://otto.example.test' },
       payload: { callbackURL: 'https://elsewhere.example.test' },
     });
     assert.equal(rejected.statusCode, 400);
@@ -363,7 +363,7 @@ test('Google sign-in keeps the fixed flow, both state cookies and configured cal
     const accepted = await app.inject({
       method: 'POST',
       url: '/api/login',
-      headers: { origin: 'https://sidekick.example.test' },
+      headers: { origin: 'https://otto.example.test' },
       payload: {},
     });
     assert.equal(accepted.statusCode, 200);
@@ -376,7 +376,7 @@ test('Google sign-in keeps the fixed flow, both state cookies and configured cal
     });
     assert.equal(
       calls.callback,
-      'https://sidekick.example.test/api/auth/callback/google?state=synthetic&code=fixture',
+      'https://otto.example.test/api/auth/callback/google?state=synthetic&code=fixture',
     );
   } finally {
     await app.close();

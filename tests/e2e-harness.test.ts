@@ -276,7 +276,7 @@ test('staged sign-in fixture requires identifier, password and OTP in separate f
 });
 
 test('test proxy pins one synthetic HTTPS host and forwards other CONNECT requests to the public guard', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-e2e-proxy-test-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-e2e-proxy-test-'));
   const forwarded: string[] = [];
   const guard = createServer();
   guard.on('connect', (request, socket) => {
@@ -306,11 +306,11 @@ test('test proxy pins one synthetic HTTPS host and forwards other CONNECT reques
     const native = proxy.nativeArgs([
       '--user-data-dir=/synthetic-profile',
       `--proxy-server=http://127.0.0.1:${(guard.address() as AddressInfo).port}`,
-      'https://example.com/__sidekick_e2e__/login',
+      'https://example.com/__otto_e2e__/login',
     ]);
     assert.equal(native[1], `--proxy-server=${proxy.proxyUrl}`);
     assert.match(native[2], /^--ignore-certificate-errors-spki-list=/);
-    assert.equal(native.at(-1), 'https://example.com/__sidekick_e2e__/login');
+    assert.equal(native.at(-1), 'https://example.com/__otto_e2e__/login');
     assert.throws(() => proxy.nativeArgs(['https://example.com']), /proxy was missing/);
     assert.throws(
       () => proxy.nativeArgs(['--proxy-server=https://example.com', 'https://example.com']),

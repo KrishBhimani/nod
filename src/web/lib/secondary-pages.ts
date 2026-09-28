@@ -1,7 +1,7 @@
 import type { Connection, Goal, Schedule } from '../../shared/contracts';
 
 export function draftInChat(text: string) {
-  window.dispatchEvent(new CustomEvent('sidekick:compose', { detail: { text, send: false } }));
+  window.dispatchEvent(new CustomEvent('otto:compose', { detail: { text, send: false } }));
 }
 
 export function connectionGroups(connections: Connection[]) {

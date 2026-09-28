@@ -29,7 +29,7 @@ export function registerLocalAccess(app: FastifyInstance, port: number) {
       return;
     if (request.method === 'GET' && path === '/api/webhooks/whatsapp') return;
     if (!hosts.has(request.headers.host || ''))
-      return reply.code(403).send({ error: 'Sidekick is only available on localhost.' });
+      return reply.code(403).send({ error: 'Otto is only available on localhost.' });
     if (request.headers.origin) {
       let origin: URL;
       try {

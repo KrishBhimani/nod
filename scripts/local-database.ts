@@ -29,15 +29,15 @@ function localDatabaseUrl(value: string) {
       ['postgres:', 'postgresql:'].includes(url.protocol) &&
       ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) &&
       url.port === '54329' &&
-      url.username === 'sidekick' &&
-      url.pathname === '/sidekick' &&
+      url.username === 'otto' &&
+      url.pathname === '/otto' &&
       url.searchParams
         .getAll('host')
         .every((host) => ['127.0.0.1', 'localhost', '::1'].includes(host)) &&
       url.searchParams.getAll('port').every((port) => port === '54329') &&
-      url.searchParams.getAll('user').every((user) => user === 'sidekick') &&
-      url.searchParams.getAll('dbname').every((database) => database === 'sidekick') &&
-      url.searchParams.getAll('database').every((database) => database === 'sidekick') &&
+      url.searchParams.getAll('user').every((user) => user === 'otto') &&
+      url.searchParams.getAll('dbname').every((database) => database === 'otto') &&
+      url.searchParams.getAll('database').every((database) => database === 'otto') &&
       !url.hash
     );
   } catch {
@@ -81,13 +81,13 @@ async function prepareDatabase(
     throw new Error('The local .env file must be a regular private file.');
   }
   const saved = parseEnv(source);
-  const configured = environment.SIDEKICK_POSTGRES_PASSWORD || saved.SIDEKICK_POSTGRES_PASSWORD;
+  const configured = environment.OTTO_POSTGRES_PASSWORD || saved.OTTO_POSTGRES_PASSWORD;
   if (configured && !/^[A-Za-z0-9_-]{43,128}$/.test(configured))
     throw new Error(
       'The local PostgreSQL password must contain at least 43 safe random characters.',
     );
   const password = configured || randomBytes(32).toString('base64url');
-  const databaseUrl = `postgresql://sidekick:${password}@127.0.0.1:54329/sidekick`;
+  const databaseUrl = `postgresql://otto:${password}@127.0.0.1:54329/otto`;
   const currentUrl = environment.DATABASE_URL || saved.DATABASE_URL;
   const local = !currentUrl || localDatabaseUrl(currentUrl);
   const serverUrl = new URL(databaseUrl);
@@ -96,7 +96,7 @@ async function prepareDatabase(
     if (serverUrl.searchParams.has('password')) serverUrl.searchParams.set('password', password);
   }
   const serverDatabaseUrl = local ? serverUrl.href : currentUrl!;
-  let next = replaceSetting(source, 'SIDEKICK_POSTGRES_PASSWORD', password);
+  let next = replaceSetting(source, 'OTTO_POSTGRES_PASSWORD', password);
   if (local) next = replaceSetting(next, 'DATABASE_URL', serverDatabaseUrl);
   if (next !== source) {
     const temporary = join(directory, `.env.${randomUUID()}.tmp`);
@@ -199,7 +199,7 @@ export function localDatabaseEnvironment(
 ): NodeJS.ProcessEnv {
   return {
     ...environment,
-    SIDEKICK_POSTGRES_PASSWORD: database.password,
+    OTTO_POSTGRES_PASSWORD: database.password,
     DATABASE_URL: database.serverDatabaseUrl,
   };
 }
@@ -246,7 +246,7 @@ export async function rotateLocalDatabase(
     'SET log_min_duration_sample = -1;',
     'SET log_duration = off;',
     "SET log_min_error_statement = 'panic';",
-    `ALTER ROLE sidekick WITH PASSWORD '${verifier}';`,
+    `ALTER ROLE otto WITH PASSWORD '${verifier}';`,
     '',
   ].join('\n');
   try {
@@ -261,7 +261,7 @@ export async function rotateLocalDatabase(
         'postgres',
         'psql',
         '--no-psqlrc',
-        '--username=sidekick',
+        '--username=otto',
         '--dbname=postgres',
         '--set=ON_ERROR_STOP=1',
         '--quiet',

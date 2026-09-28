@@ -44,11 +44,10 @@ function Workspace({
   );
   const [inspector, setInspector] = useState(
     () =>
-      path === '/dev' ||
-      (window.innerWidth > 720 && readUiPreference('sidekick.inspector') === 'open'),
+      path === '/dev' || (window.innerWidth > 720 && readUiPreference('otto.inspector') === 'open'),
   );
   const [collapsed, setCollapsed] = useState(
-    () => readUiPreference('sidekick.sidebar') === 'collapsed',
+    () => readUiPreference('otto.sidebar') === 'collapsed',
   );
   const [composerDraft, setComposerDraft] = useState<{ text: string; nonce: number }>();
   const [inspectionFocus, setInspectionFocus] = useState<{ messageId: string; taskId: string }>();
@@ -95,11 +94,11 @@ function Workspace({
       setInspectionFocus(detail);
       setInspector(true);
     };
-    window.addEventListener('sidekick:compose', compose);
-    window.addEventListener('sidekick:inspect-message', inspect);
+    window.addEventListener('otto:compose', compose);
+    window.addEventListener('otto:inspect-message', inspect);
     return () => {
-      window.removeEventListener('sidekick:compose', compose);
-      window.removeEventListener('sidekick:inspect-message', inspect);
+      window.removeEventListener('otto:compose', compose);
+      window.removeEventListener('otto:inspect-message', inspect);
     };
   }, [developer]);
   const currentPath = path === '/dev' || path === '/you' ? '/' : path;
@@ -114,10 +113,10 @@ function Workspace({
     return () => window.removeEventListener('popstate', closeOnNavigation);
   }, []);
   useEffect(() => {
-    writeUiPreference('sidekick.inspector', inspector ? 'open' : 'closed');
+    writeUiPreference('otto.inspector', inspector ? 'open' : 'closed');
   }, [inspector]);
   useEffect(() => {
-    writeUiPreference('sidekick.sidebar', collapsed ? 'collapsed' : 'expanded');
+    writeUiPreference('otto.sidebar', collapsed ? 'collapsed' : 'expanded');
   }, [collapsed]);
   const inspectorEnabled = developer && !!state?.configuration.inspectorEnabled;
   const inspectorOpen = inspectorEnabled && inspector;
@@ -153,7 +152,7 @@ function Workspace({
           navigate('/');
           setComposerDraft(undefined);
           setInspectionFocus(undefined);
-          window.dispatchEvent(new CustomEvent('sidekick:restart-setup'));
+          window.dispatchEvent(new CustomEvent('otto:restart-setup'));
         }}
       />
       <div className="workspace-frame">
@@ -169,7 +168,7 @@ function Workspace({
                     </Button>
                   </>
                 ) : (
-                  <Loading label="Opening Sidekick…" />
+                  <Loading label="Opening Otto…" />
                 )}
               </div>
             ) : (
@@ -266,7 +265,7 @@ function AccountApp({ path, setPath }: { path: string; setPath(path: string): vo
   if (sessionState.loading)
     return (
       <main className="initial-loading">
-        <Loading label="Opening Sidekick…" />
+        <Loading label="Opening Otto…" />
       </main>
     );
   if (!session?.user)

@@ -67,7 +67,7 @@ export function createBridgeComputer(options: {
       (disposed || uncertain || options.available?.(input) === false)
     )
       return Promise.reject(
-        new Error('The workspace browser is unavailable. Restart Sidekick before continuing.'),
+        new Error('The workspace browser is unavailable. Restart Otto before continuing.'),
       );
     const request = browserRequest.parse({
       ...input,
@@ -113,9 +113,7 @@ export function createBridgeComputer(options: {
         child.stdin.destroy();
         child.kill('SIGKILL');
         reject(
-          new Error(
-            'The workspace browser did not finish safely. Restart Sidekick before continuing.',
-          ),
+          new Error('The workspace browser did not finish safely. Restart Otto before continuing.'),
         );
       };
       function cancel() {

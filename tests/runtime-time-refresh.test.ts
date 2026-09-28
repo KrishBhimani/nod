@@ -41,7 +41,7 @@ function context(directory: string, overrides: Partial<RuntimeContext> = {}): Ru
 }
 
 test('secure continuation refreshes the trusted clock and its Inspector snapshot across DST', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-clock-continuation-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-clock-continuation-'));
   const before =
     'Current UTC time: 2026-10-25T00:59:59.000Z. Current local time: 2026-10-25T01:59:59+01:00. User time zone: Europe/Lisbon.';
   const after =
@@ -123,7 +123,7 @@ test('secure continuation refreshes the trusted clock and its Inspector snapshot
 });
 
 test('reopening a persisted Pi session sends the current date and owner time zone to the model', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-clock-pi-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-clock-pi-'));
   const before =
     'Current UTC time: 2026-09-25T23:59:00.000Z. Current local time: 2026-09-26T00:59:00+01:00. User time zone: Europe/Lisbon.';
   const after =

@@ -73,7 +73,7 @@ test('privacy is public and never requests a session, account data or embedded c
     globalThis.fetch = async (url, options) => {
       requests.push(String(url));
       assert.equal(options?.credentials, 'omit');
-      assert.equal(new Headers(options?.headers).get('X-Sidekick-Account'), null);
+      assert.equal(new Headers(options?.headers).get('X-Otto-Account'), null);
       return Response.json({
         content: [
           '## Your information',
@@ -202,7 +202,7 @@ test('authenticated workspace binds SSE to its account, supports settings shortc
     if (String(url) === '/api/session') return Response.json(account);
     if (String(url) === '/api/state') {
       stateSignal = options?.signal;
-      assert.equal(new Headers(options?.headers).get('X-Sidekick-Account'), account.user!.id);
+      assert.equal(new Headers(options?.headers).get('X-Otto-Account'), account.user!.id);
       return new Promise((resolve) => {
         finishState = resolve;
       });

@@ -45,8 +45,7 @@ export const requestPublicPreview: PreviewRequest = ({
           else callback(null, address, isIP(address));
         },
         headers: {
-          'User-Agent':
-            purpose === 'download' ? 'Sidekick-FileDownload/1.0' : 'Sidekick-LinkPreview/1.0',
+          'User-Agent': purpose === 'download' ? 'Otto-FileDownload/1.0' : 'Otto-LinkPreview/1.0',
           Accept:
             purpose === 'download'
               ? '*/*'

@@ -28,7 +28,7 @@ export function createCloudflareRuntimeTransport(
   }
   async function control(path: string, body: unknown) {
     try {
-      const response = await request(`http://sidekick.runtime/runtime/${path}`, {
+      const response = await request(`http://otto.runtime/runtime/${path}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
@@ -102,7 +102,7 @@ export function createCloudflareRuntimeTransport(
         z.uuid().parse(ownerId);
         const remaining = input.deadline - Date.now();
         if (remaining <= 0 || remaining > 600_000) throw new Error();
-        const response = await request('http://sidekick.runtime/runtime/prepare-deployment', {
+        const response = await request('http://otto.runtime/runtime/prepare-deployment', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ ownerId, generation, ...input }),
@@ -140,7 +140,7 @@ export function createCloudflareRuntimeTransport(
       z.uuid().parse(ownerId);
       const url = new URL(input.url);
       return request(
-        new Request(`http://sidekick.runtime/${ownerId}${url.pathname}${url.search}`, input),
+        new Request(`http://otto.runtime/${ownerId}${url.pathname}${url.search}`, input),
         { redirect: 'manual' },
       );
     },

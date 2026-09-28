@@ -29,9 +29,9 @@ export async function recoverDeployment(
   }
   const plan = deploymentPlan({
     environment,
-    release: variables.SIDEKICK_RELEASE,
+    release: variables.OTTO_RELEASE,
     accountId: variables.CLOUDFLARE_ACCOUNT_ID,
-    publicUrl: variables.SIDEKICK_PUBLIC_URL,
+    publicUrl: variables.OTTO_PUBLIC_URL,
     gatewayEnv: variables.GATEWAY_ENV,
     config: configuration,
   });

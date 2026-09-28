@@ -44,8 +44,8 @@ test('E2B templates use bounded build contexts and the trusted browser and shell
   assert.equal(browser.buildId, 'synthetic-browser-build');
   assert.match(builds[1].template, /workspace-command\.py/);
   const combined = JSON.parse(builds[2].template);
-  assert.equal(combined.startCmd, 'exec python3 /opt/sidekick/computer-guard.py start');
-  assert.equal(combined.readyCmd, 'python3 /opt/sidekick/computer-guard.py check');
+  assert.equal(combined.startCmd, 'exec python3 /opt/otto/computer-guard.py start');
+  assert.equal(combined.readyCmd, 'python3 /opt/otto/computer-guard.py check');
   assert.equal(
     builds.some((build) => build.template.includes('synthetic-key')),
     false,
@@ -100,7 +100,7 @@ test('offline E2B preflight includes the complete browser import closure and no 
 });
 
 test('template contexts reject symlinked source and do not copy unrelated local files', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'sidekick-template-source-'));
+  const root = await mkdtemp(join(tmpdir(), 'otto-template-source-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   for (const directory of ['src/providers/container-browser', 'deployment/e2b'])
     await mkdir(join(root, directory), { recursive: true });
@@ -143,7 +143,7 @@ test('template contexts reject symlinked source and do not copy unrelated local 
 });
 
 test('browser readiness completes a real private worker exchange without opening a browser', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'sidekick-ready-'));
+  const root = await mkdtemp(join(tmpdir(), 'otto-ready-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const socketPath = join(root, 'worker.sock');
   let launches = 0;
@@ -167,7 +167,7 @@ test('browser readiness completes a real private worker exchange without opening
 });
 
 test('browser readiness rejects silent and malformed Unix services within its deadline', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'sidekick-ready-timeout-'));
+  const root = await mkdtemp(join(tmpdir(), 'otto-ready-timeout-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const socketPath = join(root, 'unrelated.sock');
   let malformed = false;
@@ -186,7 +186,7 @@ test('browser readiness rejects silent and malformed Unix services within its de
 });
 
 test('computer boundary failures keep fixed diagnostics and clean up both fixture containers', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'sidekick-boundary-runner-'));
+  const root = await mkdtemp(join(tmpdir(), 'otto-boundary-runner-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const reply = join(root, 'reply.json');
   const calls = join(root, 'calls.jsonl');
@@ -202,7 +202,7 @@ if (args[0] === 'run' && args.includes('none')) {
   process.exit(1);
 }
 if (args[0] === 'exec' && args.includes('check')) process.stdout.write('{"ready":true}\\n');
-if (args[0] === 'exec' && args.includes('/tmp/sidekick-boundary.py')) {
+if (args[0] === 'exec' && args.includes('/tmp/otto-boundary.py')) {
   process.stdout.write(fs.readFileSync(${JSON.stringify(reply)}, 'utf8'));
   process.stderr.write('synthetic-private-subprocess-output');
   process.exit(1);
@@ -219,7 +219,7 @@ if (args[0] === 'exec' && args.includes('/tmp/sidekick-boundary.py')) {
     await writeFile(calls, '');
     const result = spawnSync(
       process.execPath,
-      [resolve('deployment/e2b/validate-computer.mjs'), 'sidekick-e2b-computer:123456789abc'],
+      [resolve('deployment/e2b/validate-computer.mjs'), 'otto-e2b-computer:123456789abc'],
       { env: { PATH: `${root}:${dirname(process.execPath)}` }, encoding: 'utf8', timeout: 15_000 },
     );
     assert.equal(result.status, 1);

@@ -42,7 +42,7 @@ test('visible browser-security login rejection removes credential fields and OAu
     assert.deepEqual(inspection.fields, []);
     assert.deepEqual(inspection.methods, []);
     assert.equal(inspection.submitSelector, undefined);
-    assert.equal(page.querySelectorAll('[data-sidekick-login-field]').length, 0);
+    assert.equal(page.querySelectorAll('[data-otto-login-field]').length, 0);
   }
 });
 
@@ -78,7 +78,7 @@ test('ordinary sign-in rejection and hidden or background browser warnings do no
 test('login inspection scopes fields to the active dialog and deduplicates nested Apple controls', () => {
   const page = new LoginDom();
   const background = element('form');
-  const oldInput = element('input', { type: 'email', 'data-sidekick-login-field': 'identifier-0' });
+  const oldInput = element('input', { type: 'email', 'data-otto-login-field': 'identifier-0' });
   background.append(oldInput, element('button', {}, 'Continue with Apple'));
   const modal = element('div', { role: 'dialog' });
   const form = element('form');
@@ -103,7 +103,7 @@ test('login inspection scopes fields to the active dialog and deduplicates neste
     undefined,
   );
   assert.equal(page.querySelectorAll(inspection.fields[0].selector)[0], input);
-  assert.equal(oldInput.getAttribute('data-sidekick-login-field'), null);
+  assert.equal(oldInput.getAttribute('data-otto-login-field'), null);
   const oauth = inspection.methods.find((method) => method.kind === 'oauth')!;
   assert.equal(page.querySelectorAll(oauth.selector!).length, 1);
   assert.equal(page.querySelectorAll(oauth.selector!)[0], apple);
@@ -272,7 +272,7 @@ test('browser observations redact common API credentials and signed URL query va
 });
 
 test('staged identifier, password and OTP entry waits for Next and keeps secrets out of observations', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-staged-login-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-staged-login-'));
   const fixture = stagedLoginBrowser();
   const computer = createAgentBrowserComputer({ dataRoot: directory, run: fixture.run });
   try {
@@ -347,7 +347,7 @@ test('staged identifier, password and OTP entry waits for Next and keeps secrets
 });
 
 test('waiting holds preserve the page across idle cleanup and OAuth selection requires the current origin', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-login-hold-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-login-hold-'));
   const fixture = stagedLoginBrowser();
   const computer = createAgentBrowserComputer({
     dataRoot: directory,

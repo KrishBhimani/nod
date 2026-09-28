@@ -3,7 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { prepareE2BContext } from './context.ts';
 
 const context = await prepareE2BContext({ role: 'computer' });
-const image = `sidekick-e2b-computer:${context.sha256.slice(0, 12)}`;
+const image = `otto-e2b-computer:${context.sha256.slice(0, 12)}`;
 try {
   await writeFile(`${context.path}/Dockerfile`, context.dockerfile, { mode: 0o600 });
   const child = spawn(

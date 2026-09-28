@@ -170,9 +170,9 @@ test('the real binary transfer negotiates file responses without changing previe
     assert.deepEqual(requests, [
       {
         accept: 'text/html,application/xhtml+xml,image/png,image/jpeg,image/webp',
-        agent: 'Sidekick-LinkPreview/1.0',
+        agent: 'Otto-LinkPreview/1.0',
       },
-      { accept: '*/*', agent: 'Sidekick-FileDownload/1.0' },
+      { accept: '*/*', agent: 'Otto-FileDownload/1.0' },
     ]);
   } finally {
     server.closeAllConnections();

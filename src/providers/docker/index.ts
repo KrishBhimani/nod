@@ -58,7 +58,7 @@ try:
  parts=r['path'].split('/')
  if not parts or any(p in ['', '.', '..'] for p in parts): raise ValueError()
  temporary=r['temporary']
- if not temporary.startswith('.sidekick-upload-') or '/' in temporary: raise ValueError()
+ if not temporary.startswith('.otto-upload-') or '/' in temporary: raise ValueError()
  fd=os.open(r['base'],os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
  fds.append(fd)
  for part in parts[:-1]:
@@ -102,7 +102,7 @@ export function createDockerWorkspace(options: {
     workspaceRoot: options.workspaceRoot,
     status: `${options.container}; Linux · internet enabled`,
     instructions:
-      'This is your own Linux computer, not the user’s personal device. It uses normal Docker networking with no Sidekick egress firewall. Internet and other reachable destinations follow the host and Docker network configuration. Node, Python, pipx, git, curl, and ffmpeg are installed. Install trusted CLI tools with npm install -g <package> or pipx install <package>; /home/node persists across tasks and restarts. You are an unprivileged user and cannot use sudo. There is no graphical desktop or display, so native GUI applications cannot run here; use a supported CLI or the browser web app. Keep task outputs under this task workspace; do not ask the user to install your tools on their device.',
+      'This is your own Linux computer, not the user’s personal device. It uses normal Docker networking with no Otto egress firewall. Internet and other reachable destinations follow the host and Docker network configuration. Node, Python, pipx, git, curl, and ffmpeg are installed. Install trusted CLI tools with npm install -g <package> or pipx install <package>; /home/node persists across tasks and restarts. You are an unprivileged user and cannot use sudo. There is no graphical desktop or display, so native GUI applications cannot run here; use a supported CLI or the browser web app. Keep task outputs under this task workspace; do not ask the user to install your tools on their device.',
     runCommand: (id, args, input) =>
       runWorkspaceCommand({
         container: options.container,
@@ -134,7 +134,7 @@ export function createCommandWorkspace(options: {
     input: { input?: string; signal?: AbortSignal; timeoutMs?: number; maxBytes?: number } = {},
   ) {
     if (unavailable || disposed)
-      throw new Error('The workspace is unavailable. Restart Sidekick before continuing.');
+      throw new Error('The workspace is unavailable. Restart Otto before continuing.');
     const operation = options.runCommand(id, args, {
       ...input,
       signal: input.signal ? AbortSignal.any([input.signal, lifecycle.signal]) : lifecycle.signal,
@@ -180,7 +180,7 @@ export function createCommandWorkspace(options: {
         throw new Error('Files must be between 1 byte and 15 MB.');
       const base = `/workspace/${id}`;
       const target = relative(base, workspaceFile(id, path));
-      const temporary = `.sidekick-upload-${randomUUID()}`;
+      const temporary = `.otto-upload-${randomUUID()}`;
       try {
         for (let offset = 0; offset < bytes.byteLength; offset += 512 * 1024) {
           const chunk = bytes.subarray(offset, offset + 512 * 1024);

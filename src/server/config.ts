@@ -5,19 +5,19 @@ import { z } from 'zod';
 
 export const runtimeMode = z
   .enum(['local', 'gateway', 'tenant'])
-  .parse(process.env.SIDEKICK_MODE || 'local');
+  .parse(process.env.OTTO_MODE || 'local');
 export const ownerId =
   runtimeMode === 'tenant'
-    ? z.uuid().parse(process.env.SIDEKICK_OWNER_ID).toLowerCase()
+    ? z.uuid().parse(process.env.OTTO_OWNER_ID).toLowerCase()
     : 'local-development';
 export const port = Number(process.env.PORT || 4310);
-export const dataRoot = resolve(process.env.SIDEKICK_DATA_ROOT || '.local');
+export const dataRoot = resolve(process.env.OTTO_DATA_ROOT || '.local');
 export const databaseUrl = process.env.DATABASE_URL || undefined;
-export const publicOrigin = new URL(process.env.SIDEKICK_PUBLIC_URL || `http://localhost:${port}`)
+export const publicOrigin = new URL(process.env.OTTO_PUBLIC_URL || `http://localhost:${port}`)
   .origin;
-export const runtimeEnvironment = process.env.SIDEKICK_ENVIRONMENT || 'development';
-export const runtimeSecret = process.env.SIDEKICK_RUNTIME_SECRET || '';
-export const runtimeGeneration = process.env.SIDEKICK_RUNTIME_GENERATION || '';
+export const runtimeEnvironment = process.env.OTTO_ENVIRONMENT || 'development';
+export const runtimeSecret = process.env.OTTO_RUNTIME_SECRET || '';
+export const runtimeGeneration = process.env.OTTO_RUNTIME_GENERATION || '';
 if (
   runtimeMode === 'tenant' &&
   (!databaseUrl ||

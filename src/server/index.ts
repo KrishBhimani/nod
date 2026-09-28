@@ -13,7 +13,7 @@ let closeApplication: (() => Promise<void>) | undefined;
 const lease =
   runtimeMode === 'tenant'
     ? createRuntimeLease({
-        expiresAt: process.env.SIDEKICK_RUNTIME_LEASE_EXPIRES || '',
+        expiresAt: process.env.OTTO_RUNTIME_LEASE_EXPIRES || '',
         fence: () => {
           const timer = setTimeout(() => process.exit(1), 2_000);
           timer.unref();
@@ -97,17 +97,15 @@ if (runtimeMode === 'tenant')
 await app.listen({
   port,
   host:
-    runtimeMode === 'local' || process.env.SIDEKICK_BIND_HOST === '127.0.0.1'
-      ? '127.0.0.1'
-      : '0.0.0.0',
+    runtimeMode === 'local' || process.env.OTTO_BIND_HOST === '127.0.0.1' ? '127.0.0.1' : '0.0.0.0',
 });
 const address = app.server?.address();
 const listeningPort = address && typeof address === 'object' ? address.port : port;
 if (runtimeMode === 'tenant')
   process.send?.({
-    type: 'sidekick-ready',
+    type: 'otto-ready',
     port: listeningPort,
     ownerId,
     generation: runtimeGeneration,
   });
-else console.log(`Sidekick is ready at http://localhost:${listeningPort}`);
+else console.log(`Otto is ready at http://localhost:${listeningPort}`);

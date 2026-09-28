@@ -6,7 +6,7 @@ export function vaultInvitation(step: CredentialInvitation, url?: string) {
     throw new Error('The sign-in site is unavailable.');
   const site = origin.origin;
   if (step.kind === 'otp')
-    return `${site} needs a verification code. Reply here with the code to continue signing in. Sidekick will send it securely to the website.`;
+    return `${site} needs a verification code. Reply here with the code to continue signing in. Otto will send it securely to the website.`;
   if (!url || !/^\/(?:vault|credentials)\/[A-Za-z0-9_-]{1,256}$/.test(url))
     throw new Error('The Vault link is unavailable.');
   if (step.methodSelection)
@@ -43,7 +43,7 @@ function requestsPrivateValue(text: string, detail: string) {
 export function requestsManualSignIn(text: string) {
   const signIn = '(?:sign(?:ing)?|log(?:ging)?)[ -]?(?:in|into)';
   return (
-    /\bsign[ -]?in in (?:the )?browser\b|\bcontinue in sidekick\b/i.test(text) ||
+    /\bsign[ -]?in in (?:the )?browser\b|\bcontinue in otto\b/i.test(text) ||
     new RegExp(
       `\\b${signIn}\\b.{0,120}\\b(?:manually|yourself|separate (?:browser )?window|browser controls?|take control)\\b`,
       'i',

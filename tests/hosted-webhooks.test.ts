@@ -53,7 +53,7 @@ function fixture() {
     env = environment,
   ) => `/api/webhooks/${provider}/${channelWebhookToken(masterKey, env, ownerId, provider)}`;
   const request = (path: string, body = '{"synthetic":"event"}', headers: HeadersInit = {}) =>
-    new Request(`https://sidekick.example.test${path}`, {
+    new Request(`https://otto.example.test${path}`, {
       method: 'POST',
       body,
       headers: { 'content-type': 'application/json', ...headers },
@@ -80,8 +80,8 @@ test('hosted integration routing accepts only the verified owner and preserves r
       'webhook-signature': 'synthetic-valid-signature',
       'webhook-id': 'fixture-id',
       'webhook-timestamp': '123456',
-      'x-sidekick-owner': f.owners[1],
-      'x-sidekick-runtime': 'forged',
+      'x-otto-owner': f.owners[1],
+      'x-otto-runtime': 'forged',
       cookie: 'private-cookie',
       authorization: 'Bearer private',
     }),
@@ -91,7 +91,7 @@ test('hosted integration routing accepts only the verified owner and preserves r
   assert.deepEqual(f.calls[0].access, { developer: false, kind: 'webhook' });
   assert.equal(f.verified[0].body, body);
   assert.equal(await f.calls[0].request.text(), body);
-  for (const header of ['cookie', 'authorization', 'x-sidekick-owner', 'x-sidekick-runtime']) {
+  for (const header of ['cookie', 'authorization', 'x-otto-owner', 'x-otto-runtime']) {
     assert.equal(f.verified[0].headers[header], undefined);
     assert.equal(f.calls[0].request.headers.get(header), null);
   }
@@ -168,17 +168,14 @@ test('channel webhook capabilities bind provider, deployment and owner before ac
     assert.equal((await f.handle(f.request(path))).status, 202);
   assert.equal(f.calls.length, 2);
   assert.equal((await f.handle(f.request('/api/webhooks/telegram/not-a-token'))).status, 404);
-  assert.equal(
-    (await f.handle(new Request(`https://sidekick.example.test${f.path()}`))).status,
-    404,
-  );
+  assert.equal((await f.handle(new Request(`https://otto.example.test${f.path()}`))).status, 404);
 });
 
 test('WhatsApp verification keeps its exact query and read-only method within the owned actor', async () => {
   const f = fixture();
   const query = '?hub.mode=subscribe&hub.verify_token=synthetic%2Ftoken&hub.challenge=12345';
   const response = await f.handle(
-    new Request(`https://sidekick.example.test${f.path(f.owners[1], 'whatsapp')}${query}`),
+    new Request(`https://otto.example.test${f.path(f.owners[1], 'whatsapp')}${query}`),
   );
   assert.equal(response.status, 200);
   assert.equal(f.calls[0].ownerId, f.owners[1]);
@@ -192,7 +189,7 @@ test('webhook reads cancel an oversized stream before consuming later chunks', a
   const f = fixture();
   let reads = 0;
   let cancelled = false;
-  const request = new Request('https://sidekick.example.test/api/webhooks/composio', {
+  const request = new Request('https://otto.example.test/api/webhooks/composio', {
     method: 'POST',
     body: new ReadableStream(
       {

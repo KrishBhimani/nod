@@ -21,7 +21,7 @@ export function Inspector({
   const [scope, setScope] = useState(focus?.taskId);
   const [scopeSource, setScopeSource] = useState<'message' | 'work'>('message');
   const [width, setWidth] = useState(() =>
-    Math.max(330, Math.min(900, Number(readUiPreference('sidekick.inspector.width')) || 480)),
+    Math.max(330, Math.min(900, Number(readUiPreference('otto.inspector.width')) || 480)),
   );
   useEffect(() => {
     if (focus?.taskId) {
@@ -31,7 +31,7 @@ export function Inspector({
     }
   }, [focus]);
   useEffect(() => {
-    writeUiPreference('sidekick.inspector.width', String(width));
+    writeUiPreference('otto.inspector.width', String(width));
   }, [width]);
   const [tab, setTab] = useState<'screen' | 'activity' | 'tools' | 'models' | 'costs' | 'prompts'>(
     'screen',

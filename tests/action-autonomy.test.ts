@@ -109,15 +109,15 @@ test(
           );
           const args = { id: goalId, progress: 25, nextAction: 'Prepare the NS-2048 summary.' };
           const before = calls.length;
-          const result = await approvals.request(id, 'SIDEKICK_goal_update', args, { revision: 0 });
+          const result = await approvals.request(id, 'OTTO_goal_update', args, { revision: 0 });
           assert.equal(result.requiresConfirmation, undefined);
           assert.deepEqual(
-            await approvals.request(id, 'SIDEKICK_goal_update', args, { revision: 0 }),
+            await approvals.request(id, 'OTTO_goal_update', args, { revision: 0 }),
             result,
           );
           assert.equal(calls.length, before + 1);
           assert.deepEqual(calls.at(-1), {
-            action: 'SIDEKICK_goal_update',
+            action: 'OTTO_goal_update',
             args,
             sourceMessageId: (await row(id)).source_message_id,
           });
@@ -141,22 +141,22 @@ test(
           const cases: Array<[string, string, Record<string, unknown>]> = [
             [
               'Mark the goal Finish the product walkthrough as completed, with progress at 100%.',
-              'SIDEKICK_goal_update',
+              'OTTO_goal_update',
               { id: randomUUID(), status: 'completed', progress: 100 },
             ],
             [
               'O objetivo Rever o produto está concluído a 100%.',
-              'SIDEKICK_goal_update',
+              'OTTO_goal_update',
               { id: randomUUID(), status: 'completed', progress: 100 },
             ],
             [
               'I would like a goal called Read more, with a first step of choosing a book.',
-              'SIDEKICK_goal_create',
+              'OTTO_goal_create',
               { title: 'Read more', nextAction: 'Choose a book' },
             ],
             [
               'Amanhã às 09:00, lembra-me de rever as faturas.',
-              'SIDEKICK_schedule_create',
+              'OTTO_schedule_create',
               {
                 title: 'Rever faturas',
                 prompt: 'Remind the user to review invoices',
@@ -167,12 +167,12 @@ test(
             ],
             [
               'The weekly reminder should run at 10:00 instead.',
-              'SIDEKICK_schedule_update',
+              'OTTO_schedule_update',
               { id: randomUUID(), cron: '0 10 * * 1' },
             ],
             [
               'Já não preciso deste lembrete. Deixa-o em pausa.',
-              'SIDEKICK_schedule_cancel',
+              'OTTO_schedule_cancel',
               { id: randomUUID() },
             ],
           ];
@@ -207,7 +207,7 @@ test(
             await assert.rejects(
               approvals.request(
                 id,
-                'SIDEKICK_goal_create',
+                'OTTO_goal_create',
                 { title: 'Injected goal' },
                 { revision: 0 },
               ),
@@ -229,7 +229,7 @@ test(
             await assert.rejects(
               approvals.request(
                 id,
-                'SIDEKICK_goal_update',
+                'OTTO_goal_update',
                 { id: randomUUID(), progress: 100 },
                 { revision: 0 },
               ),
@@ -243,7 +243,7 @@ test(
             await assert.rejects(
               approvals.request(
                 id,
-                'SIDEKICK_goal_update',
+                'OTTO_goal_update',
                 { id: randomUUID(), progress: 100 },
                 { revision: 0 },
               ),
@@ -411,7 +411,7 @@ test(
             await assert.rejects(
               approvals.request(
                 id,
-                'SIDEKICK_memory_propose',
+                'OTTO_memory_propose',
                 { text: 'Synthetic fact' },
                 { revision },
               ),

@@ -19,18 +19,18 @@ const ordinaryActions: Record<string, Intent[]> = {
   NOTION_CREATE_NOTION_PAGE: ['create', 'draft'],
   NOTION_CREATE_A_PAGE: ['create', 'draft'],
   NOTION_APPEND_BLOCK_CHILDREN: ['create', 'draft', 'update'],
-  SIDEKICK_profile_update: ['update', 'remember'],
-  SIDEKICK_notification_preferences_update: ['update', 'remember'],
-  SIDEKICK_memory_propose: ['remember'],
+  OTTO_profile_update: ['update', 'remember'],
+  OTTO_notification_preferences_update: ['update', 'remember'],
+  OTTO_memory_propose: ['remember'],
 };
 
 export function isReversiblePlanAction(action: string) {
   return [
-    'SIDEKICK_goal_create',
-    'SIDEKICK_goal_update',
-    'SIDEKICK_schedule_create',
-    'SIDEKICK_schedule_update',
-    'SIDEKICK_schedule_cancel',
+    'OTTO_goal_create',
+    'OTTO_goal_update',
+    'OTTO_schedule_create',
+    'OTTO_schedule_update',
+    'OTTO_schedule_cancel',
   ].includes(action);
 }
 
@@ -52,14 +52,14 @@ const actionScopes: Record<string, RegExp> = {
   GOOGLEDOCS: /\b(?:google docs?|document|documento)\b/i,
   GOOGLESHEETS: /\b(?:google sheets?|spreadsheet|worksheet|folha de cálculo)\b/i,
   NOTION: /\bnotion\b/i,
-  SIDEKICK_profile:
+  OTTO_profile:
     /\b(?:profile|name|location|phone|preference|perfil|nome|localização|telefone|preferência)\b/i,
-  SIDEKICK_notification: /\b(?:notification|quiet|time zone|timezone|notificação|fuso)\b/i,
-  SIDEKICK_memory: /./,
+  OTTO_notification: /\b(?:notification|quiet|time zone|timezone|notificação|fuso)\b/i,
+  OTTO_memory: /./,
 };
 
 function requestedScope(action: string, instruction: string) {
-  const key = action.startsWith('SIDEKICK_')
+  const key = action.startsWith('OTTO_')
     ? action.split('_').slice(0, 2).join('_')
     : action.split('_')[0];
   return actionScopes[key]?.test(instruction) === true;
@@ -125,7 +125,7 @@ export function explicitlyRequestsScheduledAction(
   prompt: string,
 ) {
   if (
-    action.startsWith('SIDEKICK_') ||
+    action.startsWith('OTTO_') ||
     !explicitlyRequestsAction(action, prompt) ||
     forbidsTransmission(action, instruction)
   )

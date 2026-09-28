@@ -42,8 +42,8 @@ export function loginInspectionScript(): string {
     const visible=e=>e && e.isConnected && e.getClientRects().length>0 && getComputedStyle(e).visibility!=='hidden' && getComputedStyle(e).display!=='none' && !e.closest('[hidden],[aria-hidden="true"],[inert]');
     const enabled=e=>!e.disabled && !e.closest('[aria-disabled="true"]');
     const inside=(scope,e)=>scope===document||scope.contains(e);
-    const marked=document.querySelectorAll('[data-sidekick-login-field],[data-sidekick-login-method],[data-sidekick-login-submit]');
-    for(const e of marked) for(const name of ['data-sidekick-login-field','data-sidekick-login-method','data-sidekick-login-submit']) e.removeAttribute(name);
+    const marked=document.querySelectorAll('[data-otto-login-field],[data-otto-login-method],[data-otto-login-submit]');
+    for(const e of marked) for(const name of ['data-otto-login-field','data-otto-login-method','data-otto-login-submit']) e.removeAttribute(name);
     const dialogs=[...document.querySelectorAll('dialog[open],[role="dialog"],[aria-modal="true"]')].filter(visible);
     const front=dialogs.filter(e=>!dialogs.some(other=>other!==e&&e.contains(other)));
     const focused=front.filter(e=>e.contains(document.activeElement));
@@ -76,8 +76,8 @@ export function loginInspectionScript(): string {
     const labels={identifier:'Email, phone number or username',password:'Password',otp:'Verification code'};
     const digitGroup=inputs.length>=4&&inputs.length<=8&&inputs.every(e=>e.maxLength===1&&['text','tel','number'].includes(e.type)&&e.parentElement===inputs[0].parentElement)&&inputs.some(e=>/one-time-code|otp|totp|verification|verifica|authenticat|autentica|security.?code/.test([hint(e),e.className,e.parentElement?.id,e.parentElement?.className].join(' ').toLowerCase()));
     if(digitGroup) {
-      for(const e of inputs) e.setAttribute('data-sidekick-login-field','otp-0');
-      fields.push({kind:'otp',selector:'[data-sidekick-login-field="otp-0"]',label:labels.otp});
+      for(const e of inputs) e.setAttribute('data-otto-login-field','otp-0');
+      fields.push({kind:'otp',selector:'[data-otto-login-field="otp-0"]',label:labels.otp});
     }
     for(const e of inputs) {
       if(digitGroup) break;
@@ -85,8 +85,8 @@ export function loginInspectionScript(): string {
       if(!kind&&inputs.length===1&&/log.?in|sign.?in|account/i.test(fieldScope.innerText||scope.innerText||document.body?.innerText||'')&&['text','tel'].includes(e.type)) kind='identifier';
       if(!kind) continue;
       const marker=kind+'-'+fields.filter(f=>f.kind===kind).length;
-      e.setAttribute('data-sidekick-login-field',marker);
-      fields.push({kind,selector:'[data-sidekick-login-field="'+marker+'"]',label:kind==='identifier'?identifierLabel(e):labels[kind]});
+      e.setAttribute('data-otto-login-field',marker);
+      fields.push({kind,selector:'[data-otto-login-field="'+marker+'"]',label:kind==='identifier'?identifierLabel(e):labels[kind]});
     }
     const candidatesByMethod=new Map();
     const controls=[...document.querySelectorAll('button,a,[role="button"],input[type="submit"]')].filter(e=>inside(scope,e)&&visible(e));
@@ -115,14 +115,14 @@ export function loginInspectionScript(): string {
     }
     const methods=[...candidatesByMethod.values()].map(({method,element})=>{
       if(!element) return method;
-      element.setAttribute('data-sidekick-login-method',method.id);
-      return {...method,selector:'[data-sidekick-login-method="'+method.id+'"]',reason:method.supported?(method.kind==='oauth'?'Opens this website’s sign-in flow. Further secure steps may be required.':'Chooses this verification method on the website. Sidekick will ask for a code in chat if needed.'):'This option is unavailable, ambiguous, or requires a separate window.'};
+      element.setAttribute('data-otto-login-method',method.id);
+      return {...method,selector:'[data-otto-login-method="'+method.id+'"]',reason:method.supported?(method.kind==='oauth'?'Opens this website’s sign-in flow. Further secure steps may be required.':'Chooses this verification method on the website. Otto will ask for a code in chat if needed.'):'This option is unavailable, ambiguous, or requires a separate window.'};
     });
     const unambiguous=!ambiguousDialogs&&!ambiguousForms&&(!submit||currentContext(submit))&&['identifier','password','otp'].every(kind=>fields.filter(field=>field.kind===kind).length<=1);
     let submitSelector;
     if(submit&&unambiguous) {
-      submit.setAttribute('data-sidekick-login-submit','current');
-      submitSelector='[data-sidekick-login-submit="current"]';
+      submit.setAttribute('data-otto-login-submit','current');
+      submitSelector='[data-otto-login-submit="current"]';
     }
     if(fields.length) methods.unshift({id:'credentials',label:(fields.find(field=>field.kind==='identifier')||fields.find(field=>field.kind==='otp')||fields[0]).label,kind:'credentials',supported:unambiguous,reason:unambiguous?undefined:'More than one credential field or active form matches this step. Choose another method or take over the browser.'});
     let emailCode;

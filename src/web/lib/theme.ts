@@ -1,8 +1,8 @@
 export type Theme = 'light' | 'dark';
 export type ThemePreference = Theme | 'system';
 
-const storageKey = 'sidekick.theme';
-const changeEvent = 'sidekick:theme';
+const storageKey = 'otto.theme';
+const changeEvent = 'otto:theme';
 let chosenTheme: Theme | undefined;
 let accountTheme: ThemePreference | undefined;
 

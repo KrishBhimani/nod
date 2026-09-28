@@ -113,7 +113,7 @@ test('logout clears private state before the network completes and preserves a f
   const store = createSessionStore(
     async <T>(path: string, options?: RequestInit) => {
       if (path !== '/api/logout') return session('alex') as T;
-      headers.push(new Headers(options?.headers).get('X-Sidekick-Account') ?? '');
+      headers.push(new Headers(options?.headers).get('X-Otto-Account') ?? '');
       tries++;
       return (tries === 1 ? await first.promise : { ok: true }) as T;
     },

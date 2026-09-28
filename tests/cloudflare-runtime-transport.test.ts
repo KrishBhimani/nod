@@ -8,7 +8,7 @@ test('clean-stop inspection binds the exact private owner and nullable generatio
   for (const generation of ['12', null]) {
     const transport = createCloudflareRuntimeTransport({
       fetch: async (url, input) => {
-        assert.equal(url, 'http://sidekick.runtime/runtime/deployment-stopped');
+        assert.equal(url, 'http://otto.runtime/runtime/deployment-stopped');
         assert.equal(input?.method, 'POST');
         assert.deepEqual(JSON.parse(String(input?.body)), { ownerId, generation });
         assert.ok(input?.signal);
@@ -56,7 +56,7 @@ test('deployment preparation keeps busy distinct from unsafe and requires bounde
   ] as const) {
     const transport = createCloudflareRuntimeTransport({
       fetch: async (url, options) => {
-        assert.equal(url, 'http://sidekick.runtime/runtime/prepare-deployment');
+        assert.equal(url, 'http://otto.runtime/runtime/prepare-deployment');
         assert.deepEqual(JSON.parse(String(options?.body)), { ownerId, generation: '3', ...input });
         return Response.json(value, { status });
       },

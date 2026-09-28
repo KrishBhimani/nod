@@ -47,7 +47,7 @@ export async function createBrowserDownloadFixture() {
             ? `<script>
           new MutationObserver(records => {
             for (const record of records) for (const node of record.addedNodes) {
-              if (!(node instanceof Element) || !node.id.startsWith('sidekick-download-')) continue;
+              if (!(node instanceof Element) || !node.id.startsWith('otto-download-')) continue;
               node.remove = async () => {
                 Element.prototype.remove.call(node);
                 await fetch('/cleanup-held');

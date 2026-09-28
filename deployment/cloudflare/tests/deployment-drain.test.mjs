@@ -8,15 +8,15 @@ import { createDeploymentClient, inspectImageDigest } from '../scripts/drain.mjs
 import { createDeploymentVerifier, deploymentHeader } from '../../../src/server/deployment-auth.ts';
 
 async function manifestFixture(t) {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-manifest-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-manifest-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const image = `registry.cloudflare.com/${'a'.repeat(32)}/sidekick-production:${'b'.repeat(40)}`;
+  const image = `registry.cloudflare.com/${'a'.repeat(32)}/otto-production:${'b'.repeat(40)}`;
   const fixturePath = join(directory, 'manifest.json');
   await writeFile(
     join(directory, 'docker'),
     `#!${process.execPath}
 const { readFileSync } = require('node:fs');
-const fixture = JSON.parse(readFileSync(process.env.SIDEKICK_MANIFEST_FIXTURE, 'utf8'));
+const fixture = JSON.parse(readFileSync(process.env.OTTO_MANIFEST_FIXTURE, 'utf8'));
 if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(fixture.args)) process.exit(23);
 process.stderr.write('synthetic private registry error');
 process.stdout.write(fixture.output, () => process.exit(fixture.code));
@@ -33,7 +33,7 @@ process.stdout.write(fixture.output, () => process.exit(fixture.code));
       );
       return inspectImageDigest(image, {
         PATH: directory,
-        SIDEKICK_MANIFEST_FIXTURE: fixturePath,
+        OTTO_MANIFEST_FIXTURE: fixturePath,
       });
     },
   };
@@ -146,7 +146,7 @@ test('registry inspection bounds output and normalizes malformed JSON or failed 
 
 function fixture(overrides = {}) {
   const masterKey = randomBytes(32);
-  const origin = 'https://sidekick.test.workers.dev';
+  const origin = 'https://otto.test.workers.dev';
   const release = 'b'.repeat(40);
   const account = 'c'.repeat(32);
   const classes = [
@@ -156,19 +156,19 @@ function fixture(overrides = {}) {
     'WorkspaceComputerContainer',
   ];
   const containers = classes.map((name, index) => ({
-    name: `sidekick-${name.toLowerCase()}-production`,
-    image: `registry.cloudflare.com/${account}/sidekick-production-${index}@sha256:${'d'.repeat(64)}`,
+    name: `otto-${name.toLowerCase()}-production`,
+    image: `registry.cloudflare.com/${account}/otto-production-${index}@sha256:${'d'.repeat(64)}`,
   }));
   const plan = {
     origin,
     release,
-    config: { env: { production: { name: 'sidekick', containers } } },
+    config: { env: { production: { name: 'otto', containers } } },
   };
   const variables = {
     CLOUDFLARE_ACCOUNT_ID: account,
     CLOUDFLARE_API_TOKEN: 'synthetic-api-key',
     GATEWAY_ENV: JSON.stringify({
-      SIDEKICK_MASTER_KEY: masterKey.toString('base64'),
+      OTTO_MASTER_KEY: masterKey.toString('base64'),
       DATABASE_URL: 'synthetic-db',
     }),
   };

@@ -4,8 +4,8 @@ import type { AgentToolResult } from '../../ports/agent.ts';
 import type { PrivateObjectStore } from '../../ports/object-storage.ts';
 
 const maximum = 15 * 1024 * 1024;
-const pendingType = 'sidekick_tool_pending';
-const completedType = 'sidekick_tool_completed';
+const pendingType = 'otto_tool_pending';
+const completedType = 'otto_tool_completed';
 const failure = () =>
   new Error(
     'The assistant session could not be saved. Stop and restore storage before continuing.',
@@ -99,7 +99,7 @@ export async function createPiCheckpoint(options: {
       if (failed) throw failure();
       try {
         const bytes = Buffer.from(
-          [{ ...manager.getHeader(), sidekickRevision: randomUUID() }, ...manager.getEntries()]
+          [{ ...manager.getHeader(), ottoRevision: randomUUID() }, ...manager.getEntries()]
             .map((entry) => JSON.stringify(entry))
             .join('\n') + '\n',
         );

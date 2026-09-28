@@ -59,9 +59,7 @@ test(
   'server artifacts, approvals and personal data preserve PostgreSQL ownership and review boundaries',
   { skip: !process.env.TEST_DATABASE_URL, timeout: 45_000 },
   async (t) => {
-    const fixtureRoot = await realpath(
-      await mkdtemp(join(tmpdir(), 'sidekick-server-boundaries-')),
-    );
+    const fixtureRoot = await realpath(await mkdtemp(join(tmpdir(), 'otto-server-boundaries-')));
     const previousDirectory = process.cwd();
     process.chdir(fixtureRoot);
     t.after(async () => {
@@ -212,7 +210,7 @@ test(
         async () => {
           const id = await newTask('succeeded');
           const workspace = join(dataRoot, 'workspaces', id);
-          const privateDir = await mkdtemp(join(tmpdir(), 'sidekick-artifact-test-'));
+          const privateDir = await mkdtemp(join(tmpdir(), 'otto-artifact-test-'));
           directories.push(workspace, privateDir);
           await mkdir(workspace, { recursive: true });
           await writeFile(join(privateDir, 'private.txt'), 'private fixture');
@@ -436,16 +434,16 @@ test(
           await message(firstTask, 'user', 'another-owner', -10);
           await message(firstTask, 'assistant', ownerId, -5);
           const [first, second] = await Promise.all([
-            propose(firstTask, 'SIDEKICK_memory_propose', {
+            propose(firstTask, 'OTTO_memory_propose', {
               text: 'First task fact',
               sourceMessageId: secondSource,
             }),
-            propose(secondTask, 'SIDEKICK_memory_propose', { text: 'Second task fact' }),
+            propose(secondTask, 'OTTO_memory_propose', { text: 'Second task fact' }),
           ]);
           await assert.rejects(
             approvals.request(
               unownedTask,
-              'SIDEKICK_memory_propose',
+              'OTTO_memory_propose',
               { text: 'No owned source' },
               { revision: 0 },
             ),
@@ -453,7 +451,7 @@ test(
           );
           await db.pool.query('UPDATE tasks SET source_message_id=NULL WHERE id=$1', [unownedTask]);
           await assert.rejects(
-            approvals.request(unownedTask, 'SIDEKICK_memory_propose', {}, { revision: 0 }),
+            approvals.request(unownedTask, 'OTTO_memory_propose', {}, { revision: 0 }),
             /direct request/,
           );
           await message(firstTask, 'user', ownerId, 2);
@@ -498,7 +496,7 @@ test(
             )
           ).rows[0];
           assert.ok(pending);
-          const id = await propose(taskId, 'SIDEKICK_memory_propose', {
+          const id = await propose(taskId, 'OTTO_memory_propose', {
             text: 'The original synthetic fact',
           });
           await confirm(id, true);

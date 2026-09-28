@@ -125,9 +125,9 @@ function fixture(overrides: Partial<Parameters<typeof createComputerCommands>[0]
   });
   const request = (path: string, init: RequestInit = {}, version = '1') =>
     registry.fetch(
-      new Request('http://sidekick.computer' + path, {
+      new Request('http://otto.computer' + path, {
         ...init,
-        headers: { ...init.headers, 'x-sidekick-generation': version },
+        headers: { ...init.headers, 'x-otto-generation': version },
       }),
     );
   return {

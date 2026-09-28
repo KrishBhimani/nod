@@ -16,14 +16,14 @@ import {
 } from '../src/providers/docker/index.ts';
 
 async function local() {
-  const directory = await mkdtemp('/tmp/sidekick-command-');
+  const directory = await mkdtemp('/tmp/otto-command-');
   const launch: WorkspaceCommandLauncher = (_command, args, options) =>
     spawn('python3', ['-u', '-c', args.at(-1)!], { ...options, cwd: directory, stdio: 'pipe' });
   return {
     directory,
     run: (args: string[], options: Partial<Parameters<typeof runWorkspaceCommand>[0]> = {}) =>
       runWorkspaceCommand({
-        container: 'sidekick-workspace-fixture',
+        container: 'otto-workspace-fixture',
         taskId: 'fixture',
         args,
         spawn: launch,
@@ -51,7 +51,7 @@ async function ready(path: string) {
 test('invalid workspace task identifiers reject asynchronously without launching a process', async () => {
   let launches = 0;
   const result = runWorkspaceCommand({
-    container: 'sidekick-workspace-fixture',
+    container: 'otto-workspace-fixture',
     taskId: '../foreign',
     args: ['printf', 'never'],
     spawn: () => {
@@ -214,7 +214,7 @@ test('a lost acknowledgement fences the workspace instead of accepting another c
     return child as unknown as ReturnType<WorkspaceCommandLauncher>;
   };
   const workspace = createDockerWorkspace({
-    container: 'sidekick-workspace-fixture',
+    container: 'otto-workspace-fixture',
     workspaceRoot: '/synthetic',
     spawn: launch,
   });
@@ -225,7 +225,7 @@ test('a lost acknowledgement fences the workspace instead of accepting another c
   });
   try {
     await assert.rejects(session.execute('printf fixture'), /did not stop safely/);
-    await assert.rejects(session.execute('printf later'), /Restart Sidekick/);
+    await assert.rejects(session.execute('printf later'), /Restart Otto/);
     assert.equal(launched, 1);
     assert.equal(workspace.status(), 'Workspace needs a restart.');
   } finally {
@@ -258,7 +258,7 @@ test('an uncertain workspace operation cancels and drains commands already in fl
     return processes.at(-1)!;
   };
   const workspace = createDockerWorkspace({
-    container: 'sidekick-workspace-fixture',
+    container: 'otto-workspace-fixture',
     workspaceRoot: '/synthetic',
     spawn: launch,
   });
@@ -287,7 +287,7 @@ test('an uncertain workspace operation cancels and drains commands already in fl
         throw new Error('Existing command was not cancelled.');
       }),
     ]);
-    await assert.rejects(session.execute('later'), /Restart Sidekick/);
+    await assert.rejects(session.execute('later'), /Restart Otto/);
     assert.equal(processes.length, 2);
     assert.equal(failureSettled, false);
     acknowledge();
@@ -301,7 +301,7 @@ test('an uncertain workspace operation cancels and drains commands already in fl
 
 test('workspace uploads transfer binary chunks atomically and reject symlink directories', async () => {
   const f = await local();
-  const outside = await mkdtemp('/tmp/sidekick-upload-outside-');
+  const outside = await mkdtemp('/tmp/otto-upload-outside-');
   let launches = 0;
   const workspace = createCommandWorkspace({
     workspaceRoot: f.directory,

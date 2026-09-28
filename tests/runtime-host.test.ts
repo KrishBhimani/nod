@@ -79,15 +79,15 @@ function fixture(
     developerIds: diagnostics.developers,
     operatorEnvironment: {
       DEV_INSPECTOR: String(diagnostics.enabled ?? false),
-      SIDEKICK_PUBLIC_URL: 'https://sidekick.example.test',
-      SIDEKICK_RUNTIME_URL: 'http://sidekick.runtime',
-      SIDEKICK_MASTER_KEY: 'synthetic-master-key',
+      OTTO_PUBLIC_URL: 'https://otto.example.test',
+      OTTO_RUNTIME_URL: 'http://otto.runtime',
+      OTTO_MASTER_KEY: 'synthetic-master-key',
       AUTH_SECRET: 'synthetic-auth-secret',
       GOOGLE_CLIENT_SECRET: 'synthetic-google-secret',
       DATABASE_URL: 'postgresql://operator:private@db.example.test/control',
       OPENAI_API_KEY: 'synthetic-server-provider-key',
       COMPUTER_PROVIDER: 'e2b',
-      OBJECT_STORAGE_ROOT: '/private/sidekick-files',
+      OBJECT_STORAGE_ROOT: '/private/otto-files',
     },
     tenants: {
       async listOwners() {
@@ -170,7 +170,7 @@ function fixture(
   });
   t.after(() => host.close().catch(() => {}));
   const request = (ownerId: string) =>
-    host.fetch(ownerId, new Request('https://sidekick.example.test/api/state'), {
+    host.fetch(ownerId, new Request('https://otto.example.test/api/state'), {
       developer: false,
     });
   return {
@@ -444,36 +444,36 @@ test('runtime startup is shared per owner while different owners retain separate
   assert.equal(f.starts.filter((start) => start.ownerId === first).length, 1);
   const [a, b] = f.starts;
   for (const key of [
-    'SIDEKICK_RUNTIME_SECRET',
-    'SIDEKICK_VAULT_KEY',
+    'OTTO_RUNTIME_SECRET',
+    'OTTO_VAULT_KEY',
     'DATABASE_URL',
-    'SIDEKICK_TELEGRAM_WEBHOOK_URL',
+    'OTTO_TELEGRAM_WEBHOOK_URL',
   ])
     assert.notEqual(a.environment[key], b.environment[key]);
   for (const configuration of f.starts) {
-    assert.equal(configuration.environment.SIDEKICK_OWNER_ID, configuration.ownerId);
-    assert.equal(configuration.environment.SIDEKICK_CONTROL_URL, 'http://sidekick.control');
+    assert.equal(configuration.environment.OTTO_OWNER_ID, configuration.ownerId);
+    assert.equal(configuration.environment.OTTO_CONTROL_URL, 'http://otto.control');
     assert.equal(configuration.environment.OPENAI_API_KEY, 'synthetic-server-provider-key');
     assert.equal(configuration.environment.DEV_INSPECTOR, 'false');
     assert.equal(
       configuration.environment.OBJECT_STORAGE_ROOT,
-      `/private/sidekick-files/${configuration.ownerId}`,
+      `/private/otto-files/${configuration.ownerId}`,
     );
-    for (const key of ['SIDEKICK_MASTER_KEY', 'AUTH_SECRET', 'GOOGLE_CLIENT_SECRET'])
+    for (const key of ['OTTO_MASTER_KEY', 'AUTH_SECRET', 'GOOGLE_CLIENT_SECRET'])
       assert.equal(configuration.environment[key], undefined);
     assert.ok(configuration.environment.DATABASE_URL.includes(configuration.ownerId));
   }
   const body = JSON.stringify({ text: 'synthetic task' });
   await f.host.fetch(
     first,
-    new Request('https://sidekick.example.test/api/messages?cursor=one%2Ftwo', {
+    new Request('https://otto.example.test/api/messages?cursor=one%2Ftwo', {
       method: 'POST',
       body,
       headers: {
         cookie: 'private-cookie',
         authorization: 'Bearer private',
         host: 'untrusted.test',
-        'x-sidekick-account': second,
+        'x-otto-account': second,
         [runtimeHeader]: 'forged',
         'content-type': 'application/json',
       },
@@ -481,10 +481,10 @@ test('runtime startup is shared per owner while different owners retain separate
     { developer: true },
   );
   const forwarded = f.requests.at(-1)!;
-  for (const name of ['cookie', 'authorization', 'host', 'x-sidekick-account'])
+  for (const name of ['cookie', 'authorization', 'host', 'x-otto-account'])
     assert.equal(forwarded.request.headers.get(name), null);
   const context = {
-    secret: a.environment.SIDEKICK_RUNTIME_SECRET,
+    secret: a.environment.OTTO_RUNTIME_SECRET,
     ownerId: first,
     environment: 'development',
     generation: a.generation,
@@ -502,7 +502,7 @@ test('runtime startup is shared per owner while different owners retain separate
     createRuntimeVerifier({
       ...context,
       ownerId: second,
-      secret: b.environment.SIDEKICK_RUNTIME_SECRET,
+      secret: b.environment.OTTO_RUNTIME_SECRET,
     }).verify(
       forwarded.request.headers.get(runtimeHeader),
       'POST',
@@ -575,7 +575,7 @@ test('a request body that finishes after shutdown cannot reach a stopped actor',
   await f.request(owner);
   const entered = deferred();
   const body = deferred<ArrayBuffer>();
-  const request = new Request('https://sidekick.example.test/api/messages', {
+  const request = new Request('https://otto.example.test/api/messages', {
     method: 'POST',
     body: '{}',
   });

@@ -58,7 +58,7 @@ export function createCloudflareAdapters(options: {
       if (workspaceUnavailable)
         throw new WorkspaceCommandError(
           true,
-          'The workspace is unavailable. Restart Sidekick before continuing.',
+          'The workspace is unavailable. Restart Otto before continuing.',
         );
       return runSupervisedCommand({
         args,

@@ -83,7 +83,7 @@ export function createE2BAdapters(options: {
           launchE2BCommand(
             allocation,
             'workspace',
-            `mkdir -p /workspace/${taskId(id)} && cd /workspace/${taskId(id)} && exec /usr/bin/setpriv --no-new-privs python3 -u /opt/sidekick/workspace-command.py`,
+            `mkdir -p /workspace/${taskId(id)} && cd /workspace/${taskId(id)} && exec /usr/bin/setpriv --no-new-privs python3 -u /opt/otto/workspace-command.py`,
           ),
       });
     },

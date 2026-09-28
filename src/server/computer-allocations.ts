@@ -107,7 +107,7 @@ export function createComputerAllocationStore(options: {
         try {
           await client.query('BEGIN');
           await client.query(
-            "SELECT pg_advisory_xact_lock(hashtextextended('sidekick:computer-allocations:'||current_schema(),0))",
+            "SELECT pg_advisory_xact_lock(hashtextextended('otto:computer-allocations:'||current_schema(),0))",
           );
           await client.query(`CREATE TABLE IF NOT EXISTS computer_allocations (
           owner_id text NOT NULL,

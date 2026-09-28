@@ -29,8 +29,8 @@ function fixture() {
       storage,
       environment: 'development',
       gatewayEnvironment: JSON.stringify({
-        SIDEKICK_MASTER_KEY: master.toString('base64'),
-        SIDEKICK_RELEASE: input.previousRelease,
+        OTTO_MASTER_KEY: master.toString('base64'),
+        OTTO_RELEASE: input.previousRelease,
       }),
       forward: async (request) => {
         requests.push(request);
@@ -39,10 +39,10 @@ function fixture() {
     });
   const request = (changes: Partial<DeploymentRequest> = {}, requestId = randomUUID()) => {
     const body = Buffer.from(JSON.stringify({ ...input, ...changes }));
-    return new Request('https://sidekick.example.test/api/deployment', {
+    return new Request('https://otto.example.test/api/deployment', {
       method: 'POST',
       headers: {
-        'x-sidekick-deployment': signDeploymentRequest({
+        'x-otto-deployment': signDeploymentRequest({
           masterKey: master,
           environment: 'development',
           body,
@@ -73,7 +73,7 @@ test('gateway persists admission closure before signed forwarding and survives c
     assert.equal(await control.closed(), true);
     assert.equal((f.values.get('deployment-barrier') as { phase: string }).phase, 'draining');
     assert.deepEqual(await request.json(), f.input);
-    assert.ok(request.headers.get('x-sidekick-deployment'));
+    assert.ok(request.headers.get('x-otto-deployment'));
     return Response.json({ ok: true, receipts: [] });
   });
   assert.equal(await control.closed(), false);
@@ -93,7 +93,7 @@ test('durable deployment request replay protection survives replacement and reje
   assert.equal(f.requests.length, 1);
   const fresh = fixture();
   const bad = fresh.request();
-  bad.headers.set('x-sidekick-deployment', 'invalid');
+  bad.headers.set('x-otto-deployment', 'invalid');
   await assert.rejects(fresh.create().handle(bad));
   assert.equal(await fresh.create().closed(), false);
   assert.equal(fresh.requests.length, 0);

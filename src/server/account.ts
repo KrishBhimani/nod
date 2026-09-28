@@ -79,7 +79,7 @@ export function createAccountSession(options: {
   }
   async function requirePrincipal(request: FastifyRequest, reply: FastifyReply) {
     const session = await principal(request);
-    const expected = request.headers['x-sidekick-account'];
+    const expected = request.headers['x-otto-account'];
     if (!session || (expected !== undefined && expected !== session.user.id)) {
       reply.code(401).send({ error: 'Sign in to continue.' });
       return null;

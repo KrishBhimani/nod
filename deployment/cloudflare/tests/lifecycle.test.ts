@@ -6,19 +6,19 @@ import { bootstrap, boundedBody, type TenantIdentity } from '../src/protocol.ts'
 
 function configuration(ownerId = randomUUID(), version = '1', expiresAt = Date.now() + 60_000) {
   const suffix = createHash('sha256')
-    .update(JSON.stringify(['sidekick-tenant-v1', 'development', ownerId]))
+    .update(JSON.stringify(['otto-tenant-v1', 'development', ownerId]))
     .digest('hex')
     .slice(0, 32);
   return {
     ownerId,
     env: {
-      SIDEKICK_OWNER_ID: ownerId,
-      SIDEKICK_ENVIRONMENT: 'development',
-      SIDEKICK_MODE: 'tenant',
-      SIDEKICK_RUNTIME_GENERATION: version,
-      SIDEKICK_RUNTIME_SECRET: 's'.repeat(43),
-      SIDEKICK_RUNTIME_LEASE_EXPIRES: new Date(expiresAt).toISOString(),
-      DATABASE_URL: `postgresql://sk_user_${suffix}:synthetic@db.example.test/sidekick`,
+      OTTO_OWNER_ID: ownerId,
+      OTTO_ENVIRONMENT: 'development',
+      OTTO_MODE: 'tenant',
+      OTTO_RUNTIME_GENERATION: version,
+      OTTO_RUNTIME_SECRET: 's'.repeat(43),
+      OTTO_RUNTIME_LEASE_EXPIRES: new Date(expiresAt).toISOString(),
+      DATABASE_URL: `postgresql://sk_user_${suffix}:synthetic@db.example.test/otto`,
       PGBOSS_SCHEMA: `sk_jobs_${suffix}`,
     },
   };
@@ -94,28 +94,25 @@ function fixture(
 test('tenant bootstrap binds the SQL namespace, runtime identity and environment', async () => {
   const input = configuration();
   const result = await bootstrap(
-    { ...input, env: { ...input.env, SIDEKICK_BIND_HOST: '127.0.0.1' } },
+    { ...input, env: { ...input.env, OTTO_BIND_HOST: '127.0.0.1' } },
     'development',
   );
   assert.equal(result.env.NODE_ENV, 'production');
-  assert.equal(result.env.SIDEKICK_DATA_ROOT, '/data');
+  assert.equal(result.env.OTTO_DATA_ROOT, '/data');
   assert.equal(result.env.HOST, '0.0.0.0');
-  assert.equal(result.env.SIDEKICK_BIND_HOST, '0.0.0.0');
-  assert.equal(
-    result.identity.leaseExpiresAt,
-    Date.parse(input.env.SIDEKICK_RUNTIME_LEASE_EXPIRES),
-  );
+  assert.equal(result.env.OTTO_BIND_HOST, '0.0.0.0');
+  assert.equal(result.identity.leaseExpiresAt, Date.parse(input.env.OTTO_RUNTIME_LEASE_EXPIRES));
   assert.equal(result.identity.revoking, false);
   assert.ok(!JSON.stringify(result.identity).includes('synthetic'));
   await assert.rejects(bootstrap(input, 'production'));
   await assert.rejects(bootstrap({ ...input, ownerId: randomUUID() }, 'development'));
   for (const change of [
-    { SIDEKICK_MODE: 'gateway' },
-    { SIDEKICK_RUNTIME_SECRET: 'short' },
-    { SIDEKICK_RUNTIME_GENERATION: '0' },
-    { DATABASE_URL: 'postgresql://admin:synthetic@db.example.test/sidekick' },
+    { OTTO_MODE: 'gateway' },
+    { OTTO_RUNTIME_SECRET: 'short' },
+    { OTTO_RUNTIME_GENERATION: '0' },
+    { DATABASE_URL: 'postgresql://admin:synthetic@db.example.test/otto' },
     { PGBOSS_SCHEMA: 'public' },
-    { SIDEKICK_OWNER_ID: randomUUID() },
+    { OTTO_OWNER_ID: randomUUID() },
   ])
     await assert.rejects(bootstrap({ ...input, env: { ...input.env, ...change } }, 'development'));
 });
@@ -128,16 +125,16 @@ test('tenant bootstrap binds its computer provider and forces the private E2B st
       env: {
         ...input.env,
         COMPUTER_PROVIDER: 'e2b',
-        SIDEKICK_COMPUTER_CONTROL_URL: 'https://foreign.example.test',
+        OTTO_COMPUTER_CONTROL_URL: 'https://foreign.example.test',
       },
     },
     'development',
   );
   assert.equal(external.identity.computerProvider, 'e2b');
-  assert.equal(external.env.SIDEKICK_COMPUTER_CONTROL_URL, 'http://sidekick.computer/v1/stopped');
+  assert.equal(external.env.OTTO_COMPUTER_CONTROL_URL, 'http://otto.computer/v1/stopped');
   const legacy = await bootstrap(input, 'development');
   assert.equal(legacy.identity.computerProvider, 'cloudflare');
-  assert.equal(legacy.env.SIDEKICK_COMPUTER_CONTROL_URL, undefined);
+  assert.equal(legacy.env.OTTO_COMPUTER_CONTROL_URL, undefined);
   await assert.rejects(
     bootstrap({ ...input, env: { ...input.env, COMPUTER_PROVIDER: 'unknown' } }, 'development'),
   );
@@ -193,7 +190,7 @@ test('a physically stopped E2B generation cannot restart while its previous comp
         },
         status: async () => state,
         start: async (env) => {
-          starts.push(env.SIDEKICK_RUNTIME_GENERATION);
+          starts.push(env.OTTO_RUNTIME_GENERATION);
           state = 'healthy';
         },
         stop: async () => {
@@ -207,7 +204,7 @@ test('a physically stopped E2B generation cannot restart while its previous comp
       });
       const original = configuration();
       const first = { ...original, env: { ...original.env, COMPUTER_PROVIDER: 'e2b' } };
-      const next = { ...first, env: { ...first.env, SIDEKICK_RUNTIME_GENERATION: '2' } };
+      const next = { ...first, env: { ...first.env, OTTO_RUNTIME_GENERATION: '2' } };
       await lifecycle.start(first);
       await lifecycle.start(first);
       assert.deepEqual(starts, ['1', '1']);
@@ -263,7 +260,7 @@ test('tenant startup and replacement require one fixed identity and a confirmed 
   assert.equal((await lifecycle.identity()).ownerId, first.ownerId);
   await lifecycle.start(first);
   assert.equal(starts, 2);
-  const second = { ...first, env: { ...first.env, SIDEKICK_RUNTIME_GENERATION: '2' } };
+  const second = { ...first, env: { ...first.env, OTTO_RUNTIME_GENERATION: '2' } };
   await assert.rejects(lifecycle.start(second), { status: 409 });
   await assert.rejects(lifecycle.start(configuration()), { status: 409 });
   await assert.rejects(lifecycle.stop(first.ownerId, '2'), { status: 409 });
@@ -282,7 +279,7 @@ test('tenant startup and replacement require one fixed identity and a confirmed 
   assert.equal(saved?.generation, '2');
   await assert.rejects(lifecycle.stop(first.ownerId, '1'), { status: 409 });
   await assert.rejects(
-    lifecycle.start({ ...second, env: { ...second.env, SIDEKICK_RUNTIME_SECRET: 't'.repeat(43) } }),
+    lifecycle.start({ ...second, env: { ...second.env, OTTO_RUNTIME_SECRET: 't'.repeat(43) } }),
     { status: 409 },
   );
 });
@@ -324,14 +321,14 @@ test('concurrent conflicting bootstrap calls cannot replace the admitted process
     },
   });
   const first = configuration();
-  const second = { ...first, env: { ...first.env, SIDEKICK_RUNTIME_GENERATION: '2' } };
+  const second = { ...first, env: { ...first.env, OTTO_RUNTIME_GENERATION: '2' } };
   const results = await Promise.allSettled([lifecycle.start(first), lifecycle.start(second)]);
   assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
   assert.equal(saved?.generation, '1');
 });
 
 test('body limits apply to actual streamed bytes without trusting content length', async () => {
-  const request = new Request('http://sidekick.runtime/runtime/start', {
+  const request = new Request('http://otto.runtime/runtime/start', {
     method: 'POST',
     body: new Uint8Array(12),
     headers: { 'content-length': '1' },
@@ -357,7 +354,7 @@ test('tenant bootstrap accepts only a bounded future ISO lease with an injected 
   ]) {
     await assert.rejects(
       bootstrap(
-        { ...input, env: { ...input.env, SIDEKICK_RUNTIME_LEASE_EXPIRES: expiry } },
+        { ...input, env: { ...input.env, OTTO_RUNTIME_LEASE_EXPIRES: expiry } },
         'development',
         () => now,
       ),
@@ -366,7 +363,7 @@ test('tenant bootstrap accepts only a bounded future ISO lease with an injected 
   }
   const withoutMilliseconds = {
     ...input,
-    env: { ...input.env, SIDEKICK_RUNTIME_LEASE_EXPIRES: '2026-09-27T12:01:00Z' },
+    env: { ...input.env, OTTO_RUNTIME_LEASE_EXPIRES: '2026-09-27T12:01:00Z' },
   };
   assert.equal(
     (await bootstrap(withoutMilliseconds, 'development', () => now)).identity.leaseExpiresAt,
@@ -419,7 +416,7 @@ test('tenant renewal and identity reject stale generations and invalid expiry be
   await assert.rejects(f.lifecycle.renew(randomUUID(), '1', future, acknowledge), { status: 409 });
   await assert.rejects(f.lifecycle.renew(input.ownerId, '2', future, acknowledge), { status: 409 });
   for (const expiry of [
-    input.env.SIDEKICK_RUNTIME_LEASE_EXPIRES,
+    input.env.OTTO_RUNTIME_LEASE_EXPIRES,
     new Date(f.now() + 20_000).toISOString(),
     new Date(f.now()).toISOString(),
     new Date(f.now() + 65_001).toISOString(),
@@ -469,7 +466,7 @@ test('failed computer stop retains revocation and blocks replacement even when t
   assert.equal(f.calls.includes('stop-tenant'), false);
   await assert.rejects(f.lifecycle.identity(), { status: 503 });
   f.platformStopped();
-  const replacement = { ...input, env: { ...input.env, SIDEKICK_RUNTIME_GENERATION: '2' } };
+  const replacement = { ...input, env: { ...input.env, OTTO_RUNTIME_GENERATION: '2' } };
   await assert.rejects(f.lifecycle.start(replacement), { status: 409 });
   await assert.rejects(f.lifecycle.start(input), { status: 409 });
   fails = false;

@@ -21,7 +21,7 @@ test(
       connectionString: process.env.TEST_DATABASE_URL,
       options: `-c search_path=${schema}`,
     });
-    const directory = await mkdtemp(join(tmpdir(), 'sidekick-rejected-login-'));
+    const directory = await mkdtemp(join(tmpdir(), 'otto-rejected-login-'));
     const fixture = stagedLoginBrowser();
     const computer = createAgentBrowserComputer({ dataRoot: directory, run: fixture.run });
     const app = Fastify();

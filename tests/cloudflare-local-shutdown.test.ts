@@ -41,7 +41,7 @@ test('the local listener guard refuses an occupied port and leaves its service u
 test('local startup removes its partial secret write but preserves secrets it cannot own', async (t) => {
   for (const condition of ['partial', 'occupied', 'locked'] as const) {
     await t.test(condition, async (subtest) => {
-      const root = await mkdtemp(join(tmpdir(), 'sidekick-startup-secret-'));
+      const root = await mkdtemp(join(tmpdir(), 'otto-startup-secret-'));
       let existing: { close(): Promise<void> } | undefined;
       subtest.after(async () => {
         await existing?.close();
@@ -74,10 +74,10 @@ test('local startup removes its partial secret write but preserves secrets it ca
       );
       const environment = {
         COMPUTER_PROVIDER: 'cloudflare',
-        SIDEKICK_ENVIRONMENT: 'development',
-        SIDEKICK_PUBLIC_URL: 'http://localhost:4330',
+        OTTO_ENVIRONMENT: 'development',
+        OTTO_PUBLIC_URL: 'http://localhost:4330',
         DATABASE_URL: 'postgresql://fixture:synthetic@localhost:54331/local',
-        SIDEKICK_MASTER_KEY: randomBytes(32).toString('base64'),
+        OTTO_MASTER_KEY: randomBytes(32).toString('base64'),
       };
       const secretFile = join(directory, '.dev.vars');
       const preserved = 'GATEWAY_ENV=synthetic-existing-runtime\n';
@@ -136,14 +136,14 @@ function deferred<T = void>() {
 }
 
 async function fixture(t: TestContext) {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-local-shutdown-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-local-shutdown-'));
   await chmod(directory, 0o700);
   const environment = {
     COMPUTER_PROVIDER: 'cloudflare',
-    SIDEKICK_ENVIRONMENT: 'development',
-    SIDEKICK_PUBLIC_URL: 'http://localhost:4330',
+    OTTO_ENVIRONMENT: 'development',
+    OTTO_PUBLIC_URL: 'http://localhost:4330',
     DATABASE_URL: 'postgresql://fixture:synthetic@localhost:54331/local',
-    SIDEKICK_MASTER_KEY: randomBytes(32).toString('base64'),
+    OTTO_MASTER_KEY: randomBytes(32).toString('base64'),
   };
   const hooks = {
     prepare: async () => [{ ownerId: randomUUID(), generation: '2' }],
@@ -158,8 +158,8 @@ async function fixture(t: TestContext) {
   const actions: string[] = [];
   const claims: string[] = [];
   const verify = createDeploymentVerifier({
-    masterKey: Buffer.from(environment.SIDEKICK_MASTER_KEY, 'base64'),
-    environment: environment.SIDEKICK_ENVIRONMENT,
+    masterKey: Buffer.from(environment.OTTO_MASTER_KEY, 'base64'),
+    environment: environment.OTTO_ENVIRONMENT,
   });
   const server = createServer(async (request, response) => {
     response.setHeader('content-type', 'application/json');
@@ -171,7 +171,7 @@ async function fixture(t: TestContext) {
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
       const body = Buffer.concat(chunks);
-      const token = request.headers['x-sidekick-deployment'];
+      const token = request.headers['x-otto-deployment'];
       const input = await verify(token, request.method!, request.url!, body);
       claims.push(String(token));
       actions.push(input.action);
@@ -456,9 +456,9 @@ test('local installation is bound to environment and database and rejects unsafe
   await control.close();
   for (const change of [
     { DATABASE_URL: 'postgresql://fixture:synthetic@localhost:54331/other' },
-    { SIDEKICK_ENVIRONMENT: 'other' },
-    { SIDEKICK_MASTER_KEY: randomBytes(32).toString('base64') },
-    { SIDEKICK_PUBLIC_URL: 'https://production.example.test' },
+    { OTTO_ENVIRONMENT: 'other' },
+    { OTTO_MASTER_KEY: randomBytes(32).toString('base64') },
+    { OTTO_PUBLIC_URL: 'https://production.example.test' },
   ])
     await assert.rejects(
       openLocalCloudflareControl(f.directory, { ...f.environment, ...change }),
@@ -603,7 +603,7 @@ test('supervision waits for preparation, ignores repeated signals and preserves 
 
 test('a terminal process-group SIGINT cannot reach the detached child before its receipt', async (t) => {
   if (process.platform === 'win32') return;
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-signal-fixture-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-signal-fixture-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const entry = join(directory, 'supervisor.mjs');
   const module = new URL('../scripts/cloudflare-local-control.mjs', import.meta.url).href;
@@ -667,12 +667,12 @@ test('a terminal process-group SIGINT cannot reach the detached child before its
 
 test('hosted CLI refuses check/resume ambiguity and resume for the other provider before launching', async (t) => {
   await assert.rejects(startHosted(['--check', '--resume']), /Choose either --check or --resume/);
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-resume-cli-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-resume-cli-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const file = join(directory, 'fixture.env');
   const values = {
     DATABASE_URL: 'postgresql://fixture:synthetic@localhost:54331/local',
-    SIDEKICK_MASTER_KEY: randomBytes(32).toString('base64'),
+    OTTO_MASTER_KEY: randomBytes(32).toString('base64'),
     BETTER_AUTH_SECRET: randomBytes(32).toString('hex'),
     GOOGLE_CLIENT_ID: 'synthetic',
     GOOGLE_CLIENT_SECRET: 'synthetic',

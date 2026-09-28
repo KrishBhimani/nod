@@ -11,14 +11,14 @@ const labels: Record<string, string> = {
   GOOGLECALENDAR_DELETE_EVENT: 'Delete this calendar event',
   GOOGLEDRIVE_DELETE_FILE: 'Delete this file',
   NOTION_DELETE_BLOCK: 'Delete this Notion block',
-  SIDEKICK_goal_create: 'Add this goal',
-  SIDEKICK_goal_update: 'Update this goal',
-  SIDEKICK_schedule_create: 'Add this schedule',
-  SIDEKICK_schedule_update: 'Update this schedule',
-  SIDEKICK_schedule_cancel: 'Pause this schedule',
-  SIDEKICK_profile_update: 'Save these preferences',
-  SIDEKICK_notification_preferences_update: 'Save these notification preferences',
-  SIDEKICK_memory_propose: 'Remember this',
+  OTTO_goal_create: 'Add this goal',
+  OTTO_goal_update: 'Update this goal',
+  OTTO_schedule_create: 'Add this schedule',
+  OTTO_schedule_update: 'Update this schedule',
+  OTTO_schedule_cancel: 'Pause this schedule',
+  OTTO_profile_update: 'Save these preferences',
+  OTTO_notification_preferences_update: 'Save these notification preferences',
+  OTTO_memory_propose: 'Remember this',
 };
 
 function plain(value: string) {
@@ -124,6 +124,6 @@ export function actionConfirmation(
     );
   }
   for (const key of ['body', 'text', 'content', 'prompt'])
-    add(action === 'SIDEKICK_memory_propose' ? 'Memory' : 'Message', text(args[key]));
+    add(action === 'OTTO_memory_propose' ? 'Memory' : 'Message', text(args[key]));
   return `${label}${using}?${details.length ? `\n\n${details.join('\n\n')}` : ''}\n\nReply yes to confirm or no to leave it unchanged.`;
 }

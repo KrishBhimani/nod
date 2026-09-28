@@ -9,10 +9,10 @@ Copy only the notice draft below into `public/privacy-notice.md` and customize i
 For local development, set the gateway environment value:
 
 ```dotenv
-SIDEKICK_PRIVACY_NOTICE_FILE=public/privacy-notice.md
+OTTO_PRIVACY_NOTICE_FILE=public/privacy-notice.md
 ```
 
-The build copies this file to `dist/web/privacy-notice.md`, which the Cloudflare image includes. Set `SIDEKICK_PRIVACY_NOTICE_FILE=dist/web/privacy-notice.md` in that environment's `GATEWAY_ENV`. Only the path belongs in the gateway JSON, whose 5 KiB limit still applies; do not embed the notice text there. Keep the file containing the rest of the gateway configuration ignored and owner-readable. See the [Cloudflare runbook](../deployment/cloudflare/README.md#environments-and-secrets).
+The build copies this file to `dist/web/privacy-notice.md`, which the Cloudflare image includes. Set `OTTO_PRIVACY_NOTICE_FILE=dist/web/privacy-notice.md` in that environment's `GATEWAY_ENV`. Only the path belongs in the gateway JSON, whose 5 KiB limit still applies; do not embed the notice text there. Keep the file containing the rest of the gateway configuration ignored and owner-readable. See the [Cloudflare runbook](../deployment/cloudflare/README.md#environments-and-secrets).
 
 The gateway reads the UTF-8 file at startup, with limits of 128 KiB and 32,000 characters. A configured file that cannot be read or fails validation prevents startup with a fixed error. Omitting the setting returns `content:null`, not a default policy. Anonymous `GET /api/privacy` serves `{content:string|null}` and `/privacy` displays it before sign-in. Neither the path setting nor the notice is forwarded to tenant runtimes. Changing the notice requires rebuilding the image and restarting the gateway for hosted deployment; this optional setting is not an automatic production-readiness gate.
 
@@ -23,11 +23,11 @@ Before sharing a hosted signup link, open `/privacy` while signed out, confirm i
 ```markdown
 Effective date: [YYYY-MM-DD]
 
-[OPERATOR NAME] operates this Sidekick service at [SERVICE URL]. Contact [PUBLIC CONTACT EMAIL] about your information or this notice.
+[OPERATOR NAME] operates this Otto service at [SERVICE URL]. Contact [PUBLIC CONTACT EMAIL] about your information or this notice.
 
 ## Information we handle
 
-Google sign-in provides your account identifier, name, email, verified-email status and profile picture. Sidekick stores authentication tokens, login sessions and browser user-agent information. It uses session cookies to keep you signed in; Sidekick sessions expire after seven days.
+Google sign-in provides your account identifier, name, email, verified-email status and profile picture. Otto stores authentication tokens, login sessions and browser user-agent information. It uses session cookies to keep you signed in; Otto sessions expire after seven days.
 
 We store your chats, uploaded and generated files, task history, saved profile details and memories, goals, schedules, notification preferences and account settings to provide the assistant and continue your work. Connected apps can provide messages, documents, calendar details and other content needed for your requests. Background updates can create stored event summaries and notifications.
 
@@ -39,9 +39,9 @@ We use this information to sign you in, carry out your requests, remember releva
 
 Hosting, database and file-storage providers: [ACTUAL PROVIDERS AND RELEVANT LOCATIONS]. AI providers: [ACTUAL PROVIDERS, INCLUDING SEPARATE SPEECH OR RELEVANCE SERVICES]. Relevant messages, files, images, personal context and tool results can be sent to these AI services to perform the work. Remote-computer provider: [ACTUAL PROVIDER]. Websites and services the assistant contacts receive information submitted to them.
 
-Google handles sign-in. Composio manages connected-app authorization and tools; it and the selected app providers process connection information and requested operations. Connecting Gmail or Calendar is separate from signing in to Sidekick. If you use Telegram, Telegram processes the messages and files exchanged with your bot. These providers also handle information under their own terms and privacy policies: [LINKS FOR ACTUAL PROVIDERS].
+Google handles sign-in. Composio manages connected-app authorization and tools; it and the selected app providers process connection information and requested operations. Connecting Gmail or Calendar is separate from signing in to Otto. If you use Telegram, Telegram processes the messages and files exchanged with your bot. These providers also handle information under their own terms and privacy policies: [LINKS FOR ACTUAL PROVIDERS].
 
-Access is scoped to your Sidekick account. The service operator controls the infrastructure and can access stored data and decrypt credentials when operating the service. This is not end-to-end encrypted storage that hides information from the operator.
+Access is scoped to your Otto account. The service operator controls the infrastructure and can access stored data and decrypt credentials when operating the service. This is not end-to-end encrypted storage that hides information from the operator.
 
 ## Retention and your choices
 
@@ -49,7 +49,7 @@ Access is scoped to your Sidekick account. The service operator controls the inf
 
 Starting a new chat archives the previous conversation; it does not erase its history. Disconnecting an app stops that connection but does not erase earlier conversations, files or event records. Disconnecting Telegram does not revoke its bot token or remove Telegram's copies. Pausing a remote computer preserves its state.
 
-Sidekick does not currently provide complete self-service account deletion. Contact [PUBLIC CONTACT EMAIL] to request access, correction or deletion; this requires operator action across the relevant systems. [DESCRIBE HOW REQUESTS ARE HANDLED AND ANY ACTUAL RETENTION LIMITATIONS.] Deleting Sidekick data does not itself establish deletion from a provider's systems or backups.
+Otto does not currently provide complete self-service account deletion. Contact [PUBLIC CONTACT EMAIL] to request access, correction or deletion; this requires operator action across the relevant systems. [DESCRIBE HOW REQUESTS ARE HANDLED AND ANY ACTUAL RETENTION LIMITATIONS.] Deleting Otto data does not itself establish deletion from a provider's systems or backups.
 
 Developer diagnostics are optional and can contain prompts and tool content. When enabled, these records are pruned after seven days. Ordinary hosted accounts do not record these diagnostic payloads; this limit does not apply to ordinary chat, file or task history.
 

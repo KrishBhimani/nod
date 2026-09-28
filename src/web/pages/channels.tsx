@@ -28,12 +28,12 @@ const providers = [
   {
     id: 'telegram' as const,
     name: 'Telegram',
-    description: 'Chat with your sidekick in Telegram.',
+    description: 'Chat with Otto in Telegram.',
   },
   {
     id: 'whatsapp' as const,
     name: 'WhatsApp',
-    description: 'Chat with your sidekick in WhatsApp.',
+    description: 'Chat with Otto in WhatsApp.',
   },
 ];
 const steps = {
@@ -114,7 +114,7 @@ export function ChannelSetupStep({
           <Check size={18} />
           <div>
             <strong>One private conversation</strong>
-            <p>Messages from Telegram user {fields.allowedUserId} will reach Sidekick.</p>
+            <p>Messages from Telegram user {fields.allowedUserId} will reach Otto.</p>
           </div>
         </div>
         <p>After connecting, open your bot in Telegram, press Start, and send a short message.</p>
@@ -213,7 +213,7 @@ export function ChannelSetupStep({
       <p>
         {hosted
           ? 'After connecting, copy the callback URL into Meta and subscribe to messages.'
-          : 'Use these same callback settings in Meta, then subscribe the app to messages. Expose only this route; keep the rest of Sidekick private.'}
+          : 'Use these same callback settings in Meta, then subscribe the app to messages. Expose only this route; keep the rest of Otto private.'}
       </p>
       {!hosted && (
         <Field
@@ -304,8 +304,8 @@ export function ChannelAccount({
               <DialogDescription>
                 {setup?.webhookStatus === 'registration_pending'
                   ? hosted
-                    ? 'Delivery setup could not finish. Contact the person who hosts your Sidekick.'
-                    : 'Restart Sidekick to retry the saved setup.'
+                    ? 'Delivery setup could not finish. Contact the person who hosts Otto.'
+                    : 'Restart Otto to retry the saved setup.'
                   : 'Finish the callback in Meta and subscribe to messages.'}
               </DialogDescription>
               {setup?.webhookUrl && (!hosted || provider === 'whatsapp') && (
@@ -563,7 +563,7 @@ export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
       <header className="page-heading secondary-heading">
         <div>
           <PageTitle path="/channels" />
-          <p>Chat with your sidekick in the apps you use.</p>
+          <p>Chat with Otto in the apps you use.</p>
         </div>
       </header>
       {error && !editing && <Notice>{error}</Notice>}
@@ -626,8 +626,7 @@ export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
             Remove {removing === 'whatsapp' ? 'WhatsApp' : 'Telegram'} channel?
           </DialogTitle>
           <DialogDescription>
-            Sidekick will stop receiving messages here. You will need its credentials to connect
-            again.
+            Otto will stop receiving messages here. You will need its credentials to connect again.
           </DialogDescription>
           {removeError && <Notice>{removeError}</Notice>}
           <div className="channel-remove-actions">
@@ -668,9 +667,9 @@ export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
             {telegramStartUrl
               ? hosted
                 ? 'Open your bot, press Start if prompted, then send your first request.'
-                : 'Open your bot, press Start if prompted, then send your first request. Sidekick must be running to reply.'
+                : 'Open your bot, press Start if prompted, then send your first request. Otto must be running to reply.'
               : step === 0
-                ? 'Connect in a few small steps. Sidekick checks your credentials before saving.'
+                ? 'Connect in a few small steps. Otto checks your credentials before saving.'
                 : 'Credentials stay in this secure form, outside the conversation.'}
           </DialogDescription>
           {error && <Notice>{error}</Notice>}

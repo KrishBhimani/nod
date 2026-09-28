@@ -1,4 +1,4 @@
-type UiPreference = 'sidekick.sidebar' | 'sidekick.inspector' | 'sidekick.inspector.width';
+type UiPreference = 'otto.sidebar' | 'otto.inspector' | 'otto.inspector.width';
 
 export function readUiPreference(key: UiPreference) {
   try {

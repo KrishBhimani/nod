@@ -214,10 +214,10 @@ export function createDefaultAdapters(
           computerLifecycle: { pause: e2b.pause, resume: e2b.resume },
         }
       : {}),
-    ...(e2b && runtimeMode === 'tenant' && env.SIDEKICK_COMPUTER_CONTROL_URL
+    ...(e2b && runtimeMode === 'tenant' && env.OTTO_COMPUTER_CONTROL_URL
       ? {
           confirmComputerShutdown: createComputerShutdownConfirmation({
-            endpoint: env.SIDEKICK_COMPUTER_CONTROL_URL,
+            endpoint: env.OTTO_COMPUTER_CONTROL_URL,
             generation: runtimeGeneration,
           }),
         }
@@ -226,11 +226,11 @@ export function createDefaultAdapters(
     ...(runtimeMode === 'tenant'
       ? {
           channelAccounts: createTenantChannelRegistry({
-            origin: env.SIDEKICK_CONTROL_URL!,
+            origin: env.OTTO_CONTROL_URL!,
             ownerId,
-            environment: env.SIDEKICK_ENVIRONMENT!,
-            generation: env.SIDEKICK_RUNTIME_GENERATION!,
-            secret: env.SIDEKICK_RUNTIME_SECRET!,
+            environment: env.OTTO_ENVIRONMENT!,
+            generation: env.OTTO_RUNTIME_GENERATION!,
+            secret: env.OTTO_RUNTIME_SECRET!,
           }),
         }
       : {}),
@@ -249,7 +249,7 @@ export function createDefaultAdapters(
     workspace:
       remote?.workspace ??
       createDockerWorkspace({
-        container: env.WORKSPACE_CONTAINER || 'sidekick-workspace',
+        container: env.WORKSPACE_CONTAINER || 'otto-workspace',
         workspaceRoot: join(dataRoot, 'workspaces'),
       }),
     speech: createOpenAISpeechProvider({
@@ -263,8 +263,8 @@ export function createDefaultAdapters(
       webhookSecret: env.COMPOSIO_WEBHOOK_SECRET,
       authConfigs,
     }),
-    keyStore: env.SIDEKICK_VAULT_KEY
-      ? createEnvironmentKeyStore(env.SIDEKICK_VAULT_KEY)
+    keyStore: env.OTTO_VAULT_KEY
+      ? createEnvironmentKeyStore(env.OTTO_VAULT_KEY)
       : process.platform === 'darwin'
         ? createKeychainKeyStore()
         : createEnvironmentKeyStore(),
@@ -278,7 +278,7 @@ export function createDefaultAdapters(
       verifier: createChatSdkSetupVerifier(
         runtimeMode === 'tenant'
           ? {
-              webhookUrl: (provider) => env[`SIDEKICK_${provider.toUpperCase()}_WEBHOOK_URL`]!,
+              webhookUrl: (provider) => env[`OTTO_${provider.toUpperCase()}_WEBHOOK_URL`]!,
             }
           : undefined,
       ),
@@ -302,7 +302,7 @@ export async function createApplication(
   });
   const privacyNotice =
     runtimeMode === 'local'
-      ? await loadPrivacyNoticeFile(process.env.SIDEKICK_PRIVACY_NOTICE_FILE)
+      ? await loadPrivacyNoticeFile(process.env.OTTO_PRIVACY_NOTICE_FILE)
       : undefined;
   await mkdir(dataRoot, { recursive: true, mode: 0o700 });
   await initializeDatabase();
@@ -478,13 +478,14 @@ export async function createApplication(
   });
   const approvals = await createApprovals(
     (action, args, provenance) =>
-      action.startsWith('SIDEKICK_')
-        ? personal.manage(action.slice(9), args, provenance)
+      action.startsWith('OTTO_')
+        ? personal.manage(action.slice('OTTO_'.length), args, provenance)
         : providerUsage.withTask(provenance.taskId, () =>
             integrations.executeApproved(ownerId, action, args),
           ),
     async (action, args) => {
-      if (action.startsWith('SIDEKICK_')) await personal.validateReview(action.slice(9), args);
+      if (action.startsWith('OTTO_'))
+        await personal.validateReview(action.slice('OTTO_'.length), args);
       else await integrations.validateApproval(ownerId, action, args);
     },
     (action, args) => integrations.describeApproval(ownerId, action, args),
@@ -529,7 +530,7 @@ export async function createApplication(
         )
           return approvals.request(
             taskId,
-            `SIDEKICK_${action}`,
+            `OTTO_${action}`,
             await personal.validateReview(action, args),
             { revision: provenance?.revision },
           );
@@ -792,30 +793,30 @@ export async function createApplication(
 export async function createGatewayApplication(
   env: Record<string, string | undefined> = process.env,
 ) {
-  const privacyNotice = await loadPrivacyNoticeFile(env.SIDEKICK_PRIVACY_NOTICE_FILE);
+  const privacyNotice = await loadPrivacyNoticeFile(env.OTTO_PRIVACY_NOTICE_FILE);
   const databaseUrl = z.string().min(1).parse(env.DATABASE_URL);
   const environment = z
     .string()
     .regex(/^[a-z][a-z0-9-]{0,31}$/)
-    .parse(env.SIDEKICK_ENVIRONMENT || 'development');
-  const origin = z.url().parse(env.SIDEKICK_PUBLIC_URL);
-  const masterKey = parseCredentialKey(env.SIDEKICK_MASTER_KEY || '');
+    .parse(env.OTTO_ENVIRONMENT || 'development');
+  const origin = z.url().parse(env.OTTO_PUBLIC_URL);
+  const masterKey = parseCredentialKey(env.OTTO_MASTER_KEY || '');
   const tenants = createTenantStore({
     admin: pool,
     databaseUrl,
     environment,
     getSecret: () => masterKey,
-    maxTenants: env.SIDEKICK_MAX_USERS ? Number(env.SIDEKICK_MAX_USERS) : 8,
+    maxTenants: env.OTTO_MAX_USERS ? Number(env.OTTO_MAX_USERS) : 8,
   });
   await tenants.initialize();
   await pool.query(
-    'CREATE SCHEMA IF NOT EXISTS sidekick_auth; REVOKE ALL ON SCHEMA sidekick_auth FROM PUBLIC',
+    'CREATE SCHEMA IF NOT EXISTS otto_auth; REVOKE ALL ON SCHEMA otto_auth FROM PUBLIC',
   );
   const authenticationDatabase = new pg.Pool({
     connectionString: databaseUrl,
     max: 4,
     connectionTimeoutMillis: 10_000,
-    options: '-c search_path=sidekick_auth',
+    options: '-c search_path=otto_auth',
   });
   let runtimes: ReturnType<typeof createTenantRuntimeHost> | undefined;
   try {
@@ -833,13 +834,13 @@ export async function createGatewayApplication(
     const channelAccounts = createChannelAccountRegistry({ admin: pool, environment });
     await channelAccounts.initialize();
     const developerIds = new Set(
-      (env.SIDEKICK_DEVELOPER_IDS || '')
+      (env.OTTO_DEVELOPER_IDS || '')
         .split(',')
         .filter(Boolean)
         .map((id) => z.uuid().parse(id.trim()).toLowerCase()),
     );
     const transport =
-      env.SIDEKICK_RUNTIME_URL === 'http://sidekick.runtime'
+      env.OTTO_RUNTIME_URL === 'http://otto.runtime'
         ? createCloudflareRuntimeTransport()
         : createLocalRuntimeTransport({
             root: join(dataRoot, 'tenants'),
@@ -852,7 +853,7 @@ export async function createGatewayApplication(
       masterKey,
       environment,
       developerIds,
-      operatorEnvironment: { ...env, SIDEKICK_PUBLIC_URL: origin },
+      operatorEnvironment: { ...env, OTTO_PUBLIC_URL: origin },
     });
     const app = await createGateway({
       origin,
@@ -860,12 +861,12 @@ export async function createGatewayApplication(
       accounts,
       runtimes,
       privacyNotice,
-      release: env.SIDEKICK_IMAGE_RELEASE || env.SIDEKICK_RELEASE,
-      ...(env.SIDEKICK_RUNTIME_URL === 'http://sidekick.runtime' && {
+      release: env.OTTO_IMAGE_RELEASE || env.OTTO_RELEASE,
+      ...(env.OTTO_RUNTIME_URL === 'http://otto.runtime' && {
         deployment: {
           masterKey,
           environment,
-          release: env.SIDEKICK_IMAGE_RELEASE || env.SIDEKICK_RELEASE,
+          release: env.OTTO_IMAGE_RELEASE || env.OTTO_RELEASE,
         },
       }),
       developerIds,
@@ -898,7 +899,7 @@ export async function createGatewayApplication(
           try {
             const result = await runtimes!.fetch(
               owner,
-              new Request('http://sidekick.runtime/api/runtime/wake', { method: 'POST' }),
+              new Request('http://otto.runtime/api/runtime/wake', { method: 'POST' }),
               { developer: false, kind: 'wake' },
             );
             await result.body?.cancel();

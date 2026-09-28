@@ -109,11 +109,11 @@ test('startup forwards the selected environment and replaces private SDK errors'
           throw new Error('synthetic private startup configuration');
         },
       },
-      { envVars: { SIDEKICK_MODE: 'tenant' } },
+      { envVars: { OTTO_MODE: 'tenant' } },
     ),
     (error) => error instanceof RuntimeControlError && !error.message.includes('private'),
   );
-  assert.deepEqual(environment, { SIDEKICK_MODE: 'tenant' });
+  assert.deepEqual(environment, { OTTO_MODE: 'tenant' });
 });
 
 test('a timed-out raw start remains fenced against another start until its actual settlement', async () => {
@@ -180,19 +180,19 @@ test('late SDK success cannot outrun a deadline whose timer has not run', async 
 test('a late native launch cannot produce a stop receipt or replacement until settled and physically stopped', async () => {
   const ownerId = randomUUID();
   const suffix = createHash('sha256')
-    .update(JSON.stringify(['sidekick-tenant-v1', 'development', ownerId]))
+    .update(JSON.stringify(['otto-tenant-v1', 'development', ownerId]))
     .digest('hex')
     .slice(0, 32);
   const environment = (generation: string) => ({
     ownerId,
     env: {
-      SIDEKICK_OWNER_ID: ownerId,
-      SIDEKICK_ENVIRONMENT: 'development',
-      SIDEKICK_MODE: 'tenant',
-      SIDEKICK_RUNTIME_GENERATION: generation,
-      SIDEKICK_RUNTIME_SECRET: 's'.repeat(43),
-      SIDEKICK_RUNTIME_LEASE_EXPIRES: new Date(Date.now() + 60_000).toISOString(),
-      DATABASE_URL: `postgresql://sk_user_${suffix}:synthetic@db.example.test/sidekick`,
+      OTTO_OWNER_ID: ownerId,
+      OTTO_ENVIRONMENT: 'development',
+      OTTO_MODE: 'tenant',
+      OTTO_RUNTIME_GENERATION: generation,
+      OTTO_RUNTIME_SECRET: 's'.repeat(43),
+      OTTO_RUNTIME_LEASE_EXPIRES: new Date(Date.now() + 60_000).toISOString(),
+      DATABASE_URL: `postgresql://sk_user_${suffix}:synthetic@db.example.test/otto`,
       PGBOSS_SCHEMA: `sk_jobs_${suffix}`,
     },
   });
@@ -204,7 +204,7 @@ test('a late native launch cannot produce a stop receipt or replacement until se
   const generations: string[] = [];
   const container: Parameters<typeof startContainer>[0] = {
     async startAndWaitForPorts({ startOptions, cancellationOptions }) {
-      const version = startOptions!.envVars.SIDEKICK_RUNTIME_GENERATION;
+      const version = startOptions!.envVars.OTTO_RUNTIME_GENERATION;
       if (version === '1') await outboundReady.promise;
       running = true;
       generations.push(version);

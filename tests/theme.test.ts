@@ -27,7 +27,7 @@ function page(dark: boolean, saved?: string, blocked = false) {
     removeEventListener: (_: string, listener: () => void) => listeners.delete(listener),
   };
   Object.defineProperty(dom.window, 'matchMedia', { value: () => media });
-  if (saved) dom.window.localStorage.setItem('sidekick.theme', saved);
+  if (saved) dom.window.localStorage.setItem('otto.theme', saved);
   if (blocked)
     Object.defineProperty(dom.window, 'localStorage', {
       get() {
@@ -76,21 +76,21 @@ test('theme choice persists, synchronizes tabs and follows OS changes only witho
   try {
     change(true);
     assert.equal(currentTheme(), 'dark');
-    assert.equal(dom.window.localStorage.getItem('sidekick.theme'), null);
+    assert.equal(dom.window.localStorage.getItem('otto.theme'), null);
     setTheme('light');
     assert.equal(currentTheme(), 'light');
-    assert.equal(dom.window.localStorage.getItem('sidekick.theme'), 'light');
+    assert.equal(dom.window.localStorage.getItem('otto.theme'), 'light');
     change(false);
     change(true);
     assert.equal(currentTheme(), 'light');
-    const reopened = page(true, dom.window.localStorage.getItem('sidekick.theme')!);
+    const reopened = page(true, dom.window.localStorage.getItem('otto.theme')!);
     assert.equal(reopened.dom.window.document.documentElement.dataset.theme, 'light');
     reopened.dom.window.close();
-    dom.window.localStorage.setItem('sidekick.theme', 'dark');
-    dom.window.dispatchEvent(new dom.window.StorageEvent('storage', { key: 'sidekick.theme' }));
+    dom.window.localStorage.setItem('otto.theme', 'dark');
+    dom.window.dispatchEvent(new dom.window.StorageEvent('storage', { key: 'otto.theme' }));
     assert.equal(currentTheme(), 'dark');
-    dom.window.localStorage.removeItem('sidekick.theme');
-    dom.window.dispatchEvent(new dom.window.StorageEvent('storage', { key: 'sidekick.theme' }));
+    dom.window.localStorage.removeItem('otto.theme');
+    dom.window.dispatchEvent(new dom.window.StorageEvent('storage', { key: 'otto.theme' }));
     change(false);
     assert.equal(currentTheme(), 'light');
     assert.ok(updates >= 4);
@@ -128,7 +128,7 @@ test('account themes override the device without leaking the choice to another a
   try {
     applyAccountTheme('light');
     assert.equal(currentTheme(), 'light');
-    assert.equal(dom.window.localStorage.getItem('sidekick.theme'), 'dark');
+    assert.equal(dom.window.localStorage.getItem('otto.theme'), 'dark');
     change(true);
     assert.equal(currentTheme(), 'light');
     applyAccountTheme('system');
@@ -136,8 +136,8 @@ test('account themes override the device without leaking the choice to another a
     assert.equal(currentTheme(), 'light');
     change(true);
     assert.equal(currentTheme(), 'dark');
-    dom.window.localStorage.setItem('sidekick.theme', 'light');
-    dom.window.dispatchEvent(new dom.window.StorageEvent('storage', { key: 'sidekick.theme' }));
+    dom.window.localStorage.setItem('otto.theme', 'light');
+    dom.window.dispatchEvent(new dom.window.StorageEvent('storage', { key: 'otto.theme' }));
     assert.equal(currentTheme(), 'dark');
     applyAccountTheme(undefined);
     assert.equal(currentTheme(), 'light');

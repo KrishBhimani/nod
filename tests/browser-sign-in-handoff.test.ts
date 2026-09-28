@@ -25,7 +25,7 @@ async function handoff(
     sandbox?: boolean;
   } = {},
 ) {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-sign-in-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-sign-in-'));
   const fixture = stagedLoginBrowser();
   const events: string[] = [];
   const launches: Array<{

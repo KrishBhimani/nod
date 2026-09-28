@@ -50,7 +50,7 @@ function run(args: string[], input?: Buffer) {
 }
 
 async function fixture() {
-  const directory = await mkdtemp(join(await realpath(tmpdir()), 'sidekick-checkpoint-'));
+  const directory = await mkdtemp(join(await realpath(tmpdir()), 'otto-checkpoint-'));
   const source = join(directory, 'source');
   const target = join(directory, 'restored');
   await mkdir(source, { mode: 0o700 });
@@ -62,7 +62,7 @@ async function fixture() {
     restore: (input: Buffer, ...args: string[]) => run(['restore', target, ...args], input),
     async noStaging() {
       assert.deepEqual(
-        (await readdir(directory)).filter((name) => name.startsWith('.sidekick-checkpoint-')),
+        (await readdir(directory)).filter((name) => name.startsWith('.otto-checkpoint-')),
         [],
       );
     },
@@ -101,7 +101,7 @@ function archive(entries: Entry[]) {
   const buffers: Buffer[] = [header({ name: '.', type: '5' })];
   for (const entry of entries) {
     if ((entry.type ?? '0') === '0') {
-      const digest = pax('sidekick.sha256', hash(entry.data ?? Buffer.alloc(0)));
+      const digest = pax('otto.sha256', hash(entry.data ?? Buffer.alloc(0)));
       buffers.push(
         header({ name: 'PaxHeader', type: 'x' }, digest.length),
         digest,
@@ -334,9 +334,7 @@ test('restore discards private staging if the target changes while input is stre
     child.stdin.write(input.subarray(0, 512));
     let staging = false;
     for (let attempt = 0; attempt < 100; attempt++) {
-      staging = (await readdir(f.directory)).some((name) =>
-        name.startsWith('.sidekick-checkpoint-'),
-      );
+      staging = (await readdir(f.directory)).some((name) => name.startsWith('.otto-checkpoint-'));
       if (staging) break;
       await delay(10);
     }
@@ -358,14 +356,14 @@ test('restore rejects malformed, repeated and unsupported extended metadata', as
   const f = await fixture();
   try {
     const data = Buffer.from('private synthetic bytes');
-    const validDigest = pax('sidekick.sha256', hash(data));
+    const validDigest = pax('otto.sha256', hash(data));
     for (const metadata of [
       Buffer.from('999999 path=../sentinel\n'),
       Buffer.concat([pax('path', 'file'), pax('path', '../sentinel'), validDigest]),
       Buffer.concat([pax('path', '../sentinel'), validDigest]),
       Buffer.concat([pax('path', '/sentinel'), validDigest]),
       Buffer.concat([pax('unknown', 'private secret metadata'), validDigest]),
-      Buffer.concat([pax('sidekick.sha256', hash(data)), validDigest]),
+      Buffer.concat([pax('otto.sha256', hash(data)), validDigest]),
       Buffer.from([255, 0, 10]),
     ]) {
       const input = Buffer.concat([

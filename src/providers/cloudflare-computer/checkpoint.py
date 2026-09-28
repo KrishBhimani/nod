@@ -251,7 +251,7 @@ def write_file(root, path, entry, output):
             remaining -= len(chunk)
         require(not os.read(descriptor, 1) and signature(os.fstat(descriptor)) == expected)
         member = metadata(path, entry)
-        member.pax_headers = {"sidekick.sha256": digest.hexdigest()}
+        member.pax_headers = {"otto.sha256": digest.hexdigest()}
         output.write(member.tobuf(format=tarfile.PAX_FORMAT))
         os.lseek(descriptor, 0, os.SEEK_SET)
         captured = hashlib.sha256()
@@ -302,7 +302,7 @@ def pax_headers(data):
         require(offset + 3 <= length <= len(data) and data[length - 1] == 10)
         value = data[offset + 1:length - 1].decode("utf-8")
         key, separator, text = value.partition("=")
-        require(separator and key in ("path", "linkpath", "sidekick.sha256"))
+        require(separator and key in ("path", "linkpath", "otto.sha256"))
         require(key not in result and text and "\0" not in text)
         result[key] = text
         data = data[length:]
@@ -343,7 +343,7 @@ def extract(root, options):
         require("linkpath" not in fields or member.type == tarfile.SYMTYPE)
         require(not member.linkname or member.type == tarfile.SYMTYPE)
         regular = member.type in (tarfile.REGTYPE, tarfile.AREGTYPE)
-        require(regular or (member.size == 0 and "sidekick.sha256" not in fields))
+        require(regular or (member.size == 0 and "otto.sha256" not in fields))
         require(member.mode >= 0 and member.mtime >= 0)
         mode = member.mode & 0o777
         if member.type == tarfile.DIRTYPE:
@@ -361,7 +361,7 @@ def extract(root, options):
             entries[path] = ("symlink", target)
             links.append((path, target))
         else:
-            expected = fields.get("sidekick.sha256", "")
+            expected = fields.get("otto.sha256", "")
             require(re.fullmatch(r"[0-9a-f]{64}", expected))
             require(member.size <= options.max_file_bytes and not member.linkname)
             parent = open_directory(root, path[:-1])
@@ -438,7 +438,7 @@ def empty_target(parent, name):
 
 def restore(parent, name, options):
     original = empty_target(parent, name)
-    staging = ".sidekick-checkpoint-" + secrets.token_hex(16)
+    staging = ".otto-checkpoint-" + secrets.token_hex(16)
     os.mkdir(staging, 0o700, dir_fd=parent)
     descriptor = None
     try:

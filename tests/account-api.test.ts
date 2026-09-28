@@ -16,7 +16,7 @@ test('authenticated API requests carry an expected account without changing auth
   globalThis.fetch = async (path, options) => {
     requests.push({
       path: String(path),
-      owner: new Headers(options?.headers).get('X-Sidekick-Account'),
+      owner: new Headers(options?.headers).get('X-Otto-Account'),
     });
     return Response.json({ ok: true });
   };
@@ -42,7 +42,7 @@ test('an account switch aborts and discards old responses, including a stale una
   let signal: AbortSignal | null | undefined;
   let unauthorized = 0;
   const listener = () => unauthorized++;
-  window.addEventListener('sidekick:unauthorized', listener);
+  window.addEventListener('otto:unauthorized', listener);
   globalThis.fetch = async (_path, options) => {
     signal = options?.signal;
     return new Promise((accept) => {
@@ -59,7 +59,7 @@ test('an account switch aborts and discards old responses, including a stale una
     await rejected;
     assert.equal(unauthorized, 0);
   } finally {
-    window.removeEventListener('sidekick:unauthorized', listener);
+    window.removeEventListener('otto:unauthorized', listener);
     setRequestAccount(null);
     globalThis.fetch = previous;
   }
@@ -69,14 +69,14 @@ test('a current unauthorized reply invalidates the active session once', async (
   const previous = globalThis.fetch;
   let unauthorized = 0;
   const listener = () => unauthorized++;
-  window.addEventListener('sidekick:unauthorized', listener);
+  window.addEventListener('otto:unauthorized', listener);
   globalThis.fetch = async () => Response.json({ error: 'Sign in again.' }, { status: 401 });
   try {
     setRequestAccount('alex');
     await assert.rejects(api('/api/apps'), { status: 401 });
     assert.equal(unauthorized, 1);
   } finally {
-    window.removeEventListener('sidekick:unauthorized', listener);
+    window.removeEventListener('otto:unauthorized', listener);
     setRequestAccount(null);
     globalThis.fetch = previous;
   }

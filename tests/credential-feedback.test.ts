@@ -39,7 +39,7 @@ test('credential feedback distinguishes fresh rejection from old alerts without 
       assert.equal(JSON.stringify(rejected).includes(secret), false);
     const oldAlert = page.read(true);
     assert.deepEqual(page.read(), oldAlert);
-    page.dom.window.document.documentElement.removeAttribute('data-sidekick-entry-attempt');
+    page.dom.window.document.documentElement.removeAttribute('data-otto-entry-attempt');
     const navigated = page.read();
     assert.equal(navigated.rejected, true);
     assert.equal(navigated.sameDocument, false);
@@ -58,7 +58,7 @@ test('rejected authenticator and context-only identifier fields do not look adva
     ],
     [
       'identifier',
-      '<h1>Sign in</h1><input data-sidekick-login-field="identifier-0" aria-invalid="true">',
+      '<h1>Sign in</h1><input data-otto-login-field="identifier-0" aria-invalid="true">',
     ],
   ] as const) {
     const page = fixture(html);

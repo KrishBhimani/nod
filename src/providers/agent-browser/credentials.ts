@@ -20,15 +20,15 @@ export function credentialFeedbackScript(
     const visible=e=>e && e.isConnected && e.getClientRects().length>0 && getComputedStyle(e).visibility!=='hidden' && getComputedStyle(e).display!=='none' && !e.closest('[hidden],[aria-hidden="true"],[inert]');
     const hint=e=>[e.id,e.name,e.autocomplete,e.getAttribute('aria-label'),e.getAttribute('placeholder'),...[...(e.labels||[])].map(label=>label.innerText||label.textContent||''),...(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById?.(id)?.textContent||'')].join(' ');
     const fields=[...document.querySelectorAll('input')].filter(e=>visible(e)&&!e.disabled&&(
-      kind==='password'?e.type==='password':kind==='otp'?/one-time-code|verification.?code|authentication.?code|security.?code|authenticator|(?:^|[^a-z])(?:otp|totp)(?:[^a-z]|$)/i.test(hint(e))||e.getAttribute('data-sidekick-login-field')?.startsWith('otp-'):
-      e.type==='email'||/username|user.?name|identifier|phone|email/i.test(hint(e))||e.getAttribute('data-sidekick-login-field')?.startsWith('identifier-')));
+      kind==='password'?e.type==='password':kind==='otp'?/one-time-code|verification.?code|authentication.?code|security.?code|authenticator|(?:^|[^a-z])(?:otp|totp)(?:[^a-z]|$)/i.test(hint(e))||e.getAttribute('data-otto-login-field')?.startsWith('otp-'):
+      e.type==='email'||/username|user.?name|identifier|phone|email/i.test(hint(e))||e.getAttribute('data-otto-login-field')?.startsWith('identifier-')));
     const errors=[...document.querySelectorAll('[role="alert"],[aria-live="assertive"],[data-error],.error,.invalid-feedback')].filter(visible).map(e=>(e.innerText||e.textContent||'').slice(0,2000)).filter(text=>/incorrect|invalid|wrong|rejected|not recognized|not recognised|not match|try again|inválid|incorret|incorrecto|invalide|ungültig|falsch/i.test(text));
     const invalid=fields.some(e=>e.getAttribute('aria-invalid')==='true');
     const text=JSON.stringify([errors,invalid]);
     let hash=2166136261;
     for(let index=0;index<text.length;index++) hash=Math.imul(hash^text.charCodeAt(index),16777619);
-    if(mark) root?.setAttribute('data-sidekick-entry-attempt',attempt);
-    return {advanced:fields.length===0,rejected:fields.length>0&&(errors.length>0||invalid),fingerprint:(hash>>>0).toString(16),sameDocument:root?.getAttribute('data-sidekick-entry-attempt')===attempt};
+    if(mark) root?.setAttribute('data-otto-entry-attempt',attempt);
+    return {advanced:fields.length===0,rejected:fields.length>0&&(errors.length>0||invalid),fingerprint:(hash>>>0).toString(16),sameDocument:root?.getAttribute('data-otto-entry-attempt')===attempt};
   })()`;
 }
 

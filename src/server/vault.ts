@@ -205,7 +205,7 @@ function savedCredentialOrigin(value: string) {
 }
 
 function binding(entry: Pick<EntryRow, 'id' | 'owner_id' | 'origin'>) {
-  return Buffer.from(JSON.stringify(['sidekick-vault-v1', entry.owner_id, entry.origin, entry.id]));
+  return Buffer.from(JSON.stringify(['otto-vault-v1', entry.owner_id, entry.origin, entry.id]));
 }
 
 export function sealCredential(
@@ -312,7 +312,7 @@ function cardBrand(number: string) {
 }
 
 function cardBinding(entry: Pick<CardRow, 'id' | 'owner_id'>) {
-  return Buffer.from(JSON.stringify(['sidekick-vault-card-v1', entry.owner_id, entry.id]));
+  return Buffer.from(JSON.stringify(['otto-vault-card-v1', entry.owner_id, entry.id]));
 }
 
 function sealCard(key: Buffer, entry: Pick<CardRow, 'id' | 'owner_id'>, secret: CardSecret) {

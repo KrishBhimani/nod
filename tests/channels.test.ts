@@ -569,7 +569,7 @@ test(
           channelId: 'telegram',
           accountId: 'fixture-account',
           threadId: 'fixture-thread',
-          text: 'The code could not be matched to a sign-in. Open the corresponding sign-in conversation in Sidekick web chat to continue.',
+          text: 'The code could not be matched to a sign-in. Open the corresponding sign-in conversation in Otto web chat to continue.',
         },
       ]);
       const guidance = (
@@ -888,7 +888,7 @@ test('channel replies keep secure credential and approval links in the local app
   );
   assert.equal(reply.includes('secret-token'), false);
   assert.equal(reply.includes('private-id'), false);
-  assert.match(reply, /Open Sidekick/);
+  assert.match(reply, /Open Otto/);
   assert.match(reply, /https:\/\/example.com\/docs/);
   assert.match(reply, /Attachments are available/);
   const imageReply = channelReply(

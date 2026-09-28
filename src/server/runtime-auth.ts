@@ -20,7 +20,7 @@ const envelope = z
   .strict();
 
 export type RuntimeClaims = z.infer<typeof envelope>;
-export const runtimeHeader = 'x-sidekick-runtime';
+export const runtimeHeader = 'x-otto-runtime';
 
 export function canonicalRequestPath(target: string): string | null {
   if (target.length > 8192 || !target.startsWith('/') || /[\\#\u0000-\u0020\u007f]/.test(target))
@@ -42,7 +42,7 @@ export function deriveRuntimeSecret(master: Uint8Array, environment: string, own
     hkdfSync(
       'sha256',
       master,
-      Buffer.from('sidekick-runtime-v1'),
+      Buffer.from('otto-runtime-v1'),
       Buffer.from(JSON.stringify([environment, ownerId.toLowerCase()])),
       32,
     ),

@@ -32,7 +32,7 @@ export function createComposerExtensions(callbacks: {
     TableKit.configure({ table: { resizable: false } }),
     TaskList,
     TaskItem.configure({ nested: true }),
-    Placeholder.configure({ placeholder: 'Message Sidekick…' }),
+    Placeholder.configure({ placeholder: 'Message Otto…' }),
     Extension.create({
       name: 'chatInput',
       priority: 1000,

@@ -1,27 +1,32 @@
 import assert from 'node:assert/strict';
 import { readFile, stat } from 'node:fs/promises';
 import test from 'node:test';
-import { deploy, deploymentPlan } from '../scripts/deploy.mjs';
+import {
+  deploy as deployRelease,
+  deploymentPlan,
+  ensureStorageBucket,
+  renameGatewayEnvironment,
+} from '../scripts/deploy.mjs';
 import { verifyDeployment } from '../scripts/smoke.mjs';
 import { recoverDeployment } from '../scripts/recover.mjs';
 
 const release = 'a'.repeat(40);
 const accountId = 'b'.repeat(32);
-const origin = 'https://sidekick.test.workers.dev';
+const origin = 'https://otto.test.workers.dev';
 const variables = {
   CLOUDFLARE_ACCOUNT_ID: accountId,
   CLOUDFLARE_API_TOKEN: 'synthetic-cloudflare-credential',
-  SIDEKICK_RELEASE: release,
-  SIDEKICK_PUBLIC_URL: origin,
+  OTTO_RELEASE: release,
+  OTTO_PUBLIC_URL: origin,
   GATEWAY_ENV: JSON.stringify({
-    SIDEKICK_ENVIRONMENT: 'production',
-    SIDEKICK_PUBLIC_URL: origin,
+    OTTO_ENVIRONMENT: 'production',
+    OTTO_PUBLIC_URL: origin,
     AUTH_SECRET: 'synthetic-gateway-credential',
-    SIDEKICK_MASTER_KEY: Buffer.alloc(32, 1).toString('base64'),
-    DATABASE_URL: 'postgresql://synthetic:synthetic@db.example.test/sidekick',
+    OTTO_MASTER_KEY: Buffer.alloc(32, 1).toString('base64'),
+    DATABASE_URL: 'postgresql://synthetic:synthetic@db.example.test/otto',
     COMPUTER_PROVIDER: 'cloudflare',
     OBJECT_STORAGE_PROVIDER: 'http',
-    OBJECT_STORAGE_ENDPOINT: 'http://sidekick.storage/v1/objects/',
+    OBJECT_STORAGE_ENDPOINT: 'http://otto.storage/v1/objects/',
   }),
 };
 
@@ -39,12 +44,15 @@ function configuration(computers = true) {
   const classes = ['GatewayContainer', 'TenantContainer'];
   if (computers) classes.push('BrowserComputerContainer', 'WorkspaceComputerContainer');
   return {
-    name: 'sidekick',
+    name: 'otto',
     main: 'src/worker.ts',
     assets: { directory: '../../dist/web' },
     env: {
       production: {
-        name: 'sidekick',
+        name: 'otto',
+        r2_buckets: [
+          { binding: 'TENANT_FILES', bucket_name: 'otto-production-files', jurisdiction: 'eu' },
+        ],
         containers: classes.map((class_name) => ({
           class_name,
           image: './Dockerfile',
@@ -54,6 +62,13 @@ function configuration(computers = true) {
       },
     },
   };
+}
+
+function deploy(environment, environmentVariables, dependencies) {
+  return deployRelease(environment, environmentVariables, {
+    ensureBucket: async () => {},
+    ...dependencies,
+  });
 }
 
 function lifecycle(events = [], failures = {}) {
@@ -83,26 +98,71 @@ function planInput(config = configuration()) {
   };
 }
 
+test('the rename converts the private gateway settings for a new Otto deployment', () => {
+  const old = JSON.stringify({
+    SIDEKICK_ENVIRONMENT: 'production',
+    SIDEKICK_PUBLIC_URL: 'https://sidekick.example.test',
+    SIDEKICK_MASTER_KEY: 'synthetic-key',
+    OBJECT_STORAGE_ENDPOINT: 'http://sidekick.storage/v1/objects/',
+    COMPUTER_PROVIDER: 'cloudflare',
+  });
+  const converted = JSON.parse(renameGatewayEnvironment(old, origin));
+  assert.equal(converted.OTTO_ENVIRONMENT, 'production');
+  assert.equal(converted.OTTO_PUBLIC_URL, origin);
+  assert.equal(converted.OTTO_MASTER_KEY, 'synthetic-key');
+  assert.equal(converted.OBJECT_STORAGE_ENDPOINT, 'http://otto.storage/v1/objects/');
+  assert.equal(converted.COMPUTER_PROVIDER, 'cloudflare');
+  assert.equal('SIDEKICK_MASTER_KEY' in converted, false);
+  assert.throws(() =>
+    renameGatewayEnvironment(
+      JSON.stringify({ SIDEKICK_MASTER_KEY: 'old', OTTO_MASTER_KEY: 'new' }),
+      origin,
+    ),
+  );
+});
+
+test('the deployment creates a missing EU object bucket before publication', async () => {
+  const requests = [];
+  const request = async (url, options) => {
+    requests.push({ url, options });
+    if (requests.length === 1) return new Response(null, { status: 404 });
+    if (requests.length === 2) return Response.json({ success: true });
+    return Response.json({ result: { jurisdiction: 'eu' } });
+  };
+  await ensureStorageBucket(accountId, 'synthetic-token', 'otto-production-files', request);
+  assert.equal(requests.length, 3);
+  assert.equal(requests[0].options.headers['cf-r2-jurisdiction'], 'eu');
+  assert.equal(requests[1].options.method, 'POST');
+  assert.deepEqual(JSON.parse(requests[1].options.body), { name: 'otto-production-files' });
+  assert.equal(requests[2].url, requests[0].url);
+  await assert.rejects(
+    ensureStorageBucket(accountId, 'synthetic-token', 'otto-production-files', async () =>
+      Response.json({ result: { jurisdiction: 'default' } }),
+    ),
+    { message: 'The private object bucket is unavailable or has the wrong jurisdiction.' },
+  );
+});
+
 test('deployment validation rejects another environment, origin and invalid revision before publishing', () => {
   const input = planInput();
   for (const change of [
     { environment: 'unknown' },
     { release: 'main' },
-    { publicUrl: 'http://sidekick.test' },
+    { publicUrl: 'http://otto.test' },
     { publicUrl: `${origin}/app` },
-    { gatewayEnv: JSON.stringify({ SIDEKICK_ENVIRONMENT: 'development' }) },
-    { gatewayEnv: JSON.stringify({ SIDEKICK_PUBLIC_URL: 'https://other.example' }) },
+    { gatewayEnv: JSON.stringify({ OTTO_ENVIRONMENT: 'development' }) },
+    { gatewayEnv: JSON.stringify({ OTTO_PUBLIC_URL: 'https://other.example' }) },
     { gatewayEnv: JSON.stringify({ AUTH_SECRET: 42 }) },
-    { gatewayEnv: JSON.stringify({ SIDEKICK_IMAGE_RELEASE: release }) },
+    { gatewayEnv: JSON.stringify({ OTTO_IMAGE_RELEASE: release }) },
     { gatewayEnv: JSON.stringify({ AUTH_SECRET: 'x'.repeat(6000) }) },
   ])
     assert.throws(() => deploymentPlan({ ...input, ...change }));
   const plan = deploymentPlan(input);
   assert.equal(
     plan.config.env.production.containers[0].image,
-    `registry.cloudflare.com/${accountId}/sidekick-production:${release}`,
+    `registry.cloudflare.com/${accountId}/otto-production:${release}`,
   );
-  assert.equal(JSON.parse(plan.secrets.GATEWAY_ENV).SIDEKICK_RELEASE, release);
+  assert.equal(JSON.parse(plan.secrets.GATEWAY_ENV).OTTO_RELEASE, release);
   assert.equal(JSON.stringify(plan.config).includes('synthetic-gateway-credential'), false);
 });
 
@@ -110,9 +170,9 @@ test('deployment assigns distinct computer images and deduplicates the shared ru
   const config = configuration();
   const plan = deploymentPlan(planInput(config));
   const images = [
-    `sidekick-production:${release}`,
-    `sidekick-production-browser:${release}`,
-    `sidekick-production-workspace:${release}`,
+    `otto-production:${release}`,
+    `otto-production-browser:${release}`,
+    `otto-production-workspace:${release}`,
   ];
   assert.deepEqual(plan.localImages, images);
   assert.deepEqual(
@@ -141,13 +201,12 @@ test('incomplete hosted computer and storage configuration is rejected before an
     ['filesystem storage', { OBJECT_STORAGE_PROVIDER: 'filesystem' }],
     ['missing endpoint', { OBJECT_STORAGE_ENDPOINT: undefined }],
     ['empty endpoint', { OBJECT_STORAGE_ENDPOINT: '' }],
-    ['host-only endpoint', { OBJECT_STORAGE_ENDPOINT: 'http://sidekick.storage' }],
+    ['host-only endpoint', { OBJECT_STORAGE_ENDPOINT: 'http://otto.storage' }],
     ['foreign endpoint', { OBJECT_STORAGE_ENDPOINT: 'https://synthetic-private-host/v1/objects/' }],
     [
       'endpoint query',
       {
-        OBJECT_STORAGE_ENDPOINT:
-          'http://sidekick.storage/v1/objects/?token=synthetic-private-token',
+        OBJECT_STORAGE_ENDPOINT: 'http://otto.storage/v1/objects/?token=synthetic-private-token',
       },
     ],
     ['E2B missing key', { ...JSON.parse(e2bGateway), E2B_API_KEY: undefined }],
@@ -186,13 +245,13 @@ test('explicit hosted providers remain supported in both deployment environments
       config.env[environment] = config.env.production;
       const gatewayEnv = gatewayValues({
         ...(computerProvider === 'e2b' ? JSON.parse(e2bGateway) : {}),
-        SIDEKICK_ENVIRONMENT: environment,
+        OTTO_ENVIRONMENT: environment,
       });
       const plan = deploymentPlan({ ...planInput(config), environment, gatewayEnv });
       const values = JSON.parse(plan.secrets.GATEWAY_ENV);
       assert.equal(values.COMPUTER_PROVIDER, computerProvider);
       assert.equal(values.OBJECT_STORAGE_PROVIDER, 'http');
-      assert.equal(values.OBJECT_STORAGE_ENDPOINT, 'http://sidekick.storage/v1/objects/');
+      assert.equal(values.OBJECT_STORAGE_ENDPOINT, 'http://otto.storage/v1/objects/');
       assert.equal(plan.localImages.length, computerProvider === 'cloudflare' ? 3 : 1);
     }
   }
@@ -283,9 +342,9 @@ test('deployment publishes all images before uploading code and secrets, cleans 
   assert.deepEqual(
     commands.slice(0, 3).map((args) => args[2]),
     [
-      `sidekick-production:${release}`,
-      `sidekick-production-browser:${release}`,
-      `sidekick-production-workspace:${release}`,
+      `otto-production:${release}`,
+      `otto-production-browser:${release}`,
+      `otto-production-workspace:${release}`,
     ],
   );
   assert.deepEqual(smoke, { origin, release });
@@ -349,7 +408,7 @@ test('an E2B deployment with two runtime classes still publishes one runtime ima
     commands.map((args) => args[0]),
     ['containers', 'deploy'],
   );
-  assert.equal(commands[0][2], `sidekick-production:${release}`);
+  assert.equal(commands[0][2], `otto-production:${release}`);
 });
 
 test('failed drain, activation or verification cannot publish or reopen prematurely', async () => {

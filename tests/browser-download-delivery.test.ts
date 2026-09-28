@@ -15,7 +15,7 @@ import { createChannels } from '../src/server/channels.ts';
 import { browserDownloadPdf, createBrowserDownloadFixture } from './browser-download-fixture.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 
-const native = process.env.SIDEKICK_TEST_NATIVE_DOWNLOAD === 'true';
+const native = process.env.OTTO_TEST_NATIVE_DOWNLOAD === 'true';
 const pdfHash = createHash('sha256').update(browserDownloadPdf).digest('hex');
 const telegram = {
   TELEGRAM_ENABLED: 'true',
@@ -30,7 +30,7 @@ test(
   async (t) => {
     assert.ok(process.env.TEST_DATABASE_URL, 'A disposable test database is required.');
     if (native)
-      assert.ok(process.env.SIDEKICK_TEST_BROWSER_EXECUTABLE, 'A native browser is required.');
+      assert.ok(process.env.OTTO_TEST_BROWSER_EXECUTABLE, 'A native browser is required.');
     const cleanup: Array<() => Promise<unknown>> = [];
     t.after(async () => {
       const failures: unknown[] = [];
@@ -46,7 +46,7 @@ test(
     const suffix = randomUUID().replaceAll('-', '').slice(0, 16);
     const schema = `test_browser_delivery_${suffix}`;
     const bossSchema = `test_browser_delivery_boss_${suffix}`;
-    const dataRoot = await mkdtemp(join(tmpdir(), 'sidekick-browser-delivery-'));
+    const dataRoot = await mkdtemp(join(tmpdir(), 'otto-browser-delivery-'));
     cleanup.push(() => rm(dataRoot, { recursive: true, force: true }));
     const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
     cleanup.push(() => admin.end());
@@ -59,8 +59,8 @@ test(
     process.env.DATABASE_URL = database.href;
     process.env.DATABASE_POOL_MAX = '4';
     process.env.PGBOSS_SCHEMA = bossSchema;
-    process.env.SIDEKICK_DATA_ROOT = dataRoot;
-    process.env.SIDEKICK_MODE = 'local';
+    process.env.OTTO_DATA_ROOT = dataRoot;
+    process.env.OTTO_MODE = 'local';
     const db = await import('../src/server/db.ts');
     cleanup.push(() => db.pool.end());
     const tasks = await import('../src/server/tasks.ts');
@@ -240,7 +240,7 @@ test(
                 })
               : createAgentBrowserComputer({
                   dataRoot: join(dataRoot, 'browser'),
-                  browserExecutable: process.env.SIDEKICK_TEST_BROWSER_EXECUTABLE,
+                  browserExecutable: process.env.OTTO_TEST_BROWSER_EXECUTABLE,
                   headless: true,
                 });
           const agent: Agent = {

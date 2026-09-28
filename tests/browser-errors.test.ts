@@ -15,7 +15,7 @@ const diagnostic = browserErrorMessage('browser_navigation_failed')!;
 const privateError = 'Private browser output https://private.example/session?token=fixture-secret';
 
 async function runtimeFailure(error: Error, name: string, cancelled = false) {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-browser-errors-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-browser-errors-'));
   const observations: RuntimeObservation[] = [];
   const controller = new AbortController();
   let received: unknown;

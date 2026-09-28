@@ -32,10 +32,10 @@ const environment = {
   ...parse(await readFile(join(repository, '.env'), 'utf8').catch(() => '')),
   ...process.env,
 };
-const configuredPort = environment.SIDEKICK_E2E_PORT ?? '4320';
+const configuredPort = environment.OTTO_E2E_PORT ?? '4320';
 const port = Number(configuredPort);
 if (!/^\d{1,5}$/.test(configuredPort) || port < 1 || port > 65_535)
-  throw new Error('SIDEKICK_E2E_PORT must be an integer between 1 and 65535.');
+  throw new Error('OTTO_E2E_PORT must be an integer between 1 and 65535.');
 const baseUrl = `http://localhost:${port}`;
 const provider = environment.LLM_PROVIDER || 'openai';
 const model = environment.LLM_MODEL || agentModels[provider as keyof typeof agentModels];
@@ -46,9 +46,9 @@ if (!apiKey)
 const suffix = randomUUID().replaceAll('-', '').slice(0, 16);
 const schema = `e2e_${suffix}`;
 const bossSchema = `e2e_boss_${suffix}`;
-const container = `sidekick-workspace-e2e-${suffix}`;
-const browserContainer = `sidekick-browser-e2e-${suffix}`;
-const directory = await realpath(await mkdtemp(join(tmpdir(), 'sidekick-e2e-')));
+const container = `otto-workspace-e2e-${suffix}`;
+const browserContainer = `otto-browser-e2e-${suffix}`;
+const directory = await realpath(await mkdtemp(join(tmpdir(), 'otto-e2e-')));
 const workspaceRoot = join(directory, '.local', 'workspaces');
 const toolsRoot = join(directory, 'workspace-tools');
 await mkdir(workspaceRoot, { recursive: true });
@@ -110,20 +110,14 @@ async function shutdown(exitCode = 0) {
 process.on('SIGINT', () => void shutdown());
 process.on('SIGTERM', () => void shutdown());
 try {
-  const image = await runProcess('docker', [
-    'inspect',
-    'sidekick-workspace',
-    '--format',
-    '{{.Image}}',
-  ]);
+  const image = await runProcess('docker', ['inspect', 'otto-workspace', '--format', '{{.Image}}']);
   const network = await runProcess('docker', [
     'inspect',
-    'sidekick-workspace',
+    'otto-workspace',
     '--format',
     '{{json .NetworkSettings.Networks}}',
   ]);
-  if (image.exitCode || network.exitCode)
-    throw new Error('Start the Sidekick Docker workspace first.');
+  if (image.exitCode || network.exitCode) throw new Error('Start the Otto Docker workspace first.');
   const networkName = workspaceNetwork(network.stdout);
   const started = await runProcess('docker', [
     'run',
@@ -159,11 +153,11 @@ try {
   containerStarted = true;
   const browserImage = await runProcess('docker', [
     'inspect',
-    'sidekick-browser',
+    'otto-browser',
     '--format',
     '{{.Image}}',
   ]);
-  if (browserImage.exitCode) throw new Error('Start the Sidekick browser container first.');
+  if (browserImage.exitCode) throw new Error('Start the Otto browser container first.');
   const fixtureScripts = join(directory, 'browser-fixtures');
   await mkdir(fixtureScripts);
   for (const name of ['e2e-browser.ts', 'e2e-fixtures.ts', 'e2e-channels.ts'])

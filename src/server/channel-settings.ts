@@ -48,7 +48,7 @@ type SettingsRow = {
 };
 
 function binding(owner: string, provider: ChannelProvider) {
-  return Buffer.from(JSON.stringify(['sidekick-channel-settings-v1', owner, provider]));
+  return Buffer.from(JSON.stringify(['otto-channel-settings-v1', owner, provider]));
 }
 function seal(
   key: Buffer,
@@ -314,8 +314,7 @@ export async function createChannelSettings(
     app.register(async (scope) => {
       scope.setErrorHandler((error, _request, reply) => {
         const messages = {
-          account_in_use:
-            'This messaging account is already connected to another Sidekick account.',
+          account_in_use: 'This messaging account is already connected to another Otto account.',
           invalid_input:
             'Check the account details and use a public HTTPS URL ending in the channel webhook path.',
           verification_failed:
@@ -325,7 +324,7 @@ export async function createChannelSettings(
           webhook_failed:
             'Telegram did not confirm the webhook registration. Check the public URL and try again.',
           activation_pending:
-            'The setup was saved, but activation did not finish. Restart Sidekick to retry the saved setup, or replace it.',
+            'The setup was saved, but activation did not finish. Restart Otto to retry the saved setup, or replace it.',
         };
         reply
           .code(

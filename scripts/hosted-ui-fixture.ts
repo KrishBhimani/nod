@@ -13,11 +13,11 @@ import {
 } from '../src/shared/integrations.ts';
 
 const repository = fileURLToPath(new URL('..', import.meta.url));
-const fixturePort = Number(process.env.SIDEKICK_UI_PORT || 4346);
+const fixturePort = Number(process.env.OTTO_UI_PORT || 4346);
 if (!Number.isInteger(fixturePort) || fixturePort < 1024 || fixturePort > 65535)
   throw new Error('Use a valid local fixture port.');
 const origin = `http://localhost:${fixturePort}`;
-const cookieName = 'sidekick-ui-fixture';
+const cookieName = 'otto-ui-fixture';
 const users = [
   { id: randomUUID(), name: 'Alex Morgan', email: 'alex@example.test', avatarUrl: null },
   { id: randomUUID(), name: 'Sam Rivera', email: 'sam@example.test', avatarUrl: null },
@@ -41,7 +41,7 @@ const account = (owner: string) =>
     displayName: null,
   };
 function session(headers: Headers) {
-  const token = headers.get('cookie')?.match(/(?:^|;\s*)sidekick-ui-fixture=([^;]+)/)?.[1];
+  const token = headers.get('cookie')?.match(/(?:^|;\s*)otto-ui-fixture=([^;]+)/)?.[1];
   if (!token) return null;
   const current = sessions.get(token);
   if (current && current.expiresAt.getTime() > Date.now()) return current;
@@ -195,7 +195,7 @@ const app = await createGateway({
   },
 });
 const page = (heading: string, content: string) =>
-  `<!doctype html><html lang="en"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Sidekick UI fixture</title><body style="font:16px system-ui;margin:0;background:#f9f8f6;color:#242229"><main style="max-width:420px;margin:15vh auto;padding:28px"><p>Sidekick UI fixture</p><h1>${heading}</h1>${content}<p style="color:#666;font-size:13px">Synthetic accounts and permissions. No provider is contacted.</p></main></body></html>`;
+  `<!doctype html><html lang="en"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Otto UI fixture</title><body style="font:16px system-ui;margin:0;background:#f9f8f6;color:#242229"><main style="max-width:420px;margin:15vh auto;padding:28px"><p>Otto UI fixture</p><h1>${heading}</h1>${content}<p style="color:#666;font-size:13px">Synthetic accounts and permissions. No provider is contacted.</p></main></body></html>`;
 app.get('/fixture/consent', async (request, reply) => {
   const state = new URL(request.url, origin).searchParams.get('state') ?? '';
   if (!pending.has(state)) return reply.code(400).send('This fixture sign-in has expired.');

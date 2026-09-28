@@ -87,7 +87,7 @@ test('ready Channels offer a bot conversation and direct removal without setup m
     assert.equal(Boolean(telegram.querySelector('[role="menu"]')), false);
     assert.match(
       whatsapp.querySelector('.channel-option-benefit')?.textContent ?? '',
-      /Chat with your sidekick in WhatsApp\./,
+      /Chat with Otto in WhatsApp\./,
     );
     assert.ok(whatsapp.querySelector('[aria-label="Connect WhatsApp"]'));
     assert.equal(Boolean(container.querySelector('select')), false);
@@ -197,7 +197,7 @@ test('pending Telegram registration offers saved recovery instructions without M
     )!;
     await act(async () => click(finish));
     const dialog = document.querySelector('[role="dialog"]')!;
-    assert.match(dialog.textContent ?? '', /Restart Sidekick to retry the saved setup/);
+    assert.match(dialog.textContent ?? '', /Restart Otto to retry the saved setup/);
     assert.doesNotMatch(dialog.textContent ?? '', /Meta|verification token|replace/i);
   } finally {
     await act(async () => root.unmount());

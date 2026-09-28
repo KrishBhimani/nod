@@ -48,8 +48,8 @@ for (const mode of ['read', 'write'] as const)
     const previousFetch = globalThis.fetch;
     const storage = Object.getOwnPropertyDescriptor(window, 'localStorage')!;
     const saved = new Map([
-      ['sidekick.sidebar', 'collapsed'],
-      ['sidekick.inspector.width', '550'],
+      ['otto.sidebar', 'collapsed'],
+      ['otto.inspector.width', '550'],
     ]);
     const access = () => {
       if (mode === 'read') throw new DOMException('Storage is blocked', 'SecurityError');

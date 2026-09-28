@@ -46,10 +46,12 @@ export function createE2BClient(options: {
       id: sandbox.sandboxId,
       async ready() {
         try {
-          const result = await sandbox.commands.run(
-            'python3 /opt/sidekick/computer-guard.py check',
-            { user: 'root', envs: {}, timeoutMs: 30_000, requestTimeoutMs },
-          );
+          const result = await sandbox.commands.run('python3 /opt/otto/computer-guard.py check', {
+            user: 'root',
+            envs: {},
+            timeoutMs: 30_000,
+            requestTimeoutMs,
+          });
           if (result.exitCode !== 0 || result.stdout !== '{"ready":true}\n' || result.stderr !== '')
             throw new Error();
         } catch {
@@ -62,7 +64,7 @@ export function createE2BClient(options: {
         const handle = await sandbox.commands.run(input.command, {
           background: true,
           stdin: true,
-          user: input.role === 'browser' ? 'sidekick-browser' : 'node',
+          user: input.role === 'browser' ? 'otto-browser' : 'node',
           envs: {},
           timeoutMs: 180_000,
           requestTimeoutMs,

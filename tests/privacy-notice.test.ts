@@ -12,8 +12,8 @@ import {
   registerPrivacyNotice,
 } from '../src/server/privacy.ts';
 
-const origin = 'https://sidekick.example.test';
-const host = 'sidekick.example.test';
+const origin = 'https://otto.example.test';
+const host = 'otto.example.test';
 
 async function fixture(privacyNotice?: string) {
   const calls: string[] = [];
@@ -52,7 +52,7 @@ test('public privacy reads return only configured Markdown without authenticatio
   try {
     for (const headers of [
       { host },
-      { host, origin, cookie: 'synthetic=untrusted', 'x-sidekick-account': 'foreign-account' },
+      { host, origin, cookie: 'synthetic=untrusted', 'x-otto-account': 'foreign-account' },
     ]) {
       const response = await f.app.inject({
         url: '/api/privacy?account=foreign-account&content=untrusted',
@@ -135,7 +135,7 @@ test('privacy configuration enforces the trimmed limit and never echoes invalid 
 });
 
 test('privacy files are bounded UTF-8 Markdown with fixed configuration failures', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-privacy-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-privacy-'));
   const path = join(directory, 'synthetic-private-file-path.md');
   try {
     assert.equal(await loadPrivacyNoticeFile(), undefined);
