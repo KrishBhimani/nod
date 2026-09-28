@@ -10,7 +10,12 @@ import { delta, refresh } from './events.ts';
 import { localArtifacts, type ArtifactService } from './artifacts.ts';
 import type { SpeechService } from './speech.ts';
 import type { Artifact, MessageReaction } from '../shared/contracts.ts';
-import type { RuntimeContext, RuntimeObservation, RuntimeResult } from '../ports/agent.ts';
+import type {
+  BrowserConnectionRequest,
+  RuntimeContext,
+  RuntimeObservation,
+  RuntimeResult,
+} from '../ports/agent.ts';
 import { conversationRevision, currentConversationSql, lockConversation } from './conversations.ts';
 import { isMessageReaction, reactionEmoji } from '../shared/emoji.ts';
 import { defaultPreferences } from './preferences.ts';
@@ -97,9 +102,9 @@ export interface TaskDependencies {
     proposal?: unknown,
   ) => Promise<unknown>;
   browserConnection?: (
-    action: 'connect' | 'use',
-    input: { url: string; connectionId?: string; label?: string },
+    request: BrowserConnectionRequest,
     task: { id: string; revision: number },
+    signal: AbortSignal,
   ) => Promise<unknown>;
   reactToMessage?: (
     input: AgentReactionInput,
@@ -1262,12 +1267,13 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
           }
         : undefined,
       browserConnection: dependencies.browserConnection
-        ? async (action, input) => {
+        ? async (request) => {
             await ensureCurrent();
-            const result = await dependencies.browserConnection!(action, input, {
-              id: taskId,
-              revision,
-            });
+            const result = await dependencies.browserConnection!(
+              request,
+              { id: taskId, revision },
+              controller.signal,
+            );
             await ensureCurrent();
             return result;
           }

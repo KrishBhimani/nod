@@ -49,7 +49,7 @@ export function BrowserControl({
   controlPath?: string;
   startLabel?: string;
   finishLabel?: string;
-  onCompleted?(): void;
+  onCompleted?(result: { loginSaved?: boolean }): void;
 }) {
   const path = controlPath ?? `/api/browser/control/${encodeURIComponent(taskId ?? 'workspace')}`;
   const [control, setControl] = useState({ path, value: initialState });
@@ -141,6 +141,7 @@ export function BrowserControl({
         revision?: number;
         mode?: ControlState['mode'];
         resumable?: boolean;
+        loginSaved?: boolean;
       }>(`${path}/${kind}`, kind === 'start' ? {} : { revision: state.revision });
       if (operation.current !== version) return;
       if (result.ok === false) throw new Error('The browser could not continue. Try again.');
@@ -155,12 +156,12 @@ export function BrowserControl({
         }));
       if (kind === 'resume' && controlPath) {
         setState(initialState);
-        onCompleted?.();
+        onCompleted?.(result);
         return;
       }
       const next = await api<ControlState>(path);
       if (operation.current === version) setState(next);
-      if (kind === 'resume' && operation.current === version) onCompleted?.();
+      if (kind === 'resume' && operation.current === version) onCompleted?.(result);
     } catch (cause) {
       if (operation.current === version) setError(errorMessage(cause));
     } finally {

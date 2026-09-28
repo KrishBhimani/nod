@@ -549,12 +549,16 @@ export function createAgentRuntime(dependencies: {
               status: 'unavailable',
               message: 'Sign in from a direct conversation or Apps.',
             };
-          const result = await context.browserConnection(p.action, p);
-          if (p.action === 'use') return result;
-          const connection = result as { name?: unknown; url?: unknown };
-          if (typeof connection.name !== 'string' || typeof connection.url !== 'string')
+          const result = await context.browserConnection(p);
+          if (p.action === 'use' && (result as { status?: unknown }).status !== 'needs_sign_in')
+            return result;
+          const connection = result as { url?: unknown };
+          if (typeof connection.url !== 'string')
             throw new Error('The website did not provide a sign-in link.');
-          question = `I opened ${connection.name} in Otto’s private browser. [Connect ${connection.name}](${connection.url}) securely, then I will continue this task.`;
+          question =
+            p.action === 'use'
+              ? `This website needs sign-in again. [Continue sign-in](${connection.url}) securely, then I will continue this task.`
+              : `I opened the website in Otto’s private browser. [Connect website](${connection.url}) securely, then I will continue this task.`;
           status = 'waiting_user';
           waitingFor = 'question';
           stopped = true;

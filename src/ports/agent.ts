@@ -37,6 +37,10 @@ export type RuntimeObservation =
     }
   | ModelUsageObservation;
 
+export type BrowserConnectionRequest =
+  | { action: 'connect'; url: string; connectionId?: string; label?: string }
+  | { action: 'use'; url: string; connectionId: string };
+
 export interface RuntimeContext {
   taskId: string;
   ownerId: string;
@@ -82,10 +86,7 @@ export interface RuntimeContext {
     service?: string,
     proposal?: unknown,
   ): Promise<unknown>;
-  browserConnection?(
-    action: 'connect' | 'use',
-    input: { url: string; connectionId?: string; label?: string },
-  ): Promise<unknown>;
+  browserConnection?(request: BrowserConnectionRequest): Promise<unknown>;
   waitForUser?(question: string): Promise<void>;
   delta(text: string, streamId?: string, done?: boolean): void;
   remember(text: string): Promise<void>;

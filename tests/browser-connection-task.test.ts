@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import type { Agent, AgentToolResult, RuntimeContext } from '../src/ports/agent.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';
@@ -13,7 +15,7 @@ function value(result: AgentToolResult) {
 }
 
 test('a LinkedIn task pauses for sign-in and reads 50 synthetic offers after reuse', async () => {
-  const directory = await mkdtemp('/tmp/sk-linkedin-task-');
+  const directory = await mkdtemp(join(tmpdir(), 'sk-linkedin-task-'));
   const connectionId = randomUUID();
   const questions: string[] = [];
   const offers = new Set<string>();
@@ -49,7 +51,7 @@ test('a LinkedIn task pauses for sign-in and reads 50 synthetic offers after reu
             url: 'https://www.linkedin.com/messaging/',
           }),
         );
-        assert.equal(result.status, 'session_saved');
+        assert.equal(result.status, 'session_opened');
         let current = result.observation;
         for (;;) {
           for (const offer of current.text.split('\n')) offers.add(offer);
@@ -94,15 +96,15 @@ test('a LinkedIn task pauses for sign-in and reads 50 synthetic offers after reu
     waitForUser: async (question) => {
       questions.push(question);
     },
-    browserConnection: async (action) =>
-      action === 'connect'
+    browserConnection: async (request) =>
+      request.action === 'connect'
         ? { name: 'linkedin.com', url: `/browser-connect/${'a'.repeat(43)}`, connectionId }
-        : { status: 'session_saved', connectionId, observation: observation() },
+        : { status: 'session_opened', connectionId, observation: observation() },
   });
   try {
     const first = await runtime.runTask(context());
     assert.equal(first.status, 'waiting_user');
-    assert.match(questions[0], /Connect linkedin\.com/);
+    assert.match(questions[0], /Connect website/);
     assert.match(questions[0], /browser-connect/);
     const second = await runtime.runTask(context());
     assert.equal(second.status, 'succeeded');

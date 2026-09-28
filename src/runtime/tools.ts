@@ -165,13 +165,27 @@ export const toolDefinitions = {
   ),
   browser_connection: defineTool(
     'browser_connection',
-    'Connect or use a website in Otto’s private browser. Use connect when account data is needed and no suitable API, MCP or CLI connection exists. Supply the exact website URL. Otto opens and inspects the site, then gives the user one secure sign-in link in chat. Use use with a saved connectionId and a URL on that same website. A saved session can expire. Never claim that a browser connection grants permission to send, post, apply, buy or delete.',
-    Type.Object({
-      action: Type.Union([Type.Literal('connect'), Type.Literal('use')]),
-      url: Type.String({ minLength: 1, maxLength: 2048 }),
-      connectionId: Type.Optional(Type.String()),
-      label: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
-    }),
+    'Connect or use a website in Otto’s private browser. Use connect when account data is needed and no suitable API, MCP or CLI connection exists. Supply the exact website URL. Otto opens and inspects the site, then gives the user one secure sign-in link in chat. Use use with a saved connectionId and a URL on that same website. A session_opened result proves only that the browser opened; inspect the page to verify account access. A saved session can expire. Never claim that a browser connection grants permission to send, post, apply, buy or delete.',
+    Type.Union([
+      Type.Object({
+        action: Type.Literal('connect'),
+        url: Type.String({ minLength: 1, maxLength: 2048 }),
+        connectionId: Type.Optional(
+          Type.String({
+            pattern:
+              '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+          }),
+        ),
+        label: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
+      }),
+      Type.Object({
+        action: Type.Literal('use'),
+        url: Type.String({ minLength: 1, maxLength: 2048 }),
+        connectionId: Type.String({
+          pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+        }),
+      }),
+    ]),
   ),
   browser_screenshot: defineTool(
     'browser_screenshot',

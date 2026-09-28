@@ -21,6 +21,7 @@ import {
   type createDiscoveredConnections,
 } from './discovered-connections.ts';
 import type { WorkAdmission } from './work-admission.ts';
+import { BrowserConnectionError } from './browser-connections.ts';
 import {
   normalizedEmail,
   verificationCode,
@@ -1258,14 +1259,18 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     app.register(async (scope) => {
       scope.setErrorHandler((error, _request, reply) => {
         const status =
-          error instanceof IntegrationError || error instanceof DiscoveredConnectionError
+          error instanceof IntegrationError ||
+          error instanceof DiscoveredConnectionError ||
+          error instanceof BrowserConnectionError
             ? error.statusCode
             : error instanceof z.ZodError
               ? 400
               : 502;
         reply.code(status).send({
           error:
-            error instanceof IntegrationError || error instanceof DiscoveredConnectionError
+            error instanceof IntegrationError ||
+            error instanceof DiscoveredConnectionError ||
+            error instanceof BrowserConnectionError
               ? error.message
               : status === 400
                 ? 'Check the connection request.'
@@ -1473,7 +1478,9 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       proposal?: unknown,
     ) => {
       if (action === 'list')
-        return (await list()).map(({ accountId: _accountId, ...connection }) => connection);
+        return (await list()).map(
+          ({ accountId: _accountId, browserUrl: _browserUrl, ...connection }) => connection,
+        );
       if (action === 'propose') {
         if (!options.discovered)
           throw new IntegrationError('Discovered connections are unavailable.', 503);

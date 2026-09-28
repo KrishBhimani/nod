@@ -30,6 +30,7 @@ export function browserViewScript(
       if (!box.width || !box.height) continue;
       const style = getComputedStyle(element);
       if (style.display === 'none' || style.visibility === 'hidden') continue;
+      if (element.matches(':disabled,[aria-disabled="true"]') || element.closest('[aria-disabled="true"],[inert]')) continue;
       if (/(auto|scroll)/.test(style.overflowY) && element.scrollHeight > element.clientHeight + 40) {
         if (scrollAreasTotal >= ${controlOffset} && scrollAreasTotal < ${controlOffset} + 20) {
           const selector = path(element);

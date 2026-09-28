@@ -29,7 +29,8 @@ test('browser view finds generic controls, scrollable areas, and later text', ()
   });
   dom.window.document.body.insertAdjacentHTML(
     'beforeend',
-    '<span></span>'.repeat(5001) +
+    '<button disabled>Disabled action</button><button aria-disabled="true">Unavailable action</button><div inert><button>Inert action</button></div>' +
+      '<span></span>'.repeat(5001) +
       Array.from({ length: 90 }, (_, index) => `<button>Action ${index}</button>`).join(''),
   );
   try {
@@ -51,6 +52,12 @@ test('browser view finds generic controls, scrollable areas, and later text', ()
     );
     assert.equal(JSON.stringify(view).includes('private-value'), false);
     assert.equal(view.controlsTotal >= 90, true);
+    assert.equal(
+      view.controls.some((control) =>
+        /Disabled action|Unavailable action|Inert action/.test(control.label),
+      ),
+      false,
+    );
 
     const later = dom.window.eval(browserViewScript(undefined, 0, 80)) as {
       controls: Array<{ label: string }>;

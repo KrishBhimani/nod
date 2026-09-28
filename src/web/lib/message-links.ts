@@ -9,7 +9,8 @@ export type MessagePart =
 const navigationPaths = new Set(['/', '/apps', '/goals', '/schedule', '/channels', '/vault']);
 const connectionPath =
   /^\/apps\?connect=[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-const localPath = /^\/(api\/artifacts|vault|credentials|browser-connect)\/[A-Za-z0-9_-]+\/?$/;
+const localPath =
+  /^\/(?:api\/artifacts|vault|credentials)\/[A-Za-z0-9_-]+\/?$|^\/browser-connect\/[A-Za-z0-9_-]{43}\/?$/;
 const credentialLabels = [
   'Vault',
   'Open Vault',

@@ -1,6 +1,6 @@
 # Validation
 
-`browser-connections`, `browser-profile-connection`, `browser-connection-task` and `browser-connection-ui` check saved website sessions, secure sign-in, task reuse and private profile removal. The LinkedIn 50-offer task uses synthetic pages and a scripted agent. A separate headless public page check confirms login fields, but no test signs in to an owned account or reads private messages.
+`browser-connections`, `browser-profile-connection`, `browser-connection-task` and `browser-connection-ui` check saved website sessions, secure sign-in, task reuse and private profile removal. Include task-bound reconnect, cancelled credential entry, same-site port checks and profile restoration after a service restart. The LinkedIn 50-offer task uses synthetic pages and a scripted agent. A separate headless public page check confirms login fields, but no automated fixture signs in to an owned account or reads private messages.
 
 `browser-view` checks that a control after 5,000 DOM nodes remains visible through control pages. It checks generic controls, scrollable areas, scoped text and input-value exclusion. `browser-manual` checks scoped snapshots and targeted scroll commands. `container-browser` checks that a full browser selector crosses the private bridge. These checks use synthetic pages.
 

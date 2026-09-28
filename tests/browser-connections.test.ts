@@ -30,6 +30,8 @@ test(
     let verificationVisible = false;
     let loginOrigin = 'https://api.linkedin.com';
     let pageUrl = 'https://www.linkedin.com/messaging/';
+    let waitForInjection: Promise<void> | undefined;
+    let injectionEntered: (() => void) | undefined;
     const computer = {
       async bindProfile(taskId: string, profileId: string, origin?: string) {
         bindings.push({ taskId, profileId, origin });
@@ -75,6 +77,8 @@ test(
       },
       async injectCredentials(input: CredentialInput) {
         inputs.push(input);
+        injectionEntered?.();
+        if (waitForInjection) await waitForInjection;
         if (input.kind === 'otp') {
           verificationRequired = false;
           verificationVisible = false;
@@ -128,7 +132,7 @@ test(
         )
       ).rows[0];
       assert.notEqual(stored.token_hash, token);
-      assert.equal(stored.start_url, 'https://www.linkedin.com/messaging/');
+      assert.equal(stored.start_url, 'https://www.linkedin.com/messaging/?private=1');
       const attempt = await app.inject({
         method: 'GET',
         url: `/api/browser-connections/attempt/${token}`,
@@ -211,27 +215,70 @@ test(
       assert.equal(replay.statusCode, 200);
       assert.equal(replay.json().state, 'saved');
       const other = await createBrowserConnections(pool, { ownerId: 'owner-b', computer });
-      await assert.rejects(other.use(connectionId, randomUUID(), pageUrl), /unavailable/);
+      await assert.rejects(
+        other.use(connectionId, { id: randomUUID(), revision: 0 }, pageUrl),
+        /unavailable/,
+      );
       const nextTask = randomUUID();
-      const used = await service.use(connectionId, nextTask, 'https://www.linkedin.com/jobs/');
-      assert.equal(used.status, 'session_saved');
+      const used = await service.use(
+        connectionId,
+        { id: nextTask, revision: 0 },
+        'https://www.linkedin.com/jobs/',
+      );
+      assert.equal(used.status, 'session_opened');
       assert.equal(bindings.at(-1)?.profileId, bindings[0].profileId);
       assert.equal(bindings.at(-1)?.origin, 'https://www.linkedin.com');
       assert.ok(closed.includes(connectionId));
       blocked = true;
       const denied = await service.use(
         connectionId,
-        nextTask,
+        { id: nextTask, revision: 0 },
         'https://www.linkedin.com/messaging/',
       );
       assert.equal(denied.status, 'site_blocked');
       blocked = false;
       await assert.rejects(
-        service.use(connectionId, randomUUID(), 'https://www.technogym.com/en-IE/'),
+        service.use(
+          connectionId,
+          { id: randomUUID(), revision: 0 },
+          'https://www.technogym.com/en-IE/',
+        ),
         /another website/,
       );
+      const expiredTask = { id: randomUUID(), revision: 2 };
+      await pool.query('INSERT INTO tasks(id,owner_id,status,revision) VALUES($1,$2,$3,$4)', [
+        expiredTask.id,
+        'owner-a',
+        'running',
+        expiredTask.revision,
+      ]);
+      signedIn = false;
+      const reconnect = await service.use(
+        connectionId,
+        expiredTask,
+        'https://www.linkedin.com/jobs/',
+      );
+      assert.equal(reconnect.status, 'needs_sign_in');
+      assert.match(reconnect.url, /^\/browser-connect\/[A-Za-z0-9_-]{43}$/);
+      const reconnectDescription = await app.inject({
+        method: 'GET',
+        url: `/api/browser-connections/attempt/${reconnect.url.split('/').at(-1)}`,
+      });
+      assert.equal(reconnectDescription.json().fromTask, true);
+      await pool.query("UPDATE tasks SET status='cancelled' WHERE id=$1", [expiredTask.id]);
+      const staleCredentials = await app.inject({
+        method: 'POST',
+        url: `/api/browser-connections/attempt/${reconnect.url.split('/').at(-1)}/credentials`,
+        payload: {
+          origin: 'https://api.linkedin.com',
+          username: 'synthetic@example.test',
+          password: 'synthetic-secret',
+        },
+      });
+      assert.equal(staleCredentials.statusCode, 409);
+      assert.equal(inputs.length, 2);
       failDelete = true;
-      await assert.rejects(service.disconnect(connectionId), /removal failed/);
+      await assert.rejects(service.disconnect(connectionId), /could not be removed/);
       assert.equal((await service.list())[0].browserState, 'disconnecting');
       failDelete = false;
       await service.disconnect(connectionId);
@@ -266,7 +313,36 @@ test(
         payload: { url: 'https://blocked.example.com/' },
       });
       assert.equal(blockedBegin.statusCode, 409);
+      const blockedConnection = (await service.list()).find(
+        (item) => item.browserUrl === 'https://blocked.example.com/',
+      );
+      assert.equal(blockedConnection?.browserState, 'needs_sign_in');
+      assert.equal(blockedConnection?.status, 'disconnected');
+      assert.ok(blockedConnection?.connectionId);
+      await service.disconnect(blockedConnection.connectionId);
+      assert.ok(removed.length >= 2);
       blocked = false;
+      loginOrigin = 'https://api.example.test:9443';
+      const portBegin = await app.inject({
+        method: 'POST',
+        url: '/api/browser-connections',
+        payload: { url: 'https://www.example.test:8443/account' },
+      });
+      assert.equal(portBegin.statusCode, 200);
+      const portConnection = portBegin.json<{ url: string; connectionId: string }>();
+      const portToken = portConnection.url.split('/').at(-1)!;
+      const portAttempt = await app.inject({
+        method: 'GET',
+        url: `/api/browser-connections/attempt/${portToken}`,
+      });
+      assert.equal(portAttempt.json().inspection.canSubmit, false);
+      const portSubmit = await app.inject({
+        method: 'POST',
+        url: `/api/browser-connections/attempt/${portToken}/credentials`,
+        payload: { origin: loginOrigin, username: 'synthetic@example.test' },
+      });
+      assert.equal(portSubmit.statusCode, 409);
+      await service.disconnect(portConnection.connectionId);
       signedIn = false;
       loginOrigin = 'https://www.linkedin.com';
       const waitingTask = { id: randomUUID(), revision: 4 };
@@ -296,6 +372,47 @@ test(
         url: `/api/browser-connections/attempt/${taskToken}`,
       });
       assert.equal(taskDescription.json().fromTask, true);
+      let releaseInjection!: () => void;
+      waitForInjection = new Promise<void>((resolve) => {
+        releaseInjection = resolve;
+      });
+      const entered = new Promise<void>((resolve) => {
+        injectionEntered = resolve;
+      });
+      const submitPending = app.inject({
+        method: 'POST',
+        url: `/api/browser-connections/attempt/${taskToken}/credentials`,
+        payload: {
+          origin: 'https://www.linkedin.com',
+          username: 'synthetic@example.test',
+          password: 'synthetic-secret',
+        },
+      });
+      await entered;
+      const cancellation = pool.query(
+        "UPDATE tasks SET status='cancelled',revision=revision+1 WHERE id=$1",
+        [waitingTask.id],
+      );
+      const cancelledBeforeInjection = await Promise.race([
+        cancellation.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 30)),
+      ]);
+      assert.equal(cancelledBeforeInjection, false);
+      releaseInjection();
+      assert.equal((await submitPending).statusCode, 200);
+      await cancellation;
+      waitForInjection = undefined;
+      injectionEntered = undefined;
+      const staleTaskSubmit = await app.inject({
+        method: 'POST',
+        url: `/api/browser-connections/attempt/${taskToken}/credentials`,
+        payload: {
+          origin: 'https://www.linkedin.com',
+          username: 'synthetic@example.test',
+          password: 'synthetic-secret',
+        },
+      });
+      assert.equal(staleTaskSubmit.statusCode, 409);
     } finally {
       await app.close();
       await pool.end();

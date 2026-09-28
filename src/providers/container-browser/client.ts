@@ -201,6 +201,7 @@ export function createBridgeComputer(options: {
     currentSession: () => currentSession,
     bindProfile: async (id, profileId, allowedOrigin) => {
       await call({ method: 'bindProfile', taskId: taskId(id), profileId, allowedOrigin });
+      screens.delete(taskId(id));
     },
     deleteProfile: async (profileId) => {
       await call({ method: 'deleteProfile', profileId });

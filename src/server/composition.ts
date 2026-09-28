@@ -623,10 +623,14 @@ export async function createApplication(
       inspectPrompt: promptInspector.record,
       finishObservationSegment: inspector.finishSegment,
       connections: integrations.manageConnections,
-      browserConnection: (action, input, task) =>
-        action === 'connect'
-          ? browserConnections.begin(input, task)
-          : browserConnections.use(input.connectionId ?? '', task.id, input.url),
+      browserConnection: (request, task, signal) =>
+        request.action === 'connect'
+          ? browserConnections.begin(
+              { url: request.url, connectionId: request.connectionId, label: request.label },
+              task,
+              signal,
+            )
+          : browserConnections.use(request.connectionId, task, request.url, signal),
       speech,
       manage: async (taskId, action, args, provenance) => {
         if (

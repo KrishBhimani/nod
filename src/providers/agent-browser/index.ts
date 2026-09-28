@@ -104,12 +104,17 @@ export function redactBrowserText(text: string, secrets: Iterable<string>): stri
   return result.replace(/(password[^\n]*?)(?:value=|: )[^\n]*/gi, '$1 [redacted]');
 }
 
-export function redactBrowserUrl(value: string, secrets: Iterable<string>): string {
+export function redactBrowserUrl(
+  value: string,
+  secrets: Iterable<string>,
+  hideQuery = false,
+): string {
   const url = new URL(value);
   const sensitive =
     /^(?:code|state|token|accesstoken|idtoken|refreshtoken|password|otp|session|sessionid|ticket|assertion|authorization|email|username|identifier|phone|apikey|xapikey|clientsecret|signature|sig|xamzsignature|xamzcredential|xgoogsignature|xgoogcredential)$/i;
   for (const name of url.searchParams.keys())
-    if (sensitive.test(name.replace(/[-_]/g, ''))) url.searchParams.set(name, '[redacted]');
+    if (hideQuery || sensitive.test(name.replace(/[-_]/g, '')))
+      url.searchParams.set(name, '[redacted]');
   if (url.hash.includes('=')) url.hash = '[redacted]';
   return redactBrowserText(url.href, secrets);
 }
@@ -935,7 +940,7 @@ export function createAgentBrowserComputer(options: {
     if (visible?.missing)
       return {
         text: 'The selected page area is no longer available. Take a full snapshot.',
-        url: redactBrowserUrl(url, state.secrets),
+        url: redactBrowserUrl(url, state.secrets, Boolean(state.saved.allowedOrigin)),
         candidates: [],
       };
     const data = await command(
@@ -960,7 +965,7 @@ export function createAgentBrowserComputer(options: {
     const text = `Page text (${offset}-${Math.min(offset + 16_000, visible?.total ?? 0)} of ${visible?.total ?? 0} characters):\n${body}\n\nPage structure (${offset}-${Math.min(offset + 16_000, fullStructure.length)} of ${fullStructure.length} characters):\n${structure}\n\nControls (${controlOffset}-${Math.min(controlOffset + 80, visible?.controlsTotal ?? 0)} of ${visible?.controlsTotal ?? 0}):\n${controls.map((item) => `${item.label}: ${item.id}`).join('\n') || 'None'}\n\nScrollable areas (${controlOffset}-${Math.min(controlOffset + 20, visible?.scrollAreasTotal ?? 0)} of ${visible?.scrollAreasTotal ?? 0}):\n${scrollAreas.join('\n') || 'None'}`;
     return {
       text,
-      url: redactBrowserUrl(url, state.secrets),
+      url: redactBrowserUrl(url, state.secrets, Boolean(state.saved.allowedOrigin)),
       candidates: [...browserCandidates(structure), ...controls].slice(0, 100),
     };
   }
@@ -971,6 +976,7 @@ export function createAgentBrowserComputer(options: {
     signal?: AbortSignal,
   ): Promise<BrowserObservation> {
     if (disposed) throw new Error('The browser service has stopped.');
+    const savedProfile = input.action === 'open' ? await screens.load(id) : null;
     if ((await recoverBrowser(id))?.saved.signInPending) throw new BrowserLockedError();
     if (browsers.get(id)?.manualUntil) throw new BrowserLockedError();
     if (input.action === 'open' && !browsers.has(id)) await recoverBrowser(id, true);
@@ -978,6 +984,12 @@ export function createAgentBrowserComputer(options: {
     if (input.action === 'open' && browsers.get(id)?.closed) await closeBrowser(id);
     if (input.action === 'open' && browsers.get(id)?.saved.navigationFailed) await closeBrowser(id);
     const state = stateFor(id);
+    if (input.action === 'open' && savedProfile?.profileId && !state.saved.profileId) {
+      state.saved.profileId = savedProfile.profileId;
+      state.saved.allowedOrigin = savedProfile.allowedOrigin;
+      state.saved.restoreSession = savedProfile.restoreSession;
+      state.saved.sensitive = savedProfile.sensitive;
+    }
     if (input.action !== 'open' && !state.started) {
       const saved = await screens.load(id);
       if (saved?.navigationFailed) state.saved = saved;
@@ -1317,7 +1329,10 @@ export function createAgentBrowserComputer(options: {
     if (inspection.origin !== new URL(url).origin)
       throw new Error('The login page changed. Inspect it again.');
     browserUrl(inspection.url);
-    return { ...inspection, url: redactBrowserUrl(inspection.url, state.secrets) };
+    return {
+      ...inspection,
+      url: redactBrowserUrl(inspection.url, state.secrets, Boolean(state.saved.allowedOrigin)),
+    };
   }
 
   async function inspectLogin(id: string): Promise<LoginInspection> {

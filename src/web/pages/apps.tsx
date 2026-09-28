@@ -524,14 +524,16 @@ export function Apps() {
               />
             </Field>
             {websiteBusy && (
-              <div className="app-website-progress" role="status" aria-live="polite">
+              <div className="app-website-progress">
                 <LoaderCircle size={17} className="spin" aria-hidden="true" />
                 <div>
-                  <strong>Opening the site and checking sign-in</strong>
-                  <p>
-                    The secure sign-in page will open when Otto is ready. The site may ask for a
-                    code after you enter your details.
-                  </p>
+                  <div role="status" aria-live="polite">
+                    <strong>Opening the site and checking sign-in</strong>
+                    <p>
+                      The secure sign-in page will open when Otto is ready. The site may ask for a
+                      code after you enter your details.
+                    </p>
+                  </div>
                   {websiteSeconds >= 10 && <small>Still working · {websiteSeconds}s</small>}
                 </div>
               </div>

@@ -30,9 +30,12 @@ export function createScreenStore(root: string) {
       await rm(path(id), { force: true });
     },
     async profileScreens(profileId: string) {
-      const files = await readdir(root).catch(() => []);
+      const files = await readdir(root).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return [];
+        throw error;
+      });
       const ids = files
-        .map((file) => /^screen-([0-9a-f-]{36})\.json$/.exec(file)?.[1])
+        .map((file) => /^screen-([A-Za-z0-9_-]{1,100})\.json$/.exec(file)?.[1])
         .filter((id): id is string => Boolean(id));
       const matches = await Promise.all(
         ids.map(async (id) => ((await this.load(id))?.profileId === profileId ? id : null)),

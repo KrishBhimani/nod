@@ -424,7 +424,8 @@ export function BrowserConnection({ token }: { token: string }) {
                   controlPath={`${base}/control`}
                   startLabel="Open private browser"
                   finishLabel="Finish sign-in"
-                  onCompleted={() => {
+                  onCompleted={(result) => {
+                    setSaveWarning(result.loginSaved === false);
                     setComplete(true);
                     void refresh().catch(() => {});
                   }}
