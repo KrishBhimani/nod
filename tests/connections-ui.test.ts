@@ -263,7 +263,7 @@ test('a partial disconnect failure keeps the account and dialog available for re
   }
 });
 
-test('Apps offers Slack and Notion with local icons and disables unavailable services', async () => {
+test('Apps offers Slack, Notion and Linear with local icons and disables unavailable services', async () => {
   const priorFetch = globalThis.fetch;
   const catalog: Connection[] = [
     {
@@ -280,6 +280,13 @@ test('Apps offers Slack and Notion with local icons and disables unavailable ser
       status: 'not_configured',
       triggersEnabled: false,
     },
+    {
+      slug: 'linear',
+      name: 'Linear',
+      description: 'Read projects and issues.',
+      status: 'disconnected',
+      triggersEnabled: false,
+    },
   ];
   globalThis.fetch = async () => Response.json(catalog);
   pageDataCache.update('/api/apps', () => catalog);
@@ -291,12 +298,15 @@ test('Apps offers Slack and Notion with local icons and disables unavailable ser
     assert.equal(container.querySelector('h1')?.textContent, 'Apps');
     assert.equal(container.querySelector('img[src="/logos/slack.svg"]')?.getAttribute('alt'), '');
     assert.ok(container.querySelector('img[src="/logos/notion.svg"]'));
+    assert.ok(container.querySelector('img[src="/logos/linear.svg"]'));
     assert.doesNotMatch(container.textContent ?? '', /Google sign-in|Connections/);
     const slack = container.querySelector<HTMLButtonElement>('[aria-label="Connect Slack"]')!;
     const notion = container.querySelector<HTMLButtonElement>('[aria-label="Connect Notion"]')!;
+    const linear = container.querySelector<HTMLButtonElement>('[aria-label="Connect Linear"]')!;
     assert.equal(slack.textContent, 'Connect');
     assert.equal(slack.disabled, false);
     assert.equal(notion.disabled, true);
+    assert.equal(linear.disabled, false);
     assert.equal(container.querySelector('[role="menu"]'), null);
   } finally {
     await act(async () => root.unmount());

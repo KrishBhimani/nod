@@ -104,7 +104,7 @@ Tasks share this local-owner container and home volume. Shell commands can acces
 
 ## Google accounts and messaging
 
-Composio owns OAuth refresh and vendor tool transport. Otto owns multiple account records, provider identity, consent attempts, revocation, watch intent, approvals, and event deduplication. Account labels come from provider responses when available. Apps returns the saved account state immediately, then coalesces bounded parallel health checks. Provider outages retain the previous verified state. Failed watch setup retries with persisted backoff.
+Composio owns OAuth refresh and vendor tool transport for its accounts. The direct adapter owns OAuth refresh and MCP transport for new Notion and Linear accounts. Otto owns multiple account records, provider identity, consent attempts, revocation, watch intent, approvals, and event deduplication. Each saved account selects its provider; an existing Composio Notion account keeps that provider. Account labels come from provider responses when available. Apps returns the saved account state immediately, then coalesces bounded parallel health checks. Provider outages retain the previous verified state. Failed watch setup retries with persisted backoff. [Connection design](connections.md) describes the package and token boundary.
 
 A Google action resolves an owned local `connectionId` before execution. Proposed writes save that ID in the approval; execution checks it again and supplies the provider account explicitly. Missing, revoked, foreign, or obsolete account references cannot silently choose another account. Old approvals without an account binding require a new request.
 

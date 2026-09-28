@@ -10,6 +10,7 @@ Implement the smallest applicable interface in `../ports`. Factories accept cred
 | `agent-browser`           | Browser actions, HTTP(S) proxy, observations and credential injection           |
 | `docker`                  | Workspace execution, files and normal Docker networking                         |
 | `composio`                | Google/Slack/Notion authorization, tools, file retrieval and signed events      |
+| `direct`                  | Bundled Notion/Linear MCP packages, OAuth, encrypted tokens and read tools      |
 | `chat-sdk`                | Telegram/WhatsApp webhook protocols and message transport                       |
 | `openai`                  | Speech and cheap event classification                                           |
 | `jev`                     | Optional browser chooser and relevance classifier                               |
@@ -18,6 +19,8 @@ Implement the smallest applicable interface in `../ports`. Factories accept cred
 Adapters must not import feature modules or runtime implementations. Normalize errors and output shapes. Never expose keys, OAuth tokens, raw SDK sessions or plaintext vault contents to the runtime, model or web client. The key-store port returns key bytes only to trusted vault and channel-settings services. SDK state that must persist needs an explicit reference and migration policy.
 
 `composio/integrations.ts` resolves missing discovery schemas through the existing session's fixed `COMPOSIO_GET_TOOL_SCHEMAS` metadata endpoint. Hydrate at most 20 advertised supported-toolkit tools in one bounded request, with no retries or application execution. Require complete matching schemas, preserve full schema bytes and remove resolved references before returning discovery. Keep malformed references, partial results and provider errors fail-closed in `composio-discovery.test.ts`; transport fixtures do not establish live account access.
+
+`direct/plugin.ts` loads only fixed bundled Agent Plugins v1 packages. `direct/oauth.ts` uses the private key-store capability for owner-bound OAuth state and tokens in the local or hosted tenant SQL namespace. `direct/mcp.ts` owns remote transport, while `direct/integrations.ts` maps approved reads to tools and reads Notion user identity from the `notion-get-users` result list. Keep account policy, callbacks, and task handoff in the server feature. New endpoints need an explicit package and approved action mapping. Do not pass package headers, tokens, or host credentials to the workspace or model.
 
 `chat-sdk/settings.ts` verifies account details without changing provider state. Its separate registration method applies the exact encrypted configuration already persisted by channel settings. Telegram retries must reuse the saved webhook secret and retain pending updates; a lost response does not justify generating another secret or restoring unknown remote settings. Provider fixtures cover this sequence without real accounts or message delivery.
 

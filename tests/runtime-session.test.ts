@@ -586,12 +586,29 @@ test('background work skips reactions while connection discovery remains quiet',
       },
     },
   );
-  assert.deepEqual(calls, [
-    { action: 'list', service: undefined },
-    { action: 'connect', service: 'gmail' },
-  ]);
+  assert.deepEqual(calls, [{ action: 'list', service: undefined }]);
   assert.deepEqual(result.replies, []);
   assert.equal(result.supplied.systemPrompt.includes('Do not ask profile questions'), true);
+});
+
+test('chat connection shows one sign-in link and waits for its callback', async () => {
+  const questions: string[] = [];
+  const result = await fixture(
+    async (tools, emit) => {
+      await call(tools, 'manage_apps', { action: 'connect', service: 'linear' });
+      emit({ type: 'final', text: 'The account is connected.' });
+    },
+    {
+      connections: async () => ({ name: 'Linear', url: 'https://mcp.linear.app/authorize' }),
+      waitForUser: async (question) => {
+        questions.push(question);
+      },
+    },
+  );
+  assert.equal(result.result.status, 'waiting_user');
+  assert.equal(result.aborted, true);
+  assert.deepEqual(result.replies, []);
+  assert.deepEqual(questions, ['[Connect Linear](https://mcp.linear.app/authorize) to continue.']);
 });
 
 test('waitForTask drains an in-flight browser action even after the model prompt ends on abort', async () => {

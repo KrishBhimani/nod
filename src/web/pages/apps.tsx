@@ -29,6 +29,7 @@ const logos = new Set([
   'googledocs',
   'slack',
   'notion',
+  'linear',
 ]);
 
 function ServiceLogo({ slug }: { slug: string }) {

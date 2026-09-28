@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowUpRight } from 'lucide-react';
 import type { AppState, Artifact, Message, SubmitMessageResponse } from '../../shared/contracts';
+import { integrationServices } from '../../shared/integrations';
 import { Composer, type ComposerHandle, type ComposerSendResult } from '../components/composer';
 import { MessageBubble } from '../components/message';
 import { ChatTurnRail } from '../components/chat-turn-rail';
@@ -54,6 +55,7 @@ export function Chat({
   const [sending, setSending] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [error, setError] = useState('');
+  const [connectionNotice, setConnectionNotice] = useState('');
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [optimistic, setOptimistic] = useState<Array<{ revision: number; message: Message }>>([]);
   const composer = useRef<ComposerHandle>(null);
@@ -150,6 +152,28 @@ export function Chat({
     const restart = () => setupAction.current();
     window.addEventListener('otto:restart-setup', restart);
     return () => window.removeEventListener('otto:restart-setup', restart);
+  }, []);
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const outcome = url.searchParams.get('connection');
+    if (!outcome) return;
+    const slug = url.searchParams.get('service');
+    const name =
+      slug && Object.hasOwn(integrationServices, slug)
+        ? integrationServices[slug as keyof typeof integrationServices].name
+        : 'App';
+    setConnectionNotice(
+      outcome === 'continued'
+        ? `${name} connected. Continuing your request.`
+        : outcome === 'connected'
+          ? `${name} connected. You can continue in chat.`
+          : outcome === 'cancelled'
+            ? `${name} connection cancelled. You can try again in chat or Apps.`
+            : `${name} could not connect. Try again in chat or Apps.`,
+    );
+    url.searchParams.delete('connection');
+    url.searchParams.delete('service');
+    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
   }, []);
   useEffect(() => {
     if (!composerDraft) return;
@@ -540,6 +564,7 @@ export function Chat({
           </Button>
         )}
         {error && <Notice>{error}</Notice>}
+        {connectionNotice && <Notice kind="info">{connectionNotice}</Notice>}
         {!state.configuration.llmReady && (
           <Notice kind="info">
             The assistant isn’t connected yet. Check the development setup.

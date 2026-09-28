@@ -326,6 +326,7 @@ const names: Record<IntegrationService, string> = {
   googledocs: 'Google Docs',
   slack: 'Slack',
   notion: 'Notion',
+  linear: 'Linear',
 };
 const toolDefinitions = [
   {
@@ -526,7 +527,9 @@ export function createIntegrationFixture(baseUrl: string, audit: Audit = () => {
   const provider: IntegrationProvider = {
     id: 'synthetic-apps',
     configured: true,
-    supportedServices: Object.keys(names) as IntegrationService[],
+    supportedServices: (Object.keys(names) as IntegrationService[]).filter(
+      (service) => service !== 'linear',
+    ),
     webhooksConfigured: false,
     supportsSubscriptions: [],
     async createSession(ownerId) {

@@ -74,7 +74,13 @@ export interface IntegrationProvider {
     query: VerificationEmailQuery,
     signal: AbortSignal,
   ): Promise<VerificationEmail[] | undefined>;
-  parseCallback(query: unknown): { state: string; accountId: string; success: boolean };
+  parseCallback(query: unknown):
+    | Promise<{ state: string; accountId: string; success: boolean }>
+    | {
+        state: string;
+        accountId: string;
+        success: boolean;
+      };
   subscribe(
     ownerId: string,
     service: IntegrationService,

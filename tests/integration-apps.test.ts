@@ -117,10 +117,10 @@ async function fixture(t: TestContext) {
     url.searchParams.set('account', id);
     const callback = await app.inject({ url: `${url.pathname}${url.search}` });
     assert.equal(callback.statusCode, 302, callback.body);
-    assert.equal(callback.headers.location, '/apps?connection=connected');
+    assert.equal(callback.headers.location, 'http://localhost:4310/apps?connection=connected');
     const replay = await app.inject({ url: `${url.pathname}${url.search}` });
     assert.equal(replay.statusCode, 302, replay.body);
-    assert.equal(replay.headers.location, '/apps?connection=expired');
+    assert.equal(replay.headers.location, 'http://localhost:4310/apps?connection=expired');
     return (await service.list()).find((account) => account.accountId === id)!;
   }
   return {
@@ -218,7 +218,7 @@ test(
     const another = await f.connect('slack');
     const notion = await f.connect('notion');
     assert.equal((await f.app.inject({ url: '/api/connections' })).statusCode, 404);
-    assert.equal((await f.service.list()).length, 8);
+    assert.equal((await f.service.list()).length, 9);
     assert.equal(slack.triggerStatus, 'active');
     assert.equal(notion.triggerStatus, 'active');
     await assert.rejects(

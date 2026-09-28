@@ -6,6 +6,7 @@ export const integrationServiceIds = [
   'googledocs',
   'slack',
   'notion',
+  'linear',
 ] as const;
 
 export type IntegrationService = (typeof integrationServiceIds)[number];
@@ -27,6 +28,7 @@ export const integrationServices: Record<
   googledocs: { name: 'Google Docs', description: 'Work with your notes and documents.' },
   slack: { name: 'Slack', description: 'Find conversations and keep up with your team.' },
   notion: { name: 'Notion', description: 'Find and work with your pages and databases.' },
+  linear: { name: 'Linear', description: 'Find projects and issues in your workspace.' },
 };
 
 export const integrationDownloadActions = [

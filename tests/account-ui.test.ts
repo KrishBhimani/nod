@@ -253,7 +253,7 @@ test('onboarding distinguishes an initial load from unavailable integrations and
   }
 });
 
-test('onboarding shows seven concise states and starts consent directly with a fixed return destination', async () => {
+test('onboarding shows eight concise states and starts consent directly with a fixed return destination', async () => {
   const previous = globalThis.fetch;
   const connections: Connection[] = integrationServiceIds.map((slug) => ({
     slug,
@@ -293,7 +293,7 @@ test('onboarding shows seven concise states and starts consent directly with a f
         }),
       ),
     );
-    assert.equal(element.querySelectorAll('.onboarding-integration').length, 7);
+    assert.equal(element.querySelectorAll('.onboarding-integration').length, 8);
     assert.equal(element.querySelectorAll('.onboarding-integration.connected').length, 1);
     assert.equal(element.textContent?.includes('private-mailbox@example.test'), false);
     assert.equal(element.querySelector('[aria-label*="Add"]'), null);

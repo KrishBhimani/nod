@@ -491,7 +491,24 @@ export function createAgentRuntime(dependencies: {
         }),
         tool(toolDefinitions.manage_apps, async (p) => {
           if (!context.connections) throw new Error('Apps are unavailable.');
-          return context.connections(p.action, p.service);
+          if (p.action === 'connect' && context.background)
+            return {
+              status: 'unavailable',
+              message: 'Connect this app from a direct conversation or Apps.',
+            };
+          const result = await context.connections(p.action, p.service);
+          if (p.action !== 'connect') return result;
+          const connection = result as { name?: unknown; url?: unknown };
+          if (typeof connection.name !== 'string' || typeof connection.url !== 'string')
+            throw new Error('The app did not provide a sign-in link.');
+          question = `[Connect ${connection.name}](${connection.url}) to continue.`;
+          status = 'waiting_user';
+          waitingFor = 'question';
+          stopped = true;
+          if (context.waitForUser) await context.waitForUser(question);
+          else await deliverReply(question);
+          abortSession();
+          return 'Task paused for app sign-in.';
         }),
         tool(toolDefinitions.shell, (p) => taskWorkspace.execute(p.command, p.timeoutSeconds)),
         tool(toolDefinitions.read_file, (p) => taskWorkspace.readFile(p.path)),

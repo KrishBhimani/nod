@@ -119,12 +119,12 @@ test(
       const before = inspectCount;
       assert.equal(
         (await apps[1].inject(callback.pathname + callback.search)).headers.location,
-        '/apps?connection=expired',
+        'https://otto.example/apps?connection=expired',
       );
       assert.equal(inspectCount, before);
       assert.equal(
         (await apps[0].inject(callback.pathname + callback.search)).headers.location,
-        '/onboarding?connection=connected',
+        'https://otto.example/onboarding?connection=connected',
       );
       await assert.rejects(services[1].list(owners[0]), { statusCode: 403 });
       assert.equal(
@@ -139,7 +139,7 @@ test(
       const second = new URL(callbacks.get(owners[1])!);
       assert.equal(
         (await apps[1].inject(second.pathname + second.search)).headers.location,
-        '/apps?connection=connected',
+        'https://otto.example/apps?connection=connected',
       );
       for (const [account, owner] of accounts) {
         await db.pool.query(
@@ -174,7 +174,7 @@ test(
       cancelled.searchParams.set('success', 'false');
       assert.equal(
         (await apps[0].inject(cancelled.pathname + cancelled.search)).headers.location,
-        '/onboarding?connection=cancelled',
+        'https://otto.example/onboarding?connection=cancelled',
       );
       await apps[0].inject({
         method: 'POST',
@@ -188,7 +188,7 @@ test(
       );
       assert.equal(
         (await apps[0].inject(expired.pathname + expired.search)).headers.location,
-        '/onboarding?connection=expired',
+        'https://otto.example/onboarding?connection=expired',
       );
     } finally {
       await Promise.all(apps.map((app) => app.close()));
