@@ -131,6 +131,7 @@ export function Apps() {
   const [websiteConnectionId, setWebsiteConnectionId] = useState<string>();
   const [websiteError, setWebsiteError] = useState('');
   const [websiteBusy, setWebsiteBusy] = useState(false);
+  const [websiteSeconds, setWebsiteSeconds] = useState(0);
   const discoveryId = new URLSearchParams(window.location.search).get('connect');
   const [discovery, setDiscovery] = useState<{
     name: string;
@@ -160,6 +161,18 @@ export function Apps() {
   const connected = groups.filter((group) => group.accounts.length);
   const available = groups.filter((group) => !group.accounts.length);
   useEffect(() => () => actionRequest.current?.abort(), []);
+  useEffect(() => {
+    if (!websiteBusy) {
+      setWebsiteSeconds(0);
+      return;
+    }
+    const started = Date.now();
+    const timer = window.setInterval(
+      () => setWebsiteSeconds(Math.floor((Date.now() - started) / 1000)),
+      1000,
+    );
+    return () => window.clearInterval(timer);
+  }, [websiteBusy]);
   useEffect(() => {
     if (!discoveryId) return;
     const request = new AbortController();
@@ -510,6 +523,19 @@ export function Apps() {
                 disabled={websiteBusy}
               />
             </Field>
+            {websiteBusy && (
+              <div className="app-website-progress" role="status" aria-live="polite">
+                <LoaderCircle size={17} className="spin" aria-hidden="true" />
+                <div>
+                  <strong>Opening the site and checking sign-in</strong>
+                  <p>
+                    The secure sign-in page will open when Otto is ready. The site may ask for a
+                    code after you enter your details.
+                  </p>
+                  {websiteSeconds >= 10 && <small>Still working · {websiteSeconds}s</small>}
+                </div>
+              </div>
+            )}
             {websiteError && <Notice>{websiteError}</Notice>}
             <Button type="submit" disabled={websiteBusy}>
               {websiteBusy ? 'Opening…' : 'Open secure sign-in'}
