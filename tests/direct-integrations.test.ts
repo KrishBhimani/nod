@@ -326,6 +326,24 @@ test(
         ),
         false,
       );
+      await pool.query('UPDATE app_connections SET account_active=false WHERE id=$1', [
+        direct.connectionId,
+      ]);
+      const inactive = await integrations.execute('local-development', 'SEARCH_TOOLS', {
+        query: 'notion',
+      });
+      assert.equal(directAccounts.at(-1)?.notion, undefined);
+      assert.deepEqual(
+        (inactive as { tools: Record<string, unknown> }).tools.NOTION_RETRIEVE_PAGE,
+        { provider: 'composio' },
+      );
+      assert.deepEqual(
+        await integrations.execute('local-development', 'NOTION_SEARCH_NOTION_PAGE', {}),
+        { id: 'composio' },
+      );
+      await pool.query('UPDATE app_connections SET account_active=true WHERE id=$1', [
+        direct.connectionId,
+      ]);
       composioSearchFails = true;
       const partial = await integrations.execute('local-development', 'SEARCH_TOOLS', {
         query: 'notion',
@@ -375,6 +393,7 @@ test(
         'direct:NOTION_SEARCH_NOTION_PAGE',
         'composio:NOTION_SEARCH_NOTION_PAGE',
         'direct:NOTION_SEARCH_NOTION_PAGE',
+        'composio:NOTION_SEARCH_NOTION_PAGE',
         'direct:LINEAR_LIST_PROJECTS',
       ]);
     } finally {

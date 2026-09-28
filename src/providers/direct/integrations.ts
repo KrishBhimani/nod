@@ -234,7 +234,14 @@ export function createDirectProvider(options: {
             result.structuredContent ??
             JSON.parse(blocks.find((item) => item.type === 'text')?.text ?? '{}');
           const data =
-            content && typeof content === 'object' && 'self' in content ? content.self : content;
+            content && typeof content === 'object' && 'self' in content
+              ? content.self
+              : content &&
+                  typeof content === 'object' &&
+                  'results' in content &&
+                  Array.isArray(content.results)
+                ? content.results[0]
+                : content;
           if (!data || typeof data !== 'object') return {};
           const record = data as Record<string, unknown>;
           const workspace = record.workspace as Record<string, unknown> | undefined;

@@ -501,7 +501,7 @@ export function createAgentRuntime(dependencies: {
           const connection = result as { name?: unknown; url?: unknown };
           if (typeof connection.name !== 'string' || typeof connection.url !== 'string')
             throw new Error('The app did not provide a sign-in link.');
-          question = `To continue, connect ${connection.name}: [Connect ${connection.name}](${connection.url}). I will proceed after you authorize it.`;
+          question = `[Connect ${connection.name}](${connection.url}) to continue.`;
           status = 'waiting_user';
           waitingFor = 'question';
           stopped = true;

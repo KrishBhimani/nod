@@ -243,6 +243,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         row.provider_id === selected.id &&
         row.account_id &&
         !row.revoked &&
+        (selected === provider || row.account_active) &&
         supportsService(row.slug)
       )
         (accounts[row.slug] ??= []).push(row.account_id);
@@ -489,7 +490,11 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     includeRevoked = false,
   ) {
     const rows = (await connectionRows(ownerId)).filter(
-      (row) => row.slug === slug && row.account_id && (!row.revoked || includeRevoked),
+      (row) =>
+        row.slug === slug &&
+        row.account_id &&
+        (!row.revoked || includeRevoked) &&
+        (row.account_active || includeRevoked),
     );
     if (connectionId) {
       const row = rows.find((item) => item.id === connectionId);
@@ -867,7 +872,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         if (!searches.length) throw new Error('No app tool catalog is available.');
         const tools = Object.assign({}, ...searches.map((item) => item.tools));
         const rows = (await connectionRows(ownerId)).filter(
-          (row) => row.account_id && !row.revoked,
+          (row) => row.account_id && !row.revoked && row.account_active,
         );
         const primary =
           availableProviders[0] === provider && results[0].status === 'fulfilled'

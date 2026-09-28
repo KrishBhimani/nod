@@ -608,9 +608,7 @@ test('chat connection shows one sign-in link and waits for its callback', async 
   assert.equal(result.result.status, 'waiting_user');
   assert.equal(result.aborted, true);
   assert.deepEqual(result.replies, []);
-  assert.deepEqual(questions, [
-    'To continue, connect Linear: [Connect Linear](https://mcp.linear.app/authorize). I will proceed after you authorize it.',
-  ]);
+  assert.deepEqual(questions, ['[Connect Linear](https://mcp.linear.app/authorize) to continue.']);
 });
 
 test('waitForTask drains an in-flight browser action even after the model prompt ends on abort', async () => {
