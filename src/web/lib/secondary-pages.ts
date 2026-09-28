@@ -1,7 +1,7 @@
-import type { Connection, Goal, Schedule } from '../../shared/contracts';
+import type { Connection } from '../../shared/contracts';
 
-export function draftInChat(text: string) {
-  window.dispatchEvent(new CustomEvent('otto:compose', { detail: { text, send: false } }));
+export function focusChatMessage(messageId: string) {
+  window.dispatchEvent(new CustomEvent('otto:focus-message', { detail: { messageId } }));
 }
 
 export function connectionGroups(connections: Connection[]) {
@@ -49,21 +49,6 @@ export function removeConnection(connections: Connection[], connectionId: string
           },
         ],
   );
-}
-
-export function goalDraft(goal: Goal, action: 'discuss' | 'status') {
-  const reference = `the goal ${JSON.stringify(goal.title)}`;
-  return action === 'status'
-    ? `${goal.status === 'active' ? 'Pause' : 'Resume'} ${reference}.`
-    : `Let's review ${reference} and decide what to do next.`;
-}
-
-export function scheduleDraft(schedule: Schedule, action: 'discuss' | 'status') {
-  const reference = `the schedule ${JSON.stringify(schedule.title)}`;
-  const timing = schedule.kind === 'once' ? `a one-time run at ${schedule.runAt}` : schedule.cron;
-  return action === 'status'
-    ? `${schedule.enabled ? 'Pause' : 'Resume'} ${reference}.`
-    : `I'd like to change ${reference}. Its current timing is ${timing} in ${schedule.timeZone}.`;
 }
 
 export type ChannelProvider = 'telegram' | 'whatsapp';

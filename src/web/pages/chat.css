@@ -572,3 +572,18 @@
     font-size: 16px;
   }
 }
+.chat-page .message-focused {
+  border-radius: var(--radius);
+  animation: chat-message-focus 2.4s ease-out;
+}
+@keyframes chat-message-focus {
+  0%,
+  45% {
+    background: var(--accent-soft);
+    box-shadow: 0 0 0 6px var(--accent-soft);
+  }
+  100% {
+    background: transparent;
+    box-shadow: 0 0 0 6px transparent;
+  }
+}

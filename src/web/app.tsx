@@ -50,7 +50,6 @@ function Workspace({
   const [collapsed, setCollapsed] = useState(
     () => readUiPreference('otto.sidebar') === 'collapsed',
   );
-  const [composerDraft, setComposerDraft] = useState<{ text: string; nonce: number }>();
   const [inspectionFocus, setInspectionFocus] = useState<{ messageId: string; taskId: string }>();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<AccountTab>('Profile');
@@ -83,10 +82,12 @@ function Workspace({
   }, [settingsOpen]);
   useEffect(() => {
     const compose = (event: Event) => {
-      const detail = (event as CustomEvent<{ text: string }>).detail;
-      if (!detail?.text) return;
-      setComposerDraft({ text: detail.text, nonce: Date.now() });
-      navigate('/');
+      const detail = (event as CustomEvent<{ text?: unknown }>).detail;
+      if (typeof detail?.text === 'string' && detail.text) navigate('/');
+    };
+    const focusMessage = (event: Event) => {
+      const detail = (event as CustomEvent<{ messageId?: unknown }>).detail;
+      if (typeof detail?.messageId === 'string') navigate('/');
     };
     const inspect = (event: Event) => {
       if (!developer) return;
@@ -96,9 +97,11 @@ function Workspace({
       setInspector(true);
     };
     window.addEventListener('otto:compose', compose);
+    window.addEventListener('otto:focus-message', focusMessage);
     window.addEventListener('otto:inspect-message', inspect);
     return () => {
       window.removeEventListener('otto:compose', compose);
+      window.removeEventListener('otto:focus-message', focusMessage);
       window.removeEventListener('otto:inspect-message', inspect);
     };
   }, [developer]);
@@ -151,7 +154,6 @@ function Workspace({
         account={account}
         onRestart={() => {
           navigate('/');
-          setComposerDraft(undefined);
           setInspectionFocus(undefined);
           window.dispatchEvent(new CustomEvent('otto:restart-setup'));
         }}
@@ -180,7 +182,6 @@ function Workspace({
                     streams={streams}
                     refresh={refresh}
                     resetConversation={resetConversation}
-                    composerDraft={composerDraft}
                   />
                 </div>
                 {currentPath === '/vault' && <Vault />}
@@ -188,8 +189,8 @@ function Workspace({
                 {currentPath === '/channels' && (
                   <Channels hosted={session.auth.mode === 'google'} />
                 )}
-                {currentPath === '/goals' && <Goals />}
-                {currentPath === '/schedule' && <SchedulePage />}
+                {currentPath === '/goals' && <Goals conversation={visibleState} />}
+                {currentPath === '/schedule' && <SchedulePage conversation={visibleState} />}
                 {!navigationItems.some((item) => item.path === currentPath) && (
                   <div className="empty-state">
                     <h1>This page isn’t here.</h1>

@@ -14,9 +14,6 @@ import {
   connectionIdentity,
   connectionIssue,
   removeConnection,
-  draftInChat,
-  goalDraft,
-  scheduleDraft,
   telegramBotUrl,
 } from '../src/web/lib/secondary-pages.ts';
 
@@ -133,43 +130,24 @@ test('account identity deduplicates matching email and removing one account pres
   assert.equal(final[0].slug, 'gmail');
 });
 
-test('goal and schedule actions prepare a named contextual draft without sending or mutating', () => {
-  const previous = Object.getOwnPropertyDescriptor(globalThis, 'window');
-  const target = new EventTarget();
-  const events: unknown[] = [];
-  target.addEventListener('otto:compose', (event) => events.push((event as CustomEvent).detail));
-  Object.defineProperty(globalThis, 'window', { value: target, configurable: true });
-  try {
-    draftInChat(goalDraft(goal, 'status'));
-    draftInChat(scheduleDraft(schedule, 'discuss'));
-    assert.deepEqual(events, [
-      { text: 'Pause the goal "Read a book".', send: false },
-      {
-        text: 'I\'d like to change the schedule "Morning briefing". Its current timing is 30 9 * * 1 in Europe/Lisbon.',
-        send: false,
-      },
-    ]);
-    assert.match(goalDraft({ ...goal, status: 'paused' }, 'status'), /^Resume/);
-    assert.match(scheduleDraft({ ...schedule, enabled: false }, 'status'), /^Resume/);
-  } finally {
-    if (previous) Object.defineProperty(globalThis, 'window', previous);
-    else Reflect.deleteProperty(globalThis, 'window');
-  }
-});
-
-test('saved goals and schedules render readable state with chat actions rather than edit forms', () => {
+test('saved goals and schedules render direct controls and an in-place Otto action', () => {
   const goalHtml = renderToStaticMarkup(
     createElement(GoalRow, { goal: { ...goal, title: '<img src="https://example.com/private">' } }),
   );
-  assert.match(goalHtml, /Update/);
+  assert.match(goalHtml, /role="switch"/);
+  assert.match(goalHtml, /type="range"/);
+  assert.match(goalHtml, /Ask Otto/);
   assert.match(goalHtml, /Choose the next chapter/);
   assert.match(goalHtml, /30%/);
-  assert.doesNotMatch(goalHtml, /<form|<input|<textarea|<img/);
+  assert.doesNotMatch(goalHtml, /in chat|<form|<textarea|<img/);
   const scheduleHtml = renderToStaticMarkup(createElement(ScheduleRow, { schedule }));
   assert.match(scheduleHtml, /Every Monday at 09:30/);
   assert.match(scheduleHtml, /Europe\/Lisbon/);
-  assert.match(scheduleHtml, /Change/);
-  assert.doesNotMatch(scheduleHtml, /<form|<input|<textarea/);
+  assert.match(scheduleHtml, /role="switch"/);
+  assert.match(scheduleHtml, /<option value="1" selected="">Mondays<\/option>/);
+  assert.match(scheduleHtml, /type="time"[^>]*value="09:30"/);
+  assert.match(scheduleHtml, /Ask Otto/);
+  assert.doesNotMatch(scheduleHtml, /in chat|<form|<textarea/);
 });
 
 test('channel steps reveal only the current credentials and never repeat secrets in the review', () => {

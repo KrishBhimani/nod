@@ -11,12 +11,14 @@ import {
   integrationServices,
   type IntegrationService,
 } from '../src/shared/integrations.ts';
+import { createPlansFixture } from './hosted-ui-fixture-plans.ts';
 
 const repository = fileURLToPath(new URL('..', import.meta.url));
 const fixturePort = Number(process.env.OTTO_UI_PORT || 4346);
 if (!Number.isInteger(fixturePort) || fixturePort < 1024 || fixturePort > 65535)
   throw new Error('Use a valid local fixture port.');
 const origin = `http://localhost:${fixturePort}`;
+const plans = process.env.OTTO_UI_FIXTURE_DATA === 'plans' ? createPlansFixture() : null;
 const cookieName = 'otto-ui-fixture';
 const users = [
   { id: randomUUID(), name: 'Alex Morgan', email: 'alex@example.test', avatarUrl: null },
@@ -37,7 +39,7 @@ const avatar = new Uint8Array(
 const account = (owner: string) =>
   accounts.get(owner) ?? {
     theme: 'system' as const,
-    onboardingCompleted: false,
+    onboardingCompleted: Boolean(plans),
     displayName: null,
   };
 function session(headers: Headers) {
@@ -109,8 +111,8 @@ const app = await createGateway({
       if (url.pathname === '/api/state')
         return Response.json({
           conversationRevision: 0,
-          messages: [],
-          tasks: [],
+          messages: plans?.state().messages ?? [],
+          tasks: plans?.state().tasks ?? [],
           configuration: {
             provider: 'fixture',
             model: 'Synthetic UI fixture',
@@ -124,10 +126,14 @@ const app = await createGateway({
         });
       if (url.pathname === '/api/events') {
         let timer: ReturnType<typeof setInterval>;
+        let stop: (() => void) | undefined;
         return new Response(
           new ReadableStream({
             start(controller) {
-              controller.enqueue(new TextEncoder().encode('data: {"type":"refresh"}\n\n'));
+              const refresh = () =>
+                controller.enqueue(new TextEncoder().encode('data: {"type":"refresh"}\n\n'));
+              refresh();
+              stop = plans?.listen(refresh);
               timer = setInterval(
                 () => controller.enqueue(new TextEncoder().encode(': fixture\n\n')),
                 30_000,
@@ -135,6 +141,7 @@ const app = await createGateway({
             },
             cancel() {
               clearInterval(timer);
+              stop?.();
             },
           }),
           { headers: { 'content-type': 'text/event-stream' } },
@@ -179,6 +186,8 @@ const app = await createGateway({
           });
         return Response.json(preferences.get(owner) ?? previous);
       }
+      const planned = await plans?.handle(request, url);
+      if (planned) return planned;
       if (url.pathname === '/api/messages/history')
         return Response.json({ messages: [], hasMore: false });
       if (url.pathname === '/api/messages')
@@ -228,6 +237,10 @@ app.get('/fixture/sign-in/:index', async (request, reply) => {
   return reply
     .header('set-cookie', `${cookieName}=${token}; Path=/; HttpOnly; SameSite=Lax`)
     .redirect('/');
+});
+app.get('/fixture/plans/reset', async (_request, reply) => {
+  plans?.reset();
+  return reply.send({ ok: Boolean(plans) });
 });
 app.get('/fixture/connect', async (request, reply) => {
   const token = new URL(request.url, origin).searchParams.get('token') ?? '';

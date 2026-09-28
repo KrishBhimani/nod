@@ -7,7 +7,22 @@ import test from 'node:test';
 import pg from 'pg';
 import { createIntegrationFixture } from '../scripts/e2e-fixtures.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
-import { goalDraft, scheduleDraft } from '../src/web/lib/secondary-pages.ts';
+import type { Goal, Schedule } from '../src/shared/contracts.ts';
+
+function goalDraft(goal: Goal, action: 'discuss' | 'status') {
+  const reference = `the goal ${JSON.stringify(goal.title)}`;
+  return action === 'status'
+    ? `${goal.status === 'active' ? 'Pause' : 'Resume'} ${reference}.`
+    : `Let's review ${reference} and decide what to do next.`;
+}
+
+function scheduleDraft(schedule: Schedule, action: 'discuss' | 'status') {
+  const reference = `the schedule ${JSON.stringify(schedule.title)}`;
+  const timing = schedule.kind === 'once' ? `a one-time run at ${schedule.runAt}` : schedule.cron;
+  return action === 'status'
+    ? `${schedule.enabled ? 'Pause' : 'Resume'} ${reference}.`
+    : `I'd like to change ${reference}. Its current timing is ${timing} in ${schedule.timeZone}.`;
+}
 
 test(
   'personal proposals validate before review, preserve supported goal fields and revalidate before execution',
