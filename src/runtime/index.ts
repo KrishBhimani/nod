@@ -552,6 +552,7 @@ export function createAgentRuntime(dependencies: {
               message: 'Sign in from a direct conversation or Apps.',
             };
           const result = await context.browserConnection(p);
+          if ((result as { status?: unknown }).status === 'rejected') return result;
           if (p.action === 'use' && (result as { status?: unknown }).status !== 'needs_sign_in')
             return result;
           const connection = result as { url?: unknown };

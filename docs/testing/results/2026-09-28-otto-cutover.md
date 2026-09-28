@@ -113,3 +113,9 @@ At **19:57:39 UTC**, the two exact existing Otto Gmail/Calendar watches were rep
 ## Remaining production gates
 
 At 16:11 UTC, the production E2B dashboard still showed Hobby, 20 concurrent computers, zero credits and a missing payment method. Live E2B remains gated on funding, keys, templates and acceptance; no concurrency upgrade is needed and the eight-user application admission limit is unchanged. Both running installations currently use the interim Cloudflare computer option, which does not support the new connected CLI path. Slack and Telegram delivery, signed integration events, broader workspace and authenticated website work, the requested recording and delivery to scientists-chat, and operator privacy/Google branding requirements remain separate gates.
+
+## Later Cloudflare and branding decision
+
+The operator subsequently chose to continue with Cloudflare Containers and defer E2B. E2B funding, keys and live template acceptance are no longer prerequisites for the selected Cloudflare release. Admission and container capacity remain unchanged: eight total provisioned users, one shared gateway and separate owner-bound runtime, browser and workspace roles. Computer roles start on first use.
+
+The approved Otto mark is the O with its pink dot. Both Composio project previews showed the saved O and app title `Otto`. The same image was saved in both Google OAuth projects, with successful save notifications. `public/otto-logo.png` provides the reusable provider asset; the shared web component now matches the favicon/touch-icon geometry. Google branding was saved, not verified or published, so this does not establish its appearance on public consent screens. No OAuth client, scope or account grant was changed by the branding update.

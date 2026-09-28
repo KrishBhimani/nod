@@ -313,15 +313,21 @@ connectionTest(
       other.use(connectionId, { id: randomUUID(), revision: 0 }, 'https://www.linkedin.com/'),
       /unavailable/,
     );
+    const rejected = await other.request(
+      { action: 'use', connectionId, url: 'https://www.linkedin.com/' },
+      { id: randomUUID(), revision: 0 },
+    );
+    assert.ok('status' in rejected);
+    assert.equal(rejected.status, 'rejected');
     await pool.query("UPDATE browser_connections SET checked_at='2000-01-01' WHERE id=$1", [
       connectionId,
     ]);
     const nextTask = randomUUID();
-    const used = await service.use(
-      connectionId,
+    const used = await service.request(
+      { action: 'use', connectionId, url: 'https://www.linkedin.com/jobs/' },
       { id: nextTask, revision: 0 },
-      'https://www.linkedin.com/jobs/',
     );
+    assert.ok('status' in used);
     assert.equal(used.status, 'session_opened');
     assert.ok(new Date((await service.list())[0].checkedAt!).getTime() > Date.UTC(2020, 0, 1));
     assert.equal(bindings.at(-1)?.profileId, bindings[0].profileId);

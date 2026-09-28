@@ -625,13 +625,7 @@ export async function createApplication(
       finishObservationSegment: inspector.finishSegment,
       connections: integrations.manageConnections,
       browserConnection: (request, task, signal) =>
-        request.action === 'connect'
-          ? browserConnections.begin(
-              { url: request.url, connectionId: request.connectionId, label: request.label },
-              task,
-              signal,
-            )
-          : browserConnections.use(request.connectionId, task, request.url, signal),
+        browserConnections.request(request, task, signal),
       speech,
       manage: async (taskId, action, args, provenance) => {
         if (
