@@ -49,6 +49,30 @@ const forwardedEnvironment = [
 
 type Entry = { lease: TenantLease; secret: string; healthy: boolean; stopping?: Promise<void> };
 
+function composioWebhookUrl(environment: Record<string, string | undefined>) {
+  const explicit = environment.OTTO_WEBHOOK_ORIGIN;
+  const configured = explicit || environment.OTTO_PUBLIC_URL;
+  if (!configured) return;
+  try {
+    const origin = new URL(configured);
+    if (
+      origin.pathname !== '/' ||
+      origin.search ||
+      origin.hash ||
+      origin.username ||
+      origin.password ||
+      (origin.protocol !== 'https:' &&
+        (explicit ||
+          origin.protocol !== 'http:' ||
+          !['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname)))
+    )
+      throw new Error();
+    if (origin.protocol === 'https:') return new URL('/api/webhooks/composio', origin).href;
+  } catch {
+    throw new Error('The webhook origin is invalid.');
+  }
+}
+
 export function createTenantRuntimeHost(options: {
   tenants: Pick<
     ReturnType<typeof createTenantStore>,
@@ -63,6 +87,7 @@ export function createTenantRuntimeHost(options: {
   leaseDurationMs?: number;
   heartbeatMs?: number;
 }): TenantRuntimeHost {
+  const webhookUrl = composioWebhookUrl(options.operatorEnvironment);
   const duration = options.leaseDurationMs ?? 60_000;
   const heartbeat = options.heartbeatMs ?? 15_000;
   if (
@@ -166,6 +191,7 @@ export function createTenantRuntimeHost(options: {
         const value = options.operatorEnvironment[key];
         if (value) environment[key] = value;
       }
+      if (webhookUrl) environment.OTTO_COMPOSIO_WEBHOOK_URL = webhookUrl;
       if (options.operatorEnvironment.OBJECT_STORAGE_ROOT)
         environment.OBJECT_STORAGE_ROOT = join(
           options.operatorEnvironment.OBJECT_STORAGE_ROOT,
