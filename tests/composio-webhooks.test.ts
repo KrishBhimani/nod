@@ -10,6 +10,9 @@ const toolkitVersions = { gmail: '20260915_00', googlecalendar: '20260915_00' };
 
 for (const destination of [undefined, webhookUrl]) {
   test(`Composio subscriptions preserve exact owner, account and versions with ${destination ? 'hosted' : 'project'} routing`, async (t) => {
+    const network = t.mock.method(globalThis, 'fetch', async () => {
+      assert.fail('Subscription fixtures cannot make network requests.');
+    });
     const client = new Composio({
       apiKey: 'fixture-key-never-live',
       allowTracking: false,
@@ -70,6 +73,7 @@ for (const destination of [undefined, webhookUrl]) {
       throw new Error('Fixture subscription is unavailable.');
     });
     await assert.rejects(provider.subscribe(owner, 'gmail', 'ca-gmail-fixture'));
+    assert.equal(network.mock.callCount(), 0);
   });
 }
 
