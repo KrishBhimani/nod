@@ -6,6 +6,7 @@ import type {
   LinkPreviewProvider,
   PublicLinkMetadata,
   PreviewImage,
+  SiteIcon,
 } from '../../ports/link-preview.ts';
 import { previewableUrl } from '../../shared/link-preview.ts';
 import { publicUrl, type AddressResolver } from '../agent-browser/network.ts';
@@ -148,15 +149,59 @@ export function parseLinkMetadata(html: string, url: string): PublicLinkMetadata
   };
 }
 
+function iconUrl(value: string) {
+  if (value.length > 2048) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && /\.[^.]/.test(url.hostname) ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function icoImage(bytes: Uint8Array) {
+  const value = Buffer.from(bytes);
+  if (value.length < 22 || value.readUInt32LE(0) !== 0x10000) return false;
+  const count = value.readUInt16LE(4);
+  return count > 0 && value.length >= 6 + count * 16;
+}
+
+function iconLink(html: string) {
+  const document = parse(html);
+  const root = document.childNodes.find((node) => node.nodeName === 'html');
+  const head =
+    root && 'childNodes' in root ? root.childNodes.find((node) => node.nodeName === 'head') : null;
+  for (const node of head && 'childNodes' in head ? head.childNodes : []) {
+    if (node.nodeName !== 'link' || !('attrs' in node)) continue;
+    const attrs = new Map(node.attrs.map((attr) => [attr.name.toLowerCase(), attr.value]));
+    const rel = (attrs.get('rel') ?? '').toLowerCase().split(/\s+/);
+    const href = attrs.get('href')?.trim();
+    if (
+      href &&
+      (rel.includes('icon') || rel.includes('apple-touch-icon')) &&
+      !/svg/i.test(attrs.get('type') ?? '') &&
+      !/\.svgz?(?:[?#]|$)/i.test(href) &&
+      !/^data:/i.test(href)
+    )
+      return href;
+  }
+  return null;
+}
+
 export function createPublicLinkPreviewProvider(
   options: { resolver?: AddressResolver; request?: PreviewRequest; timeoutMs?: number } = {},
 ): LinkPreviewProvider {
   const request = options.request ?? requestPublicPreview;
-  async function fetchPublic(value: string, maxBytes: number) {
-    const signal = AbortSignal.timeout(Math.min(5000, options.timeoutMs ?? 5000));
+  async function fetchPublic(
+    value: string,
+    maxBytes: number,
+    metadata = maxBytes < 1024 * 1024,
+    destination = previewableUrl,
+    signal = AbortSignal.timeout(Math.min(5000, options.timeoutMs ?? 5000)),
+  ) {
     let current = value;
     for (let redirects = 0; redirects <= 3; redirects++) {
-      const safe = previewableUrl(current);
+      const safe = destination(current);
       if (!safe) throw new Error('Preview destination is not supported.');
       const resolved = await Promise.race([
         publicUrl(safe, options.resolver),
@@ -171,7 +216,7 @@ export function createPublicLinkPreviewProvider(
         ...resolved,
         signal,
         maxBytes,
-        metadata: maxBytes < 1024 * 1024,
+        metadata,
       });
       signal.throwIfAborted();
       if ([301, 302, 303, 307, 308].includes(result.status)) {
@@ -200,6 +245,37 @@ export function createPublicLinkPreviewProvider(
         )
           return null;
         return parseLinkMetadata(Buffer.from(result.body).toString('utf8'), result.url);
+      } catch {
+        return null;
+      }
+    },
+    async icon(origin) {
+      const signal = AbortSignal.timeout(Math.min(8000, options.timeoutMs ?? 8000));
+      const fetchIcon = async (url: string): Promise<SiteIcon | null> => {
+        const result = await fetchPublic(url, 128 * 1024, false, iconUrl, signal);
+        const mimeType = icoImage(result.body) ? 'image/x-icon' : rasterImageType(result.body);
+        return mimeType ? { bytes: result.body, mimeType } : null;
+      };
+      try {
+        const icon = await fetchIcon(new URL('/favicon.ico', origin).href);
+        if (icon) return icon;
+      } catch {}
+      try {
+        const page = await fetchPublic(
+          new URL('/', origin).href,
+          256 * 1024,
+          true,
+          iconUrl,
+          signal,
+        );
+        if (
+          !/^(?:text\/html|application\/xhtml\+xml)(?:;|$)/i.test(
+            page.headers['content-type'] ?? '',
+          )
+        )
+          return null;
+        const href = iconLink(Buffer.from(page.body).toString('utf8'));
+        return href ? await fetchIcon(new URL(href, page.url).href) : null;
       } catch {
         return null;
       }
