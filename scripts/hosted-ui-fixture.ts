@@ -267,7 +267,7 @@ app.get('/fixture/connected', async (request, reply) => {
     connections.set(attempt.ownerId, apps);
   }
   return reply.redirect(
-    `${attempt.returnTo}?connection=${result === 'connected' ? 'connected' : 'cancelled'}`,
+    `${attempt.returnTo}?connection=${result === 'connected' ? 'connected' : 'cancelled'}${attempt.returnTo === '/connected.html' ? `&service=${attempt.service}` : ''}`,
   );
 });
 const vite = await createServer({

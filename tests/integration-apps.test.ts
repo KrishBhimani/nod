@@ -143,7 +143,7 @@ async function fixture(t: TestContext) {
 
 test(
   'new-window consent returns before session cleanup and closes through a fixed page',
-  { skip: !process.env.TEST_DATABASE_URL },
+  { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
   async (t) => {
     const f = await fixture(t);
     let release!: () => void;
@@ -163,7 +163,7 @@ test(
     const callback = await f.app.inject({ url: `${url.pathname}${url.search}` });
     assert.equal(
       callback.headers.location,
-      'http://localhost:4310/connected.html?connection=connected',
+      'http://localhost:4310/connected.html?connection=connected&service=slack',
     );
     const rejected = await f.app.inject({
       method: 'POST',

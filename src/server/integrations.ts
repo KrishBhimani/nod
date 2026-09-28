@@ -1363,7 +1363,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
           .header('Referrer-Policy', 'no-referrer')
           .redirect(
             new URL(
-              `${returnPaths[returnTo]}?connection=${outcome}${returnTo === 'chat' && service ? `&service=${service}` : ''}`,
+              `${returnPaths[returnTo]}?connection=${outcome}${(returnTo === 'chat' || returnTo === 'window') && service ? `&service=${service}` : ''}`,
               options.baseUrl,
             ).href,
           );

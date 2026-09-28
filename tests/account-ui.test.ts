@@ -373,6 +373,18 @@ test('onboarding opens consent in a new window without blocking other apps and r
     assert.ok(element.textContent?.includes('Continue in the new window.'));
     await act(async () => window.dispatchEvent(new Event('focus')));
     assert.equal(element.textContent?.includes('Continue in the new window.'), false);
+    const card = (slug: string) =>
+      element.querySelector(`[aria-labelledby="onboarding-${slug}"]`)!.textContent ?? '';
+    await act(async () => button('Connect Google Calendar').click());
+    await act(async () =>
+      replies.at(-1)!.resolve(Response.json({ url: 'https://accounts.example.test/calendar' })),
+    );
+    await act(async () => button('Connect Linear').click());
+    await act(async () =>
+      replies.at(-1)!.resolve(Response.json({ url: 'https://accounts.example.test/linear' })),
+    );
+    assert.ok(card('googlecalendar').includes('Continue in the new window.'));
+    assert.ok(card('linear').includes('Continue in the new window.'));
     connections = connections.map((connection) =>
       connection.slug === 'googlecalendar'
         ? { ...connection, status: 'connected', connectionId: 'fixture-calendar' }
@@ -380,28 +392,40 @@ test('onboarding opens consent in a new window without blocking other apps and r
     );
     const before = loads;
     const channel = new BroadcastChannel('otto.apps');
-    await act(async () => channel.postMessage({ connection: 'connected' }));
+    await act(async () =>
+      channel.postMessage({ connection: 'connected', service: 'googlecalendar' }),
+    );
     channel.close();
     assert.ok(loads > before);
     assert.equal(element.querySelectorAll('.onboarding-integration.connected').length, 2);
+    assert.ok(card('linear').includes('Continue in the new window.'));
     await act(async () => button('Connect Google Drive').click());
     await act(async () =>
-      replies[1].resolve(Response.json({ error: 'Synthetic provider failure' }, { status: 502 })),
+      replies
+        .at(-1)!
+        .resolve(Response.json({ error: 'Synthetic provider failure' }, { status: 502 })),
     );
-    assert.equal(windows[1].popup.closed, true);
+    assert.equal(windows.at(-1)!.popup.closed, true);
     assert.ok(element.querySelector('[role="alert"]'));
     blocked = true;
+    const opened = windows.length;
     await act(async () => button('Connect Slack').click());
     assert.deepEqual(posts.at(-1), {
       path: '/api/apps/slack/connect',
       body: { returnTo: 'onboarding' },
     });
+    await act(async () =>
+      replies.at(-1)!.resolve(Response.json({ url: 'https://accounts.example.test/slack' })),
+    );
+    assert.equal(windows.length, opened);
+    assert.ok(button('Connect Slack').textContent?.includes('Opening…'));
+    assert.equal(button('Connect Slack').disabled, true);
     blocked = false;
     await act(async () => button('Connect Notion').click());
+    const notion = replies.at(-1)!;
     await act(async () => root.render(null));
-    assert.equal(replies[2].signal?.aborted, true);
-    assert.equal(replies[3].signal?.aborted, true);
-    await act(async () => replies[3].resolve(Response.json({ url: 'https://late.example.test' })));
+    assert.equal(notion.signal?.aborted, true);
+    await act(async () => notion.resolve(Response.json({ url: 'https://late.example.test' })));
     assert.equal(windows.at(-1)!.popup.closed, true);
     assert.equal(windows.at(-1)!.popup.location.href, 'about:blank');
   } finally {

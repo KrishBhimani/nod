@@ -46,26 +46,30 @@ export function Onboarding({
     const result = new URLSearchParams(window.location.search).get('connection');
     setError(connectionMessage(result));
     if (result) window.history.replaceState(null, '', window.location.pathname);
-    const settle = () =>
+    const settle = (service?: string | null) =>
       setPending((current) => {
         const next = { ...current };
-        for (const slug of integrationServiceIds) if (next[slug] === 'waiting') delete next[slug];
+        for (const slug of integrationServiceIds)
+          if (next[slug] === 'waiting' && (!service || slug === service)) delete next[slug];
         return next;
       });
     const channel =
       typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel('otto.apps');
     if (channel)
-      channel.onmessage = (event: MessageEvent<{ connection?: string } | null>) => {
+      channel.onmessage = (
+        event: MessageEvent<{ connection?: string; service?: string | null } | null>,
+      ) => {
         setError(connectionMessage(event.data?.connection ?? null));
-        settle();
+        settle(event.data?.service);
         void refresh();
       };
-    window.addEventListener('focus', settle);
+    const focus = () => settle();
+    window.addEventListener('focus', focus);
     void prepare();
     return () => {
       active.current = false;
       channel?.close();
-      window.removeEventListener('focus', settle);
+      window.removeEventListener('focus', focus);
       for (const request of actions.current.values()) request.abort();
       actions.current.clear();
       preparationRequest.current?.abort();
