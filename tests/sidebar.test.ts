@@ -22,6 +22,16 @@ for (const key of [
 ] as const)
   Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
 Object.defineProperty(dom.window.navigator, 'platform', { value: 'MacIntel' });
+Object.assign(dom.window.HTMLDialogElement.prototype, {
+  showModal(this: HTMLDialogElement) {
+    this.setAttribute('open', '');
+  },
+  close(this: HTMLDialogElement) {
+    if (!this.hasAttribute('open')) return;
+    this.removeAttribute('open');
+    this.dispatchEvent(new dom.window.Event('close'));
+  },
+});
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', { configurable: true, value: true });
 after(() => dom.window.close());
 const { createRoot } = await import('react-dom/client');
@@ -58,7 +68,7 @@ test('sidebar exposes navigation shortcuts, keyboard focus and modifier hints wi
         }),
       ),
     );
-    const links = Array.from(element.querySelectorAll<HTMLAnchorElement>('nav a'));
+    const links = Array.from(element.querySelectorAll<HTMLAnchorElement>('.main-nav a'));
     assert.equal(links.length, 6);
     assert.equal(links[1]?.getAttribute('aria-current'), 'page');
     assert.ok(
@@ -80,21 +90,25 @@ test('sidebar exposes navigation shortcuts, keyboard focus and modifier hints wi
     links[5]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     assert.equal(document.activeElement, links[0]);
     const more = element.querySelector<HTMLButtonElement>('[aria-label="Navigation menu"]')!;
+    const sheet = element.querySelector<HTMLDialogElement>('dialog.mobile-sheet')!;
     await act(async () => more.click());
-    const menu = element.querySelector('[role="menu"]')!;
-    assert.equal(menu.querySelectorAll('[role="menuitem"]').length, 9);
-    await act(async () =>
-      [...menu.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')]
-        .find((button) => button.textContent?.includes('Inspector'))!
-        .click(),
+    assert.equal(sheet.open, true);
+    const actions = [
+      ...sheet.querySelectorAll<HTMLButtonElement>('.mobile-sheet-actions > button'),
+    ];
+    assert.deepEqual(
+      actions.map((button) => button.textContent?.trim()),
+      ['Switch to dark theme', 'Inspector'],
     );
+    assert.equal(sheet.querySelector('kbd, [title], [aria-keyshortcuts]'), null);
+    assert.equal(element.textContent?.includes('Restart setup'), false);
+    await act(async () => actions[1]!.click());
     assert.equal(inspections, 1);
-    assert.equal(element.querySelector('[role="menu"]'), null);
+    assert.equal(sheet.open, false);
     assert.equal(document.activeElement, more);
-    await act(async () => more.click());
     await act(async () =>
-      [...element.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')]
-        .find((button) => button.textContent?.includes('Restart setup'))!
+      element
+        .querySelector<HTMLButtonElement>('.sidebar-bottom [aria-label="Get started"]')!
         .click(),
     );
     assert.equal(restarts, 1);
@@ -107,14 +121,16 @@ test('sidebar exposes navigation shortcuts, keyboard focus and modifier hints wi
     assert.equal(window.localStorage.getItem('otto.theme'), 'dark');
     assert.ok(element.querySelector('.sidebar-bottom [aria-label="Switch to light theme"]'));
     await act(async () => more.click());
-    const lightTheme = [...element.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
-      (button) => button.textContent?.includes('Switch to light theme'),
+    const lightTheme = [...sheet.querySelectorAll<HTMLButtonElement>('button')].find((button) =>
+      button.textContent?.includes('Switch to light theme'),
     )!;
     assert.ok(lightTheme);
     await act(async () => lightTheme.click());
     assert.equal(document.documentElement.dataset.theme, 'light');
     assert.equal(window.localStorage.getItem('otto.theme'), 'light');
-    assert.equal(element.querySelector('[role="menu"]'), null);
+    assert.equal(sheet.open, true);
+    await act(async () => sheet.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    assert.equal(sheet.open, false);
     assert.equal(document.activeElement, more);
     inspections = 0;
     const press = async (key: string, extra: KeyboardEventInit = {}) => {
@@ -291,11 +307,12 @@ test('sidebar preserves all shortcuts inside editable fields, including nested a
   }
 });
 
-test('mobile navigation includes Chat with current-page state and preserves native link actions', async () => {
+test('small screens use a chat-first top bar and a section sheet without shortcut hints', async () => {
   const element = document.createElement('div');
   document.body.append(element);
   const root = createRoot(element);
   const navigations: string[] = [];
+  const settings: string[] = [];
   const render = (path: string) =>
     act(async () =>
       root.render(
@@ -307,83 +324,88 @@ test('mobile navigation includes Chat with current-page state and preserves nati
           onNavigate(path) {
             navigations.push(path);
           },
+          account: {
+            user: { id: 'owner', name: 'Alex Morgan', email: 'alex@example.test', avatarUrl: null },
+            theme: 'system',
+            saving: false,
+            canLogout: true,
+            onSettings(tab) {
+              settings.push(tab);
+            },
+            async onTheme() {},
+            onLogout() {},
+          },
         }),
       ),
     );
   try {
     await render('/vault');
     const trigger = element.querySelector<HTMLButtonElement>('[aria-label="Navigation menu"]')!;
-    assert.ok(trigger);
+    const sheet = element.querySelector<HTMLDialogElement>('dialog.mobile-sheet')!;
+    assert.equal(trigger.getAttribute('aria-haspopup'), 'dialog');
     assert.equal(trigger.getAttribute('aria-expanded'), 'false');
-    assert.equal(element.querySelector('[role="menu"]'), null);
+    assert.equal(trigger.querySelector('.account-avatar')?.textContent, 'AM');
+    assert.equal(sheet.open, false);
     const open = async () => {
       await act(async () => trigger.click());
+      assert.equal(sheet.open, true);
+      assert.equal(trigger.getAttribute('aria-expanded'), 'true');
     };
     await open();
-    const links = [
-      ...element.querySelectorAll<HTMLAnchorElement>('[role="menu"] a[role="menuitem"]'),
-    ];
+    assert.equal(document.activeElement, sheet.querySelector('.mobile-sheet-body'));
+    const links = [...sheet.querySelectorAll<HTMLAnchorElement>('a.mobile-section')];
     assert.deepEqual(
       links.map((link) => link.getAttribute('href')),
       ['/', '/goals', '/schedule', '/apps', '/channels', '/vault'],
     );
     assert.equal(links[0]!.textContent, 'Chat');
+    assert.equal(links[0]!.querySelector('.brand-glyph'), null);
+    assert.ok(links[0]!.querySelector('svg'));
     assert.equal(links[0]!.getAttribute('aria-current'), null);
     assert.equal(links[5]!.getAttribute('aria-current'), 'page');
-    assert.equal(document.activeElement, links[0]);
-    assert.deepEqual(
-      [...element.querySelectorAll<HTMLButtonElement>('[role="menu"] button[role="menuitem"]')].map(
-        (button) => button.textContent?.trim(),
-      ),
-      ['Switch to dark theme', 'Restart setupStarts a new chat. Keeps your saved data.'],
-    );
+    assert.ok(sheet.querySelector('.account-menu-identity')?.textContent?.includes('Alex Morgan'));
+    assert.equal(sheet.querySelector('kbd, [title*="⌘"], [aria-keyshortcuts]'), null);
+    assert.equal(element.querySelector('.mobile-navigation kbd'), null);
     for (const modifier of ['metaKey', 'ctrlKey', 'shiftKey', 'altKey']) {
       const event = new MouseEvent('click', { bubbles: true, cancelable: true, [modifier]: true });
       await act(async () => links[0]!.dispatchEvent(event));
       assert.equal(event.defaultPrevented, false);
       assert.deepEqual(navigations, []);
     }
-    await act(async () =>
-      links[0]!.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
-      ),
-    );
-    assert.equal(element.querySelector('[role="menu"]'), null);
+    await act(async () => sheet.close());
+    assert.equal(trigger.getAttribute('aria-expanded'), 'false');
     assert.equal(document.activeElement, trigger);
     await open();
-    await act(async () =>
-      document
-        .getElementById('workspace')!
-        .dispatchEvent(new MouseEvent('click', { bubbles: true })),
-    );
-    assert.equal(element.querySelector('[role="menu"]'), null);
+    await act(async () => sheet.querySelector<HTMLElement>('.mobile-sheet-body')!.click());
+    assert.equal(sheet.open, true);
+    await act(async () => sheet.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    assert.equal(sheet.open, false);
     await open();
-    await act(async () =>
-      element.querySelector<HTMLAnchorElement>('[role="menu"] a[href="/goals"]')!.click(),
-    );
+    await act(async () => sheet.querySelector<HTMLAnchorElement>('a[href="/goals"]')!.click());
     assert.deepEqual(navigations, ['/goals']);
-    assert.equal(element.querySelector('[role="menu"]'), null);
+    assert.equal(sheet.open, false);
     assert.equal(document.activeElement, trigger);
     await open();
     await act(async () =>
-      element.querySelector<HTMLAnchorElement>('[role="menu"] a[href="/"]')!.click(),
+      [...sheet.querySelectorAll<HTMLButtonElement>('button')]
+        .find((button) => button.textContent?.includes('Settings'))!
+        .click(),
     );
-    assert.deepEqual(navigations, ['/goals', '/']);
-    assert.equal(element.querySelector('[role="menu"]'), null);
-    assert.equal(document.activeElement, trigger);
+    assert.equal(sheet.open, false);
+    assert.deepEqual(settings, ['Preferences']);
     await render('/');
     await open();
-    const current = element.querySelectorAll('[role="menu"] [aria-current="page"]');
+    const current = sheet.querySelectorAll('[aria-current="page"]');
     assert.equal(current.length, 1);
     assert.equal(current[0]!.getAttribute('href'), '/');
     await act(async () => window.dispatchEvent(new Event('resize')));
-    assert.equal(element.querySelector('[role="menu"]'), null);
+    assert.equal(sheet.open, false);
     const chat = element.querySelector<HTMLAnchorElement>('.mobile-chat-link')!;
-    assert.ok(chat);
     assert.equal(chat.getAttribute('href'), '/');
     assert.equal(chat.getAttribute('aria-current'), 'page');
+    assert.ok(chat.querySelector('.brand-glyph'));
     await act(async () => chat.click());
-    assert.deepEqual(navigations, ['/goals', '/', '/']);
+    assert.deepEqual(navigations, ['/goals', '/']);
   } finally {
     await act(async () => root.unmount());
     element.remove();
@@ -437,7 +459,7 @@ test('panel shortcuts use current callbacks and preserve unavailable inspector s
   }
 });
 
-test('sidebar shortcut opens and closes the mobile menu without changing the desktop rail', async () => {
+test('sidebar shortcut opens and closes the small-screen sheet without changing the desktop rail', async () => {
   const initialWidth = window.innerWidth;
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
   const element = document.createElement('div');
@@ -467,17 +489,18 @@ test('sidebar shortcut opens and closes the mobile menu without changing the des
       ),
     );
     document.getElementById('workspace')!.focus();
+    const sheet = element.querySelector<HTMLDialogElement>('dialog.mobile-sheet')!;
     await press();
-    assert.ok(element.querySelector('[role="menu"]'));
-    assert.equal(document.activeElement?.getAttribute('href'), '/');
+    assert.equal(sheet.open, true);
+    assert.equal(document.activeElement, sheet.querySelector('.mobile-sheet-body'));
     await press();
-    assert.equal(element.querySelector('[role="menu"]'), null);
+    assert.equal(sheet.open, false);
     assert.equal(document.activeElement?.getAttribute('aria-label'), 'Navigation menu');
     assert.equal(desktopToggles, 0);
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 });
     await press();
     assert.equal(desktopToggles, 1);
-    assert.equal(element.querySelector('[role="menu"]'), null);
+    assert.equal(sheet.open, false);
   } finally {
     await act(async () => root.unmount());
     element.remove();
@@ -554,12 +577,11 @@ test('shortcut focus uses only the latest navigation and never runs after sideba
   }
 });
 
-test('production keeps developer controls in the app menu with setup context and keyboard dismissal', async () => {
+test('production keeps Inspector in the app menu and hides More when it is empty', async () => {
   const element = document.createElement('div');
   document.body.append(element);
   const root = createRoot(element);
   let inspections = 0;
-  let restarts = 0;
   const render = async (enabled: boolean) =>
     act(async () =>
       root.render(
@@ -570,9 +592,7 @@ test('production keeps developer controls in the app menu with setup context and
           inspectorEnabled: enabled,
           onNavigate() {},
           onToggle() {},
-          onRestart() {
-            restarts++;
-          },
+          onRestart() {},
           onToggleInspector() {
             inspections++;
           },
@@ -588,18 +608,15 @@ test('production keeps developer controls in the app menu with setup context and
     await act(async () => trigger.click());
     const menu = element.querySelector<HTMLElement>('[role="menu"]')!;
     const buttons = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
-    assert.equal(buttons.length, 2);
-    assert.equal(buttons[0]!.textContent?.trim(), 'Inspector');
-    assert.ok(buttons[1]!.textContent?.includes('Keeps your saved data.'));
+    assert.deepEqual(
+      buttons.map((button) => button.textContent?.trim()),
+      ['Inspector'],
+    );
+    assert.equal(element.textContent?.includes('Restart setup'), false);
     await act(async () => buttons[0]!.click());
     assert.equal(inspections, 1);
     assert.equal(element.querySelector('[role="menu"]'), null);
     assert.equal(document.activeElement, trigger);
-    await act(async () => trigger.click());
-    await act(async () =>
-      element.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')[1]!.click(),
-    );
-    assert.equal(restarts, 1);
     await act(async () => trigger.click());
     await act(async () =>
       document.activeElement!.dispatchEvent(
@@ -609,9 +626,8 @@ test('production keeps developer controls in the app menu with setup context and
     assert.equal(element.querySelector('[role="menu"]'), null);
     assert.equal(document.activeElement, trigger);
     await render(false);
-    await act(async () => trigger.click());
-    assert.equal(element.querySelectorAll('[role="menuitem"]').length, 1);
-    assert.ok(element.querySelector('[role="menuitem"]')?.textContent?.includes('Restart setup'));
+    assert.equal(element.querySelector('[aria-label="App menu"]'), null);
+    assert.equal(element.querySelector('.sidebar-app-menu'), null);
   } finally {
     await act(async () => root.unmount());
     element.remove();
