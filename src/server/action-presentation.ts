@@ -1,4 +1,5 @@
 import type { Approval } from '../shared/contracts.ts';
+import { createInspectorRedactor } from './inspector-redaction.ts';
 
 const labels: Record<string, string> = {
   GMAIL_SEND_EMAIL: 'Send this email',
@@ -19,6 +20,8 @@ const labels: Record<string, string> = {
   OTTO_profile_update: 'Save these preferences',
   OTTO_notification_preferences_update: 'Save these notification preferences',
   OTTO_memory_propose: 'Remember this',
+  CONNECTED_HTTP: 'Call this connected API',
+  CONNECTED_MCP_CALL: 'Use this connected tool',
 };
 
 function plain(value: string) {
@@ -39,6 +42,14 @@ function recipients(value: unknown) {
   )
     return undefined;
   return values.map((entry) => plain(entry as string)).join(', ');
+}
+
+const redactConnected = createInspectorRedactor([], { string: 2000, payload: 2400 });
+
+function connectedText(value: unknown) {
+  const safe = redactConnected(value);
+  const serialized = typeof safe === 'string' ? safe : JSON.stringify(safe);
+  return plain(serialized.length > 1800 ? `${serialized.slice(0, 1800)} [truncated]` : serialized);
 }
 
 export function actionConfirmation(
@@ -67,6 +78,15 @@ export function actionConfirmation(
     details.push(`${label}: ${value}`);
   };
   add('For', text(targetTitle));
+  if (action === 'CONNECTED_HTTP') {
+    add('Method', connectedText(args.method));
+    add('Path', connectedText(args.path));
+    if (args.body !== undefined) add('Request', connectedText(args.body));
+  }
+  if (action === 'CONNECTED_MCP_CALL') {
+    add('Tool', connectedText(args.tool));
+    if (args.input !== undefined) add('Input', connectedText(args.input));
+  }
   for (const [key, label] of [
     ['title', 'Title'],
     ['subject', 'Subject'],

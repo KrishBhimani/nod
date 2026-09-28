@@ -2,8 +2,9 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
+import { getDomain } from 'tldts';
 import { integrationResultSnapshot } from './integration-result.ts';
-import type { Approval, Connection } from '../shared/contracts.ts';
+import type { Approval, Connection, VaultLoginEntry } from '../shared/contracts.ts';
 import type {
   IntegrationFile,
   IntegrationProvider,
@@ -15,6 +16,10 @@ import {
   integrationServices,
 } from '../shared/integrations.ts';
 import { integrationActions } from './integration-policy.ts';
+import {
+  DiscoveredConnectionError,
+  type createDiscoveredConnections,
+} from './discovered-connections.ts';
 import type { WorkAdmission } from './work-admission.ts';
 import {
   normalizedEmail,
@@ -59,7 +64,23 @@ type IntegrationOptions = {
   resumeConnection?(taskId: string, revision: number, service: Slug): Promise<boolean>;
   baseUrl: string;
   refresh?(): void;
+  discovered?: Awaited<ReturnType<typeof createDiscoveredConnections>>;
+  browserAccounts?: () => Promise<VaultLoginEntry[]>;
+  removeBrowserAccount?: (id: string) => Promise<void>;
 };
+
+function browserService(origin: string) {
+  const url = new URL(origin);
+  const domain = getDomain(url.hostname, { allowPrivateDomains: true });
+  const name = domain ?? url.hostname;
+  return {
+    slug: `browser-${name
+      .replace(/[^a-z0-9]/gi, '-')
+      .toLowerCase()
+      .slice(0, 40)}-${createHash('sha256').update(url.origin).digest('hex').slice(0, 12)}`,
+    name,
+  };
+}
 class IntegrationError extends Error {
   constructor(
     message: string,
@@ -480,7 +501,24 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         });
       }
     }
-    return result;
+    const browserAccounts = (await options.browserAccounts?.()) ?? [];
+    return [
+      ...result,
+      ...((await options.discovered?.list()) ?? []),
+      ...browserAccounts.map((entry): Connection => {
+        const service = browserService(entry.origin);
+        return {
+          slug: service.slug,
+          name: service.name,
+          status: 'connected',
+          connectionId: entry.id,
+          accountName: entry.label,
+          triggersEnabled: false,
+          supportsTriggers: false,
+          accessPaths: [{ id: entry.id, kind: 'browser', endpoint: entry.origin }],
+        };
+      }),
+    ];
   }
 
   async function selectConnection(
@@ -706,6 +744,13 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
   }
 
   async function validateApproval(ownerId: string, action: string, args: Record<string, unknown>) {
+    if (action === 'CONNECTED_HTTP' || action === 'CONNECTED_MCP_CALL') {
+      assertOwner(ownerId);
+      if (!options.discovered)
+        throw new IntegrationError('Discovered connections are unavailable.', 503);
+      await options.discovered.selected(args);
+      return;
+    }
     await approvedConnection(ownerId, action, args);
   }
 
@@ -715,6 +760,8 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     args: Record<string, unknown>,
   ): Promise<Approval['connection']> {
     assertOwner(ownerId);
+    if (action === 'CONNECTED_HTTP' || action === 'CONNECTED_MCP_CALL')
+      return options.discovered?.describe(args);
     const slug = slugSchema.safeParse(action.split('_')[0].toLowerCase());
     const connectionId = z.uuid().safeParse(args.connectionId);
     if (!slug.success || !connectionId.success) return undefined;
@@ -823,6 +870,12 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
   }
 
   async function executeApproved(ownerId: string, action: string, args: Record<string, unknown>) {
+    if (action === 'CONNECTED_HTTP' || action === 'CONNECTED_MCP_CALL') {
+      assertOwner(ownerId);
+      if (!options.discovered)
+        throw new IntegrationError('Discovered connections are unavailable.', 503);
+      return options.discovered.execute(action, args);
+    }
     const row = await approvedConnection(ownerId, action, args);
     if ((integrationDownloadActions as readonly string[]).includes(action))
       return {
@@ -850,6 +903,14 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
 
   async function execute(ownerId: string, action: string, args: Record<string, unknown>) {
     assertOwner(ownerId);
+    if (action === 'CONNECTED_HTTP' || action === 'CONNECTED_MCP_CALL') {
+      if (!options.discovered)
+        throw new IntegrationError('Discovered connections are unavailable.', 503);
+      const read = await options.discovered.isRead(action, args);
+      return read
+        ? options.discovered.execute(action, args, true)
+        : { requiresApproval: true, action, args };
+    }
     if (action === 'SEARCH_TOOLS') {
       const { query } = z
         .object({ query: z.string().trim().min(1).max(1000) })
@@ -869,7 +930,8 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
             > => result.status === 'fulfilled',
           )
           .map((result) => result.value);
-        if (!searches.length) throw new Error('No app tool catalog is available.');
+        if (!searches.length && !options.discovered)
+          throw new Error('No app tool catalog is available.');
         const tools = Object.assign({}, ...searches.map((item) => item.tools));
         const rows = (await connectionRows(ownerId)).filter(
           (row) => row.account_id && !row.revoked && row.account_active,
@@ -920,7 +982,31 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
             accountName,
             accountEmail,
           }));
-        return { ...search, accounts };
+        const discovered = await options.discovered?.search(query);
+        if (discovered?.accounts.length) {
+          Object.assign(tools, {
+            CONNECTED_HTTP: {
+              description: 'Call one saved HTTP API path.',
+              parameters: {
+                connectionId: 'Saved account ID.',
+                pathId: 'Saved path ID.',
+                method: 'GET, POST, PUT, PATCH or DELETE.',
+                path: 'Relative API path.',
+                body: 'Optional JSON request body.',
+              },
+            },
+            CONNECTED_MCP_CALL: {
+              description: 'Call one discovered MCP tool.',
+              parameters: {
+                connectionId: 'Saved account ID.',
+                pathId: 'Saved path ID.',
+                tool: 'Exact MCP tool name.',
+                input: 'Exact tool arguments.',
+              },
+            },
+          });
+        }
+        return { ...search, accounts, discovered: discovered?.accounts ?? [] };
       } catch {
         throw new IntegrationError('App tool search is unavailable. Try again later.', 502);
       }
@@ -1130,14 +1216,14 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     app.register(async (scope) => {
       scope.setErrorHandler((error, _request, reply) => {
         const status =
-          error instanceof IntegrationError
+          error instanceof IntegrationError || error instanceof DiscoveredConnectionError
             ? error.statusCode
             : error instanceof z.ZodError
               ? 400
               : 502;
         reply.code(status).send({
           error:
-            error instanceof IntegrationError
+            error instanceof IntegrationError || error instanceof DiscoveredConnectionError
               ? error.message
               : status === 400
                 ? 'Check the connection request.'
@@ -1145,19 +1231,26 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         });
       });
       scope.get('/api/apps', async () => list());
-      scope.post<{ Params: { slug: string } }>('/api/apps/:slug/connect', async (request) =>
-        connect(
-          slugSchema.parse(request.params.slug),
-          z
-            .object({ returnTo: z.enum(['apps', 'onboarding']).default('apps') })
-            .strict()
-            .parse(request.body ?? {}).returnTo,
-        ),
-      );
+      options.discovered?.registerRoutes(scope);
+      scope.post<{ Params: { slug: string } }>('/api/apps/:slug/connect', async (request) => {
+        const input = z
+          .object({
+            returnTo: z.enum(['apps', 'onboarding']).default('apps'),
+            connectionId: z.uuid().optional(),
+          })
+          .strict()
+          .parse(request.body ?? {});
+        if (input.connectionId || !slugSchema.safeParse(request.params.slug).success)
+          return (
+            options.discovered?.reconnect(request.params.slug, input.connectionId) ??
+            Promise.reject(new IntegrationError('This service is unavailable.', 404))
+          );
+        return connect(slugSchema.parse(request.params.slug), input.returnTo);
+      });
       scope.get('/api/apps/callback', async (request, reply) => {
         let returnTo: 'apps' | 'onboarding' | 'chat' = 'apps';
         let outcome: 'connected' | 'continued' | 'cancelled' | 'failed' | 'expired' = 'expired';
-        let service: Slug | undefined;
+        let service: string | undefined;
         const state = z
           .object({ state: z.string().regex(/^[A-Za-z0-9_-]{43}$/) })
           .safeParse(request.query);
@@ -1191,6 +1284,15 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
                 outcome = 'failed';
               }
             }
+          } else if (options.discovered) {
+            const result = await options.discovered
+              .completeOAuth(request.query)
+              .catch(() => undefined);
+            if (result) {
+              service = result.service;
+              outcome = result.outcome;
+              returnTo = result.returnTo;
+            }
           }
         }
         return reply
@@ -1214,11 +1316,29 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       );
       scope.post<{ Params: { slug: string; connectionId: string } }>(
         '/api/apps/:slug/accounts/:connectionId/disconnect',
-        async (request) =>
-          disconnect(
-            slugSchema.parse(request.params.slug),
-            z.uuid().parse(request.params.connectionId),
-          ),
+        async (request) => {
+          const id = z.uuid().parse(request.params.connectionId);
+          const browser = ((await options.browserAccounts?.()) ?? []).find(
+            (entry) => entry.id === id && browserService(entry.origin).slug === request.params.slug,
+          );
+          if (browser) {
+            if (!options.removeBrowserAccount)
+              throw new IntegrationError('This account is unavailable.', 503);
+            await options.removeBrowserAccount(id);
+            options.refresh?.();
+            return { ok: true };
+          }
+          if (
+            (await options.discovered?.list())?.some(
+              (entry) => entry.connectionId === id && entry.slug === request.params.slug,
+            )
+          )
+            return options.discovered!.disconnect(id, request.params.slug);
+          return slugSchema.safeParse(request.params.slug).success
+            ? disconnect(slugSchema.parse(request.params.slug), id)
+            : (options.discovered?.disconnect(id, request.params.slug) ??
+                Promise.reject(new IntegrationError('This service is unavailable.', 404)));
+        },
       );
       scope.post<{ Params: { slug: string; connectionId: string } }>(
         '/api/apps/:slug/accounts/:connectionId/triggers',
@@ -1294,12 +1414,18 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     describeTarget,
     list,
     manageConnections: async (
-      action: 'list' | 'connect',
+      action: 'list' | 'connect' | 'propose',
       service?: string,
       task?: { id: string; revision: number },
+      proposal?: unknown,
     ) => {
       if (action === 'list')
         return (await list()).map(({ accountId: _accountId, ...connection }) => connection);
+      if (action === 'propose') {
+        if (!options.discovered)
+          throw new IntegrationError('Discovered connections are unavailable.', 503);
+        return options.discovered.propose(proposal, task);
+      }
       const slug = slugSchema.parse(service);
       return { name: catalogs[slug].name, ...(await connect(slug, task ? 'chat' : 'apps', task)) };
     },
