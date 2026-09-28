@@ -124,27 +124,29 @@ export async function createGateway(options: {
     trustProxy: false,
     forceCloseConnections: true,
   });
+  async function setup(ownerId: string, path: string) {
+    const response = await options.runtimes.fetch(
+      ownerId,
+      new Request(new URL(path, origin), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      }),
+      { developer: false },
+    );
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error('Account setup failed.');
+    }
+    z.object({ ok: z.literal(true) })
+      .strict()
+      .parse(await response.json());
+  }
   const accounts = createAccountSession({
     ...options,
     origin: origin.origin,
-    async prepare(ownerId) {
-      const response = await options.runtimes.fetch(
-        ownerId,
-        new Request(new URL('/api/account/prepare', origin), {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: '{}',
-        }),
-        { developer: false },
-      );
-      if (!response.ok) {
-        await response.body?.cancel();
-        throw new Error('Account preparation failed.');
-      }
-      z.object({ ok: z.literal(true) })
-        .strict()
-        .parse(await response.json());
-    },
+    prepare: (ownerId) => setup(ownerId, '/api/account/prepare'),
+    start: (ownerId) => setup(ownerId, '/api/onboarding/start'),
   });
   const deployment = options.deployment
     ? createDeploymentControl({ ...options.deployment, runtimes: options.runtimes })

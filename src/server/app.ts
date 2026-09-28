@@ -20,6 +20,7 @@ import {
   reactToAssistantMessage,
   resetConversation,
   submitUserMessage,
+  welcomeSourceId,
 } from './tasks.ts';
 import { conversationRevision, currentConversationSql } from './conversations.ts';
 import { isMessageReaction } from '../shared/emoji.ts';
@@ -65,6 +66,7 @@ export interface AppDependencies {
   inspector?: Pick<InspectorStore, 'read'>;
   configuration?: () => Configuration;
   onboard?: (timeZone?: string, conversationRevision?: number) => Promise<unknown>;
+  startOnboarding?: () => Promise<unknown>;
 }
 
 export async function createApp(dependencies: AppDependencies = {}) {
@@ -132,8 +134,8 @@ export async function createApp(dependencies: AppDependencies = {}) {
         [ownerId],
       ),
       pool.query(
-        `SELECT id,title,status,error,created_at AS "createdAt",updated_at AS "updatedAt",(source='user') AS "showTyping" FROM tasks t WHERE owner_id=$1 AND channel='web' AND ${currentConversationSql()} ORDER BY created_at DESC LIMIT 50`,
-        [ownerId],
+        `SELECT id,title,status,error,created_at AS "createdAt",updated_at AS "updatedAt",(source='user' OR source_id=$2) AS "showTyping" FROM tasks t WHERE owner_id=$1 AND channel='web' AND ${currentConversationSql()} ORDER BY created_at DESC LIMIT 50`,
+        [ownerId, welcomeSourceId],
       ),
       dependencies.verification?.pending() ?? [],
     ]);
@@ -211,6 +213,15 @@ export async function createApp(dependencies: AppDependencies = {}) {
       throw Object.assign(new Error('Setup is unavailable.'), { statusCode: 503 });
     return dependencies.onboard(timeZone, conversationRevision);
   });
+  app.post('/api/onboarding/start', async (request) => {
+    z.object({})
+      .strict()
+      .parse(request.body ?? {});
+    if (!dependencies.startOnboarding)
+      throw Object.assign(new Error('Setup is unavailable.'), { statusCode: 503 });
+    await dependencies.startOnboarding();
+    return { ok: true };
+  });
   app.post('/api/messages', async (request) => {
     const input = z
       .object({
@@ -267,8 +278,8 @@ export async function createApp(dependencies: AppDependencies = {}) {
   });
   app.get<{ Params: { id: string } }>('/api/tasks/:id', async (request, reply) => {
     const result = await pool.query(
-      `SELECT id,title,status,error,created_at AS "createdAt",updated_at AS "updatedAt",(channel='web' AND source='user') AS "showTyping" FROM tasks t WHERE id=$1 AND owner_id=$2 AND ${currentConversationSql()}`,
-      [z.uuid().parse(request.params.id), ownerId],
+      `SELECT id,title,status,error,created_at AS "createdAt",updated_at AS "updatedAt",(channel='web' AND (source='user' OR source_id=$3)) AS "showTyping" FROM tasks t WHERE id=$1 AND owner_id=$2 AND ${currentConversationSql()}`,
+      [z.uuid().parse(request.params.id), ownerId, welcomeSourceId],
     );
     return result.rows[0] ?? reply.code(404).send({ error: 'Task not found.' });
   });

@@ -206,6 +206,36 @@ test('onboarding preparation routes only the authenticated owner with a fixed pr
   assert.doesNotMatch(failed.body, /private|sandboxId/);
 });
 
+test('completing onboarding starts the welcome in the authenticated owner runtime', async (t) => {
+  const f = await fixture();
+  t.after(() => f.app.close());
+  let start = 200;
+  f.reply(async (_owner, request) =>
+    new URL(request.url).pathname === '/api/onboarding/start' && start !== 200
+      ? Response.json({ error: 'Setup is unavailable.' }, { status: start })
+      : Response.json({ ok: true }),
+  );
+  const complete = () =>
+    f.app.inject({
+      method: 'PATCH',
+      url: '/api/account',
+      headers: { ...f.headers(1), origin },
+      payload: { onboardingCompleted: true },
+    });
+  assert.equal((await complete()).statusCode, 200);
+  assert.deepEqual(
+    f.calls.map((call) => [call.owner, call.url, call.method, call.body, call.developer]),
+    [
+      [f.users[1], `${origin}/api/account/prepare`, 'POST', '{}', false],
+      [f.users[1], `${origin}/api/onboarding/start`, 'POST', '{}', false],
+    ],
+  );
+  start = 503;
+  const failed = await complete();
+  assert.equal(failed.statusCode, 503);
+  assert.doesNotMatch(failed.body, /unavailable/);
+});
+
 test('gateway routes two signed users only by their cookie identity and strips client routing credentials', async () => {
   const f = await fixture();
   try {

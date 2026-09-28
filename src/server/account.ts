@@ -40,6 +40,7 @@ export function createAccountSession(options: {
   localUser?: AccountUser;
   developerIds?: ReadonlySet<string>;
   prepare?(ownerId: string): Promise<void>;
+  start?(ownerId: string): Promise<void>;
 }) {
   const origin = new URL(options.origin).origin;
   const mode = options.authentication ? 'google' : 'local';
@@ -204,7 +205,14 @@ export function createAccountSession(options: {
       const session = await requirePrincipal(request, reply);
       if (!session) return;
       const input = accountUpdate.parse(request.body);
-      if (input.onboardingCompleted && !(await prepare(request, reply, session))) return;
+      if (input.onboardingCompleted) {
+        if (!(await prepare(request, reply, session))) return;
+        try {
+          await options.start?.(session.user.id);
+        } catch {
+          return reply.code(503).send({ error: 'Setup could not be completed. Try again.' });
+        }
+      }
       await options.accounts.update(session.user.id, input);
       reply.header('cache-control', 'no-store');
       return response(request);
