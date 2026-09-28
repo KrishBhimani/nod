@@ -199,7 +199,7 @@ test('Back to latest uses hysteresis, counts new replies and keeps a history loa
     });
     const jump = fixture.button(/Back to latest/)!;
     assert.equal(jump.getAttribute('aria-label'), 'Back to latest, 1 new reply');
-    assert.equal(jump.querySelector('.jump-latest-count')?.textContent, '1');
+    assert.equal(jump.textContent, '1 new reply');
     await act(async () => fixture.button(/Load earlier messages/)!.click());
     scrolls.length = 0;
     await act(async () => jump.click());

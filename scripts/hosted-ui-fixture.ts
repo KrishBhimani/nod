@@ -74,44 +74,6 @@ const authentication: AuthenticationProvider = {
     return { bytes: avatar, mimeType: 'image/png' };
   },
 };
-const turns = [
-  [
-    'Plan my morning around the design review.',
-    'Start with the review notes at 09:00. Keep 10:00 to 11:30 for the review itself, then block 30 minutes to write up decisions while they are fresh.',
-  ],
-  [
-    'Can you check Thursday?',
-    'Thursday has two meetings: the roadmap sync at 10:00 and a 1:1 at 15:00. The time after 16:00 is free.',
-  ],
-  [
-    'Book the free slot for deep work.',
-    'I added a 90 minute focus block on Thursday at 16:15 and set it to busy.',
-  ],
-  [
-    'What is left on the launch checklist?',
-    'Three items remain: final copy review, the pricing page screenshot and the release note. The copy review is the only one with a deadline today.',
-  ],
-];
-const conversationStart = Date.now() - 36 * 3_600_000;
-const fixtureMessage = (index: number, time: number) => ({
-  id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
-  role: index % 2 ? 'assistant' : 'user',
-  text: turns[Math.floor(index / 2) % turns.length][index % 2],
-  taskId: '00000000-0000-4000-8000-100000000000',
-  attachments: [],
-  createdAt: new Date(time).toISOString(),
-});
-const conversation = Array.from({ length: 40 }, (_, index) =>
-  fixtureMessage(
-    index + 100,
-    conversationStart + (index < 20 ? index * 9 : 24 * 60 + (index - 20) * 7) * 60_000,
-  ),
-);
-const earlier = Array.from({ length: 12 }, (_, index) =>
-  fixtureMessage(index, conversationStart - 24 * 3_600_000 + index * 11 * 60_000),
-);
-let replies = 0;
-const eventStreams = new Set<ReadableStreamDefaultController<Uint8Array>>();
 const app = await createGateway({
   origin,
   privacyNotice: [
@@ -147,8 +109,7 @@ const app = await createGateway({
       if (url.pathname === '/api/state')
         return Response.json({
           conversationRevision: 0,
-          hasEarlierMessages: true,
-          messages: conversation,
+          messages: [],
           tasks: [],
           configuration: {
             provider: 'fixture',
@@ -163,12 +124,9 @@ const app = await createGateway({
         });
       if (url.pathname === '/api/events') {
         let timer: ReturnType<typeof setInterval>;
-        let stream: ReadableStreamDefaultController<Uint8Array>;
         return new Response(
           new ReadableStream({
             start(controller) {
-              stream = controller;
-              eventStreams.add(controller);
               controller.enqueue(new TextEncoder().encode('data: {"type":"refresh"}\n\n'));
               timer = setInterval(
                 () => controller.enqueue(new TextEncoder().encode(': fixture\n\n')),
@@ -177,7 +135,6 @@ const app = await createGateway({
             },
             cancel() {
               clearInterval(timer);
-              eventStreams.delete(stream);
             },
           }),
           { headers: { 'content-type': 'text/event-stream' } },
@@ -224,10 +181,6 @@ const app = await createGateway({
       }
       if (url.pathname === '/api/messages/history')
         return Response.json({ messages: [], hasMore: false });
-      if (url.pathname === '/api/messages' && request.method === 'GET') {
-        await new Promise((resolve) => setTimeout(resolve, 2500));
-        return Response.json({ messages: earlier, hasMore: false });
-      }
       if (url.pathname === '/api/messages')
         return Response.json(
           { error: 'The UI fixture does not run an assistant.' },
@@ -243,13 +196,6 @@ const app = await createGateway({
 });
 const page = (heading: string, content: string) =>
   `<!doctype html><html lang="en"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Otto UI fixture</title><body style="font:16px system-ui;margin:0;background:#f9f8f6;color:#242229"><main style="max-width:420px;margin:15vh auto;padding:28px"><p>Otto UI fixture</p><h1>${heading}</h1>${content}<p style="color:#666;font-size:13px">Synthetic accounts and permissions. No provider is contacted.</p></main></body></html>`;
-app.get('/fixture/reply', async (request, reply) => {
-  if (new URL(request.url, origin).searchParams.has('reset')) conversation.length = 40;
-  else conversation.push(fixtureMessage(1001 + 2 * replies++, Date.now()));
-  for (const stream of eventStreams)
-    stream.enqueue(new TextEncoder().encode('data: {"type":"refresh"}\n\n'));
-  return reply.code(204).send();
-});
 app.get('/fixture/consent', async (request, reply) => {
   const state = new URL(request.url, origin).searchParams.get('state') ?? '';
   if (!pending.has(state)) return reply.code(400).send('This fixture sign-in has expired.');

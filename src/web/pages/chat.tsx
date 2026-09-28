@@ -13,11 +13,6 @@ import { MessageBubble } from '../components/message';
 import { ChatTurnRail } from '../components/chat-turn-rail';
 import { BrandMark } from '../components/brand';
 import { Button, Notice } from '../components/ui';
-import {
-  ChatTimelinePrototypeSwitcher,
-  chatVariant,
-  type ChatVariant,
-} from '../prototypes/chat-timeline-prototype';
 import { api, apiResponse, errorMessage, post } from '../lib/api';
 import {
   hasVisibleChatActivity,
@@ -95,7 +90,6 @@ export function Chat({
   const [activeTurn, setActiveTurn] = useState<string | null>(null);
   const [visibleTurns, setVisibleTurns] = useState<string[]>([]);
   const [away, setAway] = useState<{ since: number; shown: boolean } | null>(null);
-  const [variant, setVariant] = useState<ChatVariant>(chatVariant);
   const returning = useRef(0);
   const bottom = useRef<HTMLDivElement>(null);
   const scroll = useRef<HTMLDivElement>(null);
@@ -428,8 +422,7 @@ export function Chat({
   }
   setupAction.current = () => void startOnboarding();
   return (
-    <div className="chat-page" data-variant={variant}>
-      <ChatTimelinePrototypeSwitcher variant={variant} onChange={setVariant} />
+    <div className="chat-page">
       <ChatTurnRail
         messages={allMessages}
         activeId={activeTurn}
@@ -467,35 +460,16 @@ export function Chat({
         <div className="conversation-column">
           {loadingHistory ? (
             <div className="history-skeleton" role="status" aria-label="Loading earlier messages">
-              {variant === 'A' && (
-                <>
-                  <span className="history-skeleton-mark" />
-                  <span className="history-skeleton-lines">
-                    <span />
-                    <span />
-                  </span>
-                </>
-              )}
-              {variant === 'B' && (
-                <>
-                  <span className="history-skeleton-bubble" />
-                  <span className="history-skeleton-row">
-                    <span className="history-skeleton-mark" />
-                    <span className="history-skeleton-lines">
-                      <span />
-                      <span />
-                      <span />
-                    </span>
-                  </span>
-                  <span className="history-skeleton-bubble" />
-                </>
-              )}
-              {variant === 'C' && (
-                <>
-                  <span className="history-skeleton-bar" />
-                  <span className="history-skeleton-label">Loading earlier messages</span>
-                </>
-              )}
+              <span className="history-skeleton-bubble" />
+              <span className="history-skeleton-row">
+                <span className="history-skeleton-mark" />
+                <span className="history-skeleton-lines">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+              </span>
+              <span className="history-skeleton-bubble" />
             </div>
           ) : (
             persistedMessages.length > 0 &&
@@ -606,13 +580,12 @@ export function Chat({
           <Button
             className={`jump-latest${unseen ? ' has-unseen' : ''}`}
             variant="outline"
-            size={variant === 'A' ? 'icon' : 'sm'}
+            size="sm"
             aria-label={
               unseen
                 ? `Back to latest, ${unseen} new ${unseen === 1 ? 'reply' : 'replies'}`
                 : 'Back to latest'
             }
-            title="Back to latest"
             onClick={() => {
               stickToBottom.current = true;
               returning.current = Date.now() + 1000;
@@ -620,24 +593,13 @@ export function Chat({
               bottom.current?.scrollIntoView({ block: 'end', behavior: scrollBehavior() });
             }}
           >
-            <ArrowDown size={variant === 'A' ? 16 : 14} />
-            {variant !== 'A' && (
-              <span className="jump-latest-label" aria-hidden="true">
-                {unseen
-                  ? `${unseen > 99 ? '99+' : unseen} new ${unseen === 1 ? 'reply' : 'replies'}`
-                  : variant === 'B'
-                    ? 'Back to latest'
-                    : 'Latest'}
-              </span>
-            )}
-            {variant === 'A' && unseen > 0 && (
-              <span className="jump-latest-count" aria-hidden="true">
-                {unseen > 99 ? '99+' : unseen}
-              </span>
-            )}
+            <ArrowDown size={14} />
+            {unseen
+              ? `${unseen > 99 ? '99+' : unseen} new ${unseen === 1 ? 'reply' : 'replies'}`
+              : 'Back to latest'}
           </Button>
         )}
-        {variant === 'B' && away?.shown && <div className="jump-latest-fade" aria-hidden="true" />}
+        {away?.shown && <div className="jump-latest-fade" aria-hidden="true" />}
         {error && <Notice>{error}</Notice>}
         {connectionNotice && <Notice kind="info">{connectionNotice}</Notice>}
         {!state.configuration.llmReady && (
