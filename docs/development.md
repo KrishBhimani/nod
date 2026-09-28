@@ -116,7 +116,7 @@ node scripts/webhook-relay.mjs
 cloudflared tunnel --url http://127.0.0.1:4331
 ```
 
-Copy the resulting HTTPS origin into `OTTO_WEBHOOK_ORIGIN` in the hosted environment file and restart the gateway. Configure the development Composio webhook destination as `<tunnel-origin>/api/webhooks/composio` with the matching development webhook secret. Telegram setup through Channels uses the server-generated opaque callback URL. When a temporary tunnel URL changes, update the origin and re-register affected development callbacks. Google sign-in remains on localhost:4330; the tunnel exposes no login page. The launcher never starts a tunnel or changes provider webhooks automatically.
+Copy the resulting HTTPS origin into `OTTO_WEBHOOK_ORIGIN` in the hosted environment file and restart the gateway. Configure the development Composio webhook destination as `<tunnel-origin>/api/webhooks/composio` with the matching development webhook secret. New hosted watches receive that deployment's callback override. When a temporary tunnel URL changes, update the origin and use the [scoped Composio repair procedure](composio.md) to read back and update each affected saved watch; changing the project destination alone does not replace existing overrides. Telegram setup through Channels uses the server-generated opaque callback URL, and its affected development callbacks must also be re-registered after a tunnel change. Google sign-in remains on localhost:4330; the tunnel exposes no login page. The launcher never starts a tunnel or rewrites saved provider callbacks automatically.
 
 ### What local checks establish
 
