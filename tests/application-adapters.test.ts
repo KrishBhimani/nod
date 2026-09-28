@@ -329,7 +329,7 @@ test(
         { action: 'GMAIL_FETCH_EMAILS', args: { max_results: 1 } },
       ]);
       assert.deepEqual(spoken, ['Replacement speech output.']);
-      assert.deepEqual(browserTasks, [id]);
+      assert.deepEqual(browserTasks, [id, id]);
       const screenResponse = await request('GET', `/api/inspector/screen?taskId=${id}`);
       assert.equal(screenResponse.statusCode, 200);
       assert.deepEqual(screenResponse.rawPayload, screen);
