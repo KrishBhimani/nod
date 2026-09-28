@@ -22,8 +22,6 @@ const values = () => ({
   BETTER_AUTH_SECRET: 'synthetic-auth-secret-with-32-characters',
   GOOGLE_CLIENT_ID: 'synthetic-client',
   GOOGLE_CLIENT_SECRET: 'synthetic-google-secret',
-  E2B_API_KEY: 'synthetic-e2b-key',
-  E2B_COMPUTER_TEMPLATE: 'fixture-computer',
 });
 
 test('hosted development isolates process, dotenv, data and server configuration', () => {
@@ -47,18 +45,33 @@ test('hosted development isolates process, dotenv, data and server configuration
   assert.equal(environment.PATH, '/bin');
   assert.equal(environment.OPENAI_API_KEY, undefined);
   assert.equal(environment.NODE_OPTIONS, undefined);
-  assert.equal(environment.OBJECT_STORAGE_PROVIDER, 'postgres');
-  assert.equal(environment.COMPUTER_PROVIDER, 'e2b');
+  assert.equal(environment.OBJECT_STORAGE_PROVIDER, 'http');
+  assert.equal(environment.OBJECT_STORAGE_ENDPOINT, 'http://otto.storage/v1/objects/');
+  assert.equal(environment.COMPUTER_PROVIDER, 'cloudflare');
+  assert.equal(environment.E2B_API_KEY, undefined);
+  assert.equal(environment.E2B_COMPUTER_TEMPLATE, undefined);
 });
 
-test('hosted E2B requires the combined template and rejects legacy split configuration without disclosing values', () => {
-  const input = values();
-  delete (input as Partial<typeof input>).E2B_COMPUTER_TEMPLATE;
-  assert.throws(() => hostedEnvironment(input), {
-    message: 'Missing configuration: E2B_COMPUTER_TEMPLATE.',
-  });
+test('explicit hosted E2B requires its key and combined template and rejects legacy split configuration without disclosing values', () => {
+  const input = {
+    ...values(),
+    COMPUTER_PROVIDER: 'e2b',
+    E2B_API_KEY: 'synthetic-e2b-key',
+    E2B_COMPUTER_TEMPLATE: 'fixture-computer',
+  };
+  const environment = hostedEnvironment(input, { inherited: {} });
+  assert.equal(environment.COMPUTER_PROVIDER, 'e2b');
+  assert.equal(environment.OBJECT_STORAGE_PROVIDER, 'postgres');
+  assert.equal(environment.OBJECT_STORAGE_ENDPOINT, undefined);
+  for (const key of ['E2B_API_KEY', 'E2B_COMPUTER_TEMPLATE'] as const) {
+    const missing: Partial<typeof input> = { ...input };
+    delete missing[key];
+    assert.throws(() => hostedEnvironment(missing), {
+      message: `Missing configuration: ${key}.`,
+    });
+  }
   for (const key of ['E2B_BROWSER_TEMPLATE', 'E2B_WORKSPACE_TEMPLATE'])
-    assert.throws(() => hostedEnvironment({ ...values(), [key]: 'private-legacy-template' }), {
+    assert.throws(() => hostedEnvironment({ ...input, [key]: 'private-legacy-template' }), {
       message: 'Split E2B templates are no longer supported. Configure E2B_COMPUTER_TEMPLATE.',
     });
 });
@@ -123,8 +136,6 @@ test('local Cloudflare uses development bindings and private runtime configurati
     GOOGLE_CLIENT_SECRET: "synthetic's # quoted \\\\ value\nnext line",
     OTTO_IMAGE_RELEASE: 'untrusted-image-release',
   };
-  delete (input as Partial<typeof input>).E2B_API_KEY;
-  delete (input as Partial<typeof input>).E2B_COMPUTER_TEMPLATE;
   const environment = hostedEnvironment(input, {
     root: '/fixture',
     inherited: { PATH: '/bin', OPENAI_API_KEY: 'inherited-secret' },

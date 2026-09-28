@@ -26,14 +26,16 @@ The local setup supports one owner and listens only on `127.0.0.1`. Chat and com
 - **Channels:** Set up Telegram or WhatsApp from **Channels**. Telegram can poll locally. WhatsApp needs a Meta callback and an eligible account. See [channel setup](docs/channels.md).
 - **Vault:** On macOS, Keychain supplies the encryption key. Other hosts need `OTTO_VAULT_KEY`. See [vault setup](docs/vault.md).
 
+Invalid app tool searches can be corrected within the task. If an earlier external action has no confirmed outcome, Otto blocks repeating it; a later fix does not clear that protection. See [connection execution and recovery](docs/composio.md).
+
 Press Ctrl-C to stop the server. Run `docker compose stop` to stop its containers. Task files stay in `.local/`. PostgreSQL, browser data, and installed workspace tools stay in Docker volumes. Keep these stores if you want to keep your local data.
 
 ## Hosted mode
 
-Hosted mode signs users in with Google and keeps their work separate. It needs a dedicated PostgreSQL database, Google OAuth credentials, a model key, and either E2B or Cloudflare Containers for computer work. Docker computer mode is only for the private local setup.
+Hosted mode signs users in with Google and keeps their work separate. The selected setup uses Cloudflare Containers, a dedicated PostgreSQL database, Google OAuth credentials and server-owned model/integration keys. One shared gateway serves up to eight total provisioned users. Each owner has a private application runtime and separate browser/workspace containers that start on first use; signup does not create those computer containers. E2B remains an optional, deferred adapter. Docker computer mode is only for the private local setup.
 
 For hosted development, use the [hosted environment example](deployment/hosted.env.example) and [development guide](docs/development.md#hosted-mode-on-your-computer). For deployment, use the [Cloudflare runbook](deployment/cloudflare/README.md) and [production requirements](docs/production.md). Cloudflare credentials are for deployment. They are not needed for the local setup.
 
-At **18:51 UTC on 2026-09-28**, the Otto production pilot was running manual release `4c8f827f`. Google sign-in, onboarding, persisted chat and a public-only browser task have live evidence. All five Google apps connect through custom clients; production metadata results have UI and SQL completion evidence, with original tool receipt verification pending. Hosted computer work uses Cloudflare; the selected one-E2B-computer-per-user setup remains inactive. The [dated cutover record](docs/testing/results/2026-09-28-otto-cutover.md) separates the local development runtime, source/native fixtures, manual release and pending automatic merged-main publication.
+At **22:31 UTC on 2026-09-28**, the Otto production pilot was serving manually deployed release `af84b26`, with passing CI and a fresh persisted chat reply. Google sign-in, onboarding, all five Google metadata reads, public browser navigation and browser-to-chat PDF delivery have earlier live checks at the Otto origin. The repaired Gmail and Calendar watches have delivered events through the signed ingress and classification pipeline. Authenticated Via Verde statement retrieval, Telegram delivery and the new release's automatic deployment remain unverified. Hosted computers use Cloudflare; E2B is deferred. The [dated cutover record](docs/testing/results/2026-09-28-otto-cutover.md) distinguishes release-specific checks and remaining acceptance work.
 
 The [system guide](docs/system-guide.md) describes product behavior and limits. [Architecture](docs/architecture.md) and the [API contract](docs/api-contract.md) describe the code.

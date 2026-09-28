@@ -160,6 +160,37 @@ test(
         query: 'Send an email',
       });
       assert.equal(JSON.stringify(search).includes('do-not-expose'), false);
+      const searches = t.mock.method(session, 'search', session.search);
+      assert.deepEqual(
+        await integrations.execute('local-development', 'SEARCH_TOOLS', {
+          query: 'Send an email',
+          connectionId: (await integrations.list()).find((row) => row.slug === 'gmail')
+            ?.connectionId,
+        }),
+        search,
+      );
+      assert.deepEqual(
+        searches.mock.calls.map((call) => call.arguments),
+        [['Send an email']],
+      );
+      for (const args of [
+        {},
+        { query: '  ' },
+        { query: 'x'.repeat(1001) },
+        { query: 'List labels', connectionId: 'not-an-account' },
+        { query: 'List labels', unexpected: 'private-fixture-value' },
+      ]) {
+        assert.deepEqual(await integrations.execute('local-development', 'SEARCH_TOOLS', args), {
+          status: 'rejected',
+          code: 'invalid_search_arguments',
+          message:
+            'SEARCH_TOOLS requires a query of 1 to 1000 characters and accepts an optional UUID connectionId. No app request was sent. Correct the arguments before continuing.',
+        });
+      }
+      await assert.rejects(
+        integrations.execute('another-user', 'SEARCH_TOOLS', { query: 'List labels' }),
+      );
+      assert.equal(searches.mock.callCount(), 1);
       t.mock.method(session, 'search', async () => {
         throw new Error('raw-provider-secret and internal setup details');
       });

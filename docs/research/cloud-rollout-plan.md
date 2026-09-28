@@ -1,5 +1,7 @@
 # Sidekick cloud rollout: proposal for review
 
+**Decision update, 2026-09-28:** Cloudflare Containers is the selected application and computer provider. E2B and other provider changes are deferred. This supersedes the provisional provider recommendations below without changing their historical research or validation claims. Current capacity is eight total provisioned users with separate owner runtime, browser and workspace containers; the computer roles start on first use. Follow the [current production guide](../production.md) and [Cloudflare runbook](../../deployment/cloudflare/README.md).
+
 Research and prototype date: **2026-09-26**. Starting revision: `1a471a0`.
 
 **Selected UX: A — Quick start**, following the user's review on 2026-09-26. Keep login and account setup concise: remove privacy reassurances, explanations of login versus app access, hosting credits, preview labels and event-processing detail from ordinary screens. Provider consent supplies the permissions review; the product adds only information needed for the immediate decision.
