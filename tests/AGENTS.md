@@ -103,7 +103,7 @@ Provider shutdown fixtures must include rejected aborts, a concurrent session st
 
 `ui-storage-failures` verifies that denied reads and failed writes cannot crash navigation or Inspector resizing. `connections-ui` holds a connection response across unmount and verifies that it cannot redirect the new page. Keep these component failures separate from real browser policy or OAuth acceptance.
 
-`direct-integrations` uses substitute OAuth and MCP responses with disposable PostgreSQL schemas to check encrypted direct tokens, read scopes, saved provider routing and chat callback handoff. `server-boundaries` checks exact task revision on connection resume. `runtime-session` checks the one-link chat wait. These fixtures do not prove a live Notion or Linear grant, MCP read, token refresh or hosted callback.
+`direct-integrations` uses substitute OAuth responses and provider sessions with disposable PostgreSQL schemas to check encrypted direct tokens, token refresh, read scopes, saved provider routing and chat callback handoff. It does not exercise MCP transport or reads. `server-boundaries` checks exact task revision on connection resume. `runtime-session` checks the one-link chat wait. These fixtures do not prove a live Notion or Linear grant, MCP read, token refresh or hosted callback.
 
 `browser-split-code` checks observed Portuguese submit controls and one private code across four to eight sibling digit inputs. Changed counts, hidden or unrelated fields, ambiguous groups and malformed codes must fail before entry. These DOM fixtures do not establish live website authentication.
 

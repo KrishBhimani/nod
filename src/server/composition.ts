@@ -392,6 +392,16 @@ export async function createApplication(
         status: 'recorded',
         note: 'Composio session, account, search, execution and subscription operations; internal SDK requests and Google quotas are not measured.',
       },
+      ...(adapters.directIntegrations
+        ? [
+            {
+              provider: 'direct',
+              category: 'integration' as const,
+              status: 'recorded' as const,
+              note: 'Direct OAuth, MCP search and read operations. Provider fees are not measured.',
+            },
+          ]
+        : []),
       {
         provider: adapters.speech.id,
         category: 'speech',

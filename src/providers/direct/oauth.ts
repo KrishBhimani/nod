@@ -121,7 +121,8 @@ export function createDirectOAuth(options: {
         ...secrets,
         accessToken: refreshed.access_token,
         refreshToken: refreshed.refresh_token ?? secrets.refreshToken,
-        expiresAt: refreshed.expires_in ? Date.now() + refreshed.expires_in * 1000 : undefined,
+        expiresAt:
+          refreshed.expires_in !== undefined ? Date.now() + refreshed.expires_in * 1000 : undefined,
       };
       await update(account.id, next);
       return next;
@@ -279,7 +280,8 @@ export function createDirectOAuth(options: {
       resource: secrets.resource,
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token,
-      expiresAt: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : undefined,
+      expiresAt:
+        tokens.expires_in !== undefined ? Date.now() + tokens.expires_in * 1000 : undefined,
     };
     const saved = await options.pool.query(
       `UPDATE direct_oauth_accounts SET ciphertext=$2,connected=true

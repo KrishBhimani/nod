@@ -22,7 +22,7 @@ The local setup supports one owner and listens only on `127.0.0.1`. Chat and com
 
 ## Optional connections
 
-- **Apps:** Connect Notion and Linear through their hosted MCP servers from **Apps** or chat. Gmail, Calendar, Drive, Sheets, Docs, and Slack use Composio; set `COMPOSIO_API_KEY` for those services. Existing Composio Notion accounts stay available. See [connections](docs/connections.md) and [Composio setup](docs/composio.md).
+- **Apps:** Connect Notion and Linear through their hosted MCP servers from **Apps** or chat. Gmail, Calendar, Drive, Sheets, Docs, and Slack use Composio; set `COMPOSIO_API_KEY` for those services and for existing Composio Notion accounts. See [connections](docs/connections.md) and [Composio setup](docs/composio.md).
 - **Channels:** Set up Telegram or WhatsApp from **Channels**. Telegram can poll locally. WhatsApp needs a Meta callback and an eligible account. See [channel setup](docs/channels.md).
 - **Vault:** On macOS, Keychain supplies the encryption key. Other hosts need `OTTO_VAULT_KEY`. See [vault setup](docs/vault.md).
 

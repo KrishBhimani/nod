@@ -862,14 +862,14 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
           .map((result) => result.value);
         if (!searches.length) throw new Error('No app tool catalog is available.');
         const tools = Object.assign({}, ...searches.map((item) => item.tools));
+        const rows = (await connectionRows(ownerId)).filter(
+          (row) => row.account_id && !row.revoked,
+        );
         const primary =
           availableProviders[0] === provider && results[0].status === 'fulfilled'
             ? results[0].value.tools
             : undefined;
         if (primary) {
-          const rows = (await connectionRows(ownerId)).filter(
-            (row) => row.account_id && !row.revoked,
-          );
           const connected = new Set(
             rows.filter((row) => row.provider_id === providerId).map((row) => row.slug),
           );
@@ -880,6 +880,24 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
             const slug = action.split('_')[0].toLowerCase() as Slug;
             if (connected.has(slug) && !direct.has(slug)) tools[action] = schema;
           }
+        }
+        const native = new Set(
+          rows
+            .filter((row) => row.provider_id !== providerId && providerForRow(row).configured)
+            .map((row) => row.slug),
+        );
+        for (const action of Object.keys(tools)) {
+          const slug = slugSchema.safeParse(action.split('_')[0].toLowerCase());
+          if (!slug.success || !native.has(slug.data)) continue;
+          const index = availableProviders.indexOf(providerFor(slug.data));
+          const selected = results[index];
+          const selectedTools = selected?.status === 'fulfilled' ? selected.value.tools : undefined;
+          if (
+            !selectedTools ||
+            typeof selectedTools !== 'object' ||
+            !Object.hasOwn(selectedTools, action)
+          )
+            delete tools[action];
         }
         const search = {
           tools,

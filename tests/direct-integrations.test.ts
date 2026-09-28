@@ -5,6 +5,7 @@ import pg from 'pg';
 import Fastify from 'fastify';
 import type { IntegrationProvider, IntegrationSession } from '../src/ports/integrations.ts';
 import { createDirectProvider } from '../src/providers/direct/integrations.ts';
+import { createDirectOAuth } from '../src/providers/direct/oauth.ts';
 import { createIntegrations } from '../src/server/integrations.ts';
 
 test(
@@ -18,8 +19,10 @@ test(
     address.searchParams.set('options', `-c search_path=${schema}`);
     const pool = new pg.Pool({ connectionString: address.href });
     const secretKey = randomBytes(32);
+    const keyStore = { id: 'fixture', configured: true, getKey: async () => secretKey };
     const redirectUris: string[] = [];
     let tokenRequests = 0;
+    let refreshRequests = 0;
     const request: typeof fetch = async (input, init) => {
       const url = String(input);
       if (url.endsWith('/.well-known/oauth-protected-resource/mcp/readonly'))
@@ -43,11 +46,25 @@ test(
         const body = init?.body as URLSearchParams;
         assert.equal(body.get('client_id'), 'fixture-client');
         assert.equal(body.get('resource'), 'https://mcp.linear.app/mcp/readonly');
+        if (body.get('grant_type') === 'refresh_token') {
+          refreshRequests += 1;
+          assert.equal(
+            body.get('refresh_token'),
+            refreshRequests === 1 ? 'private-refresh-token' : 'first-refresh-token',
+          );
+          return Response.json({
+            access_token:
+              refreshRequests === 1 ? 'first-refreshed-access-token' : 'refreshed-access-token',
+            refresh_token:
+              refreshRequests === 1 ? 'first-refresh-token' : 'refreshed-refresh-token',
+            expires_in: refreshRequests === 1 ? 0 : 3600,
+          });
+        }
         assert.ok(body.get('code_verifier'));
         return Response.json({
           access_token: 'private-access-token',
           refresh_token: 'private-refresh-token',
-          expires_in: 3600,
+          expires_in: 0,
         });
       }
       throw new Error(`Unexpected request: ${url}`);
@@ -55,7 +72,7 @@ test(
     try {
       const provider = createDirectProvider({
         pool,
-        keyStore: { id: 'fixture', configured: true, getKey: async () => secretKey },
+        keyStore,
         request,
       });
       assert.deepEqual(provider.supportedServices, ['notion', 'linear']);
@@ -102,6 +119,29 @@ test(
         [attempt.accountId],
       );
       assert.doesNotMatch(encrypted.rows[0].ciphertext, /private-access-token|fixture-client/);
+      const oauth = createDirectOAuth({ pool, keyStore, request });
+      assert.deepEqual(await oauth.access('fixture-owner', attempt.accountId), {
+        service: 'linear',
+        accessToken: 'first-refreshed-access-token',
+      });
+      assert.equal(refreshRequests, 1);
+      assert.deepEqual(await oauth.access('fixture-owner', attempt.accountId), {
+        service: 'linear',
+        accessToken: 'refreshed-access-token',
+      });
+      assert.equal(refreshRequests, 2);
+      await oauth.access('fixture-owner', attempt.accountId);
+      assert.equal(refreshRequests, 2);
+      assert.doesNotMatch(
+        (
+          await pool.query<{ ciphertext: string }>(
+            'SELECT ciphertext FROM direct_oauth_accounts WHERE id=$1',
+            [attempt.accountId],
+          )
+        ).rows[0].ciphertext,
+        /refreshed-access-token/,
+      );
+      assert.deepEqual((await session.search('linear')).tools, {});
       await assert.rejects(
         session.execute('LINEAR_DELETE_ISSUE', {}, attempt.accountId),
         /unavailable/,
@@ -114,7 +154,7 @@ test(
         }),
         callback,
       );
-      assert.equal(tokenRequests, 1);
+      assert.equal(tokenRequests, 3);
     } finally {
       await pool.end();
       await admin.query(`DROP SCHEMA ${schema} CASCADE`);
@@ -153,7 +193,11 @@ test(
       search: async () => {
         if (id === 'composio' && composioSearchFails) throw new Error('Provider unavailable.');
         return {
-          tools: { [`${id}_tool`]: {}, NOTION_RETRIEVE_PAGE: { provider: id } },
+          tools: {
+            [`${id}_tool`]: {},
+            NOTION_RETRIEVE_PAGE: { provider: id },
+            ...(id === 'composio' ? { NOTION_FETCH_DATABASE: { provider: id } } : {}),
+          },
           suggestions: [],
         };
       },
@@ -194,23 +238,27 @@ test(
       },
       matchesSubscription: () => false,
     });
-    const integrations = await createIntegrations(pool, {
-      ownerId: 'local-development',
-      provider: provider('composio', ['notion']),
-      additionalProviders: [provider('direct', ['notion', 'linear'])],
-      resumeConnection: async (taskId, revision, service) => {
-        resumes.push(`${taskId}:${revision}:${service}`);
-        return true;
-      },
-      baseUrl: 'http://localhost:4310',
-      wake: async () => {},
-    });
-    integrations.registerRoutes(app);
     try {
+      const integrations = await createIntegrations(pool, {
+        ownerId: 'local-development',
+        provider: provider('composio', ['notion']),
+        additionalProviders: [provider('direct', ['notion', 'linear'])],
+        resumeConnection: async (taskId, revision, service) => {
+          resumes.push(`${taskId}:${revision}:${service}`);
+          return true;
+        },
+        baseUrl: 'http://localhost:4310',
+        wake: async () => {},
+      });
+      integrations.registerRoutes(app);
       const existing = await pool.query<{ id: string }>(
         `INSERT INTO app_connections(owner_id,slug,account_id,provider_id)
          VALUES('local-development','notion','composio-notion','composio') RETURNING id`,
       );
+      const legacy = await integrations.execute('local-development', 'SEARCH_TOOLS', {
+        query: 'notion',
+      });
+      assert.ok((legacy as { tools: Record<string, unknown> }).tools.NOTION_FETCH_DATABASE);
       const connect = await app.inject({ method: 'POST', url: '/api/apps/notion/connect' });
       assert.equal(connect.statusCode, 200);
       const callback = await app.inject({ url: `/api/apps/callback?state=${state}&code=fixture` });
@@ -247,6 +295,13 @@ test(
       assert.deepEqual((search as { tools: Record<string, unknown> }).tools.NOTION_RETRIEVE_PAGE, {
         provider: 'direct',
       });
+      assert.equal(
+        Object.hasOwn(
+          (search as { tools: Record<string, unknown> }).tools,
+          'NOTION_FETCH_DATABASE',
+        ),
+        false,
+      );
       composioSearchFails = true;
       const partial = await integrations.execute('local-development', 'SEARCH_TOOLS', {
         query: 'notion',

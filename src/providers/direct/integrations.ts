@@ -158,10 +158,15 @@ export function createDirectProvider(options: {
             ),
           );
           for (const service of supportedServices) {
-            if (!Object.keys(matches).some((name) => name.startsWith(`${service.toUpperCase()}_`)))
-              continue;
+            const actions = Object.keys(matches).filter((name) =>
+              name.startsWith(`${service.toUpperCase()}_`),
+            );
+            if (!actions.length) continue;
             const id = await oauth.connectedAccount(ownerId, service);
-            if (!id) continue;
+            if (!id) {
+              for (const action of actions) delete matches[action];
+              continue;
+            }
             try {
               const account = await oauth.access(ownerId, id);
               const available = await mcp(service, account.accessToken, (client) =>
@@ -181,13 +186,21 @@ export function createDirectProvider(options: {
                     };
               for (const [action, toolName] of Object.entries(names)) {
                 const tool = available.tools.find((entry) => entry.name === toolName);
-                if (tool && matches[action])
+                if (
+                  !tool ||
+                  (action === 'NOTION_SEARCH_NOTION_PAGE' &&
+                    !available.tools.some((entry) => entry.name === 'notion-get-tool-access'))
+                )
+                  delete matches[action];
+                else if (matches[action])
                   matches[action] = {
                     description: tool.description,
                     inputSchema: tool.inputSchema,
                   };
               }
-            } catch {}
+            } catch {
+              for (const action of actions) delete matches[action];
+            }
           }
           return { tools: matches, suggestions: [] };
         },
