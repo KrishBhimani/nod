@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import { z } from 'zod';
+import { conversationRoutingFailureCodes } from '../ports/conversation.ts';
 import type { ProviderUsageEvent } from '../ports/provider-usage.ts';
 import type { ProviderUsageResponse } from '../shared/provider-usage.ts';
 
@@ -28,6 +29,13 @@ const schema = z
     toolCallId: z.uuid().optional(),
     toolName: toolName.optional(),
     status: z.enum(['succeeded', 'failed', 'cancelled']),
+    routingFailure: z
+      .object({
+        code: z.enum(conversationRoutingFailureCodes),
+        httpStatus: z.number().int().min(100).max(599).optional(),
+      })
+      .strict()
+      .optional(),
     durationMs: metric.default(0),
     inputTokens: metric,
     outputTokens: metric,
@@ -41,7 +49,17 @@ const schema = z
     pricing: z.enum(['reported', 'sdk_estimate', 'unavailable']).optional(),
   })
   .strict()
-  .refine((event) => Boolean(event.toolCallId) === Boolean(event.toolName));
+  .refine((event) => Boolean(event.toolCallId) === Boolean(event.toolName))
+  .refine(
+    (event) =>
+      !event.routingFailure ||
+      (event.category === 'relevance' &&
+        event.operation === 'conversation_route' &&
+        (event.status === 'failed' || event.status === 'cancelled') &&
+        !event.taskId &&
+        !event.toolCallId &&
+        !event.toolName),
+  );
 
 export function createProviderUsageStore(
   pool: Pool,
@@ -98,7 +116,7 @@ export function createProviderUsageStore(
     }
   }
   function record(input: ProviderUsageEvent) {
-    if (!options.enabled() || stopped) return;
+    if (stopped || (!options.enabled() && input.routingFailure === undefined)) return;
     const current = context.getStore();
     const inherited = !input.taskId || input.taskId === current?.taskId ? current : undefined;
     const parsed = schema.safeParse({
@@ -118,24 +136,27 @@ export function createProviderUsageStore(
         ? "EXISTS(SELECT 1 FROM inspector_records r JOIN tasks t ON t.id=r.task_id AND t.owner_id=r.owner_id WHERE r.id=$13::uuid AND r.owner_id=$2 AND r.task_id=$3 AND r.kind='tool' AND r.name=$14)"
         : 'false';
     const priced = event.costUsd != null && event.pricing && event.pricing !== 'unavailable';
-    const metrics = Object.fromEntries(
-      [
-        'inputTokens',
-        'outputTokens',
-        'cacheReadTokens',
-        'cacheWriteTokens',
-        'audioSeconds',
-        'characters',
-        'messages',
-        'bytes',
-      ].flatMap((key) => {
-        const value = event[key as keyof typeof event];
-        return typeof value === 'number' ? [[key, value]] : [];
-      }),
-    );
+    const metrics = {
+      ...Object.fromEntries(
+        [
+          'inputTokens',
+          'outputTokens',
+          'cacheReadTokens',
+          'cacheWriteTokens',
+          'audioSeconds',
+          'characters',
+          'messages',
+          'bytes',
+        ].flatMap((key) => {
+          const value = event[key as keyof typeof event];
+          return typeof value === 'number' ? [[key, value]] : [];
+        }),
+      ),
+      ...(event.routingFailure ? { routingFailure: event.routingFailure } : {}),
+    };
     const write = (async () => {
       await prune();
-      if (!options.enabled()) return;
+      if (!options.enabled() && !event.routingFailure) return;
       await pool.query(
         `INSERT INTO provider_usage(id,owner_id,task_id,provider,category,operation,model,status,duration_ms,metrics,cost_usd,pricing,tool_call_id,tool_name)
         SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,CASE WHEN ${ownedTool} THEN $13::uuid END,CASE WHEN ${ownedTool} THEN $14::text END

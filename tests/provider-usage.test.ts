@@ -15,6 +15,218 @@ import {
 import type { AgentEvent } from '../src/ports/agent.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 import type { IntegrationProvider } from '../src/ports/integrations.ts';
+import type { ProviderUsageEvent } from '../src/ports/provider-usage.ts';
+import { conversationRoutingFailureCodes } from '../src/ports/conversation.ts';
+
+test(
+  'routing failures remain owned and retained with Inspector disabled without enabling ordinary capture',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async () => {
+    const schema = `test_routing_usage_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+    });
+    const firstOwner = randomUUID();
+    const secondOwner = randomUUID();
+    const create = (ownerId: string) =>
+      createProviderUsageStore(pool, { ownerId, enabled: () => false, coverage: [] });
+    const first = create(firstOwner);
+    const second = create(secondOwner);
+    const app = Fastify();
+    let restored: ReturnType<typeof create> | undefined;
+    const base: ProviderUsageEvent = {
+      provider: 'openai',
+      category: 'relevance',
+      operation: 'conversation_route',
+      model: 'fixture',
+      status: 'failed',
+      durationMs: 21,
+    };
+    const ids = conversationRoutingFailureCodes.map(() => randomUUID());
+    const secondId = randomUUID();
+    try {
+      await pool.query('CREATE TABLE tasks(id uuid PRIMARY KEY,owner_id text NOT NULL)');
+      await first.initialize();
+      await second.initialize();
+      first.registerRoutes(app);
+      for (const [index, code] of conversationRoutingFailureCodes.entries()) {
+        const event: ProviderUsageEvent = {
+          ...base,
+          id: ids[index],
+          status: index % 2 ? 'cancelled' : 'failed',
+          inputTokens: 12,
+          routingFailure: {
+            code,
+            ...(index === 0 ? { httpStatus: 100 } : index === 1 ? { httpStatus: 599 } : {}),
+          },
+        };
+        first.record(event);
+        first.record(event);
+      }
+      first.record(base);
+      first.record({ ...base, status: 'succeeded' });
+      first.record({ ...base, category: 'agent', operation: 'response' });
+      first.record({ ...base, operation: 'classify' });
+      second.record({
+        ...base,
+        id: secondId,
+        routingFailure: { code: 'response_processing', httpStatus: 429 },
+      });
+      await Promise.all([first.flush(), second.flush()]);
+      const rows = (
+        await pool.query(
+          'SELECT id,owner_id,task_id,tool_call_id,tool_name,metrics FROM provider_usage ORDER BY id',
+        )
+      ).rows;
+      assert.equal(rows.length, conversationRoutingFailureCodes.length + 1);
+      for (const [index, code] of conversationRoutingFailureCodes.entries()) {
+        const row = rows.find((row) => row.id === ids[index])!;
+        assert.equal(row.owner_id, firstOwner);
+        assert.equal(row.task_id, null);
+        assert.equal(row.tool_call_id, null);
+        assert.equal(row.tool_name, null);
+        assert.deepEqual(row.metrics, {
+          inputTokens: 12,
+          routingFailure: {
+            code,
+            ...(index === 0 ? { httpStatus: 100 } : index === 1 ? { httpStatus: 599 } : {}),
+          },
+        });
+      }
+      assert.equal(rows.find((row) => row.id === secondId)?.owner_id, secondOwner);
+      const owned = await first.read();
+      assert.equal(owned.captureEnabled, false);
+      assert.equal(owned.providers.length, 1);
+      assert.equal(owned.providers[0].requests, conversationRoutingFailureCodes.length);
+      assert.equal((await second.read()).providers[0].requests, 1);
+      assert.equal((await app.inject('/api/inspector/providers')).statusCode, 404);
+      await first.close();
+      await second.close();
+      await pool.query(
+        "UPDATE provider_usage SET recorded_at=now()-interval '8 days' WHERE id=ANY($1::uuid[])",
+        [[ids[0], secondId]],
+      );
+      restored = create(firstOwner);
+      await restored.initialize();
+      const retained = (await pool.query('SELECT id FROM provider_usage ORDER BY id')).rows;
+      assert.equal(
+        retained.some((row) => row.id === ids[0]),
+        false,
+      );
+      assert.equal(
+        retained.some((row) => row.id === secondId),
+        true,
+      );
+      assert.equal(retained.length, conversationRoutingFailureCodes.length);
+      assert.equal(
+        (await restored.read()).providers[0].requests,
+        conversationRoutingFailureCodes.length - 1,
+      );
+    } finally {
+      await app.close();
+      await Promise.all([first.close(), second.close(), restored?.close()]);
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);
+
+test('routing failure validation rejects extra data, wrong event scope and task or tool references', async () => {
+  for (const enabled of [false, true]) {
+    const writes: unknown[][] = [];
+    const pool = {
+      query: async (sql: string, values?: unknown[]) => {
+        if (sql.includes('INSERT INTO provider_usage')) writes.push(values!);
+        return { rows: [] };
+      },
+    } as unknown as pg.Pool;
+    const usage = createProviderUsageStore(pool, {
+      ownerId: 'fixture-owner',
+      enabled: () => enabled,
+      coverage: [],
+    });
+    const base: ProviderUsageEvent = {
+      provider: 'openai',
+      category: 'relevance',
+      operation: 'conversation_route',
+      status: 'failed',
+      durationMs: 1,
+      routingFailure: { code: 'invalid_json' },
+    };
+    const malformed = [
+      { ...base, routingFailure: {} },
+      { ...base, routingFailure: { code: 'private-provider-error' } },
+      { ...base, routingFailure: { code: 'invalid_json', error: 'private-error' } },
+      { ...base, rawError: 'private-error' },
+      { ...base, headers: { authorization: 'private-secret' } },
+      { ...base, category: 'agent' },
+      { ...base, operation: 'classify' },
+      { ...base, status: 'succeeded' },
+      { ...base, taskId: randomUUID() },
+      { ...base, toolCallId: randomUUID(), toolName: 'apps' },
+      ...[99, 600, 401.5, Number.NaN, '429', null].map((httpStatus) => ({
+        ...base,
+        routingFailure: { code: 'response_processing', httpStatus },
+      })),
+    ];
+    try {
+      for (const event of malformed) usage.record(event as ProviderUsageEvent);
+      usage.withTask(randomUUID(), () => usage.record(base));
+      usage.withTool(randomUUID(), randomUUID(), 'apps', () => usage.record(base));
+      await usage.flush();
+      assert.equal(writes.length, 0);
+      usage.record(base);
+      await usage.flush();
+      assert.equal(writes.length, 1);
+      assert.deepEqual(JSON.parse(writes[0][9] as string), {
+        routingFailure: { code: 'invalid_json' },
+      });
+      assert.doesNotMatch(JSON.stringify(writes), /private-error|private-secret/);
+    } finally {
+      await usage.close();
+    }
+  }
+});
+
+test('disabled routing diagnostics keep the pending bound and drain accepted writes on shutdown', async () => {
+  let release!: () => void;
+  const pruning = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const writes: unknown[][] = [];
+  const pool = {
+    query: async (sql: string, values?: unknown[]) => {
+      if (sql.startsWith('DELETE')) await pruning;
+      if (sql.includes('INSERT INTO provider_usage')) writes.push(values!);
+      return { rows: [] };
+    },
+  } as unknown as pg.Pool;
+  const usage = createProviderUsageStore(pool, {
+    ownerId: 'fixture-owner',
+    enabled: () => false,
+    coverage: [],
+  });
+  const event: ProviderUsageEvent = {
+    provider: 'openai',
+    category: 'relevance',
+    operation: 'conversation_route',
+    status: 'cancelled',
+    durationMs: 1,
+    routingFailure: { code: 'cancelled' },
+  };
+  for (let index = 0; index < 140; index++) usage.record(event);
+  assert.equal(writes.length, 0);
+  assert.equal((await usage.read()).droppedEvents, 12);
+  const closing = usage.close();
+  usage.record(event);
+  release();
+  await closing;
+  assert.equal(writes.length, 128);
+});
 
 test('usage shutdown drains accepted writes and rejects late records', async () => {
   let release!: () => void;

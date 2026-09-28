@@ -1,6 +1,6 @@
 # Privacy notice: operator template
 
-**Draft, checked against the implementation on 2026-09-27. Do not publish unchanged.** The repository does not identify the operator of a deployment or establish its retention policy. Replace every bracketed placeholder, list the providers actually enabled, and remove features that deployment does not offer. Confirm how requests for access or deletion will be handled before inviting users. This template is not a legal compliance assessment.
+**Draft, checked against the implementation on 2026-09-28. Do not publish unchanged.** The repository does not identify the operator of a deployment or establish its retention policy. Replace every bracketed placeholder, list the providers actually enabled, and remove features that deployment does not offer. Confirm how requests for access or deletion will be handled before inviting users. This template is not a legal compliance assessment.
 
 ## Configure the public notice
 
@@ -52,6 +52,8 @@ Starting a new chat archives the previous conversation; it does not erase its hi
 Sidekick does not currently provide complete self-service account deletion. Contact [PUBLIC CONTACT EMAIL] to request access, correction or deletion; this requires operator action across the relevant systems. [DESCRIBE HOW REQUESTS ARE HANDLED AND ANY ACTUAL RETENTION LIMITATIONS.] Deleting Sidekick data does not itself establish deletion from a provider's systems or backups.
 
 Developer diagnostics are optional and can contain prompts and tool content. When enabled, these records are pruned after seven days. Ordinary hosted accounts do not record these diagnostic payloads; this limit does not apply to ordinary chat, file or task history.
+
+Failed message routing can retain a private diagnostic record for seven days even when optional developer diagnostics are disabled. It contains a fixed failure code, optional HTTP status and bounded model, timing and usage information, without prompts, outputs, raw errors or credentials.
 ```
 
 ## Implementation basis

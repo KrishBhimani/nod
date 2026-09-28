@@ -5,6 +5,7 @@ import { z } from 'zod';
 import type {
   ConversationRouteDecision,
   ConversationRouter,
+  ConversationRoutingFailureCode,
   ConversationRoutingContext,
 } from '../../ports/conversation.ts';
 import { defaultConversationRoutingTimeoutMs } from '../../ports/conversation.ts';
@@ -105,6 +106,7 @@ export function createPiConversationRouter(options: {
   provider: string;
   model?: string;
   apiKey?: string;
+  fetch?: typeof globalThis.fetch;
   onUsage?: RecordProviderUsage;
   createRuntime?: (options: CreateModelRuntimeOptions) => Promise<RoutingRuntime>;
 }): ConversationRouter {
@@ -126,27 +128,41 @@ export function createPiConversationRouter(options: {
     return initialized;
   }
   return async (input) => {
-    if (input.signal.aborted) throw cancelled();
-    if (!options.apiKey) throw new Error('Conversation routing is not configured.');
+    const started = performance.now();
+    const id = randomUUID();
+    let provider = options.provider;
+    let modelId = options.model || routingModels[options.provider as keyof typeof routingModels];
+    let status: ProviderUsageEvent['status'] = 'failed';
+    let metrics: Partial<ProviderUsageEvent> = {};
+    let failure: ConversationRoutingFailureCode = 'initialization';
+    let httpStatus: number | undefined;
+    let publicError = 'Conversation routing is unavailable.';
     const signal = AbortSignal.any([
       input.signal,
       AbortSignal.timeout(defaultConversationRoutingTimeoutMs),
     ]);
-    const modelId = options.model || routingModels[options.provider as keyof typeof routingModels];
-    const value = await withCancellation(runtime(), signal);
-    if (signal.aborted) throw cancelled();
-    const model = value.getModel(options.provider, modelId);
-    if (!model) throw new Error('Conversation routing model is unavailable.');
-    const data = payload(input);
-    const candidateIds = new Set(
-      [...data.candidates, ...data.blockedCandidates].map((candidate) => candidate.outcomeId),
-    );
-    const started = performance.now();
-    const id = randomUUID();
     const completion = (async (): Promise<ConversationRouteDecision> => {
-      let status: ProviderUsageEvent['status'] = 'failed';
-      let metrics: Partial<ProviderUsageEvent> = {};
       try {
+        if (signal.aborted) throw cancelled();
+        if (!options.apiKey) {
+          publicError = 'Conversation routing is not configured.';
+          throw new Error(publicError);
+        }
+        const value = await withCancellation(runtime(), signal);
+        if (signal.aborted) throw cancelled();
+        failure = 'model_unavailable';
+        const model = value.getModel(options.provider, modelId);
+        if (!model) {
+          publicError = 'Conversation routing model is unavailable.';
+          throw new Error(publicError);
+        }
+        provider = model.provider;
+        modelId = model.id;
+        failure = 'completion_setup';
+        const data = payload(input);
+        const candidateIds = new Set(
+          [...data.candidates, ...data.blockedCandidates].map((candidate) => candidate.outcomeId),
+        );
         const message = await value.completeSimple(
           model,
           {
@@ -162,44 +178,80 @@ export function createPiConversationRouter(options: {
             timeoutMs: defaultConversationRoutingTimeoutMs,
             cacheRetention: 'none',
             transport: 'sse',
+            fetch: async (...args) => {
+              failure = 'transport';
+              const response = await (options.fetch ?? globalThis.fetch)(...args);
+              if (
+                Number.isInteger(response.status) &&
+                response.status >= 100 &&
+                response.status <= 599
+              )
+                httpStatus = response.status;
+              failure = 'response_processing';
+              return response;
+            },
           },
         );
         metrics = piUsageMetrics(message.usage);
         if (signal.aborted || message.stopReason === 'aborted') throw cancelled();
-        if (
-          message.stopReason !== 'stop' ||
-          message.content.some((item) => item.type === 'toolCall')
-        )
+        if (message.stopReason === 'length') {
+          failure = 'output_limit';
           throw new Error('Invalid routing result.');
+        }
+        if (
+          message.stopReason === 'toolUse' ||
+          message.content.some((item) => item.type === 'toolCall')
+        ) {
+          failure = 'unexpected_tool';
+          throw new Error('Invalid routing result.');
+        }
+        if (message.stopReason !== 'stop') throw new Error('Invalid routing result.');
         const text = message.content
           .filter((item) => item.type === 'text')
           .map((item) => item.text)
           .join('');
-        if (text.length > 4000) throw new Error('Invalid routing result.');
-        const decision = decisionSchema.parse(JSON.parse(text));
-        if (decision.kind === 'continue' && !candidateIds.has(decision.outcomeId))
+        if (text.length > 4000) {
+          failure = 'text_limit';
           throw new Error('Invalid routing result.');
+        }
+        failure = 'invalid_json';
+        const decoded: unknown = JSON.parse(text);
+        failure = 'invalid_decision';
+        const decision = decisionSchema.parse(decoded);
+        if (decision.kind === 'continue' && !candidateIds.has(decision.outcomeId)) {
+          failure = 'unknown_outcome';
+          throw new Error('Invalid routing result.');
+        }
         status = 'succeeded';
         return decision;
       } catch (error) {
         if (signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
           status = 'cancelled';
+          failure = 'cancelled';
           throw cancelled();
         }
-        throw new Error('Conversation routing is unavailable.');
+        throw new Error(publicError);
       } finally {
         try {
           options.onUsage?.({
             id,
-            provider: model.provider,
+            provider,
             category: 'relevance',
             operation: 'conversation_route',
-            model: model.id,
+            model: modelId,
             status,
             durationMs: performance.now() - started,
             pricing: 'unavailable',
             costUsd: null,
             ...metrics,
+            ...(status === 'succeeded'
+              ? {}
+              : {
+                  routingFailure: {
+                    code: failure,
+                    ...(httpStatus !== undefined ? { httpStatus } : {}),
+                  },
+                }),
           });
         } catch {}
       }

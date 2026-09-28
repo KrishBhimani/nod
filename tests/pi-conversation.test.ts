@@ -55,12 +55,18 @@ function response(text: string, changes: Partial<AssistantMessage> = {}): Assist
   };
 }
 
-function fixture(complete: ModelRuntime['completeSimple'], provider = 'openai', model?: string) {
+function fixture(
+  complete: ModelRuntime['completeSimple'],
+  provider = 'openai',
+  model?: string,
+  fetch?: typeof globalThis.fetch,
+) {
   const usage: ProviderUsageEvent[] = [];
   let creations = 0;
   const router = createPiConversationRouter({
     provider,
     model,
+    fetch,
     apiKey: 'private-fixture-key',
     onUsage: (value) => usage.push(value),
     createRuntime: async (options) => {
@@ -153,6 +159,7 @@ test('Pi routing uses local catalog defaults and stateless bounded data without 
     assert.equal(value.usage[0].cacheReadTokens, 5);
     assert.equal(value.usage[0].costUsd, 0.031);
     assert.equal(value.usage[0].pricing, 'sdk_estimate');
+    assert.equal(value.usage[0].routingFailure, undefined);
     assert.doesNotMatch(JSON.stringify(value.usage), /private-|trip|credentials/);
   }
 });
@@ -354,6 +361,9 @@ test('Pi routing cancels promptly, forwards the signal and records late reported
     message: 'Conversation routing cancelled.',
   });
   assert.equal(value.creations(), 0);
+  assert.equal(value.usage.length, 1);
+  assert.deepEqual(value.usage[0].routingFailure, { code: 'cancelled' });
+  assert.equal(value.usage[0].costUsd, null);
   const live = new AbortController();
   const pending = value.router({ ...context(), signal: live.signal });
   await new Promise((resolve) => setImmediate(resolve));
@@ -363,15 +373,23 @@ test('Pi routing cancels promptly, forwards the signal and records late reported
   assert.equal(providerSignal?.aborted, true);
   finish(response('{"kind":"continue","outcomeId":"outcome-one"}'));
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(value.usage.length, 1);
-  assert.equal(value.usage[0].status, 'cancelled');
-  assert.equal(value.usage[0].costUsd, 0.031);
+  assert.equal(value.usage.length, 2);
+  assert.equal(value.usage[1].status, 'cancelled');
+  assert.equal(value.usage[1].costUsd, 0.031);
+  assert.deepEqual(value.usage[1].routingFailure, { code: 'cancelled' });
   assert.doesNotMatch(JSON.stringify(value.usage), /private-abort-reason|outcome-one/);
 });
 
-test('Pi routing reports unavailable costs honestly and masks provider failures without metering unconfigured requests', async () => {
-  const absent = createPiConversationRouter({ provider: 'openai' });
+test('Pi routing reports unavailable costs honestly and masks configuration and provider failures', async () => {
+  const absentUsage: ProviderUsageEvent[] = [];
+  const absent = createPiConversationRouter({
+    provider: 'openai',
+    onUsage: (value) => absentUsage.push(value),
+  });
   await assert.rejects(absent(context()), { message: 'Conversation routing is not configured.' });
+  assert.equal(absentUsage.length, 1);
+  assert.deepEqual(absentUsage[0].routingFailure, { code: 'initialization' });
+  assert.equal(absentUsage[0].costUsd, null);
   const failed = fixture(async () => {
     throw new Error('private-fixture-key: raw upstream error');
   });
@@ -382,6 +400,7 @@ test('Pi routing reports unavailable costs honestly and masks provider failures 
   assert.equal(failed.usage[0].status, 'failed');
   assert.equal(failed.usage[0].pricing, 'unavailable');
   assert.equal(failed.usage[0].costUsd, null);
+  assert.deepEqual(failed.usage[0].routingFailure, { code: 'completion_setup' });
   const noCost = response('{"kind":"conversation"}');
   noCost.usage.cost.total = Number.NaN;
   const unpriced = fixture(async () => noCost);
@@ -389,4 +408,363 @@ test('Pi routing reports unavailable costs honestly and masks provider failures 
   assert.equal(unpriced.usage[0].pricing, 'unavailable');
   assert.equal(unpriced.usage[0].costUsd, null);
   assert.equal(unpriced.usage[0].inputTokens, 100);
+});
+
+test('Pi routing records initialization and model failures once and includes setup time', async (t) => {
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  for (const phase of ['create', 'credentials', 'model', 'missing', 'success'] as const) {
+    const usage: ProviderUsageEvent[] = [];
+    let calls = 0;
+    const router = createPiConversationRouter({
+      provider: 'openai',
+      apiKey: 'private-fixture-key',
+      onUsage: (value) => usage.push(value),
+      createRuntime: async () => {
+        now += 40;
+        if (phase === 'create') throw new Error('private-initialization-error');
+        return {
+          setRuntimeApiKey: async () => {
+            now += 30;
+            if (phase === 'credentials') throw new Error('private-credential-error');
+          },
+          getModel: () => {
+            now += 20;
+            if (phase === 'model') throw new Error('private-model-error');
+            return phase === 'missing' ? undefined : catalog.getModel('openai', 'gpt-6-luna');
+          },
+          completeSimple: async () => {
+            calls++;
+            now += 10;
+            return response('{"kind":"conversation"}');
+          },
+        };
+      },
+    });
+    if (phase === 'success') assert.deepEqual(await router(context()), { kind: 'conversation' });
+    else
+      await assert.rejects(router(context()), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.doesNotMatch(error.message, /private-/);
+        assert.equal(error.cause, undefined);
+        return true;
+      });
+    assert.equal(calls, phase === 'success' ? 1 : 0);
+    assert.equal(usage.length, 1);
+    assert.equal(
+      usage[0].durationMs,
+      phase === 'create' ? 40 : phase === 'credentials' ? 70 : phase === 'success' ? 100 : 90,
+    );
+    assert.equal(usage[0].model, 'gpt-6-luna');
+    assert.deepEqual(
+      usage[0].routingFailure,
+      phase === 'success'
+        ? undefined
+        : {
+            code: ['create', 'credentials'].includes(phase)
+              ? 'initialization'
+              : 'model_unavailable',
+          },
+    );
+    assert.doesNotMatch(JSON.stringify(usage), /private-/);
+  }
+});
+
+test('Pi routing records fixed validation failures without retaining provider content or foreign IDs', async () => {
+  const cases = [
+    [response('private-output', { stopReason: 'length' }), 'output_limit'],
+    [response('private-output', { stopReason: 'toolUse' }), 'unexpected_tool'],
+    [
+      response('', {
+        content: [{ type: 'toolCall', id: 'private-call', name: 'private-tool', arguments: {} }],
+      }),
+      'unexpected_tool',
+    ],
+    [response('private-output'.repeat(400)), 'text_limit'],
+    [response('private-output'), 'invalid_json'],
+    [response('{"kind":"conversation","private-field":"private-output"}'), 'invalid_decision'],
+    [response('{"kind":"continue","outcomeId":"private-foreign-outcome"}'), 'unknown_outcome'],
+  ] as const;
+  for (const [message, code] of cases) {
+    const value = fixture(async () => message);
+    await assert.rejects(value.router(context()), {
+      message: 'Conversation routing is unavailable.',
+    });
+    assert.equal(value.usage.length, 1);
+    assert.equal(value.usage[0].status, 'failed');
+    assert.equal(value.usage[0].costUsd, 0.031);
+    assert.deepEqual(value.usage[0].routingFailure, { code });
+    assert.doesNotMatch(JSON.stringify(value.usage), /private-/);
+  }
+});
+
+test('Pi routing forwards identical fetch inputs and responses and records only bounded HTTP status', async () => {
+  const request = new Request('https://provider.invalid/responses', {
+    method: 'POST',
+    headers: { authorization: 'Bearer private-fixture-key' },
+    body: 'private-request-body',
+  });
+  const init = { headers: { 'x-private-header': 'private-header-value' } };
+  for (const status of [429, 200, 0, 99, 600, 200.5, Number.NaN]) {
+    const reply = new Response('private-response-body', { status: 200 });
+    Object.defineProperty(reply, 'status', { value: status });
+    let calls = 0;
+    const value = fixture(
+      async (_model, _request, options) => {
+        assert.ok(options?.fetch);
+        const observed = await options.fetch(request, init);
+        assert.equal(observed, reply);
+        assert.equal(observed.bodyUsed, false);
+        throw new Error('private-provider-error');
+      },
+      'openai',
+      undefined,
+      async (input, options) => {
+        calls++;
+        assert.equal(input, request);
+        assert.equal(options, init);
+        return reply;
+      },
+    );
+    await assert.rejects(value.router(context()), {
+      message: 'Conversation routing is unavailable.',
+    });
+    assert.equal(calls, 1);
+    assert.equal(value.usage.length, 1);
+    assert.deepEqual(value.usage[0].routingFailure, {
+      code: 'response_processing',
+      ...(Number.isInteger(status) && status >= 100 && status <= 599 ? { httpStatus: status } : {}),
+    });
+    assert.doesNotMatch(JSON.stringify(value.usage), /private-|authorization|provider.invalid/);
+  }
+});
+
+test('Pi routing preserves actual SDK success and classifies HTTP, transport and incomplete SSE failures without retries', async () => {
+  for (const kind of ['http', 'transport', 'sse', 'success'] as const) {
+    let calls = 0;
+    const usage: ProviderUsageEvent[] = [];
+    const router = createPiConversationRouter({
+      provider: 'openai',
+      apiKey: 'private-fixture-key',
+      onUsage: (value) => usage.push(value),
+      createRuntime: async (options) => {
+        const runtime = await ModelRuntime.create(options);
+        return {
+          getModel: (...args) => runtime.getModel(...args),
+          setRuntimeApiKey: (...args) => runtime.setRuntimeApiKey(...args),
+          completeSimple: (...args) => {
+            assert.equal(typeof args[2]?.fetch, 'function');
+            return runtime.completeSimple(...args);
+          },
+        };
+      },
+      fetch: async (_input, init) => {
+        calls++;
+        const body = JSON.parse(String(init?.body));
+        assert.equal(body.model, 'gpt-6-luna');
+        assert.equal(body.max_output_tokens, 600);
+        assert.equal(body.tool_choice, 'none');
+        assert.deepEqual(body.reasoning, { effort: 'none' });
+        if (kind === 'transport') throw new TypeError('private-transport-error');
+        if (kind === 'http')
+          return new Response(JSON.stringify({ error: { message: 'private-provider-error' } }), {
+            status: 429,
+            headers: { 'content-type': 'application/json', 'retry-after': '0' },
+          });
+        if (kind === 'success') {
+          const item = {
+            id: 'private-message-id',
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: '{"kind":"conversation"}' }],
+          };
+          const events = [
+            { type: 'response.output_item.done', output_index: 0, item },
+            {
+              type: 'response.completed',
+              response: {
+                id: 'private-response-id',
+                status: 'completed',
+                output: [item],
+                usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
+              },
+            },
+          ];
+          return new Response(
+            events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''),
+            {
+              headers: { 'content-type': 'text/event-stream' },
+            },
+          );
+        }
+        return new Response(
+          'data: {"type":"response.created","response":{"id":"private-id"}}\n\n',
+          {
+            headers: { 'content-type': 'text/event-stream' },
+          },
+        );
+      },
+    });
+    if (kind === 'success') assert.deepEqual(await router(context()), { kind: 'conversation' });
+    else
+      await assert.rejects(router(context()), { message: 'Conversation routing is unavailable.' });
+    assert.equal(calls, 1);
+    assert.equal(usage.length, 1);
+    if (kind === 'success') {
+      assert.equal(usage[0].routingFailure, undefined);
+      assert.equal(usage[0].inputTokens, 100);
+      assert.equal(usage[0].outputTokens, 10);
+    } else
+      assert.deepEqual(usage[0].routingFailure, {
+        code: kind === 'transport' ? 'transport' : 'response_processing',
+        ...(kind === 'transport' ? {} : { httpStatus: kind === 'http' ? 429 : 200 }),
+      });
+    assert.doesNotMatch(JSON.stringify(usage), /private-|retry-after|response.created/);
+  }
+});
+
+test('Pi routing records a response-processing phase when an HTTP 200 SSE body fails after headers', async () => {
+  let calls = 0;
+  let reads = 0;
+  const usage: ProviderUsageEvent[] = [];
+  const reply = new Response(
+    new ReadableStream(
+      {
+        pull(controller) {
+          reads++;
+          if (reads === 1)
+            controller.enqueue(
+              new TextEncoder().encode(
+                'data: {"type":"response.created","response":{"id":"private-response-id"}}\n\n',
+              ),
+            );
+          else
+            controller.error(
+              new TypeError('private-body-transport-error', {
+                cause: new Error('private-body-transport-cause'),
+              }),
+            );
+        },
+      },
+      { highWaterMark: 0 },
+    ),
+    { status: 200, headers: { 'content-type': 'text/event-stream' } },
+  );
+  const router = createPiConversationRouter({
+    provider: 'openai',
+    apiKey: 'private-fixture-key',
+    onUsage: (value) => usage.push(value),
+    createRuntime: async (options) => {
+      const runtime = await ModelRuntime.create(options);
+      return {
+        getModel: (...args) => runtime.getModel(...args),
+        setRuntimeApiKey: (...args) => runtime.setRuntimeApiKey(...args),
+        completeSimple: (model, request, options) => {
+          assert.ok(options?.fetch);
+          const forward = options.fetch;
+          return runtime.completeSimple(model, request, {
+            ...options,
+            fetch: async (...args) => {
+              const observed = await forward(...args);
+              assert.equal(observed, reply);
+              assert.equal(observed.bodyUsed, false);
+              assert.equal(reads, 0);
+              return observed;
+            },
+          });
+        },
+      };
+    },
+    fetch: async () => {
+      calls++;
+      return reply;
+    },
+  });
+  await assert.rejects(router(context()), {
+    message: 'Conversation routing is unavailable.',
+  });
+  assert.equal(calls, 1);
+  assert.equal(reads, 2);
+  assert.equal(usage.length, 1);
+  assert.equal(usage[0].status, 'failed');
+  assert.deepEqual(usage[0].routingFailure, {
+    code: 'response_processing',
+    httpStatus: 200,
+  });
+  assert.doesNotMatch(JSON.stringify(usage), /private-|response.created/);
+});
+
+test('Pi routing keeps late HTTP success and failure cancelled with one usage event', async () => {
+  for (const failed of [false, true]) {
+    let finish!: (response: Response) => void;
+    const controller = new AbortController();
+    const value = fixture(
+      async (_model, _request, options) => {
+        await options!.fetch!('https://provider.invalid/responses');
+        if (failed) throw new Error('private-late-provider-error');
+        return response('{"kind":"conversation"}');
+      },
+      'openai',
+      undefined,
+      async () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pending = value.router({ ...context(), signal: controller.signal });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(finish);
+    controller.abort(new Error('private-abort-reason'));
+    await assert.rejects(pending, {
+      name: 'AbortError',
+      message: 'Conversation routing cancelled.',
+    });
+    assert.equal(value.usage.length, 0);
+    finish(new Response('private-body', { status: failed ? 503 : 200 }));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(value.usage.length, 1);
+    assert.equal(value.usage[0].status, 'cancelled');
+    assert.equal(value.usage[0].costUsd, failed ? null : 0.031);
+    assert.deepEqual(value.usage[0].routingFailure, {
+      code: 'cancelled',
+      httpStatus: failed ? 503 : 200,
+    });
+    assert.doesNotMatch(JSON.stringify(value.usage), /private-|provider.invalid/);
+  }
+});
+
+test('Pi routing cancellation during initialization never starts a late completion or emits twice', async () => {
+  let finish!: () => void;
+  let completionCalls = 0;
+  const usage: ProviderUsageEvent[] = [];
+  const router = createPiConversationRouter({
+    provider: 'openai',
+    apiKey: 'private-fixture-key',
+    onUsage: (value) => usage.push(value),
+    createRuntime: async () => {
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      return {
+        getModel: () => catalog.getModel('openai', 'gpt-6-luna'),
+        setRuntimeApiKey: async () => {},
+        completeSimple: async () => {
+          completionCalls++;
+          return response('{"kind":"conversation"}');
+        },
+      };
+    },
+  });
+  const controller = new AbortController();
+  const pending = router({ ...context(), signal: controller.signal });
+  controller.abort(new Error('private-abort-reason'));
+  await assert.rejects(pending, { name: 'AbortError', message: 'Conversation routing cancelled.' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(usage.length, 1);
+  assert.deepEqual(usage[0].routingFailure, { code: 'cancelled' });
+  finish();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(usage.length, 1);
+  assert.equal(completionCalls, 0);
+  assert.doesNotMatch(JSON.stringify(usage), /private-/);
 });
