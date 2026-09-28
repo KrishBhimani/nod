@@ -167,8 +167,17 @@ export const toolDefinitions = {
   ),
   send_screenshot: defineTool(
     'send_screenshot',
-    'Capture this task browser through its protected screenshot boundary and publish the masked image as an owned attachment. Use when the user asks to see a screenshot. A successful call already sends the attachment to the user. If this completes the request, finish without another confirmation or repeated link. Secure-entry locks still apply. On channels without file delivery, the attachment is available in the Otto web app.',
-    Type.Object({}),
+    'Capture this task browser through its protected screenshot boundary and publish the masked image as an owned attachment. Use when the user asks to see a screenshot or needs a baseline image for a later comparison. Dismiss a cookie consent dialog that covers the target content with its reject or essential-only option before capture. Do not accept optional cookies. The tool rejects a visible consent dialog; use the browser to dismiss it and retry. Set allowCookieDialog only when the user asked to see the dialog itself. Give each distinct page a clear PNG name. The returned artifact URL can identify the baseline image in a scheduled comparison. A successful call already sends the attachment to the user. If this completes the request, finish without another confirmation or repeated link. Secure-entry locks still apply. On channels without file delivery, the attachment is available in the Otto web app.',
+    Type.Object({
+      name: Type.Optional(
+        Type.String({
+          minLength: 5,
+          maxLength: 84,
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\\.png$',
+        }),
+      ),
+      allowCookieDialog: Type.Optional(Type.Boolean()),
+    }),
   ),
   inspect_login: defineTool(
     'inspect_login',

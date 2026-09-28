@@ -2110,7 +2110,7 @@ test('screenshot publishing uses protected browser bytes and returns only owned 
   const bytes = Buffer.from('masked browser image');
   const artifact = {
     id: randomUUID(),
-    name: 'screenshot.png',
+    name: 'sample-home.png',
     mimeType: 'image/png',
     size: bytes.length,
     url: '/api/artifacts/fixture',
@@ -2119,13 +2119,14 @@ test('screenshot publishing uses protected browser bytes and returns only owned 
   let published = 0;
   await fixture(
     async (tools) => {
-      const result = await call(tools, 'send_screenshot', {});
+      const result = await call(tools, 'send_screenshot', { name: 'sample-home.png' });
       assert.deepEqual(result.content, [{ type: 'text', text: JSON.stringify(artifact) }]);
     },
     {
-      publishScreenshot: async (value) => {
+      publishScreenshot: async (value, name) => {
         published++;
         assert.deepEqual(value, bytes);
+        assert.equal(name, 'sample-home.png');
         return artifact;
       },
       observe: async (event) => {
@@ -2137,6 +2138,48 @@ test('screenshot publishing uses protected browser bytes and returns only owned 
   assert.equal(published, 1);
   assert.equal(JSON.stringify(observations).includes(bytes.toString()), false);
   assert.equal(JSON.stringify(observations).includes(bytes.toString('base64')), false);
+});
+
+test('screenshot publishing waits for visible cookie consent to clear', async () => {
+  let covered = true;
+  let published = 0;
+  await fixture(
+    async (tools) => {
+      await assert.rejects(call(tools, 'send_screenshot', {}), /cookie consent dialog/);
+      assert.equal(published, 0);
+      await call(tools, 'send_screenshot', { allowCookieDialog: true });
+      await call(tools, 'browser', { action: 'click', selector: '@reject' });
+      await call(tools, 'send_screenshot', {});
+    },
+    {
+      publishScreenshot: async () => {
+        published++;
+        return {
+          id: randomUUID(),
+          name: 'screenshot.png',
+          mimeType: 'image/png',
+          size: 5,
+          url: '/api/artifacts/fixture',
+        };
+      },
+    },
+    {
+      computer: fakeComputer({
+        act: async (_taskId, input) => {
+          if (input.action === 'click') covered = false;
+          return {
+            text: covered
+              ? 'Cookie consent dialog. Accept Only Necessary. Accept All Cookies.'
+              : 'Research page',
+            url: 'https://example.com',
+            candidates: [],
+          };
+        },
+        screenshot: async () => Buffer.from('image'),
+      }),
+    },
+  );
+  assert.equal(published, 2);
 });
 
 test('screenshot publishing cannot bypass secure-entry locks, unavailable screens or cancellation', async () => {

@@ -1305,16 +1305,16 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
         await reply(taskId, `Created ${artifact.name}.`, [artifact], revision);
         return artifact;
       },
-      publishScreenshot: async (bytes) => {
+      publishScreenshot: async (bytes, name) => {
         const artifact = await current(async () =>
           (dependencies.artifacts ?? localArtifacts).storeArtifact(
             Buffer.from(bytes),
-            'screenshot.png',
+            name && /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\.png$/.test(name) ? name : 'screenshot.png',
             'image/png',
             taskId,
           ),
         );
-        await reply(taskId, 'Browser screenshot.', [artifact], revision);
+        await reply(taskId, `Browser screenshot: ${artifact.name}`, [artifact], revision);
         return artifact;
       },
       publishBrowserFile: async (file) => {

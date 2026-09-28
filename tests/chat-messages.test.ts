@@ -6,6 +6,7 @@ import { createElement, act } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { ChatTurnRail } from '../src/web/components/chat-turn-rail.tsx';
 import {
+  collapseScreenshotMessages,
   hasVisibleChatActivity,
   messagesAreGrouped,
   visibleConversationTurns,
@@ -67,6 +68,31 @@ const base: Message = {
   attachments: [],
   createdAt: '2026-09-25T12:00:00Z',
 };
+
+test('adjacent screenshots from one task appear as one gallery', () => {
+  const image = (id: string): Message => ({
+    ...base,
+    id,
+    text: `Browser screenshot: ${id}.png`,
+    createdAt: `2026-09-25T12:00:0${id === 'one' ? '0' : '1'}Z`,
+    attachments: [
+      { id, name: `${id}.png`, mimeType: 'image/png', size: 10, url: `/api/artifacts/${id}` },
+    ],
+  });
+  const first = image('one');
+  const second = image('two');
+  const otherTask = { ...image('three'), taskId: 'another-task' };
+  const result = collapseScreenshotMessages([first, second, { ...base, id: 'answer' }, otherTask]);
+  assert.equal(result.length, 3);
+  assert.equal(result[0].text, '2 screenshots');
+  assert.deepEqual(
+    result[0].attachments.map((item) => item.name),
+    ['one.png', 'two.png'],
+  );
+  assert.equal(result[1].id, 'answer');
+  assert.equal(result[2].id, 'three');
+  assert.equal(first.attachments.length, 1);
+});
 
 function click(element: Element) {
   element.dispatchEvent(new MouseEvent('click', { bubbles: true }));

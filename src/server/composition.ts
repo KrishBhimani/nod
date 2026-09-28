@@ -693,6 +693,7 @@ export async function createApplication(
     computer,
     runtime,
     inspector,
+    providerUsage,
     configuration: () =>
       configuration({
         provider: adapters.model.provider,
@@ -806,6 +807,7 @@ export async function createApplication(
     channels = await createChannels(pool, {
       admission,
       ownerId,
+      appOrigin: runtimeMode === 'tenant' ? publicOrigin : undefined,
       resolveAttachments: artifacts.readTaskArtifacts,
       transport: meterMessaging(messaging, providerUsage),
       acceptVerification: (text, input) => chatVerification.accept(text, input),

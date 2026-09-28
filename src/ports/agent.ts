@@ -86,7 +86,7 @@ export interface RuntimeContext {
   delta(text: string, streamId?: string, done?: boolean): void;
   remember(text: string): Promise<void>;
   publish(path: string, name?: string): Promise<Artifact>;
-  publishScreenshot?(bytes: Uint8Array): Promise<Artifact>;
+  publishScreenshot?(bytes: Uint8Array, name?: string): Promise<Artifact>;
   publishBrowserFile?(file: {
     bytes: Uint8Array;
     name: string;

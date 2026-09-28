@@ -323,6 +323,7 @@ test(
       assert.equal(model.costUsd, 0.01);
       assert.equal(model.pricedRequests, 1);
       assert.equal(model.pricing, 'sdk_estimate');
+      assert.deepEqual(await usage.taskCosts([task, foreign]), { [task]: 0.01 });
       assert.equal(current.providers.find((row) => row.provider === 'composio')?.costUsd, null);
       assert.equal(
         current.providers.some((row) => row.provider === 'jev'),

@@ -36,6 +36,7 @@ import type { createChatVerification } from './chat-verification.ts';
 import { registerTenantDrain } from './tenant-drain.ts';
 import type { WorkAdmission } from './work-admission.ts';
 import type { TenantDrain } from '../ports/deployment.ts';
+import type { ProviderUsageStore } from './provider-usage.ts';
 
 const messageFields = `m.id,m.role,m.text,m.task_id AS "taskId",m.created_at AS "createdAt",m.attachments,m.stream_id AS "streamId",m.reaction,m.assistant_reaction AS "assistantReaction",m.reply_to_message_id AS "replyToMessageId",
  CASE WHEN target.id IS NULL THEN NULL ELSE json_build_object('id',target.id,'role',target.role,'text',left(target.text,1000)) END AS "replyTo"`;
@@ -63,6 +64,7 @@ export interface AppDependencies {
     inspectTools?(): AgentToolMetadata[];
   };
   inspector?: Pick<InspectorStore, 'read'>;
+  providerUsage?: Pick<ProviderUsageStore, 'taskCosts'>;
   configuration?: () => Configuration;
   onboard?: (timeZone?: string, conversationRevision?: number) => Promise<unknown>;
 }
@@ -137,10 +139,13 @@ export async function createApp(dependencies: AppDependencies = {}) {
       ),
       dependencies.verification?.pending() ?? [],
     ]);
+    const costs = await dependencies.providerUsage
+      ?.taskCosts(tasks.rows.map((task) => task.id))
+      .catch(() => undefined);
     return {
       conversationRevision: revision,
       messages: messages.rows.map(messageView),
-      tasks: tasks.rows,
+      tasks: tasks.rows.map((task) => ({ ...task, costUsd: costs?.[task.id] ?? null })),
       verificationRequests,
       configuration: publicConfiguration(),
     };

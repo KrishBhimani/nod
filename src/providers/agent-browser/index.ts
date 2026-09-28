@@ -136,6 +136,7 @@ export function createAgentBrowserComputer(options: {
   desktop?: (directory: string) => Promise<SignInDesktop>;
   idleTimeoutMs?: number;
   manualTimeoutMs?: number;
+  maxLiveSessions?: number;
   run?: typeof runProcess;
   daemonCommand?: typeof existingDaemonCommand;
   signInLauncher?: ReturnType<typeof createBrowserSignIn>;
@@ -161,6 +162,7 @@ export function createAgentBrowserComputer(options: {
   const createDesktop = options.desktop ?? createSignInDesktop();
   const idleTimeoutMs = options.idleTimeoutMs ?? 30 * 60_000;
   const manualTimeoutMs = Math.min(options.manualTimeoutMs ?? 30 * 60_000, 30 * 60_000);
+  const maxLiveSessions = Math.max(1, Math.min(4, options.maxLiveSessions ?? 4));
   const proxy = createBrowserProxy();
   const signInLauncher =
     options.signInLauncher ?? createBrowserSignIn({ sandbox: options.sandbox });
@@ -235,7 +237,7 @@ export function createAgentBrowserComputer(options: {
           (entry) => entry.started || entry.saved.navigationFailed || entry.saved.signInPending,
         );
       const attempted = new Set<string>();
-      while (occupied().length >= 4) {
+      while (occupied().length >= maxLiveSessions) {
         const candidate = occupied()
           .filter(
             (entry) =>
@@ -386,7 +388,11 @@ export function createAgentBrowserComputer(options: {
         ],
         {
           cwd: runtimeRoot,
-          env: { ...serviceEnvironment(), ...state.desktop?.environment },
+          env: {
+            ...serviceEnvironment(),
+            AGENT_BROWSER_DEFAULT_TIMEOUT: '30000',
+            ...state.desktop?.environment,
+          },
           input: options.input,
           signal: options.signal,
           timeoutMs: 45_000,
@@ -877,14 +883,18 @@ export function createAgentBrowserComputer(options: {
     if (state.injecting || state.manualUntil || state.saved.signInPending)
       throw new BrowserLockedError();
     const url = await currentUrl(state, signal);
-    const inputValues = await maskFields(state, signal);
-    const visible = await evaluate(
-      state,
-      `(() => ({ text: String(document.body?.innerText ?? '').slice(0, 16000) }))()`,
-      signal,
-    );
-    const body =
+    const bodyScript = `(() => ({ text: String(document.body?.innerText ?? '').slice(0, 16000) }))()`;
+    let inputValues = await maskFields(state, signal);
+    let visible = await evaluate(state, bodyScript, signal);
+    let body =
       visible && typeof visible === 'object' && 'text' in visible ? String(visible.text) : '';
+    for (let attempt = 0; attempt < 4 && !body.trim(); attempt++) {
+      await delay(750, undefined, { signal });
+      inputValues = await maskFields(state, signal);
+      visible = await evaluate(state, bodyScript, signal);
+      body =
+        visible && typeof visible === 'object' && 'text' in visible ? String(visible.text) : '';
+    }
     const data = await command(state, ['snapshot', '-c'], { signal });
     const structure = maskSnapshotInputValues(
       redactBrowserText(String(data.snapshot ?? data.text ?? JSON.stringify(data)), state.secrets),

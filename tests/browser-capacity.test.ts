@@ -4,13 +4,14 @@ import test from 'node:test';
 import { createBrowserFixture as createAgentBrowserComputer } from './browser-fixture.ts';
 import { stagedLoginBrowser } from './login-fixture.ts';
 
-async function fixture() {
+async function fixture(maxLiveSessions?: number) {
   const directory = await mkdtemp('/tmp/sk-capacity-');
   const browser = stagedLoginBrowser();
   let before = async (_task: string, _command: string[]) => {};
   let nativeClosed = true;
   const computer = createAgentBrowserComputer({
     dataRoot: directory,
+    maxLiveSessions,
     run: async (executable, args, options) => {
       const task = args[args.indexOf('--profile') + 1]?.split('/').at(-1) ?? '';
       const command = args.slice(args.indexOf('--idle-timeout') + 2);
@@ -51,6 +52,32 @@ async function fixture() {
     },
   };
 }
+
+test('a two-session browser evicts an idle run before opening the next run', async () => {
+  const f = await fixture(2);
+  try {
+    await f.open('baseline');
+    await f.open('first-check');
+    await f.open('second-check');
+    assert.equal(f.browser.pages.get('baseline')!.closed, true);
+    assert.equal(f.browser.pages.get('first-check')!.closed, false);
+    assert.equal(f.browser.pages.get('second-check')!.closed, false);
+  } finally {
+    await f.close();
+  }
+});
+
+test('a one-session browser replaces a finished run before the next run opens', async () => {
+  const f = await fixture(1);
+  try {
+    await f.open('baseline');
+    await f.open('first-check');
+    assert.equal(f.browser.pages.get('baseline')!.closed, true);
+    assert.equal(f.browser.pages.get('first-check')!.closed, false);
+  } finally {
+    await f.close();
+  }
+});
 
 test('new browser tasks evict the oldest idle session and retain its cached screen', async () => {
   const f = await fixture();

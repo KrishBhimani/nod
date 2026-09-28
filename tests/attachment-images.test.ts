@@ -273,6 +273,75 @@ test('media previews reject unsafe URLs and active types, including direct viewe
   }
 });
 
+test('owned Markdown and CSV open readable previews with safe links and exact table cells', async () => {
+  const originalFetch = globalThis.fetch;
+  const markdown: Artifact = {
+    ...pictures[0],
+    name: 'brief.md',
+    mimeType: 'text/markdown',
+    url: '/api/artifacts/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  };
+  const csv: Artifact = {
+    ...pictures[1],
+    name: 'values.csv',
+    mimeType: 'text/csv',
+    url: '/api/artifacts/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+  };
+  globalThis.fetch = async (input) =>
+    new Response(
+      String(input).includes(markdown.url)
+        ? '# Brief\n\n| Tool | Result |\n| --- | --- |\n| One | [Source](https://example.com) |\n<script>window.bad = true</script>'
+        : 'Company,Note\r\nA,"first, second"\r\nB,"two\nlines"\r\n',
+    );
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  const message: Message = {
+    id: 'document-preview',
+    role: 'assistant',
+    taskId: 'document-preview-task',
+    text: '',
+    createdAt: '2026-09-25T12:00:00Z',
+    attachments: [markdown, csv],
+  };
+  try {
+    await act(async () => root.render(createElement(MessageBubble, { message })));
+    assert.equal(container.querySelectorAll('.attachment-image-tile').length, 2);
+    await act(async () => {
+      click(container.querySelector('[aria-label="View attachment 1 of 2"]')!);
+      await tick();
+    });
+    let viewer = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    assert.match(viewer.textContent ?? '', /Brief/);
+    assert.equal(viewer.querySelector('.attachment-markdown script'), null);
+    assert.equal(
+      viewer.querySelector('.attachment-markdown a')?.getAttribute('href'),
+      'https://example.com/',
+    );
+    assert.equal(viewer.querySelector('a[download]')?.getAttribute('href'), markdown.url);
+    await act(async () => {
+      click(viewer.querySelector('[aria-label="Next attachment"]')!);
+      await tick();
+    });
+    viewer = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    assert.match(viewer.textContent ?? '', /2 rows/);
+    assert.deepEqual(
+      Array.from(viewer.querySelectorAll('tbody tr')).map((row) =>
+        Array.from(row.querySelectorAll('td')).map((cell) => cell.textContent),
+      ),
+      [
+        ['A', 'first, second'],
+        ['B', 'two\nlines'],
+      ],
+    );
+    assert.equal(viewer.querySelector('a[download]')?.getAttribute('href'), csv.url);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('gallery sources accept owned raster images and reject remote, private and active document URLs', async () => {
   for (const url of [
     'https://example.com/image.png',

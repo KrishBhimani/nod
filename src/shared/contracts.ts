@@ -48,6 +48,7 @@ export interface Task {
   status: TaskStatus;
   createdAt: string;
   updatedAt: string;
+  costUsd?: number | null;
   error?: string | null;
   showTyping?: boolean;
 }
