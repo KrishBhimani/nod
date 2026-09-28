@@ -62,6 +62,7 @@ test(
           attempted.add(context.taskId);
           if (context.prompt.startsWith('held:'))
             await new Promise<void>((resolve) => held.set(context.taskId, resolve));
+          if (context.prompt.startsWith('write:')) await context.startExternalAction!();
           throw new Error('PRIVATE-FIXTURE-KEY provider implementation /private/fixture/path');
         },
         recordFailure: async (taskId, revision, error) => {
@@ -110,23 +111,22 @@ test(
         },
       );
       await t.test(
-        'duplicate delivery and a rejected retry preserve the original failed segment',
+        'duplicate delivery and a retry of a read-only failure preserve the original failed segment',
         async () => {
           const id = await tasks.submitTask('Fail the synthetic request');
           await waitFor(async () => (await row(id)).status === 'failed');
+          assert.equal((await row(id)).external_action, false);
           const first = (await messages(id))[0];
           await tasks.boss.send('assistant-task', { taskId: id, revision: 0 }, { retryLimit: 0 });
           await delay(650);
           assert.equal((await messages(id)).length, 1);
-          await assert.rejects(
-            tasks.submitUserMessage('Retry the synthetic request', [], {
-              replyToMessageId: first.id,
-            }),
-            {
-              statusCode: 409,
-              message: 'I can’t safely repeat the earlier action because its outcome is unknown.',
-            },
-          );
+          const retried = await tasks.submitUserMessage('Retry the synthetic request', [], {
+            replyToMessageId: first.id,
+          });
+          assert.equal(retried.continued, false);
+          assert.notEqual(retried.taskId, id);
+          assert.equal((await row(retried.taskId)).title, 'Retry the synthetic request');
+          await waitFor(async () => (await row(retried.taskId)).status === 'failed');
           const replies = await messages(id);
           assert.deepEqual(
             replies.map((item) => item.stream_id),
@@ -148,6 +148,21 @@ test(
           assert.ok(diagnostics.some((item) => item.taskId === id && item.revision === 0));
         },
       );
+      await t.test('a failure after a started outside action stays blocked', async () => {
+        const id = await tasks.submitTask('write:Send the synthetic confirmation');
+        await waitFor(async () => (await row(id)).status === 'failed');
+        assert.equal((await row(id)).external_action, true);
+        const first = (await messages(id))[0];
+        for (const target of [{ replyToMessageId: first.id }, { taskId: id }])
+          await assert.rejects(tasks.submitUserMessage('Try again', [], target), {
+            statusCode: 409,
+            code: 'task_review_required',
+            taskId: id,
+            summary: 'write:Send the synthetic confirmation',
+          });
+        assert.equal((await row(id)).revision, 0);
+        assert.equal((await messages(id)).length, 1);
+      });
       await t.test(
         'an already accepted follow-up remains held when its active segment fails',
         async () => {

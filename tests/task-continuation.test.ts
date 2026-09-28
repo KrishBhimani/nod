@@ -373,6 +373,119 @@ test(
         },
       );
       await t.test(
+        'blocked work returns a structured review and supports both recovery actions',
+        async () => {
+          const { createApp } = await import('../src/server/app.ts');
+          const config = await import('../src/server/config.ts');
+          const { conversationRevision } = await import('../src/server/conversations.ts');
+          const app = await createApp({
+            configuration: () => ({ ...config.configuration(), llmReady: true }),
+          });
+          const headers = {
+            host: `localhost:${config.port}`,
+            origin: `http://localhost:${config.port}`,
+          };
+          const blockedTask = async (status: string, reason: string | null, external = true) => {
+            const outcomeId = randomUUID();
+            await db.pool.query(
+              "INSERT INTO outcomes(id,owner_id,channel,conversation_revision,title,objective) VALUES($1,'local-development','web',$2,'Send the synthetic invoice','Send the invoice.')",
+              [outcomeId, await conversationRevision(db.pool, 'local-development')],
+            );
+            const id = await tasks.submitTask('Send the synthetic invoice', [], undefined, false, {
+              outcomeId,
+            });
+            await db.pool.query(
+              'UPDATE tasks SET status=$2,waiting_reason=$3,external_action=$4 WHERE id=$1',
+              [id, status, reason, external],
+            );
+            const messageId = randomUUID();
+            await db.pool.query(
+              "INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,'local-development','assistant','I couldn’t finish that.',$2)",
+              [messageId, id],
+            );
+            return { id, outcomeId, messageId };
+          };
+          const outcome = async (id: string) =>
+            (await db.pool.query('SELECT status FROM outcomes WHERE id=$1', [id])).rows[0].status;
+          const close = (id: string) =>
+            app.inject({ method: 'POST', url: `/api/tasks/${id}/close`, headers, payload: {} });
+          try {
+            const failed = await blockedTask('failed', null);
+            const blocked = await app.inject({
+              method: 'POST',
+              url: '/api/messages',
+              headers,
+              payload: { text: 'Try again', replyToMessageId: failed.messageId },
+            });
+            assert.equal(blocked.statusCode, 409);
+            assert.deepEqual(blocked.json(), {
+              error: 'I can’t safely repeat the earlier action because its outcome is unknown.',
+              code: 'task_review_required',
+              taskId: failed.id,
+              summary: 'Send the synthetic invoice',
+            });
+            assert.equal((await close(failed.id)).statusCode, 200);
+            assert.equal((await close(failed.id)).statusCode, 200);
+            assert.equal(await outcome(failed.outcomeId), 'closed');
+            assert.equal(
+              (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [failed.id])).rows[0]
+                .status,
+              'failed',
+            );
+            const restarted = await app.inject({
+              method: 'POST',
+              url: '/api/messages',
+              headers,
+              payload: { text: 'Try again', forceNew: true },
+            });
+            assert.equal(restarted.statusCode, 200, restarted.body);
+            assert.equal(restarted.json().continued, false);
+            const fresh = (
+              await db.pool.query('SELECT outcome_id,external_action FROM tasks WHERE id=$1', [
+                restarted.json().taskId,
+              ])
+            ).rows[0];
+            assert.deepEqual(fresh, { outcome_id: null, external_action: false });
+            const interrupted = await blockedTask('waiting_user', 'recovery');
+            await db.pool.query(
+              "INSERT INTO pending_task_inputs(id,owner_id,task_id,message_id) VALUES($1,'local-development',$2,$3)",
+              [randomUUID(), interrupted.id, interrupted.messageId],
+            );
+            assert.equal((await close(interrupted.id)).statusCode, 200);
+            assert.equal(await outcome(interrupted.outcomeId), 'closed');
+            assert.deepEqual(
+              (
+                await db.pool.query('SELECT status,revision FROM tasks WHERE id=$1', [
+                  interrupted.id,
+                ])
+              ).rows[0],
+              { status: 'cancelled', revision: 1 },
+            );
+            assert.deepEqual(
+              (
+                await db.pool.query('SELECT state FROM pending_task_inputs WHERE task_id=$1', [
+                  interrupted.id,
+                ])
+              ).rows,
+              [{ state: 'discarded' }],
+            );
+            assert.equal((await close(interrupted.id)).statusCode, 200);
+            const retryable = await blockedTask('failed', null, false);
+            const refused = await close(retryable.id);
+            assert.equal(refused.statusCode, 409);
+            assert.equal(refused.json().error, 'This work does not need review.');
+            assert.equal(await outcome(retryable.outcomeId), 'open');
+            assert.equal((await close(randomUUID())).statusCode, 404);
+            await db.pool.query("UPDATE tasks SET owner_id='foreign-owner' WHERE id=$1", [
+              retryable.id,
+            ]);
+            assert.equal((await close(retryable.id)).statusCode, 404);
+          } finally {
+            await app.close();
+          }
+        },
+      );
+      await t.test(
         'an immediate answer waits for the old segment to exit and keeps context timestamps and reactions',
         async () => {
           let release!: () => void;

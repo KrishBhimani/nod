@@ -130,6 +130,8 @@ export async function initializeTaskSchema() {
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS waiting_question text;
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS action_resume_kind text;
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS action_resume_revision integer;
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS external_action boolean;
+    ALTER TABLE tasks ALTER COLUMN external_action SET DEFAULT false;
     CREATE UNIQUE INDEX IF NOT EXISTS tasks_owner_source ON tasks(owner_id,source_id) WHERE source_id IS NOT NULL;
     CREATE TABLE IF NOT EXISTS task_continuations (
       owner_id text NOT NULL, source_id text NOT NULL, task_id uuid NOT NULL REFERENCES tasks(id),
@@ -283,8 +285,14 @@ export async function submitTask(
         );
       revision = found.rows[0].revision + 1;
       await client.query(
-        "UPDATE tasks SET prompt=$2,status='queued',revision=$3,error=NULL,source=$4,waiting_reason=NULL,waiting_question=NULL,updated_at=now() WHERE id=$1",
-        [taskId, text, revision, options.source ?? (silent ? found.rows[0].source : 'user')],
+        "UPDATE tasks SET prompt=$2,status='queued',revision=$3,error=NULL,source=$4,waiting_reason=NULL,waiting_question=NULL,external_action=CASE WHEN $5 THEN external_action ELSE false END,updated_at=now() WHERE id=$1",
+        [
+          taskId,
+          text,
+          revision,
+          options.source ?? (silent ? found.rows[0].source : 'user'),
+          silent,
+        ],
       );
       if (options.sourceId)
         await client.query(
@@ -510,7 +518,7 @@ async function activatePendingInput(client: PoolClient, taskId: string) {
   ).rows[0];
   if (!next) return false;
   const updated = await client.query(
-    "UPDATE tasks SET prompt=$2,source_message_id=$3,source='user',status='queued',revision=revision+1,error=NULL,waiting_reason=NULL,waiting_question=NULL,updated_at=now() WHERE id=$1 RETURNING revision",
+    "UPDATE tasks SET prompt=$2,source_message_id=$3,source='user',status='queued',revision=revision+1,error=NULL,waiting_reason=NULL,waiting_question=NULL,external_action=false,updated_at=now() WHERE id=$1 RETURNING revision",
     [taskId, next.text, next.message_id],
   );
   await client.query(
@@ -558,6 +566,10 @@ async function queueUserInput(
       [ownerId, options.sourceId, taskId],
     );
   await activatePendingInput(client, taskId);
+}
+
+function reviewRequired(task: { id: string; summary: string }) {
+  return new TaskReviewRequiredError(task.id, String(task.summary).slice(0, 100));
 }
 
 export async function submitUserMessage(
@@ -697,7 +709,7 @@ export async function submitUserMessage(
         )
           throw Object.assign(new Error('This work is no longer available.'), { statusCode: 409 });
         const selected = await client.query(
-          `SELECT t.id,t.status,t.waiting_reason FROM outcomes o JOIN tasks t ON t.outcome_id=o.id
+          `SELECT t.id,t.status,t.waiting_reason,t.external_action,o.title AS summary FROM outcomes o JOIN tasks t ON t.outcome_id=o.id
            WHERE o.id=$1 AND o.owner_id=$2 AND o.channel=$3 AND o.conversation_revision=$4 AND o.status='open'
              AND t.owner_id=$2 AND t.channel=$3 AND ${currentConversationSql()}
            ORDER BY t.updated_at DESC,t.id DESC LIMIT 1 FOR UPDATE OF t`,
@@ -707,9 +719,13 @@ export async function submitUserMessage(
           throw Object.assign(new Error('This work is no longer available.'), { statusCode: 409 });
         if (
           prepared.blockedOutcomeIds.includes(decision.outcomeId) ||
-          taskNeedsReview(selected.rows[0].status, selected.rows[0].waiting_reason)
+          taskNeedsReview(
+            selected.rows[0].status,
+            selected.rows[0].waiting_reason,
+            selected.rows[0].external_action,
+          )
         )
-          throw new TaskReviewRequiredError();
+          throw reviewRequired(selected.rows[0]);
         existingId = selected.rows[0].id;
       } else if (decision.kind === 'new_outcome') {
         outcomeId = randomUUID();
@@ -722,28 +738,32 @@ export async function submitUserMessage(
     if (existingId) {
       const selected = (
         await client.query(
-          `SELECT channel,status,waiting_reason,outcome_id FROM tasks t WHERE id=$1 AND owner_id=$2 AND ${currentConversationSql()} FOR UPDATE`,
+          `SELECT id,channel,status,waiting_reason,external_action,outcome_id,title AS summary FROM tasks t WHERE id=$1 AND owner_id=$2 AND ${currentConversationSql()} FOR UPDATE`,
           [existingId, ownerId],
         )
       ).rows[0];
       if (!selected || selected.channel !== channel || selected.status === 'cancelled')
         throw Object.assign(new Error('Task not found in this conversation.'), { statusCode: 404 });
-      if (taskNeedsReview(selected.status, selected.waiting_reason))
-        throw new TaskReviewRequiredError();
       if (selected.outcome_id) {
         const latest = (
           await client.query(
-            `SELECT status,waiting_reason FROM tasks t
-             WHERE outcome_id=$1 AND owner_id=$2 AND channel=$3 AND ${currentConversationSql()}
-             ORDER BY updated_at DESC,id DESC LIMIT 1 FOR UPDATE`,
+            `SELECT t.id,t.status,t.waiting_reason,t.external_action,o.title AS summary FROM tasks t
+             JOIN outcomes o ON o.id=t.outcome_id AND o.owner_id=t.owner_id
+             WHERE t.outcome_id=$1 AND t.owner_id=$2 AND t.channel=$3 AND ${currentConversationSql()}
+             ORDER BY t.updated_at DESC,t.id DESC LIMIT 1 FOR UPDATE OF t`,
             [selected.outcome_id, ownerId, channel],
           )
         ).rows[0];
         if (!latest)
           throw Object.assign(new Error('This work is no longer available.'), { statusCode: 409 });
-        if (taskNeedsReview(latest.status, latest.waiting_reason))
-          throw new TaskReviewRequiredError();
-      }
+        if (taskNeedsReview(selected.status, selected.waiting_reason, selected.external_action))
+          throw reviewRequired({ ...selected, summary: latest.summary });
+        if (taskNeedsReview(latest.status, latest.waiting_reason, latest.external_action))
+          throw reviewRequired(latest);
+      } else if (
+        taskNeedsReview(selected.status, selected.waiting_reason, selected.external_action)
+      )
+        throw reviewRequired(selected);
       if (!selected.outcome_id) {
         if (selected.status === 'waiting_credentials')
           throw Object.assign(new Error('Complete the secure sign-in form to continue.'), {
@@ -759,17 +779,20 @@ export async function submitUserMessage(
             statusCode: 409,
           });
       }
-      await queueUserInput(client, existingId, text, attachments, options);
-      if (selected.outcome_id)
-        await client.query('UPDATE outcomes SET updated_at=now() WHERE id=$1 AND owner_id=$2', [
-          selected.outcome_id,
-          ownerId,
-        ]);
-      return {
-        taskId: existingId,
-        continued: true,
-        ...(options.clientMessageId ? { messageId: options.clientMessageId } : {}),
-      };
+      if (selected.status === 'failed') outcomeId = selected.outcome_id ?? undefined;
+      else {
+        await queueUserInput(client, existingId, text, attachments, options);
+        if (selected.outcome_id)
+          await client.query('UPDATE outcomes SET updated_at=now() WHERE id=$1 AND owner_id=$2', [
+            selected.outcome_id,
+            ownerId,
+          ]);
+        return {
+          taskId: existingId,
+          continued: true,
+          ...(options.clientMessageId ? { messageId: options.clientMessageId } : {}),
+        };
+      }
     }
     const taskId = await submitTask(text, attachments, undefined, false, {
       sourceId: options.sourceId,
@@ -780,6 +803,11 @@ export async function submitUserMessage(
       outcomeId,
       messageId: options.clientMessageId,
     });
+    if (outcomeId)
+      await client.query('UPDATE outcomes SET updated_at=now() WHERE id=$1 AND owner_id=$2', [
+        outcomeId,
+        ownerId,
+      ]);
     return {
       taskId,
       continued: false,
@@ -977,6 +1005,37 @@ export async function cancelTask(taskId: string) {
   running.get(taskId)?.abort();
   refresh();
 }
+export async function closeReviewedTask(taskId: string) {
+  await transaction(async (client) => {
+    await lockConversation(client, ownerId);
+    const task = (
+      await client.query(
+        `SELECT status,waiting_reason,external_action,outcome_id FROM tasks t WHERE id=$1 AND owner_id=$2 AND channel='web' AND ${currentConversationSql()} FOR UPDATE`,
+        [taskId, ownerId],
+      )
+    ).rows[0];
+    if (!task) throw Object.assign(new Error('Task not found.'), { statusCode: 404 });
+    if (task.status === 'cancelled') return;
+    if (!taskNeedsReview(task.status, task.waiting_reason, task.external_action))
+      throw Object.assign(new Error('This work does not need review.'), { statusCode: 409 });
+    if (task.outcome_id)
+      await client.query(
+        "UPDATE outcomes SET status='closed',updated_at=now() WHERE id=$1 AND owner_id=$2",
+        [task.outcome_id, ownerId],
+      );
+    if (task.status !== 'waiting_user') return;
+    await client.query(
+      "UPDATE tasks SET status='cancelled',revision=revision+1,waiting_reason=NULL,waiting_question=NULL,updated_at=now() WHERE id=$1",
+      [taskId],
+    );
+    await client.query(
+      "UPDATE pending_task_inputs SET state='discarded' WHERE task_id=$1 AND owner_id=$2 AND state='pending'",
+      [taskId, ownerId],
+    );
+  });
+  refresh();
+  return { ok: true };
+}
 export async function pauseOwnedTaskForControl(taskId: string): Promise<{ revision: number }> {
   const result = await transaction(async (client) => {
     const current = await client.query(
@@ -1059,9 +1118,34 @@ export async function initializeTasks() {
 }
 export async function startTaskWorkers(dependencies: TaskDependencies) {
   await pool.query(
-    "UPDATE tasks SET status='waiting_user',waiting_reason='recovery',waiting_question=NULL,error='The server stopped during this task. Review its last action before continuing.',revision=revision+1,updated_at=now() WHERE owner_id=$1 AND status='running'",
+    "UPDATE tasks SET status='waiting_user',waiting_reason='recovery',waiting_question=NULL,error='The server stopped during this task. Review its last action before continuing.',revision=revision+1,updated_at=now() WHERE owner_id=$1 AND status='running' AND external_action IS NOT FALSE",
     [ownerId],
   );
+  await transaction(async (client) => {
+    const interrupted = await client.query(
+      "UPDATE tasks SET status='failed',error='The task stopped.',revision=revision+1,updated_at=now() WHERE owner_id=$1 AND status='running' RETURNING id,revision,source",
+      [ownerId],
+    );
+    for (const task of interrupted.rows) {
+      await client.query('INSERT INTO task_events(id,task_id,type,summary) VALUES($1,$2,$3,$4)', [
+        randomUUID(),
+        task.id,
+        'failed',
+        'The task stopped.',
+      ]);
+      if (task.source === 'user')
+        await client.query(
+          "INSERT INTO messages(id,owner_id,role,text,task_id,stream_id) VALUES($1,$2,'assistant',$3,$4,$5)",
+          [
+            randomUUID(),
+            ownerId,
+            'I couldn’t finish that.',
+            task.id,
+            `failure:${task.id}:${task.revision}`,
+          ],
+        );
+    }
+  });
   const retainedInputs = await pool.query(
     `SELECT DISTINCT t.id,t.channel FROM tasks t JOIN pending_task_inputs p ON p.task_id=t.id
      WHERE t.owner_id=$1 AND p.owner_id=$1 AND p.state='pending' AND ${currentConversationSql()}
@@ -1278,6 +1362,10 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
             return result;
           }
         : undefined,
+      startExternalAction: () =>
+        current(async (client) => {
+          await client.query('UPDATE tasks SET external_action=true WHERE id=$1', [taskId]);
+        }),
       waitForUser: async (question) => {
         await current(async (client) => {
           const changed = await client.query(

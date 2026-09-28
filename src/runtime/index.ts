@@ -42,6 +42,14 @@ function publicLoginInspection(inspection: LoginInspection) {
   return result;
 }
 
+function changesExternalState(name: string, params: unknown) {
+  return (
+    name === 'browser_fast_step' ||
+    (name === 'browser' &&
+      ['click', 'fill', 'press'].includes(String((params as { action?: unknown }).action)))
+  );
+}
+
 export function createAgentRuntime(dependencies: {
   agent: Agent;
   computer: Computer;
@@ -393,6 +401,7 @@ export function createAgentRuntime(dependencies: {
             if (stopped || status !== 'succeeded')
               throw new Error('This execution segment has stopped.');
             await context.emit('tool_start', name.replaceAll('_', ' '));
+            if (changesExternalState(name, params)) await context.startExternalAction?.();
             const action = () => execute(params as Static<P>);
             const output = await (dependencies.withTool
               ? dependencies.withTool(context.taskId, id, name, action)

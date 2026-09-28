@@ -465,7 +465,7 @@ test(
       );
 
       await t.test(
-        'restart requeues queued tasks but sends interrupted execution to review',
+        'restart requeues queued work, reviews interrupted outside actions and fails read-only work',
         async () => {
           const missingJob = await tasks.submitTask('recovery-fixture', [], undefined, true, {
             sourceId: 'recovery-fixture',
@@ -474,9 +474,11 @@ test(
             missingJob,
           ]);
           const interrupted = randomUUID();
+          const legacy = randomUUID();
+          const readOnly = randomUUID();
           await db.pool.query(
-            "INSERT INTO tasks(id,owner_id,title,prompt,status) VALUES($1,'local-development','Interrupted','Do not repeat','running')",
-            [interrupted],
+            "INSERT INTO tasks(id,owner_id,title,prompt,status,external_action) VALUES($1,'local-development','Interrupted','Do not repeat','running',true),($2,'local-development','Legacy','Do not repeat','running',NULL),($3,'local-development','Read only','Read the synthetic page','running',false)",
+            [interrupted, legacy, readOnly],
           );
           await tasks.startTaskWorkers(dependencies);
           await waitFor(
@@ -484,12 +486,46 @@ test(
               (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [missingJob])).rows[0]
                 .status === 'succeeded',
           );
-          assert.equal(
-            (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [interrupted])).rows[0]
-              .status,
-            'waiting_user',
+          const state = async (id: string) =>
+            (
+              await db.pool.query(
+                'SELECT status,waiting_reason,revision,error FROM tasks WHERE id=$1',
+                [id],
+              )
+            ).rows[0];
+          for (const id of [interrupted, legacy])
+            assert.deepEqual(await state(id), {
+              status: 'waiting_user',
+              waiting_reason: 'recovery',
+              revision: 1,
+              error:
+                'The server stopped during this task. Review its last action before continuing.',
+            });
+          assert.deepEqual(await state(readOnly), {
+            status: 'failed',
+            waiting_reason: null,
+            revision: 1,
+            error: 'The task stopped.',
+          });
+          assert.deepEqual(
+            (
+              await db.pool.query(
+                "SELECT text,stream_id FROM messages WHERE task_id=$1 AND role='assistant'",
+                [readOnly],
+              )
+            ).rows,
+            [{ text: 'I couldn’t finish that.', stream_id: `failure:${readOnly}:1` }],
           );
+          await assert.rejects(tasks.submitUserMessage('Continue', [], { taskId: interrupted }), {
+            statusCode: 409,
+            code: 'task_review_required',
+            taskId: interrupted,
+          });
+          const retried = await tasks.submitUserMessage('Try again', [], { taskId: readOnly });
+          assert.notEqual(retried.taskId, readOnly);
           assert.equal(ran.has(interrupted), false);
+          assert.equal(ran.has(legacy), false);
+          assert.equal(ran.has(readOnly), false);
         },
       );
 
@@ -505,6 +541,7 @@ test(
           await assert.rejects(context.remember('late-memory-fixture'));
           await assert.rejects(context.manage('profile_update', { name: 'Injected' }));
           await assert.rejects(context.integration('GMAIL_FETCH_EMAILS', {}));
+          await assert.rejects(context.startExternalAction!());
           await assert.rejects(
             context.requestCredential({
               origin: 'https://example.com',
