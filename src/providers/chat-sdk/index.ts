@@ -230,15 +230,12 @@ export function createChatSdkTransport(
           if (parsed.status < 200 || parsed.status >= 300)
             throw new Error('Telegram update could not be accepted.');
           for (const message of parsed.messages ?? []) await accept(message);
+          if (parsed.pairing) await pair?.(parsed.pairing);
           await pool.query(
             `INSERT INTO channel_poll_offsets(provider,account_id,next_offset) VALUES('telegram',$1,$2)
             ON CONFLICT(provider,account_id) DO UPDATE SET next_offset=GREATEST(channel_poll_offsets.next_offset,EXCLUDED.next_offset)`,
             [accountId, update.update_id + 1],
           );
-          if (parsed.pairing) {
-            pair?.(parsed.pairing);
-            break;
-          }
         }
       } catch {
         throw new Error('Telegram polling is unavailable. Check the bot configuration.');

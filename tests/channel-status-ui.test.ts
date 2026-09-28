@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { after, test } from 'node:test';
 import { JSDOM } from 'jsdom';
@@ -268,6 +269,19 @@ test('Telegram setup asks the owner to confirm the account that pressed Start be
     );
     assert.match(dialogText(), /Add your bot/);
     assert.doesNotMatch(dialogText(), /user ID/);
+    const style = document.createElement('style');
+    style.textContent = await readFile(
+      new URL('../src/web/pages/channels.css', import.meta.url),
+      'utf8',
+    );
+    document.head.append(style);
+    const next = document.querySelector<HTMLElement>('.telegram-checklist > li.is-next')!;
+    assert.equal(dom.window.getComputedStyle(next).opacity, '1');
+    assert.equal(
+      dom.window.getComputedStyle(next.querySelector('.telegram-checklist-marker')!).opacity,
+      '0.55',
+    );
+    style.remove();
     await typeInDialog('synthetic-fixture-token');
     await submitDialogForm();
     assert.match(dialogText(), /Verification failed/);
@@ -356,7 +370,7 @@ test('an unpaired Telegram channel can bind a user ID found with @userinfobot', 
   try {
     await act(async () => root.render(createElement(Channels)));
     const row = element.querySelector<HTMLElement>('[aria-labelledby="channel-telegram"]')!;
-    assert.match(row.textContent!, /Waiting for Start in Telegram/);
+    assert.match(row.textContent!, /Start link expired/);
     assert.equal(Boolean(row.querySelector('a[href="https://t.me/fixture_bot"]')), false);
     await act(async () =>
       [...row.querySelectorAll('button')]
@@ -372,7 +386,7 @@ test('an unpaired Telegram channel can bind a user ID found with @userinfobot', 
     assert.equal(input.inputMode, 'numeric');
     assert.equal(input.pattern, '[1-9][0-9]{0,15}');
     assert.equal(input.required, true);
-    await typeInDialog(' 4242 ');
+    await typeInDialog('4242');
     await submitDialogForm();
     assert.deepEqual(writes.at(-1), {
       path: '/api/channel-settings/telegram/user',

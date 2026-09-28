@@ -283,16 +283,12 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
 
   async function completePairing(request: ChannelPairingRequest) {
     if (closed || !options.pair) return;
-    const release = options.admission?.enter();
-    if (options.admission && !release) return;
     try {
       await options.pair(request);
     } catch {
       throw Object.assign(new Error('Channel processing is temporarily unavailable. Try again.'), {
         statusCode: 503,
       });
-    } finally {
-      release?.();
     }
   }
 
@@ -545,7 +541,6 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
     if (running) return running;
     const release = options.admission?.enter();
     if (options.admission && !release) return Promise.resolve();
-    let pairing: ChannelPairingRequest | undefined;
     running = (async () => {
       let pollingFailed = false;
       try {
@@ -554,11 +549,8 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
           try {
             await transport.poll?.(
               (message) => accept(message, message.channelId),
-              (request) => {
-                pairing = request;
-              },
+              completePairing,
             );
-            if (pairing) break;
           } catch {
             pollingFailed = true;
           }
@@ -574,7 +566,6 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
       } finally {
         running = undefined;
         release?.();
-        if (pairing) void completePairing(pairing).catch(() => {});
       }
     })();
     return running;

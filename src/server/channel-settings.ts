@@ -427,25 +427,25 @@ export async function createChannelSettings(
     }
   }
   async function pair(request: ChannelPairingRequest) {
-    return exclusive(async () => {
-      const current = await telegramRow();
-      const sender = candidateSchema.safeParse({
-        ...request,
-        sentAt: request.sentAt.toISOString(),
-      });
-      if (!current || request.channelId !== 'telegram' || !sender.success) return false;
-      const { row, configured } = current;
-      const expected = Buffer.from(configured.TELEGRAM_PAIRING_CODE_HASH ?? '', 'hex');
-      const actual = Buffer.from(pairingHash(request.code), 'hex');
-      if (
-        configured.TELEGRAM_ALLOWED_USER_ID ||
-        accountId('telegram', configured) !== request.accountId ||
-        !(Number(configured.TELEGRAM_PAIRING_EXPIRES_AT) > Date.now()) ||
-        expected.length !== actual.length ||
-        !timingSafeEqual(expected, actual)
-      )
-        return false;
-      const expiresAt = new Date(Date.now() + pairingLifetimeMs);
+    const current = await telegramRow();
+    const sender = candidateSchema.safeParse({
+      ...request,
+      sentAt: request.sentAt.toISOString(),
+    });
+    if (!current || request.channelId !== 'telegram' || !sender.success) return false;
+    const { row, configured } = current;
+    const expected = Buffer.from(configured.TELEGRAM_PAIRING_CODE_HASH ?? '', 'hex');
+    const actual = Buffer.from(pairingHash(request.code), 'hex');
+    if (
+      configured.TELEGRAM_ALLOWED_USER_ID ||
+      accountId('telegram', configured) !== request.accountId ||
+      !(Number(configured.TELEGRAM_PAIRING_EXPIRES_AT) > Date.now()) ||
+      expected.length !== actual.length ||
+      !timingSafeEqual(expected, actual)
+    )
+      return false;
+    const expiresAt = new Date(Date.now() + pairingLifetimeMs);
+    try {
       await replaceTelegram(
         row,
         {
@@ -460,8 +460,11 @@ export async function createChannelSettings(
         },
         false,
       );
-      return true;
-    });
+    } catch (error) {
+      if (error instanceof ChannelSetupFailure) return false;
+      throw error;
+    }
+    return true;
   }
   async function bind(allowedUserId?: string) {
     const bound = await exclusive(async () => {

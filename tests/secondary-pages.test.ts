@@ -267,7 +267,7 @@ test('channel status separates saved configuration from delivery and limits bot 
         provider: 'telegram',
         enabled: true,
         mode: 'polling',
-        pairingExpiresAt: '2026-09-28T12:00:00.000Z',
+        pairingExpiresAt: new Date(Date.now() + 600000).toISOString(),
       },
       true,
     ),
@@ -293,12 +293,25 @@ test('channel status separates saved configuration from delivery and limits bot 
         provider: 'telegram',
         enabled: true,
         mode: 'polling',
-        pairingExpiresAt: '2026-09-28T12:00:00.000Z',
+        pairingExpiresAt: new Date(Date.now() + 600000).toISOString(),
         pairingCandidate: { id: '123456789', name: '@fixture_owner' },
       },
       true,
     ),
     'Confirm your Telegram account',
+  );
+  assert.equal(
+    channelLabel(
+      {
+        provider: 'telegram',
+        enabled: true,
+        mode: 'polling',
+        pairingExpiresAt: new Date(Date.now() - 1000).toISOString(),
+        pairingCandidate: { id: '123456789', name: '@fixture_owner' },
+      },
+      true,
+    ),
+    'Start link expired',
   );
   assert.equal(telegramBotUrl('@fixture_bot'), 'https://t.me/fixture_bot');
   assert.equal(telegramBotUrl('@fixture/../private'), null);

@@ -838,3 +838,91 @@ test(
     }
   },
 );
+
+test(
+  'Telegram polling keeps a Start update until its pairing candidate is stored',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async () => {
+    const schema = `test_channel_pair_poll_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+    });
+    const offsets: number[] = [];
+    const code = 'fixture-start-code-0123456789abcdef';
+    const transport = createChatSdkTransport(
+      pool,
+      {
+        TELEGRAM_ENABLED: 'true',
+        TELEGRAM_BOT_TOKEN: token,
+        TELEGRAM_ALLOWED_USER_ID: '',
+        TELEGRAM_PAIRING_EXPIRES_AT: String(Date.now() + 600000),
+        TELEGRAM_WEBHOOK_SECRET_TOKEN: 'fixture-secret-long-enough',
+        TELEGRAM_MODE: 'polling',
+      },
+      {
+        fetch: async (_url, init) => {
+          offsets.push(JSON.parse(String(init?.body)).offset);
+          return Response.json({
+            ok: true,
+            result:
+              offsets.at(-1) === 8
+                ? []
+                : [
+                    {
+                      update_id: 7,
+                      message: {
+                        message_id: 3,
+                        date: Math.floor(Date.now() / 1000),
+                        text: `/start ${code}`,
+                        from: { id: 123, is_bot: false, first_name: 'Fixture', username: 'owner' },
+                        chat: { id: 123, type: 'private' },
+                      },
+                    },
+                  ],
+          });
+        },
+      },
+    );
+    try {
+      const accepted: string[] = [];
+      const paired: string[] = [];
+      await assert.rejects(
+        transport.poll!(
+          async () => {
+            accepted.push('message');
+          },
+          async () => {
+            throw new Error('Synthetic pairing write failure');
+          },
+        ),
+      );
+      await transport.poll!(
+        async () => {
+          accepted.push('message');
+        },
+        async (request) => {
+          paired.push(`${request.senderId}:${request.senderName}:${request.code}`);
+        },
+      );
+      await transport.poll!(
+        async () => {
+          accepted.push('message');
+        },
+        async () => {
+          assert.fail('Already stored pairing update');
+        },
+      );
+      assert.deepEqual(offsets, [0, 0, 8]);
+      assert.deepEqual(paired, [`123:@owner:${code}`]);
+      assert.deepEqual(accepted, []);
+    } finally {
+      await transport.close();
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);

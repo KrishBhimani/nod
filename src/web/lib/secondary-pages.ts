@@ -91,8 +91,12 @@ export type ChannelSettings = { ready: boolean; channels: ChannelSetup[] };
 export function channelLabel(setup: ChannelSetup | undefined, configured: boolean) {
   if (!setup?.enabled) return configured ? 'Configuration present' : 'Not connected';
   if (setup.webhookStatus === 'registration_pending') return 'Setup needs a retry';
-  if (setup.pairingCandidate) return 'Confirm your Telegram account';
-  if (setup.pairingExpiresAt) return 'Waiting for Start in Telegram';
+  if (setup.pairingExpiresAt) {
+    if (Date.parse(setup.pairingExpiresAt) <= Date.now()) return 'Start link expired';
+    return setup.pairingCandidate
+      ? 'Confirm your Telegram account'
+      : 'Waiting for Start in Telegram';
+  }
   if (setup.allowedUserId)
     return `Only ${setup.pairedUser ? `${setup.pairedUser}, ` : ''}ID ${setup.allowedUserId} can message Otto`;
   if (setup.mode === 'polling') return null;

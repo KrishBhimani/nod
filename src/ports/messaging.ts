@@ -56,7 +56,7 @@ export interface MessagingTransport {
   pollingEnabled?: boolean;
   poll?(
     accept: (message: InboundMessage) => Promise<void>,
-    pair?: (request: ChannelPairingRequest) => void,
+    pair?: (request: ChannelPairingRequest) => Promise<void>,
   ): Promise<void>;
   receive(request: MessagingWebhook): Promise<MessagingWebhookResult>;
   post(input: {

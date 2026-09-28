@@ -244,7 +244,13 @@ const app = await createGateway({
         const input = (await request.json()) as { allowedUserId?: string };
         const candidate = channel?.pairingCandidate as { id: string; name: string } | undefined;
         const id = url.pathname.endsWith('/user') ? input.allowedUserId?.trim() : candidate?.id;
-        if (!channel?.pairingExpiresAt || !id || !/^[1-9]\d{0,15}$/.test(id))
+        if (
+          !channel?.pairingExpiresAt ||
+          (url.pathname.endsWith('/confirm') &&
+            !(Date.parse(String(channel.pairingExpiresAt)) > Date.now())) ||
+          !id ||
+          !/^[1-9]\d{0,15}$/.test(id)
+        )
           return Response.json(
             { error: 'Check the Telegram user ID. It is a positive number.' },
             { status: 400 },
