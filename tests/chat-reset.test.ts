@@ -75,6 +75,7 @@ after(() => {
 });
 const { createRoot } = await import('react-dom/client');
 const { useAppState } = await import('../src/web/hooks/use-app-state.ts');
+const { sessionStore } = await import('../src/web/lib/session.ts');
 const { Chat } = await import('../src/web/pages/chat.tsx');
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 25));
 const message: Message = {
@@ -102,6 +103,18 @@ const base: AppState = {
 };
 
 async function mount() {
+  const request = globalThis.fetch;
+  globalThis.fetch = async (path, options) =>
+    path === '/api/session'
+      ? Response.json({
+          auth: { mode: 'local', googleAvailable: false },
+          user: { id: 'fixture-owner', name: 'Alex Example', email: null, avatarUrl: null },
+          settings: { theme: 'system', onboardingCompleted: true },
+          capabilities: { developer: false },
+        })
+      : request(path, options);
+  sessionStore.invalidate();
+  await sessionStore.refresh();
   const element = document.createElement('div');
   document.body.append(element);
   const root = createRoot(element);
@@ -127,6 +140,8 @@ async function mount() {
     dispose: async () => {
       await act(async () => root.unmount());
       element.remove();
+      sessionStore.invalidate();
+      globalThis.fetch = request;
     },
   };
 }

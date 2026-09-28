@@ -4,9 +4,15 @@ The historical checks below exercised release `cfe9bb3defa3c29107a7503d3a85192ee
 
 The [production reset](2026-09-28-production-reset.md) completed before this check. One fresh authorized work account and its activity are subsequent data, separate from the verified empty reset state.
 
+## 2026-09-28 automatic deployment of e1d9e5d
+
+Main merge `e1d9e5d38a0ae796e7c5bad847f417edb6a94cb1` passed [CI run 36370336653](https://github.com/n8n-io/sidekick/actions/runs/36370336653) and its automatic `workflow_run` [production deployment 36371062842](https://github.com/n8n-io/sidekick/actions/runs/36371062842). The deployment published the release and completed at 02:57:35 UTC; exact-release health and authorization boundaries passed at 02:57:33.520 UTC. The workflow verified images, rollouts and status. An optional independent registry-manifest readback failed at `registry-images` because of local Docker registry authentication, so it adds no independent image-verification evidence.
+
+Public health returned 200 for the exact release. A read-only observer confirmed one ordinary owned chat task succeeded, with one delta frame and a persisted reply; the real UI displayed that reply after reload. Existing IAB and native Arc tabs remained at Reconnecting across the rollout, and reloading restored them. This establishes post-deployment chat, not seamless connection recovery. The [event-stream recovery follow-up](2026-09-28-event-stream-recovery.md) records separate local checks. Private observation and screenshot evidence remain outside Git.
+
 ## 2026-09-28 follow-up on f79924a
 
-Release `f79924aec7c045628f95cdd95bc351b95d6706dd` passed manual deployment from 02:12:18 to 02:15:10 UTC, including natural drain, image rollout and authorization/health checks. The local suite passed 1,326 tests total: 1,323 passed, three native-only skips and zero failures; root checks and build passed, as did 19 focused metadata tests. [PR #5](https://github.com/n8n-io/sidekick/pull/5) subsequently merged as `e1d9e5d` after all CI jobs passed: 1,323 app tests passed with three native-only skips, 403 Cloudflare checks passed, and the separate native suite passed 16 checks. This record establishes manual deployment of `f79924a`; automatic deployment of the merge requires separate evidence.
+Release `f79924aec7c045628f95cdd95bc351b95d6706dd` passed manual deployment from 02:12:18 to 02:15:10 UTC, including natural drain, image rollout and authorization/health checks. The local suite passed 1,326 tests total: 1,323 passed, three native-only skips and zero failures; root checks and build passed, as did 19 focused metadata tests. [PR #5](https://github.com/n8n-io/sidekick/pull/5) subsequently merged as `e1d9e5d` after all CI jobs passed: 1,323 app tests passed with three native-only skips, 403 Cloudflare checks passed, and the separate native suite passed 16 checks. The later automatic deployment and post-merge chat evidence are recorded above.
 
 A fresh Notion read returned the changed fixture value, which was withheld from the prompt, and the correct page link. The read-only observer confirmed task success for the expected owner and current web channel, eight delta frames and exact-release health; the UI response matched the fixture. This establishes the scoped synthetic-page read on this release, not broad workspace access, writes or event delivery.
 
@@ -45,6 +51,6 @@ Private evidence remains under `.local/cloud/production-channel-attachment-obser
 - Broader Notion access and write flows, Slack demo acceptance and the requested recorded demo.
 - Gmail custom OAuth repair and successful user consent.
 - E2B funding, separate project keys and combined templates, live guest isolation and same-resource recovery. This release still used Cloudflare computers.
-- Reviewed operator privacy information and the public-sharing gate. Scoped Notion and public-PDF success do not complete broader hosted acceptance.
+- Operator privacy-information review and the public-sharing gate. Scoped Notion and public-PDF success do not complete broader hosted acceptance.
 
 See [production requirements](../../production.md), [provider setup](../../research/provider-account-setup.md) and the [earlier production chat record](2026-09-27-production-chat.md).

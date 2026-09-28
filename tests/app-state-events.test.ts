@@ -67,15 +67,19 @@ const state: AppState = {
   },
 };
 
-async function fixture(t: TestContext) {
+async function fixture(
+  t: TestContext,
+  options: { accountless?: boolean; session?: SessionResponse } = {},
+) {
   const previousFetch = globalThis.fetch;
   Events.all = [];
-  let currentSession = account;
+  let currentSession = options.session ?? account;
   let currentState = state;
   let sessionResponse: (() => Promise<Response>) | undefined;
   let sessionReads = 0;
   let stateReads = 0;
   globalThis.fetch = async (path) => {
+    if (path === '/api/logout') return Response.json({ ok: true });
     if (path === '/api/session') {
       sessionReads++;
       return sessionResponse ? sessionResponse() : Response.json(currentSession);
@@ -91,7 +95,7 @@ async function fixture(t: TestContext) {
   document.body.append(element);
   const root = createRoot(element);
   let app!: ReturnType<typeof useAppState>;
-  function Fixture({ owner }: { owner: string }) {
+  function Fixture({ owner }: { owner?: string }) {
     app = useAppState(owner);
     return createElement('div', null, app.connected ? 'Connected' : 'Reconnecting');
   }
@@ -109,7 +113,12 @@ async function fixture(t: TestContext) {
     globalThis.fetch = previousFetch;
   });
   await act(async () =>
-    root.render(createElement(Fixture, { key: account.user!.id, owner: account.user!.id })),
+    root.render(
+      createElement(Fixture, {
+        key: account.user!.id,
+        owner: options.accountless ? undefined : account.user!.id,
+      }),
+    ),
   );
   return {
     app: () => app,
@@ -349,3 +358,60 @@ test('a superseded session refresh neither blocks nor duplicates terminal recove
   await f.tick(60_000);
   assert.equal(Events.all.length, 2);
 });
+
+test('an accountless subscription requires an accepted account before opening a source', async (t) => {
+  const f = await fixture(t, {
+    accountless: true,
+    session: { ...account, user: null, settings: null },
+  });
+  assert.equal(Events.all.length, 0);
+  f.session(account);
+  await act(async () => sessionStore.refresh());
+  await f.tick(60_000);
+  assert.equal(Events.all.length, 0);
+  await f.render(account.user!.id);
+  assert.equal(Events.all.length, 1);
+  assert.equal(Events.all[0].url, '/api/events?account=account-a');
+});
+
+test('an accountless local subscription derives the accepted account for initial and replacement sources', async (t) => {
+  const f = await fixture(t, {
+    accountless: true,
+    session: { ...account, auth: { mode: 'local', googleAvailable: false } },
+  });
+  assert.equal(Events.all[0].url, '/api/events?account=account-a');
+  await act(async () => Events.all[0].fail());
+  await f.tick(1000);
+  assert.equal(Events.all.length, 2);
+  assert.equal(Events.all[1].url, '/api/events?account=account-a');
+});
+
+for (const change of ['owner', 'epoch', 'signout'] as const)
+  test(`an accountless subscription fences old callbacks and retries after ${change} changes`, async (t) => {
+    const f = await fixture(t, { accountless: true });
+    const first = Events.all[0];
+    await act(async () => first.fail());
+    const epoch = sessionStore.getSnapshot().epoch;
+    await act(async () => {
+      if (change === 'owner') {
+        f.session({ ...account, user: { ...account.user!, id: 'account-b' } });
+        await sessionStore.refresh();
+      } else if (change === 'epoch') {
+        sessionStore.invalidate();
+        await sessionStore.refresh();
+      } else await sessionStore.logout();
+    });
+    assert.ok(sessionStore.getSnapshot().epoch > epoch);
+    const reads = f.reads();
+    await act(async () => {
+      first.onopen?.();
+      first.onerror?.();
+      first.emit({ type: 'delta', taskId: 'old', streamId: 'stale', text: 'Old session' });
+    });
+    await f.tick(60_000);
+    assert.equal(Events.all.length, 1);
+    assert.equal(first.readyState, Events.CLOSED);
+    assert.equal(f.app().connected, false);
+    assert.equal(f.app().streams.stale, undefined);
+    assert.deepEqual(f.reads(), reads);
+  });

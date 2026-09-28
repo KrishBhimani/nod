@@ -8,7 +8,9 @@ export function subscribeAppEvents(
     message(event: MessageEvent<string>): void;
   },
 ) {
-  const epoch = sessionStore.getSnapshot().epoch;
+  const acceptedSession = sessionStore.getSnapshot();
+  const epoch = acceptedSession.epoch;
+  const owner = accountId ?? acceptedSession.session?.user?.id ?? '';
   let disposed = false;
   let source: EventSource | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -17,8 +19,10 @@ export function subscribeAppEvents(
     const session = sessionStore.getSnapshot();
     return (
       !disposed &&
-      (!accountId ||
-        (session.session?.user?.id === accountId && session.epoch === epoch && !session.signingOut))
+      Boolean(owner) &&
+      session.session?.user?.id === owner &&
+      session.epoch === epoch &&
+      !session.signingOut
     );
   }
   function clearRetry() {
@@ -36,9 +40,7 @@ export function subscribeAppEvents(
   function connect() {
     if (!current()) return;
     source?.close();
-    const events = new EventSource(
-      accountId ? `/api/events?account=${encodeURIComponent(accountId)}` : '/api/events',
-    );
+    const events = new EventSource(`/api/events?account=${encodeURIComponent(owner)}`);
     source = events;
     const accepted = () => current() && source === events;
     events.onopen = () => {

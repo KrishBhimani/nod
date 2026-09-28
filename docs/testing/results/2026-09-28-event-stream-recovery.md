@@ -2,14 +2,14 @@
 
 A deployment can temporarily return HTTP 503 when an open page reconnects its event stream. A non-200 response makes the browser close `EventSource` permanently. Previously, the client refreshed its login state but retained that closed source, so the page could remain on “Reconnecting”. Normal EOF after a valid stream has different behavior: the browser retries it itself. [HTML processing model](https://html.spec.whatwg.org/multipage/server-sent-events.html#sse-processing-model).
 
-The client now replaces terminal sources with one pending retry, backing off from one second to at most 30 seconds. It preserves native retries, streamed text and the accepted account binding. Account changes, sign-out and unmount cancel pending retries and fence late callbacks. Reconnection does not resubmit chat messages or agent actions.
+The client now replaces terminal sources with one pending retry, backing off from one second to at most 30 seconds. It requires an accepted account and always includes its expected-account query, including when a caller omits the owner argument. It preserves native retries and streamed text. Account changes, sign-out and unmount cancel pending retries and fence late callbacks. Reconnection does not resubmit chat messages or agent actions.
 
 ## Automated checks
 
 - The regression failed before the fix: no replacement source appeared after terminal closure.
-- Nine hook regressions cover terminal recovery, native retry deduplication, backoff, retained text and revision changes, stale callbacks, unmount, account replacement, expiry, and hung or superseded session refreshes.
-- The focused six-file run passed 41 tests, with no failures or skips.
-- The full local suite passed 1,332 of 1,335 tests, with zero failures and three native-only skips. The build, TypeScript, architecture and formatting checks passed.
+- Fourteen hook regressions cover terminal recovery, native retry deduplication, backoff, retained text and revision changes, stale callbacks, unmount, account replacement, expiry, missing owner arguments, accepted local identities, and hung or superseded session refreshes.
+- The focused six-file run passed 46 tests, with no failures or skips. Five identity regressions also failed before the ownership correction.
+- The full local suite passed 1,337 of 1,340 tests, with zero failures and three native-only skips. The build, TypeScript, architecture and formatting checks passed.
 - Independent source review found no actionable issues.
 
 ## Native browser check
