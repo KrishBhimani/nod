@@ -73,7 +73,7 @@ test(
       second.record({
         ...base,
         id: secondId,
-        routingFailure: { code: 'provider_response', httpStatus: 429 },
+        routingFailure: { code: 'response_processing', httpStatus: 429 },
       });
       await Promise.all([first.flush(), second.flush()]);
       const rows = (
@@ -170,7 +170,7 @@ test('routing failure validation rejects extra data, wrong event scope and task 
       { ...base, toolCallId: randomUUID(), toolName: 'apps' },
       ...[99, 600, 401.5, Number.NaN, '429', null].map((httpStatus) => ({
         ...base,
-        routingFailure: { code: 'provider_response', httpStatus },
+        routingFailure: { code: 'response_processing', httpStatus },
       })),
     ];
     try {

@@ -187,7 +187,7 @@ export function createPiConversationRouter(options: {
                 response.status <= 599
               )
                 httpStatus = response.status;
-              failure = 'provider_response';
+              failure = 'response_processing';
               return response;
             },
           },

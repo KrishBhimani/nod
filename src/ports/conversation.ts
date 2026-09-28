@@ -7,7 +7,7 @@ export const conversationRoutingFailureCodes = [
   'model_unavailable',
   'completion_setup',
   'transport',
-  'provider_response',
+  'response_processing',
   'output_limit',
   'unexpected_tool',
   'text_limit',

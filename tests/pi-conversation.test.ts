@@ -532,7 +532,7 @@ test('Pi routing forwards identical fetch inputs and responses and records only 
     assert.equal(calls, 1);
     assert.equal(value.usage.length, 1);
     assert.deepEqual(value.usage[0].routingFailure, {
-      code: 'provider_response',
+      code: 'response_processing',
       ...(Number.isInteger(status) && status >= 100 && status <= 599 ? { httpStatus: status } : {}),
     });
     assert.doesNotMatch(JSON.stringify(value.usage), /private-|authorization|provider.invalid/);
@@ -616,11 +616,82 @@ test('Pi routing preserves actual SDK success and classifies HTTP, transport and
       assert.equal(usage[0].outputTokens, 10);
     } else
       assert.deepEqual(usage[0].routingFailure, {
-        code: kind === 'transport' ? 'transport' : 'provider_response',
+        code: kind === 'transport' ? 'transport' : 'response_processing',
         ...(kind === 'transport' ? {} : { httpStatus: kind === 'http' ? 429 : 200 }),
       });
     assert.doesNotMatch(JSON.stringify(usage), /private-|retry-after|response.created/);
   }
+});
+
+test('Pi routing records a response-processing phase when an HTTP 200 SSE body fails after headers', async () => {
+  let calls = 0;
+  let reads = 0;
+  const usage: ProviderUsageEvent[] = [];
+  const reply = new Response(
+    new ReadableStream(
+      {
+        pull(controller) {
+          reads++;
+          if (reads === 1)
+            controller.enqueue(
+              new TextEncoder().encode(
+                'data: {"type":"response.created","response":{"id":"private-response-id"}}\n\n',
+              ),
+            );
+          else
+            controller.error(
+              new TypeError('private-body-transport-error', {
+                cause: new Error('private-body-transport-cause'),
+              }),
+            );
+        },
+      },
+      { highWaterMark: 0 },
+    ),
+    { status: 200, headers: { 'content-type': 'text/event-stream' } },
+  );
+  const router = createPiConversationRouter({
+    provider: 'openai',
+    apiKey: 'private-fixture-key',
+    onUsage: (value) => usage.push(value),
+    createRuntime: async (options) => {
+      const runtime = await ModelRuntime.create(options);
+      return {
+        getModel: (...args) => runtime.getModel(...args),
+        setRuntimeApiKey: (...args) => runtime.setRuntimeApiKey(...args),
+        completeSimple: (model, request, options) => {
+          assert.ok(options?.fetch);
+          const forward = options.fetch;
+          return runtime.completeSimple(model, request, {
+            ...options,
+            fetch: async (...args) => {
+              const observed = await forward(...args);
+              assert.equal(observed, reply);
+              assert.equal(observed.bodyUsed, false);
+              assert.equal(reads, 0);
+              return observed;
+            },
+          });
+        },
+      };
+    },
+    fetch: async () => {
+      calls++;
+      return reply;
+    },
+  });
+  await assert.rejects(router(context()), {
+    message: 'Conversation routing is unavailable.',
+  });
+  assert.equal(calls, 1);
+  assert.equal(reads, 2);
+  assert.equal(usage.length, 1);
+  assert.equal(usage[0].status, 'failed');
+  assert.deepEqual(usage[0].routingFailure, {
+    code: 'response_processing',
+    httpStatus: 200,
+  });
+  assert.doesNotMatch(JSON.stringify(usage), /private-|response.created/);
 });
 
 test('Pi routing keeps late HTTP success and failure cancelled with one usage event', async () => {

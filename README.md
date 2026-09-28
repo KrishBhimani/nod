@@ -43,7 +43,7 @@ Add provider keys to the ignored `.env`, then restart. Keep keys out of chat, so
 | `DATABASE_URL`, `PORT`                        | Server database and port; the launcher generates local database credentials      |
 | `DEV_INSPECTOR=false`                         | Disable Inspector access and payload capture                                     |
 
-Failed message routing keeps a private diagnostic record for seven days, even with Inspector disabled. It contains a fixed failure code, optional HTTP status and bounded model/timing/usage fields, without prompts, outputs or raw errors. [Capture limits and access](docs/security.md#private-diagnostic-observations).
+When message routing fails before a task starts, Sidekick may keep a private diagnostic record for seven days, even with Inspector disabled. Capture is best effort and excludes operations with task or tool context. Records contain a fixed failure code, optional HTTP status and bounded model/timing/usage fields, without prompts, outputs or raw errors. [Capture limits and access](docs/security.md#private-diagnostic-observations).
 
 macOS Keychain supplies the encryption key for the vault and saved channel settings. Other hosts require `SIDEKICK_VAULT_KEY`; see [vault setup](docs/vault.md). Telegram and WhatsApp credentials can be saved through **Channels**, outside chat. Telegram supports local polling without a tunnel; WhatsApp still requires Meta callback setup and an eligibility check.
 
