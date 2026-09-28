@@ -419,6 +419,13 @@ export function createAgentBrowserComputer(options: {
       /^Navigation failed: net::ERR_[A-Z_]+/.test(response.error)
     )
       throw new BrowserActionError('browser_navigation_failed');
+    if (
+      args[0] === 'open' &&
+      response.success === false &&
+      typeof response.error === 'string' &&
+      response.error.startsWith('Operation timed out.')
+    )
+      throw new DaemonCommandError();
     if (result.exitCode || response.success === false)
       throw new Error('Browser action could not complete. Observe the page again before retrying.');
     if (args[0] === 'close') await closeDisplay(state);
@@ -953,6 +960,22 @@ export function createAgentBrowserComputer(options: {
           await command(state, ['open', url.href], { signal });
           state.saved.navigationFailed = false;
         } catch (error) {
+          if (error instanceof DaemonCommandError && !signal?.aborted) {
+            try {
+              const loaded = new URL(await currentUrl(state, signal));
+              if (
+                loaded.origin === url.origin &&
+                loaded.pathname.replace(/\/+$/, '') === url.pathname.replace(/\/+$/, '') &&
+                loaded.search === url.search
+              ) {
+                const observation = await observe(state, signal);
+                if (observation.text.split('\n\nPage structure:\n', 1)[0].trim()) {
+                  state.saved.navigationFailed = false;
+                  return observation;
+                }
+              }
+            } catch {}
+          }
           if (error instanceof BrowserActionError && !signal?.aborted) {
             state.started = false;
             state.saved.navigationFailed = true;

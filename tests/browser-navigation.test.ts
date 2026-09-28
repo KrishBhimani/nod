@@ -25,6 +25,59 @@ test('a browser observation waits for a page that first renders with no text', a
   }
 });
 
+test('a timed-out open uses the requested page when its text is ready', async () => {
+  const directory = await mkdtemp('/tmp/sk-slow-navigation-');
+  let currentUrl = 'about:blank';
+  const run: typeof runProcess = async (_executable, args, options) => {
+    if (args.includes('info'))
+      return {
+        stdout: JSON.stringify({ success: true, data: { active: false } }),
+        stderr: '',
+        exitCode: 0,
+      };
+    const command = args.slice(args.indexOf('--idle-timeout') + 2);
+    let data: Record<string, unknown> = {};
+    if (command[0] === 'open') {
+      if (command[1].endsWith('/slow') || command[1].endsWith('/blank')) currentUrl = command[1];
+      if (['/slow', '/missing', '/blank'].some((path) => command[1].endsWith(path)))
+        return {
+          stdout: JSON.stringify({
+            success: false,
+            error:
+              'Operation timed out. The page may still be loading or the element may not exist.',
+          }),
+          stderr: '',
+          exitCode: 1,
+        };
+      currentUrl = command[1];
+    }
+    if (command[0] === 'get') data = { url: currentUrl };
+    if (command[0] === 'eval')
+      data = options?.input?.includes('document.body?.innerText')
+        ? { result: { text: currentUrl.endsWith('/blank') ? '' : 'Page content is ready' } }
+        : { result: { masked: true, values: [], inputValues: [] } };
+    if (command[0] === 'snapshot') data = { snapshot: '- heading "Page content is ready"' };
+    return { stdout: JSON.stringify({ success: true, data }), stderr: '', exitCode: 0 };
+  };
+  const browser = createAgentBrowserComputer({ dataRoot: directory, run });
+  try {
+    const page = await browser.act('slow', { action: 'open', url: 'https://1.1.1.1/slow' });
+    assert.equal(page.url, 'https://1.1.1.1/slow');
+    assert.match(page.text, /Page content is ready/);
+    await assert.rejects(
+      browser.act('slow', { action: 'open', url: 'https://1.1.1.1/missing' }),
+      /could not complete/,
+    );
+    await assert.rejects(
+      browser.act('slow', { action: 'open', url: 'https://1.1.1.1/blank' }),
+      /could not complete/,
+    );
+  } finally {
+    await browser.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('failed public navigation stays diagnosable without exposing a browser error page and a new open recovers', async () => {
   const directory = await mkdtemp('/tmp/sk-navigation-');
   const commands: string[] = [];
