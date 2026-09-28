@@ -249,6 +249,20 @@ test('historical role markers and attachment names stay quoted while the current
   }
 });
 
+test('message attachment metadata names the staged workspace copy', async () => {
+  const attachments = [
+    { name: 'statement.pdf', mimeType: 'application/pdf', workspaceFile: 'fixture-statement.pdf' },
+  ];
+  const result = await fixture(async () => {}, {
+    history: [{ id: 'fixture-message', role: 'assistant', text: '', attachments }],
+    replyTo: { id: 'fixture-message', role: 'assistant', text: '', attachments },
+  });
+  const instruction = JSON.parse(result.userPrompt.split('Request data (JSON):\n')[1]);
+  assert.deepEqual(instruction.recentConversation[0].attachments, attachments);
+  assert.ok(result.supplied.systemPrompt.includes(`"workspaceFile":"fixture-statement.pdf"`));
+  assert.match(result.userPrompt, /for a PDF, extract the text with pdftotext/);
+});
+
 test('new and resumed sessions receive the current local time and owner time zone', async () => {
   for (const [timeZone, resumed] of [
     [undefined, false],
