@@ -4,6 +4,7 @@ import { App } from './app';
 import { initializeTheme } from './lib/theme';
 import './styles.css';
 import './pages/chat.css';
+import './pages/chat-welcome-prototype.css';
 import './theme.css';
 import './pages/secondary-pages.css';
 import './pages/apps.css';

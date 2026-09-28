@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowDown, ArrowUpRight } from 'lucide-react';
+import { ArrowDown } from 'lucide-react';
 import type { AppState, Artifact, Message, SubmitMessageResponse } from '../../shared/contracts';
 import { integrationServices } from '../../shared/integrations';
 import { Composer, type ComposerHandle, type ComposerSendResult } from '../components/composer';
@@ -7,6 +7,12 @@ import { MessageBubble } from '../components/message';
 import { ChatTurnRail } from '../components/chat-turn-rail';
 import { BrandMark } from '../components/brand';
 import { Button, Notice } from '../components/ui';
+import {
+  ChatWelcome,
+  FirstMessageSuggestions,
+  WelcomeVariantSwitcher,
+  welcomeVariant,
+} from './chat-welcome-prototype';
 import { api, apiResponse, errorMessage, post } from '../lib/api';
 import {
   hasVisibleChatActivity,
@@ -95,6 +101,11 @@ export function Chat({
       .map((item) => item.message),
   ];
   const working = hasVisibleChatActivity(state.tasks);
+  const variant = welcomeVariant();
+  const pick = (label: string) => {
+    setText(label);
+    composer.current?.focus();
+  };
   const persistedStreams = new Set(allMessages.map((message) => message.streamId).filter(Boolean));
   const streamEntries = Object.entries(streams).filter(
     ([id, value]) => value && !persistedStreams.has(id),
@@ -117,7 +128,6 @@ export function Chat({
       };
     }),
   ];
-  const onboardingVisible = allMessages.length === 0 && !working && !resetting;
   useLayoutEffect(() => {
     if (stickToBottom.current)
       bottom.current?.scrollIntoView({ behavior: 'instant', block: 'end' });
@@ -403,6 +413,7 @@ export function Chat({
   setupAction.current = () => void startOnboarding();
   return (
     <div className="chat-page">
+      {import.meta.env?.DEV && <WelcomeVariantSwitcher variant={variant} />}
       <ChatTurnRail
         messages={allMessages}
         activeId={activeTurn}
@@ -450,24 +461,13 @@ export function Chat({
             </div>
           )}
           {visibleMessages.length === 0 && (
-            <div className="welcome">
-              <BrandMark />
-              <h1>What’s on your mind?</h1>
-              <div className="starter-actions">
-                {['Plan my day', 'Help me research something', 'Start a goal'].map((label) => (
-                  <button
-                    key={label}
-                    onClick={() => {
-                      setText(label);
-                      composer.current?.focus();
-                    }}
-                  >
-                    {label}
-                    <ArrowUpRight size={15} />
-                  </button>
-                ))}
-              </div>
-            </div>
+            <ChatWelcome
+              variant={variant}
+              status={
+                resetting ? 'Starting setup' : working || sending ? 'Otto is typing' : undefined
+              }
+              onPick={pick}
+            />
           )}
           <div
             className="messages"
@@ -505,40 +505,29 @@ export function Chat({
                 />
               </Fragment>
             ))}
-            {(sending || resetting || working) && streamEntries.length === 0 && (
-              <div
-                className="thinking"
-                role="status"
-                aria-label={
-                  resetting ? 'Starting setup' : sending ? 'Sending message' : 'Otto is typing'
-                }
-              >
-                <div className="assistant-mark">
-                  <BrandMark small />
+            {(sending || resetting || working) &&
+              streamEntries.length === 0 &&
+              visibleMessages.length > 0 && (
+                <div
+                  className="thinking"
+                  role="status"
+                  aria-label={
+                    resetting ? 'Starting setup' : sending ? 'Sending message' : 'Otto is typing'
+                  }
+                >
+                  <div className="assistant-mark">
+                    <BrandMark small />
+                  </div>
+                  <span className="thinking-dots" aria-hidden="true">
+                    <i />
+                    <i />
+                    <i />
+                  </span>
                 </div>
-                <span className="thinking-dots" aria-hidden="true">
-                  <i />
-                  <i />
-                  <i />
-                </span>
-              </div>
-            )}
+              )}
           </div>
-          {onboardingVisible && (
-            <section className="onboarding-card">
-              <div>
-                <h2>Make Otto yours.</h2>
-                <p>Connect your tools and pick something to work on.</p>
-              </div>
-              <Button
-                variant="outline"
-                disabled={sending || resetting || !state.configuration.llmReady}
-                onClick={() => window.dispatchEvent(new CustomEvent('otto:restart-setup'))}
-              >
-                Get started
-                <ArrowUpRight size={15} />
-              </Button>
-            </section>
+          {allMessages.length === 1 && allMessages[0].role === 'assistant' && !working && (
+            <FirstMessageSuggestions variant={variant} text={allMessages[0].text} onPick={pick} />
           )}
           <div ref={bottom} />
         </div>

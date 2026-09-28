@@ -26,7 +26,29 @@ const sessions = new Map<string, AuthenticatedSession>();
 const pending = new Set<string>();
 const accounts = new Map<string, StoredAccount>();
 const preferences = new Map<string, typeof defaultPreferences>();
-const connections = new Map<string, Set<IntegrationService>>();
+const connections = new Map<string, Set<IntegrationService>>([
+  [users[0].id, new Set<IntegrationService>(['gmail', 'googlecalendar', 'slack'])],
+]);
+const welcomes = new Map<string, { startedAt: number; taskId: string; messageId: string }>();
+const welcomeIdeas: Partial<Record<IntegrationService, string>> = {
+  gmail: 'Draft replies to the three emails that wait for your answer.',
+  googlecalendar: 'Prepare notes for your 14:00 design review.',
+  slack: 'Summarize what changed in #launch since yesterday.',
+};
+function welcomeText(owner: string) {
+  const name = users.find((user) => user.id === owner)?.name.split(' ')[0];
+  const apps = integrationServiceIds.filter((slug) => connections.get(owner)?.has(slug));
+  if (!apps.length)
+    return `Hi ${name}. No apps are connected yet, so here are good ways to start:\n\n1. Plan my week around three priorities.\n2. Research a topic and give me a short summary.\n3. Set a goal and check in on it each week.\n\nConnect Gmail or Google Calendar in Apps, and I can do more for you.`;
+  const names = apps.map((slug) => integrationServices[slug].name);
+  return `Hi ${name}. I looked at ${names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0]}. Here is what I can do now:\n\n${apps
+    .slice(0, 3)
+    .map(
+      (slug, index) =>
+        `${index + 1}. **${integrationServices[slug].name}:** ${welcomeIdeas[slug] ?? 'Find what changed this week.'}`,
+    )
+    .join('\n')}\n\nPick one, or ask me something else.`;
+}
 const consent = new Map<
   string,
   { ownerId: string; service: IntegrationService; returnTo: string }
@@ -106,11 +128,44 @@ const app = await createGateway({
     async fetch(owner, request) {
       const url = new URL(request.url);
       if (url.pathname === '/api/account/prepare') return Response.json({ ok: true });
+      if (url.pathname === '/api/onboarding/start') {
+        if (!welcomes.has(owner))
+          welcomes.set(owner, {
+            startedAt: Date.now(),
+            taskId: randomUUID(),
+            messageId: randomUUID(),
+          });
+        return Response.json({ ok: true });
+      }
+      const welcome = welcomes.get(owner);
+      const replied = welcome && Date.now() - welcome.startedAt > 6_000;
       if (url.pathname === '/api/state')
         return Response.json({
           conversationRevision: 0,
-          messages: [],
-          tasks: [],
+          messages: replied
+            ? [
+                {
+                  id: welcome.messageId,
+                  role: 'assistant',
+                  text: welcomeText(owner),
+                  taskId: welcome.taskId,
+                  attachments: [],
+                  createdAt: new Date(welcome.startedAt + 6_000).toISOString(),
+                },
+              ]
+            : [],
+          tasks: welcome
+            ? [
+                {
+                  id: welcome.taskId,
+                  title: 'Welcome',
+                  status: replied ? 'succeeded' : 'queued',
+                  showTyping: true,
+                  createdAt: new Date(welcome.startedAt).toISOString(),
+                  updatedAt: new Date(welcome.startedAt).toISOString(),
+                },
+              ]
+            : [],
           configuration: {
             provider: 'fixture',
             model: 'Synthetic UI fixture',
@@ -129,8 +184,8 @@ const app = await createGateway({
             start(controller) {
               controller.enqueue(new TextEncoder().encode('data: {"type":"refresh"}\n\n'));
               timer = setInterval(
-                () => controller.enqueue(new TextEncoder().encode(': fixture\n\n')),
-                30_000,
+                () => controller.enqueue(new TextEncoder().encode('data: {"type":"refresh"}\n\n')),
+                2_000,
               );
             },
             cancel() {
@@ -228,6 +283,20 @@ app.get('/fixture/sign-in/:index', async (request, reply) => {
   return reply
     .header('set-cookie', `${cookieName}=${token}; Path=/; HttpOnly; SameSite=Lax`)
     .redirect('/');
+});
+app.get('/fixture/chat', async (request, reply) => {
+  const current = session(new Headers({ cookie: request.headers.cookie ?? '' }));
+  if (!current) return reply.code(401).send('Sign in to use this fixture.');
+  const search = new URL(request.url, origin).searchParams;
+  welcomes.delete(current.user.id);
+  if (search.get('state') !== 'empty')
+    welcomes.set(current.user.id, {
+      startedAt: Date.now(),
+      taskId: randomUUID(),
+      messageId: randomUUID(),
+    });
+  const variant = search.get('variant');
+  return reply.redirect(variant && /^[ABC]$/.test(variant) ? `/?variant=${variant}` : '/');
 });
 app.get('/fixture/connect', async (request, reply) => {
   const token = new URL(request.url, origin).searchParams.get('token') ?? '';

@@ -77,6 +77,7 @@ const { createRoot } = await import('react-dom/client');
 const { useAppState } = await import('../src/web/hooks/use-app-state.ts');
 const { sessionStore } = await import('../src/web/lib/session.ts');
 const { Chat } = await import('../src/web/pages/chat.tsx');
+const { pageDataCache } = await import('../src/web/lib/page-data-cache.ts');
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 25));
 const message: Message = {
   id: 'old-message',
@@ -282,6 +283,7 @@ test('Get started uses the same restart event and failed reset preserves the exi
       return failReset
         ? new Response(JSON.stringify({ error: 'Restart failed.' }), { status: 503 })
         : new Response(JSON.stringify({ ok: true, conversationRevision: 1 }));
+    if (path === '/api/apps') return Response.json([]);
     return new Response('{}');
   };
   const fixture = await mount();
@@ -300,15 +302,7 @@ test('Get started uses the same restart event and failed reset preserves the exi
     });
     assert.equal(requests.filter((path) => path === '/api/onboarding').length, 1);
     assert.doesNotMatch(fixture.element.textContent ?? '', /Archived conversation/);
-    const button = [...fixture.element.querySelectorAll('button')].find((item) =>
-      item.textContent?.includes('Get started'),
-    )!;
-    assert.ok(button);
-    await act(async () => {
-      button.click();
-      await tick();
-    });
-    assert.equal(requests.filter((path) => path === '/api/conversation/reset').length, 3);
+    assert.equal(requests.filter((path) => path === '/api/conversation/reset').length, 2);
   } finally {
     await fixture.dispose();
     globalThis.fetch = priorFetch;
@@ -355,6 +349,7 @@ test('setup cannot archive a conversation when its model is unavailable', async 
   const paths: string[] = [];
   globalThis.fetch = async (path) => {
     paths.push(String(path));
+    if (path === '/api/apps') return Response.json([]);
     return Response.json({
       ...base,
       messages: [],
@@ -363,10 +358,6 @@ test('setup cannot archive a conversation when its model is unavailable', async 
   };
   const fixture = await mount();
   try {
-    const button = [...fixture.element.querySelectorAll('button')].find((item) =>
-      item.textContent?.includes('Get started'),
-    )!;
-    assert.equal(button.disabled, true);
     await act(async () => {
       window.dispatchEvent(new CustomEvent('otto:restart-setup'));
       await tick();
@@ -375,6 +366,59 @@ test('setup cannot archive a conversation when its model is unavailable', async 
       paths.some((path) => path === '/api/conversation/reset' || path === '/api/onboarding'),
       false,
     );
+  } finally {
+    await fixture.dispose();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('empty chat shows typing while the first message is on its way and app suggestions otherwise', async () => {
+  const originalFetch = globalThis.fetch;
+  let tasks: AppState['tasks'] = [
+    {
+      id: 'welcome',
+      title: 'Welcome',
+      status: 'queued',
+      showTyping: true,
+      createdAt: '2026-09-28T12:00:00Z',
+      updatedAt: '2026-09-28T12:00:00Z',
+    },
+  ];
+  const apps: string[] = [];
+  globalThis.fetch = async (path) => {
+    if (path === '/api/apps') {
+      apps.push(String(path));
+      return Response.json(
+        ['gmail', 'googlecalendar', 'slack', 'notion'].map((slug) => ({
+          slug,
+          name: slug,
+          status: slug === 'gmail' || slug === 'slack' ? 'connected' : 'disconnected',
+          triggersEnabled: false,
+        })),
+      );
+    }
+    return Response.json({ ...base, messages: [], tasks });
+  };
+  pageDataCache.clear();
+  const fixture = await mount();
+  try {
+    const text = () => fixture.element.textContent ?? '';
+    assert.ok(fixture.element.querySelector('[aria-label="Otto is typing"]'));
+    assert.doesNotMatch(text(), /What’s on your mind|Make Otto yours|Get started/);
+    tasks = [{ ...tasks[0], status: 'succeeded' }];
+    await act(async () => {
+      Events.current.emit({ type: 'refresh' });
+      await tick();
+    });
+    assert.equal(fixture.element.querySelector('[aria-label="Otto is typing"]'), null);
+    assert.equal(apps.length, 1);
+    assert.deepEqual(
+      [...fixture.element.querySelectorAll('.starter-actions button')].map(
+        (button) => button.textContent,
+      ),
+      ['Summarize my unread email', 'Catch me up on Slack', 'Plan my day'],
+    );
+    assert.doesNotMatch(text(), /Make Otto yours|Get started/);
   } finally {
     await fixture.dispose();
     globalThis.fetch = originalFetch;
