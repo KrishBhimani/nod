@@ -3,7 +3,7 @@ import type { AppState } from '../../shared/contracts';
 import { api, errorMessage, post } from '../lib/api';
 import { initialStreamState, streamReducer } from '../lib/streams';
 import { pageDataCache } from '../lib/page-data-cache';
-import { sessionStore } from '../lib/session';
+import { subscribeAppEvents } from '../lib/app-events';
 
 export function useAppState(accountId?: string) {
   const [state, setState] = useState<AppState | null>(null);
@@ -87,64 +87,62 @@ export function useAppState(accountId?: string) {
     active.current = true;
     let subscribed = true;
     void refresh();
-    const events = new EventSource(
-      accountId ? `/api/events?account=${encodeURIComponent(accountId)}` : '/api/events',
-    );
-    events.onopen = () => {
-      if (!subscribed) return;
-      setConnected(true);
-      void refresh();
-    };
-    events.onerror = () => {
-      if (!subscribed || !active.current) return;
-      setConnected(false);
-      void sessionStore.refresh();
-    };
-    events.onmessage = (event) => {
-      if (!subscribed || !active.current) return;
-      try {
-        const data = JSON.parse(event.data) as {
-          type: string;
-          taskId?: string;
-          text?: string;
-          streamId?: string;
-          done?: boolean;
-          conversationRevision?: number;
-        };
-        if (data.type === 'refresh') {
-          pageDataCache.revalidateActive();
-          void refresh();
-        }
-        if (
-          data.type === 'delta' &&
-          typeof data.taskId === 'string' &&
-          (typeof data.text === 'string' || data.done === true)
-        ) {
-          const revision = data.conversationRevision ?? 0;
-          if (revision < conversationRevision.current) return;
-          if (revision > conversationRevision.current) {
-            advanceConversation(revision);
+    const closeEvents = subscribeAppEvents(accountId, {
+      open() {
+        if (!subscribed) return;
+        setConnected(true);
+        void refresh();
+      },
+      error() {
+        if (!subscribed || !active.current) return;
+        setConnected(false);
+      },
+      message(event) {
+        if (!subscribed || !active.current) return;
+        try {
+          const data = JSON.parse(event.data) as {
+            type: string;
+            taskId?: string;
+            text?: string;
+            streamId?: string;
+            done?: boolean;
+            conversationRevision?: number;
+          };
+          if (data.type === 'refresh') {
+            pageDataCache.revalidateActive();
             void refresh();
           }
-          dispatchStream({
-            type: 'delta',
-            conversationRevision: revision,
-            taskId: data.taskId,
-            text: typeof data.text === 'string' ? data.text : '',
-            ...(typeof data.streamId === 'string' ? { streamId: data.streamId } : {}),
-            done: data.done === true,
-          });
+          if (
+            data.type === 'delta' &&
+            typeof data.taskId === 'string' &&
+            (typeof data.text === 'string' || data.done === true)
+          ) {
+            const revision = data.conversationRevision ?? 0;
+            if (revision < conversationRevision.current) return;
+            if (revision > conversationRevision.current) {
+              advanceConversation(revision);
+              void refresh();
+            }
+            dispatchStream({
+              type: 'delta',
+              conversationRevision: revision,
+              taskId: data.taskId,
+              text: typeof data.text === 'string' ? data.text : '',
+              ...(typeof data.streamId === 'string' ? { streamId: data.streamId } : {}),
+              done: data.done === true,
+            });
+          }
+        } catch {
+          setError('An update could not be read. Refresh the page to reconnect.');
         }
-      } catch {
-        setError('An update could not be read. Refresh the page to reconnect.');
-      }
-    };
+      },
+    });
     return () => {
       active.current = false;
       subscribed = false;
       requestVersion.current++;
       stateRequest.current?.abort();
-      events.close();
+      closeEvents();
     };
   }, [refresh, advanceConversation, accountId]);
 
