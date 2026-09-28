@@ -92,7 +92,7 @@ test(
         true,
       );
       assert.equal(
-        state.tasks.find((task: { id: string }) => task.id === hidden).showTyping,
+        state.tasks.some((task: { id: string }) => task.id === hidden),
         false,
       );
       assert.equal(

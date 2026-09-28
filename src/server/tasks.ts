@@ -1216,8 +1216,16 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
         refresh();
       },
       delta: (text, streamId, done) => {
-        if (!controller.signal.aborted && task.source === 'user')
-          delta(taskId, text, streamId, done, task.conversation_revision);
+        if (!controller.signal.aborted && task.source === 'user' && task.channel === 'web')
+          delta({
+            ownerId,
+            channel: task.channel,
+            taskId,
+            text,
+            streamId,
+            done,
+            conversationRevision: task.conversation_revision,
+          });
       },
       remember: async (text) => {
         if (task.source !== 'user' || !sourceMessageId)
@@ -1252,6 +1260,18 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
           ),
         );
         await reply(taskId, 'Browser screenshot.', [artifact], revision);
+        return artifact;
+      },
+      publishBrowserFile: async (file) => {
+        const artifact = await current(async () =>
+          (dependencies.artifacts ?? localArtifacts).storeArtifact(
+            Buffer.from(file.bytes),
+            file.name,
+            file.mimeType,
+            taskId,
+          ),
+        );
+        await reply(taskId, '', [artifact], revision);
         return artifact;
       },
       createAudio: async (text) => {

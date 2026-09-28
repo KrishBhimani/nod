@@ -126,6 +126,10 @@ test('manual input uses normalized socket commands, masks typed data, and locks 
   try {
     await f.computer.takeControl!('fixture');
     await assert.rejects(f.computer.act('fixture', { action: 'snapshot' }), /paused/);
+    await assert.rejects(
+      f.computer.download!('fixture', { url: 'https://1.1.1.1/file.pdf' }),
+      /paused/,
+    );
     await assert.rejects(f.computer.inspectLogin('fixture'), /paused/);
     await assert.rejects(
       f.computer.selectLoginMethod('fixture', 'https://1.1.1.1', 'oauth-google'),

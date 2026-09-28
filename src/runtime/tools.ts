@@ -106,6 +106,15 @@ export const toolDefinitions = {
     'Read a screenshot of this task browser when a visual observation is needed.',
     Type.Object({}),
   ),
+  download_browser_file: defineTool(
+    'download_browser_file',
+    'Download a file using this task’s authenticated browser and send it as a private attachment in this conversation. Supply an observed file URL or download selector, never a filesystem path. With neither, retrieve this task’s sole completed browser download or the currently displayed PDF. Use this for website invoices and PDFs; publish_artifact only reads workspace files. Downloads are limited to 12 MiB. The server keeps cookies, file bytes and private paths out of model context. A successful call already sends the attachment; do not repeat a link or confirmation.',
+    Type.Object({
+      selector: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
+      url: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
+      name: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+    }),
+  ),
   send_screenshot: defineTool(
     'send_screenshot',
     'Capture this task browser through its protected screenshot boundary and publish the masked image as an owned attachment. Use when the user asks to see a screenshot. A successful call already sends the attachment to the user. If this completes the request, finish without another confirmation or repeated link. Secure-entry locks still apply. On channels without file delivery, the attachment is available in the Sidekick web app.',

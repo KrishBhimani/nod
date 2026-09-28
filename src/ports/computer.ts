@@ -38,6 +38,17 @@ export interface BrowserObservation {
   url: string;
   candidates: BrowserCandidate[];
 }
+export const browserDownloadBytes = 12 * 1024 * 1024;
+export interface BrowserDownloadInput {
+  selector?: string;
+  url?: string;
+  name?: string;
+}
+export interface BrowserDownload {
+  bytes: Buffer;
+  name: string;
+  mimeType: string;
+}
 export type CredentialKind = 'identifier' | 'password' | 'otp';
 export interface LoginField {
   kind: CredentialKind;
@@ -86,6 +97,11 @@ export interface Computer {
   control?(taskId: string, input: ManualBrowserInput): Promise<void>;
   releaseControl?(taskId: string): Promise<void>;
   act(taskId: string, input: BrowserAction, signal?: AbortSignal): Promise<BrowserObservation>;
+  download?(
+    taskId: string,
+    input: BrowserDownloadInput,
+    signal?: AbortSignal,
+  ): Promise<BrowserDownload>;
   screenshot(taskId: string, signal?: AbortSignal): Promise<Buffer | null>;
   screenStatus?(taskId: string): {
     state: 'live' | 'last_known' | 'unavailable';

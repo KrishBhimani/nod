@@ -1,0 +1,246 @@
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { get, type IncomingMessage } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import test from 'node:test';
+import pg from 'pg';
+import type { RuntimeContext, RuntimeResult } from '../src/ports/agent.ts';
+import type { AppState, Message } from '../src/shared/contracts.ts';
+import { initialStreamState, streamReducer, type StreamAction } from '../src/web/lib/streams.ts';
+
+test(
+  'web SSE and persisted chat exclude replies from every external channel while retaining web reminders',
+  { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
+  async (t) => {
+    const suffix = randomUUID().replaceAll('-', '').slice(0, 16);
+    const schema = `test_channel_stream_${suffix}`;
+    const bossSchema = `test_channel_stream_boss_${suffix}`;
+    const dataRoot = await mkdtemp(join(tmpdir(), 'sidekick-channel-stream-'));
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const databaseUrl = new URL(process.env.TEST_DATABASE_URL!);
+    databaseUrl.searchParams.set('options', `-c search_path=${schema}`);
+    process.env.DATABASE_URL = databaseUrl.href;
+    process.env.PGBOSS_SCHEMA = bossSchema;
+    process.env.SIDEKICK_DATA_ROOT = dataRoot;
+    process.env.SIDEKICK_MODE = 'local';
+    const db = await import('../src/server/db.ts');
+    const tasks = await import('../src/server/tasks.ts');
+    const { createApp } = await import('../src/server/app.ts');
+    const { createPersonalService } = await import('../src/server/personal.ts');
+    const { port } = await import('../src/server/config.ts');
+    const { events } = await import('../src/server/events.ts');
+    const contexts = new Map<string, RuntimeContext>();
+    const releases = new Map<string, (value: RuntimeResult) => void>();
+    const app = await createApp();
+    const controller = new AbortController();
+    const wire: Array<Record<string, unknown>> = [];
+    const visible: string[] = [];
+    let streamState = initialStreamState;
+    let read: Promise<void> | undefined;
+    const waitFor = async (condition: () => boolean | Promise<boolean>) => {
+      for (let attempt = 0; attempt < 500; attempt++) {
+        if (await condition()) return;
+        await delay(10);
+      }
+      assert.fail('The synthetic stream did not reach its expected boundary.');
+    };
+    const headers = { host: `localhost:${port}` };
+    try {
+      await db.initializeDatabase();
+      await tasks.initializeTasks();
+      const personal = createPersonalService({
+        pool: db.pool,
+        ownerId: 'local-development',
+        scheduler: tasks.boss,
+        submitTask: tasks.submitTask,
+        refresh() {},
+      });
+      await personal.initialize({ workers: false });
+      await tasks.startTaskWorkers({
+        async runTask(context) {
+          contexts.set(context.taskId, context);
+          return new Promise<RuntimeResult>((resolve) => releases.set(context.taskId, resolve));
+        },
+        speech: {
+          synthesize: async () => {
+            throw new Error('Unused fixture');
+          },
+        },
+        requestCredential: async () => {
+          throw new Error('Unused fixture');
+        },
+        integration: async () => {
+          throw new Error('Unused fixture');
+        },
+        manage: async () => {
+          throw new Error('Unused fixture');
+        },
+      });
+      const origin = await app.listen({ host: '127.0.0.1', port: 0 });
+      const response = await new Promise<IncomingMessage>((resolve, reject) => {
+        get(`${origin}/api/events`, { headers, signal: controller.signal }, resolve).on(
+          'error',
+          reject,
+        );
+      });
+      assert.equal(response.statusCode, 200);
+      assert.match(response.headers['content-type'] ?? '', /text\/event-stream/);
+      read = (async () => {
+        const decoder = new TextDecoder();
+        let pending = '';
+        for await (const chunk of response) {
+          pending += decoder.decode(chunk, { stream: true });
+          let boundary;
+          while ((boundary = pending.indexOf('\n\n')) >= 0) {
+            const frame = pending.slice(0, boundary);
+            pending = pending.slice(boundary + 2);
+            if (!frame.startsWith('data: ')) continue;
+            const event = JSON.parse(frame.slice(6)) as Record<string, unknown>;
+            wire.push(event);
+            if (event.type === 'delta') {
+              streamState = streamReducer(streamState, event as StreamAction);
+              visible.push(...Object.values(streamState.active).map((stream) => stream.text));
+            }
+          }
+        }
+      })().catch((error) => {
+        if (!controller.signal.aborted) throw error;
+      });
+      await waitFor(() => wire.some((event) => event.type === 'refresh'));
+      const modes = [
+        { channel: 'telegram:account_one:sender_one', source: 'user', marker: 'telegram-one' },
+        { channel: 'telegram:account_two:sender_two', source: 'user', marker: 'telegram-two' },
+        { channel: 'whatsapp:account_one:sender_one', source: 'user', marker: 'whatsapp-one' },
+        { channel: 'web', source: 'schedule', marker: 'web-reminder' },
+        { channel: 'web', source: 'event', marker: 'web-event' },
+        { channel: 'web', source: 'user', marker: 'web-reply' },
+      ] as const;
+      const ids = new Map<string, string>();
+      const rejectedEvents = [
+        { ownerId: 'another-owner', channel: 'web' },
+        { ownerId: 'local-development', channel: 'web:another-conversation' },
+        { ownerId: 'local-development', channel: 'telegram:another-conversation' },
+        { channel: 'web' },
+        { ownerId: 'local-development' },
+      ].map((routing, index) => ({
+        type: 'delta',
+        taskId: randomUUID(),
+        text: `rejected-stream-${index}`,
+        streamId: `rejected-stream-${index}`,
+        conversationRevision: 0,
+        ...routing,
+      }));
+      for (const mode of modes) {
+        const id = await tasks.submitTask(`Synthetic ${mode.marker}`, [], undefined, false, mode);
+        ids.set(mode.marker, id);
+        await waitFor(() => contexts.has(id));
+        const context = contexts.get(id)!;
+        if (mode.marker === 'web-reply')
+          for (const event of rejectedEvents) events.emit('event', event as never);
+        context.delta(mode.marker, `stream-${mode.marker}`);
+        await context.reply(mode.marker, `stream-${mode.marker}`);
+        context.delta('', `stream-${mode.marker}`, true);
+        releases.get(id)!({ status: 'succeeded' });
+        await waitFor(
+          async () =>
+            (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [id])).rows[0]?.status ===
+            'succeeded',
+        );
+      }
+      await waitFor(() =>
+        wire.some((event) => event.streamId === 'stream-web-reply' && event.done),
+      );
+      const persisted = (
+        await app.inject({ method: 'GET', url: '/api/state', headers })
+      ).json<AppState>();
+      const history = (await app.inject({ method: 'GET', url: '/api/messages', headers })).json<
+        Message[]
+      >();
+      const expected = ['web-event', 'web-reminder', 'web-reply'];
+      await t.test(
+        'reload and history retain web replies and quiet background reminders',
+        async () => {
+          assert.deepEqual(
+            persisted.messages
+              .filter((message) => message.role === 'assistant')
+              .map((message) => message.text)
+              .sort(),
+            expected,
+          );
+          assert.deepEqual(
+            history
+              .filter((message) => message.role === 'assistant')
+              .map((message) => message.text)
+              .sort(),
+            expected,
+          );
+          assert.equal(
+            (await db.pool.query("SELECT id FROM messages WHERE role='assistant'")).rowCount,
+            modes.length,
+          );
+          assert.ok(visible.includes('web-reply'));
+          assert.equal(
+            wire.some(
+              (event) => event.type === 'delta' && event.taskId === ids.get('web-reminder'),
+            ),
+            false,
+          );
+          assert.equal(
+            wire.some((event) => event.type === 'delta' && event.taskId === ids.get('web-event')),
+            false,
+          );
+          assert.equal(
+            wire.some((event) => 'ownerId' in event || 'channel' in event),
+            false,
+          );
+        },
+      );
+      const foreignIds = new Set(
+        modes.filter((mode) => mode.channel !== 'web').map((mode) => ids.get(mode.marker)),
+      );
+      await t.test('external-channel task deltas never leave the web SSE response', () => {
+        assert.deepEqual(
+          wire.filter((event) => event.type === 'delta' && foreignIds.has(String(event.taskId))),
+          [],
+          'External-channel assistant bytes reached the web SSE response.',
+        );
+      });
+      await t.test('external-channel text never reaches the web stream reducer', () => {
+        assert.equal(
+          visible.some((text) => /telegram-|whatsapp-/.test(text)),
+          false,
+          'External-channel replies appeared in the web stream reducer.',
+        );
+      });
+      await t.test('SSE rejects foreign-owner, foreign-destination and unscoped events', () => {
+        assert.deepEqual(
+          wire.filter((event) =>
+            rejectedEvents.some((rejected) => rejected.taskId === event.taskId),
+          ),
+          [],
+        );
+      });
+      await t.test('web state omits external-channel task metadata', () => {
+        assert.deepEqual(
+          persisted.tasks.filter((task) => foreignIds.has(task.id)),
+          [],
+        );
+      });
+    } finally {
+      controller.abort();
+      await read;
+      for (const release of releases.values()) release({ status: 'succeeded' });
+      await app.close();
+      await tasks.stopTasks();
+      await db.pool.end();
+      await admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`);
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+      await rm(dataRoot, { recursive: true, force: true });
+    }
+  },
+);

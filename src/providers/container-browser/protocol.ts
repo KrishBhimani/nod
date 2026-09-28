@@ -12,6 +12,19 @@ const identity = {
 };
 const task = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const selector = z.string().min(1).max(500);
+export const browserDownloadInput = z
+  .object({
+    selector: selector.optional(),
+    url: z.string().min(1).max(8192).optional(),
+    name: z
+      .string()
+      .min(1)
+      .max(200)
+      .regex(/^[^/\\\u0000-\u001f\u007f]+$/)
+      .optional(),
+  })
+  .strict()
+  .refine((input) => !(input.selector && input.url));
 const browserAction = z
   .object({
     action: z.enum(['open', 'snapshot', 'click', 'fill', 'scroll']),
@@ -37,6 +50,14 @@ const credential = z
 
 export const browserRequest = z.discriminatedUnion('method', [
   z.object({ ...identity, method: z.literal('act'), taskId: task, input: browserAction }).strict(),
+  z
+    .object({
+      ...identity,
+      method: z.literal('download'),
+      taskId: task,
+      input: browserDownloadInput,
+    })
+    .strict(),
   z.object({ ...identity, method: z.literal('screenshot'), taskId: task }).strict(),
   z.object({ ...identity, method: z.literal('signInScreenshot'), taskId: task }).strict(),
   z.object({ ...identity, method: z.literal('takeControl'), taskId: task }).strict(),

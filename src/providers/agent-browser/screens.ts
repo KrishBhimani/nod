@@ -70,6 +70,7 @@ export function existingDaemonCommand(
   command: Record<string, unknown>,
   signal?: AbortSignal,
   timeoutMs = 45_000,
+  maxBytes = 256 * 1024,
 ): Promise<Record<string, unknown>> {
   signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
@@ -97,7 +98,7 @@ export function existingDaemonCommand(
     );
     socket.on('data', (chunk: string) => {
       received += chunk;
-      if (Buffer.byteLength(received) > 256 * 1024)
+      if (Buffer.byteLength(received) > maxBytes)
         return stop(new Error('Browser observation exceeded its limit.'));
       const end = received.indexOf('\n');
       if (end < 0) return;

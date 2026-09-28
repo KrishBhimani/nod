@@ -13,7 +13,7 @@ import {
   runtimeEnvironment,
   runtimeGeneration,
 } from './config.ts';
-import { events } from './events.ts';
+import { events, type ServerEvent } from './events.ts';
 import { artifactView, maxFileSize, localArtifacts, type ArtifactService } from './artifacts.ts';
 import {
   cancelTask,
@@ -132,7 +132,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
         [ownerId],
       ),
       pool.query(
-        `SELECT id,title,status,error,created_at AS "createdAt",updated_at AS "updatedAt",(channel='web' AND source='user') AS "showTyping" FROM tasks t WHERE owner_id=$1 AND ${currentConversationSql()} ORDER BY created_at DESC LIMIT 50`,
+        `SELECT id,title,status,error,created_at AS "createdAt",updated_at AS "updatedAt",(source='user') AS "showTyping" FROM tasks t WHERE owner_id=$1 AND channel='web' AND ${currentConversationSql()} ORDER BY created_at DESC LIMIT 50`,
         [ownerId],
       ),
       dependencies.verification?.pending() ?? [],
@@ -285,8 +285,21 @@ export async function createApp(dependencies: AppDependencies = {}) {
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
     });
-    const send = (event: unknown) => {
-      if (!reply.raw.destroyed) reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+    const send = (event: ServerEvent) => {
+      const payload =
+        event.type === 'refresh'
+          ? { type: 'refresh' }
+          : event.type === 'delta' && event.ownerId === ownerId && event.channel === 'web'
+            ? {
+                type: 'delta',
+                taskId: event.taskId,
+                text: event.text,
+                streamId: event.streamId,
+                done: event.done,
+                conversationRevision: event.conversationRevision,
+              }
+            : undefined;
+      if (payload && !reply.raw.destroyed) reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
     };
     send({ type: 'refresh' });
     events.on('event', send);

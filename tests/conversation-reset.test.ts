@@ -215,9 +215,23 @@ test(
       const state = (await request('GET', '/api/state')).json();
       assert.equal(state.conversationRevision, 1);
       assert.deepEqual(state.messages, []);
+      assert.deepEqual(state.tasks, []);
       assert.deepEqual(
-        state.tasks.map((task: { id: string }) => task.id),
-        [other],
+        (
+          await db.pool.query(
+            'SELECT channel,status,conversation_revision FROM tasks WHERE id=$1',
+            [other],
+          )
+        ).rows,
+        [{ channel: 'telegram:fixture', status: 'succeeded', conversation_revision: 0 }],
+      );
+      assert.equal(
+        (
+          await db.pool.query("SELECT text FROM messages WHERE task_id=$1 AND role='assistant'", [
+            other,
+          ])
+        ).rows[0].text,
+        'Other channel answer.',
       );
       assert.deepEqual((await request('GET', '/api/messages')).json(), []);
       assert.equal((await request('GET', '/api/messages?conversationRevision=0')).statusCode, 409);

@@ -26,6 +26,8 @@
 
 These interfaces hide SDK and transport details, not migration costs. A new provider key does not migrate OAuth account IDs, browser profiles, or transcript formats. The setup verifier currently covers Telegram/WhatsApp and returns a validated server-only configuration map; another channel requires an explicit setup schema and policy.
 
+`Computer.download` optionally captures a file from the task's authenticated browser. It returns bounded bytes and validated file metadata to trusted runtime code; it does not expose browser cookies, profile paths or a shell read handle. `RuntimeContext.publishBrowserFile` stores those bytes under the immutable owner and active task revision, then replies on the originating channel. Replacement computers must retain the 12 MiB transfer limit, cancellation/drain behavior and private browser boundary. The model receives only the published artifact reference.
+
 ## Add an adapter
 
 1. Read the applicable port and focused tests. Put the implementation under `src/providers/<provider>/`; accept configuration and keys as factory arguments.

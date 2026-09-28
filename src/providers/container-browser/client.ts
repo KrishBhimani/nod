@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { BrowserActionError, type Computer } from '../../ports/computer.ts';
+import { BrowserActionError, browserDownloadBytes, type Computer } from '../../ports/computer.ts';
 import { taskId } from '../../ports/task-identity.ts';
 import type { CommandProcess } from '../command-process.ts';
 import { loginInspectionSchema } from '../agent-browser/login.ts';
@@ -40,6 +40,7 @@ export function createBridgeComputer(options: {
   function updateMetadata(value: BrowserMetadata, order: number, input: BrowserCall) {
     if (
       (input.method === 'act' ||
+        input.method === 'download' ||
         (input.method === 'close' && input.taskId === currentSession?.taskId)) &&
       order >= activitySequence
     ) {
@@ -87,7 +88,7 @@ export function createBridgeComputer(options: {
           new Error('The workspace browser is unavailable. Start its container and try again.'),
         );
       }
-      if (input.method === 'act') {
+      if (input.method === 'act' || input.method === 'download') {
         activitySequence = order;
         currentSession = { taskId: input.taskId, lastActivityAt: new Date().toISOString() };
       }
@@ -212,6 +213,36 @@ export function createBridgeComputer(options: {
         .strict()
         .parse(await call({ method: 'act', taskId: taskId(id), input }, signal)),
     screenshot: (id, signal) => image('screenshot', id, signal),
+    async download(id, input, signal) {
+      const result = z
+        .object({
+          data: z
+            .string()
+            .min(4)
+            .max(Math.ceil(browserDownloadBytes / 3) * 4),
+          name: z
+            .string()
+            .min(1)
+            .max(200)
+            .regex(/^[^/\\\u0000-\u001f\u007f]+$/),
+          mimeType: z
+            .string()
+            .max(100)
+            .regex(/^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/),
+        })
+        .strict()
+        .parse(await call({ method: 'download', taskId: taskId(id), input }, signal));
+      if (result.data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(result.data))
+        throw new Error('The browser file is unavailable.');
+      const bytes = Buffer.from(result.data, 'base64');
+      if (
+        !bytes.length ||
+        bytes.length > browserDownloadBytes ||
+        bytes.toString('base64') !== result.data
+      )
+        throw new Error('The browser file is unavailable.');
+      return { bytes, name: result.name, mimeType: result.mimeType };
+    },
     signInScreenshot: (id, signal) => image('signInScreenshot', id, signal),
     takeControl: async (id) => {
       await call({ method: 'takeControl', taskId: taskId(id) });
