@@ -53,7 +53,7 @@ function fixture() {
     advance: (ms: number) => {
       time += ms;
     },
-    request: new Request('https://sidekick.example.test/api/deployment', { method: 'POST' }),
+    request: new Request('https://otto.example.test/api/deployment', { method: 'POST' }),
   };
 }
 

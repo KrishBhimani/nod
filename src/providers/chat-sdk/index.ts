@@ -139,9 +139,9 @@ export function createChatSdkTransport(
         logger,
       })
     : undefined;
-  const state = createPostgresState({ client: pool, keyPrefix: 'sidekick-channels', logger });
+  const state = createPostgresState({ client: pool, keyPrefix: 'otto-channels', logger });
   const bot = new Chat({
-    userName: 'Sidekick',
+    userName: 'Otto',
     adapters: { ...(telegram ? { telegram } : {}), ...(whatsapp ? { whatsapp } : {}) },
     state,
     logger,

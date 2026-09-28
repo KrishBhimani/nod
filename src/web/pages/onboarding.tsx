@@ -106,7 +106,7 @@ export function Onboarding({
       <header>
         <div className="sign-in-brand">
           <BrandMark />
-          <span>sidekick</span>
+          <span>otto</span>
         </div>
         {canLogout && (
           <Button variant="ghost" onClick={onLogout}>
@@ -187,8 +187,8 @@ export function Onboarding({
             {preparation === 'pending'
               ? 'Preparing…'
               : saving
-                ? 'Opening Sidekick…'
-                : 'Continue to Sidekick'}
+                ? 'Opening Otto…'
+                : 'Continue to Otto'}
           </Button>
           <Button
             variant="ghost"

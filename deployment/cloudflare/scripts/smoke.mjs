@@ -37,11 +37,7 @@ export async function verifyDeployment({
   )
     throw new Error('The public session boundary did not pass verification.');
   const checks = [
-    [
-      '/api/state',
-      { headers: { 'x-sidekick-owner': '00000000-0000-4000-8000-000000000001' } },
-      401,
-    ],
+    ['/api/state', { headers: { 'x-otto-owner': '00000000-0000-4000-8000-000000000001' } }, 401],
     ['/api/internal/channels/claim', { method: 'POST' }, 404],
     ['/runtime/start', { method: 'POST' }, 404],
     ['/api/login', { method: 'POST', headers: { origin: 'https://foreign.example' } }, 403],

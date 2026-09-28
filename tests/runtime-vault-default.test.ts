@@ -11,7 +11,7 @@ import { requestsManualSignIn, userRequestsManualSignIn } from '../src/runtime/c
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 
 const manualSignIn =
-  'Please use Sign in in browser under the browser controls, sign in to X in that separate window, then choose Continue in Sidekick.';
+  'Please use Sign in in browser under the browser controls, sign in to X in that separate window, then choose Continue in Otto.';
 
 for (const [prompt, solicitation] of [
   ['Get my bookmarks on x.com.', manualSignIn],
@@ -22,7 +22,7 @@ for (const [prompt, solicitation] of [
 ] as const)
   for (const method of ['ask_user', 'send_message', 'final'])
     test(`${method} uses the current Vault step for ${prompt}: ${solicitation}`, async () => {
-      const directory = await mkdtemp(join(tmpdir(), 'sidekick-vault-default-'));
+      const directory = await mkdtemp(join(tmpdir(), 'otto-vault-default-'));
       const replies: string[] = [];
       const deltas: string[] = [];
       const requests: Array<Parameters<RuntimeContext['requestCredential']>[0]> = [];
@@ -123,7 +123,7 @@ for (const [prompt, solicitation] of [
         ]);
         assert.doesNotMatch(
           deltas.join(''),
-          /Sign in in browser|Continue in Sidekick|login credentials|sign-in details/,
+          /Sign in in browser|Continue in Otto|login credentials|sign-in details/,
         );
       } finally {
         await runtime.dispose();
@@ -136,7 +136,7 @@ async function signInFailureFixture(options: {
   computer: Partial<Computer>;
   prompt?: string;
 }) {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-vault-failure-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-vault-failure-'));
   const replies: string[] = [];
   const waits: string[] = [];
   const prompts: string[] = [];

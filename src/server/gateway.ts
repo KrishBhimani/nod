@@ -261,7 +261,7 @@ export async function createGateway(options: {
       if (!handler) return reply.code(404).send({ error: 'Route not found.' });
       const headers = new Headers();
       for (const key of internal
-        ? ['content-type', 'x-sidekick-runtime', 'x-sidekick-owner']
+        ? ['content-type', 'x-otto-runtime', 'x-otto-owner']
         : [
             'content-type',
             'webhook-id',

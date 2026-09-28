@@ -117,7 +117,7 @@ export const toolDefinitions = {
   ),
   send_screenshot: defineTool(
     'send_screenshot',
-    'Capture this task browser through its protected screenshot boundary and publish the masked image as an owned attachment. Use when the user asks to see a screenshot. A successful call already sends the attachment to the user. If this completes the request, finish without another confirmation or repeated link. Secure-entry locks still apply. On channels without file delivery, the attachment is available in the Sidekick web app.',
+    'Capture this task browser through its protected screenshot boundary and publish the masked image as an owned attachment. Use when the user asks to see a screenshot. A successful call already sends the attachment to the user. If this completes the request, finish without another confirmation or repeated link. Secure-entry locks still apply. On channels without file delivery, the attachment is available in the Otto web app.',
     Type.Object({}),
   ),
   inspect_login: defineTool(

@@ -71,7 +71,7 @@ function fixture(
     ...(checkpoint
       ? {
           checkpoint: {
-            format: 'sidekick-computer-tar-v1',
+            format: 'otto-computer-tar-v1',
             id: randomUUID(),
             ownerId,
             environment: 'development',
@@ -106,7 +106,7 @@ function fixture(
   };
   const namespace = { idFromName: (name: string) => ({ toString: () => name }) };
   const env = {
-    SIDEKICK_ENVIRONMENT: 'development',
+    OTTO_ENVIRONMENT: 'development',
     BROWSER_COMPUTERS: namespace,
     WORKSPACE_COMPUTERS: namespace,
     TENANTS: {
@@ -176,12 +176,12 @@ function fixture(
       computer.request(
         ownerId,
         authorizedGeneration,
-        new Request(`http://sidekick.computer${path}`, {
+        new Request(`http://otto.computer${path}`, {
           ...init,
           headers: {
             ...Object.fromEntries(new Headers(init.headers)),
-            'x-sidekick-generation': authorizedGeneration,
-            'x-sidekick-computer-role': role,
+            'x-otto-generation': authorizedGeneration,
+            'x-otto-computer-role': role,
           },
         }),
       ),
@@ -199,7 +199,7 @@ test('both computer roles preserve the pinned image user for restore helpers and
         calls.push({ args, options });
         assert.equal(Object.hasOwn(options, 'user'), false);
         return args.includes('/app/src/providers/container-browser/bridge.ts') ||
-          args.includes('/opt/sidekick/workspace-command.py')
+          args.includes('/opt/otto/workspace-command.py')
           ? { ...command, exitCode: exit.promise }
           : nativeProcess().process;
       });
@@ -222,7 +222,7 @@ test('both computer roles preserve the pinned image user for restore helpers and
       assert.deepEqual(restore.args.slice(0, 4), [
         'python3',
         '-u',
-        '/opt/sidekick/checkpoint.py',
+        '/opt/otto/checkpoint.py',
         'restore',
       ]);
       assert.ok(restore.options.stdin instanceof ReadableStream);
@@ -272,7 +272,7 @@ test('the same controller can launch a new generation after stopping an unused r
       };
       current.exec(async (args) =>
         args.includes('/app/src/providers/container-browser/bridge.ts') ||
-        args.includes('/opt/sidekick/workspace-command.py')
+        args.includes('/opt/otto/workspace-command.py')
           ? command.process
           : nativeProcess().process,
       );
@@ -347,7 +347,7 @@ for (const revoked of [false, true]) {
           command.process = { ...command.process, exitCode: exit.promise };
           current.exec(async (args) =>
             args.includes('/app/src/providers/container-browser/bridge.ts') ||
-            args.includes('/opt/sidekick/workspace-command.py')
+            args.includes('/opt/otto/workspace-command.py')
               ? command.process
               : nativeProcess().process,
           );
@@ -383,7 +383,7 @@ for (const revoked of [false, true]) {
             current.events.filter(
               (event) =>
                 event.includes('/app/src/providers/container-browser/bridge.ts') ||
-                event.includes('/opt/sidekick/workspace-command.py'),
+                event.includes('/opt/otto/workspace-command.py'),
             ).length,
             revoked ? 0 : 1,
           );

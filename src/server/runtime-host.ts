@@ -14,10 +14,10 @@ import {
 } from './deployment-auth.ts';
 
 const forwardedEnvironment = [
-  'SIDEKICK_PUBLIC_URL',
-  'SIDEKICK_RELEASE',
+  'OTTO_PUBLIC_URL',
+  'OTTO_RELEASE',
   'COMPUTER_PROVIDER',
-  'SIDEKICK_COMPUTER_CONTROL_URL',
+  'OTTO_COMPUTER_CONTROL_URL',
   'E2B_API_KEY',
   'E2B_COMPUTER_TEMPLATE',
   'E2B_SANDBOX_TIMEOUT_MS',
@@ -113,7 +113,7 @@ export function createTenantRuntimeHost(options: {
     )
       throw new Error('The account runtime is unavailable.');
     const headers = new Headers(request.headers);
-    for (const name of ['cookie', 'authorization', 'host', 'x-sidekick-account', runtimeHeader])
+    for (const name of ['cookie', 'authorization', 'host', 'x-otto-account', runtimeHeader])
       headers.delete(name);
     headers.set(
       runtimeHeader,
@@ -172,13 +172,13 @@ export function createTenantRuntimeHost(options: {
           ownerId,
         );
       Object.assign(environment, {
-        SIDEKICK_MODE: 'tenant',
-        SIDEKICK_OWNER_ID: ownerId,
-        SIDEKICK_ENVIRONMENT: options.environment,
-        SIDEKICK_RUNTIME_GENERATION: lease.generation,
-        SIDEKICK_RUNTIME_SECRET: secret,
-        SIDEKICK_RUNTIME_LEASE_EXPIRES: lease.expiresAt,
-        SIDEKICK_DATA_ROOT: '/data',
+        OTTO_MODE: 'tenant',
+        OTTO_OWNER_ID: ownerId,
+        OTTO_ENVIRONMENT: options.environment,
+        OTTO_RUNTIME_GENERATION: lease.generation,
+        OTTO_RUNTIME_SECRET: secret,
+        OTTO_RUNTIME_LEASE_EXPIRES: lease.expiresAt,
+        OTTO_DATA_ROOT: '/data',
         DATABASE_URL: configuration.databaseUrl,
         DATABASE_POOL_MAX: String(configuration.poolMax),
         INSPECTOR_DATABASE_POOL_MAX: '1',
@@ -189,28 +189,28 @@ export function createTenantRuntimeHost(options: {
           options.operatorEnvironment.DEV_INSPECTOR === 'true' &&
             (options.developerIds?.has(ownerId) ?? false),
         ),
-        SIDEKICK_VAULT_KEY: Buffer.from(
+        OTTO_VAULT_KEY: Buffer.from(
           hkdfSync(
             'sha256',
             options.masterKey,
-            Buffer.from('sidekick-vault-v1'),
+            Buffer.from('otto-vault-v1'),
             Buffer.from(JSON.stringify([options.environment, ownerId])),
             32,
           ),
         ).toString('base64'),
       });
-      if (environment.SIDEKICK_PUBLIC_URL)
+      if (environment.OTTO_PUBLIC_URL)
         for (const provider of ['telegram', 'whatsapp'] as const) {
-          environment[`SIDEKICK_${provider.toUpperCase()}_WEBHOOK_URL`] = new URL(
+          environment[`OTTO_${provider.toUpperCase()}_WEBHOOK_URL`] = new URL(
             `/api/webhooks/${provider}/${channelWebhookToken(options.masterKey, options.environment, ownerId, provider)}`,
-            options.operatorEnvironment.SIDEKICK_WEBHOOK_ORIGIN || environment.SIDEKICK_PUBLIC_URL,
+            options.operatorEnvironment.OTTO_WEBHOOK_ORIGIN || environment.OTTO_PUBLIC_URL,
           ).href;
         }
-      environment.SIDEKICK_CONTROL_URL =
-        options.operatorEnvironment.SIDEKICK_RUNTIME_URL === 'http://sidekick.runtime'
-          ? 'http://sidekick.control'
-          : options.operatorEnvironment.SIDEKICK_CONTROL_ORIGIN ||
-            options.operatorEnvironment.SIDEKICK_PUBLIC_URL ||
+      environment.OTTO_CONTROL_URL =
+        options.operatorEnvironment.OTTO_RUNTIME_URL === 'http://otto.runtime'
+          ? 'http://otto.control'
+          : options.operatorEnvironment.OTTO_CONTROL_ORIGIN ||
+            options.operatorEnvironment.OTTO_PUBLIC_URL ||
             '';
       await options.transport.start({ ownerId, generation: lease.generation, environment });
       if (closed || Date.parse(lease.expiresAt) <= Date.now())
@@ -269,7 +269,7 @@ export function createTenantRuntimeHost(options: {
     if (remaining <= 0) throw new DeploymentControlError();
     const response = await signedFetch(
       entry,
-      new Request(`http://sidekick.runtime/api/runtime/${action}`, {
+      new Request(`http://otto.runtime/api/runtime/${action}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(input),
@@ -390,7 +390,7 @@ export function createTenantRuntimeHost(options: {
             entry.lease = lease;
             const response = await signedFetch(
               entry,
-              new Request('http://sidekick.runtime/api/runtime/lease', {
+              new Request('http://otto.runtime/api/runtime/lease', {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ expiresAt: lease.expiresAt }),

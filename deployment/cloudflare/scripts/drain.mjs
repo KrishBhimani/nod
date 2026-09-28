@@ -111,7 +111,7 @@ async function boundedJson(response, maximum = 1024 * 1024) {
 
 export function inspectImageDigest(image, environment = process.env) {
   if (
-    !/^registry\.cloudflare\.com\/[a-f0-9]{32}\/sidekick-(development|production)(-browser|-workspace)?:[a-f0-9]{40}$/.test(
+    !/^registry\.cloudflare\.com\/[a-f0-9]{32}\/otto-(development|production)(-browser|-workspace)?:[a-f0-9]{40}$/.test(
       image,
     )
   )
@@ -217,12 +217,10 @@ async function emptyTenantRegistry(databaseUrl) {
   });
   try {
     await client.connect();
-    const relation = await client.query(
-      "SELECT to_regclass('sidekick_control.tenants') AS relation",
-    );
+    const relation = await client.query("SELECT to_regclass('otto_control.tenants') AS relation");
     if (!relation.rows[0]?.relation) return true;
     const result = await client.query(
-      'SELECT EXISTS(SELECT 1 FROM sidekick_control.tenants) AS occupied',
+      'SELECT EXISTS(SELECT 1 FROM otto_control.tenants) AS occupied',
     );
     return result.rows[0]?.occupied === false;
   } catch {
@@ -244,7 +242,7 @@ export function createDeploymentClient({
   intervalMs = 5000,
 }) {
   const gateway = JSON.parse(variables.GATEWAY_ENV);
-  const masterKey = parseCredentialKey(gateway.SIDEKICK_MASTER_KEY || '');
+  const masterKey = parseCredentialKey(gateway.OTTO_MASTER_KEY || '');
   const selected = plan.config.env[environment];
   const worker = selected.name || `${plan.config.name}-${environment}`;
   if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(worker)) throw unavailable();

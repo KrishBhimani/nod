@@ -261,7 +261,7 @@ test(
       const localOnly = await addReply(taskId, [image]);
       await channels.drain();
       assert.equal((await state(localOnly)).state, 'sent');
-      assert.match(fallback[0], /Attachments are available in Sidekick/);
+      assert.match(fallback[0], /Attachments are available in Otto/);
     } finally {
       releaseResolve();
       await app.close();

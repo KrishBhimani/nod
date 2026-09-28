@@ -1,4 +1,4 @@
-# Sidekick
+# Otto
 
 A personal assistant with a private single-owner local mode and an implemented hosted multi-user pilot. Do not push, deploy, or publish without authorization. Keep keys out of Git, logs, prompts, and client configuration. Keep private user content out of Git and logs. Do not add code comments or JSDoc.
 

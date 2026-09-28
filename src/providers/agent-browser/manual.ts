@@ -9,7 +9,7 @@ export const protectFocusedField = `(() => {
     try { if(!e.contentDocument) return 'unsupported_frame'; e=e.contentDocument.activeElement; } catch { return 'unsupported_frame'; }
   }
   if(!visible(e) || e.disabled || e.readOnly || !(e.matches('input,textarea') && !['file','hidden','button','submit','reset','checkbox','radio','range','color','image'].includes(e.type) || e.isContentEditable)) return false;
-  e.setAttribute('data-sidekick-manual-field','true');
+  e.setAttribute('data-otto-manual-field','true');
   e.style.setProperty('color','transparent','important');
   e.style.setProperty('text-shadow','none','important');
   e.style.setProperty('-webkit-text-security','disc','important');
@@ -30,7 +30,7 @@ export function maskPageScript(selectors: string[], secrets: string[]): string {
         }
         else if(!child) unreadableFrames.push(frame);
       }
-      for(const e of page.querySelectorAll('input[type="password"],input[autocomplete="one-time-code"],input[autocomplete="username"],input[data-sidekick-login-field^="identifier"]')) nodes.add(e);
+      for(const e of page.querySelectorAll('input[type="password"],input[autocomplete="one-time-code"],input[autocomplete="username"],input[data-otto-login-field^="identifier"]')) nodes.add(e);
       for(const selector of selectors) { try { for(const e of page.querySelectorAll(selector)) nodes.add(e); } catch {} }
       for(const e of page.querySelectorAll('input,textarea')) if(secrets.some(secret=>secret&&String(e.value??e.textContent??'').includes(secret))) nodes.add(e);
     }
@@ -39,7 +39,7 @@ export function maskPageScript(selectors: string[], secrets: string[]): string {
     if(inputValues.some(value=>value.length>8192)) throw new Error('Protected field exceeds limit');
     for(const e of nodes) {
       if(grouped.has(e)) continue;
-      const marker=e.getAttribute('data-sidekick-login-field'),siblings=marker?.startsWith('otp-')&&e.parentElement?[...e.parentElement.querySelectorAll('input')].filter(n=>nodes.has(n)&&n.parentElement===e.parentElement&&n.getAttribute('data-sidekick-login-field')===marker):[];
+      const marker=e.getAttribute('data-otto-login-field'),siblings=marker?.startsWith('otp-')&&e.parentElement?[...e.parentElement.querySelectorAll('input')].filter(n=>nodes.has(n)&&n.parentElement===e.parentElement&&n.getAttribute('data-otto-login-field')===marker):[];
       if(siblings.length>=4&&siblings.length<=8&&siblings.every(n=>n.maxLength===1)) {
         siblings.forEach(n=>grouped.add(n));
         const value=siblings.map(n=>String(n.value??'')).join('');

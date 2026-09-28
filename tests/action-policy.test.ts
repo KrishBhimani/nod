@@ -16,7 +16,7 @@ test('ordinary actions require a known operation and matching explicit scope', (
     ['SLACK_POST_MESSAGE', 'Send the message to him on Slack then.'],
     ['SLACK_OPEN_DM', 'Send the message to him on Slack then.'],
     ['GMAIL_CREATE_EMAIL_DRAFT', 'Write an email draft to Alex.'],
-    ['SIDEKICK_memory_propose', 'Remember I prefer short replies.'],
+    ['OTTO_memory_propose', 'Remember I prefer short replies.'],
   ])
     assert.equal(explicitlyRequestsAction(action!, text!), true, `${action}: ${text}`);
 
@@ -32,7 +32,7 @@ test('ordinary actions require a known operation and matching explicit scope', (
     ['SLACK_ENABLE_PUBLIC_SHARING_OF_A_FILE', 'Share the Slack file.'],
     ['GOOGLESHEETS_BATCH_UPDATE', 'Update the spreadsheet.'],
     ['GMAIL_SEND_EMAIL', 'Do not send the email.'],
-    ['SIDEKICK_goal_create', 'Review my goals.'],
+    ['OTTO_goal_create', 'Review my goals.'],
   ])
     assert.equal(explicitlyRequestsAction(action!, text!), false, `${action}: ${text}`);
 });
@@ -81,19 +81,19 @@ test('send verbs do not override explicit draft or unsent qualifiers', () => {
 
 test('only the five reversible plan operations use the direct local policy', () => {
   for (const action of [
-    'SIDEKICK_goal_create',
-    'SIDEKICK_goal_update',
-    'SIDEKICK_schedule_create',
-    'SIDEKICK_schedule_update',
-    'SIDEKICK_schedule_cancel',
+    'OTTO_goal_create',
+    'OTTO_goal_update',
+    'OTTO_schedule_create',
+    'OTTO_schedule_update',
+    'OTTO_schedule_cancel',
   ])
     assert.equal(isReversiblePlanAction(action), true, action);
   for (const action of [
-    'SIDEKICK_goal_delete',
-    'SIDEKICK_schedule_delete',
-    'SIDEKICK_profile_update',
-    'SIDEKICK_memory_propose',
-    'SIDEKICK_goal_update_all',
+    'OTTO_goal_delete',
+    'OTTO_schedule_delete',
+    'OTTO_profile_update',
+    'OTTO_memory_propose',
+    'OTTO_goal_update_all',
     'GMAIL_SEND_EMAIL',
     'GMAIL_DELETE_MESSAGE',
     'SLACK_POST_MESSAGE',
@@ -193,7 +193,7 @@ test('scheduled writes require a saved matching user instruction and preserve dr
   );
   assert.equal(
     explicitlyRequestsScheduledAction(
-      'SIDEKICK_goal_create',
+      'OTTO_goal_create',
       'Create a goal every day.',
       'Create a goal.',
     ),

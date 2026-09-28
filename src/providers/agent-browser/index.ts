@@ -636,7 +636,7 @@ export function createAgentBrowserComputer(options: {
           throw new Error('Use Take control to type in this embedded field.');
         if (field !== true) throw new Error('Click a text field in the browser first.');
         state.secrets.add(input.text);
-        state.protectedSelectors.add('[data-sidekick-manual-field="true"]');
+        state.protectedSelectors.add('[data-otto-manual-field="true"]');
         await saveState(state);
         state.injecting = true;
         try {
@@ -980,12 +980,12 @@ export function createAgentBrowserComputer(options: {
           });
           const loginField = await command(
             state,
-            ['get', 'attr', target, 'data-sidekick-login-field'],
+            ['get', 'attr', target, 'data-otto-login-field'],
             { signal },
           );
           const manualField = await command(
             state,
-            ['get', 'attr', target, 'data-sidekick-manual-field'],
+            ['get', 'attr', target, 'data-otto-manual-field'],
             { signal },
           );
           if (
@@ -1066,7 +1066,7 @@ export function createAgentBrowserComputer(options: {
       }
       await mkdir(directory, { recursive: true, mode: 0o700 });
       const capture = await createDownloadCapture(directory);
-      const anchor = !target ? `sidekick-download-${randomUUID()}` : undefined;
+      const anchor = !target ? `otto-download-${randomUUID()}` : undefined;
       const controller = new AbortController();
       const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
       let watching: Promise<void> | undefined;

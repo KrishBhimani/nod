@@ -456,7 +456,7 @@ test(
           [memoryTaskId],
         )
       ).rows[0];
-      assert.equal(memoryApproval.action, 'SIDEKICK_memory_propose');
+      assert.equal(memoryApproval.action, 'OTTO_memory_propose');
       assert.deepEqual(memoryApproval.args, { text: 'I prefer concise replies.' });
       assert.equal(memoryApproval.source_message_id, source.id);
       assert.equal((await pool.query('SELECT id FROM memory_facts')).rowCount, 0);

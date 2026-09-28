@@ -95,7 +95,7 @@ export function createAcceptanceDriver(apiKey: string, plan: AcceptancePlan): Ac
         onResume: 'restore',
       });
       if (sandbox.sandboxId !== id) throw failed();
-      await sandbox.files.write('/run/sidekick/live-boundary.py', script, {
+      await sandbox.files.write('/run/otto/live-boundary.py', script, {
         user: 'root',
         requestTimeoutMs: 10_000,
       });
@@ -105,7 +105,7 @@ export function createAcceptanceDriver(apiKey: string, plan: AcceptancePlan): Ac
         if (bytes > 4096) throw failed();
       };
       const result = await sandbox.commands.run(
-        'chmod 600 /run/sidekick/live-boundary.py && exec python3 /run/sidekick/live-boundary.py --disposable',
+        'chmod 600 /run/otto/live-boundary.py && exec python3 /run/otto/live-boundary.py --disposable',
         {
           user: 'root',
           envs: {},

@@ -198,7 +198,7 @@ test(
       assert.match(created.id, /^[0-9a-f-]{36}$/);
       assert.equal(created.role, 'workspace');
       assert.equal(created.taskId, 'task-123');
-      assert.ok(fixture.calls.every((call) => call.headers['x-sidekick-generation'] === '17'));
+      assert.ok(fixture.calls.every((call) => call.headers['x-otto-generation'] === '17'));
       assert.ok(fixture.calls.slice(1).every((call) => call.path.includes(created.id)));
       assert.equal(command.process.stdin.destroyed, true);
     } finally {
@@ -566,14 +566,14 @@ test('Cloudflare binds immutable configuration and clears deadlines after termin
   await Promise.resolve();
   t.mock.timers.tick(200_000);
   assert.equal(uncertain, 0);
-  assert.ok(fixture.calls.every((call) => call.headers.get('x-sidekick-generation') === '8'));
+  assert.ok(fixture.calls.every((call) => call.headers.get('x-otto-generation') === '8'));
   assert.ok(fixture.calls.every((call) => call.redirect === 'error'));
 });
 
 test('Cloudflare rejects unsupported origins, identities and task paths before contacting transport', () => {
   const invalid: Array<Partial<Parameters<typeof launchCloudflareCommand>[0]>> = [
-    { origin: 'https://sidekick.computer' },
-    { origin: 'http://sidekick.computer:8080' },
+    { origin: 'https://otto.computer' },
+    { origin: 'http://otto.computer:8080' },
     { origin: 'http://example.test' },
     { origin: 'http://user:password@localhost' },
     { origin: 'http://localhost/path' },

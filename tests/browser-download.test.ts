@@ -79,7 +79,7 @@ async function createDownloadBrowser(root: string, captureStarted?: () => void) 
       browserRoot = dataRoot;
       return createAgentBrowserComputer({
         dataRoot,
-        browserExecutable: process.env.SIDEKICK_TEST_BROWSER_EXECUTABLE,
+        browserExecutable: process.env.OTTO_TEST_BROWSER_EXECUTABLE,
         headless: true,
         daemonCommand: async (...args) => {
           const result = await existingDaemonCommand(...args);
@@ -334,7 +334,7 @@ test('browser captures refuse symlinks, partial files, multiple links and excess
 test(
   'authenticated browser PDFs cross the real private bridge without sharing the profile',
   {
-    skip: !process.env.SIDEKICK_TEST_BROWSER_EXECUTABLE,
+    skip: !process.env.OTTO_TEST_BROWSER_EXECUTABLE,
     timeout: 180_000,
   },
   async (t) => {
@@ -445,7 +445,7 @@ test(
 
 test(
   'an authenticated native download waits for the original clicked response to finish',
-  { skip: !process.env.SIDEKICK_TEST_BROWSER_EXECUTABLE, timeout: 30_000 },
+  { skip: !process.env.OTTO_TEST_BROWSER_EXECUTABLE, timeout: 30_000 },
   async (t) => {
     const root = await mkdtemp('/tmp/sk-download-held-');
     const fixture = await createBrowserDownloadFixture();
@@ -508,7 +508,7 @@ test(
 test(
   'native capture cleanup preserves a late unrelated file after the one-file check',
   {
-    skip: !process.env.SIDEKICK_TEST_BROWSER_EXECUTABLE,
+    skip: !process.env.OTTO_TEST_BROWSER_EXECUTABLE,
     timeout: 30_000,
   },
   async (t) => {
@@ -516,7 +516,7 @@ test(
     const fixture = await createBrowserDownloadFixture();
     const computer = createAgentBrowserComputer({
       dataRoot: root,
-      browserExecutable: process.env.SIDEKICK_TEST_BROWSER_EXECUTABLE,
+      browserExecutable: process.env.OTTO_TEST_BROWSER_EXECUTABLE,
       headless: true,
     });
     let pending: ReturnType<NonNullable<typeof computer.download>> | undefined;

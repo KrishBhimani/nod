@@ -23,12 +23,12 @@ test('same-origin iframe typing protects the real focused field and reflected te
   const f = fixture();
   try {
     assert.equal(f.page.window.eval(protectFocusedField), true);
-    assert.equal(f.input.getAttribute('data-sidekick-manual-field'), 'true');
+    assert.equal(f.input.getAttribute('data-otto-manual-field'), 'true');
     const value = 'synthetic private typed text';
     f.input.value = value;
     f.document.querySelector('p')!.textContent = value;
     const result = f.page.window.eval(
-      maskPageScript(['[data-sidekick-manual-field="true"]'], [value]),
+      maskPageScript(['[data-otto-manual-field="true"]'], [value]),
     ) as { masked: boolean; values: string[] };
     assert.equal(result.masked, true);
     assert.ok(result.values.includes(value));

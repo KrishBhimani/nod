@@ -29,7 +29,7 @@ export function createTenantControl(options: {
   return async (request: Request) => {
     const denied = () =>
       Response.json({ error: 'Runtime authentication failed.' }, { status: 401 });
-    const owner = z.uuid().safeParse(request.headers.get('x-sidekick-owner'));
+    const owner = z.uuid().safeParse(request.headers.get('x-otto-owner'));
     const url = new URL(request.url);
     if (
       !owner.success ||
@@ -114,7 +114,7 @@ export function createTenantChannelRegistry(options: {
     origin.pathname !== '/' ||
     origin.search ||
     origin.hash ||
-    (origin.origin !== 'http://sidekick.control' &&
+    (origin.origin !== 'http://otto.control' &&
       origin.protocol !== 'https:' &&
       !(
         ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname) && origin.protocol === 'http:'
@@ -148,7 +148,7 @@ export function createTenantChannelRegistry(options: {
       headers: {
         'content-type': 'application/json',
         [runtimeHeader]: token,
-        'x-sidekick-owner': options.ownerId,
+        'x-otto-owner': options.ownerId,
       },
       body,
       redirect: 'manual',

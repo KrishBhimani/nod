@@ -103,7 +103,7 @@ async function fixture(
     cookies,
     calls,
     sessions,
-    headers: (index = 0) => ({ host, cookie: cookies[index], 'x-sidekick-account': users[index] }),
+    headers: (index = 0) => ({ host, cookie: cookies[index], 'x-otto-account': users[index] }),
     reply: (value: typeof reply) => {
       reply = value;
     },
@@ -180,8 +180,8 @@ test('onboarding preparation routes only the authenticated owner with a fixed pr
       headers: {
         ...f.headers(index),
         origin,
-        'x-sidekick-owner': f.users[1 - index],
-        'x-sidekick-generation': '999',
+        'x-otto-owner': f.users[1 - index],
+        'x-otto-generation': '999',
       },
       payload: {},
     });
@@ -217,8 +217,8 @@ test('gateway routes two signed users only by their cookie identity and strips c
         headers: {
           ...f.headers(index),
           origin,
-          'x-sidekick-owner': f.users[1 - index],
-          'x-sidekick-runtime': 'forged',
+          'x-otto-owner': f.users[1 - index],
+          'x-otto-runtime': 'forged',
           authorization: 'Bearer fixture',
           'x-forwarded-host': 'foreign.example.test',
         },
@@ -230,16 +230,16 @@ test('gateway routes two signed users only by their cookie identity and strips c
       assert.equal(call.owner, f.users[index]);
       assert.equal(call.developer, index === 0);
       assert.equal(call.headers.get('cookie'), null);
-      assert.equal(call.headers.get('x-sidekick-account'), null);
-      assert.equal(call.headers.get('x-sidekick-owner'), null);
-      assert.equal(call.headers.get('x-sidekick-runtime'), null);
+      assert.equal(call.headers.get('x-otto-account'), null);
+      assert.equal(call.headers.get('x-otto-owner'), null);
+      assert.equal(call.headers.get('x-otto-runtime'), null);
       assert.equal(call.headers.get('authorization'), null);
       assert.equal(call.headers.get('x-forwarded-host'), null);
       assert.equal(JSON.parse(call.body).text, 'Synthetic message');
     }
     const stale = await f.app.inject({
       url: '/api/state',
-      headers: { ...f.headers(1), 'x-sidekick-account': f.users[0] },
+      headers: { ...f.headers(1), 'x-otto-account': f.users[0] },
     });
     assert.equal(stale.statusCode, 401);
     assert.equal(f.calls.length, 2);
@@ -254,7 +254,7 @@ test('gateway service ingress preserves signed bytes and exposes only exact call
     received.push({ kind, request, body: new Uint8Array(await request.arrayBuffer()) });
     return new Response('rejected by signature verification', {
       status: 401,
-      headers: { 'set-cookie': 'unsafe=fixture', 'x-sidekick-owner': 'private' },
+      headers: { 'set-cookie': 'unsafe=fixture', 'x-otto-owner': 'private' },
     });
   };
   const f = await fixture({ internal: handler('internal'), webhook: handler('webhook') });
@@ -276,8 +276,8 @@ test('gateway service ingress preserves signed bytes and exposes only exact call
           cookie: f.cookies[0],
           authorization: 'Bearer synthetic',
           'content-type': 'application/json',
-          'x-sidekick-owner': f.users[0],
-          'x-sidekick-runtime': 'synthetic-envelope',
+          'x-otto-owner': f.users[0],
+          'x-otto-runtime': 'synthetic-envelope',
           'webhook-signature': 'synthetic-signature',
           'x-telegram-bot-api-secret-token': 'synthetic-provider-secret',
         },
@@ -285,20 +285,20 @@ test('gateway service ingress preserves signed bytes and exposes only exact call
       });
       assert.equal(result.statusCode, 401, url);
       assert.equal(result.headers['set-cookie'], undefined);
-      assert.equal(result.headers['x-sidekick-owner'], undefined);
+      assert.equal(result.headers['x-otto-owner'], undefined);
       const call = received.at(-1)!;
       assert.deepEqual(Buffer.from(call.body), body);
       assert.equal(call.request.headers.get('cookie'), null);
       assert.equal(call.request.headers.get('authorization'), null);
       if (call.kind === 'internal') {
-        assert.equal(call.request.headers.get('x-sidekick-owner'), f.users[0]);
-        assert.equal(call.request.headers.get('x-sidekick-runtime'), 'synthetic-envelope');
+        assert.equal(call.request.headers.get('x-otto-owner'), f.users[0]);
+        assert.equal(call.request.headers.get('x-otto-runtime'), 'synthetic-envelope');
         assert.equal(call.request.headers.get('webhook-signature'), null);
         assert.equal(call.request.headers.get('x-telegram-bot-api-secret-token'), null);
       } else {
         assert.equal(call.request.headers.get('webhook-signature'), 'synthetic-signature');
-        assert.equal(call.request.headers.get('x-sidekick-runtime'), null);
-        assert.equal(call.request.headers.get('x-sidekick-owner'), null);
+        assert.equal(call.request.headers.get('x-otto-runtime'), null);
+        assert.equal(call.request.headers.get('x-otto-owner'), null);
       }
     }
     const challenge = await f.app.inject({
@@ -441,7 +441,7 @@ test('actor response headers cannot create cookies or replace gateway privacy he
           'content-security-policy': 'frame-ancestors *',
           'referrer-policy': 'unsafe-url',
           'x-content-type-options': 'invalid',
-          'x-sidekick-runtime': 'must-not-be-public',
+          'x-otto-runtime': 'must-not-be-public',
         },
       }),
   );
@@ -450,7 +450,7 @@ test('actor response headers cannot create cookies or replace gateway privacy he
     assert.equal(result.statusCode, 200);
     assert.equal(result.body, 'synthetic');
     assert.equal(result.headers['set-cookie'], undefined);
-    assert.equal(result.headers['x-sidekick-runtime'], undefined);
+    assert.equal(result.headers['x-otto-runtime'], undefined);
     assert.equal(result.headers['cache-control'], 'no-store');
     assert.equal(result.headers['content-security-policy'], "frame-ancestors 'none'");
     assert.equal(result.headers['referrer-policy'], 'no-referrer');

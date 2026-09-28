@@ -166,7 +166,7 @@ export function InspectorWork({ onInspect }: { onInspect(taskId: string): void }
               </div>
             </div>
             <p className="inspector-data-note">
-              Reviews follow your preferences while Sidekick is running.
+              Reviews follow your preferences while Otto is running.
             </p>
           </section>
           <section className={`inspector-work-section${!data.decisions.length ? ' is-empty' : ''}`}>

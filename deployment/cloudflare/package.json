@@ -1,5 +1,5 @@
 {
-  "name": "sidekick-cloudflare",
+  "name": "otto-cloudflare",
   "private": true,
   "type": "module",
   "scripts": {

@@ -1,17 +1,17 @@
-name: sidekick-local
+name: otto-local
 services:
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_USER: sidekick
-      POSTGRES_PASSWORD: ${SIDEKICK_POSTGRES_PASSWORD:?Run npm run dev to prepare the local database}
-      POSTGRES_DB: sidekick
+      POSTGRES_USER: otto
+      POSTGRES_PASSWORD: ${OTTO_POSTGRES_PASSWORD:?Run npm run dev to prepare the local database}
+      POSTGRES_DB: otto
     ports:
       - '127.0.0.1:54329:5432'
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U sidekick']
+      test: ['CMD-SHELL', 'pg_isready -U otto']
       interval: 2s
       timeout: 3s
       retries: 30
@@ -19,7 +19,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.browser
-    container_name: sidekick-browser
+    container_name: otto-browser
     init: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -48,7 +48,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.workspace
-    container_name: sidekick-workspace
+    container_name: otto-workspace
     init: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]

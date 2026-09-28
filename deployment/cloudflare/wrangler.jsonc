@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "sidekick",
+  "name": "otto",
   "main": "src/worker.ts",
   "compatibility_date": "2026-09-26",
   "compatibility_flags": ["nodejs_compat"],
@@ -9,7 +9,7 @@
     "directory": "../../dist/web",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/runtime/*", "/__sidekick/*"],
+    "run_worker_first": ["/api/*", "/runtime/*", "/__otto/*"],
   },
   "observability": {
     "enabled": false,
@@ -26,10 +26,10 @@
   ],
   "env": {
     "development": {
-      "name": "sidekick-development",
+      "name": "otto-development",
       "vars": {
-        "SIDEKICK_ENVIRONMENT": "development",
-        "SIDEKICK_PUBLIC_URL": "https://sidekick-development.n8n-maintenance.workers.dev",
+        "OTTO_ENVIRONMENT": "development",
+        "OTTO_PUBLIC_URL": "https://otto-development.n8n-maintenance.workers.dev",
       },
       "triggers": {
         "crons": ["* * * * *"],
@@ -57,7 +57,7 @@
       "r2_buckets": [
         {
           "binding": "TENANT_FILES",
-          "bucket_name": "sidekick-development-files",
+          "bucket_name": "otto-development-files",
           "jurisdiction": "eu",
         },
       ],
@@ -133,10 +133,10 @@
       ],
     },
     "production": {
-      "name": "sidekick",
+      "name": "otto",
       "vars": {
-        "SIDEKICK_ENVIRONMENT": "production",
-        "SIDEKICK_PUBLIC_URL": "https://sidekick.n8n-maintenance.workers.dev",
+        "OTTO_ENVIRONMENT": "production",
+        "OTTO_PUBLIC_URL": "https://otto.n8n-maintenance.workers.dev",
       },
       "triggers": {
         "crons": ["* * * * *"],
@@ -164,7 +164,7 @@
       "r2_buckets": [
         {
           "binding": "TENANT_FILES",
-          "bucket_name": "sidekick-production-files",
+          "bucket_name": "otto-production-files",
           "jurisdiction": "eu",
         },
       ],

@@ -18,7 +18,7 @@ test('composition binds one E2B template to the process owner and keeps preparat
       registerHooks({load(url, context, next){const source=modules.get(url);return source===undefined?next(url,context):{format:'module',source,shortCircuit:true}}});
       globalThis.fetch=()=>{throw new Error('Unexpected provider request')};
       const {createDefaultAdapters}=await import(${JSON.stringify(base + 'server/composition.ts')});
-      const environment={...process.env,COMPUTER_PROVIDER:'e2b',E2B_API_KEY:'synthetic-unused',E2B_COMPUTER_TEMPLATE:'combined-template',SIDEKICK_CONTROL_URL:'http://sidekick.control',OBJECT_STORAGE_PROVIDER:'postgres'};
+      const environment={...process.env,COMPUTER_PROVIDER:'e2b',E2B_API_KEY:'synthetic-unused',E2B_COMPUTER_TEMPLATE:'combined-template',OTTO_CONTROL_URL:'http://otto.control',OBJECT_STORAGE_PROVIDER:'postgres'};
       const adapters=createDefaultAdapters(environment);
       assert.equal(adapters.computer.status(),'e2b');
       assert.equal(globalThis.computerOptions.ownerId,${JSON.stringify(mode === 'local' ? 'local-development' : owner)});
@@ -39,10 +39,10 @@ test('composition binds one E2B template to the process owner and keeps preparat
         assert.throws(()=>createDefaultAdapters({...environment,[key]:'legacy-secret'}),/Split E2B templates are no longer supported/);
       assert.throws(()=>createDefaultAdapters({...environment,E2B_COMPUTER_TEMPLATE:undefined}),/configuration is incomplete/);
       if (${JSON.stringify(mode)}==='tenant') {
-        assert.throws(()=>createDefaultAdapters({...environment,SIDEKICK_COMPUTER_CONTROL_URL:'https://external.example.test'}),/shutdown configuration is invalid/);
-        const hosted=createDefaultAdapters({...environment,SIDEKICK_COMPUTER_CONTROL_URL:'http://sidekick.computer/v1/stopped',SIDEKICK_RUNTIME_GENERATION:'999'});
-        globalThis.fetch=async(_url,request)=>{assert.equal(request.headers['x-sidekick-generation'],'17');return Response.json({ok:true})};
-        const fresh=createDefaultAdapters({...environment,SIDEKICK_COMPUTER_CONTROL_URL:'http://sidekick.computer/v1/stopped',SIDEKICK_RUNTIME_GENERATION:'999'});
+        assert.throws(()=>createDefaultAdapters({...environment,OTTO_COMPUTER_CONTROL_URL:'https://external.example.test'}),/shutdown configuration is invalid/);
+        const hosted=createDefaultAdapters({...environment,OTTO_COMPUTER_CONTROL_URL:'http://otto.computer/v1/stopped',OTTO_RUNTIME_GENERATION:'999'});
+        globalThis.fetch=async(_url,request)=>{assert.equal(request.headers['x-otto-generation'],'17');return Response.json({ok:true})};
+        const fresh=createDefaultAdapters({...environment,OTTO_COMPUTER_CONTROL_URL:'http://otto.computer/v1/stopped',OTTO_RUNTIME_GENERATION:'999'});
         await fresh.confirmComputerShutdown();
         assert.equal(typeof hosted.confirmComputerShutdown,'function');
       }
@@ -57,14 +57,14 @@ test('composition binds one E2B template to the process owner and keeps preparat
         env: {
           PATH: process.env.PATH,
           NODE_ENV: 'test',
-          DOTENV_CONFIG_PATH: '/tmp/sidekick-synthetic-missing-env',
-          SIDEKICK_MODE: mode,
-          SIDEKICK_OWNER_ID: owner,
-          SIDEKICK_ENVIRONMENT: 'development',
-          SIDEKICK_RUNTIME_GENERATION: '17',
-          SIDEKICK_RUNTIME_SECRET: Buffer.alloc(32, 1).toString('base64url'),
-          SIDEKICK_VAULT_KEY: Buffer.alloc(32, 2).toString('base64'),
-          SIDEKICK_DATA_ROOT: '/tmp/sidekick-synthetic-composition',
+          DOTENV_CONFIG_PATH: '/tmp/otto-synthetic-missing-env',
+          OTTO_MODE: mode,
+          OTTO_OWNER_ID: owner,
+          OTTO_ENVIRONMENT: 'development',
+          OTTO_RUNTIME_GENERATION: '17',
+          OTTO_RUNTIME_SECRET: Buffer.alloc(32, 1).toString('base64url'),
+          OTTO_VAULT_KEY: Buffer.alloc(32, 2).toString('base64'),
+          OTTO_DATA_ROOT: '/tmp/otto-synthetic-composition',
           DATABASE_URL: 'postgresql://synthetic:synthetic@127.0.0.1:1/synthetic',
           PGBOSS_SCHEMA: 'sk_jobs_' + 'a'.repeat(32),
         },

@@ -14,7 +14,7 @@ import { createAgentRuntime } from '../src/runtime/index.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 
 test('Pi drains every session before reporting an abort failure and retries failed disposal', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-pi-disposal-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-pi-disposal-'));
   const events: string[] = [];
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -102,7 +102,7 @@ test('Pi drains every session before reporting an abort failure and retries fail
 });
 
 test('real Pi sessions persist a credential pause and resume without replaying chat history', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-pi-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-pi-'));
   const id = 'test-' + randomUUID();
   const replies: string[] = [];
   const prompts: string[] = [];
@@ -278,7 +278,7 @@ test('real Pi sessions persist a credential pause and resume without replaying c
 });
 
 test('token-limited Pi replies are not completed messages and retain prior tool commentary', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-pi-truncated-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-pi-truncated-'));
   const events: AgentEvent[] = [];
   const replies: Array<{ text: string; id?: string }> = [];
   const deltas: Array<{ text: string; id?: string; done?: boolean }> = [];
@@ -419,7 +419,7 @@ test('token-limited Pi replies are not completed messages and retain prior tool 
 });
 
 test('Responses commentary and final answer remain separate visible messages', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-pi-phases-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-pi-phases-'));
   const events: Array<import('../src/ports/agent.ts').AgentEvent> = [];
   const answer = 'Your file is ready. Go, go.';
   const factory: typeof createAgentSession = async (options) => {
@@ -667,7 +667,7 @@ test('Pi usage rejects absent or malformed cost and skips empty failed attempts'
 });
 
 test('real Pi retry followed by a tool pause reports only new usage despite repeated completion callbacks', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-pi-retry-usage-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-pi-retry-usage-'));
   const events: AgentEvent[] = [];
   let attempts = 0;
   let paused = false;
@@ -759,7 +759,7 @@ test('real Pi retry followed by a tool pause reports only new usage despite repe
 });
 
 test('Pi reports compaction and cache warming usage without private summaries or duplicate entries', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-pi-auxiliary-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-pi-auxiliary-'));
   const events: AgentEvent[] = [];
   let emit!: Parameters<Awaited<ReturnType<typeof createAgentSession>>['session']['subscribe']>[0];
   const factory: typeof createAgentSession = async (options) => {

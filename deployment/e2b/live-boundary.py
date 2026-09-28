@@ -14,7 +14,7 @@ import time
 import uuid
 
 
-PROBE_PATH = "/run/sidekick/live-boundary.py"
+PROBE_PATH = "/run/otto/live-boundary.py"
 OUTPUT_LIMIT = 16384
 WORK_SECONDS = 100
 CLEANUP_SECONDS = 20
@@ -41,7 +41,7 @@ def require(value, label):
 
 
 def environment(uid, extra=None):
-    homes = {0: "/nonexistent", 1000: "/home/node", 1001: "/home/sidekick-browser"}
+    homes = {0: "/nonexistent", 1000: "/home/node", 1001: "/home/otto-browser"}
     return {"PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin", "HOME": homes[uid], "LANG": "C.UTF-8", **(extra or {})}
 
 
@@ -194,7 +194,7 @@ try:
   while time.monotonic()<end:
    for key,_ in selector.select(.2):
     c,_=key.fileobj.accept()
-    with c:c.settimeout(1);c.sendall(b'sidekick-live-boundary')
+    with c:c.settimeout(1);c.sendall(b'otto-live-boundary')
 finally:
  for s in sockets:s.close()
 """
@@ -225,7 +225,7 @@ def tcp_source(target, port, denied=False, marker=False):
     start = f"import errno,socket\ns=socket.socket({family},socket.SOCK_STREAM);s.settimeout(2)\n"
     if denied:
         return start + f"try:\n s.connect({destination!r})\nexcept OSError as error:\n assert error.errno in (errno.EACCES,errno.EPERM,errno.ECONNREFUSED,errno.EHOSTUNREACH)\nelse:\n raise AssertionError()\nfinally:\n s.close()"
-    read = "\n assert s.recv(64)==b'sidekick-live-boundary'" if marker else ""
+    read = "\n assert s.recv(64)==b'otto-live-boundary'" if marker else ""
     return start + f"with s:\n s.connect({destination!r})" + read
 
 
@@ -241,7 +241,7 @@ def private_file(path, uid, content):
 
 
 def guard(processes, label):
-    require(processes.run(0, ["/usr/bin/python3", "/opt/sidekick/computer-guard.py", "check"], 20) == (0, b'{"ready":true}\n', b""), label)
+    require(processes.run(0, ["/usr/bin/python3", "/opt/otto/computer-guard.py", "check"], 20) == (0, b'{"ready":true}\n', b""), label)
 
 
 def check_browser(processes, directory):
@@ -250,7 +250,7 @@ def check_browser(processes, directory):
     profile = directory / "profile"
     profile.mkdir(mode=0o700)
     os.chown(profile, 1001, 1001)
-    private_file(directory / "private", 1001, b"sidekick-live-boundary")
+    private_file(directory / "private", 1001, b"otto-live-boundary")
     authority = str(directory / "Xauthority")
     private_file(authority, 1001, b"")
     cookie = uuid.uuid4().hex
@@ -317,7 +317,7 @@ def probe(processes, directories):
     code, output, errors = processes.run(0, ["/usr/sbin/ip", "-json", "address", "show"])
     require(code == 0 and not errors, "interface-addresses")
     targets, counts = addresses(output)
-    listener = processes.start(1001, ["/usr/bin/python3", "-c", LISTENER, json.dumps(targets)], {"SIDEKICK_BOUNDARY_SENTINEL": "synthetic"}, True)
+    listener = processes.start(1001, ["/usr/bin/python3", "-c", LISTENER, json.dumps(targets)], {"OTTO_BOUNDARY_SENTINEL": "synthetic"}, True)
     ports = read_listener(listener, len(targets))
     for target, port in zip(targets, ports):
         processes.python(1001, tcp_source(target, port, marker=True), "browser-network")
@@ -330,20 +330,20 @@ def probe(processes, directories):
     processes.python(0, tcp_source(envd, 49983), "envd-root")
     processes.python(1001, tcp_source(envd, 49983), "envd-browser")
     profile, desktop_environment, display = check_browser(processes, browser_directory)
-    processes.python(1001, f"import os,socket\nassert open({str(browser_directory / 'private')!r},'rb').read(64)==b'sidekick-live-boundary'\nassert os.listdir({str(profile)!r})\ns=socket.socket(socket.AF_UNIX);s.settimeout(2);s.connect('/data/control.sock');s.close()", "browser-private")
+    processes.python(1001, f"import os,socket\nassert open({str(browser_directory / 'private')!r},'rb').read(64)==b'otto-live-boundary'\nassert os.listdir({str(profile)!r})\ns=socket.socket(socket.AF_UNIX);s.settimeout(2);s.connect('/data/control.sock');s.close()", "browser-private")
     require(processes.running(listener), "browser-process")
-    browser_environment = environment(1001, {"SIDEKICK_BOUNDARY_SENTINEL": "synthetic"})
+    browser_environment = environment(1001, {"OTTO_BOUNDARY_SENTINEL": "synthetic"})
     processes.python(1001, f"import os\nassert (os.getuid(),os.getgid(),os.getgroups())==(1001,1001,[])\nos.kill({listener.pid},0)\nv=open('/proc/{listener.pid}/environ','rb').read(4097)\nassert len(v)<=4096\nassert dict(item.decode().split('=',1) for item in v.split(b'\\x00') if item)=={browser_environment!r}", "browser-process")
     denials = [
         f"os.open({str(browser_directory / 'private')!r},os.O_RDONLY)",
         f"os.open({str(profile)!r},os.O_RDONLY|os.O_DIRECTORY)",
         f"os.open({desktop_environment['XAUTHORITY']!r},os.O_RDONLY)",
         "socket.socket(socket.AF_UNIX).connect('/data/control.sock')",
-        "os.open('/home/sidekick-browser',os.O_RDONLY|os.O_DIRECTORY)",
+        "os.open('/home/otto-browser',os.O_RDONLY|os.O_DIRECTORY)",
         "os.open('/root',os.O_RDONLY|os.O_DIRECTORY)",
         f"os.open({PROBE_PATH!r},os.O_RDONLY)",
-        "os.open('/opt/sidekick/computer-guard.py',os.O_WRONLY|os.O_NOFOLLOW)",
-        "os.open('/opt/sidekick/workspace-command.py',os.O_WRONLY|os.O_NOFOLLOW)",
+        "os.open('/opt/otto/computer-guard.py',os.O_WRONLY|os.O_NOFOLLOW)",
+        "os.open('/opt/otto/workspace-command.py',os.O_WRONLY|os.O_NOFOLLOW)",
         "os.open('/app/src/providers/container-browser/worker.ts',os.O_WRONLY|os.O_NOFOLLOW)",
         "os.setuid(0)",
         f"os.kill({listener.pid},0)",
@@ -352,11 +352,11 @@ def probe(processes, directories):
     for operation in denials:
         processes.python(1000, denial_source(operation), "workspace-private")
     require(processes.running(listener), "browser-process")
-    code, _, _ = processes.run(1000, ["/usr/sbin/nft", "list", "table", "inet", "sidekick"])
+    code, _, _ = processes.run(1000, ["/usr/sbin/nft", "list", "table", "inet", "otto"])
     require(code != 0, "workspace-firewall")
     check_x11(processes, desktop_environment, display)
     processes.python(1000, "import os,pathlib\nassert (os.getuid(),os.getgid(),os.getgroups())==(1000,1000,[])\ns=pathlib.Path('/proc/self/status').read_text();v=dict(line.split(':',1) for line in s.splitlines())\nassert v['NoNewPrivs'].strip()=='1'\nassert all(int(v[key],16)==0 for key in ['CapEff','CapPrm','CapAmb','CapInh'])", "workspace-privileges")
-    processes.python(1000, f"import pathlib,socket\np=pathlib.Path({str(workspace_directory / 'sentinel')!r});p.write_text('sidekick-live-boundary');assert p.read_text()=='sidekick-live-boundary'\nassert socket.getaddrinfo('example.com',443,type=socket.SOCK_STREAM)", "workspace-files-dns", 8)
+    processes.python(1000, f"import pathlib,socket\np=pathlib.Path({str(workspace_directory / 'sentinel')!r});p.write_text('otto-live-boundary');assert p.read_text()=='otto-live-boundary'\nassert socket.getaddrinfo('example.com',443,type=socket.SOCK_STREAM)", "workspace-files-dns", 8)
     code, output, errors = processes.run(1000, ["/usr/bin/curl", "--fail", "--silent", "--output", "/dev/null", "--proto", "=https", "--connect-timeout", "3", "--max-time", "8", "https://example.com"], 10)
     require(code == 0 and not output and not errors, "workspace-https")
     guard(processes, "final-readiness")

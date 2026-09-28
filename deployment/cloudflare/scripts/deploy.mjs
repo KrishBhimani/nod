@@ -13,7 +13,7 @@ export function deploymentPlan({ environment, release, accountId, publicUrl, gat
   if (!['development', 'production'].includes(environment))
     throw new Error('Choose the development or production deployment environment.');
   if (!/^[a-f0-9]{40}$/.test(release ?? ''))
-    throw new Error('Set SIDEKICK_RELEASE to the tested Git commit.');
+    throw new Error('Set OTTO_RELEASE to the tested Git commit.');
   if (!/^[a-f0-9]{32}$/.test(accountId ?? ''))
     throw new Error('Set CLOUDFLARE_ACCOUNT_ID to the selected account.');
   let origin;
@@ -33,7 +33,7 @@ export function deploymentPlan({ environment, release, accountId, publicUrl, gat
     origin.password ||
     origin.hostname.includes('.example.')
   )
-    throw new Error('Set SIDEKICK_PUBLIC_URL to the canonical production HTTPS origin.');
+    throw new Error('Set OTTO_PUBLIC_URL to the canonical production HTTPS origin.');
   if (
     !values ||
     Array.isArray(values) ||
@@ -44,16 +44,16 @@ export function deploymentPlan({ environment, release, accountId, publicUrl, gat
     Object.entries(values).some(
       ([key, value]) =>
         !/^[A-Z][A-Z0-9_]*$/.test(key) ||
-        key === 'SIDEKICK_IMAGE_RELEASE' ||
+        key === 'OTTO_IMAGE_RELEASE' ||
         typeof value !== 'string' ||
         value.includes('\0') ||
         value.length > 32768,
     )
   )
     throw new Error('GATEWAY_ENV must contain bounded server environment strings.');
-  if (values.SIDEKICK_ENVIRONMENT && values.SIDEKICK_ENVIRONMENT !== environment)
+  if (values.OTTO_ENVIRONMENT && values.OTTO_ENVIRONMENT !== environment)
     throw new Error('The gateway configuration belongs to another environment.');
-  if (values.SIDEKICK_PUBLIC_URL && values.SIDEKICK_PUBLIC_URL !== origin.origin)
+  if (values.OTTO_PUBLIC_URL && values.OTTO_PUBLIC_URL !== origin.origin)
     throw new Error('The gateway configuration uses another application origin.');
   if (!['cloudflare', 'e2b'].includes(values.COMPUTER_PROVIDER))
     throw new Error('Set COMPUTER_PROVIDER to cloudflare or e2b for this deployment.');
@@ -69,10 +69,10 @@ export function deploymentPlan({ environment, release, accountId, publicUrl, gat
     throw new Error('Migrate the separate E2B templates to E2B_COMPUTER_TEMPLATE.');
   if (
     values.OBJECT_STORAGE_PROVIDER !== 'http' ||
-    values.OBJECT_STORAGE_ENDPOINT !== 'http://sidekick.storage/v1/objects/'
+    values.OBJECT_STORAGE_ENDPOINT !== 'http://otto.storage/v1/objects/'
   )
     throw new Error(
-      'Set OBJECT_STORAGE_PROVIDER to http and OBJECT_STORAGE_ENDPOINT to http://sidekick.storage/v1/objects/.',
+      'Set OBJECT_STORAGE_PROVIDER to http and OBJECT_STORAGE_ENDPOINT to http://otto.storage/v1/objects/.',
     );
   const selected = config.env?.[environment];
   if (!selected?.containers?.length)
@@ -98,15 +98,15 @@ export function deploymentPlan({ environment, release, accountId, publicUrl, gat
     requiredClasses.some((name) => !classes.includes(name))
   )
     throw new Error('The deployment is missing a required container class or repeats one.');
-  const localImage = `sidekick-${environment}:${release}`;
+  const localImage = `otto-${environment}:${release}`;
   const classImages = new Map([
     ['GatewayContainer', localImage],
     ['TenantContainer', localImage],
-    ['BrowserComputerContainer', `sidekick-${environment}-browser:${release}`],
-    ['WorkspaceComputerContainer', `sidekick-${environment}-workspace:${release}`],
+    ['BrowserComputerContainer', `otto-${environment}-browser:${release}`],
+    ['WorkspaceComputerContainer', `otto-${environment}-workspace:${release}`],
   ]);
   const localImages = new Set();
-  const gatewaySecret = JSON.stringify({ ...values, SIDEKICK_RELEASE: release });
+  const gatewaySecret = JSON.stringify({ ...values, OTTO_RELEASE: release });
   if (Buffer.byteLength(gatewaySecret) > 5 * 1024)
     throw new Error('The compact gateway configuration exceeds the Worker secret size limit.');
   const deployment = structuredClone(config);
@@ -119,9 +119,9 @@ export function deploymentPlan({ environment, release, accountId, publicUrl, gat
       ...selected,
       vars: {
         ...selected.vars,
-        SIDEKICK_ENVIRONMENT: environment,
-        SIDEKICK_PUBLIC_URL: origin.origin,
-        SIDEKICK_DEPLOYMENT_MANAGED: 'true',
+        OTTO_ENVIRONMENT: environment,
+        OTTO_PUBLIC_URL: origin.origin,
+        OTTO_DEPLOYMENT_MANAGED: 'true',
       },
       containers: selected.containers.map((container) => {
         const selectedImage = classImages.get(container.class_name);
@@ -197,16 +197,16 @@ export async function deploy(environment, variables = process.env, dependencies 
     throw new Error('Configure the Cloudflare deployment token.');
   const plan = deploymentPlan({
     environment,
-    release: variables.SIDEKICK_RELEASE,
+    release: variables.OTTO_RELEASE,
     accountId: variables.CLOUDFLARE_ACCOUNT_ID,
-    publicUrl: variables.SIDEKICK_PUBLIC_URL,
+    publicUrl: variables.OTTO_PUBLIC_URL,
     gatewayEnv: variables.GATEWAY_ENV,
     config: configuration,
   });
   const lifecycle =
     dependencies.deploymentControl ?? createDeploymentClient({ environment, plan, variables });
   const digest = dependencies.imageDigest ?? inspectImageDigest;
-  const privateDirectory = await mkdtemp(join(tmpdir(), 'sidekick-deploy-'));
+  const privateDirectory = await mkdtemp(join(tmpdir(), 'otto-deploy-'));
   await chmod(privateDirectory, 0o700);
   try {
     const configPath = join(privateDirectory, 'wrangler.json');

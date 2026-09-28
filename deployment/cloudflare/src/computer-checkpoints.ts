@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { environmentName, ownerIdentity, RuntimeControlError } from './protocol.ts';
 
 export type ComputerCheckpoint = {
-  format: 'sidekick-computer-tar-v1';
+  format: 'otto-computer-tar-v1';
   id: string;
   ownerId: string;
   environment: string;
@@ -91,7 +91,7 @@ export function createComputerCheckpoints(options: {
 
   function validate(checkpoint: ComputerCheckpoint) {
     if (
-      checkpoint.format !== 'sidekick-computer-tar-v1' ||
+      checkpoint.format !== 'otto-computer-tar-v1' ||
       checkpoint.ownerId !== ownerId ||
       checkpoint.environment !== environment ||
       checkpoint.role !== role ||
@@ -189,7 +189,7 @@ export function createComputerCheckpoints(options: {
       if (object.size !== size || object.key !== objectKey) throw unavailable();
       await bound.run(options.assertCurrent);
       const checkpoint: ComputerCheckpoint = {
-        format: 'sidekick-computer-tar-v1',
+        format: 'otto-computer-tar-v1',
         id,
         ownerId,
         environment,

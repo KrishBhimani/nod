@@ -16,7 +16,7 @@ export function createGoogleAuthentication(options: {
   if (options.secret.length < 32 || !options.clientId || !options.clientSecret)
     throw new Error('Google authentication configuration is incomplete.');
   const auth = betterAuth({
-    appName: 'Sidekick',
+    appName: 'Otto',
     baseURL: origin,
     basePath: '/api/auth',
     secret: options.secret,
@@ -42,7 +42,7 @@ export function createGoogleAuthentication(options: {
     },
     advanced: {
       database: { generateId: 'uuid' },
-      cookiePrefix: `sidekick-${options.environment}`,
+      cookiePrefix: `otto-${options.environment}`,
       useSecureCookies: origin.startsWith('https:'),
       defaultCookieAttributes: { httpOnly: true, sameSite: 'lax', path: '/' },
     },

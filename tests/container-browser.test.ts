@@ -212,7 +212,7 @@ test('container browser routes through the private bridge and preserves images, 
         '-i',
         '--user',
         'node',
-        'sidekick-browser',
+        'otto-browser',
         'node',
         '--import',
         'tsx',
@@ -410,8 +410,7 @@ test('malformed methods and namespaces never reach a computer or filesystem path
     }
     assert.equal(fixture.instances.size, 0);
     assert.throws(
-      () =>
-        createContainerBrowserComputer({ dataRoot: '/synthetic', container: 'sidekick-workspace' }),
+      () => createContainerBrowserComputer({ dataRoot: '/synthetic', container: 'otto-workspace' }),
       /BROWSER_CONTAINER/,
     );
   } finally {

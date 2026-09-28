@@ -108,7 +108,7 @@ test('message actions reply and copy, inspect the selected assistant message, an
     },
   });
   const inspect = (event: Event) => inspected.push((event as CustomEvent).detail);
-  window.addEventListener('sidekick:inspect-message', inspect);
+  window.addEventListener('otto:inspect-message', inspect);
   try {
     await act(async () =>
       root.render(
@@ -175,7 +175,7 @@ test('message actions reply and copy, inspect the selected assistant message, an
     );
     assert.equal(element.querySelector('[aria-label="Inspect message"]'), null);
   } finally {
-    window.removeEventListener('sidekick:inspect-message', inspect);
+    window.removeEventListener('otto:inspect-message', inspect);
     await act(async () => root.unmount());
     element.remove();
   }
@@ -248,7 +248,7 @@ test('reactions persist through the user endpoint and assistant reactions appear
         }),
       ),
     );
-    assert.ok(element.querySelector('[aria-label="Sidekick reacted: thumbs up"]'));
+    assert.ok(element.querySelector('[aria-label="Otto reacted: thumbs up"]'));
     assert.equal(element.querySelector('[aria-label="React to message"]'), null);
   } finally {
     globalThis.fetch = previousFetch;
@@ -269,7 +269,7 @@ test('Unicode reactions include flags, skin tones and joined sequences while leg
       }),
     );
     assert.ok(html.includes(value));
-    assert.ok(html.includes(`Sidekick reacted: ${reactionName(value)}`));
+    assert.ok(html.includes(`Otto reacted: ${reactionName(value)}`));
   }
 });
 
@@ -281,9 +281,7 @@ test('agent badges are labelled, noninteractive and limited to valid user-messag
   );
   const container = document.createElement('div');
   container.innerHTML = rendered;
-  const badge = container.querySelector(
-    '[role="img"][aria-label="Sidekick reacted: party popper"]',
-  );
+  const badge = container.querySelector('[role="img"][aria-label="Otto reacted: party popper"]');
   assert.ok(badge);
   assert.equal(badge.tagName, 'SPAN');
   assert.equal(badge.hasAttribute('tabindex'), false);
@@ -296,7 +294,7 @@ test('agent badges are labelled, noninteractive and limited to valid user-messag
     },
   ]) {
     assert.equal(
-      renderToStaticMarkup(createElement(MessageBubble, { message })).includes('Sidekick reacted:'),
+      renderToStaticMarkup(createElement(MessageBubble, { message })).includes('Otto reacted:'),
       false,
     );
   }

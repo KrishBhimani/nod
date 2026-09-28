@@ -165,9 +165,9 @@ function CredentialForm({ id }: { id: string }) {
   }
   return (
     <main className="credential-page">
-      <a href="/" className="credential-brand" aria-label="Sidekick home">
+      <a href="/" className="credential-brand" aria-label="Otto home">
         <BrandMark />
-        <span>sidekick</span>
+        <span>otto</span>
       </a>
       <div className="credential-card" aria-busy={saving || (!request && !error)}>
         {saving ? (
@@ -187,7 +187,7 @@ function CredentialForm({ id }: { id: string }) {
               <Check size={24} />
             </div>
             <h1>Details submitted</h1>
-            <p>Sidekick will continue from the website’s response.</p>
+            <p>Otto will continue from the website’s response.</p>
             <Button asChild>
               <a href="/">Back to chat</a>
             </Button>
@@ -199,7 +199,7 @@ function CredentialForm({ id }: { id: string }) {
             <p>
               {retried
                 ? 'Return to chat for the next step.'
-                : 'Ask Sidekick to check the sign-in page again.'}
+                : 'Ask Otto to check the sign-in page again.'}
             </p>
             {!retried && (
               <Button disabled={saving} onClick={() => void retry()}>

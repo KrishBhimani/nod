@@ -5,7 +5,7 @@ import { workspaceNetwork } from '../scripts/e2e-workspace.ts';
 const connection = { NetworkID: 'a'.repeat(64) };
 
 test('the acceptance workspace reuses one observed normal Docker network', () => {
-  for (const name of ['bridge', 'sidekick-local_default', 'sidekick.fixture-network']) {
+  for (const name of ['bridge', 'otto-local_default', 'otto.fixture-network']) {
     const inspected = JSON.stringify({ [name]: { ...connection, IPAddress: '172.18.0.3' } });
     assert.equal(workspaceNetwork(inspected), name);
   }
@@ -31,6 +31,6 @@ test('the acceptance workspace rejects privileged, absent, malformed and ambiguo
   ])
     assert.throws(
       () => workspaceNetwork(inspected),
-      /^Error: Start the Sidekick workspace on a normal Docker network first\.$/,
+      /^Error: Start the Otto workspace on a normal Docker network first\.$/,
     );
 });

@@ -100,7 +100,7 @@ test('unused retirement atomically retains the exact uncertainty record and a st
     const replacement = { ...f.options.identity, phase: 'ready', stopped: true };
     assert.deepEqual(f.values.get('computer'), replacement);
     assert.deepEqual(f.values.get(f.archiveKey), {
-      format: 'sidekick-unused-computer-retirement-v1',
+      format: 'otto-unused-computer-retirement-v1',
       deployment: f.options.deployment,
       original: f.original,
       replacement,
@@ -266,7 +266,7 @@ function controllerFixture(role: 'browser' | 'workspace', f = fixture(role)) {
   const computer = Object.assign(Object.create(Computer.prototype), {
     role,
     env: {
-      SIDEKICK_ENVIRONMENT: identity.environment,
+      OTTO_ENVIRONMENT: identity.environment,
       BROWSER_COMPUTERS: namespace,
       WORKSPACE_COMPUTERS: namespace,
       TENANTS: {
@@ -337,9 +337,9 @@ test('both controller roles retire only through deployment drain and keep ordina
     const response = await f.computer.request(
       f.options.identity.ownerId,
       '4',
-      new Request('http://sidekick.computer/v1/commands', {
+      new Request('http://otto.computer/v1/commands', {
         method: 'POST',
-        headers: { 'x-sidekick-generation': '4', 'x-sidekick-computer-role': role },
+        headers: { 'x-otto-generation': '4', 'x-otto-computer-role': role },
         body: JSON.stringify({
           id: randomUUID(),
           role,
@@ -446,9 +446,9 @@ test('a controller selection already awaiting storage cannot enter during retire
   const request = f.computer.request(
     f.options.identity.ownerId,
     '4',
-    new Request('http://sidekick.computer/v1/commands', {
+    new Request('http://otto.computer/v1/commands', {
       method: 'POST',
-      headers: { 'x-sidekick-generation': '4', 'x-sidekick-computer-role': 'browser' },
+      headers: { 'x-otto-generation': '4', 'x-otto-computer-role': 'browser' },
       body: JSON.stringify({ id: randomUUID(), role: 'browser' }),
     }),
   );
@@ -482,9 +482,9 @@ test('native inspection cannot install a concurrent controller or acknowledge lo
   const response = await f.computer.request(
     f.options.identity.ownerId,
     '4',
-    new Request('http://sidekick.computer/v1/commands', {
+    new Request('http://otto.computer/v1/commands', {
       method: 'POST',
-      headers: { 'x-sidekick-generation': '4', 'x-sidekick-computer-role': 'browser' },
+      headers: { 'x-otto-generation': '4', 'x-otto-computer-role': 'browser' },
       body: JSON.stringify({ id: randomUUID(), role: 'browser' }),
     }),
   );
@@ -508,7 +508,7 @@ test('a current unused failure retires only to a stopped marker and preserves it
         stopped: true,
       });
       assert.deepEqual(f.values.get(f.archiveKey), {
-        format: 'sidekick-unused-computer-retirement-v1',
+        format: 'otto-unused-computer-retirement-v1',
         deployment: f.options.deployment,
         original: f.original,
         replacement: { ...f.options.identity, phase: 'ready', stopped: true },
@@ -518,9 +518,9 @@ test('a current unused failure retires only to a stopped marker and preserves it
       const response = await f.computer.request(
         f.options.identity.ownerId,
         f.options.identity.generation,
-        new Request('http://sidekick.computer/v1/commands', {
+        new Request('http://otto.computer/v1/commands', {
           method: 'POST',
-          headers: { 'x-sidekick-generation': '4', 'x-sidekick-computer-role': role },
+          headers: { 'x-otto-generation': '4', 'x-otto-computer-role': role },
           body: JSON.stringify({
             id: randomUUID(),
             role,

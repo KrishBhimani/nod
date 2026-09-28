@@ -86,7 +86,7 @@ test(
         const service = await createIntegrations(db.pool, {
           ownerId,
           provider,
-          baseUrl: 'https://sidekick.example',
+          baseUrl: 'https://otto.example',
           wake: async (_text, id) => {
             delivered.get(ownerId)!.push(id);
           },
@@ -221,7 +221,7 @@ test(
     try {
       for (const [index, ownerId] of ['owner-one', 'owner-two'].entries()) {
         const webhookUrl =
-          'https://sidekick.example/api/webhooks/telegram/' + String(index + 1).repeat(43);
+          'https://otto.example/api/webhooks/telegram/' + String(index + 1).repeat(43);
         const verifier = createChatSdkSetupVerifier({
           webhookUrl: () => webhookUrl,
           fetch: async (url, options) => {

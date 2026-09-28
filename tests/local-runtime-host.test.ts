@@ -18,7 +18,7 @@ test(
   async (t) => {
     const suffix = randomUUID().replaceAll('-', '').slice(0, 20);
     const database = `test_runtime_${suffix}`;
-    const directory = await mkdtemp(join(tmpdir(), 'sidekick-runtime-'));
+    const directory = await mkdtemp(join(tmpdir(), 'otto-runtime-'));
     const root = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 2 });
     const ownerA = randomUUID();
     const ownerB = randomUUID();
@@ -60,7 +60,7 @@ test(
           cwd: resolve('.'),
         }),
         operatorEnvironment: {
-          SIDEKICK_PUBLIC_URL: 'http://localhost:4330',
+          OTTO_PUBLIC_URL: 'http://localhost:4330',
           COMPUTER_PROVIDER: 'e2b',
           E2B_API_KEY: 'synthetic-unused-key',
           E2B_COMPUTER_TEMPLATE: 'synthetic-computer',
@@ -70,7 +70,7 @@ test(
     async function request(owner: string, method: string, body?: unknown) {
       const response = await host!.fetch(
         owner,
-        new Request('http://sidekick.test/api/preferences', {
+        new Request('http://otto.test/api/preferences', {
           method,
           headers: { 'content-type': 'application/json' },
           ...(body ? { body: JSON.stringify(body) } : {}),

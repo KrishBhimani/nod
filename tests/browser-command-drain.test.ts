@@ -32,7 +32,7 @@ test('container launches the package native CLI directly for both supported imag
 });
 
 test('cancellation remains pending until the accepted daemon operation is closed', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-browser-drain-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-browser-drain-'));
   const fixture = stagedLoginBrowser();
   const started = deferred();
   const closing = deferred();
@@ -94,7 +94,7 @@ test('cancellation remains pending until the accepted daemon operation is closed
 });
 
 test('failed interruption cleanup blocks later actions until an explicit close succeeds', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-browser-drain-failure-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-browser-drain-failure-'));
   const fixture = stagedLoginBrowser();
   const commands: string[] = [];
   let failClose = true;
@@ -145,11 +145,11 @@ for (const scenario of [
   { operation: 'screenshot', command: 'eval', occurrence: 1 },
   { operation: 'fill', command: 'get attr @e1 type', occurrence: 1 },
   { operation: 'fill', command: 'get attr @e1 autocomplete', occurrence: 1 },
-  { operation: 'fill', command: 'get attr @e1 data-sidekick-login-field', occurrence: 1 },
-  { operation: 'fill', command: 'get attr @e1 data-sidekick-manual-field', occurrence: 1 },
+  { operation: 'fill', command: 'get attr @e1 data-otto-login-field', occurrence: 1 },
+  { operation: 'fill', command: 'get attr @e1 data-otto-manual-field', occurrence: 1 },
 ] as const) {
   test(`${scenario.operation} cancellation drains ${scenario.command} ${scenario.occurrence} before queued work`, async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'sidekick-observation-drain-'));
+    const directory = await mkdtemp(join(tmpdir(), 'otto-observation-drain-'));
     const fixture = stagedLoginBrowser();
     const started = deferred();
     const releaseCommand = deferred();

@@ -21,7 +21,7 @@ export async function prepareE2BContext(options: { role: E2BTemplateRole; root?:
   const root = await realpath(
     options.root ?? resolve(dirname(fileURLToPath(import.meta.url)), '../..'),
   );
-  const path = await mkdtemp(join(tmpdir(), 'sidekick-e2b-template-'));
+  const path = await mkdtemp(join(tmpdir(), 'otto-e2b-template-'));
   const files: Array<{ path: string; bytes: number; sha256: string }> = [];
   const close = () => rm(path, { recursive: true, force: true });
   async function read(name: string) {

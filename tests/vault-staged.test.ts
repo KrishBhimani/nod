@@ -21,7 +21,7 @@ test(
       connectionString: process.env.TEST_DATABASE_URL,
       options: `-c search_path=${schema}`,
     });
-    const directory = await mkdtemp(join(tmpdir(), 'sidekick-secure-stages-'));
+    const directory = await mkdtemp(join(tmpdir(), 'otto-secure-stages-'));
     const fixture = stagedLoginBrowser();
     const computer = createAgentBrowserComputer({
       dataRoot: directory,
@@ -74,7 +74,7 @@ test(
         form.methods.find((method: { kind: string }) => method.kind === 'oauth').supported,
         true,
       );
-      assert.equal(JSON.stringify(form).includes('data-sidekick-login-method'), false);
+      assert.equal(JSON.stringify(form).includes('data-otto-login-method'), false);
       assert.equal(
         (
           await app.inject({

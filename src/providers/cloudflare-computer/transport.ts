@@ -19,7 +19,7 @@ export function launchCloudflareCommand(options: {
   const { role, generation, taskId: selectedTaskId, onUncertain } = options;
   let origin: string;
   try {
-    const url = new URL(options.origin ?? 'http://sidekick.computer');
+    const url = new URL(options.origin ?? 'http://otto.computer');
     if (
       url.protocol !== 'http:' ||
       url.username ||
@@ -27,7 +27,7 @@ export function launchCloudflareCommand(options: {
       url.pathname !== '/' ||
       url.search ||
       url.hash ||
-      (url.origin !== 'http://sidekick.computer' &&
+      (url.origin !== 'http://otto.computer' &&
         !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) ||
       !['browser', 'workspace'].includes(role) ||
       !/^[1-9]\d{0,18}$/.test(generation) ||
@@ -92,8 +92,8 @@ export function launchCloudflareCommand(options: {
         ...init,
         headers: {
           ...init.headers,
-          'x-sidekick-generation': generation,
-          'x-sidekick-computer-role': role,
+          'x-otto-generation': generation,
+          'x-otto-computer-role': role,
         },
         redirect: 'error',
         signal: AbortSignal.any([lifetime.signal, controller.signal]),

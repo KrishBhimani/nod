@@ -8,7 +8,7 @@ import test from 'node:test';
 
 test('the integration runner fails when the test process is terminated by a signal', async () => {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-test-runner-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-test-runner-'));
   try {
     await mkdir(join(directory, 'tests'));
     await symlink(join(root, 'node_modules'), join(directory, 'node_modules'), 'dir');

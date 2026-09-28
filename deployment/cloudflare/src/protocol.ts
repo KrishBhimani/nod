@@ -69,7 +69,7 @@ export function environmentValues(value: unknown): Record<string, string> {
   for (const [key, entry] of entries)
     if (
       !/^[A-Z][A-Z0-9_]{0,79}$/.test(key) ||
-      key === 'SIDEKICK_IMAGE_RELEASE' ||
+      key === 'OTTO_IMAGE_RELEASE' ||
       typeof entry !== 'string' ||
       entry.includes('\u0000') ||
       entry.length > 32 * 1024
@@ -93,16 +93,16 @@ export async function bootstrap(value: unknown, environment: string, now: () => 
   const provider = computerProvider({
     computerProvider: env.COMPUTER_PROVIDER as TenantIdentity['computerProvider'],
   });
-  const runtimeGeneration = generation(env.SIDEKICK_RUNTIME_GENERATION);
-  const leaseExpiresAt = leaseExpiry(env.SIDEKICK_RUNTIME_LEASE_EXPIRES, now);
+  const runtimeGeneration = generation(env.OTTO_RUNTIME_GENERATION);
+  const leaseExpiresAt = leaseExpiry(env.OTTO_RUNTIME_LEASE_EXPIRES, now);
   if (
-    env.SIDEKICK_OWNER_ID !== ownerId ||
-    env.SIDEKICK_ENVIRONMENT !== environmentName(environment) ||
-    env.SIDEKICK_MODE !== 'tenant' ||
-    !/^[a-zA-Z0-9_-]{43,128}$/.test(env.SIDEKICK_RUNTIME_SECRET ?? '')
+    env.OTTO_OWNER_ID !== ownerId ||
+    env.OTTO_ENVIRONMENT !== environmentName(environment) ||
+    env.OTTO_MODE !== 'tenant' ||
+    !/^[a-zA-Z0-9_-]{43,128}$/.test(env.OTTO_RUNTIME_SECRET ?? '')
   )
     throw new RuntimeControlError();
-  const suffix = (await hash(JSON.stringify(['sidekick-tenant-v1', environment, ownerId]))).slice(
+  const suffix = (await hash(JSON.stringify(['otto-tenant-v1', environment, ownerId]))).slice(
     0,
     32,
   );
@@ -121,16 +121,15 @@ export async function bootstrap(value: unknown, environment: string, now: () => 
     throw new RuntimeControlError();
   const configured: Record<string, string> = {
     ...env,
-    SIDEKICK_CONTROL_URL: 'http://sidekick.control',
-    SIDEKICK_DATA_ROOT: '/data',
-    SIDEKICK_BIND_HOST: '0.0.0.0',
+    OTTO_CONTROL_URL: 'http://otto.control',
+    OTTO_DATA_ROOT: '/data',
+    OTTO_BIND_HOST: '0.0.0.0',
     NODE_ENV: 'production',
     PORT: '4310',
     HOST: '0.0.0.0',
   };
-  delete configured.SIDEKICK_COMPUTER_CONTROL_URL;
-  if (provider === 'e2b')
-    configured.SIDEKICK_COMPUTER_CONTROL_URL = 'http://sidekick.computer/v1/stopped';
+  delete configured.OTTO_COMPUTER_CONTROL_URL;
+  if (provider === 'e2b') configured.OTTO_COMPUTER_CONTROL_URL = 'http://otto.computer/v1/stopped';
   const configurationHash = await hash(JSON.stringify(Object.entries(configured).sort()));
   const identity: TenantIdentity = {
     ownerId,

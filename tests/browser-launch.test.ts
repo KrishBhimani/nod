@@ -10,7 +10,7 @@ import { stagedLoginBrowser } from './login-fixture.ts';
 
 for (const platform of ['darwin', 'linux'] as const) {
   test(`${platform} browser launch preserves secure login and platform display support`, async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'sidekick-browser-launch-'));
+    const directory = await mkdtemp(join(tmpdir(), 'otto-browser-launch-'));
     const fixture = stagedLoginBrowser();
     const launches: string[][] = [];
     const computer = createAgentBrowserComputer({

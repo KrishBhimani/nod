@@ -42,7 +42,7 @@ async function tenantShutdownFixture(t: TestContext, pending: 'application' | 'd
     import { registerHooks } from 'node:module';
     import Fastify from ${JSON.stringify(import.meta.resolve('fastify'))};
     const expiry = Date.now() + 5_000;
-    process.env.SIDEKICK_RUNTIME_LEASE_EXPIRES = new Date(expiry).toISOString();
+    process.env.OTTO_RUNTIME_LEASE_EXPIRES = new Date(expiry).toISOString();
     const resources = setInterval(() => {}, 1_000);
     let release;
     const pendingCleanup = new Promise(resolve => { release = resolve; });
@@ -84,7 +84,7 @@ async function tenantShutdownFixture(t: TestContext, pending: 'application' | 'd
     process.execPath,
     ['--import', import.meta.resolve('tsx'), '--input-type=module', '-e', script],
     {
-      env: { NODE_ENV: 'production', SIDEKICK_BIND_HOST: '127.0.0.1' },
+      env: { NODE_ENV: 'production', OTTO_BIND_HOST: '127.0.0.1' },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     },
   );
@@ -126,7 +126,7 @@ async function tenantShutdownFixture(t: TestContext, pending: 'application' | 'd
     }
     return messages.find((message) => message.type === type)!;
   }
-  await waitFor('sidekick-ready');
+  await waitFor('otto-ready');
   const { expiry } = await waitFor('fixture-listening');
   assert.ok(expiry - Date.now() > 500);
   return {

@@ -1,6 +1,5 @@
 export function workspaceNetwork(inspectedNetworks: string) {
-  const unavailable = () =>
-    new Error('Start the Sidekick workspace on a normal Docker network first.');
+  const unavailable = () => new Error('Start the Otto workspace on a normal Docker network first.');
   let networks: unknown;
   try {
     networks = JSON.parse(inspectedNetworks);

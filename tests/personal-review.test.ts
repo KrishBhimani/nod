@@ -123,7 +123,7 @@ test(
       const [pending] = await approvalsFor(id);
       await pool.query('UPDATE approvals SET action=$2,args=$3 WHERE id=$1', [
         pending.id,
-        `SIDEKICK_${action}`,
+        `OTTO_${action}`,
         args,
       ]);
       await pool.query('UPDATE messages SET text=$2 WHERE id=$1', [

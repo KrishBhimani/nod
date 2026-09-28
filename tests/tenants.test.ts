@@ -193,7 +193,7 @@ test(
         await denied(() => poolB.query(`SELECT * FROM "${tenantA.appSchema}".fixture_records`));
         await denied(() => poolA.query(`SET ROLE "${tenantB.role}"`));
         await denied(() => poolA.query(`SET ROLE "${decodeURIComponent(url.username)}"`));
-        await denied(() => poolA.query('SELECT * FROM sidekick_control.tenants'));
+        await denied(() => poolA.query('SELECT * FROM otto_control.tenants'));
         await denied(() => poolA.query('SELECT * FROM auth_fixture.sessions'));
         await denied(() => poolA.query('SELECT * FROM public.fixture_shared'));
         await denied(() => poolA.query('CREATE SCHEMA fixture_escape'));
@@ -287,7 +287,7 @@ test(
         assert.equal(renewed?.generation, first.generation);
         assert.equal(await store.releaseLease({ ...first, holderId: randomUUID() }), false);
         await admin!.query(
-          "UPDATE sidekick_control.tenants SET lease_expires=clock_timestamp()-interval '1 second' WHERE owner_id=$1 AND environment=$2",
+          "UPDATE otto_control.tenants SET lease_expires=clock_timestamp()-interval '1 second' WHERE owner_id=$1 AND environment=$2",
           [ownerA, options.environment],
         );
         assert.equal(await store.renewLease(first), undefined);

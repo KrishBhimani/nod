@@ -22,7 +22,7 @@ const planSchema = z
   .object({
     version: z.literal(1),
     environment: z.literal('development'),
-    project: z.literal('sidekick-development'),
+    project: z.literal('otto-development'),
     disposable: z.literal(true),
     nonce: z.string().uuid(),
     ownerId: z.string().uuid(),
@@ -111,7 +111,7 @@ async function save(path: string, value: unknown) {
 export async function readDevelopmentConfiguration(path: string): Promise<Configuration> {
   const values = parseEnv((await privateBytes(path, 64 * 1024)).toString('utf8'));
   if (
-    values.SIDEKICK_ENVIRONMENT !== 'development' ||
+    values.OTTO_ENVIRONMENT !== 'development' ||
     values.COMPUTER_PROVIDER !== 'e2b' ||
     !values.E2B_API_KEY?.trim() ||
     values.E2B_API_KEY.length > 4096 ||
@@ -188,7 +188,7 @@ export async function prepareAcceptance(
   const plan = planSchema.parse({
     version: 1,
     environment: 'development',
-    project: 'sidekick-development',
+    project: 'otto-development',
     disposable: true,
     nonce: randomUUID(),
     ownerId: randomUUID(),
@@ -284,10 +284,10 @@ export async function openAcceptance(
 }
 export function acceptanceMetadata(plan: AcceptancePlan) {
   return {
-    sidekick_acceptance: plan.nonce,
-    sidekick_disposable: 'development',
-    sidekick_owner: sha(plan.ownerId),
-    sidekick_role: 'computer',
+    otto_acceptance: plan.nonce,
+    otto_disposable: 'development',
+    otto_owner: sha(plan.ownerId),
+    otto_role: 'computer',
   };
 }
 function owned(info: ResourceInfo, plan: AcceptancePlan, generation: string) {
@@ -296,7 +296,7 @@ function owned(info: ResourceInfo, plan: AcceptancePlan, generation: string) {
     !identifier.safeParse(info.id).success ||
     info.templateId !== plan.templateId ||
     !['running', 'paused'].includes(info.state) ||
-    info.metadata.sidekick_generation !== generation ||
+    info.metadata.otto_generation !== generation ||
     Object.entries(expected).some(([key, value]) => info.metadata[key] !== value)
   )
     throw failure();

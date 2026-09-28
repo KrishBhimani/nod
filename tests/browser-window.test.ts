@@ -179,7 +179,7 @@ test('browser popout opens only the app route, pauses embedded captures and rest
     const event = new MouseEvent('click', { bubbles: true, cancelable: true });
     await act(async () => link.dispatchEvent(event));
     assert.equal(event.defaultPrevented, true);
-    assert.deepEqual(opened, [['/browser', 'sidekick-browser', 'popup,width=1200,height=800']]);
+    assert.deepEqual(opened, [['/browser', 'otto-browser', 'popup,width=1200,height=800']]);
     assert.equal(popup.opener, null);
     const detachedLink = element.querySelector<HTMLAnchorElement>(
       '[aria-label="Open browser window"]',

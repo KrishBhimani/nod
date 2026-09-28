@@ -99,7 +99,7 @@ test('a failed CLI operation remains bounded when a provider stream leaves an ac
   );
 });
 async function fixture(t: TestContext) {
-  const root = await realpath(await mkdtemp(join(tmpdir(), 'sidekick-e2b-live-test-')));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'otto-e2b-live-test-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const directory = join(root, 'journal');
   const prepared = await prepareAcceptance(directory, configuration, source);
@@ -339,7 +339,7 @@ test('live E2B environment reader refuses production, legacy templates and endpo
   const f = await fixture(t);
   const file = join(f.root, 'development.env');
   const baseline =
-    'SIDEKICK_ENVIRONMENT=development\nCOMPUTER_PROVIDER=e2b\nE2B_API_KEY=synthetic-key\nE2B_COMPUTER_TEMPLATE=synthetic-template\n';
+    'OTTO_ENVIRONMENT=development\nCOMPUTER_PROVIDER=e2b\nE2B_API_KEY=synthetic-key\nE2B_COMPUTER_TEMPLATE=synthetic-template\n';
   await writeFile(file, baseline, { mode: 0o600 });
   assert.equal((await readDevelopmentConfiguration(file)).templateId, 'synthetic-template');
   for (const text of [
@@ -402,7 +402,7 @@ test('ambiguous or foreign discovery blocks cleanup without touching another res
   f.driver.find = async () => [original, { ...original, id: 'second-resource' }];
   await assert.rejects(cleanupAcceptance(f.journal, f.driver));
   f.driver.find = async () => [
-    { ...original, metadata: { ...original.metadata, sidekick_owner: 'foreign' } },
+    { ...original, metadata: { ...original.metadata, otto_owner: 'foreign' } },
   ];
   await assert.rejects(cleanupAcceptance(f.journal, f.driver));
   assert.equal(f.calls.includes('kill'), false);
@@ -467,7 +467,7 @@ test('allocation CAS rejects foreign owner, generation and resource replacement'
     (await f.journal.store.read(f.journal.plan.ownerId, 'computer'))?.resourceId,
     record.resourceId,
   );
-  assert.equal(acceptanceMetadata(f.journal.plan).sidekick_disposable, 'development');
+  assert.equal(acceptanceMetadata(f.journal.plan).otto_disposable, 'development');
 });
 
 for (const pauseDuringHold of [false, true])
@@ -500,7 +500,7 @@ for (const pauseDuringHold of [false, true])
                 text:
                   url.hostname === 'example.com'
                     ? 'Example Domain'
-                    : JSON.stringify({ cookies: { sidekick_e2b: cookie } }),
+                    : JSON.stringify({ cookies: { otto_e2b: cookie } }),
                 candidates: [],
               };
             },

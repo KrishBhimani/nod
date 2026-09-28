@@ -157,18 +157,18 @@ export async function openLocalCloudflareControl(
   try {
     if (
       environment.COMPUTER_PROVIDER !== 'cloudflare' ||
-      environment.SIDEKICK_ENVIRONMENT?.toLowerCase() === 'production' ||
-      !/^[a-z][a-z0-9-]{0,31}$/.test(environment.SIDEKICK_ENVIRONMENT ?? '') ||
-      environment.SIDEKICK_PUBLIC_URL !== origin
+      environment.OTTO_ENVIRONMENT?.toLowerCase() === 'production' ||
+      !/^[a-z][a-z0-9-]{0,31}$/.test(environment.OTTO_ENVIRONMENT ?? '') ||
+      environment.OTTO_PUBLIC_URL !== origin
     )
       throw unavailable();
-    const masterKey = parseCredentialKey(environment.SIDEKICK_MASTER_KEY ?? '');
+    const masterKey = parseCredentialKey(environment.OTTO_MASTER_KEY ?? '');
     const database = new URL(environment.DATABASE_URL);
     if (!['postgres:', 'postgresql:'].includes(database.protocol)) throw unavailable();
     const binding = createHash('sha256')
       .update(
         JSON.stringify([
-          environment.SIDEKICK_ENVIRONMENT,
+          environment.OTTO_ENVIRONMENT,
           origin,
           database.href,
           masterKey.toString('base64'),
@@ -318,7 +318,7 @@ export async function openLocalCloudflareControl(
       const body = Buffer.from(JSON.stringify({ ...input, action }));
       const token = signDeploymentRequest({
         masterKey,
-        environment: environment.SIDEKICK_ENVIRONMENT,
+        environment: environment.OTTO_ENVIRONMENT,
         body,
         now: now(),
       });

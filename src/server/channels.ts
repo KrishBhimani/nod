@@ -87,15 +87,15 @@ export function channelReply(text: string, hasAttachments = false, deliversAttac
   const safe = text
     .replace(
       /\[[^\]]*\]\((?:https?:\/\/[^\s)]+)?\/api\/artifacts\/[^\s)]+\)|(?:https?:\/\/[^\s)]+)?\/api\/artifacts\/[^\s)]+/g,
-      deliversAttachments ? 'Attached file.' : 'Open Sidekick to view this file.',
+      deliversAttachments ? 'Attached file.' : 'Open Otto to view this file.',
     )
     .replace(
       new RegExp(`\\[[^\\]]*\\]\\(${securePath}\\)|${securePath}`, 'g'),
-      'Open Sidekick to continue securely.',
+      'Open Otto to continue securely.',
     );
   return (
-    `${safe}${hasAttachments ? '\n\nAttachments are available in Sidekick.' : ''}`.trim() ||
-    'A reply is available in Sidekick.'
+    `${safe}${hasAttachments ? '\n\nAttachments are available in Otto.' : ''}`.trim() ||
+    'A reply is available in Otto.'
   );
 }
 
@@ -239,7 +239,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
                 [
                   replyId,
                   ownerId,
-                  'The code could not be matched to a sign-in. Open the corresponding sign-in conversation in Sidekick web chat to continue.',
+                  'The code could not be matched to a sign-in. Open the corresponding sign-in conversation in Otto web chat to continue.',
                 ],
               );
               await client.query('INSERT INTO channel_outbox(message_id,source_id) VALUES($1,$2)', [

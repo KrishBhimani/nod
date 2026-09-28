@@ -198,7 +198,7 @@ test('split-code entry stops when an input handler changes the observed group', 
       const inspection = loginInspectionSchema.parse(dom.window.eval(loginInspectionScript()));
       const inputs = [...dom.window.document.querySelectorAll('input')];
       inputs[0].addEventListener('input', () => {
-        if (change === 'selector') inputs[1].removeAttribute('data-sidekick-login-field');
+        if (change === 'selector') inputs[1].removeAttribute('data-otto-login-field');
         if (change === 'type') inputs[1].type = 'password';
         if (change === 'size') inputs[1].maxLength = 2;
         if (change === 'parent') dom.window.document.body.append(inputs[1]);

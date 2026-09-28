@@ -16,8 +16,8 @@ const systemKeys =
 export function cloudflareLocalPlan(environment, config, root = repository, release) {
   if (
     environment.COMPUTER_PROVIDER !== 'cloudflare' ||
-    environment.SIDEKICK_ENVIRONMENT === 'production' ||
-    environment.SIDEKICK_PUBLIC_URL !== 'http://localhost:4330' ||
+    environment.OTTO_ENVIRONMENT === 'production' ||
+    environment.OTTO_PUBLIC_URL !== 'http://localhost:4330' ||
     !/^[a-f0-9]{40}$/.test(release ?? '')
   )
     throw new Error('Configure an isolated local Cloudflare development environment.');
@@ -33,41 +33,41 @@ export function cloudflareLocalPlan(environment, config, root = repository, rele
         !systemKeys.test(key) &&
         ![
           'DOTENV_CONFIG_PATH',
-          'SIDEKICK_DATA_ROOT',
-          'SIDEKICK_BIND_HOST',
+          'OTTO_DATA_ROOT',
+          'OTTO_BIND_HOST',
           'PORT',
           'NODE_ENV',
           'CLOUDFLARE_API_TOKEN',
           'CLOUDFLARE_ACCOUNT_ID',
-          'SIDEKICK_IMAGE_RELEASE',
+          'OTTO_IMAGE_RELEASE',
         ].includes(key),
     ),
   );
   const secret = JSON.stringify({
     ...gateway,
-    SIDEKICK_RELEASE: release,
+    OTTO_RELEASE: release,
     OBJECT_STORAGE_PROVIDER: 'http',
-    OBJECT_STORAGE_ENDPOINT: 'http://sidekick.storage/v1/objects/',
+    OBJECT_STORAGE_ENDPOINT: 'http://otto.storage/v1/objects/',
   });
   if (Buffer.byteLength(secret) > 5 * 1024)
     throw new Error('The compact gateway configuration exceeds the Worker secret size limit.');
   const local = {
     ...common,
     ...selected,
-    name: 'sidekick-development-local',
+    name: 'otto-development-local',
     main: resolve(directory, common.main),
     assets: { ...common.assets, directory: resolve(directory, common.assets.directory) },
     dev: { ip: '127.0.0.1', port: 4330, inspector_port: 9330 },
     vars: {
-      SIDEKICK_ENVIRONMENT: environment.SIDEKICK_ENVIRONMENT,
-      SIDEKICK_PUBLIC_URL: 'http://localhost:4330',
+      OTTO_ENVIRONMENT: environment.OTTO_ENVIRONMENT,
+      OTTO_PUBLIC_URL: 'http://localhost:4330',
     },
     containers: selected.containers.map((container) => ({
       ...container,
       image: resolve(directory, container.image),
       image_build_context: resolve(directory, container.image_build_context),
       ...(['GatewayContainer', 'TenantContainer'].includes(container.class_name) && {
-        image_vars: { ...container.image_vars, SIDEKICK_RELEASE: release },
+        image_vars: { ...container.image_vars, OTTO_RELEASE: release },
       }),
     })),
   };

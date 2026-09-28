@@ -124,7 +124,7 @@ test('account settings bind to the session and reject stale account tabs and for
           headers: {
             cookie: 'session=b',
             origin: 'http://localhost:4399',
-            'x-sidekick-account': f.owners[0],
+            'x-otto-account': f.owners[0],
           },
           payload: { theme: 'dark' },
         })
@@ -149,7 +149,7 @@ test('account settings bind to the session and reject stale account tabs and for
       headers: {
         cookie: 'session=a',
         origin: 'http://localhost:4399',
-        'x-sidekick-account': f.owners[0],
+        'x-otto-account': f.owners[0],
       },
       payload: { theme: 'dark', name: 'Alex Updated', onboardingCompleted: true },
     });
@@ -187,7 +187,7 @@ test('login fixes the provider destination and logout forwards cookie expiry', a
       headers: {
         origin: 'http://localhost:4399',
         cookie: 'session=a',
-        'x-sidekick-account': f.owners[0],
+        'x-otto-account': f.owners[0],
       },
       payload: {},
     });

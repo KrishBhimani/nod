@@ -11,7 +11,7 @@ import {
   signRuntimeRequest,
 } from '../src/server/runtime-auth.ts';
 
-const boundary = 'sidekick-synthetic-multipart-boundary';
+const boundary = 'otto-synthetic-multipart-boundary';
 const contentType = `multipart/form-data; boundary=${boundary}`;
 type Part = { name: string; bytes: Buffer; filename?: string; mimeType?: string };
 function form(parts: Part[], close = true) {
@@ -42,13 +42,13 @@ test(
     const secret = deriveRuntimeSecret(randomBytes(32), 'development', ownerId);
     const context = { ownerId, secret, environment: 'development', generation: '1' };
     const environment = {
-      DOTENV_CONFIG_PATH: '/nonexistent-sidekick-fixture-env',
+      DOTENV_CONFIG_PATH: '/nonexistent-otto-fixture-env',
       DATABASE_URL: 'postgresql://fixture:unused@127.0.0.1:1/unavailable',
-      SIDEKICK_MODE: 'tenant',
-      SIDEKICK_OWNER_ID: ownerId,
-      SIDEKICK_RUNTIME_SECRET: secret,
-      SIDEKICK_RUNTIME_GENERATION: '1',
-      SIDEKICK_ENVIRONMENT: 'development',
+      OTTO_MODE: 'tenant',
+      OTTO_OWNER_ID: ownerId,
+      OTTO_RUNTIME_SECRET: secret,
+      OTTO_RUNTIME_GENERATION: '1',
+      OTTO_ENVIRONMENT: 'development',
       PGBOSS_SCHEMA: 'sk_jobs_' + 'a'.repeat(32),
     };
     const previous = Object.fromEntries(

@@ -23,7 +23,7 @@ test('confirmation shows readable target and account without internal identifier
 
 test('goal confirmation uses its owned title, readable changes and escaped user text', () => {
   const question = actionConfirmation(
-    'SIDEKICK_goal_update',
+    'OTTO_goal_update',
     {
       id: 'hidden-goal',
       progress: 50,
@@ -41,7 +41,7 @@ test('goal confirmation uses its owned title, readable changes and escaped user 
 });
 
 test('schedule confirmation shows local date and frequency while messages retain useful send details', () => {
-  const question = actionConfirmation('SIDEKICK_schedule_create', {
+  const question = actionConfirmation('OTTO_schedule_create', {
     title: 'Portfolio check',
     timeZone: 'Europe/Lisbon',
     runAt: '2026-09-25T13:21:00Z',
@@ -51,7 +51,7 @@ test('schedule confirmation shows local date and frequency while messages retain
   assert.match(question, /Time zone: Europe\/Lisbon/);
   assert.doesNotMatch(question, /runAt|timeZone/);
   assert.match(
-    actionConfirmation('SIDEKICK_schedule_create', { cron: '*/5 * * * *' }),
+    actionConfirmation('OTTO_schedule_create', { cron: '*/5 * * * *' }),
     /Every 5 minutes/,
   );
   const send = actionConfirmation('GMAIL_SEND_EMAIL', {

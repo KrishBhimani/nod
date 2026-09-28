@@ -14,7 +14,7 @@ import {
 } from '../scripts/local-database.ts';
 
 async function fixture(content = 'PORT=4310\nDATABASE_URL=\nOPENAI_API_KEY=fixture-model-key\n') {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-database-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-database-'));
   await writeFile(join(directory, '.env'), content, { mode: 0o644 });
   return {
     directory,
@@ -32,7 +32,7 @@ test('fresh local setup saves a private random password and keeps the server URL
     assert.match(database.password, /^[A-Za-z0-9_-]{43}$/);
     assert.notEqual(database.password, other.password);
     const saved = await first.read();
-    assert.equal(saved.SIDEKICK_POSTGRES_PASSWORD, database.password);
+    assert.equal(saved.OTTO_POSTGRES_PASSWORD, database.password);
     assert.equal(new URL(saved.DATABASE_URL!).password, database.password);
     assert.equal(saved.DATABASE_URL, database.serverDatabaseUrl);
     assert.equal(saved.OPENAI_API_KEY, 'fixture-model-key');
@@ -56,7 +56,7 @@ test('simultaneous first launches create the template and credentials under the 
     ]);
     assert.equal(first.password, second.password);
     const saved = await local.read();
-    assert.equal(saved.SIDEKICK_POSTGRES_PASSWORD, first.password);
+    assert.equal(saved.OTTO_POSTGRES_PASSWORD, first.password);
     assert.equal(saved.OPENAI_API_KEY, 'fixture-model-key');
     assert.equal((await stat(join(local.directory, '.env'))).mode & 0o777, 0o600);
   } finally {
@@ -66,7 +66,7 @@ test('simultaneous first launches create the template and credentials under the 
 
 test('legacy local setup replaces the known password without changing unrelated settings', async () => {
   const local = await fixture(
-    'PORT=4321\nDATABASE_URL="postgresql://sidekick:sidekick-local@localhost:54329/sidekick"\nOPENAI_API_KEY="fixture key # with spaces"\nDATABASE_URL=postgresql://sidekick:sidekick-local@127.0.0.1:54329/sidekick\n',
+    'PORT=4321\nDATABASE_URL="postgresql://otto:otto-local@localhost:54329/otto"\nOPENAI_API_KEY="fixture key # with spaces"\nDATABASE_URL=postgresql://otto:otto-local@127.0.0.1:54329/otto\n',
   );
   try {
     const database = await prepareLocalDatabase(local.directory, {});
@@ -74,13 +74,13 @@ test('legacy local setup replaces the known password without changing unrelated 
     assert.equal(saved.OPENAI_API_KEY, 'fixture key # with spaces');
     assert.equal(saved.PORT, '4321');
     assert.equal(saved.DATABASE_URL, database.databaseUrl);
-    assert.notEqual(database.password, 'sidekick-local');
+    assert.notEqual(database.password, 'otto-local');
     const text = await readFile(join(local.directory, '.env'), 'utf8');
     assert.equal(text.match(/^DATABASE_URL=/gm)?.length, 1);
-    assert.doesNotMatch(text, /sidekick-local/);
+    assert.doesNotMatch(text, /otto-local/);
     const environment = localDatabaseEnvironment(database, { DATABASE_URL: 'stale', PORT: '4321' });
     assert.equal(environment.DATABASE_URL, database.databaseUrl);
-    assert.equal(environment.SIDEKICK_POSTGRES_PASSWORD, database.password);
+    assert.equal(environment.OTTO_POSTGRES_PASSWORD, database.password);
     assert.equal(environment.PORT, '4321');
   } finally {
     await local.close();
@@ -122,7 +122,7 @@ test('concurrent fresh setup reuses one password and holds the lock through rota
     release();
     const [a, b] = await Promise.all([first, second]);
     assert.equal(a.password, b.password);
-    assert.equal((await local.read()).SIDEKICK_POSTGRES_PASSWORD, a.password);
+    assert.equal((await local.read()).OTTO_POSTGRES_PASSWORD, a.password);
     const [c, d] = await Promise.all([
       prepareLocalDatabase(local.directory, {}),
       prepareLocalDatabase(local.directory, {}),
@@ -187,7 +187,7 @@ test('a terminated setup owner is recovered without replacing a concurrent live 
       prepareLocalDatabase(local.directory, {}),
       prepareLocalDatabase(local.directory, {}),
     ]);
-    assert.equal(first.password, before.SIDEKICK_POSTGRES_PASSWORD);
+    assert.equal(first.password, before.OTTO_POSTGRES_PASSWORD);
     assert.equal(first.password, second.password);
     assert.deepEqual(await readdir(join(local.directory, '.local')), []);
   } finally {
@@ -216,13 +216,9 @@ test('configuration rejects unsafe password input and symlinks without exposing 
   const linked = await fixture();
   try {
     const original = await readFile(join(local.directory, '.env'), 'utf8');
-    for (const value of [
-      'fixture-short',
-      `${'a'.repeat(43)}\nDROP ROLE sidekick;`,
-      "'".repeat(43),
-    ]) {
+    for (const value of ['fixture-short', `${'a'.repeat(43)}\nDROP ROLE otto;`, "'".repeat(43)]) {
       await assert.rejects(
-        prepareLocalDatabase(local.directory, { SIDEKICK_POSTGRES_PASSWORD: value }),
+        prepareLocalDatabase(local.directory, { OTTO_POSTGRES_PASSWORD: value }),
         (error: Error) => {
           assert.equal(
             error.message,
@@ -261,7 +257,7 @@ test('existing-volume rotation sends only a SCRAM verifier on stdin to fixed loc
           'postgres',
           'psql',
           '--no-psqlrc',
-          '--username=sidekick',
+          '--username=otto',
           '--dbname=postgres',
           '--set=ON_ERROR_STOP=1',
           '--quiet',
@@ -271,10 +267,10 @@ test('existing-volume rotation sends only a SCRAM verifier on stdin to fixed loc
         assert.match(options.input, /^SET log_statement = 'none';/);
         assert.match(
           options.input,
-          /ALTER ROLE sidekick WITH PASSWORD 'SCRAM-SHA-256\$4096:[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+';/,
+          /ALTER ROLE otto WITH PASSWORD 'SCRAM-SHA-256\$4096:[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+';/,
         );
         assert.doesNotMatch(options.input, /\b(?:DROP|DELETE|TRUNCATE|CREATE)\b/);
-        assert.equal(options.env.SIDEKICK_POSTGRES_PASSWORD, database.password);
+        assert.equal(options.env.OTTO_POSTGRES_PASSWORD, database.password);
       },
     });
     assert.equal(calls, 1);
@@ -286,7 +282,7 @@ test('existing-volume rotation sends only a SCRAM verifier on stdin to fixed loc
       }),
       /^Error: The local database password could not be updated\. Existing data was retained\.$/,
     );
-    assert.equal((await local.read()).SIDEKICK_POSTGRES_PASSWORD, database.password);
+    assert.equal((await local.read()).OTTO_POSTGRES_PASSWORD, database.password);
   } finally {
     await local.close();
   }
@@ -369,14 +365,14 @@ test('missing database setup permits module imports but fails before database in
 
 test('local database options survive password replacement without retaining an obsolete password', async () => {
   const local = await fixture(
-    'DATABASE_URL=postgresql://sidekick:obsolete@localhost:54329/sidekick?application_name=sidekick&sslmode=disable&password=obsolete\n',
+    'DATABASE_URL=postgresql://otto:obsolete@localhost:54329/otto?application_name=otto&sslmode=disable&password=obsolete\n',
   );
   try {
     const database = await prepareLocalDatabase(local.directory, {});
     const url = new URL(database.serverDatabaseUrl);
     assert.equal(url.password, database.password);
     assert.equal(url.searchParams.get('password'), database.password);
-    assert.equal(url.searchParams.get('application_name'), 'sidekick');
+    assert.equal(url.searchParams.get('application_name'), 'otto');
     assert.equal(url.searchParams.get('sslmode'), 'disable');
     assert.equal((await local.read()).DATABASE_URL, database.serverDatabaseUrl);
     assert.deepEqual(await prepareLocalDatabase(local.directory, {}), database);
@@ -389,11 +385,11 @@ test('duplicate database routing options cannot receive the generated local pass
   for (const [name, localValue, otherValue] of [
     ['host', 'localhost', 'database.example.test'],
     ['port', '54329', '5432'],
-    ['user', 'sidekick', 'another-user'],
-    ['dbname', 'sidekick', 'another-database'],
-    ['database', 'sidekick', 'another-database'],
+    ['user', 'otto', 'another-user'],
+    ['dbname', 'otto', 'another-database'],
+    ['database', 'otto', 'another-database'],
   ]) {
-    const url = `postgresql://sidekick:synthetic-old@localhost:54329/sidekick?${name}=${localValue}&${name}=${otherValue}`;
+    const url = `postgresql://otto:synthetic-old@localhost:54329/otto?${name}=${localValue}&${name}=${otherValue}`;
     const local = await fixture(`DATABASE_URL=${url}\n`);
     try {
       const database = await prepareLocalDatabase(local.directory, {});

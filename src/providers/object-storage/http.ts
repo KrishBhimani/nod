@@ -16,7 +16,7 @@ export function createHttpObjectStore(
     generation?: string;
   } = {},
 ): PrivateObjectStore {
-  const endpoint = new URL(options.endpoint ?? 'http://sidekick.storage/v1/objects/');
+  const endpoint = new URL(options.endpoint ?? 'http://otto.storage/v1/objects/');
   if (
     endpoint.username ||
     endpoint.password ||
@@ -33,7 +33,7 @@ export function createHttpObjectStore(
   async function send(key: string, init: RequestInit) {
     try {
       const headers = new Headers(init.headers);
-      if (generation !== undefined) headers.set('x-sidekick-generation', generation);
+      if (generation !== undefined) headers.set('x-otto-generation', generation);
       const response = await request(base + encodeURIComponent(objectKey(key)), {
         ...init,
         headers,

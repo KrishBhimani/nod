@@ -72,7 +72,7 @@ export function InspectorScreen({
     if (imageUrl.current) URL.revokeObjectURL(imageUrl.current);
     imageUrl.current = '';
     setScreenState(
-      browserId ? 'Opening the browser view…' : 'The browser appears when Sidekick uses it.',
+      browserId ? 'Opening the browser view…' : 'The browser appears when Otto uses it.',
     );
     async function frame() {
       if (
@@ -173,7 +173,7 @@ export function InspectorScreen({
     }
     let opened: Window | null;
     try {
-      opened = window.open('/browser', 'sidekick-browser', 'popup,width=1200,height=800');
+      opened = window.open('/browser', 'otto-browser', 'popup,width=1200,height=800');
     } catch {
       return;
     }
@@ -194,7 +194,7 @@ export function InspectorScreen({
     <Button asChild variant="ghost" size="sm" className="browser-window-action">
       <a
         href="/browser"
-        target="sidekick-browser"
+        target="otto-browser"
         rel="noreferrer"
         aria-label="Open browser window"
         title="Open browser window"

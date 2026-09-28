@@ -176,14 +176,14 @@ const sendKey = (element: Element) =>
   );
 async function draft(text: string) {
   await act(async () => {
-    window.dispatchEvent(new CustomEvent('sidekick:compose', { detail: { text, send: false } }));
+    window.dispatchEvent(new CustomEvent('otto:compose', { detail: { text, send: false } }));
     await tick();
   });
 }
 
 test('a real runtime reply stays visible while persistence is pending and retains its bubble after refresh', async () => {
   const previousFetch = globalThis.fetch;
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-chat-stream-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-chat-stream-'));
   let current = base;
   globalThis.fetch = async (path) => {
     assert.equal(path, '/api/state');
@@ -614,7 +614,7 @@ test('reset fences an optimistic send and its late failure cannot restore the ol
       /old generation/,
     );
     await act(async () => {
-      window.dispatchEvent(new CustomEvent('sidekick:restart-setup'));
+      window.dispatchEvent(new CustomEvent('otto:restart-setup'));
       await tick();
     });
     assert.equal(fixture.element.querySelector('.message-user'), null);

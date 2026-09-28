@@ -11,7 +11,7 @@ export function channelWebhookToken(
   provider: 'telegram' | 'whatsapp',
 ) {
   return createHmac('sha256', master)
-    .update(JSON.stringify(['sidekick-webhook-v1', environment, z.uuid().parse(ownerId), provider]))
+    .update(JSON.stringify(['otto-webhook-v1', environment, z.uuid().parse(ownerId), provider]))
     .digest('base64url');
 }
 
@@ -75,7 +75,7 @@ export function createHostedWebhooks(options: {
       return Response.json({ ok: true }, { status: 202 });
     return options.runtimes.fetch(
       ownerId,
-      new Request(`http://sidekick.runtime${path}${url.search}`, {
+      new Request(`http://otto.runtime${path}${url.search}`, {
         method: request.method,
         headers,
         signal: request.signal,

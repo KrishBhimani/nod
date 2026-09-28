@@ -12,7 +12,7 @@ test(
   'private artifacts survive actor restart and remain owned for downloads and channel delivery',
   { skip: !process.env.TEST_DATABASE_URL },
   async () => {
-    const root = await mkdtemp(join(tmpdir(), 'sidekick-artifact-store-'));
+    const root = await mkdtemp(join(tmpdir(), 'otto-artifact-store-'));
     const schema = 'test_durable_artifacts_' + randomUUID().replaceAll('-', '');
     const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
     await admin.query(`CREATE SCHEMA ${schema}`);

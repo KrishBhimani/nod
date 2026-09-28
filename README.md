@@ -24,7 +24,7 @@ The local setup supports one owner and listens only on `127.0.0.1`. Chat and com
 
 - **Apps:** Gmail, Calendar, Drive, Sheets, Docs, Slack, and Notion use Composio. Set `COMPOSIO_API_KEY` for a development project, restart Otto, and connect each account from **Apps**. Without Composio, these Apps are unavailable. See [app setup](docs/composio.md).
 - **Channels:** Set up Telegram or WhatsApp from **Channels**. Telegram can poll locally. WhatsApp needs a Meta callback and an eligible account. See [channel setup](docs/channels.md).
-- **Vault:** On macOS, Keychain supplies the encryption key. Other hosts need `SIDEKICK_VAULT_KEY`. See [vault setup](docs/vault.md).
+- **Vault:** On macOS, Keychain supplies the encryption key. Other hosts need `OTTO_VAULT_KEY`. See [vault setup](docs/vault.md).
 
 Press Ctrl-C to stop the server. Run `docker compose stop` to stop its containers. Task files stay in `.local/`. PostgreSQL, browser data, and installed workspace tools stay in Docker volumes. Keep these stores if you want to keep your local data.
 

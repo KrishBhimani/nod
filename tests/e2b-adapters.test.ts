@@ -32,7 +32,7 @@ function allocationStore() {
 }
 
 async function fixture() {
-  const root = await mkdtemp('/tmp/sidekick-e2b-');
+  const root = await mkdtemp('/tmp/otto-e2b-');
   const socketPath = join(root, 'control.sock');
   const calls: Array<{ method: string; input?: unknown }> = [];
   let holdAction: (() => Promise<void>) | undefined;

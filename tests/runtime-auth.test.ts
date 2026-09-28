@@ -70,7 +70,7 @@ test('private processor rejects spoofed identity, changed bodies and ordinary co
         await app.inject({
           method: 'POST',
           url: '/api/messages',
-          headers: { 'x-sidekick-owner': ownerId },
+          headers: { 'x-otto-owner': ownerId },
           payload: { text: 'hello' },
         })
       ).statusCode,
@@ -81,7 +81,7 @@ test('private processor rejects spoofed identity, changed bodies and ordinary co
         await app.inject({
           method: 'POST',
           url: '/api/messages',
-          headers: { 'content-type': 'application/json', 'x-sidekick-runtime': token },
+          headers: { 'content-type': 'application/json', 'x-otto-runtime': token },
           payload: JSON.stringify({ text: 'changed' }),
         })
       ).statusCode,
@@ -93,7 +93,7 @@ test('private processor rejects spoofed identity, changed bodies and ordinary co
       url: '/api/messages',
       headers: {
         'content-type': 'application/json',
-        'x-sidekick-runtime': signed({
+        'x-otto-runtime': signed({
           method: 'POST',
           target: '/api/messages',
           body: Buffer.from(payload),
@@ -107,7 +107,7 @@ test('private processor rejects spoofed identity, changed bodies and ordinary co
       (
         await app.inject({
           url: '/api/browser/screen',
-          headers: { 'x-sidekick-runtime': signed({ target: '/api/browser/screen' }) },
+          headers: { 'x-otto-runtime': signed({ target: '/api/browser/screen' }) },
         })
       ).statusCode,
       404,
@@ -117,7 +117,7 @@ test('private processor rejects spoofed identity, changed bodies and ordinary co
         await app.inject({
           url: '/api/browser/screen',
           headers: {
-            'x-sidekick-runtime': signed({ target: '/api/browser/screen', developer: true }),
+            'x-otto-runtime': signed({ target: '/api/browser/screen', developer: true }),
           },
         })
       ).statusCode,
@@ -139,7 +139,7 @@ test('webhook and wake envelopes cannot authorize ordinary API calls', async () 
         (
           await app.inject({
             url: '/api/state',
-            headers: { 'x-sidekick-runtime': signed({ kind }) },
+            headers: { 'x-otto-runtime': signed({ kind }) },
           })
         ).statusCode,
         403,
@@ -150,7 +150,7 @@ test('webhook and wake envelopes cannot authorize ordinary API calls', async () 
           method: 'POST',
           url: '/api/webhooks/telegram',
           headers: {
-            'x-sidekick-runtime': signed({ method: 'POST', target: '/api/webhooks/telegram' }),
+            'x-otto-runtime': signed({ method: 'POST', target: '/api/webhooks/telegram' }),
           },
         })
       ).statusCode,
@@ -181,14 +181,14 @@ test('runtime policy rejects encoded and normalized capability paths even with a
     ]) {
       const result = await app.inject({
         url: path,
-        headers: { 'x-sidekick-runtime': signed({ target: path }) },
+        headers: { 'x-otto-runtime': signed({ target: path }) },
       });
       assert.ok([400, 401].includes(result.statusCode), `${path}: ${result.statusCode}`);
     }
     assert.equal(calls, 0);
     const safe = await app.inject({
       url: '/api/state?cursor=synthetic%2Fvalue',
-      headers: { 'x-sidekick-runtime': signed({ target: '/api/state?cursor=synthetic%2Fvalue' }) },
+      headers: { 'x-otto-runtime': signed({ target: '/api/state?cursor=synthetic%2Fvalue' }) },
     });
     assert.equal(safe.statusCode, 200);
   } finally {
@@ -210,7 +210,7 @@ test('only wake signatures can call the exact POST wake and lease routes', async
         const result = await app.inject({
           method: 'POST',
           url: path,
-          headers: { 'x-sidekick-runtime': signed({ target: path, method: 'POST', kind }) },
+          headers: { 'x-otto-runtime': signed({ target: path, method: 'POST', kind }) },
         });
         assert.equal(result.statusCode, 403);
       }
@@ -218,7 +218,7 @@ test('only wake signatures can call the exact POST wake and lease routes', async
         (
           await app.inject({
             url: path,
-            headers: { 'x-sidekick-runtime': signed({ target: path, kind: 'wake' }) },
+            headers: { 'x-otto-runtime': signed({ target: path, kind: 'wake' }) },
           })
         ).statusCode,
         403,
@@ -230,7 +230,7 @@ test('only wake signatures can call the exact POST wake and lease routes', async
           method: 'POST',
           url: '/api/runtime/other',
           headers: {
-            'x-sidekick-runtime': signed({
+            'x-otto-runtime': signed({
               target: '/api/runtime/other',
               method: 'POST',
               kind: 'wake',
@@ -248,7 +248,7 @@ test('only wake signatures can call the exact POST wake and lease routes', async
             method: 'POST',
             url: path,
             headers: {
-              'x-sidekick-runtime': signed({ target: path, method: 'POST', kind: 'wake' }),
+              'x-otto-runtime': signed({ target: path, method: 'POST', kind: 'wake' }),
             },
           })
         ).statusCode,

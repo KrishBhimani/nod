@@ -137,9 +137,7 @@ test('goal and schedule actions prepare a named contextual draft without sending
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'window');
   const target = new EventTarget();
   const events: unknown[] = [];
-  target.addEventListener('sidekick:compose', (event) =>
-    events.push((event as CustomEvent).detail),
-  );
+  target.addEventListener('otto:compose', (event) => events.push((event as CustomEvent).detail));
   Object.defineProperty(globalThis, 'window', { value: target, configurable: true });
   try {
     draftInChat(goalDraft(goal, 'status'));
@@ -229,7 +227,7 @@ test('hosted channel setup keeps identity restrictions and omits operator callba
   const whatsapp = renderToStaticMarkup(
     createElement(ChannelSetupStep, { ...base, provider: 'whatsapp', step: 3 }),
   );
-  assert.doesNotMatch(whatsapp, /type="url"|keep the rest of Sidekick private/);
+  assert.doesNotMatch(whatsapp, /type="url"|keep the rest of Otto private/);
   assert.match(whatsapp, /Webhook verification token/);
   assert.match(whatsapp, /After connecting, copy the callback URL into Meta/);
 });

@@ -137,7 +137,7 @@ test('goal actions have distinct accessible names and open unsent drafts for the
   pageDataCache.update('/api/goals', () => goals);
   const drafts: Array<{ text: string; send: boolean }> = [];
   const onDraft = (event: Event) => drafts.push((event as CustomEvent).detail);
-  window.addEventListener('sidekick:compose', onDraft);
+  window.addEventListener('otto:compose', onDraft);
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -184,7 +184,7 @@ test('goal actions have distinct accessible names and open unsent drafts for the
     assert.ok(completed.querySelector('[aria-label="Update goal Finished review"]'));
     assert.ok(completed.querySelector('[aria-label="Delete goal Finished review"]'));
   } finally {
-    window.removeEventListener('sidekick:compose', onDraft);
+    window.removeEventListener('otto:compose', onDraft);
     await act(async () => root.unmount());
     container.remove();
     pageDataCache.update('/api/goals', () => null);

@@ -4,14 +4,14 @@ The original announcement was verified posted on 2026-09-25: https://n8nio.slack
 
 ---
 
-TL;DR: Sidekick is a local assistant that can do work from one chat: use connected apps, browse websites in its own computer, create files, remember context, and follow goals and schedules. The basic flows are working, with recorded examples below. It is still a prototype; Google/X sign-in and live integration coverage need more work.
+TL;DR: Otto is a local assistant that can do work from one chat: use connected apps, browse websites in its own computer, create files, remember context, and follow goals and schedules. The basic flows are working, with recorded examples below. It is still a prototype; Google/X sign-in and live integration coverage need more work.
 
 **How it works**
 
 - React chat → Node/Fastify server → Pi model/tool loop. PostgreSQL keeps conversations, task state and scheduled jobs so a follow-up can continue the same work.
 - Three Docker containers: database, Linux workspace and browser. The browser runs inside the workspace environment, not in your own Chrome. The shell and browser have internet access; browser profiles and server keys stay separate from the shell.
 - Apps use Composio for account connections and actions. A clear request can authorize ordinary work. A request to draft does not authorize sending; destructive or unclear actions ask a question in chat.
-- Website identifiers and passwords go through one private Vault form. For verification, Sidekick first tries a narrow lookup in the matching connected Gmail inbox; otherwise it asks for the code in chat. The trusted server replaces a matching code reply with a masked receipt before local history or model processing. You can take over the container browser and click, type, paste or scroll directly when a site needs human interaction.
+- Website identifiers and passwords go through one private Vault form. For verification, Otto first tries a narrow lookup in the matching connected Gmail inbox; otherwise it asks for the code in chat. The trusted server replaces a matching code reply with a masked receipt before local history or model processing. You can take over the container browser and click, type, paste or scroll directly when a site needs human interaction.
 
 **What you can try**
 
@@ -19,7 +19,7 @@ Public browsing and screenshots; file creation and attachment previews; named lo
 
 **Run it**
 
-The code is in https://github.com/n8n-io/sidekick, currently on branch `feat/sidekick-workspace` / PR https://github.com/n8n-io/sidekick/pull/1. Install Node 24.21+ and Docker Desktop, check out that branch and run `npm run dev`. Add an OpenAI or Anthropic key to the ignored `.env`; add a Composio key if you want Apps. The launcher prepares the three containers and opens localhost:4310. macOS uses Keychain for the Vault key; other hosts need `SIDEKICK_VAULT_KEY`. The app and machine must stay running for schedules.
+The code is in https://github.com/n8n-io/otto, currently on branch `feat/otto-workspace` / PR https://github.com/n8n-io/otto/pull/1. Install Node 24.21+ and Docker Desktop, check out that branch and run `npm run dev`. Add an OpenAI or Anthropic key to the ignored `.env`; add a Composio key if you want Apps. The launcher prepares the three containers and opens localhost:4310. macOS uses Keychain for the Vault key; other hosts need `OTTO_VAULT_KEY`. The app and machine must stay running for schedules.
 
 **Current state and next work**
 

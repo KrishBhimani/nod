@@ -87,11 +87,11 @@ function fixture() {
       developer: options.developer ?? false,
       kind: options.kind ?? 'wake',
     });
-    return new Request(`http://sidekick.control${path}`, {
+    return new Request(`http://otto.control${path}`, {
       method,
       headers: {
         'content-type': 'application/json',
-        'x-sidekick-owner': options.headerOwner ?? ownerId,
+        'x-otto-owner': options.headerOwner ?? ownerId,
         [runtimeHeader]: token,
       },
       ...(!['GET', 'HEAD'].includes(method) ? { body: options.body ?? bytes } : {}),
@@ -217,7 +217,7 @@ test('tenant channel clients sign exact control requests and cannot delegate ano
   const f = fixture();
   const requests: Request[] = [];
   const registry = createTenantChannelRegistry({
-    origin: 'http://sidekick.control',
+    origin: 'http://otto.control',
     ownerId: f.ownerA,
     environment: f.environment,
     generation: '1',
@@ -259,7 +259,7 @@ test('tenant channel clients sign exact control requests and cannot delegate ano
 test('control client failures do not expose redirect targets or provider responses', async () => {
   const f = fixture();
   const registry = createTenantChannelRegistry({
-    origin: 'http://sidekick.control',
+    origin: 'http://otto.control',
     ownerId: f.ownerA,
     environment: f.environment,
     generation: '1',

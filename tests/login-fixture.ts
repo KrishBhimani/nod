@@ -189,7 +189,7 @@ export class LoginPage {
     const controls = [this.next, this.google, this.passkey, this.verification];
     if (selector === 'input' || selector === 'input,textarea') return inputs;
     if (selector === 'button,a,[role="button"],input[type="submit"]') return controls;
-    if (selector.startsWith('[data-sidekick-login-field],'))
+    if (selector.startsWith('[data-otto-login-field],'))
       return [...inputs, ...controls].filter((element) => element.matches(selector));
     if (selector.startsWith('input[type="password"],input[autocomplete='))
       return inputs.filter(

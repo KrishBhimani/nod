@@ -28,7 +28,7 @@ async function fixture(options: {
   signal?: AbortSignal;
   observe?: (event: RuntimeObservation) => Promise<void>;
 }) {
-  const directory = await mkdtemp(join(tmpdir(), 'sidekick-shell-recovery-'));
+  const directory = await mkdtemp(join(tmpdir(), 'otto-shell-recovery-'));
   const id = randomUUID();
   const workspacePath = join(directory, id);
   const store = createFilesystemObjectStore(join(directory, 'objects'));
@@ -174,14 +174,14 @@ test('a confirmed nonzero shell exit reaches the model and completes its durable
   });
   const f = await fixture({
     commands: [
-      'sidekick-missing-python-fixture',
+      'otto-missing-python-fixture',
       `python3 -c 'from pathlib import Path; Path("result.txt").write_text(str(123456 * 789)); print(123456 * 789)'`,
     ],
   });
   const write = f.store.write;
   let held = false;
   f.store.write = async (...args) => {
-    if (!held && Buffer.from(args[1]).toString().includes('sidekick_tool_completed')) {
+    if (!held && Buffer.from(args[1]).toString().includes('otto_tool_completed')) {
       held = true;
       entered();
       await gate;
@@ -198,14 +198,14 @@ test('a confirmed nonzero shell exit reaches the model and completes its durable
     ]);
     assert.equal(f.inputs.length, 1);
     assert.equal(f.executions(), 1);
-    assert.match(await f.saved(), /sidekick_tool_pending/);
-    assert.doesNotMatch(await f.saved(), /sidekick_tool_completed/);
+    assert.match(await f.saved(), /otto_tool_pending/);
+    assert.doesNotMatch(await f.saved(), /otto_tool_completed/);
     release();
     assert.deepEqual(await operation, { status: 'succeeded' });
     assert.equal(f.executions(), 2);
     assert.equal(f.inputs.length, 3);
     assert.match(f.inputs[1], /exitCode\\?":127/);
-    assert.match(f.inputs[1], /sidekick-missing-python-fixture/);
+    assert.match(f.inputs[1], /otto-missing-python-fixture/);
     assert.match(f.inputs[2], /97406784/);
     assert.equal(await readFile(join(f.workspacePath, 'result.txt'), 'utf8'), '97406784');
     assert.deepEqual(f.events, ['tool_start', 'tool_failed', 'tool_start', 'tool_complete']);
@@ -220,14 +220,14 @@ test('a confirmed nonzero shell exit reaches the model and completes its durable
     const receipt = entries.find(
       (entry) =>
         entry.type === 'custom' &&
-        entry.customType === 'sidekick_tool_completed' &&
+        entry.customType === 'otto_tool_completed' &&
         entry.data.callId === 'shell-0',
     );
     assert.ok(receipt);
     const failure = JSON.parse(receipt.data.result.content[0].text);
     assert.equal(failure.status, 'failed');
     assert.equal(failure.exitCode, 127);
-    assert.match(failure.output, /sidekick-missing-python-fixture.*(?:not found|No such file)/);
+    assert.match(failure.output, /otto-missing-python-fixture.*(?:not found|No such file)/);
     const restored = await f.restore();
     assert.match(
       JSON.stringify(restored.manager.buildSessionContext().messages),
@@ -275,10 +275,10 @@ test('only confirmed shell exits recover; cancellation, bounds and unknown outco
         assert.equal(f.executions(), 1);
         assert.equal(f.inputs.length, 1);
         const saved = await f.saved();
-        assert.match(saved, /sidekick_tool_pending/);
+        assert.match(saved, /otto_tool_pending/);
         assert.doesNotMatch(
           saved,
-          /sidekick_tool_completed|private transport detail|private provider detail/,
+          /otto_tool_completed|private transport detail|private provider detail/,
         );
         await assert.rejects(f.restore(), /interrupted before its result/);
         assert.deepEqual(f.replies, []);
@@ -306,8 +306,8 @@ test('cancellation while recording a confirmed shell failure cannot become a com
   try {
     await assert.rejects(f.run());
     assert.equal(f.inputs.length, 1);
-    assert.match(await f.saved(), /sidekick_tool_pending/);
-    assert.doesNotMatch(await f.saved(), /sidekick_tool_completed/);
+    assert.match(await f.saved(), /otto_tool_pending/);
+    assert.doesNotMatch(await f.saved(), /otto_tool_completed/);
     await assert.rejects(f.restore(), /interrupted before its result/);
     assert.deepEqual(f.replies, []);
   } finally {
@@ -336,7 +336,7 @@ test('confirmed exit diagnostics are bounded and cannot come from arbitrary erro
       .split('\n')
       .map((line) => JSON.parse(line));
     const receipt = rows.find(
-      (row) => row.type === 'custom' && row.customType === 'sidekick_tool_completed',
+      (row) => row.type === 'custom' && row.customType === 'otto_tool_completed',
     );
     const output = JSON.parse(receipt.data.result.content[0].text);
     assert.equal(output.output.length, 20_000);
@@ -357,7 +357,7 @@ test('a failed durable error receipt prevents model continuation and restart rep
   });
   const write = f.store.write;
   f.store.write = async (...args) => {
-    if (Buffer.from(args[1]).toString().includes('sidekick_tool_completed'))
+    if (Buffer.from(args[1]).toString().includes('otto_tool_completed'))
       throw new Error('private storage failure');
     return write(...args);
   };
@@ -365,7 +365,7 @@ test('a failed durable error receipt prevents model continuation and restart rep
     await assert.rejects(f.run(), /could not be saved/);
     assert.equal(f.executions(), 1);
     assert.equal(f.inputs.length, 1);
-    assert.doesNotMatch(await f.saved(), /sidekick_tool_completed|private storage failure/);
+    assert.doesNotMatch(await f.saved(), /otto_tool_completed|private storage failure/);
     await assert.rejects(f.restore(), /interrupted before its result/);
     assert.deepEqual(f.replies, []);
   } finally {
@@ -387,7 +387,7 @@ test('a nonzero file helper exit does not receive shell recovery privileges', as
     await assert.rejects(f.run(), /could not be saved/);
     assert.equal(f.executions(), 1);
     assert.equal(f.inputs.length, 1);
-    assert.doesNotMatch(await f.saved(), /sidekick_tool_completed/);
+    assert.doesNotMatch(await f.saved(), /otto_tool_completed/);
     await assert.rejects(f.restore(), /interrupted before its result/);
   } finally {
     await f.close();

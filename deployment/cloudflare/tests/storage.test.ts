@@ -33,7 +33,7 @@ function fixture() {
 test('storage keys use trusted owner and environment and never caller-supplied headers', async () => {
   const { objects, bucket, identity } = fixture();
   const artifact = `artifacts/${randomUUID()}`;
-  const url = `http://sidekick.storage/v1/objects/${encodeURIComponent(artifact)}`;
+  const url = `http://otto.storage/v1/objects/${encodeURIComponent(artifact)}`;
   const response = await storageRequest(
     new Request(url, {
       method: 'PUT',
@@ -92,7 +92,7 @@ test('storage keys use trusted owner and environment and never caller-supplied h
 test('session checkpoints require exact etag compare-and-swap across competing writers', async () => {
   const { bucket, identity } = fixture();
   const key = `sessions/${randomUUID()}.jsonl`;
-  const url = `http://sidekick.storage/v1/objects/${encodeURIComponent(key)}`;
+  const url = `http://otto.storage/v1/objects/${encodeURIComponent(key)}`;
   const first = await storageRequest(
     new Request(url, { method: 'PUT', body: 'first', headers: { 'if-none-match': '*' } }),
     identity,
@@ -133,12 +133,12 @@ test('private storage rejects arbitrary paths, invalid owners and oversized obje
   ])
     await assert.rejects(
       storageRequest(
-        new Request(`http://sidekick.storage/v1/objects/${encodeURIComponent(key)}`),
+        new Request(`http://otto.storage/v1/objects/${encodeURIComponent(key)}`),
         identity,
         bucket,
       ),
     );
-  const url = `http://sidekick.storage/v1/objects/${encodeURIComponent(`artifacts/${randomUUID()}`)}`;
+  const url = `http://otto.storage/v1/objects/${encodeURIComponent(`artifacts/${randomUUID()}`)}`;
   await assert.rejects(storageRequest(new Request(url), { ...identity, ownerId: 'other' }, bucket));
   await assert.rejects(
     storageRequest(

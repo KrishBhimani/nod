@@ -7,7 +7,7 @@ import type { ComputerState } from '../src/computer-lifecycle.ts';
 function fixture(role: 'browser' | 'workspace' = 'browser') {
   const identity = { ownerId: randomUUID(), environment: 'development', generation: '2', role };
   const checkpoint = {
-    format: 'sidekick-computer-tar-v1' as const,
+    format: 'otto-computer-tar-v1' as const,
     id: randomUUID(),
     ownerId: identity.ownerId,
     environment: identity.environment,

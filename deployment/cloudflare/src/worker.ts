@@ -51,9 +51,9 @@ export interface Bindings {
   TENANT_FILES: R2Bucket;
   ASSETS: Fetcher;
   GATEWAY_ENV: string;
-  SIDEKICK_ENVIRONMENT: string;
-  SIDEKICK_PUBLIC_URL: string;
-  SIDEKICK_DEPLOYMENT_MANAGED?: string;
+  OTTO_ENVIRONMENT: string;
+  OTTO_PUBLIC_URL: string;
+  OTTO_DEPLOYMENT_MANAGED?: string;
 }
 
 declare global {
@@ -63,15 +63,15 @@ declare global {
 }
 
 function gatewayName(env: Bindings) {
-  return `gateway:${environmentName(env.SIDEKICK_ENVIRONMENT)}`;
+  return `gateway:${environmentName(env.OTTO_ENVIRONMENT)}`;
 }
 
 function tenantName(env: Bindings, ownerId: string) {
-  return `tenant:${environmentName(env.SIDEKICK_ENVIRONMENT)}:${ownerIdentity(ownerId)}`;
+  return `tenant:${environmentName(env.OTTO_ENVIRONMENT)}:${ownerIdentity(ownerId)}`;
 }
 
 function publicOrigin(env: Bindings) {
-  const url = new URL(env.SIDEKICK_PUBLIC_URL);
+  const url = new URL(env.OTTO_PUBLIC_URL);
   if (
     url.pathname !== '/' ||
     url.search ||
@@ -186,7 +186,7 @@ const runtimeOutbound: OutboundHandler<Bindings> = async (request, env, context)
     const match = /^\/([^/]+)(\/api\/.*)$/.exec(url.pathname);
     if (!match) throw new RuntimeControlError(404);
     const ownerId = ownerIdentity(match[1]);
-    if (!request.headers.has('x-sidekick-runtime')) throw new RuntimeControlError(401);
+    if (!request.headers.has('x-otto-runtime')) throw new RuntimeControlError(401);
     const target = new URL(publicOrigin(env));
     target.pathname = match[2];
     target.search = url.search;
@@ -203,10 +203,10 @@ const storageOutbound: OutboundHandler<Bindings> = async (request, env, context)
     if (context.className !== 'TenantContainer') throw new RuntimeControlError(403);
     const tenant = env.TENANTS.get(env.TENANTS.idFromString(context.containerId));
     const identity = await tenant.storageIdentity(
-      generation(request.headers.get('x-sidekick-generation')),
+      generation(request.headers.get('x-otto-generation')),
     );
     if (
-      identity.environment !== env.SIDEKICK_ENVIRONMENT ||
+      identity.environment !== env.OTTO_ENVIRONMENT ||
       context.containerId !== env.TENANTS.idFromName(tenantName(env, identity.ownerId)).toString()
     )
       throw new RuntimeControlError(403);
@@ -229,16 +229,16 @@ const controlOutbound: OutboundHandler<Bindings> = async (request, env, context)
     const tenant = env.TENANTS.get(env.TENANTS.idFromString(context.containerId));
     const identity = await tenant.storageIdentity();
     if (
-      identity.environment !== env.SIDEKICK_ENVIRONMENT ||
+      identity.environment !== env.OTTO_ENVIRONMENT ||
       context.containerId !==
         env.TENANTS.idFromName(tenantName(env, identity.ownerId)).toString() ||
-      request.headers.get('x-sidekick-owner') !== identity.ownerId ||
-      !request.headers.has('x-sidekick-runtime')
+      request.headers.get('x-otto-owner') !== identity.ownerId ||
+      !request.headers.has('x-otto-runtime')
     )
       throw new RuntimeControlError(403);
     const target = new URL(url.pathname, publicOrigin(env));
-    const headers = new Headers({ host: target.host, 'x-sidekick-owner': identity.ownerId });
-    for (const name of ['content-type', 'x-sidekick-runtime']) {
+    const headers = new Headers({ host: target.host, 'x-otto-owner': identity.ownerId });
+    for (const name of ['content-type', 'x-otto-runtime']) {
       const value = request.headers.get(name);
       if (value) headers.set(name, value);
     }
@@ -257,7 +257,7 @@ const controlOutbound: OutboundHandler<Bindings> = async (request, env, context)
 const computerOutbound: OutboundHandler<Bindings> = async (request, env, context) => {
   try {
     if (context.className !== 'TenantContainer') throw new RuntimeControlError(403);
-    const version = generation(request.headers.get('x-sidekick-generation'));
+    const version = generation(request.headers.get('x-otto-generation'));
     const tenant = env.TENANTS.get(env.TENANTS.idFromString(context.containerId));
     const url = new URL(request.url);
     if (url.pathname === '/v1/stopped') {
@@ -268,12 +268,12 @@ const computerOutbound: OutboundHandler<Bindings> = async (request, env, context
       await tenant.recordExternalComputerStopped(version);
       return Response.json({ ok: true }, { headers: { 'cache-control': 'no-store' } });
     }
-    const role = request.headers.get('x-sidekick-computer-role');
+    const role = request.headers.get('x-otto-computer-role');
     if (role !== 'browser' && role !== 'workspace') throw new RuntimeControlError(400);
     const identity = await tenant.storageIdentity(version);
     if (
       computerProvider(identity) !== 'cloudflare' ||
-      identity.environment !== env.SIDEKICK_ENVIRONMENT ||
+      identity.environment !== env.OTTO_ENVIRONMENT ||
       context.containerId !== env.TENANTS.idFromName(tenantName(env, identity.ownerId)).toString()
     )
       throw new RuntimeControlError(403);
@@ -298,11 +298,10 @@ export class GatewayContainer extends Container<Bindings> {
       throw new RuntimeControlError(403);
     this.deployment ??= createGatewayDeployment({
       storage: this.ctx.storage,
-      environment: this.env.SIDEKICK_ENVIRONMENT,
+      environment: this.env.OTTO_ENVIRONMENT,
       gatewayEnvironment: this.env.GATEWAY_ENV,
       requireInitialization:
-        this.env.SIDEKICK_ENVIRONMENT === 'production' ||
-        this.env.SIDEKICK_DEPLOYMENT_MANAGED === 'true',
+        this.env.OTTO_ENVIRONMENT === 'production' || this.env.OTTO_DEPLOYMENT_MANAGED === 'true',
       forward: (request) => this.forward(request),
     });
     return this.deployment;
@@ -322,7 +321,7 @@ export class GatewayContainer extends Container<Bindings> {
       state.nonce !== input.nonce ||
       state.targetRelease !== input.targetRelease ||
       state.deadline !== input.deadline ||
-      state.previousRelease !== configured.SIDEKICK_RELEASE ||
+      state.previousRelease !== configured.OTTO_RELEASE ||
       input.deadline <= Date.now() ||
       input.deadline > Date.now() + deploymentMaximumDuration
     )
@@ -385,12 +384,12 @@ export class GatewayContainer extends Container<Bindings> {
     const configured = environmentValues(JSON.parse(this.env.GATEWAY_ENV));
     this.envVars = {
       ...configured,
-      SIDEKICK_MODE: 'gateway',
-      SIDEKICK_ENVIRONMENT: environmentName(this.env.SIDEKICK_ENVIRONMENT),
-      SIDEKICK_PUBLIC_URL: publicOrigin(this.env),
-      SIDEKICK_RUNTIME_URL: 'http://sidekick.runtime',
-      SIDEKICK_DATA_ROOT: '/data',
-      SIDEKICK_BIND_HOST: '0.0.0.0',
+      OTTO_MODE: 'gateway',
+      OTTO_ENVIRONMENT: environmentName(this.env.OTTO_ENVIRONMENT),
+      OTTO_PUBLIC_URL: publicOrigin(this.env),
+      OTTO_RUNTIME_URL: 'http://otto.runtime',
+      OTTO_DATA_ROOT: '/data',
+      OTTO_BIND_HOST: '0.0.0.0',
       NODE_ENV: 'production',
       PORT: '4310',
       HOST: '0.0.0.0',
@@ -407,7 +406,7 @@ export class TenantContainer extends Container<Bindings> {
   defaultPort = 4310;
   sleepAfter = '10m';
   enableInternet = true;
-  envVars = { SIDEKICK_MODE: 'tenant', NODE_ENV: 'production' };
+  envVars = { OTTO_MODE: 'tenant', NODE_ENV: 'production' };
   private deploymentWitness: { proof: RuntimeDeploymentProof; token: object } | undefined;
 
   override async onActivityExpired() {}
@@ -418,7 +417,7 @@ export class TenantContainer extends Container<Bindings> {
     schedule: (when) => this.schedule(when, 'expireRuntimeLease'),
   });
   private lifecycle = createTenantLifecycle({
-    environment: environmentName(this.env.SIDEKICK_ENVIRONMENT),
+    environment: environmentName(this.env.OTTO_ENVIRONMENT),
     read: () => this.ctx.storage.get<TenantIdentity>('identity'),
     write: (identity) => this.ctx.storage.put('identity', identity),
     status: async () => {
@@ -462,7 +461,7 @@ export class TenantContainer extends Container<Bindings> {
         !identity ||
         computerProvider(identity) !== 'e2b' ||
         identity.generation !== expected ||
-        identity.environment !== this.env.SIDEKICK_ENVIRONMENT ||
+        identity.environment !== this.env.OTTO_ENVIRONMENT ||
         this.ctx.id.toString() !==
           this.env.TENANTS.idFromName(tenantName(this.env, identity.ownerId)).toString()
       )
@@ -533,7 +532,7 @@ export class TenantContainer extends Container<Bindings> {
         !identity ||
         identity.ownerId !== ownerId ||
         identity.generation !== version ||
-        identity.environment !== this.env.SIDEKICK_ENVIRONMENT
+        identity.environment !== this.env.OTTO_ENVIRONMENT
       )
         throw new RuntimeControlError(409);
       if (
@@ -563,7 +562,7 @@ export class TenantContainer extends Container<Bindings> {
         !identity ||
         identity.ownerId !== ownerId ||
         identity.generation !== version ||
-        identity.environment !== this.env.SIDEKICK_ENVIRONMENT
+        identity.environment !== this.env.OTTO_ENVIRONMENT
       )
         throw new RuntimeControlError(409);
       const attempt = await storage.get<RuntimeDeploymentProof>('deployment-attempt');
@@ -622,7 +621,7 @@ export class TenantContainer extends Container<Bindings> {
         role === 'browser' ? this.env.BROWSER_COMPUTERS : this.env.WORKSPACE_COMPUTERS;
       if (
         !(await namespace
-          .getByName(computerName(this.env.SIDEKICK_ENVIRONMENT, ownerId, role))
+          .getByName(computerName(this.env.OTTO_ENVIRONMENT, ownerId, role))
           .inspectDeploymentStopped(ownerId, expected))
       )
         return false;
@@ -642,7 +641,7 @@ export class TenantContainer extends Container<Bindings> {
       !identity ||
       identity.ownerId !== ownerId ||
       identity.generation !== expected ||
-      identity.environment !== this.env.SIDEKICK_ENVIRONMENT ||
+      identity.environment !== this.env.OTTO_ENVIRONMENT ||
       !deploymentProof(proof, input, expected) ||
       (!deploymentProof(this.deploymentWitness?.proof, input, expected) &&
         !(await this.physicallyStopped()))
@@ -716,7 +715,7 @@ export class TenantContainer extends Container<Bindings> {
       const namespace =
         role === 'browser' ? this.env.BROWSER_COMPUTERS : this.env.WORKSPACE_COMPUTERS;
       const result = await namespace
-        .getByName(computerName(this.env.SIDEKICK_ENVIRONMENT, ownerId, role))
+        .getByName(computerName(this.env.OTTO_ENVIRONMENT, ownerId, role))
         .prepareDeploymentDrain(ownerId, expected, input);
       if (result.status !== 'drained')
         return {
@@ -762,7 +761,7 @@ export class TenantContainer extends Container<Bindings> {
       !identity ||
       computerProvider(identity) !== 'cloudflare' ||
       identity.ownerId !== ownerId ||
-      identity.environment !== this.env.SIDEKICK_ENVIRONMENT ||
+      identity.environment !== this.env.OTTO_ENVIRONMENT ||
       identity.generation !== expected ||
       (stopping && identity.revoking !== true)
     )
@@ -846,11 +845,11 @@ export class TenantContainer extends Container<Bindings> {
   }
 }
 
-GatewayContainer.outboundByHost = { 'sidekick.runtime': runtimeOutbound };
+GatewayContainer.outboundByHost = { 'otto.runtime': runtimeOutbound };
 TenantContainer.outboundByHost = {
-  'sidekick.storage': storageOutbound,
-  'sidekick.control': controlOutbound,
-  'sidekick.computer': computerOutbound,
+  'otto.storage': storageOutbound,
+  'otto.control': controlOutbound,
+  'otto.computer': computerOutbound,
 };
 
 export default {
@@ -861,13 +860,13 @@ export default {
     try {
       const url = new URL(request.url);
       if (url.origin !== publicOrigin(env)) throw new RuntimeControlError(403);
-      if (url.pathname.startsWith('/runtime/') || url.pathname.startsWith('/__sidekick/'))
+      if (url.pathname.startsWith('/runtime/') || url.pathname.startsWith('/__otto/'))
         throw new RuntimeControlError(404);
       if (url.pathname.startsWith('/api/internal/')) throw new RuntimeControlError(404);
       if (url.pathname.startsWith('/api/')) {
         const forwarded = new Request(request);
         for (const name of [...forwarded.headers.keys()])
-          if (name.toLowerCase().startsWith('x-sidekick-runtime')) forwarded.headers.delete(name);
+          if (name.toLowerCase().startsWith('x-otto-runtime')) forwarded.headers.delete(name);
         forwarded.headers.set('host', url.host);
         return await env.GATEWAY.getByName(gatewayName(env)).fetch(forwarded);
       }

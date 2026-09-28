@@ -16,7 +16,7 @@ def require(condition, check):
 
 
 def user_environment(uid, env=None):
-    return {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/home/sidekick-browser" if uid == 1001 else "/home/node", "LANG": "C.UTF-8", **(env or {})}
+    return {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/home/otto-browser" if uid == 1001 else "/home/node", "LANG": "C.UTF-8", **(env or {})}
 
 
 def as_user(uid, args, timeout=15, env=None):
@@ -72,7 +72,7 @@ def main():
             "from pathlib import Path; Path('/data/boundary-private').read_bytes()",
             "from pathlib import Path; Path('/data/boundary-profile').iterdir().__next__()",
             "import socket; s=socket.socket(socket.AF_UNIX); s.connect('/data/control.sock')",
-            "import os; os.open('/opt/sidekick/workspace-command.py',os.O_WRONLY)",
+            "import os; os.open('/opt/otto/workspace-command.py',os.O_WRONLY)",
             "import os; os.open('/app/src/providers/container-browser/worker.ts',os.O_WRONLY)",
             "import os; os.setuid(0)",
             f"import os; os.kill({chromium.pid},0)",
@@ -85,9 +85,9 @@ def main():
         safe = as_user(1000, ["python3", "-c", "from pathlib import Path; import socket; s=Path('/proc/self/status').read_text(); assert 'NoNewPrivs:\\t1' in s; assert all(int(line.split()[1],16)==0 for line in s.splitlines() if line.startswith(('CapEff:','CapPrm:','CapAmb:'))); p=Path('/workspace/boundary.txt'); p.write_text('synthetic'); assert p.read_text()=='synthetic'; assert socket.getaddrinfo('example.com',443)"])
         require(safe.returncode == 0, "workspace-files-dns-privileges")
         require(as_user(1000, ["curl", "--fail", "--silent", "--output", "/dev/null", "--max-time", "10", "https://example.com"]).returncode == 0, "workspace-https")
-        require(subprocess.run(["python3", "/opt/sidekick/computer-guard.py", "check"], capture_output=True, timeout=20).returncode == 0, "unchanged-firewall-readiness")
-        subprocess.run(["nft", "delete", "table", "inet", "sidekick"], check=True, capture_output=True)
-        require(subprocess.run(["python3", "/opt/sidekick/computer-guard.py", "check"], capture_output=True, timeout=20).returncode != 0, "changed-firewall-readiness")
+        require(subprocess.run(["python3", "/opt/otto/computer-guard.py", "check"], capture_output=True, timeout=20).returncode == 0, "unchanged-firewall-readiness")
+        subprocess.run(["nft", "delete", "table", "inet", "otto"], check=True, capture_output=True)
+        require(subprocess.run(["python3", "/opt/otto/computer-guard.py", "check"], capture_output=True, timeout=20).returncode != 0, "changed-firewall-readiness")
         print(json.dumps({"browserCdpAndX11": True, "workspaceNetworkDenied": len(targets), "workspaceFileAndProcessDenied": len(checks), "workspacePrivilegeDenied": True, "workspaceInternetDnsFiles": True, "changedFirewallRejected": True}))
     finally:
         for child in children:

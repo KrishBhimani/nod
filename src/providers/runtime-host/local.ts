@@ -79,8 +79,8 @@ export function createLocalRuntimeTransport(options: {
           HOME: directory(ownerId),
           ...environment,
           PORT: '0',
-          SIDEKICK_DATA_ROOT: data,
-          SIDEKICK_BIND_HOST: '127.0.0.1',
+          OTTO_DATA_ROOT: data,
+          OTTO_BIND_HOST: '127.0.0.1',
           OBJECT_STORAGE_PROVIDER: 'postgres',
           DOTENV_CONFIG_PATH: join(data, 'unused.env'),
         },
@@ -113,7 +113,7 @@ export function createLocalRuntimeTransport(options: {
           child.on('message', (message) => {
             const parsed = z
               .object({
-                type: z.literal('sidekick-ready'),
+                type: z.literal('otto-ready'),
                 port: z.number().int().min(1).max(65535),
                 ownerId: z.literal(ownerId),
                 generation: z.literal(generation),

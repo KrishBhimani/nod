@@ -5,7 +5,7 @@ import { JSDOM } from 'jsdom';
 import { createBrowserFixture as createAgentBrowserComputer } from './browser-fixture.ts';
 
 test('split-code observations hide each private input value and retain unrelated numbers and refs', async () => {
-  const directory = await mkdtemp('/tmp/sidekick-private-values-');
+  const directory = await mkdtemp('/tmp/otto-private-values-');
   const dom = new JSDOM(
     '<form class="otp"><h1>Verification</h1>' +
       Array.from(

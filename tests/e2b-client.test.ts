@@ -10,7 +10,7 @@ test('E2B SDK configuration keeps keys server-side, blocks public traffic and bo
     commands: {
       async run(...args: unknown[]) {
         calls.push({ action: 'run', args });
-        if (args[0] === 'python3 /opt/sidekick/computer-guard.py check')
+        if (args[0] === 'python3 /opt/otto/computer-guard.py check')
           return { exitCode: 0, stdout: '{"ready":true}\n', stderr: '' };
         return {
           sendStdin: async (...args: unknown[]) => {
@@ -58,7 +58,7 @@ test('E2B SDK configuration keeps keys server-side, blocks public traffic and bo
   assert.equal('retries' in created, false);
   await sandbox.ready();
   assert.deepEqual(calls.find((call) => call.action === 'run')!.args, [
-    'python3 /opt/sidekick/computer-guard.py check',
+    'python3 /opt/otto/computer-guard.py check',
     { user: 'root', envs: {}, timeoutMs: 30_000, requestTimeoutMs: 1234 },
   ]);
   const command = await sandbox.start({
@@ -71,7 +71,7 @@ test('E2B SDK configuration keeps keys server-side, blocks public traffic and bo
     string,
     unknown
   >;
-  assert.equal(started.user, 'sidekick-browser');
+  assert.equal(started.user, 'otto-browser');
   assert.equal(started.stdin, true);
   assert.equal(started.background, true);
   assert.equal(started.requestTimeoutMs, 1234);

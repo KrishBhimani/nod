@@ -142,7 +142,7 @@ export async function createApprovals(
       const explicit = scheduled || explicitlyRequestsAction(action, task.author_instruction);
       const currentSource = task.author_instruction === task.prompt;
       const resumedSource =
-        !action.startsWith('SIDEKICK_') &&
+        !action.startsWith('OTTO_') &&
         explicit &&
         ['credentials', 'manual_control'].includes(task.action_resume_kind) &&
         task.action_resume_revision === expected.revision;
@@ -167,9 +167,9 @@ export async function createApprovals(
       let targetTitle: string | undefined = verifiedTarget;
       if (!direct && typeof snapshot.id === 'string') {
         const table =
-          action === 'SIDEKICK_goal_update'
+          action === 'OTTO_goal_update'
             ? 'goals'
-            : ['SIDEKICK_schedule_update', 'SIDEKICK_schedule_cancel'].includes(action)
+            : ['OTTO_schedule_update', 'OTTO_schedule_cancel'].includes(action)
               ? 'schedules'
               : undefined;
         if (table)

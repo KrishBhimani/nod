@@ -87,7 +87,7 @@ function quoted(value: string) {
 
 export function tenantIdentifiers(ownerId: string, environment: string) {
   const suffix = createHash('sha256')
-    .update(JSON.stringify(['sidekick-tenant-v1', environmentName(environment), identity(ownerId)]))
+    .update(JSON.stringify(['otto-tenant-v1', environmentName(environment), identity(ownerId)]))
     .digest('hex')
     .slice(0, 32);
   return {
@@ -132,7 +132,7 @@ function leaseRecord(row: {
 
 export function createTenantStore(options: TenantStoreOptions) {
   const environment = environmentName(options.environment);
-  const controlSchema = options.controlSchema ?? 'sidekick_control';
+  const controlSchema = options.controlSchema ?? 'otto_control';
   const control = identifier(controlSchema);
   const table = `${control}.tenants`;
   const maxTenants = options.maxTenants ?? 8;
@@ -197,7 +197,7 @@ export function createTenantStore(options: TenantStoreOptions) {
       hkdfSync(
         'sha256',
         secret,
-        Buffer.from('sidekick-tenant-database-v1'),
+        Buffer.from('otto-tenant-database-v1'),
         Buffer.from(JSON.stringify([environment, tenant.ownerId, tenant.credentialVersion])),
         32,
       ),
@@ -248,7 +248,7 @@ export function createTenantStore(options: TenantStoreOptions) {
   async function initialize() {
     await transaction(async (client) => {
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
-        `sidekick-tenant-registry:${controlSchema}`,
+        `otto-tenant-registry:${controlSchema}`,
       ]);
       const database = (await client.query<{ name: string }>('SELECT current_database() AS name'))
         .rows[0].name;
@@ -299,7 +299,7 @@ export function createTenantStore(options: TenantStoreOptions) {
     const ownerId = identity(owner);
     return transaction(async (client) => {
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
-        `sidekick-tenant-registry:${controlSchema}`,
+        `otto-tenant-registry:${controlSchema}`,
       ]);
       const existing = await client.query<TenantRow>(
         `SELECT ${fields} FROM ${table} WHERE environment=$1 AND owner_id=$2`,
@@ -337,14 +337,14 @@ export function createTenantStore(options: TenantStoreOptions) {
       const role = identifier(tenant.role);
       const appSchema = identifier(tenant.appSchema);
       const jobsSchema = identifier(tenant.jobsSchema);
-      await client.query("SELECT set_config('sidekick.provisioning_password',$1,true)", [
+      await client.query("SELECT set_config('otto.provisioning_password',$1,true)", [
         await password(tenant),
       ]);
       await client.query(`DO $tenant$ BEGIN
         EXECUTE format('CREATE ROLE %I LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 12 PASSWORD %L',
-          '${tenant.role}',current_setting('sidekick.provisioning_password'));
+          '${tenant.role}',current_setting('otto.provisioning_password'));
       END $tenant$`);
-      await client.query("SELECT set_config('sidekick.provisioning_password','',true)");
+      await client.query("SELECT set_config('otto.provisioning_password','',true)");
       await client.query(`GRANT ${role} TO CURRENT_USER WITH SET TRUE, INHERIT FALSE`);
       const database = (await client.query<{ name: string }>('SELECT current_database() AS name'))
         .rows[0].name;

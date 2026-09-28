@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 const image = process.argv[2];
 if (!image || !/^[a-z0-9][a-z0-9._/:@-]+$/.test(image) || process.argv.length !== 3)
   throw new Error('Provide a locally built combined computer image.');
-const name = `sidekick-e2b-boundary-${randomUUID()}`;
+const name = `otto-e2b-boundary-${randomUUID()}`;
 const rejectedName = `${name}-rejected`;
 const environment = Object.fromEntries(
   Object.entries(process.env).filter(([key]) => /^(PATH|HOME|DOCKER_CONFIG|TMPDIR)$/.test(key)),
@@ -36,7 +36,7 @@ try {
       '--entrypoint',
       'python3',
       image,
-      '/opt/sidekick/computer-guard.py',
+      '/opt/otto/computer-guard.py',
       'start',
     ],
     true,
@@ -64,12 +64,12 @@ try {
     '/bin/sh',
     image,
     '-c',
-    'ip address add 169.254.169.254/32 dev lo && ip -6 address add fd00:ec2::254/128 dev lo && exec python3 /opt/sidekick/computer-guard.py start',
+    'ip address add 169.254.169.254/32 dev lo && ip -6 address add fd00:ec2::254/128 dev lo && exec python3 /opt/otto/computer-guard.py start',
   ]);
   const deadline = Date.now() + 30_000;
   for (;;) {
     const ready = docker(
-      ['exec', '--user', 'root', name, 'python3', '/opt/sidekick/computer-guard.py', 'check'],
+      ['exec', '--user', 'root', name, 'python3', '/opt/otto/computer-guard.py', 'check'],
       true,
     );
     if (ready.status === 0 && ready.stdout === '{"ready":true}\n' && ready.stderr === '') break;
@@ -79,12 +79,9 @@ try {
   docker([
     'cp',
     fileURLToPath(new URL('./computer-boundary.py', import.meta.url)),
-    `${name}:/tmp/sidekick-boundary.py`,
+    `${name}:/tmp/otto-boundary.py`,
   ]);
-  const result = docker(
-    ['exec', '--user', 'root', name, 'python3', '/tmp/sidekick-boundary.py'],
-    true,
-  );
+  const result = docker(['exec', '--user', 'root', name, 'python3', '/tmp/otto-boundary.py'], true);
   if (result.error || result.status !== 0) {
     let check = 'unknown';
     try {

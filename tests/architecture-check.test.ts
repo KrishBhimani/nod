@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import test from 'node:test';
 
 test('architecture checks include static template imports without executing source', async () => {
-  const directory = await mkdtemp('/tmp/sidekick-architecture-');
+  const directory = await mkdtemp('/tmp/otto-architecture-');
   try {
     await mkdir(join(directory, 'src/runtime'), { recursive: true });
     const script = fileURLToPath(new URL('../scripts/check-architecture.mjs', import.meta.url));

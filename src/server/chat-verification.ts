@@ -51,9 +51,7 @@ export async function createChatVerification(
       .getKey()
       .then((key) => {
         if (!Buffer.isBuffer(key) || key.length !== 32) throw new Error();
-        return createHmac('sha256', key)
-          .update('sidekick:chat-verification:fingerprint:v1')
-          .digest();
+        return createHmac('sha256', key).update('otto:chat-verification:fingerprint:v1').digest();
       })
       .catch(() => {
         fingerprintKey = undefined;

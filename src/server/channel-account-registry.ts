@@ -30,7 +30,7 @@ export function createChannelAccountRegistry(options: {
   claimWithLease(input: ChannelAccountIdentity, lease: TenantLease): Promise<boolean>;
   releaseWithLease(input: ChannelAccountIdentity, lease: TenantLease): Promise<void>;
 } {
-  const schema = options.controlSchema ?? 'sidekick_control';
+  const schema = options.controlSchema ?? 'otto_control';
   if (
     !/^[a-z][a-z0-9-]{0,31}$/.test(options.environment) ||
     !/^[a-z][a-z0-9_]{0,62}$/.test(schema) ||
@@ -92,7 +92,7 @@ export function createChannelAccountRegistry(options: {
         await client.query("SET LOCAL lock_timeout='5s'");
         await client.query("SET LOCAL statement_timeout='5s'");
         await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
-          JSON.stringify(['sidekick-channel-account', schema, ...values.slice(0, 3)]),
+          JSON.stringify(['otto-channel-account', schema, ...values.slice(0, 3)]),
         ]);
         if (lease) {
           const checked = await client.query<{ valid: boolean }>(
@@ -160,7 +160,7 @@ export function createChannelAccountRegistry(options: {
         try {
           await client.query('BEGIN');
           await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
-            `sidekick:channel-account-registry:${schema}`,
+            `otto:channel-account-registry:${schema}`,
           ]);
           await client.query(`CREATE TABLE IF NOT EXISTS ${table} (
             environment text NOT NULL,

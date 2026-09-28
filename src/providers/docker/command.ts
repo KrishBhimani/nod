@@ -117,8 +117,8 @@ export async function runWorkspaceCommand(options: {
   spawn?: WorkspaceCommandLauncher;
   drainTimeoutMs?: number;
 }): Promise<{ stdout: Buffer; stderr: Buffer; exitCode: number }> {
-  if (!/^sidekick-workspace(?:-[a-zA-Z0-9_-]+)?$/.test(options.container))
-    throw new Error('WORKSPACE_CONTAINER must identify a Sidekick workspace.');
+  if (!/^otto-workspace(?:-[a-zA-Z0-9_-]+)?$/.test(options.container))
+    throw new Error('WORKSPACE_CONTAINER must identify an Otto workspace.');
   const id = taskId(options.taskId);
   return runSupervisedCommand({
     ...options,
@@ -171,7 +171,7 @@ export function runSupervisedCommand(options: {
       return reject(
         new WorkspaceCommandError(
           true,
-          'The workspace is unavailable. Start its container and restart Sidekick.',
+          'The workspace is unavailable. Start its container and restart Otto.',
         ),
       );
     }
@@ -198,7 +198,7 @@ export function runSupervisedCommand(options: {
       reject(
         new WorkspaceCommandError(
           true,
-          'The workspace command did not stop safely. Restart Sidekick before continuing.',
+          'The workspace command did not stop safely. Restart Otto before continuing.',
         ),
       );
     };

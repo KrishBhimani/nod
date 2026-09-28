@@ -120,7 +120,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
   await app.register(multipart, { limits: uploads.limits });
   app.get('/api/health', async () => {
     await pool.query('SELECT 1');
-    const release = process.env.SIDEKICK_IMAGE_RELEASE || process.env.SIDEKICK_RELEASE;
+    const release = process.env.OTTO_IMAGE_RELEASE || process.env.OTTO_RELEASE;
     return { ok: true, ...(release ? { release } : {}) };
   });
   app.get('/api/state', async () => {

@@ -89,7 +89,7 @@ function fixture(
       await beforeCheckpoint(state);
       await assertCurrent();
       return {
-        format: 'sidekick-computer-tar-v1',
+        format: 'otto-computer-tar-v1',
         id: randomUUID(),
         ownerId,
         environment: 'development',

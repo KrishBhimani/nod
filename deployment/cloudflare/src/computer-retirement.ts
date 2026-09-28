@@ -6,7 +6,7 @@ import { environmentName, generation, ownerIdentity, RuntimeControlError } from 
 type Storage = Pick<DurableObjectTransaction, 'get' | 'list' | 'put'>;
 
 type Retirement = {
-  format: 'sidekick-unused-computer-retirement-v1';
+  format: 'otto-unused-computer-retirement-v1';
   deployment: DeploymentInput;
   original: ComputerState;
   replacement: ComputerState;
@@ -98,7 +98,7 @@ export async function retireUnusedComputer(options: {
       )
         throw unavailable();
       const record: Retirement = {
-        format: 'sidekick-unused-computer-retirement-v1',
+        format: 'otto-unused-computer-retirement-v1',
         deployment,
         original: state!,
         replacement,

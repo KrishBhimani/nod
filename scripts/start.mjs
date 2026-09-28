@@ -38,9 +38,7 @@ try {
     );
     return environment;
   });
-  console.log(
-    '\nSidekick starts at http://localhost:4310. Add provider keys to .env when ready.\n',
-  );
+  console.log('\nOtto starts at http://localhost:4310. Add provider keys to .env when ready.\n');
   const child = spawn('npx', ['--no-install', 'tsx', 'watch', 'src/server/index.ts'], {
     stdio: 'inherit',
     env: { ...environment, NODE_ENV: 'development' },

@@ -19,7 +19,7 @@ import { runProcess } from '../src/providers/process.ts';
 import { fixtureChannelCredentials } from './e2e-channels.ts';
 
 export const fixtureOrigin = 'https://example.com';
-export const fixturePrefix = '/__sidekick_e2e__/';
+export const fixturePrefix = '/__otto_e2e__/';
 export const fixtureLogin = fixtureOrigin + fixturePrefix + 'login';
 export const fixtureCredentials = {
   username: 'tester@example.test',
@@ -522,7 +522,7 @@ export function createIntegrationFixture(baseUrl: string, audit: Audit = () => {
       },
     ];
   }
-  const prefix = 'https://sidekick-consent.example/__sidekick_e2e__/';
+  const prefix = 'https://otto-consent.example/__otto_e2e__/';
   const provider: IntegrationProvider = {
     id: 'synthetic-apps',
     configured: true,
@@ -827,7 +827,7 @@ export function createIntegrationFixture(baseUrl: string, audit: Audit = () => {
         return reply.type('text/html').send(
           html(
             `Connect synthetic ${names[account.service]}`,
-            `<p>This is synthetic app consent, not a real provider sign-in. It exposes only synthetic records to this isolated Sidekick instance.</p><p>Account: tester${account.number}@example.test</p><form id="fixture-consent" method="post"><input type="hidden" name="consent" value="connect"><button type="submit">Connect synthetic account</button></form><p id="consent-error" role="alert" hidden>Could not connect the synthetic account. Try again.</p><script>
+            `<p>This is synthetic app consent, not a real provider sign-in. It exposes only synthetic records to this isolated Otto instance.</p><p>Account: tester${account.number}@example.test</p><form id="fixture-consent" method="post"><input type="hidden" name="consent" value="connect"><button type="submit">Connect synthetic account</button></form><p id="consent-error" role="alert" hidden>Could not connect the synthetic account. Try again.</p><script>
 const consentForm = document.getElementById('fixture-consent');
 const consentButton = consentForm.querySelector('button');
 const consentError = document.getElementById('consent-error');
@@ -879,7 +879,7 @@ consentForm.addEventListener('submit', async (event) => {
 
 export function operatorPage() {
   return html(
-    'Sidekick isolated acceptance environment',
-    `<p><a href="/">Open Sidekick</a> · <a href="/e2e/status">Timing events</a></p><p>The assistant and browser are real. Google, Slack and Notion accounts, files, channel setup and the Northstar site are synthetic. No external messages are delivered.</p><h2>Secure sign-in fixture</h2><p>Give the assistant this URL: <code>${fixtureLogin}</code></p><p>Enter these synthetic values only in the Vault form, never in chat:</p><dl><dt>Email</dt><dd>${fixtureCredentials.username}</dd><dt>Password</dt><dd>${fixtureCredentials.password}</dd><dt>One-time code</dt><dd>${fixtureCredentials.code}</dd></dl><p>Slow page for acknowledgement checks: <code>${fixtureOrigin + fixturePrefix}slow</code></p><p>The fixture URL works only in the assistant's isolated browser. The user's normal browser should use this localhost page and the Vault.</p><h2>Channels UI fixture</h2><p>Open <a href="/channels">Channels</a> and enter these fixed synthetic values in its setup forms. Both channels start disconnected. No provider is contacted and incoming or outgoing messages are disabled, including after setup.</p><h3>Telegram</h3><dl><dt>Bot token</dt><dd>${fixtureChannelCredentials.telegram.botToken}</dd><dt>Your Telegram user ID</dt><dd>${fixtureChannelCredentials.telegram.allowedUserId}</dd></dl><p>Leave the callback blank. The saved account is labelled Synthetic Telegram bot (UI only).</p><h3>WhatsApp</h3><dl><dt>Business phone number ID</dt><dd>${fixtureChannelCredentials.whatsapp.phoneNumberId}</dd><dt>Your WhatsApp number</dt><dd>${fixtureChannelCredentials.whatsapp.allowedNumber}</dd><dt>Business access token</dt><dd>${fixtureChannelCredentials.whatsapp.accessToken}</dd><dt>Meta app secret</dt><dd>${fixtureChannelCredentials.whatsapp.appSecret}</dd><dt>Webhook verification token</dt><dd>${fixtureChannelCredentials.whatsapp.verifyToken}</dd></dl><p>Check the policy box for this synthetic setup and leave the callback blank. The saved account remains at Finish delivery setup; no callback is registered.</p>`,
+    'Otto isolated acceptance environment',
+    `<p><a href="/">Open Otto</a> · <a href="/e2e/status">Timing events</a></p><p>The assistant and browser are real. Google, Slack and Notion accounts, files, channel setup and the Northstar site are synthetic. No external messages are delivered.</p><h2>Secure sign-in fixture</h2><p>Give the assistant this URL: <code>${fixtureLogin}</code></p><p>Enter these synthetic values only in the Vault form, never in chat:</p><dl><dt>Email</dt><dd>${fixtureCredentials.username}</dd><dt>Password</dt><dd>${fixtureCredentials.password}</dd><dt>One-time code</dt><dd>${fixtureCredentials.code}</dd></dl><p>Slow page for acknowledgement checks: <code>${fixtureOrigin + fixturePrefix}slow</code></p><p>The fixture URL works only in the assistant's isolated browser. The user's normal browser should use this localhost page and the Vault.</p><h2>Channels UI fixture</h2><p>Open <a href="/channels">Channels</a> and enter these fixed synthetic values in its setup forms. Both channels start disconnected. No provider is contacted and incoming or outgoing messages are disabled, including after setup.</p><h3>Telegram</h3><dl><dt>Bot token</dt><dd>${fixtureChannelCredentials.telegram.botToken}</dd><dt>Your Telegram user ID</dt><dd>${fixtureChannelCredentials.telegram.allowedUserId}</dd></dl><p>Leave the callback blank. The saved account is labelled Synthetic Telegram bot (UI only).</p><h3>WhatsApp</h3><dl><dt>Business phone number ID</dt><dd>${fixtureChannelCredentials.whatsapp.phoneNumberId}</dd><dt>Your WhatsApp number</dt><dd>${fixtureChannelCredentials.whatsapp.allowedNumber}</dd><dt>Business access token</dt><dd>${fixtureChannelCredentials.whatsapp.accessToken}</dd><dt>Meta app secret</dt><dd>${fixtureChannelCredentials.whatsapp.appSecret}</dd><dt>Webhook verification token</dt><dd>${fixtureChannelCredentials.whatsapp.verifyToken}</dd></dl><p>Check the policy box for this synthetic setup and leave the callback blank. The saved account remains at Finish delivery setup; no callback is registered.</p>`,
   );
 }

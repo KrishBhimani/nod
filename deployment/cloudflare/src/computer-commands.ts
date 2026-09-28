@@ -421,7 +421,7 @@ export function createComputerCommands(options: {
       let fenceOnError = false;
       try {
         const url = new URL(request.url);
-        const version = generation(request.headers.get('x-sidekick-generation'));
+        const version = generation(request.headers.get('x-otto-generation'));
         if (url.search || url.hash) throw new RuntimeControlError(404);
         if (url.pathname === '/v1/commands' && request.method === 'POST') {
           await options.authorize(version);
