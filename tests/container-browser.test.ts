@@ -146,7 +146,10 @@ async function harness(control: { beforeFirstBridge?: Promise<void> } = {}) {
     return process as unknown as ChildProcessWithoutNullStreams;
   };
   const clients: Computer[] = [];
-  function client(dataRoot: string, options: { timeoutMs?: number; drainTimeoutMs?: number } = {}) {
+  function client(
+    dataRoot: string,
+    options: { timeoutMs?: number; openTimeoutMs?: number; drainTimeoutMs?: number } = {},
+  ) {
     const value = createContainerBrowserComputer({ dataRoot, spawn: launch, ...options });
     clients.push(value);
     return value;
@@ -444,6 +447,29 @@ test('an unacknowledged cancellation fences new actions until namespace cleanup 
     await computer.dispose();
   } finally {
     drain.resolve();
+    await fixture.close();
+  }
+});
+
+test('a slow page open can finish within its longer browser budget', async () => {
+  const fixture = await harness();
+  try {
+    const computer = fixture.client('/synthetic/slow-open', {
+      timeoutMs: 20,
+      openTimeoutMs: 100,
+    });
+    await computer.act('task', { action: 'snapshot' });
+    fixture.instance('/synthetic/slow-open').setAct(async (_id, input) => {
+      await delay(50);
+      return { text: 'Loaded page', url: input.url ?? 'https://example.com', candidates: [] };
+    });
+    const result = await computer.act('task', {
+      action: 'open',
+      url: 'https://example.com',
+    });
+    assert.equal(result.text, 'Loaded page');
+    assert.doesNotMatch(computer.status(), /restart/);
+  } finally {
     await fixture.close();
   }
 });
