@@ -1,28 +1,28 @@
-# Sidekick
+# Otto
 
-Sidekick is a personal assistant you use through one chat. It can browse websites, run commands, and create files in a Linux workspace. It can also track goals, run scheduled tasks, and use accounts that you connect.
+Otto is a personal assistant you use through one chat. It can browse websites, run commands, and create files in a Linux workspace. It can also track goals, run scheduled tasks, and use accounts that you connect.
 
 - **Chat:** Send messages and files, follow task progress, and keep chat history between sessions.
-- **Computer:** Let Sidekick use its own browser and workspace. In local mode, you can take control of the browser when a task needs your input.
+- **Computer:** Let Otto use its own browser and workspace. In local mode, you can take control of the browser when a task needs your input.
 - **Planning:** Keep goals and schedules in the app. Use the Vault to save website logins and payment cards.
 
 ## Start on your computer
 
-Install Node.js **24.21.0 or newer** and Docker with Compose v2. On Mac, start Docker Desktop. Run this command from the repository root:
+Install Node.js **24.21.0 or newer** and Docker with Compose v2. You can use Node 26 locally. CI and Docker images use Node 24 LTS. On Mac, start Docker Desktop. Run this command from the repository root:
 
 ```sh
 npm run dev
 ```
 
-The first run installs dependencies, creates `.env`, and starts PostgreSQL and the Docker containers for the browser and workspace. Open [http://localhost:4310](http://localhost:4310) in your browser. Sidekick's browser runs inside Docker. It does not use a browser profile from your computer.
+The first run installs dependencies, creates `.env`, and starts PostgreSQL and the Docker containers for the browser and workspace. Open [http://localhost:4310](http://localhost:4310) in your browser. Otto's browser runs inside Docker. It does not use a browser profile from your computer.
 
-Chat needs a model key. For OpenAI, set `LLM_PROVIDER=openai` and `OPENAI_API_KEY`. For Anthropic, set `LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`. Put these settings in the ignored `.env` file or export them in the shell that starts Sidekick. If a setting is in both places, the shell value takes priority. Restart Sidekick after you edit `.env`. Keep keys out of chat and Git.
+Chat needs a model key. For OpenAI, set `LLM_PROVIDER=openai` and `OPENAI_API_KEY`. For Anthropic, set `LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`. Put these settings in the ignored `.env` file or export them in the shell that starts Otto. If a setting is in both places, the shell value takes priority. Restart Otto after you edit `.env`. Keep keys out of chat and Git.
 
 The local setup supports one owner and listens only on `127.0.0.1`. Chat and computer tasks need Docker and a model key. They do not need Cloudflare, E2B, or Google sign-in.
 
 ## Optional connections
 
-- **Apps:** Gmail, Calendar, Drive, Sheets, Docs, Slack, and Notion use Composio. Set `COMPOSIO_API_KEY` for a development project, restart Sidekick, and connect each account from **Apps**. Without Composio, these Apps are unavailable. See [app setup](docs/composio.md).
+- **Apps:** Gmail, Calendar, Drive, Sheets, Docs, Slack, and Notion use Composio. Set `COMPOSIO_API_KEY` for a development project, restart Otto, and connect each account from **Apps**. Without Composio, these Apps are unavailable. See [app setup](docs/composio.md).
 - **Channels:** Set up Telegram or WhatsApp from **Channels**. Telegram can poll locally. WhatsApp needs a Meta callback and an eligible account. See [channel setup](docs/channels.md).
 - **Vault:** On macOS, Keychain supplies the encryption key. Other hosts need `SIDEKICK_VAULT_KEY`. See [vault setup](docs/vault.md).
 
