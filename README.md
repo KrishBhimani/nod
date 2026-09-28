@@ -34,6 +34,6 @@ Hosted mode signs users in with Google and keeps their work separate. It needs a
 
 For hosted development, use the [hosted environment example](deployment/hosted.env.example) and [development guide](docs/development.md#hosted-mode-on-your-computer). For deployment, use the [Cloudflare runbook](deployment/cloudflare/README.md) and [production requirements](docs/production.md). Cloudflare credentials are for deployment. They are not needed for the local setup.
 
-The [dated Otto cutover record](docs/testing/results/2026-09-28-otto-cutover.md) separates the new deployment from the existing Sidekick pilot and its live checks.
+The Otto production pilot passed manual deployment, Google sign-in, onboarding and plain chat with reload persistence on 2026-09-28. Automatic deployment from main and a fresh chat reply with reload persistence subsequently passed. It currently uses Cloudflare computers. Development Gmail consent/label read and Calendar/Drive/Docs/Sheets connections now pass. A same-release production redeployment retained the Gateway process and its old Google configuration; custom production mapping/consent and the selected one-E2B-computer-per-user setup remain unverified. The [dated cutover record](docs/testing/results/2026-09-28-otto-cutover.md) separates these checks from the legacy Sidekick pilot and the remaining live checks.
 
 The [system guide](docs/system-guide.md) describes product behavior and limits. [Architecture](docs/architecture.md) and the [API contract](docs/api-contract.md) describe the code.

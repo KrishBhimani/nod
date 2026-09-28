@@ -9,6 +9,7 @@ import {
 } from '../scripts/deploy.mjs';
 import { verifyDeployment } from '../scripts/smoke.mjs';
 import { recoverDeployment } from '../scripts/recover.mjs';
+import { createDeploymentClient } from '../scripts/drain.mjs';
 
 const release = 'a'.repeat(40);
 const accountId = 'b'.repeat(32);
@@ -556,6 +557,55 @@ test('deployment publishes all images before uploading code and secrets, cleans 
   assert.equal(reports.join(' ').includes('synthetic'), false);
   await assert.rejects(stat(temporaryConfig), { code: 'ENOENT' });
   await assert.rejects(stat(secretPath), { code: 'ENOENT' });
+});
+
+test('changed gateway configuration cannot publish Worker secrets under the running release', async () => {
+  const changed = {
+    ...variables,
+    GATEWAY_ENV: gatewayValues({ COMPOSIO_GMAIL_AUTH_CONFIG_ID: 'ac_synthetic_custom' }),
+  };
+  const plan = deploymentPlan({ ...planInput(), gatewayEnv: changed.GATEWAY_ENV });
+  const requests = [];
+  const commands = [];
+  let temporaryConfig;
+  const control = createDeploymentClient({
+    environment: 'production',
+    plan,
+    variables: changed,
+    fetcher: async (raw, options) => {
+      const url = new URL(raw);
+      requests.push({ path: url.pathname, method: options.method ?? 'GET' });
+      if (url.hostname === 'api.cloudflare.com' && url.pathname.endsWith('/settings'))
+        return workerSettings();
+      if (url.origin === origin && url.pathname === '/api/health')
+        return Response.json({ ok: true, release });
+      assert.fail('The existing release must not receive a deployment control request.');
+    },
+  });
+  await assert.rejects(
+    deploy('production', changed, {
+      config: configuration(),
+      deploymentControl: control,
+      imageDigest,
+      report() {},
+      request: async () => assert.fail('Worker verification requires publication.'),
+      command: async (args) => {
+        commands.push(args);
+        temporaryConfig = args[args.indexOf('--config') + 1];
+      },
+      smoke: async () => assert.fail('Same-release configuration must not pass smoke checks.'),
+    }),
+    { message: 'Deployment safety checks did not pass; admission remains unchanged or closed.' },
+  );
+  assert.deepEqual(
+    commands.map((args) => args[0]),
+    ['containers', 'containers', 'containers'],
+  );
+  assert.deepEqual(requests, [
+    { path: `/client/v4/accounts/${accountId}/workers/scripts/otto/settings`, method: 'GET' },
+    { path: '/api/health', method: 'GET' },
+  ]);
+  await assert.rejects(stat(temporaryConfig), { code: 'ENOENT' });
 });
 
 test('a failed publication of any image prevents Worker activation and smoke checks', async () => {

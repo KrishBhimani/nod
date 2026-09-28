@@ -413,7 +413,12 @@ export function createDeploymentClient({
         signal: AbortSignal.timeout(10_000),
       });
       const status = await boundedJson(health, 4096);
-      if (!health.ok || status.ok !== true || !/^[a-f0-9]{40}$/.test(status.release ?? ''))
+      if (
+        !health.ok ||
+        status.ok !== true ||
+        !/^[a-f0-9]{40}$/.test(status.release ?? '') ||
+        status.release === plan.release
+      )
         throw unavailable();
       input = {
         nonce: randomUUID(),

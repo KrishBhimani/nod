@@ -1179,8 +1179,13 @@ export function createAgentBrowserComputer(options: {
                   state,
                   credentialFeedbackScript(input.origin, input.kind ?? 'password', attempt),
                   signal,
-                ).catch(() => undefined),
+                ).catch((error: unknown) => {
+                  if (!state.started || state.closed || state.closing) throw error;
+                  return undefined;
+                }),
               );
+              if (!state.started || state.closed || state.closing)
+                throw new Error('The browser session is unavailable.');
               if (feedback?.advanced) break;
               if (
                 feedback?.rejected &&
@@ -1190,12 +1195,15 @@ export function createAgentBrowserComputer(options: {
               await delay(80, undefined, { signal }).catch(() => {});
             }
           }
+          if (!state.started || state.closed || state.closing)
+            throw new Error('The browser session is unavailable.');
           return { status: 'submitted' as const };
         } catch {
-          await evaluate(
-            state,
-            `(() => { if(location.origin!==${JSON.stringify(input.origin)}) return false; for(const s of ${JSON.stringify(fields.map((field) => field.selector))}) { for(const e of document.querySelectorAll(s)) { e.value=''; e.dispatchEvent(new Event('input',{bubbles:true})); } } return true; })()`,
-          ).catch(() => {});
+          if (state.started && !state.closed && !state.closing)
+            await evaluate(
+              state,
+              `(() => { if(location.origin!==${JSON.stringify(input.origin)}) return false; for(const s of ${JSON.stringify(fields.map((field) => field.selector))}) { for(const e of document.querySelectorAll(s)) { e.value=''; e.dispatchEvent(new Event('input',{bubbles:true})); } } return true; })()`,
+            ).catch(() => {});
           throw new Error(
             'Secure entry could not be confirmed. Check the login page before continuing.',
           );

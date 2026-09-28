@@ -25,7 +25,7 @@ async function fixture() {
   const actions: string[] = [];
   const launches: string[] = [];
   const sockets = new Set<Socket>();
-  let before = async (_action: string) => {};
+  let before = async (_action: string, _command: Record<string, unknown>) => {};
   let failedAction: string | undefined;
   const server = createServer((socket) => {
     sockets.add(socket);
@@ -38,7 +38,7 @@ async function fixture() {
       const command = JSON.parse(input);
       input = '';
       actions.push(command.action);
-      await before(command.action);
+      await before(command.action, command);
       if (command.action === failedAction) {
         socket.end(
           JSON.stringify({
@@ -182,6 +182,154 @@ test('a completed daemon error keeps the session available and navigation failur
     );
     assert.equal(f.actions.includes('close'), false);
   } finally {
+    await f.cleanup();
+  }
+});
+
+for (const failedClose of [false, true]) {
+  test(`interrupted credential feedback preserves the ${failedClose ? 'unconfirmed' : 'confirmed'} close fence without replay or cleanup commands`, async () => {
+    const f = await fixture();
+    const releaseFeedback = deferred();
+    try {
+      await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+      const login = await f.computer.inspectLogin('fixture');
+      let feedbackCalls = 0;
+      f.before(async (action, command) => {
+        if (
+          action === 'evaluate' &&
+          typeof command.script === 'string' &&
+          command.script.includes('mark=false;')
+        ) {
+          feedbackCalls++;
+          await releaseFeedback.promise;
+        }
+        if (action === 'close') {
+          releaseFeedback.resolve();
+          if (failedClose) f.fail('close');
+        }
+      });
+      await assert.rejects(
+        f.computer.injectCredentials({
+          taskId: 'fixture',
+          origin: login.origin,
+          kind: 'identifier',
+          username: 'private-credential-fixture@example.test',
+          usernameSelector: login.fields[0].selector,
+          submitSelector: login.submitSelector,
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.equal(
+            error.message,
+            'Secure entry could not be confirmed. Check the login page before continuing.',
+          );
+          return true;
+        },
+      );
+      assert.equal(feedbackCalls, 1);
+      const closed = f.actions.indexOf('close');
+      assert.notEqual(closed, -1);
+      assert.deepEqual(f.actions.slice(closed), ['close']);
+      await assert.rejects(f.computer.act('fixture', { action: 'snapshot' }), /expired/);
+      assert.deepEqual(f.actions.slice(closed), ['close']);
+      assert.deepEqual(f.launches, ['open', 'info']);
+    } finally {
+      releaseFeedback.resolve();
+      f.fail();
+      await f.cleanup();
+    }
+  });
+}
+
+test('completed credential feedback errors remain optional while the browser is healthy', async () => {
+  const f = await fixture();
+  try {
+    await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    const login = await f.computer.inspectLogin('fixture');
+    let feedbackCalls = 0;
+    f.before(async (action, command) => {
+      if (
+        action === 'evaluate' &&
+        typeof command.script === 'string' &&
+        command.script.includes('mark=false;')
+      ) {
+        feedbackCalls++;
+        f.fail('evaluate');
+      } else f.fail();
+    });
+    assert.deepEqual(
+      await f.computer.injectCredentials({
+        taskId: 'fixture',
+        origin: login.origin,
+        kind: 'identifier',
+        username: 'private-credential-fixture@example.test',
+        usernameSelector: login.fields[0].selector,
+        submitSelector: login.submitSelector,
+      }),
+      { status: 'submitted' },
+    );
+    assert.ok(feedbackCalls > 1);
+    assert.equal(f.actions.includes('close'), false);
+    const observation = await f.computer.act('fixture', { action: 'snapshot' });
+    assert.match(observation.text, /Sign in password/);
+    assert.equal(observation.text.includes('private-credential-fixture@example.test'), false);
+    assert.deepEqual(f.launches, ['open', 'info']);
+  } finally {
+    f.fail();
+    await f.cleanup();
+  }
+});
+
+test('closing during successful credential feedback cannot report submission or clear credentials', async () => {
+  const f = await fixture();
+  const feedbackStarted = deferred();
+  const releaseFeedback = deferred();
+  try {
+    await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    const login = await f.computer.inspectLogin('fixture');
+    let feedbackIndex = -1;
+    let clearingCommands = 0;
+    f.before(async (action, command) => {
+      if (
+        action === 'evaluate' &&
+        typeof command.script === 'string' &&
+        command.script.includes("e.value=''")
+      )
+        clearingCommands++;
+      if (
+        action === 'evaluate' &&
+        typeof command.script === 'string' &&
+        command.script.includes('mark=false;')
+      ) {
+        feedbackIndex = f.actions.length - 1;
+        feedbackStarted.resolve();
+        await releaseFeedback.promise;
+      }
+    });
+    const rejected = assert.rejects(
+      f.computer.injectCredentials({
+        taskId: 'fixture',
+        origin: login.origin,
+        kind: 'identifier',
+        username: 'private-credential-fixture@example.test',
+        usernameSelector: login.fields[0].selector,
+        submitSelector: login.submitSelector,
+      }),
+      /Secure entry could not be confirmed/,
+    );
+    await feedbackStarted.promise;
+    const closed = f.computer.close('fixture');
+    releaseFeedback.resolve();
+    await Promise.all([rejected, closed]);
+    assert.notEqual(feedbackIndex, -1);
+    assert.equal(clearingCommands, 0);
+    assert.equal(f.actions.filter((action) => action === 'close').length, 1);
+    assert.equal(f.actions.at(-1), 'close');
+    const completedActions = f.actions.length;
+    await assert.rejects(f.computer.act('fixture', { action: 'snapshot' }), /Open a website first/);
+    assert.equal(f.actions.length, completedActions);
+  } finally {
+    releaseFeedback.resolve();
     await f.cleanup();
   }
 });
