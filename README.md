@@ -26,6 +26,8 @@ The local setup supports one owner and listens only on `127.0.0.1`. Chat and com
 - **Channels:** Set up Telegram or WhatsApp from **Channels**. Telegram can poll locally. WhatsApp needs a Meta callback and an eligible account. See [channel setup](docs/channels.md).
 - **Vault:** On macOS, Keychain supplies the encryption key. Other hosts need `OTTO_VAULT_KEY`. See [vault setup](docs/vault.md).
 
+Invalid app tool searches can be corrected within the task. If an earlier external action has no confirmed outcome, Otto blocks repeating it; a later fix does not clear that protection. See [connection execution and recovery](docs/composio.md).
+
 Press Ctrl-C to stop the server. Run `docker compose stop` to stop its containers. Task files stay in `.local/`. PostgreSQL, browser data, and installed workspace tools stay in Docker volumes. Keep these stores if you want to keep your local data.
 
 ## Hosted mode

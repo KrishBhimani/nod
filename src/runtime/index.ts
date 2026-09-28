@@ -385,6 +385,7 @@ export function createAgentRuntime(dependencies: {
             input: params,
             startedAt: new Date().toISOString(),
           });
+          let result: AgentToolResult;
           try {
             context.signal.throwIfAborted();
             await pendingReplies;
@@ -398,7 +399,7 @@ export function createAgentRuntime(dependencies: {
               : action());
             context.signal.throwIfAborted();
             if (!stopped) await context.emit('tool_complete', name.replaceAll('_', ' '));
-            const result =
+            result =
               output && typeof output === 'object' && 'content' in output
                 ? (output as AgentToolResult)
                 : textResult(output);
@@ -411,7 +412,6 @@ export function createAgentRuntime(dependencies: {
               finishedAt: new Date().toISOString(),
               durationMs: performance.now() - started,
             });
-            return result;
           } catch (error) {
             if (!stopped)
               await context.emit('tool_failed', name.replaceAll('_', ' ')).catch(() => {});
@@ -469,6 +469,8 @@ export function createAgentRuntime(dependencies: {
             }
             throw new Error(failure);
           }
+          context.signal.throwIfAborted();
+          return result;
         }),
     });
     try {

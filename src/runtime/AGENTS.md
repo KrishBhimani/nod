@@ -6,6 +6,8 @@
 
 `RuntimeContext.observe` receives paired tool starts and ends, with validated arguments, actual outputs, fixed errors and timing, plus provider-normalized model usage. `observations.ts` bounds each write to one second and disables capture for the remaining segment after a timeout. The optional `observationTimeoutMs` factory argument can shorten that limit. Cancellation releases waits immediately; cancelled tool ends and queued or late model usage use nonblocking best-effort delivery. A timeout still disables later usage capture, so totals can be partial. Late callback failures remain handled. Flush only the bounded queue when a segment ends. Server persistence still owns query timeouts, redaction, limits, task revision checks and developer access. Raw tool values can contain private content; do not send them to ordinary logs or chat.
 
+Recheck cancellation after a successful tool-end observation before returning its result to the model/checkpoint. Keep that check outside the execution catch so it cannot emit a duplicate terminal observation. Intentional question/approval/credential waits still return their result; a stopped segment is not the same as an aborted signal.
+
 Interfaces live in `../ports/agent.ts` and `../ports/computer.ts`. A model session receives only registered tools. Keep provider types out of those interfaces. Never add a host shell, arbitrary browser JavaScript or secret-read tool.
 
 `BrowserActionError` carries a recognized fixed browser category from the adapter. Resolve its public message through `shared/browser-errors.ts` before sending it to the model or tool observation; never trust its raw message, arbitrary error codes, command output or website URLs. Unknown errors remain generic and cancellation takes precedence.
