@@ -450,6 +450,12 @@ export async function createBrowserConnections(
           options.refresh?.();
           return { connectionId: row.id, status: 'needs_sign_in' as const };
         }
+        await pool.query(
+          `UPDATE browser_connections SET checked_at=now(),updated_at=now()
+           WHERE id=$1 AND owner_id=$2 AND state='saved'`,
+          [row.id, options.ownerId],
+        );
+        options.refresh?.();
         return {
           connectionId: row.id,
           status: 'session_opened' as const,
