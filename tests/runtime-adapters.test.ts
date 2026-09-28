@@ -25,8 +25,15 @@ function browserFixture() {
       data = command[1] === 'url' ? { url: 'https://1.1.1.1/' } : { value: 'text' };
     if (command[0] === 'eval')
       data = {
-        result: options?.input?.includes('document.body?.innerText')
-          ? { text: 'Readable article body. fixture-secret' }
+        result: options?.input?.includes('const root =')
+          ? {
+              text: 'Readable article body. fixture-secret',
+              total: 37,
+              controls: [],
+              controlsTotal: 0,
+              scrollAreas: [],
+              scrollAreasTotal: 0,
+            }
           : { ok: true },
       };
     if (command[0] === 'snapshot')

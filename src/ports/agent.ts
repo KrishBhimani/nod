@@ -82,6 +82,10 @@ export interface RuntimeContext {
     service?: string,
     proposal?: unknown,
   ): Promise<unknown>;
+  browserConnection?(
+    action: 'connect' | 'use',
+    input: { url: string; connectionId?: string; label?: string },
+  ): Promise<unknown>;
   waitForUser?(question: string): Promise<void>;
   delta(text: string, streamId?: string, done?: boolean): void;
   remember(text: string): Promise<void>;

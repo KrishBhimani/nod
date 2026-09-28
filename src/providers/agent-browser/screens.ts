@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { resolve } from 'node:path';
 import { z } from 'zod';
@@ -14,6 +14,8 @@ const storedScreen = z.object({
   navigationFailed: z.boolean().optional(),
   signInPending: z.boolean().optional(),
   restoreSession: z.boolean().optional(),
+  profileId: z.uuid().optional(),
+  allowedOrigin: z.url().max(2048).optional(),
   resumeUrl: z.string().max(8192).optional(),
   capturedAt: z.iso.datetime().optional(),
 });
@@ -24,6 +26,22 @@ export function createScreenStore(root: string) {
   const metadata = (id: string) => resolve(root, `screen-${taskId(id)}.json`);
   return {
     path,
+    async clearImage(id: string) {
+      await rm(path(id), { force: true });
+    },
+    async profileScreens(profileId: string) {
+      const files = await readdir(root).catch(() => []);
+      const ids = files
+        .map((file) => /^screen-([0-9a-f-]{36})\.json$/.exec(file)?.[1])
+        .filter((id): id is string => Boolean(id));
+      const matches = await Promise.all(
+        ids.map(async (id) => ((await this.load(id))?.profileId === profileId ? id : null)),
+      );
+      return matches.filter((id): id is string => Boolean(id));
+    },
+    async delete(id: string) {
+      await Promise.all([rm(path(id), { force: true }), rm(metadata(id), { force: true })]);
+    },
     async load(id: string): Promise<StoredScreen | null> {
       try {
         if ((await stat(metadata(id))).size > 16_384) return null;

@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { z } from 'zod';
 import type {
   BrowserAction,
   BrowserDownloadInput,
@@ -37,6 +38,7 @@ import {
 } from './screens.ts';
 import { createBrowserSignIn, resolveSignInBrowser, type BrowserSignInHandle } from './sign-in.ts';
 import { createSignInDesktop, type SignInDesktop } from './desktop.ts';
+import { browserViewScript } from './view.ts';
 import {
   createDownloadCapture,
   decodeDownload,
@@ -147,6 +149,8 @@ export function createAgentBrowserComputer(options: {
     lastSession = { taskId: id, lastActivityAt: new Date().toISOString() };
   };
   const runtimeRoot = resolve(options.dataRoot, 'runtime');
+  const profilePath = (state: BrowserState) =>
+    resolve(runtimeRoot, 'profiles', state.saved.profileId ?? state.id);
   const screens = createScreenStore(runtimeRoot);
   const screenStatuses = new Map<string, ReturnType<NonNullable<Computer['screenStatus']>>>();
   const namespace = `sk-${createHash('sha256').update(runtimeRoot).digest('hex').slice(0, 12)}`;
@@ -170,6 +174,14 @@ export function createAgentBrowserComputer(options: {
   let disposed = false;
   let activeCalls = 0;
   let allocationQueue: Promise<void> = Promise.resolve();
+  function allocate<T>(operation: () => Promise<T>): Promise<T> {
+    const pending = allocationQueue.then(operation);
+    allocationQueue = pending.then(
+      () => undefined,
+      () => undefined,
+    );
+    return pending;
+  }
   function tracked<Args extends unknown[], Result>(operation: (...args: Args) => Promise<Result>) {
     return async (...args: Args): Promise<Result> => {
       activeCalls += 1;
@@ -228,7 +240,7 @@ export function createAgentBrowserComputer(options: {
   }
 
   async function reserveBrowser(state: BrowserState): Promise<void> {
-    const pending = allocationQueue.then(async () => {
+    const pending = allocate(async () => {
       if (state.started || state.saved.navigationFailed || state.saved.signInPending) return;
       const occupied = () =>
         [...browsers.values()].filter(
@@ -263,7 +275,6 @@ export function createAgentBrowserComputer(options: {
         throw new Error('The browser session has expired. Open the URL again.');
       state.started = true;
     });
-    allocationQueue = pending.catch(() => {});
     await pending;
   }
 
@@ -321,17 +332,33 @@ export function createAgentBrowserComputer(options: {
                   ? { action: 'click', selector: args[1] }
                   : args[0] === 'fill'
                     ? { action: 'fill', selector: args[1], value: args[2] }
-                    : args[0] === 'scroll'
-                      ? { action: 'scroll', direction: args[1], amount: Number(args[2]) }
-                      : args[0] === 'screenshot'
-                        ? { action: 'screenshot', path: args[1], fullPage: false, annotate: false }
-                        : args[0] === 'download'
-                          ? { action: 'download', selector: args[1], path: args[2] }
-                          : args[0] === 'snapshot'
-                            ? { action: 'snapshot', compact: true }
-                            : args[0] === 'close'
-                              ? { action: 'close' }
-                              : null;
+                    : args[0] === 'press'
+                      ? { action: 'press', key: args[1] }
+                      : args[0] === 'scroll'
+                        ? {
+                            action: 'scroll',
+                            direction: args[1],
+                            amount: Number(args[2]),
+                            ...(args[4] ? { selector: args[4] } : {}),
+                          }
+                        : args[0] === 'screenshot'
+                          ? {
+                              action: 'screenshot',
+                              path: args[1],
+                              fullPage: false,
+                              annotate: false,
+                            }
+                          : args[0] === 'download'
+                            ? { action: 'download', selector: args[1], path: args[2] }
+                            : args[0] === 'snapshot'
+                              ? {
+                                  action: 'snapshot',
+                                  compact: true,
+                                  ...(args[3] ? { selector: args[3] } : {}),
+                                }
+                              : args[0] === 'close'
+                                ? { action: 'close' }
+                                : null;
       if (!request) throw new Error('Reopen this page before continuing browser actions.');
       const result = await drainInterruptedCommand(state, args[0], () =>
         requestDaemon(state.socket!, request, options.signal, 45_000, options.maxBytes),
@@ -343,7 +370,7 @@ export function createAgentBrowserComputer(options: {
     const config = resolve(runtimeRoot, 'browser-config.json');
     await writeFile(config, '{}', { mode: 0o600 });
     const proxyUrl = await proxy.url();
-    const profile = resolve(runtimeRoot, 'profiles', state.id);
+    const profile = profilePath(state);
     if (args[0] === 'open' && privateDisplay && !state.desktop) {
       try {
         state.desktop = await createDesktop(runtimeRoot);
@@ -682,8 +709,8 @@ export function createAgentBrowserComputer(options: {
       await serialize(state, async () => {
         controller.signal.throwIfAborted();
         if (state.injecting) throw new BrowserLockedError();
-        const profilePath = resolve(runtimeRoot, 'profiles', state.id);
-        const executablePath = await signInBrowser(profilePath);
+        const path = profilePath(state);
+        const executablePath = await signInBrowser(path);
         if (state.closing || disposed) throw new BrowserLockedError();
         if (state.started) await currentUrl(state);
         const destination = state.saved.resumeUrl || state.saved.url;
@@ -707,7 +734,7 @@ export function createAgentBrowserComputer(options: {
         state.browserExecutable = executablePath;
         if (state.closing || disposed) throw new BrowserLockedError();
         state.signInWindow = await signInLauncher.start({
-          profilePath,
+          profilePath: path,
           proxyUrl: await proxy.url(),
           url,
           executablePath,
@@ -819,7 +846,7 @@ export function createAgentBrowserComputer(options: {
       state.signInWindow = undefined;
       const destination = state.saved.resumeUrl || state.saved.url;
       const url = destination ? browserUrl(destination).href : 'about:blank';
-      state.browserExecutable ??= await signInBrowser(resolve(runtimeRoot, 'profiles', state.id));
+      state.browserExecutable ??= await signInBrowser(profilePath(state));
       state.saved.restoreSession = true;
       if (state.closing || disposed) throw new BrowserLockedError();
       try {
@@ -873,28 +900,68 @@ export function createAgentBrowserComputer(options: {
     return inputValues;
   }
 
-  async function observe(state: BrowserState, signal?: AbortSignal): Promise<BrowserObservation> {
+  async function observe(
+    state: BrowserState,
+    signal?: AbortSignal,
+    input?: BrowserAction,
+  ): Promise<BrowserObservation> {
     if (state.injecting || state.manualUntil || state.saved.signInPending)
       throw new BrowserLockedError();
     const url = await currentUrl(state, signal);
+    if (state.saved.allowedOrigin && new URL(url).origin !== state.saved.allowedOrigin)
+      throw new BrowserActionError('browser_origin_changed');
     const inputValues = await maskFields(state, signal);
-    const visible = await evaluate(
+    const scope =
+      input?.action === 'snapshot' && input.selector ? selector(input.selector) : undefined;
+    const offset = input?.action === 'snapshot' ? (input.offset ?? 0) : 0;
+    const controlOffset = input?.action === 'snapshot' ? (input.controlOffset ?? 0) : 0;
+    if (!Number.isInteger(offset) || offset < 0 || offset > 100_000)
+      throw new Error('Choose a page offset of at most 100000 characters.');
+    if (!Number.isInteger(controlOffset) || controlOffset < 0 || controlOffset > 100_000)
+      throw new Error('Choose a control offset of at most 100000.');
+    const visible = (await evaluate(
       state,
-      `(() => ({ text: String(document.body?.innerText ?? '').slice(0, 16000) }))()`,
+      browserViewScript(scope, offset, controlOffset),
       signal,
+    )) as {
+      missing?: boolean;
+      text?: string;
+      total?: number;
+      controls?: Array<{ selector: string; label: string }>;
+      controlsTotal?: number;
+      scrollAreas?: Array<{ selector: string; height: number; viewport: number }>;
+      scrollAreasTotal?: number;
+    };
+    if (visible?.missing)
+      return {
+        text: 'The selected page area is no longer available. Take a full snapshot.',
+        url: redactBrowserUrl(url, state.secrets),
+        candidates: [],
+      };
+    const data = await command(
+      state,
+      scope ? ['snapshot', '-c', '-s', scope] : ['snapshot', '-c'],
+      { signal, maxBytes: 1024 * 1024 },
     );
-    const body =
-      visible && typeof visible === 'object' && 'text' in visible ? String(visible.text) : '';
-    const data = await command(state, ['snapshot', '-c'], { signal });
-    const structure = maskSnapshotInputValues(
+    const fullStructure = maskSnapshotInputValues(
       redactBrowserText(String(data.snapshot ?? data.text ?? JSON.stringify(data)), state.secrets),
       inputValues,
-    ).slice(0, 16_000);
-    const text = `${redactBrowserText(body, state.secrets)}\n\nPage structure:\n${structure}`;
+    );
+    const structure = fullStructure.slice(offset, offset + 16_000);
+    const body = redactBrowserText(String(visible?.text ?? ''), state.secrets);
+    const controls = (visible?.controls ?? [])
+      .filter((item) => typeof item.selector === 'string' && typeof item.label === 'string')
+      .slice(0, 80)
+      .map((item) => ({ id: item.selector, label: redactBrowserText(item.label, state.secrets) }));
+    const scrollAreas = (visible?.scrollAreas ?? [])
+      .filter((item) => typeof item.selector === 'string')
+      .slice(0, 20)
+      .map((item) => `${item.selector} (${item.viewport} of ${item.height} pixels)`);
+    const text = `Page text (${offset}-${Math.min(offset + 16_000, visible?.total ?? 0)} of ${visible?.total ?? 0} characters):\n${body}\n\nPage structure (${offset}-${Math.min(offset + 16_000, fullStructure.length)} of ${fullStructure.length} characters):\n${structure}\n\nControls (${controlOffset}-${Math.min(controlOffset + 80, visible?.controlsTotal ?? 0)} of ${visible?.controlsTotal ?? 0}):\n${controls.map((item) => `${item.label}: ${item.id}`).join('\n') || 'None'}\n\nScrollable areas (${controlOffset}-${Math.min(controlOffset + 20, visible?.scrollAreasTotal ?? 0)} of ${visible?.scrollAreasTotal ?? 0}):\n${scrollAreas.join('\n') || 'None'}`;
     return {
       text,
       url: redactBrowserUrl(url, state.secrets),
-      candidates: browserCandidates(structure),
+      candidates: [...browserCandidates(structure), ...controls].slice(0, 100),
     };
   }
 
@@ -923,11 +990,13 @@ export function createAgentBrowserComputer(options: {
       signal?.throwIfAborted();
       if (input.action === 'open') {
         const url = browserUrl(input.url ?? '');
+        if (state.saved.allowedOrigin && url.origin !== state.saved.allowedOrigin)
+          throw new BrowserActionError('browser_origin_changed');
         const previous = state.saved.restoreSession ? state.saved : await screens.load(id);
         if (previous?.restoreSession) {
           state.saved.restoreSession = true;
           state.saved.sensitive = true;
-          state.browserExecutable ??= await signInBrowser(resolve(runtimeRoot, 'profiles', id));
+          state.browserExecutable ??= await signInBrowser(profilePath(state));
         }
         if (state.closing || disposed) throw new BrowserLockedError();
         signal?.throwIfAborted();
@@ -1004,9 +1073,30 @@ export function createAgentBrowserComputer(options: {
           await command(state, ['fill', target, text], { signal });
         }
         if (input.action === 'scroll')
-          await command(state, ['scroll', input.direction ?? 'down', '600'], { signal });
+          await command(
+            state,
+            input.selector
+              ? ['scroll', input.direction ?? 'down', '600', '-s', selector(input.selector)]
+              : ['scroll', input.direction ?? 'down', '600'],
+            { signal },
+          );
+        if (input.action === 'press') {
+          if (
+            !input.key ||
+            !['Enter', 'Escape', 'Tab', 'ArrowDown', 'ArrowUp', 'PageDown', 'PageUp'].includes(
+              input.key,
+            )
+          )
+            throw new Error('Choose a supported browser key.');
+          await command(state, ['press', input.key], { signal });
+        }
       }
-      return observe(state, signal);
+      if (input.waitMs !== undefined) {
+        if (!Number.isInteger(input.waitMs) || input.waitMs < 0 || input.waitMs > 15_000)
+          throw new Error('Choose a wait of at most 15 seconds.');
+        if (input.waitMs) await delay(input.waitMs, undefined, { signal });
+      }
+      return observe(state, signal, input);
     });
   }
 
@@ -1023,6 +1113,8 @@ export function createAgentBrowserComputer(options: {
       signal?.throwIfAborted();
       markActivity(id);
       const current = await currentUrl(state, signal);
+      if (state.saved.allowedOrigin && new URL(current).origin !== state.saved.allowedOrigin)
+        throw new BrowserActionError('browser_origin_changed');
       const directory = resolve(runtimeRoot, 'downloads', state.id);
       let target = input.selector ? selector(input.selector) : undefined;
       let url = input.url;
@@ -1052,6 +1144,8 @@ export function createAgentBrowserComputer(options: {
         }
       }
       const crossOrigin = url && new URL(url).origin !== new URL(current).origin;
+      if (state.saved.allowedOrigin && url && new URL(url).origin !== state.saved.allowedOrigin)
+        throw new BrowserActionError('browser_origin_changed');
       if (url) {
         if (!url.startsWith(`blob:${new URL(current).origin}/`)) browserUrl(url);
       }
@@ -1216,6 +1310,8 @@ export function createAgentBrowserComputer(options: {
 
   async function inspectPage(state: BrowserState): Promise<LoginInspection> {
     const url = await currentUrl(state);
+    if (state.saved.allowedOrigin && new URL(url).origin !== state.saved.allowedOrigin)
+      throw new BrowserActionError('browser_origin_changed');
     await maskFields(state);
     const inspection = loginInspectionSchema.parse(await evaluate(state, loginInspectionScript()));
     if (inspection.origin !== new URL(url).origin)
@@ -1278,7 +1374,9 @@ export function createAgentBrowserComputer(options: {
     if (state.saved.navigationFailed) throw new BrowserActionError('browser_navigation_failed');
     if (state.recovered && state.saved.sensitive && !state.secrets.size)
       throw new Error('Reopen the login page before continuing this browser session.');
-    await currentUrl(state, signal);
+    const url = await currentUrl(state, signal);
+    if (state.saved.allowedOrigin && new URL(url).origin !== state.saved.allowedOrigin)
+      throw new BrowserActionError('browser_origin_changed');
     await maskFields(state, signal);
     const path = resolve(runtimeRoot, `screen-${state.id}.capture.png`);
     await command(state, ['screenshot', path], { signal });
@@ -1293,6 +1391,8 @@ export function createAgentBrowserComputer(options: {
     const saved = await screens.load(id);
     if (saved?.signInPending) throw new BrowserLockedError();
     if (saved?.navigationFailed) throw new BrowserActionError('browser_navigation_failed');
+    if (saved?.allowedOrigin && saved.url && new URL(saved.url).origin !== saved.allowedOrigin)
+      throw new BrowserActionError('browser_origin_changed');
     const buffer = saved?.capturedAt ? await screens.read(id) : null;
     screenStatuses.set(
       id,
@@ -1320,7 +1420,7 @@ export function createAgentBrowserComputer(options: {
   }
 
   async function closeBrowser(id: string, idleAt?: number): Promise<void> {
-    const state = browsers.get(taskId(id));
+    const state = browsers.get(taskId(id)) ?? (await recoverBrowser(id, true));
     if (!state) return;
     if (idleAt === undefined) {
       state.closing = true;
@@ -1364,6 +1464,81 @@ export function createAgentBrowserComputer(options: {
       () => undefined,
     );
     await pending;
+  }
+
+  async function bindProfile(
+    id: string,
+    rawProfileId: string,
+    rawAllowedOrigin?: string,
+  ): Promise<void> {
+    const profileId = z.uuid().parse(rawProfileId);
+    const allowedOrigin = rawAllowedOrigin ? browserUrl(rawAllowedOrigin).origin : undefined;
+    if (rawAllowedOrigin && allowedOrigin !== rawAllowedOrigin)
+      throw new Error('An exact website origin is required.');
+    taskId(id);
+    await allocate(async () => {
+      const previous = browsers.get(id) ?? (await recoverBrowser(id, true));
+      if (previous?.saved.profileId === profileId) {
+        if (previous.saved.allowedOrigin !== allowedOrigin) {
+          previous.saved.allowedOrigin = allowedOrigin;
+          previous.saved.capturedAt = undefined;
+          await screens.clearImage(id);
+          await saveState(previous);
+        }
+        return;
+      }
+      if (previous?.injecting || previous?.manualUntil || previous?.saved.signInPending)
+        throw new BrowserLockedError();
+      if (previous) await closeBrowser(id);
+      const relatedIds = await screens.profileScreens(profileId);
+      const restoreSession = (
+        await Promise.all(relatedIds.map((relatedId) => screens.load(relatedId)))
+      ).some((saved) => saved?.restoreSession);
+      for (const otherId of relatedIds) {
+        if (otherId === id) continue;
+        const other = browsers.get(otherId) ?? (await recoverBrowser(otherId, true));
+        if (!other) continue;
+        if (other.busy || other.injecting || other.manualUntil || other.heldUntil > Date.now())
+          throw new BrowserLockedError();
+        await closeBrowser(otherId);
+      }
+      const state = stateFor(id);
+      state.saved = {
+        version: 1,
+        url: '',
+        sensitive: restoreSession,
+        active: false,
+        profileId,
+        allowedOrigin,
+        restoreSession,
+      };
+      await screens.clearImage(id);
+      await saveState(state);
+    });
+  }
+
+  async function deleteProfile(rawProfileId: string): Promise<void> {
+    const profileId = z.uuid().parse(rawProfileId);
+    await allocate(async () => {
+      const ids = await screens.profileScreens(profileId);
+      for (const id of ids) {
+        const state = browsers.get(id) ?? (await recoverBrowser(id, true));
+        if (
+          state &&
+          (state.busy || state.injecting || state.manualUntil || state.heldUntil > Date.now())
+        )
+          throw new BrowserLockedError();
+        if (state) await closeBrowser(id);
+      }
+      await rm(resolve(runtimeRoot, 'profiles', profileId), { recursive: true, force: true });
+      for (const id of ids) {
+        await Promise.all([
+          screens.delete(id),
+          rm(resolve(runtimeRoot, 'downloads', id), { recursive: true, force: true }),
+        ]);
+        screenStatuses.delete(id);
+      }
+    });
   }
 
   function browserStatus(): string {
@@ -1412,6 +1587,8 @@ export function createAgentBrowserComputer(options: {
         ? { taskId: manual.id, lastActivityAt: new Date(manual.lastUsed).toISOString() }
         : lastSession;
     },
+    bindProfile: tracked(bindProfile),
+    deleteProfile: tracked(deleteProfile),
     takeControl: tracked(takeControl),
     openSignIn: tracked(openSignIn),
     finishSignIn: tracked(finishSignIn),

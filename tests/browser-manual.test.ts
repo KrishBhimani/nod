@@ -349,13 +349,25 @@ test('a recovered browser resumes supported agent actions over its existing priv
       selector: '#ordinary-search',
       text: 'synthetic query',
     });
+    await restored.act('fixture', { action: 'press', key: 'Enter' });
     await restored.act('fixture', { action: 'scroll', direction: 'up' });
+    await restored.act('fixture', { action: 'scroll', direction: 'down', selector: '#inbox' });
+    const waiting = Date.now();
+    await restored.act('fixture', { action: 'snapshot', waitMs: 20 });
+    await restored.act('fixture', { action: 'snapshot', selector: 'body', offset: 100 });
+    assert.ok(Date.now() - waiting >= 15);
+    await assert.rejects(restored.act('fixture', { action: 'snapshot', waitMs: 15_001 }));
+    await assert.rejects(restored.act('fixture', { action: 'snapshot', offset: 100_001 }));
     assert.equal(
       f.actions.some((action) => action.action === 'click' && action.selector === '@e1'),
       true,
     );
     assert.equal(
       f.actions.some((action) => action.action === 'fill' && action.value === 'synthetic query'),
+      true,
+    );
+    assert.equal(
+      f.actions.some((action) => action.action === 'press' && action.key === 'Enter'),
       true,
     );
     assert.equal(
@@ -369,6 +381,14 @@ test('a recovered browser resumes supported agent actions over its existing priv
         (action) =>
           action.action === 'scroll' && action.amount === 600 && action.direction === 'up',
       ),
+      true,
+    );
+    assert.equal(
+      f.actions.some((action) => action.action === 'scroll' && action.selector === '#inbox'),
+      true,
+    );
+    assert.equal(
+      f.actions.some((action) => action.action === 'snapshot' && action.selector === 'body'),
       true,
     );
     assert.equal(

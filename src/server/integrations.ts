@@ -67,6 +67,8 @@ type IntegrationOptions = {
   discovered?: Awaited<ReturnType<typeof createDiscoveredConnections>>;
   browserAccounts?: () => Promise<VaultLoginEntry[]>;
   removeBrowserAccount?: (id: string) => Promise<void>;
+  browserConnections?: () => Promise<Connection[]>;
+  removeBrowserConnection?: (id: string) => Promise<unknown>;
 };
 
 function browserService(origin: string) {
@@ -505,6 +507,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     return [
       ...result,
       ...((await options.discovered?.list()) ?? []),
+      ...((await options.browserConnections?.()) ?? []),
       ...browserAccounts.map((entry): Connection => {
         const service = browserService(entry.origin);
         return {
@@ -1357,6 +1360,17 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         '/api/apps/:slug/accounts/:connectionId/disconnect',
         async (request) => {
           const id = z.uuid().parse(request.params.connectionId);
+          if (
+            (await options.browserConnections?.())?.some(
+              (entry) => entry.connectionId === id && entry.slug === request.params.slug,
+            )
+          ) {
+            if (!options.removeBrowserConnection)
+              throw new IntegrationError('This account is unavailable.', 503);
+            await options.removeBrowserConnection(id);
+            options.refresh?.();
+            return { ok: true };
+          }
           const browser = ((await options.browserAccounts?.()) ?? []).find(
             (entry) => entry.id === id && browserService(entry.origin).slug === request.params.slug,
           );

@@ -1,5 +1,9 @@
 # Agent runtime
 
+`browser_connection connect` is for an account website when no suitable saved or official MCP, API or CLI path serves the task. It supplies a checked private sign-in link in chat and stops the segment. `browser_connection use` binds a saved profile to the current task before any account browsing. Use its connection ID and a URL on the saved origin. A browser session can expire. Reconnect through the secure flow when the site asks for sign-in. Never treat the link or saved session as permission to send, apply, publish, buy or delete.
+
+The `browser` tool supports bounded key presses for search and navigation after a field has focus. A snapshot can wait up to 15 seconds for a slow page before observation. It can select a page area and page through text, structure and controls. It reports scrollable areas so a scroll can target an inner list. `fill` still rejects credential fields. A key press must not send a message, post, application or purchase without the user's instruction.
+
 `index.ts` exports `createAgentRuntime({agent,computer,workspace,chooseBrowserAction?,webSearch?})`. Its methods are `runTask`, `waitForTask`, `inspectTools`, `status` and `dispose`. Runtime lifecycle, tool validation, budgets, prompt construction and waiting states belong here. Concrete SDKs and provider configuration belong in `../providers` and server composition.
 
 `tools.ts` owns tool names, descriptions and schemas. Sessions and `inspectTools` use that same catalog. Inspection must not open a workspace, browser or model session. Include optional browser chooser and web search tools only when the factory received those capabilities.

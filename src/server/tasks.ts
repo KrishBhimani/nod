@@ -96,6 +96,11 @@ export interface TaskDependencies {
     task?: { id: string; revision: number },
     proposal?: unknown,
   ) => Promise<unknown>;
+  browserConnection?: (
+    action: 'connect' | 'use',
+    input: { url: string; connectionId?: string; label?: string },
+    task: { id: string; revision: number },
+  ) => Promise<unknown>;
   reactToMessage?: (
     input: AgentReactionInput,
   ) => ReturnType<NonNullable<RuntimeContext['reactToMessage']>>;
@@ -1252,6 +1257,17 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
               },
               proposal,
             );
+            await ensureCurrent();
+            return result;
+          }
+        : undefined,
+      browserConnection: dependencies.browserConnection
+        ? async (action, input) => {
+            await ensureCurrent();
+            const result = await dependencies.browserConnection!(action, input, {
+              id: taskId,
+              revision,
+            });
             await ensureCurrent();
             return result;
           }

@@ -122,6 +122,18 @@
   width: min(500px, calc(100vw - 32px));
   padding: 24px;
 }
+.app-website-dialog {
+  width: min(480px, calc(100vw - 32px));
+  padding: 24px;
+}
+.app-website-dialog form {
+  display: grid;
+  gap: 16px;
+  margin-top: 22px;
+}
+.app-website-dialog .input {
+  width: 100%;
+}
 .app-discovery-path {
   display: grid;
   gap: 3px;

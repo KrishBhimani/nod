@@ -50,6 +50,12 @@ function metadata(computer?: Computer, request?: BrowserRequest): BrowserMetadat
 async function dispatch(computer: Computer, request: BrowserRequest, signal: AbortSignal) {
   signal.throwIfAborted();
   switch (request.method) {
+    case 'bindProfile':
+      if (!computer.bindProfile) throw new Error();
+      return computer.bindProfile(request.taskId, request.profileId, request.allowedOrigin);
+    case 'deleteProfile':
+      if (!computer.deleteProfile) throw new Error();
+      return computer.deleteProfile(request.profileId);
     case 'act':
       return computer.act(request.taskId, request.input, signal);
     case 'download': {

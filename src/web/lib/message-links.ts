@@ -9,7 +9,7 @@ export type MessagePart =
 const navigationPaths = new Set(['/', '/apps', '/goals', '/schedule', '/channels', '/vault']);
 const connectionPath =
   /^\/apps\?connect=[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-const localPath = /^\/(api\/artifacts|vault|credentials)\/[A-Za-z0-9_-]+\/?$/;
+const localPath = /^\/(api\/artifacts|vault|credentials|browser-connect)\/[A-Za-z0-9_-]+\/?$/;
 const credentialLabels = [
   'Vault',
   'Open Vault',
@@ -19,6 +19,7 @@ const credentialLabels = [
   'Continue sign-in',
   'Enter verification code',
   'Choose a sign-in method',
+  'Connect website',
 ];
 
 export function credentialLinkLabel(value: string): string {
@@ -61,7 +62,9 @@ export function safeMessageLink(value: string, origin: string): SafeLink | null 
       return {
         href: url.pathname,
         kind:
-          url.pathname.startsWith('/credentials/') || url.pathname.startsWith('/vault/')
+          url.pathname.startsWith('/credentials/') ||
+          url.pathname.startsWith('/vault/') ||
+          url.pathname.startsWith('/browser-connect/')
             ? 'credential'
             : 'artifact',
       };
@@ -75,7 +78,7 @@ export function safeMessageLink(value: string, origin: string): SafeLink | null 
 export function parseMessageText(text: string, origin: string): MessagePart[] {
   const parts: MessagePart[] = [];
   const pattern =
-    /\[([^\]\n]+)\]\(([^()\s]+)\)|(?<![\w:/])(?:https?:\/\/|\/(?:api\/artifacts|vault|credentials)\/)[^\s<>"'\[\]()]+/gi;
+    /\[([^\]\n]+)\]\(([^()\s]+)\)|(?<![\w:/])(?:https?:\/\/|\/(?:api\/artifacts|vault|credentials|browser-connect)\/)[^\s<>"'\[\]()]+/gi;
   let cursor = 0;
   for (const match of text.matchAll(pattern)) {
     if (match.index > cursor) parts.push({ type: 'text', text: text.slice(cursor, match.index) });
