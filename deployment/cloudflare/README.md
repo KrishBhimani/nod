@@ -158,6 +158,8 @@ For this cutover, the production `GATEWAY_ENV` secret can still contain `SIDEKIC
 
 Ordinary deployment refuses a target SHA that already matches healthy production, including a rerun intended only to change `GATEWAY_ENV`. The check runs before creating a deployment operation or publishing Worker code/secrets; image pushes can already have occurred. Running containers retain their startup environment, so the same image is not a configuration-activation guarantee. Build and validate a new release, then use the normal rollout for configuration changes. Explicit `recover` remains limited to the exact original interrupted operation; it is not a new configuration deployment. First-deployment bootstrap retains its separate absence checks.
 
+To enable the Inspector for an allowlisted developer, add `"DEV_INSPECTOR":"true"` and that developer's account UUID in `OTTO_DEVELOPER_IDS` to the `GATEWAY_ENV` secret of the GitHub `production` environment. Keep the JSON under 5 KiB and never print it. Then deploy a new release through the normal rollout, which restarts the gateway and every tenant with the new environment. Other accounts still do not get the signed developer capability or Inspector access.
+
 An existing deployment follows these steps:
 
 1. A purpose-specific HMAC derived from `OTTO_MASTER_KEY` authorizes the bounded `POST /api/deployment` control request. It binds environment, body, target and a short-lived replay-protected request ID; Google sessions and tenant credentials cannot authorize deployment. No additional long-lived key is needed.
