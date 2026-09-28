@@ -1,11 +1,30 @@
 import { useEffect, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { FileText } from 'lucide-react';
+import { ExternalLink, FileText } from 'lucide-react';
 import { safeMessageLink } from '../lib/message-links';
 
 type Sheet = { name: string; rows: string[][]; header: boolean };
 type Content = { kind: 'markdown'; text: string } | { kind: 'spreadsheet'; sheets: Sheet[] };
+
+function SpreadsheetCell({ value }: { value: string }) {
+  const link = safeMessageLink(value, window.location.origin);
+  if (link?.kind !== 'external') return value;
+  const host = new URL(link.href).hostname;
+  return (
+    <a
+      className="attachment-table-link"
+      href={link.href}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={link.href}
+      aria-label={`Open ${host}`}
+    >
+      {host}
+      <ExternalLink size={13} aria-hidden="true" />
+    </a>
+  );
+}
 
 function parseCsv(text: string): string[][] {
   const rows: string[][] = [];
@@ -88,7 +107,9 @@ function Spreadsheet({ sheets }: { sheets: Sheet[] }) {
               <tr key={rowIndex}>
                 {!sheet.header && <th scope="row">{rowIndex + 1}</th>}
                 {headings.map((_, columnIndex) => (
-                  <td key={columnIndex}>{row[columnIndex] ?? ''}</td>
+                  <td key={columnIndex}>
+                    <SpreadsheetCell value={row[columnIndex] ?? ''} />
+                  </td>
                 ))}
               </tr>
             ))}

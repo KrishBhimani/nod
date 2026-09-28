@@ -291,7 +291,7 @@ test('owned Markdown and CSV open readable previews with safe links and exact ta
     new Response(
       String(input).includes(markdown.url)
         ? '# Brief\n\n| Tool | Result |\n| --- | --- |\n| One | [Source](https://example.com) |\n<script>window.bad = true</script>'
-        : 'Company,Note\r\nA,"first, second"\r\nB,"two\nlines"\r\n',
+        : 'Company,Note,Source\r\nA,"first, second",https://example.com/research?year=2024&country=DEU\r\nB,"two\nlines",javascript:alert(1)\r\n',
     );
   const container = document.createElement('div');
   document.body.append(container);
@@ -330,10 +330,16 @@ test('owned Markdown and CSV open readable previews with safe links and exact ta
         Array.from(row.querySelectorAll('td')).map((cell) => cell.textContent),
       ),
       [
-        ['A', 'first, second'],
-        ['B', 'two\nlines'],
+        ['A', 'first, second', 'example.com'],
+        ['B', 'two\nlines', 'javascript:alert(1)'],
       ],
     );
+    const source = viewer.querySelector<HTMLAnchorElement>('.attachment-table-link')!;
+    assert.equal(source.href, 'https://example.com/research?year=2024&country=DEU');
+    assert.equal(source.title, source.href);
+    assert.equal(source.target, '_blank');
+    assert.equal(source.rel, 'noopener noreferrer');
+    assert.equal(viewer.querySelectorAll('.attachment-table-link').length, 1);
     assert.equal(viewer.querySelector('a[download]')?.getAttribute('href'), csv.url);
   } finally {
     await act(async () => root.unmount());
