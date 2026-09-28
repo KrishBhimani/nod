@@ -31,6 +31,24 @@ const consent = new Map<
   string,
   { ownerId: string; service: IntegrationService; returnTo: string }
 >();
+const telegramChannels = new Map<string, Record<string, unknown>>();
+const telegramCodes = new Map<string, string>();
+function startTelegramPairing(owner: string) {
+  for (const [code, value] of telegramCodes) if (value === owner) telegramCodes.delete(code);
+  const code = randomBytes(24).toString('base64url');
+  telegramCodes.set(code, owner);
+  const channel = {
+    provider: 'telegram',
+    enabled: true,
+    mode: 'webhook',
+    webhookStatus: 'registered',
+    accountName: 'Otto fixture bot',
+    accountHandle: '@otto_fixture_bot',
+    pairingExpiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+  };
+  telegramChannels.set(owner, channel);
+  return { ok: true, channel, pairingUrl: `${origin}/fixture/telegram?start=${code}` };
+}
 const avatar = new Uint8Array(
   await readFile(new URL('../public/apple-touch-icon.png', import.meta.url)),
 );
@@ -179,6 +197,44 @@ const app = await createGateway({
           });
         return Response.json(preferences.get(owner) ?? previous);
       }
+      if (url.pathname === '/api/channels')
+        return Response.json({
+          channels: ['telegram', 'whatsapp'].map((provider) => ({
+            provider,
+            status:
+              provider === 'telegram' && telegramChannels.has(owner) ? 'configured' : 'disabled',
+            missing: [],
+          })),
+          error: null,
+        });
+      if (url.pathname === '/api/channel-settings')
+        return Response.json({
+          ready: true,
+          channels: telegramChannels.has(owner) ? [telegramChannels.get(owner)] : [],
+        });
+      if (url.pathname === '/api/channel-settings/telegram' && request.method === 'PUT') {
+        const input = (await request.json()) as { botToken?: string };
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        if (!/^\d{5,}:[A-Za-z0-9_-]{20,}$/.test(input.botToken?.trim() ?? ''))
+          return Response.json(
+            {
+              error: 'The account could not be verified. Check the token, account and permissions.',
+            },
+            { status: 400 },
+          );
+        return Response.json(startTelegramPairing(owner));
+      }
+      if (url.pathname === '/api/channel-settings/telegram/pairing' && request.method === 'POST')
+        return telegramChannels.get(owner)?.pairingExpiresAt
+          ? Response.json(startTelegramPairing(owner))
+          : Response.json(
+              { error: 'A new start link is not available. Remove Telegram and connect it again.' },
+              { status: 400 },
+            );
+      if (url.pathname === '/api/channel-settings/telegram' && request.method === 'DELETE') {
+        telegramChannels.delete(owner);
+        return Response.json({ ok: true, channel: { provider: 'telegram', enabled: false } });
+      }
       if (url.pathname === '/api/messages/history')
         return Response.json({ messages: [], hasMore: false });
       if (url.pathname === '/api/messages')
@@ -228,6 +284,40 @@ app.get('/fixture/sign-in/:index', async (request, reply) => {
   return reply
     .header('set-cookie', `${cookieName}=${token}; Path=/; HttpOnly; SameSite=Lax`)
     .redirect('/');
+});
+app.get('/fixture/telegram', async (request, reply) => {
+  const code = new URL(request.url, origin).searchParams.get('start') ?? '';
+  if (!telegramCodes.has(code))
+    return reply.code(400).send('This fixture start link is not valid.');
+  return reply
+    .type('text/html')
+    .send(
+      page(
+        'Otto fixture bot',
+        `<p>This page stands in for Telegram. Press Start to send the one-time code.</p><a role="button" href="/fixture/telegram/start?start=${code}" style="padding:12px 20px;display:inline-block">Start</a>`,
+      ),
+    );
+});
+app.get('/fixture/telegram/start', async (request, reply) => {
+  const code = new URL(request.url, origin).searchParams.get('start') ?? '';
+  const owner = telegramCodes.get(code);
+  const channel = owner && telegramChannels.get(owner);
+  if (!channel || Date.parse(String(channel.pairingExpiresAt)) <= Date.now())
+    return reply.code(400).send('This fixture start link is not valid.');
+  telegramCodes.delete(code);
+  const name = users.find((user) => user.id === owner)?.name ?? 'Fixture';
+  delete channel.pairingExpiresAt;
+  channel.pairedUser = `@${name.toLowerCase().replaceAll(' ', '_')}`;
+  return reply
+    .type('text/html')
+    .send(page('Otto is connected', '<p>Send a message to start. You can return to Otto.</p>'));
+});
+app.get('/fixture/telegram/expire', async (request, reply) => {
+  const owner = session(new Headers({ cookie: request.headers.cookie ?? '' }))?.user.id;
+  const channel = owner && telegramChannels.get(owner);
+  if (!channel?.pairingExpiresAt) return reply.code(400).send('No fixture start link is waiting.');
+  channel.pairingExpiresAt = new Date(Date.now() - 1000).toISOString();
+  return reply.type('text/html').send(page('Start link expired', '<p>Return to Otto.</p>'));
 });
 app.get('/fixture/connect', async (request, reply) => {
   const token = new URL(request.url, origin).searchParams.get('token') ?? '';

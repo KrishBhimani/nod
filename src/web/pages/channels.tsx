@@ -1,6 +1,6 @@
 import { PageTitle } from '../components/page-title';
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Check, ExternalLink, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, ExternalLink, X } from 'lucide-react';
 import { api, errorMessage } from '../lib/api';
 import {
   channelLabel,
@@ -23,6 +23,14 @@ import {
   Loading,
   Notice,
 } from '../components/ui';
+import {
+  TelegramChecklist,
+  TelegramInline,
+  TelegramPairingStatus,
+  TelegramVariantSwitcher,
+  telegramVariant,
+  type TelegramFlow,
+} from './channels-telegram-prototype';
 
 const providers = [
   {
@@ -359,8 +367,11 @@ export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
   );
   const pairingExpiry = pairingUrl && !paired ? telegramSetup?.pairingExpiresAt : undefined;
   const expired = Boolean(pairingExpiry && Date.parse(pairingExpiry) <= Date.now());
-  const connected = channels.filter((channel) => channel.connected);
-  const available = channels.filter((channel) => !channel.connected);
+  const inlineTelegram = telegramVariant === 'C' && editing === 'telegram';
+  const connected = channels.filter(
+    (channel) => channel.connected && !(inlineTelegram && channel.provider.id === 'telegram'),
+  );
+  const available = channels.filter((channel) => !connected.includes(channel));
   async function load() {
     request.current?.abort();
     const current = new AbortController();
@@ -528,53 +539,78 @@ export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
       if (!current.signal.aborted) setBusy(false);
     }
   }
+  const telegramFlow: TelegramFlow = {
+    hosted,
+    busy,
+    error,
+    fields,
+    onField: (name, value) => setFields((current) => ({ ...current, [name]: value })),
+    onVerify: (event) => void submit(event),
+    onClose: close,
+    onNewLink: () => void startPairing(),
+    pairingUrl,
+    paired,
+    expired,
+    expiresAt: pairingExpiry,
+    pairedUser: telegramSetup?.pairedUser,
+    botHandle: telegramSetup?.accountHandle,
+    botUrl: telegramBotUrl(telegramSetup?.accountHandle),
+    linkRef: telegramStartLink,
+  };
   function cards(items: typeof channels) {
     return (
       <div className="channel-options">
-        {items.map(({ provider, setup, configured, connected: isConnected }) => (
-          <article
-            className={`channel-option${isConnected ? ' is-connected' : ''}`}
-            key={provider.id}
-            aria-labelledby={`channel-${provider.id}`}
-          >
-            <div className="channel-option-heading">
-              <img src={`/logos/${provider.id}.svg`} alt="" width={25} height={25} />
-              <div>
-                <h3 id={`channel-${provider.id}`}>{provider.name}</h3>
-                <p className="channel-option-benefit">{provider.description}</p>
+        {items.map(({ provider, setup, configured, connected: saved }) => {
+          const isConnected = saved && !(inlineTelegram && provider.id === 'telegram');
+          return (
+            <article
+              className={`channel-option${isConnected ? ' is-connected' : ''}`}
+              key={provider.id}
+              aria-labelledby={`channel-${provider.id}`}
+            >
+              <div className="channel-option-heading">
+                <img src={`/logos/${provider.id}.svg`} alt="" width={25} height={25} />
+                <div>
+                  <h3 id={`channel-${provider.id}`}>{provider.name}</h3>
+                  <p className="channel-option-benefit">{provider.description}</p>
+                </div>
+                {!isConnected && !(inlineTelegram && provider.id === 'telegram') && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="channel-connect"
+                    aria-label={`Connect ${provider.name}`}
+                    data-connect-channel={provider.id}
+                    disabled={busy || !settings?.ready}
+                    onClick={() => open(provider.id)}
+                  >
+                    Connect
+                  </Button>
+                )}
               </div>
-              {!isConnected && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="channel-connect"
-                  aria-label={`Connect ${provider.name}`}
-                  data-connect-channel={provider.id}
-                  disabled={busy || !settings?.ready}
-                  onClick={() => open(provider.id)}
-                >
-                  Connect
-                </Button>
+              {inlineTelegram && provider.id === 'telegram' ? (
+                <TelegramInline {...telegramFlow} />
+              ) : (
+                isConnected && (
+                  <ChannelAccount
+                    provider={provider.id}
+                    setup={setup}
+                    configured={configured}
+                    hosted={hosted}
+                    onDisconnect={(trigger) => {
+                      removeTrigger.current = trigger;
+                      removeProvider.current = provider.id;
+                      setRemoveError('');
+                      setRemoving(provider.id);
+                    }}
+                    onPair={() => void startPairing()}
+                    busy={busy || !settings?.ready}
+                  />
+                )
               )}
-            </div>
-            {isConnected && (
-              <ChannelAccount
-                provider={provider.id}
-                setup={setup}
-                configured={configured}
-                hosted={hosted}
-                onDisconnect={(trigger) => {
-                  removeTrigger.current = trigger;
-                  removeProvider.current = provider.id;
-                  setRemoveError('');
-                  setRemoving(provider.id);
-                }}
-                onPair={() => void startPairing()}
-                busy={busy || !settings?.ready}
-              />
-            )}
-          </article>
-        ))}
+            </article>
+          );
+        })}
       </div>
     );
   }
@@ -664,130 +700,120 @@ export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
           </div>
         </DialogContent>
       </Dialog>
+      <TelegramVariantSwitcher />
       <Dialog
-        open={Boolean(editing)}
+        open={Boolean(editing) && !inlineTelegram}
         onOpenChange={(value) => {
           if (!value && !busy) close();
         }}
       >
         <DialogContent className="channel-wizard">
-          <div className="channel-wizard-heading">
-            <img src={`/logos/${editing ?? 'telegram'}.svg`} alt="" width={25} height={25} />
-            <span>{editing === 'whatsapp' ? 'WhatsApp' : 'Telegram'}</span>
-            {!paired && (
-              <small>
-                Step {step + 1} of {steps[editing ?? 'telegram'].length}
-              </small>
-            )}
-          </div>
-          <DialogTitle>
-            {paired ? 'Telegram is connected' : steps[editing ?? 'telegram'][step]}
-          </DialogTitle>
-          <DialogDescription className="channel-wizard-description">
-            {pairingUrl
-              ? paired
-                ? hosted
-                  ? 'Send your bot a message to start.'
-                  : 'Send your bot a message to start. Otto must be running to reply.'
-                : 'Open your bot and press Start. Otto connects the first Telegram account that uses this link.'
-              : step === 0
-                ? 'Connect in a few small steps. Otto checks your credentials before saving.'
-                : 'Credentials stay in this secure form, outside the conversation.'}
-          </DialogDescription>
-          {error && <Notice>{error}</Notice>}
-          {pairingUrl ? (
+          {editing === 'telegram' && telegramVariant === 'B' ? (
             <>
-              <div className="channel-wizard-step">
-                <div
-                  className={`channel-pairing${paired ? ' is-paired' : expired ? ' is-expired' : ''}`}
-                  role="status"
-                >
-                  {paired ? (
-                    <Check size={16} aria-hidden="true" />
-                  ) : (
-                    <span className="channel-pairing-signal" aria-hidden="true" />
-                  )}
-                  <div>
-                    <strong>
-                      {paired
-                        ? `Connected as ${telegramSetup?.pairedUser}`
-                        : expired
-                          ? 'This link has expired'
-                          : 'Waiting for Start'}
-                    </strong>
-                    <p>
-                      {paired
-                        ? 'Only this Telegram account can use your bot.'
-                        : expired
-                          ? 'Get a new link, then press Start again.'
-                          : `The link works once. It expires at ${new Date(pairingExpiry!).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`}
-                    </p>
-                  </div>
-                </div>
+              <div className="channel-wizard-heading">
+                <img src="/logos/telegram.svg" alt="" width={25} height={25} />
+                <span>Telegram</span>
               </div>
-              <div className="channel-wizard-actions">
-                <Button variant="ghost" size="sm" disabled={busy} onClick={close}>
-                  {paired ? 'Done' : 'Close'}
-                </Button>
-                {expired ? (
-                  <Button disabled={busy} onClick={() => void startPairing()}>
-                    {busy ? 'Creating link…' : 'Get a new link'}
-                  </Button>
-                ) : (
-                  <Button asChild>
-                    <a
-                      ref={telegramStartLink}
-                      href={
-                        paired
-                          ? (telegramBotUrl(telegramSetup?.accountHandle) ?? pairingUrl)
-                          : pairingUrl
-                      }
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      {paired ? 'Start conversation' : 'Open Telegram'}
-                      <ExternalLink size={14} />
-                    </a>
-                  </Button>
-                )}
-              </div>
+              <TelegramChecklist {...telegramFlow} />
             </>
           ) : (
-            <form onSubmit={(event) => void submit(event)}>
-              <div className="channel-wizard-step" key={`${editing}:${step}`}>
-                <ChannelSetupStep
-                  provider={editing ?? 'telegram'}
-                  step={step}
-                  fields={fields}
-                  onField={(name, value) => setFields((current) => ({ ...current, [name]: value }))}
-                  policy={policy}
-                  onPolicy={setPolicy}
-                  hosted={hosted}
-                />
+            <>
+              <div className="channel-wizard-heading">
+                <img src={`/logos/${editing ?? 'telegram'}.svg`} alt="" width={25} height={25} />
+                <span>{editing === 'whatsapp' ? 'WhatsApp' : 'Telegram'}</span>
+                {!paired && (
+                  <small>
+                    Step {step + 1} of {steps[editing ?? 'telegram'].length}
+                  </small>
+                )}
               </div>
-              <div className="channel-wizard-actions">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={busy}
-                  onClick={() => (step ? setStep((value) => value - 1) : close())}
-                >
-                  {step ? <ArrowLeft size={14} /> : null}
-                  {step ? 'Back' : 'Cancel'}
-                </Button>
-                <Button type="submit" disabled={busy}>
-                  {busy
-                    ? 'Verifying…'
-                    : step === steps[editing ?? 'telegram'].length - 1
-                      ? 'Verify and save'
-                      : 'Continue'}
-                  {!busy && step < steps[editing ?? 'telegram'].length - 1 && (
-                    <ArrowRight size={14} />
-                  )}
-                </Button>
-              </div>
-            </form>
+              <DialogTitle>
+                {paired ? 'Telegram is connected' : steps[editing ?? 'telegram'][step]}
+              </DialogTitle>
+              <DialogDescription className="channel-wizard-description">
+                {pairingUrl
+                  ? paired
+                    ? hosted
+                      ? 'Send your bot a message to start.'
+                      : 'Send your bot a message to start. Otto must be running to reply.'
+                    : 'Open your bot and press Start. Otto connects the first Telegram account that uses this link.'
+                  : step === 0
+                    ? 'Connect in a few small steps. Otto checks your credentials before saving.'
+                    : 'Credentials stay in this secure form, outside the conversation.'}
+              </DialogDescription>
+              {error && <Notice>{error}</Notice>}
+              {pairingUrl ? (
+                <>
+                  <div className="channel-wizard-step">
+                    <TelegramPairingStatus {...telegramFlow} />
+                  </div>
+                  <div className="channel-wizard-actions">
+                    <Button variant="ghost" size="sm" disabled={busy} onClick={close}>
+                      {paired ? 'Done' : 'Close'}
+                    </Button>
+                    {expired ? (
+                      <Button disabled={busy} onClick={() => void startPairing()}>
+                        {busy ? 'Creating link…' : 'Get a new link'}
+                      </Button>
+                    ) : (
+                      <Button asChild>
+                        <a
+                          ref={telegramStartLink}
+                          href={
+                            paired
+                              ? (telegramBotUrl(telegramSetup?.accountHandle) ?? pairingUrl)
+                              : pairingUrl
+                          }
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          {paired ? 'Start conversation' : 'Open Telegram'}
+                          <ExternalLink size={14} />
+                        </a>
+                      </Button>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <form onSubmit={(event) => void submit(event)}>
+                  <div className="channel-wizard-step" key={`${editing}:${step}`}>
+                    <ChannelSetupStep
+                      provider={editing ?? 'telegram'}
+                      step={step}
+                      fields={fields}
+                      onField={(name, value) =>
+                        setFields((current) => ({ ...current, [name]: value }))
+                      }
+                      policy={policy}
+                      onPolicy={setPolicy}
+                      hosted={hosted}
+                    />
+                  </div>
+                  <div className="channel-wizard-actions">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => (step ? setStep((value) => value - 1) : close())}
+                    >
+                      {step ? <ArrowLeft size={14} /> : null}
+                      {step ? 'Back' : 'Cancel'}
+                    </Button>
+                    <Button type="submit" disabled={busy}>
+                      {busy
+                        ? 'Verifying…'
+                        : step === steps[editing ?? 'telegram'].length - 1
+                          ? 'Verify and save'
+                          : 'Continue'}
+                      {!busy && step < steps[editing ?? 'telegram'].length - 1 && (
+                        <ArrowRight size={14} />
+                      )}
+                    </Button>
+                  </div>
+                </form>
+              )}
+            </>
           )}
         </DialogContent>
       </Dialog>
