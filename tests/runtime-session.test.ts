@@ -820,6 +820,56 @@ test('background runs deliver explicit useful messages without also delivering f
   assert.deepEqual(result.deltas, []);
 });
 
+test('background page reports reject no-change claims for failed browser pages', async () => {
+  let attempts = 0;
+  const result = await fixture(
+    async (tools) => {
+      await assert.rejects(
+        call(tools, 'browser', { action: 'open', url: 'https://example.com/pricing' }),
+      );
+      const blocked = await call(tools, 'send_message', {
+        text: 'Example: no change on https://example.com/pricing.',
+      });
+      assert.match(
+        blocked.content[0].type === 'text' ? blocked.content[0].text : '',
+        /needs_revision/,
+      );
+      const synonym = await call(tools, 'send_message', {
+        text: 'Example: https://example.com/pricing is unchanged.',
+      });
+      assert.match(
+        synonym.content[0].type === 'text' ? synonym.content[0].text : '',
+        /needs_revision/,
+      );
+      await call(tools, 'send_message', {
+        text: 'Example: https://example.com/pricing is unverified. Its current price is unknown.',
+      });
+      await call(tools, 'browser', { action: 'open', url: 'https://example.com/pricing' });
+      await call(tools, 'send_message', {
+        text: 'Example: no change on https://example.com/pricing after a fresh page check.',
+      });
+    },
+    { background: true },
+    {
+      computer: fakeComputer({
+        act: async () => {
+          attempts += 1;
+          if (attempts === 1) throw new Error('Page load failed.');
+          return {
+            url: 'https://example.com/pricing',
+            text: 'Current pricing details',
+            candidates: [],
+          };
+        },
+      }),
+    },
+  );
+  assert.deepEqual(result.replies, [
+    'Example: https://example.com/pricing is unverified. Its current price is unknown.',
+    'Example: no change on https://example.com/pricing after a fresh page check.',
+  ]);
+});
+
 test('normal user tasks still stream and deliver automatic final replies', async () => {
   const result = await fixture(async (_tools, emit) => {
     emit({ type: 'text_delta', text: 'Here is your answer.' });
