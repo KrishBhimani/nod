@@ -31,24 +31,70 @@ export function renameGatewayEnvironment(source, publicUrl) {
   return JSON.stringify(values);
 }
 
-export async function ensureStorageBucket(accountId, token, bucket, request = fetch) {
-  const collection = `https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/buckets`;
-  const endpoint = `${collection}/${bucket}`;
-  const headers = { authorization: `Bearer ${token}`, 'cf-r2-jurisdiction': 'eu' };
-  const read = () => request(endpoint, { headers, signal: AbortSignal.timeout(10_000) });
-  let response = await read();
-  if (response.status === 404) {
-    const created = await request(collection, {
-      method: 'POST',
-      headers: { ...headers, 'content-type': 'application/json' },
-      body: JSON.stringify({ name: bucket }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!created.ok) throw new Error('The private object bucket could not be created.');
-    response = await read();
+function storageTarget(config, environment) {
+  const selected = config.env?.[environment];
+  const bindings = selected?.r2_buckets;
+  if (
+    typeof selected?.name !== 'string' ||
+    !/^[a-zA-Z0-9_-]{1,63}$/.test(selected.name) ||
+    !Array.isArray(bindings) ||
+    bindings.length !== 1 ||
+    bindings[0]?.binding !== 'TENANT_FILES' ||
+    typeof bindings[0].bucket_name !== 'string' ||
+    !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(bindings[0].bucket_name) ||
+    bindings[0].jurisdiction !== 'eu'
+  )
+    throw new Error('Configure an explicit Worker name and one EU private object bucket.');
+  return { worker: selected.name, bucket: bindings[0].bucket_name };
+}
+
+export async function verifyStorageBinding(plan, environment, token, request = fetch) {
+  try {
+    const { worker, bucket } = storageTarget(plan.config, environment);
+    const accountId = plan.config.account_id;
+    if (!/^[a-f0-9]{32}$/.test(accountId) || typeof token !== 'string' || !token) throw new Error();
+    const response = await request(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${worker}/settings`,
+      {
+        method: 'GET',
+        headers: { authorization: `Bearer ${token}` },
+        cache: 'no-store',
+        redirect: 'error',
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    if (response.status !== 200 || !response.body) throw new Error();
+    const length = response.headers.get('content-length');
+    const limit = 512 * 1024;
+    if (length !== null && (!/^\d+$/.test(length) || Number(length) > limit)) throw new Error();
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of response.body) {
+      size += chunk.byteLength;
+      if (size > limit) throw new Error();
+      chunks.push(chunk);
+    }
+    const settings = JSON.parse(
+      new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, size)),
+    );
+    if (
+      settings?.success !== true ||
+      (settings.errors !== undefined &&
+        (!Array.isArray(settings.errors) || settings.errors.length !== 0)) ||
+      !Array.isArray(settings.result?.bindings)
+    )
+      throw new Error();
+    const bindings = settings.result.bindings.filter((binding) => binding?.name === 'TENANT_FILES');
+    if (
+      bindings.length !== 1 ||
+      bindings[0].type !== 'r2_bucket' ||
+      bindings[0].bucket_name !== bucket ||
+      bindings[0].jurisdiction !== 'eu'
+    )
+      throw new Error();
+  } catch {
+    throw new Error('The deployed private object binding did not pass verification.');
   }
-  if (!response.ok || (await response.json()).result?.jurisdiction !== 'eu')
-    throw new Error('The private object bucket is unavailable or has the wrong jurisdiction.');
 }
 
 export function deploymentPlan({ environment, release, accountId, publicUrl, gatewayEnv, config }) {
@@ -119,6 +165,7 @@ export function deploymentPlan({ environment, release, accountId, publicUrl, gat
   const selected = config.env?.[environment];
   if (!selected?.containers?.length)
     throw new Error('The selected environment has no container configuration.');
+  storageTarget(config, environment);
   const classes = selected.containers.map((container) => container.class_name);
   if (
     classes.some(
@@ -253,7 +300,6 @@ export async function deploy(environment, variables = process.env, dependencies 
     dependencies.deploymentControl ??
     createDeploymentClient({ environment, plan, variables: renamedVariables });
   const digest = dependencies.imageDigest ?? inspectImageDigest;
-  const ensureBucket = dependencies.ensureBucket ?? ensureStorageBucket;
   const privateDirectory = await mkdtemp(join(tmpdir(), 'otto-deploy-'));
   await chmod(privateDirectory, 0o700);
   try {
@@ -273,17 +319,6 @@ export async function deploy(environment, variables = process.env, dependencies 
     childEnvironment.CI = 'true';
     childEnvironment.WRANGLER_SEND_METRICS = 'false';
     childEnvironment.WRANGLER_LOG_PATH = join(privateDirectory, 'wrangler.log');
-    const storage = plan.config.env[environment].r2_buckets?.find(
-      (binding) => binding.binding === 'TENANT_FILES',
-    );
-    if (!storage?.bucket_name || storage.jurisdiction !== 'eu')
-      throw new Error('The deployment has no EU private object bucket.');
-    report('Preparing the private object bucket.');
-    await ensureBucket(
-      variables.CLOUDFLARE_ACCOUNT_ID,
-      variables.CLOUDFLARE_API_TOKEN,
-      storage.bucket_name,
-    );
     report('Publishing the verified container images.');
     for (const image of plan.localImages)
       await run(
@@ -308,12 +343,20 @@ export async function deploy(environment, variables = process.env, dependencies 
         secretPath,
         '--containers-rollout',
         'immediate',
+        '--experimental-provision=false',
         '--tag',
         plan.release,
         '--message',
         `Commit ${plan.release}`,
       ],
       childEnvironment,
+    );
+    report('Verifying the deployed private object binding.');
+    await verifyStorageBinding(
+      plan,
+      environment,
+      variables.CLOUDFLARE_API_TOKEN,
+      dependencies.request,
     );
     report('Waiting for every container role to finish its image rollout.');
     await lifecycle.verifyRollouts();
