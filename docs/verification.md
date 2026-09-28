@@ -1,5 +1,7 @@
 # Local verification
 
+The [2026-09-28 Otto cutover record](testing/results/2026-09-28-otto-cutover.md) separates successful legacy Sidekick CI/deployment and fresh chat from the new Otto deployment's pre-publication failure. Operator bucket setup and the deployment repair do not establish Otto signup, integrations or computer acceptance.
+
 The [browser download completion follow-up](testing/results/2026-09-28-browser-download-completion.md) records a later native CI failure and a separate controlled reproduction. Its validation and rollout status is tracked in that record.
 
 The [event-stream recovery follow-up](testing/results/2026-09-28-event-stream-recovery.md) passed 1,337 local tests with zero failures and three native-only skips, plus build and type/import/format checks. A real-browser loopback fixture confirmed automatic recovery after three HTTP 503 responses, retaining the earlier streamed text without reloading or resubmitting work. The same record separately dates successful main CI, automatic production publication and fresh streamed, persisted chat in existing IAB and Arc clients without reload. The production check did not capture `EventSource` entering `CLOSED`; the actual HTTP 503 reproduction remains local-fixture evidence.

@@ -4,8 +4,8 @@ import test from 'node:test';
 import {
   deploy as deployRelease,
   deploymentPlan,
-  ensureStorageBucket,
   renameGatewayEnvironment,
+  verifyStorageBinding,
 } from '../scripts/deploy.mjs';
 import { verifyDeployment } from '../scripts/smoke.mjs';
 import { recoverDeployment } from '../scripts/recover.mjs';
@@ -66,9 +66,22 @@ function configuration(computers = true) {
 
 function deploy(environment, environmentVariables, dependencies) {
   return deployRelease(environment, environmentVariables, {
-    ensureBucket: async () => {},
+    request: async () => workerSettings(),
     ...dependencies,
   });
+}
+
+function workerSettings(
+  bindings = [
+    {
+      name: 'TENANT_FILES',
+      type: 'r2_bucket',
+      bucket_name: 'otto-production-files',
+      jurisdiction: 'eu',
+    },
+  ],
+) {
+  return Response.json({ success: true, result: { bindings } });
 }
 
 function lifecycle(events = [], failures = {}) {
@@ -121,28 +134,6 @@ test('the rename converts the private gateway settings for a new Otto deployment
   );
 });
 
-test('the deployment creates a missing EU object bucket before publication', async () => {
-  const requests = [];
-  const request = async (url, options) => {
-    requests.push({ url, options });
-    if (requests.length === 1) return new Response(null, { status: 404 });
-    if (requests.length === 2) return Response.json({ success: true });
-    return Response.json({ result: { jurisdiction: 'eu' } });
-  };
-  await ensureStorageBucket(accountId, 'synthetic-token', 'otto-production-files', request);
-  assert.equal(requests.length, 3);
-  assert.equal(requests[0].options.headers['cf-r2-jurisdiction'], 'eu');
-  assert.equal(requests[1].options.method, 'POST');
-  assert.deepEqual(JSON.parse(requests[1].options.body), { name: 'otto-production-files' });
-  assert.equal(requests[2].url, requests[0].url);
-  await assert.rejects(
-    ensureStorageBucket(accountId, 'synthetic-token', 'otto-production-files', async () =>
-      Response.json({ result: { jurisdiction: 'default' } }),
-    ),
-    { message: 'The private object bucket is unavailable or has the wrong jurisdiction.' },
-  );
-});
-
 test('deployment validation rejects another environment, origin and invalid revision before publishing', () => {
   const input = planInput();
   for (const change of [
@@ -164,6 +155,205 @@ test('deployment validation rejects another environment, origin and invalid revi
   );
   assert.equal(JSON.parse(plan.secrets.GATEWAY_ENV).OTTO_RELEASE, release);
   assert.equal(JSON.stringify(plan.config).includes('synthetic-gateway-credential'), false);
+});
+
+test('deployment requires one explicit EU object binding before publication', () => {
+  const valid = configuration().env.production.r2_buckets[0];
+  for (const bindings of [
+    undefined,
+    {},
+    [],
+    [null],
+    [valid, valid],
+    [{ ...valid, binding: 'OTHER_FILES' }],
+    [{ ...valid, bucket_name: undefined }],
+    [{ ...valid, bucket_name: '' }],
+    [{ ...valid, bucket_name: 'private/path' }],
+    [{ ...valid, jurisdiction: undefined }],
+    [{ ...valid, jurisdiction: 'default' }],
+  ]) {
+    const config = configuration();
+    config.env.production.r2_buckets = bindings;
+    assert.throws(() => deploymentPlan(planInput(config)));
+  }
+  for (const name of [
+    undefined,
+    '',
+    '../other-worker',
+    'worker?other=true',
+    'Otto',
+    'otto_production',
+    '-otto',
+  ]) {
+    const config = configuration();
+    config.env.production.name = name;
+    assert.throws(() => deploymentPlan(planInput(config)));
+  }
+});
+
+test('routine CI preserves an explicit EU binding without R2 administration and verifies its deployed identity', async () => {
+  const events = [];
+  const requests = [];
+  let deploymentArgs;
+  await deploy('production', variables, {
+    config: configuration(),
+    deploymentControl: lifecycle(events),
+    imageDigest,
+    report() {},
+    command: async (args) => {
+      if (args[0] !== 'deploy') return;
+      deploymentArgs = args;
+      events.push('deploy');
+      const config = JSON.parse(await readFile(args[args.indexOf('--config') + 1], 'utf8'));
+      assert.deepEqual(config.env.production.r2_buckets, configuration().env.production.r2_buckets);
+    },
+    request: async (url, options) => {
+      requests.push(url);
+      events.push('storage');
+      assert.equal(
+        url,
+        `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/otto/settings`,
+      );
+      assert.equal(options.method, 'GET');
+      assert.equal(options.headers.authorization, `Bearer ${variables.CLOUDFLARE_API_TOKEN}`);
+      assert.equal(options.redirect, 'error');
+      assert.equal(options.cache, 'no-store');
+      assert.ok(options.signal instanceof AbortSignal);
+      return workerSettings();
+    },
+    smoke: async () => events.push('smoke'),
+  });
+  assert.equal(requests.length, 1);
+  assert.ok(deploymentArgs.includes('--experimental-provision=false'));
+  assert.deepEqual(events, [
+    'prepare',
+    'activate',
+    'deploy',
+    'storage',
+    'verifyRollouts',
+    'smoke',
+    'initialize',
+    'complete',
+  ]);
+});
+
+test('missing, denied or mismatched deployed storage never permits admission completion', async () => {
+  const valid = {
+    name: 'TENANT_FILES',
+    type: 'r2_bucket',
+    bucket_name: 'otto-production-files',
+    jurisdiction: 'eu',
+  };
+  for (const response of [
+    () => new Response('private-api-error', { status: 403 }),
+    () => new Response(null, { status: 404 }),
+    () => Response.json({ success: false, result: { bindings: [valid] } }),
+    () =>
+      Response.json({
+        success: true,
+        errors: [{ message: 'private-error' }],
+        result: { bindings: [valid] },
+      }),
+    () => Response.json({ success: true, result: {} }),
+    () => workerSettings([]),
+    () => workerSettings([valid, valid]),
+    () => workerSettings([{ ...valid, type: 'kv_namespace' }]),
+    () => workerSettings([{ ...valid, bucket_name: 'foreign-private-bucket' }]),
+    () => workerSettings([{ ...valid, jurisdiction: 'default' }]),
+    () => workerSettings([{ ...valid, jurisdiction: undefined }]),
+    () => new Response('private-invalid-json'),
+    () => {
+      throw new Error('private-network-error');
+    },
+  ]) {
+    const events = [];
+    await assert.rejects(
+      deploy('production', variables, {
+        config: configuration(),
+        deploymentControl: lifecycle(events),
+        imageDigest,
+        report() {},
+        command: async () => {},
+        request: async () => response(),
+        smoke: async () => assert.fail('Storage verification must precede smoke.'),
+      }),
+      (error) => {
+        assert.equal(
+          error.message,
+          'The deployed private object binding did not pass verification.',
+        );
+        return true;
+      },
+    );
+    assert.deepEqual(events, ['prepare', 'activate', 'abort']);
+  }
+});
+
+test('deployed storage readback uses the selected environment and refuses an inherited or foreign binding', async () => {
+  const config = configuration();
+  config.env.development = {
+    ...config.env.production,
+    name: 'otto-development',
+    r2_buckets: [
+      { binding: 'TENANT_FILES', bucket_name: 'otto-development-files', jurisdiction: 'eu' },
+    ],
+  };
+  const plan = deploymentPlan({
+    ...planInput(config),
+    environment: 'development',
+    gatewayEnv: gatewayValues({ OTTO_ENVIRONMENT: 'development' }),
+  });
+  const read = async (url) => {
+    assert.equal(
+      url,
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/otto-development/settings`,
+    );
+    return workerSettings([
+      {
+        name: 'TENANT_FILES',
+        type: 'r2_bucket',
+        bucket_name: 'otto-development-files',
+        jurisdiction: 'eu',
+      },
+    ]);
+  };
+  await verifyStorageBinding(plan, 'development', variables.CLOUDFLARE_API_TOKEN, read);
+  await assert.rejects(
+    verifyStorageBinding(plan, 'development', variables.CLOUDFLARE_API_TOKEN, async () =>
+      workerSettings(),
+    ),
+    { message: 'The deployed private object binding did not pass verification.' },
+  );
+});
+
+test('deployed storage readback bounds and cancels oversized or invalid response bodies', async () => {
+  const plan = deploymentPlan(planInput());
+  let cancelled = false;
+  const oversized = new Response(
+    new ReadableStream({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(64 * 1024));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    }),
+  );
+  for (const response of [
+    oversized,
+    new Response(new Uint8Array([0xff])),
+    new Response('{}', { headers: { 'content-length': '524289' } }),
+  ])
+    await assert.rejects(
+      verifyStorageBinding(
+        plan,
+        'production',
+        variables.CLOUDFLARE_API_TOKEN,
+        async () => response,
+      ),
+      { message: 'The deployed private object binding did not pass verification.' },
+    );
+  assert.equal(cancelled, true);
 });
 
 test('deployment assigns distinct computer images and deduplicates the shared runtime image', () => {
@@ -449,7 +639,7 @@ test('a manifest from another repository fails before maintenance or activation'
   assert.equal(commands.includes('deploy'), false);
 });
 
-test('recovery completion never publishes images and verifies rollout then public smoke before reopening', async () => {
+test('recovery completion never publishes images and verifies storage, rollout and public smoke before reopening', async () => {
   const events = [];
   const control = lifecycle(events);
   control.recover = async () => {
@@ -465,6 +655,15 @@ test('recovery completion never publishes images and verifies rollout then publi
       assert.equal(environment.CLOUDFLARE_API_TOKEN, undefined);
       return imageDigest(image);
     },
+    request: async (url, options) => {
+      events.push('storage');
+      assert.equal(
+        url,
+        `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/otto/settings`,
+      );
+      assert.equal(options.method, 'GET');
+      return workerSettings();
+    },
     smoke: async () => events.push('smoke'),
     report: () => {},
   });
@@ -473,10 +672,90 @@ test('recovery completion never publishes images and verifies rollout then publi
     'digest',
     'digest',
     'digest',
+    'storage',
     'verifyRollouts',
     'smoke',
     'complete',
   ]);
+});
+
+test('recovery normalizes the same legacy gateway configuration accepted during Otto publication', async () => {
+  const gateway = Object.fromEntries(
+    Object.entries(JSON.parse(variables.GATEWAY_ENV)).map(([key, value]) => [
+      key.replace(/^OTTO_/, 'SIDEKICK_'),
+      value,
+    ]),
+  );
+  gateway.SIDEKICK_PUBLIC_URL = 'https://sidekick.test.workers.dev';
+  gateway.OBJECT_STORAGE_ENDPOINT = 'http://sidekick.storage/v1/objects/';
+  const events = [];
+  const control = lifecycle(events);
+  control.recover = async () => {
+    events.push('recover');
+    return { phase: 'activating' };
+  };
+  await recoverDeployment(
+    'production',
+    'complete',
+    {
+      ...variables,
+      GATEWAY_ENV: JSON.stringify(gateway),
+    },
+    {
+      config: configuration(),
+      deploymentControl: control,
+      imageDigest,
+      request: async (url, options) => {
+        events.push('storage');
+        assert.equal(
+          url,
+          `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/otto/settings`,
+        );
+        assert.equal(options.method, 'GET');
+        return workerSettings();
+      },
+      smoke: async (input) => {
+        assert.deepEqual(input, { origin, release });
+        events.push('smoke');
+      },
+      report() {},
+    },
+  );
+  assert.deepEqual(events, ['recover', 'storage', 'verifyRollouts', 'smoke', 'complete']);
+});
+
+test('recovery completion cannot bypass a denied or mismatched deployed storage binding', async () => {
+  for (const phase of ['activating', 'complete']) {
+    for (const response of [
+      () => new Response('private-api-error', { status: 403 }),
+      () => workerSettings([]),
+      () =>
+        workerSettings([
+          {
+            name: 'TENANT_FILES',
+            type: 'r2_bucket',
+            bucket_name: 'foreign-bucket',
+            jurisdiction: 'eu',
+          },
+        ]),
+    ]) {
+      const events = [];
+      const control = lifecycle(events);
+      control.recover = async () => ({ phase });
+      await assert.rejects(
+        recoverDeployment('production', 'complete', variables, {
+          config: configuration(),
+          deploymentControl: control,
+          imageDigest,
+          request: async () => response(),
+          smoke: () => assert.fail('Invalid storage must not reach smoke.'),
+          report() {},
+        }),
+        { message: 'The deployed private object binding did not pass verification.' },
+      );
+      assert.deepEqual(events, []);
+    }
+  }
 });
 
 test('recovery refuses completion before activation and abort after activation', async () => {
@@ -510,6 +789,7 @@ test('recovery abort and status preserve the existing control identity without i
       config: configuration(),
       deploymentControl: control,
       imageDigest: () => assert.fail('Abort and status are independent of images.'),
+      request: () => assert.fail('Abort and status are independent of storage readback.'),
       smoke: () => assert.fail('Abort and status must not run release smoke.'),
       report: (value) => reports.push(value),
     });
