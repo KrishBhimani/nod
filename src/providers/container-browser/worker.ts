@@ -3,7 +3,7 @@ import { createServer, connect, type Socket } from 'node:net';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Computer } from '../../ports/computer.ts';
-import { BrowserActionError } from '../../ports/computer.ts';
+import { BrowserActionError, browserDownloadBytes } from '../../ports/computer.ts';
 import { createAgentBrowserComputer } from '../agent-browser/index.ts';
 import { containerBrowserOptions } from './config.ts';
 import {
@@ -52,6 +52,31 @@ async function dispatch(computer: Computer, request: BrowserRequest, signal: Abo
   switch (request.method) {
     case 'act':
       return computer.act(request.taskId, request.input, signal);
+    case 'download': {
+      if (!computer.download) throw new Error();
+      const file = await computer.download(request.taskId, request.input, signal);
+      signal.throwIfAborted();
+      if (
+        !Buffer.isBuffer(file.bytes) ||
+        !file.bytes.length ||
+        file.bytes.length > browserDownloadBytes
+      )
+        throw new Error();
+      if (
+        typeof file.name !== 'string' ||
+        !file.name ||
+        file.name.length > 200 ||
+        /[/\\\u0000-\u001f\u007f]/.test(file.name)
+      )
+        throw new Error();
+      if (
+        typeof file.mimeType !== 'string' ||
+        file.mimeType.length > 100 ||
+        !/^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/.test(file.mimeType)
+      )
+        throw new Error();
+      return { data: file.bytes.toString('base64'), name: file.name, mimeType: file.mimeType };
+    }
     case 'screenshot':
     case 'signInScreenshot': {
       const method =

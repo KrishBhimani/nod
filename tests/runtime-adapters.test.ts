@@ -9,6 +9,7 @@ import { createBrowserFixture as createAgentBrowserComputer } from './browser-fi
 import { createBrowserProxy } from '../src/providers/agent-browser/network.ts';
 import type { runProcess } from '../src/providers/process.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';
+import { integrationResultSnapshot } from '../src/server/integration-result.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 
 function browserFixture() {
@@ -296,6 +297,66 @@ test('shared runtime composes replacement agent, computer, workspace and chooser
     ]);
     await assert.rejects(runtime.runTask(context(directory)), /stopped/);
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('runtime preserves incomplete app evidence and read-only narrowing guidance without replay', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sidekick-incomplete-integration-'));
+  const omitted = integrationResultSnapshot({
+    results: [
+      { title: 'Unrelated page', description: 'x'.repeat(18_000) },
+      { title: 'Synthetic requested page' },
+    ],
+    has_more: false,
+  });
+  let calls = 0;
+  const observations: unknown[] = [];
+  const runtime = createAgentRuntime({
+    agent: {
+      open: async (input) => ({
+        resumed: false,
+        abort: () => {},
+        dispose: () => {},
+        prompt: async () => {
+          const apps = input.tools.find((tool) => tool.name === 'apps')!;
+          assert.match(apps.description, /incomplete evidence, not a not-found result/);
+          assert.match(apps.description, /narrower read-only query/);
+          assert.match(apps.description, /Never repeat a completed write/);
+          const result = await apps.execute({
+            action: 'NOTION_SEARCH_NOTION_PAGE',
+            args: { query: 'Synthetic requested page', page_size: 100 },
+          });
+          assert.equal(result.content.length, 1);
+          const content = result.content[0];
+          assert.equal(content.type, 'text');
+          if (content.type !== 'text') assert.fail('Expected bounded JSON text.');
+          assert.deepEqual(JSON.parse(content.text), omitted);
+          assert.ok(Buffer.byteLength(content.text) <= 18_000);
+          assert.ok(!content.text.includes('Unrelated page'));
+        },
+      }),
+      dispose: () => {},
+    },
+    computer: fakeComputer(),
+    workspace: fakeWorkspace(),
+  });
+  try {
+    const result = await runtime.runTask({
+      ...context(directory),
+      integration: async () => {
+        calls += 1;
+        return omitted;
+      },
+      observe: async (event) => {
+        if (event.type === 'tool_end') observations.push(event.output);
+      },
+    });
+    assert.equal(result.status, 'succeeded');
+    assert.equal(calls, 1);
+    assert.deepEqual(observations, [omitted]);
+  } finally {
+    await runtime.dispose();
     await rm(directory, { recursive: true, force: true });
   }
 });

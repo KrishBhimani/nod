@@ -71,6 +71,18 @@ jobs:
           docker build --platform linux/amd64 --file deployment/cloudflare/Dockerfile --tag sidekick-ci .
           docker build --platform linux/amd64 --file deployment/cloudflare/Dockerfile.browser --tag sidekick-ci-browser .
           docker build --platform linux/amd64 --file deployment/cloudflare/Dockerfile.workspace --tag sidekick-ci-workspace .
+      - name: Verify authenticated browser download delivery
+        run: >-
+          docker run --rm --network host --shm-size=1g
+          --env TEST_DATABASE_URL
+          --env SIDEKICK_TEST_NATIVE_DOWNLOAD=true
+          --env SIDEKICK_TEST_BROWSER_EXECUTABLE=/usr/bin/chromium
+          --volume "$PWD/src:/app/src:ro"
+          --volume "$PWD/tests:/app/tests:ro"
+          --volume "$PWD/scripts:/app/scripts:ro"
+          --volume "$PWD/dist/web:/app/dist/web:ro"
+          --entrypoint /usr/bin/tini sidekick-ci-browser
+          -- node --import tsx --test tests/browser-download.test.ts tests/browser-download-delivery.test.ts
       - name: Verify the runtime filesystem and user
         run: >-
           docker run --rm --network none --entrypoint node sidekick-ci

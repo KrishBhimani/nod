@@ -83,6 +83,11 @@ export interface RuntimeContext {
   remember(text: string): Promise<void>;
   publish(path: string, name?: string): Promise<Artifact>;
   publishScreenshot?(bytes: Uint8Array): Promise<Artifact>;
+  publishBrowserFile?(file: {
+    bytes: Uint8Array;
+    name: string;
+    mimeType: string;
+  }): Promise<Artifact>;
   createAudio?(text: string): Promise<Artifact>;
   requestCredential(input: {
     origin: string;

@@ -4,7 +4,9 @@ The repository includes Google login, account settings, isolated per-user Node r
 
 **Selected architecture, 2026-09-27:** host the application on Cloudflare and allocate one combined E2B computer per user during authenticated onboarding. Live E2B execution and its same-VM boundary are not yet validated; development shows 100 credits, production shows 0 credits with a payment-card gate, and runtime-key authorization is pending.
 
-The running pilot still selects `COMPUTER_PROVIDER=cloudflare`, with separate private browser/workspace containers per owner. Its [production acceptance on `6e0a3aab`](testing/results/2026-09-27-production-chat.md) verifies ordinary chat, real browser/workspace tasks, two-account file isolation and persistence across the successful automatic deployment from `main`. It does not establish live E2B, integration-event delivery or completion of the broader hosted acceptance gates.
+The running pilot selects `COMPUTER_PROVIDER=cloudflare`, with separate private browser/workspace containers per owner. Its historical [production acceptance on `6e0a3aab`](testing/results/2026-09-27-production-chat.md) verifies ordinary chat, real browser/workspace tasks, two-account file isolation and persistence across the successful automatic deployment from `main`. It does not establish live E2B, integration-event delivery or completion of the broader hosted acceptance gates.
+
+The later [scoped production check on historical release `cfe9bb3`](testing/results/2026-09-28-production-downloads.md) passed fresh signup/onboarding, public PDF rendering/download with matching bytes, and a separate web text stream after the reset. One fresh authorized work account now exists. Notion exact-title search and content read matched a withheld fixture value and correct link for one explicitly shared synthetic page. The record preserves a subsequent metadata-dispatch failure and the successful fresh read after its fix, with a changed fixture value withheld from the prompt. Exact releases and CI status are dated there. The newer public-PDF recheck passed rendering and link-API byte verification, with ordinary click-download still unverified. Broader Notion access, live Telegram attachment delivery, Gmail repair and E2B acceptance remain separate gates.
 
 ## Selected E2B deployment shape
 
@@ -69,6 +71,8 @@ Google rules checked **2026-09-27**:
 Keep basic login separate from Gmail, Calendar and other app grants managed by Composio. Their additional scopes have their own consent and verification requirements; neither basic login success nor the identity-only exception validates those connections. Live production signup, logout and account isolation still need their own acceptance checks.
 
 ## Durability and external actions
+
+For an authorized reset, follow [Resetting an environment](environment-reset.md). Deleting authentication rows or truncating the database alone leaves object storage, computer state and remote integration connections behind. Keep admission closed until all selected user resources have been removed and verified.
 
 Tasks, jobs, schedules, event inbox/outbox and ownership live in PostgreSQL. Artifacts and Pi checkpoints use bounded private object storage with conditional writes. A stale checkpoint writer fails; a saved pre-action journal without a confirmed result prevents automatic replay. Failed conditional cleanup can leave a private orphan for reconciliation rather than delete a newer object. Cloudflare container disks are ephemeral working space.
 

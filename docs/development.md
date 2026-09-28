@@ -14,6 +14,8 @@ The launcher prepares PostgreSQL before browser/workspace services. It generates
 
 ## Hosted mode on your computer
 
+Keep hosted development data separate from production. A fresh-signup recording can use an explicitly authorized [environment reset](environment-reset.md); conversation reset preserves accounts and historical data. Automated tests should continue using disposable schemas and synthetic accounts instead of resetting a normal profile or production.
+
 The selected production architecture as of **2026-09-27** is Cloudflare application hosting with one E2B computer per user. Local E2B/process mode exercises the same provider without a Cloudflare deployment. Its live execution remains unverified; development has 100 credits, production has 0 credits and a card gate, and runtime-key authorization is pending. Keep the earlier Cloudflare-computer local evidence separate.
 
 Hosted development uses real Google login, account isolation and per-user runtimes, with the web app at [localhost:4330](http://localhost:4330). It is separate from ordinary local mode on port 4310, the synthetic E2E harness on port 4320, the design prototype on port 4318 and the UI fixture on port 4346. Node.js 24.21.0 or newer is required. Install dependencies with `npm ci` first.
@@ -182,6 +184,8 @@ After a UI change, check the real local app at desktop and narrow widths. Includ
 For network changes, use a synthetic task directory to verify the user ID, capabilities, persistent CLI installs and expected HTTP and registry reachability. Browser and shell traffic have no Sidekick private-address, port or IPv6 deny policy; reachability follows Docker and host routing. Check the separate public link-preview fetcher against its existing private-destination rejection tests. Do not report network isolation that the default Compose bridge does not provide.
 
 For browser changes, use a disposable browser namespace and synthetic website. Check navigation, masked captures, private native frames/input, normal sign-in shutdown and explicit continuation, cancellation and worker restart. Verify that the shell cannot read browser profiles or reach its control socket, display or debugging interface, and that no host browser process launches. Exercise password and fake-2FA continuation without real credentials. These checks establish that controlled harness only; real website security decisions and authentication require separate evidence.
+
+Browser download acceptance runs `tests/browser-download.test.ts` and `tests/browser-download-delivery.test.ts` with a disposable `TEST_DATABASE_URL`, `SIDEKICK_TEST_NATIVE_DOWNLOAD=true` and `SIDEKICK_TEST_BROWSER_EXECUTABLE` pointing to Chromium. CI runs them inside the browser image with `/usr/bin/chromium`. The tests serve cookie-protected PDFs and verify exact bytes across the private browser bridge, runtime publication, owned HTTP retrieval and Telegram multipart formatting. Native opt-in fails when its prerequisites are absent; the ordinary suite explicitly skips native Chromium while retaining adapter and task-cancellation checks. Telegram delivery in this harness is a fixture, not a real recipient receipt.
 
 Run live provider checks only within the authorized scope. Do not use reconnect/disconnect as a default repair for an SDK bug; preserve existing accounts. Record fixture evidence, live provider evidence, and unresolved steps separately in [verification](verification.md). A configured key, a mocked OAuth callback, or a synthetic login page does not prove the real service works.
 

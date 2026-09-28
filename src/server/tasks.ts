@@ -164,6 +164,38 @@ export async function addEvent(taskId: string, type: string, summary: string, re
   );
   refresh();
 }
+async function insertReply(
+  client: PoolClient,
+  taskId: string,
+  text: string,
+  attachments: Artifact[],
+  streamId?: string,
+  replyToMessageId?: string,
+) {
+  if (replyToMessageId) {
+    const target = await client.query(
+      `SELECT m.id FROM messages m JOIN tasks target ON target.id=m.task_id JOIN tasks current ON current.id=$3 WHERE m.id=$1 AND m.owner_id=$2 AND target.owner_id=$2 AND target.channel=current.channel AND target.conversation_revision=current.conversation_revision AND ${currentConversationSql('target')}`,
+      [replyToMessageId, ownerId, taskId],
+    );
+    if (!target.rowCount)
+      throw Object.assign(new Error('The reply is unavailable in this conversation.'), {
+        statusCode: 404,
+      });
+  }
+  return client.query(
+    'INSERT INTO messages(id,owner_id,role,text,task_id,attachments,stream_id,reply_to_message_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+    [
+      randomUUID(),
+      ownerId,
+      'assistant',
+      text,
+      taskId,
+      JSON.stringify(attachments),
+      streamId ?? null,
+      replyToMessageId ?? null,
+    ],
+  );
+}
 export async function reply(
   taskId: string,
   text: string,
@@ -174,31 +206,7 @@ export async function reply(
 ) {
   await withTaskLock(
     taskId,
-    async (client) => {
-      if (replyToMessageId) {
-        const target = await client.query(
-          `SELECT m.id FROM messages m JOIN tasks target ON target.id=m.task_id JOIN tasks current ON current.id=$3 WHERE m.id=$1 AND m.owner_id=$2 AND target.owner_id=$2 AND target.channel=current.channel AND target.conversation_revision=current.conversation_revision AND ${currentConversationSql('target')}`,
-          [replyToMessageId, ownerId, taskId],
-        );
-        if (!target.rowCount)
-          throw Object.assign(new Error('The reply is unavailable in this conversation.'), {
-            statusCode: 404,
-          });
-      }
-      return client.query(
-        'INSERT INTO messages(id,owner_id,role,text,task_id,attachments,stream_id,reply_to_message_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
-        [
-          randomUUID(),
-          ownerId,
-          'assistant',
-          text,
-          taskId,
-          JSON.stringify(attachments),
-          streamId ?? null,
-          replyToMessageId ?? null,
-        ],
-      );
-    },
+    (client) => insertReply(client, taskId, text, attachments, streamId, replyToMessageId),
     revision,
   );
   refresh();
@@ -1216,8 +1224,16 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
         refresh();
       },
       delta: (text, streamId, done) => {
-        if (!controller.signal.aborted && task.source === 'user')
-          delta(taskId, text, streamId, done, task.conversation_revision);
+        if (!controller.signal.aborted && task.source === 'user' && task.channel === 'web')
+          delta({
+            ownerId,
+            channel: task.channel,
+            taskId,
+            text,
+            streamId,
+            done,
+            conversationRevision: task.conversation_revision,
+          });
       },
       remember: async (text) => {
         if (task.source !== 'user' || !sourceMessageId)
@@ -1252,6 +1268,21 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
           ),
         );
         await reply(taskId, 'Browser screenshot.', [artifact], revision);
+        return artifact;
+      },
+      publishBrowserFile: async (file) => {
+        const artifact = await current(async (client) => {
+          const artifact = await (dependencies.artifacts ?? localArtifacts).storeArtifact(
+            Buffer.from(file.bytes),
+            file.name,
+            file.mimeType,
+            taskId,
+            client,
+          );
+          await insertReply(client, taskId, '', [artifact]);
+          return artifact;
+        });
+        refresh();
         return artifact;
       },
       createAudio: async (text) => {

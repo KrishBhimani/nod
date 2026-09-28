@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type {
   BrowserAction,
+  BrowserDownloadInput,
   BrowserObservation,
   Computer,
   CredentialInput,
@@ -36,6 +37,14 @@ import {
 } from './screens.ts';
 import { createBrowserSignIn, resolveSignInBrowser, type BrowserSignInHandle } from './sign-in.ts';
 import { createSignInDesktop, type SignInDesktop } from './desktop.ts';
+import {
+  completedDownloads,
+  createDownloadCapture,
+  decodeDownload,
+  downloadName,
+  fetchDownloadScript,
+  readDownload,
+} from './downloads.ts';
 
 interface BrowserState {
   id: string;
@@ -295,7 +304,7 @@ export function createAgentBrowserComputer(options: {
   async function command(
     state: BrowserState,
     args: string[],
-    options: { input?: string; signal?: AbortSignal } = {},
+    options: { input?: string; signal?: AbortSignal; maxBytes?: number } = {},
   ): Promise<Record<string, unknown>> {
     options.signal?.throwIfAborted();
     if (state.socket) {
@@ -316,14 +325,16 @@ export function createAgentBrowserComputer(options: {
                       ? { action: 'scroll', direction: args[1], amount: Number(args[2]) }
                       : args[0] === 'screenshot'
                         ? { action: 'screenshot', path: args[1], fullPage: false, annotate: false }
-                        : args[0] === 'snapshot'
-                          ? { action: 'snapshot', compact: true }
-                          : args[0] === 'close'
-                            ? { action: 'close' }
-                            : null;
+                        : args[0] === 'download'
+                          ? { action: 'download', selector: args[1], path: args[2] }
+                          : args[0] === 'snapshot'
+                            ? { action: 'snapshot', compact: true }
+                            : args[0] === 'close'
+                              ? { action: 'close' }
+                              : null;
       if (!request) throw new Error('Reopen this page before continuing browser actions.');
       const result = await drainInterruptedCommand(state, args[0], () =>
-        requestDaemon(state.socket!, request, options.signal),
+        requestDaemon(state.socket!, request, options.signal, 45_000, options.maxBytes),
       );
       if (args[0] === 'close') await closeDisplay(state);
       return result;
@@ -999,6 +1010,124 @@ export function createAgentBrowserComputer(options: {
     });
   }
 
+  async function download(id: string, input: BrowserDownloadInput, signal?: AbortSignal) {
+    if (input.selector && input.url) throw new Error('Choose a download link or URL.');
+    if (input.name !== undefined) downloadName(input.name);
+    const state = await recoverBrowser(id);
+    if (!state?.started) throw new Error('Open the file website first.');
+    if (state.injecting || state.manualUntil || state.saved.signInPending)
+      throw new BrowserLockedError();
+    return serialize(state, async () => {
+      if (state.injecting || state.manualUntil || state.saved.signInPending)
+        throw new BrowserLockedError();
+      signal?.throwIfAborted();
+      markActivity(id);
+      const current = await currentUrl(state, signal);
+      const directory = resolve(runtimeRoot, 'downloads', state.id);
+      const existing = await completedDownloads(directory);
+      let target = input.selector ? selector(input.selector) : undefined;
+      let url = input.url;
+      if (target) {
+        const href = await command(state, ['get', 'attr', target, 'href'], { signal });
+        if (typeof href.value === 'string' && href.value.trim()) {
+          const destination = new URL(href.value, current);
+          const source = new URL(current);
+          destination.hash = '';
+          source.hash = '';
+          if (
+            !href.value.trim().startsWith('#') &&
+            destination.protocol !== 'javascript:' &&
+            destination.href !== source.href
+          )
+            url = new URL(href.value, current).href;
+        }
+      }
+      if (!target && !url) {
+        const type = await evaluate(state, 'document.contentType', signal);
+        if (type === 'application/pdf') url = current;
+        else {
+          if (existing.length !== 1) throw new Error('Choose the specific download link or URL.');
+          const result = await readDownload(directory, existing[0], input.name);
+          signal?.throwIfAborted();
+          return result;
+        }
+      }
+      const crossOrigin = url && new URL(url).origin !== new URL(current).origin;
+      if (url) {
+        if (!url.startsWith(`blob:${new URL(current).origin}/`)) browserUrl(url);
+      }
+      if (url && !crossOrigin) {
+        const result = await command(state, ['eval', '--stdin'], {
+          input: fetchDownloadScript(url),
+          signal,
+          maxBytes: 17 * 1024 * 1024,
+        });
+        signal?.throwIfAborted();
+        return decodeDownload(result.result, input.name);
+      }
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      const capture = await createDownloadCapture(directory);
+      const anchor = !target ? `sidekick-download-${randomUUID()}` : undefined;
+      const controller = new AbortController();
+      const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+      let watching: Promise<void> | undefined;
+      let completed = false;
+      const watch = setInterval(() => {
+        if (watching) return;
+        watching = capture
+          .inspect()
+          .then(() => {})
+          .catch(() => controller.abort())
+          .finally(() => {
+            watching = undefined;
+          });
+      }, 25);
+      try {
+        if (anchor) {
+          await evaluate(
+            state,
+            `(() => {
+            const anchor = document.createElement('a');
+            anchor.id = ${JSON.stringify(anchor)};
+            anchor.href = ${JSON.stringify(url)};
+            anchor.textContent = 'Download file';
+            anchor.style.cssText = 'position:fixed;top:0;left:0;z-index:2147483647;background:white;color:black;padding:8px';
+            document.documentElement.append(anchor);
+          })()`,
+            combined,
+          );
+          target = `#${anchor}`;
+        }
+        await command(state, ['download', target!, resolve(directory, capture.file)], {
+          signal: combined,
+        });
+        combined.throwIfAborted();
+        const files = await capture.inspect();
+        if (files.length !== 1 || files[0] !== capture.file)
+          throw new Error('The browser download did not finish.');
+        const result = await readDownload(directory, capture.file, input.name);
+        combined.throwIfAborted();
+        completed = true;
+        return result;
+      } catch (error) {
+        if (!completed && !state.closed && !state.closing)
+          await drainInterruptedCommand(state, 'download', async () => {
+            throw new Error('The browser download did not finish.');
+          });
+        throw error;
+      } finally {
+        clearInterval(watch);
+        await watching;
+        try {
+          if (anchor && !state.closed && !state.closing)
+            await evaluate(state, `document.getElementById(${JSON.stringify(anchor)})?.remove()`);
+        } finally {
+          if (completed || state.closed) await capture.cleanup();
+        }
+      }
+    });
+  }
+
   async function injectCredentials(input: CredentialInput): Promise<CredentialSubmission> {
     const state = browsers.get(taskId(input.taskId));
     if (state?.saved.signInPending) throw new BrowserLockedError();
@@ -1284,6 +1413,7 @@ export function createAgentBrowserComputer(options: {
     control: tracked(manualControl),
     releaseControl: tracked(releaseControl),
     act: tracked(browserAction),
+    download: tracked(download),
     screenshot: tracked(getScreenshot),
     screenStatus: (id) => screenStatuses.get(taskId(id)) ?? { state: 'unavailable' },
     injectCredentials: tracked(injectCredentials),

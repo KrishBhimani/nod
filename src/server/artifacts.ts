@@ -7,7 +7,7 @@ import { dataRoot, ownerId } from './config.ts';
 import type { Artifact } from '../shared/contracts.ts';
 import type { MessagingAttachment } from '../ports/messaging.ts';
 import { z } from 'zod';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import type { PrivateObjectStore } from '../ports/object-storage.ts';
 
 const mimeTypes: Record<string, string> = {
@@ -106,6 +106,7 @@ export function createArtifactService(options: {
     name: string,
     mimeType: string,
     taskId?: string,
+    database: Pick<PoolClient, 'query'> = options.database,
   ): Promise<Artifact> {
     if (!bytes.length || bytes.length > maxFileSize)
       throw Object.assign(new Error('Files must be between 1 byte and 15 MB.'), {
@@ -114,7 +115,7 @@ export function createArtifactService(options: {
     if (
       taskId &&
       !(
-        await options.database.query('SELECT id FROM tasks WHERE id=$1 AND owner_id=$2', [
+        await database.query('SELECT id FROM tasks WHERE id=$1 AND owner_id=$2', [
           z.uuid().parse(taskId),
           options.ownerId,
         ])
@@ -136,7 +137,7 @@ export function createArtifactService(options: {
         .replace(/[\r\n\x00-\x1f]/g, '')
         .slice(0, 160) || 'file';
     try {
-      const result = await options.database.query(
+      const result = await database.query(
         'INSERT INTO artifacts(id,owner_id,task_id,name,mime_type,size,storage_path) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',
         [id, options.ownerId, taskId || null, safeName, mimeType, bytes.length, location(id)],
       );

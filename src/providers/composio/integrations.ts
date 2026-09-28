@@ -24,6 +24,42 @@ const subscriptions = {
 } as const;
 type ManagedSession = Awaited<ReturnType<Composio['sessions']['use']>>;
 type AccountIdentity = { expiresAt: number; accountName?: string; accountEmail?: string };
+const toolSlug = z
+  .string()
+  .max(200)
+  .regex(/^[A-Z][A-Z0-9]*_[A-Z0-9_]+$/);
+const schemaToolkit = z.string().toLowerCase().pipe(z.enum(integrationServiceIds));
+const schemaFields = z.record(z.string(), z.unknown());
+const toolSchemasResult = z.object({
+  success: z.literal(true),
+  successful: z.literal(true).optional(),
+  error: z.null().optional(),
+  not_found: z.array(z.string()).max(0).optional(),
+  tool_schemas: z.record(
+    toolSlug,
+    z.object({
+      tool_slug: toolSlug,
+      toolkit: schemaToolkit,
+      description: z.string().optional(),
+      input_schema: schemaFields,
+      output_schema: schemaFields.optional(),
+      hasFullSchema: z.literal(true).optional(),
+      schemaRef: z.never().optional(),
+    }),
+  ),
+});
+const toolSchemasResponse = z.object({
+  error: z.null(),
+  successful: z.literal(true).optional(),
+  data: z.union([
+    toolSchemasResult,
+    z.object({
+      successful: z.literal(true),
+      error: z.null().optional(),
+      data: toolSchemasResult,
+    }),
+  ]),
+});
 const identityTools = {
   gmail: { action: 'GMAIL_GET_PROFILE', args: { user_id: 'me' } },
   slack: { action: 'SLACK_WHO_AM_I', args: {} },
@@ -222,14 +258,84 @@ export function createComposioProvider(options: {
         return { accountId: result.id, url: result.redirectUrl };
       },
       async search(query) {
-        const result = await value.search({ query, toolkits });
-        return {
-          tools: result.toolSchemas,
-          suggestions: result.results.map((item) => ({
-            useCase: item.useCase,
-            primaryToolSlugs: item.primaryToolSlugs,
-          })),
-        };
+        try {
+          const result = await value.search({ query, toolkits });
+          if (!result.success || result.error != null) throw new Error();
+          const entries = Object.entries(result.toolSchemas).map(
+            ([slug, tool]) =>
+              [slug, { ...tool, toolkit: schemaToolkit.parse(tool.toolkit) }] as const,
+          );
+          const advertised = new Set(entries.map(([slug]) => slug));
+          for (const [slug, tool] of entries) {
+            toolSlug.parse(slug);
+            if (tool.toolSlug !== slug || !slug.startsWith(`${tool.toolkit.toUpperCase()}_`))
+              throw new Error();
+          }
+          const missing = entries.filter(
+            ([, tool]) =>
+              tool.hasFullSchema === false || !schemaFields.safeParse(tool.inputSchema).success,
+          );
+          if (missing.length > 20) throw new Error();
+          for (const [slug, tool] of missing) {
+            const reference = tool.schemaRef;
+            const slugs = reference?.args.toolSlugs;
+            if (
+              reference?.tool !== 'COMPOSIO_GET_TOOL_SCHEMAS' ||
+              !slugs?.includes(slug) ||
+              slugs.length > 20 ||
+              new Set(slugs).size !== slugs.length ||
+              slugs.some((item) => !advertised.has(item))
+            )
+              throw new Error();
+          }
+          const tools = Object.fromEntries(
+            entries.map(([slug, { schemaRef: _, ...tool }]) => [slug, tool]),
+          );
+          if (missing.length) {
+            const signal = AbortSignal.timeout(15_000);
+            const response = await required()
+              .getClient()
+              .toolRouter.session.executeMeta(
+                value.sessionId,
+                {
+                  slug: 'COMPOSIO_GET_TOOL_SCHEMAS',
+                  arguments: {
+                    tool_slugs: missing.map(([slug]) => slug),
+                    include: ['input_schema'],
+                  },
+                },
+                { signal, maxRetries: 0 },
+              );
+            signal.throwIfAborted();
+            const envelope = toolSchemasResponse.parse(response).data;
+            const schemas =
+              'tool_schemas' in envelope ? envelope.tool_schemas : envelope.data.tool_schemas;
+            if (Object.keys(schemas).length !== missing.length) throw new Error();
+            for (const [slug, tool] of missing) {
+              const schema = schemas[slug];
+              if (!schema || schema.tool_slug !== slug || schema.toolkit !== tool.toolkit)
+                throw new Error();
+              tools[slug] = {
+                ...tools[slug],
+                ...(schema.description === undefined ? {} : { description: schema.description }),
+                inputSchema: schema.input_schema,
+                ...(schema.output_schema === undefined
+                  ? {}
+                  : { outputSchema: schema.output_schema }),
+                hasFullSchema: true,
+              };
+            }
+          }
+          return {
+            tools,
+            suggestions: result.results.map((item) => ({
+              useCase: item.useCase,
+              primaryToolSlugs: item.primaryToolSlugs,
+            })),
+          };
+        } catch {
+          throw new Error('The app tool schemas could not be loaded.');
+        }
       },
       async download(action, args, accountId, signal) {
         const operation = signal
