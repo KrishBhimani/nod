@@ -42,6 +42,7 @@ function fixture(
   t: TestContext,
   heartbeatMs = 15_000,
   diagnostics: { enabled?: boolean; developers?: ReadonlySet<string> } = {},
+  operatorEnvironment: Record<string, string | undefined> = {},
 ) {
   const masterKey = randomBytes(32);
   const leases = new Map<string, TenantLease>();
@@ -88,6 +89,7 @@ function fixture(
       OPENAI_API_KEY: 'synthetic-server-provider-key',
       COMPUTER_PROVIDER: 'e2b',
       OBJECT_STORAGE_ROOT: '/private/otto-files',
+      ...operatorEnvironment,
     },
     tenants: {
       async listOwners() {
@@ -199,6 +201,71 @@ test('runtime diagnostics require both operator capture and an assigned develope
   const disabled = fixture(t, 15_000, { enabled: false, developers: new Set([developer]) });
   await disabled.request(developer);
   assert.equal(disabled.starts[0].environment.DEV_INSPECTOR, 'false');
+});
+
+test('runtime derives the Composio callback from the public origin for each fixed owner', async (t) => {
+  const f = fixture(
+    t,
+    15_000,
+    {},
+    {
+      OTTO_COMPOSIO_WEBHOOK_URL: 'https://foreign.example.test/callback',
+    },
+  );
+  const owners = [randomUUID(), randomUUID()];
+  for (const owner of owners) await f.request(owner);
+  assert.equal(f.starts.length, owners.length);
+  for (const [index, configuration] of f.starts.entries()) {
+    assert.equal(configuration.ownerId, owners[index]);
+    assert.equal(configuration.environment.OTTO_OWNER_ID, owners[index]);
+    assert.equal(
+      configuration.environment.OTTO_COMPOSIO_WEBHOOK_URL,
+      'https://otto.example.test/api/webhooks/composio',
+    );
+    assert.equal(configuration.environment.OTTO_WEBHOOK_ORIGIN, undefined);
+  }
+});
+
+test('runtime uses the explicit tunnel origin without forwarding raw webhook configuration', async (t) => {
+  const f = fixture(
+    t,
+    15_000,
+    {},
+    {
+      OTTO_PUBLIC_URL: 'http://localhost:4330',
+      OTTO_WEBHOOK_ORIGIN: 'https://tunnel.example.test/',
+    },
+  );
+  await f.request(randomUUID());
+  assert.equal(
+    f.starts[0].environment.OTTO_COMPOSIO_WEBHOOK_URL,
+    'https://tunnel.example.test/api/webhooks/composio',
+  );
+  assert.equal(f.starts[0].environment.OTTO_PUBLIC_URL, 'http://localhost:4330');
+  assert.equal(f.starts[0].environment.OTTO_WEBHOOK_ORIGIN, undefined);
+});
+
+test('runtime leaves local HTTP Composio callbacks unconfigured without an explicit tunnel', async (t) => {
+  for (const origin of ['http://localhost:4330', 'http://127.0.0.1:4330', 'http://[::1]:4330']) {
+    const f = fixture(t, 15_000, {}, { OTTO_PUBLIC_URL: origin });
+    await f.request(randomUUID());
+    assert.equal(f.starts[0].environment.OTTO_COMPOSIO_WEBHOOK_URL, undefined);
+  }
+});
+
+test('runtime rejects malformed explicit webhook origins before tenant startup without exposing values', (t) => {
+  for (const origin of [
+    'private-invalid-origin',
+    'http://localhost:4331',
+    'http://private.example.test',
+    'https://private.example.test/path',
+    'https://private.example.test/?secret=private',
+    'https://private.example.test/#private',
+    'https://private-user:private-password@private.example.test',
+  ])
+    assert.throws(() => fixture(t, 15_000, {}, { OTTO_WEBHOOK_ORIGIN: origin }), {
+      message: 'The webhook origin is invalid.',
+    });
 });
 
 function deploymentInput() {

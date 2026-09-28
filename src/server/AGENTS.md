@@ -1,5 +1,7 @@
 # Server features
 
+`runtime-host.ts` derives `OTTO_COMPOSIO_WEBHOOK_URL` for each tenant from the canonical HTTPS `OTTO_WEBHOOK_ORIGIN` or public application origin. HTTP loopback development without a tunnel leaves it absent. Reject malformed explicit origins before starting a tenant; never copy a caller-supplied internal URL. Composition passes this fixed destination to the adapter for new watches. Existing account/trigger ownership and raw-body signature checks still apply, and saved trigger IDs are not automatically migrated.
+
 `composition.ts` constructs adapters and binds feature factories. `index.ts` serves the app and owns process signals. Other server modules use `../ports` and explicit dependencies; do not import vendor SDKs or concrete runtime/provider implementations. Signal shutdown must attempt application cleanup and database closure independently, return a failing exit status if either fails, and keep raw cleanup errors out of console output. Retain the tenant lease until cleanup finishes so its existing expiry watchdog can terminate pending cleanup. Repeated signals must not extend that deadline.
 
 | Work                                                                   | Entry point                                 |

@@ -274,6 +274,7 @@ export function createDefaultAdapters(
     integrations: createComposioProvider({
       apiKey: env.COMPOSIO_API_KEY,
       webhookSecret: env.COMPOSIO_WEBHOOK_SECRET,
+      webhookUrl: env.OTTO_COMPOSIO_WEBHOOK_URL,
       authConfigs,
     }),
     ...(['local', 'tenant'].includes(runtimeMode)

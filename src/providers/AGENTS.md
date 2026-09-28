@@ -2,6 +2,8 @@
 
 Implement the smallest applicable interface in `../ports`. Factories accept credentials and configuration explicitly. `../server/composition.ts` chooses implementations. Provider SDKs, protocols, transport parsing and vendor defaults stay here.
 
+Hosted Composio watch creation receives a fixed operator-derived webhook URL through composition. Use the SDK client's trigger upsert to include `egress_url`, exact owner and connected-account IDs, fixed trigger configuration and the SDK's pinned toolkit versions. The high-level `triggers.create` path remains for unconfigured local routing. Never change the project subscription or signing secret during watch creation. Existing saved trigger IDs require a separate verified migration; startup does not reroute them. `composio-webhooks` covers exact requests and composition, while `runtime-host` covers trusted origin and owner wiring.
+
 `composio/verification-email.ts` provides the private verification-email read capability. Use only fixed Gmail list/get endpoints through the selected connected account, with recipient, sender-domain and time filters, at most five messages, bounded MIME decoding and cancellation. Require visible recipient headers and Google's first authentication result with DMARC pass aligned to the From domain; reject uncertain parsing and pagination. Return mail only to the trusted server matcher, never a model session, tool catalog, event store, usage payload or error message. This path does not send mail or manage accounts.
 
 | Provider                  | Capability                                                                       |
