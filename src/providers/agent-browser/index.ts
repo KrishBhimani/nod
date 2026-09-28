@@ -38,12 +38,12 @@ import {
 import { createBrowserSignIn, resolveSignInBrowser, type BrowserSignInHandle } from './sign-in.ts';
 import { createSignInDesktop, type SignInDesktop } from './desktop.ts';
 import {
-  completedDownloads,
   createDownloadCapture,
   decodeDownload,
   downloadName,
   fetchDownloadScript,
   readDownload,
+  waitForDownload,
 } from './downloads.ts';
 
 interface BrowserState {
@@ -1024,7 +1024,6 @@ export function createAgentBrowserComputer(options: {
       markActivity(id);
       const current = await currentUrl(state, signal);
       const directory = resolve(runtimeRoot, 'downloads', state.id);
-      const existing = await completedDownloads(directory);
       let target = input.selector ? selector(input.selector) : undefined;
       let url = input.url;
       if (target) {
@@ -1046,8 +1045,8 @@ export function createAgentBrowserComputer(options: {
         const type = await evaluate(state, 'document.contentType', signal);
         if (type === 'application/pdf') url = current;
         else {
-          if (existing.length !== 1) throw new Error('Choose the specific download link or URL.');
-          const result = await readDownload(directory, existing[0], input.name);
+          const file = await waitForDownload(directory, signal);
+          const result = await readDownload(directory, file, input.name);
           signal?.throwIfAborted();
           return result;
         }
