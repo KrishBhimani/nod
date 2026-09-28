@@ -291,7 +291,7 @@ test('owned Markdown and CSV open readable previews with safe links and exact ta
     new Response(
       String(input).includes(markdown.url)
         ? '# Brief\n\n| Tool | Result |\n| --- | --- |\n| One | [Source](https://example.com) |\n<script>window.bad = true</script>'
-        : 'Company,Note,Source\r\nA,"first, second",https://example.com/research?year=2024&country=DEU\r\nB,"two\nlines",javascript:alert(1)\r\n',
+        : 'Company,Note,Source\r\nA,"first, second",https://example.com/research?year=2024&country=DEU\r\nB,"two\nlines",javascript:alert(1)\r\nC,official pages,https://one.example/source;https://two.example/source\r\n',
     );
   const container = document.createElement('div');
   document.body.append(container);
@@ -324,7 +324,7 @@ test('owned Markdown and CSV open readable previews with safe links and exact ta
       await tick();
     });
     viewer = document.querySelector<HTMLElement>('[role="dialog"]')!;
-    assert.match(viewer.textContent ?? '', /2 rows/);
+    assert.match(viewer.textContent ?? '', /3 rows/);
     assert.deepEqual(
       Array.from(viewer.querySelectorAll('tbody tr')).map((row) =>
         Array.from(row.querySelectorAll('td')).map((cell) => cell.textContent),
@@ -332,6 +332,7 @@ test('owned Markdown and CSV open readable previews with safe links and exact ta
       [
         ['A', 'first, second', 'example.com'],
         ['B', 'two\nlines', 'javascript:alert(1)'],
+        ['C', 'official pages', 'one.exampletwo.example'],
       ],
     );
     const source = viewer.querySelector<HTMLAnchorElement>('.attachment-table-link')!;
@@ -339,7 +340,16 @@ test('owned Markdown and CSV open readable previews with safe links and exact ta
     assert.equal(source.title, source.href);
     assert.equal(source.target, '_blank');
     assert.equal(source.rel, 'noopener noreferrer');
-    assert.equal(viewer.querySelectorAll('.attachment-table-link').length, 1);
+    assert.deepEqual(
+      Array.from(viewer.querySelectorAll<HTMLAnchorElement>('.attachment-table-link')).map(
+        (link) => link.href,
+      ),
+      [
+        'https://example.com/research?year=2024&country=DEU',
+        'https://one.example/source',
+        'https://two.example/source',
+      ],
+    );
     assert.equal(viewer.querySelector('a[download]')?.getAttribute('href'), csv.url);
   } finally {
     await act(async () => root.unmount());

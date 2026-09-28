@@ -8,16 +8,33 @@ type Sheet = { name: string; rows: string[][]; header: boolean };
 type Content = { kind: 'markdown'; text: string } | { kind: 'spreadsheet'; sheets: Sheet[] };
 
 function SpreadsheetCell({ value }: { value: string }) {
+  const parts = value.split(/[;\n]\s*(?=https?:\/\/)/i);
+  if (parts.length > 1) {
+    if (parts.length > 8) return value;
+    const links = parts.map((part) => safeMessageLink(part.trim(), window.location.origin));
+    if (links.some((link) => link?.kind !== 'external')) return value;
+    return (
+      <span className="attachment-table-links">
+        {links.map((link, index) => (
+          <SpreadsheetLink href={link!.href} key={`${link!.href}:${index}`} />
+        ))}
+      </span>
+    );
+  }
   const link = safeMessageLink(value, window.location.origin);
   if (link?.kind !== 'external') return value;
-  const host = new URL(link.href).hostname;
+  return <SpreadsheetLink href={link.href} />;
+}
+
+function SpreadsheetLink({ href }: { href: string }) {
+  const host = new URL(href).hostname;
   return (
     <a
       className="attachment-table-link"
-      href={link.href}
+      href={href}
       target="_blank"
       rel="noopener noreferrer"
-      title={link.href}
+      title={href}
       aria-label={`Open ${host}`}
     >
       {host}
