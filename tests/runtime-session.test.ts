@@ -2333,13 +2333,27 @@ test('an image read interrupted by cancellation never starts the model prompt', 
   assert.equal(prompted, false);
 });
 
-test('browser write steps mark an outside action before dispatch while reads do not', async () => {
+test('browser writes, shell commands and sign-in steps mark an outside action before dispatch', async () => {
   const order: string[] = [];
   await fixture(
     async (tools) => {
       await call(tools, 'browser', { action: 'snapshot' });
+      await call(tools, 'browser', { action: 'scroll', direction: 'down' }).catch(() => {});
       await call(tools, 'browser', { action: 'click', ref: 'e1' });
-      await call(tools, 'shell', { command: 'echo fixture' });
+      order.push('shell');
+      await call(tools, 'shell', { command: 'curl -X POST https://example.com' });
+      order.push('select');
+      await call(tools, 'select_login_method', {
+        origin: 'https://example.com',
+        methodId: 'credentials',
+      }).catch(() => {});
+      order.push('credentials');
+      await call(tools, 'request_credentials', {
+        origin: 'https://example.com',
+        label: 'Fixture',
+        kind: 'password',
+        passwordSelector: '#password',
+      }).catch(() => {});
     },
     {
       startExternalAction: async () => {
@@ -2355,7 +2369,10 @@ test('browser write steps mark an outside action before dispatch while reads do 
       }),
     },
   );
-  assert.deepEqual(order, ['snapshot', 'marked', 'click']);
+  assert.deepEqual(order.slice(0, 5), ['snapshot', 'scroll', 'marked', 'click', 'shell']);
+  assert.equal(order[5], 'marked');
+  assert.equal(order[order.indexOf('select') + 1], 'marked');
+  assert.equal(order[order.indexOf('credentials') + 1], 'marked');
 });
 
 test('an outcome check exposes only read tools, refuses writes and reports once', async () => {
@@ -2365,18 +2382,16 @@ test('an outcome check exposes only read tools, refuses writes and reports once'
     async (tools) => {
       assert.deepEqual(
         [...tools.keys()].sort(),
-        [
-          'apps',
-          'ask_user',
-          'browser',
-          'browser_connection',
-          'browser_screenshot',
-          'read_file',
-          'report_outcome',
-        ].sort(),
+        ['apps', 'ask_user', 'browser', 'browser_screenshot', 'read_file', 'report_outcome'].sort(),
       );
       await call(tools, 'browser', { action: 'open', url: 'https://example.com/sent' });
-      await assert.rejects(call(tools, 'browser', { action: 'click', ref: 'e2' }));
+      await call(tools, 'browser', { action: 'snapshot' });
+      for (const action of [
+        { action: 'click', selector: '#send' },
+        { action: 'fill', selector: '#note', text: 'Fixture' },
+        { action: 'press', key: 'Enter' },
+      ])
+        await assert.rejects(call(tools, 'browser', action));
       await call(tools, 'report_outcome', {
         outcome: 'completed',
         message: 'The fixture email went through.',
@@ -2402,7 +2417,7 @@ test('an outcome check exposes only read tools, refuses writes and reports once'
     },
   );
   assert.equal(result.supplied.fresh, true);
-  assert.deepEqual(dispatched, ['open']);
+  assert.deepEqual(dispatched, ['open', 'snapshot']);
   assert.deepEqual(reports, [['completed', 'The fixture email went through.']]);
   assert.equal(result.aborted, true);
   assert.equal(

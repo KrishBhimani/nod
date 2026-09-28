@@ -1450,14 +1450,33 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
                 await insertReply(client, taskId, message.slice(0, 2000), []);
               const request = await originalRequest(client, task);
               const next = revision + 1;
+              if (outcome === 'not_completed' && task.recovery_attempts >= recoveryLimit) {
+                await client.query(
+                  "UPDATE tasks SET status='failed',error='I couldn’t finish that.',recovery_mode=NULL,fresh_session=true,updated_at=now() WHERE id=$1",
+                  [taskId],
+                );
+                if (task.source === 'user')
+                  await client.query(
+                    "INSERT INTO messages(id,owner_id,role,text,task_id,stream_id) VALUES($1,$2,'assistant',$3,$4,$5)",
+                    [
+                      randomUUID(),
+                      ownerId,
+                      recoveryFailure,
+                      taskId,
+                      `failure:${taskId}:${revision}`,
+                    ],
+                  );
+                return;
+              }
               await client.query(
-                "UPDATE tasks SET status='queued',revision=$2,prompt=$3,recovery_mode=NULL,external_action=false,fresh_session=false,waiting_reason=NULL,waiting_question=NULL,updated_at=now() WHERE id=$1",
+                "UPDATE tasks SET status='queued',revision=$2,prompt=$3,recovery_mode=NULL,external_action=false,fresh_session=false,recovery_attempts=recovery_attempts+$4,waiting_reason=NULL,waiting_question=NULL,updated_at=now() WHERE id=$1",
                 [
                   taskId,
                   next,
                   outcome === 'completed'
                     ? `The earlier step went through. Continue the rest of this request without repeating that step. If nothing is left, finish without another message. Request: ${JSON.stringify(request)}`
                     : request,
+                  outcome === 'not_completed' ? 1 : 0,
                 ],
               );
               await boss.send(

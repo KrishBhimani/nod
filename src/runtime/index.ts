@@ -45,18 +45,24 @@ function publicLoginInspection(inspection: LoginInspection) {
 const outcomeCheckTools = [
   'browser',
   'browser_screenshot',
-  'browser_connection',
   'apps',
   'read_file',
   'web_search',
   'ask_user',
 ];
 
+const outsideActionTools = [
+  'browser_fast_step',
+  'shell',
+  'request_credentials',
+  'select_login_method',
+];
+
 function changesExternalState(name: string, params: unknown) {
   return (
-    name === 'browser_fast_step' ||
+    outsideActionTools.includes(name) ||
     (name === 'browser' &&
-      ['click', 'fill', 'press'].includes(String((params as { action?: unknown }).action)))
+      !['open', 'snapshot', 'scroll'].includes(String((params as { action?: unknown }).action)))
   );
 }
 

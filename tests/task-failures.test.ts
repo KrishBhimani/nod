@@ -73,6 +73,11 @@ test(
               await context.reportOutcome!('completed', 'The synthetic send went through.');
               return { status: 'succeeded' };
             }
+            if (context.prompt.includes('verify-twice')) {
+              if (run === 2) throw new Error('Synthetic check failure');
+              await context.reportOutcome!('not_completed', 'The synthetic post did not happen.');
+              return { status: 'succeeded' };
+            }
             if (context.prompt.includes('verify-redo')) {
               await context.reportOutcome!('not_completed', 'The synthetic send did not happen.');
               return { status: 'succeeded' };
@@ -274,6 +279,20 @@ test(
           ],
         );
         assert.equal(segments(id)[2].currentMessageId, segments(id)[0].currentMessageId);
+        assert.equal((await row(id)).recovery_attempts, 2);
+      });
+      await t.test('a redo beyond the recovery limit ends with one plain message', async () => {
+        const id = await tasks.submitTask('verify-twice:Post the synthetic update');
+        await waitFor(async () => (await row(id)).status === 'failed');
+        await delay(200);
+        assert.deepEqual(
+          segments(id).map((context) => context.checkOutcome),
+          [false, true, true],
+        );
+        assert.deepEqual(
+          (await messages(id)).map((item) => item.text),
+          ['The synthetic post did not happen.', tasks.recoveryFailure],
+        );
       });
       await t.test('an outcome that cannot be checked asks one plain question', async () => {
         const id = await tasks.submitTask('verify-unknown:Send the synthetic invite');
