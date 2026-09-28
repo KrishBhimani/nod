@@ -23,8 +23,13 @@ test(
     const redirectUris: string[] = [];
     let tokenRequests = 0;
     let refreshRequests = 0;
+    let mcpRequests = 0;
     const request: typeof fetch = async (input, init) => {
       const url = String(input);
+      if (url === 'https://mcp.linear.app/mcp/readonly') {
+        mcpRequests += 1;
+        throw new Error('The synthetic MCP server is unavailable.');
+      }
       if (url.endsWith('/.well-known/oauth-protected-resource/mcp/readonly'))
         return Response.json({ authorization_servers: ['https://mcp.linear.app'] });
       if (url.endsWith('/.well-known/oauth-authorization-server'))
@@ -141,6 +146,16 @@ test(
         ).rows[0].ciphertext,
         /refreshed-access-token/,
       );
+      await pool.query(
+        `INSERT INTO direct_oauth_accounts(id,owner_id,service,ciphertext,connected)
+         VALUES($1,$2,$3,$4,true)`,
+        ['00000000-0000-0000-0000-000000000001', 'fixture-owner', 'linear', 'invalid'],
+      );
+      const connectedSession = await provider.createSession('fixture-owner', {
+        linear: ['00000000-0000-0000-0000-000000000001', attempt.accountId],
+      });
+      assert.deepEqual((await connectedSession.search('linear')).tools, {});
+      assert.ok(mcpRequests > 0);
       assert.deepEqual((await session.search('linear')).tools, {});
       await assert.rejects(
         session.execute('LINEAR_DELETE_ISSUE', {}, attempt.accountId),
@@ -177,6 +192,7 @@ test(
     const app = Fastify();
     const calls: string[] = [];
     const resumes: string[] = [];
+    const directAccounts: Array<Record<string, unknown>> = [];
     let composioSearchFails = false;
     let failInspectOnce = false;
     let state = '';
@@ -215,7 +231,10 @@ test(
       supportedServices: services,
       webhooksConfigured: false,
       supportsSubscriptions: [],
-      createSession: async () => session(id),
+      createSession: async (_ownerId, accounts) => {
+        if (id === 'direct') directAccounts.push(accounts);
+        return session(id);
+      },
       restoreSession: async () => session(id),
       deleteSession: async () => {},
       inspectAccount: async (accountId) => {
@@ -262,7 +281,7 @@ test(
       const connect = await app.inject({ method: 'POST', url: '/api/apps/notion/connect' });
       assert.equal(connect.statusCode, 200);
       const callback = await app.inject({ url: `/api/apps/callback?state=${state}&code=fixture` });
-      assert.equal(callback.headers.location, '/apps?connection=connected');
+      assert.equal(callback.headers.location, 'http://localhost:4310/apps?connection=connected');
       const rows = (await integrations.list()).filter((item) => item.slug === 'notion');
       assert.equal(rows.length, 2);
       const direct = rows.find((item) => item.connectionId !== existing.rows[0].id)!;
@@ -287,6 +306,11 @@ test(
       const search = await integrations.execute('local-development', 'SEARCH_TOOLS', {
         query: 'notion',
       });
+      assert.ok(
+        directAccounts.some(
+          (accounts) => Array.isArray(accounts.notion) && accounts.notion.includes('direct-notion'),
+        ),
+      );
       assert.deepEqual(Object.keys((search as { tools: object }).tools), [
         'composio_tool',
         'NOTION_RETRIEVE_PAGE',
@@ -327,11 +351,17 @@ test(
       const firstCallback = await app.inject({
         url: `/api/apps/callback?state=${state}&code=fixture`,
       });
-      assert.equal(firstCallback.headers.location, '/?connection=failed&service=linear');
+      assert.equal(
+        firstCallback.headers.location,
+        'http://localhost:4310/?connection=failed&service=linear',
+      );
       const chatCallback = await app.inject({
         url: `/api/apps/callback?state=${state}&code=fixture`,
       });
-      assert.equal(chatCallback.headers.location, '/?connection=continued&service=linear');
+      assert.equal(
+        chatCallback.headers.location,
+        'http://localhost:4310/?connection=continued&service=linear',
+      );
       assert.deepEqual(resumes, [`${taskId}:3:linear`]);
       const linear = (await integrations.list()).find((item) => item.slug === 'linear');
       assert.equal(linear?.status, 'connected');

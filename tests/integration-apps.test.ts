@@ -117,10 +117,10 @@ async function fixture(t: TestContext) {
     url.searchParams.set('account', id);
     const callback = await app.inject({ url: `${url.pathname}${url.search}` });
     assert.equal(callback.statusCode, 302, callback.body);
-    assert.equal(callback.headers.location, '/apps?connection=connected');
+    assert.equal(callback.headers.location, 'http://localhost:4310/apps?connection=connected');
     const replay = await app.inject({ url: `${url.pathname}${url.search}` });
     assert.equal(replay.statusCode, 302, replay.body);
-    assert.equal(replay.headers.location, '/apps?connection=expired');
+    assert.equal(replay.headers.location, 'http://localhost:4310/apps?connection=expired');
     return (await service.list()).find((account) => account.accountId === id)!;
   }
   return {

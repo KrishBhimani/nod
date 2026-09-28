@@ -236,12 +236,27 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     ).rows;
   }
 
+  async function connectedAccounts(ownerId: string, selected: IntegrationProvider) {
+    const accounts: Partial<Record<Slug, string[]>> = {};
+    for (const row of await connectionRows(ownerId)) {
+      if (
+        row.provider_id === selected.id &&
+        row.account_id &&
+        !row.revoked &&
+        supportsService(row.slug)
+      )
+        (accounts[row.slug] ??= []).push(row.account_id);
+    }
+    return accounts;
+  }
+
   async function getSession(
     ownerId: string,
     selected: IntegrationProvider = provider,
   ): Promise<IntegrationSession> {
     assertOwner(ownerId);
-    if (selected !== provider) return selected.createSession(ownerId, {});
+    if (selected !== provider)
+      return selected.createSession(ownerId, await connectedAccounts(ownerId, selected));
     const cached = sessions.get(ownerId);
     if (cached) return cached;
     const pending = (async () => {
@@ -252,18 +267,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       );
       if (saved.rows[0]?.configuration_version === 3)
         return sdk.restoreSession(saved.rows[0].session_id);
-      const rows = await connectionRows(ownerId);
-      const connectedAccounts: Partial<Record<Slug, string[]>> = {};
-      for (const row of rows) {
-        if (
-          row.provider_id === providerId &&
-          row.account_id &&
-          !row.revoked &&
-          supportsService(row.slug)
-        )
-          (connectedAccounts[row.slug] ??= []).push(row.account_id);
-      }
-      const session = await sdk.createSession(ownerId, connectedAccounts);
+      const session = await sdk.createSession(ownerId, await connectedAccounts(ownerId, sdk));
       await pool.query(
         'INSERT INTO integration_sessions (owner_id,session_id,provider_id,configuration_version) VALUES ($1,$2,$3,3) ON CONFLICT(owner_id) DO UPDATE SET session_id=EXCLUDED.session_id,provider_id=EXCLUDED.provider_id,configuration_version=3',
         [ownerId, session.id, providerId],
@@ -1188,7 +1192,10 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
           .header('Cache-Control', 'no-store')
           .header('Referrer-Policy', 'no-referrer')
           .redirect(
-            `${returnTo === 'chat' ? '/' : `/${returnTo}`}?connection=${outcome}${returnTo === 'chat' && service ? `&service=${service}` : ''}`,
+            new URL(
+              `${returnTo === 'chat' ? '/' : `/${returnTo}`}?connection=${outcome}${returnTo === 'chat' && service ? `&service=${service}` : ''}`,
+              options.baseUrl,
+            ).href,
           );
       });
       scope.post<{ Params: { slug: string } }>('/api/apps/:slug/disconnect', async (request) =>

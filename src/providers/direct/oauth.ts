@@ -301,14 +301,6 @@ export function createDirectOAuth(options: {
       const secrets = await access(account);
       return { service: account.service, accessToken: secrets.accessToken! };
     },
-    async connectedAccount(ownerId: string, service: Service) {
-      await ready;
-      const accounts = await options.pool.query<{ id: string }>(
-        'SELECT id FROM direct_oauth_accounts WHERE owner_id=$1 AND service=$2 AND connected=true LIMIT 1',
-        [ownerId, service],
-      );
-      return accounts.rows[0]?.id;
-    },
     async deleteAccount(id: string) {
       await ready;
       await options.pool.query('DELETE FROM direct_oauth_accounts WHERE id=$1', [id]);

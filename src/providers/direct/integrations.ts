@@ -141,7 +141,7 @@ export function createDirectProvider(options: {
     supportedServices,
     webhooksConfigured: false,
     supportsSubscriptions: [],
-    async createSession(ownerId) {
+    async createSession(ownerId, accounts) {
       const session: IntegrationSession = {
         id: ownerId,
         authorize: (service, callbackUrl) =>
@@ -162,44 +162,44 @@ export function createDirectProvider(options: {
               name.startsWith(`${service.toUpperCase()}_`),
             );
             if (!actions.length) continue;
-            const id = await oauth.connectedAccount(ownerId, service);
-            if (!id) {
+            let available: Awaited<ReturnType<Client['listTools']>> | undefined;
+            const ids = accounts[service];
+            for (const id of typeof ids === 'string' ? [ids] : (ids ?? [])) {
+              try {
+                const account = await oauth.access(ownerId, id);
+                available = await mcp(service, account.accessToken, (client) => client.listTools());
+                break;
+              } catch {}
+            }
+            if (!available) {
               for (const action of actions) delete matches[action];
               continue;
             }
-            try {
-              const account = await oauth.access(ownerId, id);
-              const available = await mcp(service, account.accessToken, (client) =>
-                client.listTools(),
-              );
-              const names =
-                service === 'linear'
-                  ? linearTools
-                  : {
-                      NOTION_SEARCH_NOTION_PAGE: available.tools.some(
-                        (entry) => entry.name === 'notion-search',
-                      )
-                        ? 'notion-search'
-                        : 'notion-ai-search',
-                      NOTION_RETRIEVE_PAGE: 'notion-fetch',
-                      NOTION_GET_PAGE_MARKDOWN: 'notion-fetch',
-                    };
-              for (const [action, toolName] of Object.entries(names)) {
-                const tool = available.tools.find((entry) => entry.name === toolName);
-                if (
-                  !tool ||
-                  (action === 'NOTION_SEARCH_NOTION_PAGE' &&
-                    !available.tools.some((entry) => entry.name === 'notion-get-tool-access'))
-                )
-                  delete matches[action];
-                else if (matches[action])
-                  matches[action] = {
-                    description: tool.description,
-                    inputSchema: tool.inputSchema,
+            const names =
+              service === 'linear'
+                ? linearTools
+                : {
+                    NOTION_SEARCH_NOTION_PAGE: available.tools.some(
+                      (entry) => entry.name === 'notion-search',
+                    )
+                      ? 'notion-search'
+                      : 'notion-ai-search',
+                    NOTION_RETRIEVE_PAGE: 'notion-fetch',
+                    NOTION_GET_PAGE_MARKDOWN: 'notion-fetch',
                   };
-              }
-            } catch {
-              for (const action of actions) delete matches[action];
+            for (const [action, toolName] of Object.entries(names)) {
+              const tool = available.tools.find((entry) => entry.name === toolName);
+              if (
+                !tool ||
+                (action === 'NOTION_SEARCH_NOTION_PAGE' &&
+                  !available.tools.some((entry) => entry.name === 'notion-get-tool-access'))
+              )
+                delete matches[action];
+              else if (matches[action])
+                matches[action] = {
+                  description: tool.description,
+                  inputSchema: tool.inputSchema,
+                };
             }
           }
           return { tools: matches, suggestions: [] };
