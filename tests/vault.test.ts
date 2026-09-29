@@ -884,7 +884,6 @@ test(
           { kind: stages.get(threadId) ?? 'identifier', selector: '#login', label: 'Login' },
         ],
         methods: [{ id: 'credentials', kind: 'credentials', label: 'Login', supported: true }],
-        submitSelector: '#submit',
       }),
       inject: async (input: CredentialInjection) => {
         injections.push(input);
@@ -1227,12 +1226,11 @@ test(
     const app = Fastify();
     let blocked = false;
     let injections = 0;
-    let selections = 0;
     let resumes = 0;
     const origin = 'https://accounts.example.com';
     const input = { origin, label: 'Synthetic sign-in', kind: 'password' as const };
     try {
-      const turns = await seedNamedTurns(pool, ['new', 'refresh', 'submit', 'method', 'saved']);
+      const turns = await seedNamedTurns(pool, ['new', 'refresh', 'submit', 'saved']);
       const key = randomBytes(32);
       const vault = await createVault(pool, {
         keyStore: { id: 'fixture', configured: true, getKey: async () => key },
@@ -1248,9 +1246,6 @@ test(
         }),
         inject: async () => {
           injections++;
-        },
-        selectMethod: async () => {
-          selections++;
         },
         retry: async () => {},
         resume: async () => {
@@ -1272,8 +1267,7 @@ test(
       blocked = true;
       const isBlocked = (error: unknown) => {
         assert.equal((error as { statusCode: number }).statusCode, 409);
-        assert.match((error as Error).message, /Take control/);
-        assert.match((error as Error).message, /Resume agent/);
+        assert.match((error as Error).message, /blocked sign-in/);
         return true;
       };
       await assert.rejects(vault.request(turns.new, 'local-development', input), isBlocked);
@@ -1284,7 +1278,6 @@ test(
       for (const [id, suffix, payload] of [
         ['refresh', '/refresh', {}],
         ['submit', '', { password: 'fixture-password' }],
-        ['method', '/method', { methodId: 'oauth-google' }],
       ] as const) {
         blocked = false;
         const request = await vault.request(turns[id], 'local-development', input);
@@ -1299,11 +1292,9 @@ test(
           payload,
         });
         assert.equal(response.statusCode, 409);
-        assert.match(response.json().error, /Take control/);
-        assert.match(response.json().error, /Resume agent/);
+        assert.match(response.json().error, /blocked sign-in/);
       }
       assert.equal(injections, 0);
-      assert.equal(selections, 0);
       assert.equal(resumes, 0);
       assert.equal(
         (await pool.query('SELECT 1 FROM credential_requests WHERE turn_id=$1', [turns.new.turnId]))
@@ -1732,7 +1723,6 @@ test(
           url: observedOrigin + '/login',
           fields: [{ kind: stages.get(id) ?? 'identifier', selector: '#observed', label: 'Email' }],
           methods: [{ id: 'credentials', kind: 'credentials', label: 'Sign in', supported: true }],
-          submitSelector: '#continue',
         }),
         inject: async (input: CredentialInjection) => {
           injections.push(input);
@@ -1787,7 +1777,6 @@ test(
         assert.equal(submitted.json().ok, true);
         assert.equal(injections.at(-1)?.kind, 'identifier');
         assert.equal(injections.at(-1)?.password, undefined);
-        assert.equal(injections.at(-1)?.submitSelector, undefined);
         return url;
       };
 
@@ -2214,7 +2203,6 @@ function inspection(kind: 'password' | 'otp'): LoginInspection {
     url: `${origin}/login`,
     fields: [{ kind, selector: `#${kind}`, label: kind }],
     methods: [{ id: 'credentials', kind: 'credentials', label: 'Sign in', supported: true }],
-    submitSelector: '#submit',
     ...(kind === 'otp' ? { emailCode: { recipient: username, length: 6 } } : {}),
   };
 }

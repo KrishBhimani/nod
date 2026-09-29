@@ -33,7 +33,6 @@ export const loginInspectionSchema = z.object({
       }),
     )
     .max(20),
-  submitSelector: z.string().max(500).optional(),
   emailCode: z
     .object({
       recipient: z.email().max(320).optional(),
@@ -195,13 +194,8 @@ export function loginInspectionScript(): string {
       return {...method,selector:'[data-otto-login-method="'+method.id+'"]',reason:method.supported?(method.kind==='oauth'?'Opens this website’s sign-in flow. Further secure steps may be required.':/cartao de cidadao|codigo qr|qr code/.test(normalized(method.label))?'Selects this sign-in option. The user may need to finish with a card reader or their own device.':'Continues this sign-in step on the website. Secrets stay in the secure credential flow.'):'This option is unavailable, ambiguous, or requires a separate window.'};
     });
     const unambiguous=!ambiguousDialogs&&!ambiguousForms&&!unsupportedSecrets.length&&(!submit||currentContext(submit))&&['identifier','password','otp'].every(kind=>fields.filter(field=>field.kind===kind).length<=1);
-    let submitSelector;
-    if(submit&&unambiguous) {
-      submit.setAttribute('data-otto-login-submit','current');
-      submitSelector='[data-otto-login-submit="current"]';
-    }
-    if(fields.length) methods.unshift({id:'credentials',label:(fields.find(field=>field.kind==='identifier')||fields.find(field=>field.kind==='otp')||fields[0]).label,kind:'credentials',supported:unambiguous,reason:unambiguous?undefined:'More than one credential field or active form matches this step. Choose another method or take over the browser.'});
-    if(unsupportedSecrets.length) methods.push({id:'private-entry',label:secretLabel(unsupportedSecrets[0])||'Private sign-in',kind:'manual',supported:false,reason:'This secret field is not a password input. Finish privately in the browser.'});
+    if(fields.length) methods.unshift({id:'credentials',label:(fields.find(field=>field.kind==='identifier')||fields.find(field=>field.kind==='otp')||fields[0]).label,kind:'credentials',supported:unambiguous,reason:unambiguous?undefined:'More than one credential field or active form matches this step. Inspect the active form again.'});
+    if(unsupportedSecrets.length) methods.push({id:'private-entry',label:secretLabel(unsupportedSecrets[0])||'Private sign-in',kind:'manual',supported:false,reason:'Otto could not identify this private field.'});
     let emailCode;
     if(unambiguous&&fields.length===1&&fields[0].kind==='otp') {
       const root=fieldScope===document?document.body:fieldScope;
@@ -224,23 +218,6 @@ export function loginInspectionScript(): string {
         emailCode={...(recipient?masked?{recipientHint:recipient}:{recipient}:{}),...(length>=4&&length<=8?{length}:{})};
       }
     }
-    return {origin:location.origin,url:location.href,fields,methods,submitSelector,...(emailCode?{emailCode}:{})};
-  })()`;
-}
-
-export function credentialSubmitScript(origin: string, selector: string): string {
-  return `(async () => {
-    const origin=${JSON.stringify(origin)},selector=${JSON.stringify(selector)};
-    const currentContext=${currentContextScript};
-    for(let attempt=0;attempt<30;attempt++) {
-      if(location.origin!==origin) return {ok:false};
-      const nodes=document.querySelectorAll(selector);
-      if(nodes.length!==1) return {ok:false};
-      const e=nodes[0];
-      if(!currentContext(e)) return {ok:false};
-      if(e.isConnected && !e.disabled && !e.closest('[hidden],[aria-hidden="true"],[inert],[aria-disabled="true"]') && e.getClientRects().length>0 && getComputedStyle(e).visibility!=='hidden' && getComputedStyle(e).display!=='none') { e.click(); return {ok:true}; }
-      await new Promise(resolve=>setTimeout(resolve,50));
-    }
-    return {ok:false};
+    return {origin:location.origin,url:location.href,fields,methods,...(emailCode?{emailCode}:{})};
   })()`;
 }

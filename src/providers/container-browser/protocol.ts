@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { manualInputSchema } from '../agent-browser/manual.ts';
 
 export const browserSocketPath = '/data/control.sock';
 export const requestBytes = 128 * 1024;
@@ -27,8 +26,25 @@ export const browserDownloadInput = z
   .refine((input) => !(input.selector && input.url));
 const browserAction = z
   .object({
-    action: z.enum(['open', 'snapshot', 'click', 'fill', 'press', 'scroll']),
+    action: z.enum([
+      'open',
+      'snapshot',
+      'click',
+      'fill',
+      'press',
+      'scroll',
+      'select',
+      'check',
+      'uncheck',
+      'hover',
+      'back',
+      'forward',
+      'reload',
+      'tab_list',
+      'tab_switch',
+    ]),
     url: z.string().max(8192).optional(),
+    tabId: z.string().min(1).max(200).optional(),
     selector: selector.optional(),
     text: z.string().max(20_000).optional(),
     key: z
@@ -50,7 +66,6 @@ const credential = z
     code: z.string().max(8192).optional(),
     usernameSelector: selector.optional(),
     passwordSelector: selector.optional(),
-    submitSelector: selector.optional(),
   })
   .strict();
 
@@ -77,37 +92,7 @@ export const browserRequest = z.discriminatedUnion('method', [
     })
     .strict(),
   z.object({ ...identity, method: z.literal('screenshot'), threadId: thread }).strict(),
-  z.object({ ...identity, method: z.literal('signInScreenshot'), threadId: thread }).strict(),
-  z.object({ ...identity, method: z.literal('takeControl'), threadId: thread }).strict(),
-  z.object({ ...identity, method: z.literal('openSignIn'), threadId: thread }).strict(),
-  z.object({ ...identity, method: z.literal('finishSignIn'), threadId: thread }).strict(),
-  z
-    .object({
-      ...identity,
-      method: z.literal('control'),
-      threadId: thread,
-      input: manualInputSchema,
-    })
-    .strict(),
-  z
-    .object({
-      ...identity,
-      method: z.literal('signInControl'),
-      threadId: thread,
-      input: manualInputSchema,
-    })
-    .strict(),
-  z.object({ ...identity, method: z.literal('releaseControl'), threadId: thread }).strict(),
   z.object({ ...identity, method: z.literal('inspectLogin'), threadId: thread }).strict(),
-  z
-    .object({
-      ...identity,
-      method: z.literal('selectLoginMethod'),
-      threadId: thread,
-      origin: z.string().max(2048),
-      methodId: z.string().max(100),
-    })
-    .strict(),
   z.object({ ...identity, method: z.literal('injectCredentials'), input: credential }).strict(),
   z
     .object({
@@ -159,7 +144,14 @@ export const browserResponse = z.discriminatedUnion('ok', [
     .object({
       id: z.uuid(),
       ok: z.literal(false),
-      error: z.enum(['cancelled', 'locked', 'navigation', 'click_intercepted', 'unavailable']),
+      error: z.enum([
+        'cancelled',
+        'locked',
+        'navigation',
+        'click_intercepted',
+        'action',
+        'unavailable',
+      ]),
       metadata: browserMetadata,
     })
     .strict(),

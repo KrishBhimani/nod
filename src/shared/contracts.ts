@@ -1,5 +1,5 @@
 export type TurnStatus = 'queued' | 'running' | 'succeeded' | 'waiting' | 'failed' | 'cancelled';
-export type ThreadStatus = 'idle' | 'running' | 'manual_control';
+export type ThreadStatus = 'idle' | 'running';
 export interface Artifact {
   id: string;
   name: string;

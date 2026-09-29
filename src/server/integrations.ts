@@ -1453,17 +1453,16 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       proposal?: unknown,
     ) => {
       if (action === 'list')
-        return (await list()).map(
-          ({ accountId: _accountId, browserUrl: _browserUrl, ...connection }) => ({
+        return (await list())
+          .filter(
+            (connection) =>
+              !connection.accessPaths?.some((path) => path.kind === 'browser') ||
+              ['saved', 'needs_sign_in'].includes(connection.browserState ?? ''),
+          )
+          .map(({ accountId: _accountId, browserUrl: _browserUrl, ...connection }) => ({
             ...connection,
-            ...(connection.accessPaths?.some((path) => path.kind === 'browser') &&
-              (connection.browserState === undefined
-                ? { browserAccess: 'credentials_saved' }
-                : ['saved', 'needs_sign_in'].includes(connection.browserState)
-                  ? { browserAccess: 'browser_session' }
-                  : {})),
-          }),
-        );
+            ...(connection.browserState ? { browserAccess: 'browser_session' } : {}),
+          }));
       if (action === 'propose') {
         if (!options.discovered)
           throw new IntegrationError('Discovered connections are unavailable.', 503);

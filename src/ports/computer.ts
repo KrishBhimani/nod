@@ -8,8 +8,24 @@ export class BrowserActionError extends Error {
 }
 
 export interface BrowserAction {
-  action: 'open' | 'snapshot' | 'click' | 'fill' | 'press' | 'scroll';
+  action:
+    | 'open'
+    | 'snapshot'
+    | 'click'
+    | 'fill'
+    | 'press'
+    | 'scroll'
+    | 'select'
+    | 'check'
+    | 'uncheck'
+    | 'hover'
+    | 'back'
+    | 'forward'
+    | 'reload'
+    | 'tab_list'
+    | 'tab_switch';
   url?: string;
+  tabId?: string;
   selector?: string;
   text?: string;
   key?: 'Enter' | 'Escape' | 'Tab' | 'ArrowDown' | 'ArrowUp' | 'PageDown' | 'PageUp';
@@ -60,7 +76,6 @@ export interface LoginInspection {
   issue?: 'browser_not_supported';
   fields: LoginField[];
   methods: LoginMethod[];
-  submitSelector?: string;
   emailCode?: { recipient?: string; recipientHint?: string; length?: number };
 }
 export interface CredentialInput {
@@ -72,23 +87,14 @@ export interface CredentialInput {
   code?: string;
   usernameSelector?: string;
   passwordSelector?: string;
-  submitSelector?: string;
 }
 export interface CredentialSubmission {
   status: 'submitted' | 'rejected';
 }
-export type ManualBrowserInput = import('../shared/browser-input.ts').BrowserInput;
 export interface Computer {
   currentSession?(): { threadId: string; lastActivityAt: string } | undefined;
   bindProfile?(threadId: string, profileId: string, allowedOrigin?: string): Promise<void>;
   deleteProfile?(profileId: string): Promise<void>;
-  takeControl?(threadId: string): Promise<void>;
-  openSignIn?(threadId: string): Promise<void>;
-  finishSignIn?(threadId: string): Promise<void>;
-  signInScreenshot?(threadId: string, signal?: AbortSignal): Promise<Buffer | null>;
-  signInControl?(threadId: string, input: ManualBrowserInput): Promise<void>;
-  control?(threadId: string, input: ManualBrowserInput): Promise<void>;
-  releaseControl?(threadId: string): Promise<void>;
   act(threadId: string, input: BrowserAction, signal?: AbortSignal): Promise<BrowserObservation>;
   download?(
     threadId: string,
@@ -102,7 +108,6 @@ export interface Computer {
   };
   injectCredentials(input: CredentialInput): Promise<CredentialSubmission | void>;
   inspectLogin(threadId: string): Promise<LoginInspection>;
-  selectLoginMethod(threadId: string, origin: string, methodId: string): Promise<void>;
   hold(threadId: string, until: number | null): Promise<void>;
   close(threadId: string): Promise<void>;
   dispose(): Promise<void>;

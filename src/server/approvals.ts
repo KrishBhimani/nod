@@ -71,7 +71,7 @@ async function turnChain(client: PoolClient, turn: TurnRow) {
     if (current.source !== 'resume') return chain;
     const linked =
       (await confirmedBy(client, current))?.turn_id ??
-      /^(?:credentials|credentials-retry|connection|control):([0-9a-f-]{36})(?::|$)/.exec(
+      /^(?:credentials|credentials-retry|connection):([0-9a-f-]{36})(?::|$)/.exec(
         current.source_id ?? '',
       )?.[1];
     if (!linked) return chain;
@@ -89,7 +89,6 @@ async function resumeKind(client: PoolClient, turn: TurnRow) {
   if (confirmation) return confirmation.status === 'declined' ? null : 'approval';
   if (turn.source_id?.startsWith('credentials:')) return 'credentials';
   if (turn.source_id?.startsWith('connection:')) return 'connection';
-  if (turn.source_id?.startsWith('control:')) return 'manual_control';
   return null;
 }
 

@@ -5,6 +5,8 @@ const browserErrors = {
     'The website did not load successfully. Open another public page or retry navigation later; taking screenshots cannot recover a failed page.',
   browser_origin_changed:
     'This connected browser left its saved website. Reopen the connected website before continuing.',
+  browser_action_failed:
+    'The page did not accept that browser action. Take a fresh snapshot and use a current control.',
 } as const;
 
 export type BrowserErrorCode = keyof typeof browserErrors;

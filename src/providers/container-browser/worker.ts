@@ -83,33 +83,13 @@ async function dispatch(computer: Computer, request: BrowserRequest, signal: Abo
         throw new Error();
       return { data: file.bytes.toString('base64'), name: file.name, mimeType: file.mimeType };
     }
-    case 'screenshot':
-    case 'signInScreenshot': {
-      const method =
-        request.method === 'screenshot' ? computer.screenshot : computer.signInScreenshot;
-      if (!method) throw new Error();
-      const image = await method.call(computer, request.threadId, signal);
+    case 'screenshot': {
+      const image = await computer.screenshot(request.threadId, signal);
       if (image && image.length > imageBytes) throw new Error();
       return image?.toString('base64') ?? null;
     }
-    case 'takeControl':
-    case 'openSignIn':
-    case 'finishSignIn':
-    case 'releaseControl': {
-      const method = computer[request.method];
-      if (!method) throw new Error();
-      return method.call(computer, request.threadId);
-    }
-    case 'control':
-    case 'signInControl': {
-      const method = computer[request.method];
-      if (!method) throw new Error();
-      return method.call(computer, request.threadId, request.input);
-    }
     case 'inspectLogin':
       return computer.inspectLogin(request.threadId);
-    case 'selectLoginMethod':
-      return computer.selectLoginMethod(request.threadId, request.origin, request.methodId);
     case 'injectCredentials':
       return computer.injectCredentials(request.input);
     case 'hold':
@@ -276,9 +256,11 @@ export async function startContainerBrowserWorker(
               ? 'click_intercepted'
               : error instanceof BrowserActionError && error.code === 'browser_navigation_failed'
                 ? 'navigation'
-                : error instanceof Error && 'statusCode' in error && error.statusCode === 423
-                  ? 'locked'
-                  : 'unavailable',
+                : error instanceof BrowserActionError && error.code === 'browser_action_failed'
+                  ? 'action'
+                  : error instanceof Error && 'statusCode' in error && error.statusCode === 423
+                    ? 'locked'
+                    : 'unavailable',
           metadata: metadata(await entry?.computer.catch(() => undefined), input),
         };
       } finally {

@@ -5,10 +5,10 @@ export function vaultInvitation(step: CredentialInvitation, url?: string) {
   if (!['https:', 'http:'].includes(origin.protocol) || origin.username || origin.password)
     throw new Error('The sign-in site is unavailable.');
   const site = origin.origin;
-  if (step.kind === 'otp')
-    return `${site} needs a verification code. Reply here with the code to continue signing in. Otto will send it securely to the website.`;
   if (!url || !/^\/(?:vault|credentials)\/[A-Za-z0-9_-]{1,256}$/.test(url))
     throw new Error('The Vault link is unavailable.');
+  if (step.kind === 'otp')
+    return `${site} needs a verification code. [Enter the code securely](${url}) and I will continue the task.`;
   if (step.methodSelection)
     return `${site} needs you to sign in. [Choose a sign-in method](${url}) and I will continue the task.`;
   if (!['identifier', 'password'].includes(step.kind))
@@ -17,7 +17,7 @@ export function vaultInvitation(step: CredentialInvitation, url?: string) {
     return `${site} needs you to sign in. There isn’t a login saved for this website in Vault. [Add login](${url}) and I will continue the task.`;
   if (step.savedLoginAvailable === true)
     return `${site} needs you to sign in. [Continue sign-in](${url}) with your saved login and I will continue the task.`;
-  return `${site} needs you to sign in. [Enter login details](${url}) and I will continue the task.`;
+  return `${site} needs you to sign in. [Open the secure form](${url}) and I will continue the task.`;
 }
 
 export function requestsPrivateInput(text: string) {

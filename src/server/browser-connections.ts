@@ -262,7 +262,9 @@ export async function createBrowserConnections(
       const row = await owned(id, true);
       const active = row.thread_id
         ? await pool.query(
-            `SELECT 1 FROM turns WHERE thread_id=$1 AND owner_id=$2 AND status IN ('queued','running','waiting') LIMIT 1`,
+            `SELECT 1 FROM turns u JOIN threads th ON th.id=u.thread_id AND th.owner_id=u.owner_id
+             WHERE u.thread_id=$1 AND u.owner_id=$2 AND u.status IN ('queued','running','waiting')
+             AND th.archived_at IS NULL LIMIT 1`,
             [row.thread_id, options.ownerId],
           )
         : null;

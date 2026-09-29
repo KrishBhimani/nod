@@ -11,33 +11,20 @@ import type {
   CredentialInput,
   CredentialSubmission,
   LoginInspection,
-  ManualBrowserInput,
 } from '../../ports/computer.ts';
 import { BrowserActionError } from '../../ports/computer.ts';
 import { threadIdentity } from '../../ports/thread-identity.ts';
 import { runProcess, serviceEnvironment } from '../process.ts';
 import { createBrowserProxy, browserUrl } from './network.ts';
-import {
-  credentialFeedback,
-  credentialFeedbackScript,
-  credentialFields,
-  credentialScript,
-} from './credentials.ts';
-import { credentialSubmitScript, loginInspectionSchema, loginInspectionScript } from './login.ts';
-import {
-  manualInputSchema,
-  protectFocusedField,
-  maskPageScript,
-  maskSnapshotInputValues,
-} from './manual.ts';
+import { credentialFields, credentialScript } from './credentials.ts';
+import { loginInspectionSchema, loginInspectionScript } from './login.ts';
+import { maskPageScript, maskSnapshotInputValues } from './redaction.ts';
 import {
   createScreenStore,
   existingDaemonCommand,
   DaemonCommandError,
   type StoredScreen,
 } from './screens.ts';
-import { createBrowserSignIn, resolveSignInBrowser, type BrowserSignInHandle } from './sign-in.ts';
-import { createSignInDesktop, type SignInDesktop } from './desktop.ts';
 import { browserViewScript } from './view.ts';
 import {
   createDownloadCapture,
@@ -52,11 +39,7 @@ interface BrowserState {
   id: string;
   queue: Promise<unknown>;
   injecting: boolean;
-  manualUntil: number;
-  manualAbort?: AbortController;
-  manualTimer?: ReturnType<typeof setTimeout>;
   secrets: Set<string>;
-  nativeText?: { value: string; added: boolean };
   protectedSelectors: Set<string>;
   started: boolean;
   lastUsed: number;
@@ -67,9 +50,7 @@ interface BrowserState {
   socket?: string;
   recovered?: boolean;
   saved: StoredScreen;
-  signInWindow?: BrowserSignInHandle;
   browserExecutable?: string;
-  desktop?: SignInDesktop;
 }
 class BrowserLockedError extends Error {
   statusCode = 423;
@@ -144,14 +125,10 @@ export function createAgentBrowserComputer(options: {
   sandbox?: boolean;
   platform?: NodeJS.Platform;
   headless?: boolean;
-  desktop?: (directory: string) => Promise<SignInDesktop>;
   idleTimeoutMs?: number;
-  manualTimeoutMs?: number;
   maxLiveSessions?: number;
   run?: typeof runProcess;
   daemonCommand?: typeof existingDaemonCommand;
-  signInLauncher?: ReturnType<typeof createBrowserSignIn>;
-  resolveSignInBrowser?: typeof resolveSignInBrowser;
 }): Computer & { canCheckpoint(): boolean } {
   const browsers = new Map<string, BrowserState>();
   let lastSession: { threadId: string; lastActivityAt: string } | undefined;
@@ -171,17 +148,9 @@ export function createAgentBrowserComputer(options: {
   const sandbox = options.sandbox !== false;
   const platform = options.platform ?? process.platform;
   const headed = options.headless === undefined ? platform === 'darwin' : !options.headless;
-  const privateDisplay = headed && platform === 'linux';
-  const createDesktop = options.desktop ?? createSignInDesktop();
   const idleTimeoutMs = options.idleTimeoutMs ?? 30 * 60_000;
-  const manualTimeoutMs = Math.min(options.manualTimeoutMs ?? 30 * 60_000, 30 * 60_000);
   const maxLiveSessions = Math.max(1, Math.min(4, options.maxLiveSessions ?? 4));
   const proxy = createBrowserProxy();
-  const signInLauncher =
-    options.signInLauncher ?? createBrowserSignIn({ sandbox: options.sandbox });
-  const signInBrowser = options.browserExecutable
-    ? async () => options.browserExecutable!
-    : (options.resolveSignInBrowser ?? resolveSignInBrowser);
   let disposed = false;
   let activeCalls = 0;
   let allocationQueue: Promise<void> = Promise.resolve();
@@ -212,7 +181,6 @@ export function createAgentBrowserComputer(options: {
         id,
         queue: Promise.resolve(),
         injecting: false,
-        manualUntil: 0,
         secrets: new Set(),
         protectedSelectors: new Set(),
         started: false,
@@ -252,11 +220,9 @@ export function createAgentBrowserComputer(options: {
 
   async function reserveBrowser(state: BrowserState): Promise<void> {
     const pending = allocate(async () => {
-      if (state.started || state.saved.navigationFailed || state.saved.signInPending) return;
+      if (state.started || state.saved.navigationFailed) return;
       const occupied = () =>
-        [...browsers.values()].filter(
-          (entry) => entry.started || entry.saved.navigationFailed || entry.saved.signInPending,
-        );
+        [...browsers.values()].filter((entry) => entry.started || entry.saved.navigationFailed);
       const attempted = new Set<string>();
       while (occupied().length >= maxLiveSessions) {
         const candidate = occupied()
@@ -268,8 +234,6 @@ export function createAgentBrowserComputer(options: {
               !entry.closed &&
               !entry.closing &&
               !entry.injecting &&
-              !entry.manualUntil &&
-              !entry.saved.signInPending &&
               entry.heldUntil <= Date.now(),
           )
           .sort((a, b) => a.lastUsed - b.lastUsed)[0];
@@ -309,11 +273,11 @@ export function createAgentBrowserComputer(options: {
         error instanceof BrowserActionError
       )
         throw error;
-      if (!state.saved.signInPending) state.closing = true;
+      state.closing = true;
       try {
         await command(state, ['close']);
         state.started = false;
-        state.closed = !state.saved.signInPending;
+        state.closed = true;
         await saveState(state);
       } catch {
         state.closing = true;
@@ -329,7 +293,10 @@ export function createAgentBrowserComputer(options: {
     options: { input?: string; signal?: AbortSignal; maxBytes?: number; timeoutMs?: number } = {},
   ): Promise<Record<string, unknown>> {
     options.signal?.throwIfAborted();
-    if (state.socket) {
+    if (
+      state.socket &&
+      !['select', 'check', 'uncheck', 'hover', 'back', 'forward', 'reload'].includes(args[0])
+    ) {
       const request =
         args[0] === 'open'
           ? { action: 'navigate', url: args[1] }
@@ -384,7 +351,6 @@ export function createAgentBrowserComputer(options: {
           options.maxBytes,
         ),
       );
-      if (args[0] === 'close') await closeDisplay(state);
       return result;
     }
     await mkdir(runtimeRoot, { recursive: true, mode: 0o700 });
@@ -392,16 +358,6 @@ export function createAgentBrowserComputer(options: {
     await writeFile(config, '{}', { mode: 0o600 });
     const proxyUrl = await proxy.url();
     const profile = profilePath(state);
-    if (args[0] === 'open' && privateDisplay && !state.desktop) {
-      try {
-        state.desktop = await createDesktop(runtimeRoot);
-      } catch {
-        state.started = false;
-        state.closed = !state.saved.signInPending;
-        await saveState(state);
-        throw new Error('The workspace browser display could not start. Try again.');
-      }
-    }
     const result = await drainInterruptedCommand(state, args[0], () =>
       run(
         executable,
@@ -437,7 +393,6 @@ export function createAgentBrowserComputer(options: {
           env: {
             ...serviceEnvironment(),
             AGENT_BROWSER_DEFAULT_TIMEOUT: '30000',
-            ...state.desktop?.environment,
           },
           input: options.input,
           signal: options.signal,
@@ -455,7 +410,7 @@ export function createAgentBrowserComputer(options: {
       );
     }
     if (args[0] === 'open') {
-      await drainInterruptedCommand(state, 'connect', () => manualSocket(state, options.signal));
+      await drainInterruptedCommand(state, 'connect', () => daemonSocket(state, options.signal));
       state.recovered = false;
     }
     if (
@@ -472,15 +427,8 @@ export function createAgentBrowserComputer(options: {
       response.error.startsWith('Operation timed out.')
     )
       throw new DaemonCommandError();
-    if (result.exitCode || response.success === false)
-      throw new Error('Browser action could not complete. Observe the page again before retrying.');
-    if (args[0] === 'close') await closeDisplay(state);
+    if (result.exitCode || response.success === false) throw new DaemonCommandError();
     return response.data ?? {};
-  }
-
-  async function closeDisplay(state: BrowserState): Promise<void> {
-    await state.desktop?.close();
-    state.desktop = undefined;
   }
 
   async function evaluate(
@@ -572,11 +520,6 @@ export function createAgentBrowserComputer(options: {
     if (existing) return existing;
     if (disposed) return undefined;
     const saved = await screens.load(id);
-    if (saved?.signInPending) {
-      const state = stateFor(id);
-      state.saved = saved;
-      return state;
-    }
     if (
       !saved ||
       (!saved.active && !saved.navigationFailed) ||
@@ -615,7 +558,7 @@ export function createAgentBrowserComputer(options: {
     }
   }
 
-  async function manualSocket(state: BrowserState, signal?: AbortSignal): Promise<string> {
+  async function daemonSocket(state: BrowserState, signal?: AbortSignal): Promise<string> {
     if (state.socket) return state.socket;
     const result = await run(
       executable,
@@ -648,311 +591,6 @@ export function createAgentBrowserComputer(options: {
       throw new Error('The browser session is no longer available.');
     state.socket = resolve(info.socketDir, `${browserSessionId(state.id)}.sock`);
     return state.socket;
-  }
-
-  function stopManual(state: BrowserState) {
-    state.nativeText = undefined;
-    state.manualUntil = 0;
-    state.manualAbort?.abort();
-    state.manualAbort = undefined;
-    clearTimeout(state.manualTimer);
-    state.manualTimer = undefined;
-  }
-
-  async function takeControl(id: string): Promise<void> {
-    const state = await recoverBrowser(id);
-    if (state?.saved.signInPending) throw new BrowserLockedError();
-    if (!state?.started || state.injecting)
-      throw new Error('Open a live browser session before taking control.');
-    stopManual(state);
-    const controller = new AbortController();
-    state.manualAbort = controller;
-    state.manualUntil = Date.now() + manualTimeoutMs;
-    state.manualTimer = setTimeout(() => controller.abort(), manualTimeoutMs);
-    state.manualTimer.unref();
-    try {
-      await serialize(state, async () => {
-        controller.signal.throwIfAborted();
-        if (state.injecting) throw new BrowserLockedError();
-        await currentUrl(state, controller.signal);
-        await manualSocket(state, controller.signal);
-        controller.signal.throwIfAborted();
-        state.heldUntil = state.manualUntil;
-        markActivity(id);
-      });
-    } catch {
-      if (state.manualAbort === controller) stopManual(state);
-      throw new Error('The browser session is no longer available for control.');
-    }
-  }
-
-  async function manualControl(id: string, raw: ManualBrowserInput): Promise<void> {
-    const input = manualInputSchema.parse(raw);
-    const state = browsers.get(threadIdentity(id));
-    if (!state?.started) throw new Error('The browser session is no longer available.');
-    const controller = state.manualAbort;
-    const check = () => {
-      if (
-        !controller ||
-        controller !== state.manualAbort ||
-        controller.signal.aborted ||
-        state.manualUntil <= Date.now() ||
-        state.injecting ||
-        state.closed ||
-        state.closing
-      )
-        throw new Error('Take control before interacting with this browser.');
-    };
-    check();
-    await serialize(state, async () => {
-      check();
-      markActivity(id);
-      const signal = controller!.signal;
-      await currentUrl(state, signal);
-      const socket = await manualSocket(state, signal);
-      const send = (command: Record<string, unknown>) => {
-        if (
-          !controller ||
-          controller !== state.manualAbort ||
-          signal.aborted ||
-          state.manualUntil <= Date.now() ||
-          state.closed ||
-          state.closing
-        )
-          throw new Error('Take control before interacting with this browser.');
-        return requestDaemon(socket, command, signal);
-      };
-      if (input.action === 'click') {
-        const viewport = (await evaluate(
-          state,
-          '({width:innerWidth,height:innerHeight})',
-          signal,
-        )) as { width: number; height: number };
-        if (
-          !Number.isFinite(viewport?.width) ||
-          !Number.isFinite(viewport?.height) ||
-          viewport.width < 1 ||
-          viewport.height < 1
-        )
-          throw new Error('The browser viewport is unavailable.');
-        await send({
-          action: 'mousemove',
-          x: Math.min(viewport.width - 1, Math.floor(input.x * viewport.width)),
-          y: Math.min(viewport.height - 1, Math.floor(input.y * viewport.height)),
-        });
-        await send({ action: 'mousedown', button: 'left' });
-        await send({ action: 'mouseup', button: 'left' });
-      } else if (input.action === 'type') {
-        const field = await evaluate(state, protectFocusedField, signal);
-        if (field === 'unsupported_frame')
-          throw new Error('Use Take control to type in this embedded field.');
-        if (field !== true) throw new Error('Click a text field in the browser first.');
-        state.secrets.add(input.text);
-        state.protectedSelectors.add('[data-otto-manual-field="true"]');
-        await saveState(state);
-        state.injecting = true;
-        try {
-          await maskFields(state, signal);
-          await send({ action: 'keyboard', subaction: 'insertText', text: input.text });
-          await maskFields(state, signal);
-        } finally {
-          state.injecting = false;
-        }
-      } else if (input.action === 'press') {
-        await send({ action: 'press', key: [...(input.modifiers ?? []), input.key].join('+') });
-      } else if (input.action === 'wheel') {
-        await send({ action: 'wheel', deltaX: input.deltaX, deltaY: input.deltaY });
-      } else {
-        await send({ action: 'wheel', deltaX: 0, deltaY: input.direction === 'up' ? -500 : 500 });
-      }
-    });
-  }
-
-  async function releaseControl(id: string): Promise<void> {
-    const state = browsers.get(threadIdentity(id));
-    if (!state) return;
-    stopManual(state);
-    await serialize(state, async () => {
-      await state.signInWindow?.close({ force: true });
-      state.signInWindow = undefined;
-      state.heldUntil = 0;
-    });
-  }
-
-  async function openSignIn(id: string): Promise<void> {
-    let state = await recoverBrowser(id, true);
-    if (!state) {
-      state = stateFor(id);
-      state.saved = (await screens.load(id)) ?? state.saved;
-    }
-    if (state.injecting) throw new BrowserLockedError();
-    stopManual(state);
-    const controller = new AbortController();
-    state.manualAbort = controller;
-    state.manualUntil = Date.now() + manualTimeoutMs;
-    try {
-      await serialize(state, async () => {
-        controller.signal.throwIfAborted();
-        if (state.injecting) throw new BrowserLockedError();
-        const path = profilePath(state);
-        const executablePath = await signInBrowser(path);
-        if (state.closing || disposed) throw new BrowserLockedError();
-        if (state.started) await currentUrl(state);
-        const destination = state.saved.resumeUrl || state.saved.url;
-        const url = destination ? browserUrl(destination).href : 'about:blank';
-        const wasStarted = state.started;
-        await reserveBrowser(state);
-        state.saved.signInPending = true;
-        state.started = wasStarted;
-        await state.signInWindow?.close();
-        state.signInWindow = undefined;
-        state.saved.signInPending = true;
-        state.saved.restoreSession = true;
-        state.saved.sensitive = true;
-        await saveState(state);
-        if (state.started) {
-          await command(state, ['close']);
-          state.started = false;
-          state.socket = undefined;
-          await saveState(state);
-        }
-        state.browserExecutable = executablePath;
-        if (state.closing || disposed) throw new BrowserLockedError();
-        state.signInWindow = await signInLauncher.start({
-          profilePath: path,
-          proxyUrl: await proxy.url(),
-          url,
-          executablePath,
-        });
-        if (state.closing || disposed || controller.signal.aborted) {
-          await state.signInWindow.close({ force: true });
-          state.signInWindow = undefined;
-          throw new BrowserLockedError();
-        }
-        state.heldUntil = state.manualUntil;
-        state.manualTimer = setTimeout(() => {
-          if (state.manualAbort !== controller) return;
-          void releaseControl(id)
-            .then(async () => {
-              if (!state.saved.url && !state.manualAbort) await closeBrowser(id);
-            })
-            .catch(() => {});
-        }, manualTimeoutMs);
-        state.manualTimer.unref();
-        if (state.saved.url) markActivity(id);
-      });
-    } catch {
-      stopManual(state);
-      throw new Error(
-        'The sign-in window could not open. Close any previous sign-in window and try again.',
-      );
-    }
-  }
-
-  async function withSignIn<T>(
-    id: string,
-    operation: (
-      window: BrowserSignInHandle,
-      signal: AbortSignal,
-      state: BrowserState,
-    ) => Promise<T>,
-    signal?: AbortSignal,
-  ): Promise<T> {
-    const state = browsers.get(threadIdentity(id));
-    const controller = state?.manualAbort;
-    const window = state?.signInWindow;
-    const check = () => {
-      signal?.throwIfAborted();
-      if (
-        !state ||
-        !controller ||
-        !window ||
-        controller !== state.manualAbort ||
-        window !== state.signInWindow ||
-        controller.signal.aborted ||
-        window.closed ||
-        state.closed ||
-        state.closing ||
-        !state.saved.signInPending ||
-        state.manualUntil <= Date.now()
-      )
-        throw new Error('The sign-in session is no longer active.');
-    };
-    check();
-    return serialize(state!, async () => {
-      check();
-      const combined = signal ? AbortSignal.any([signal, controller!.signal]) : controller!.signal;
-      const result = await operation(window!, combined, state!);
-      check();
-      return result;
-    });
-  }
-
-  function signInScreenshot(id: string, signal?: AbortSignal): Promise<Buffer> {
-    return withSignIn(
-      id,
-      (window, combined) => {
-        if (!window.screenshot) throw new Error('The sign-in screen is unavailable.');
-        return window.screenshot(combined);
-      },
-      signal,
-    );
-  }
-
-  async function signInControl(id: string, raw: ManualBrowserInput): Promise<void> {
-    const input = manualInputSchema.parse(raw);
-    await withSignIn(id, async (window, signal, state) => {
-      if (!window.control) throw new Error('Sign-in control is unavailable.');
-      const previous = state.nativeText;
-      if (input.action === 'type') {
-        const continuing = previous && previous.value.length + input.text.length <= 8192;
-        const value = continuing ? previous.value + input.text : input.text;
-        if (continuing && previous.added) state.secrets.delete(previous.value);
-        state.nativeText = { value, added: !state.secrets.has(value) };
-        state.secrets.add(value);
-      } else state.nativeText = undefined;
-      if (state.saved.url) markActivity(id);
-      try {
-        await window.control(input, signal);
-      } catch (error) {
-        if (previous) state.secrets.add(previous.value);
-        if (input.action === 'type') state.secrets.add(input.text);
-        state.nativeText = undefined;
-        throw error;
-      }
-    });
-  }
-
-  async function finishSignIn(id: string): Promise<void> {
-    const state = await recoverBrowser(id, true);
-    if (!state?.saved.signInPending) return;
-    await serialize(state, async () => {
-      await state.signInWindow?.close();
-      state.signInWindow = undefined;
-      const destination = state.saved.resumeUrl || state.saved.url;
-      const url = destination ? browserUrl(destination).href : 'about:blank';
-      state.browserExecutable ??= await signInBrowser(profilePath(state));
-      state.saved.restoreSession = true;
-      if (state.closing || disposed) throw new BrowserLockedError();
-      try {
-        if (state.started) {
-          await command(state, ['close']);
-          state.started = false;
-          state.socket = undefined;
-        }
-        await command(state, ['open', url]);
-        state.started = true;
-        if (state.closing || disposed) throw new BrowserLockedError();
-        state.saved.navigationFailed = false;
-        state.saved.signInPending = false;
-        stopManual(state);
-        state.heldUntil = 0;
-        await saveState(state);
-        markActivity(id);
-      } catch {
-        throw new Error('The workspace browser could not resume. Try Resume agent again.');
-      }
-    });
   }
 
   async function maskFields(state: BrowserState, signal?: AbortSignal): Promise<string[]> {
@@ -990,8 +628,7 @@ export function createAgentBrowserComputer(options: {
     signal?: AbortSignal,
     input?: BrowserAction,
   ): Promise<BrowserObservation> {
-    if (state.injecting || state.manualUntil || state.saved.signInPending)
-      throw new BrowserLockedError();
+    if (state.injecting) throw new BrowserLockedError();
     const url = await currentUrl(state, signal);
     if (url === 'about:blank')
       return {
@@ -1076,8 +713,6 @@ export function createAgentBrowserComputer(options: {
   ): Promise<BrowserObservation> {
     if (disposed) throw new Error('The browser service has stopped.');
     const savedProfile = input.action === 'open' ? await screens.load(id) : null;
-    if ((await recoverBrowser(id))?.saved.signInPending) throw new BrowserLockedError();
-    if (browsers.get(id)?.manualUntil) throw new BrowserLockedError();
     if (input.action === 'open' && !browsers.has(id)) await recoverBrowser(id, true);
     if (input.action === 'open' && browsers.get(id)?.recovered) await closeBrowser(id);
     if (input.action === 'open' && browsers.get(id)?.closed) await closeBrowser(id);
@@ -1093,11 +728,9 @@ export function createAgentBrowserComputer(options: {
       const saved = await screens.load(id);
       if (saved?.navigationFailed) state.saved = saved;
     }
-    if (state.injecting || state.manualUntil || state.saved.signInPending)
-      throw new BrowserLockedError();
+    if (state.injecting) throw new BrowserLockedError();
     return serialize(state, async () => {
-      if (state.injecting || state.manualUntil || state.saved.signInPending)
-        throw new BrowserLockedError();
+      if (state.injecting) throw new BrowserLockedError();
       signal?.throwIfAborted();
       if (input.action === 'open') {
         const url = browserUrl(input.url ?? '');
@@ -1107,7 +740,6 @@ export function createAgentBrowserComputer(options: {
         if (previous?.restoreSession) {
           state.saved.restoreSession = true;
           state.saved.sensitive = true;
-          state.browserExecutable ??= await signInBrowser(profilePath(state));
         }
         if (state.closing || disposed) throw new BrowserLockedError();
         signal?.throwIfAborted();
@@ -1170,6 +802,25 @@ export function createAgentBrowserComputer(options: {
         if (!state.started) throw new Error('Open a website first.');
         markActivity(id);
         await currentUrl(state, signal);
+        if (input.action === 'tab_list') {
+          const tabs = await browserTabs(state, signal);
+          return {
+            text: tabs
+              .map(
+                (tab) =>
+                  `${tab.active ? 'Active' : 'Open'} ${tab.tabId}: ${redactBrowserUrl(tab.url, state.secrets, true)}`,
+              )
+              .join('\n'),
+            url: redactBrowserUrl(await currentUrl(state, signal), state.secrets, true),
+            candidates: [],
+          };
+        }
+        if (input.action === 'tab_switch') {
+          const tabs = await browserTabs(state, signal);
+          if (!tabs.some((tab) => tab.tabId === input.tabId))
+            throw new Error('Choose a tab from the current browser list.');
+          await command(state, ['tab', 'switch', input.tabId!], { signal });
+        }
         if (input.action === 'click') {
           const target = selector(input.selector);
           const tabs = await browserTabs(state, signal);
@@ -1187,15 +838,9 @@ export function createAgentBrowserComputer(options: {
             ['get', 'attr', target, 'data-otto-login-field'],
             { signal },
           );
-          const manualField = await command(
-            state,
-            ['get', 'attr', target, 'data-otto-manual-field'],
-            { signal },
-          );
           if (
             /password|one-time-code|username/i.test([type.value, autocomplete.value].join(' ')) ||
             /identifier|password|otp/.test(String(loginField.value ?? '')) ||
-            manualField.value === 'true' ||
             state.protectedSelectors.has(target)
           )
             throw new Error('Use the secure credential request tool for this field.');
@@ -1227,6 +872,20 @@ export function createAgentBrowserComputer(options: {
           await command(state, ['press', input.key], { signal });
           await settleTabs(state, tabs, signal);
         }
+        if (input.action === 'select') {
+          const value = input.text ?? '';
+          if (
+            !value ||
+            value.length > 8000 ||
+            [...state.secrets].some((secret) => secret && value.includes(secret))
+          )
+            throw new Error('Choose a visible option without private details.');
+          await command(state, ['select', selector(input.selector), value], { signal });
+        }
+        if (['check', 'uncheck', 'hover'].includes(input.action))
+          await command(state, [input.action, selector(input.selector)], { signal });
+        if (['back', 'forward', 'reload'].includes(input.action))
+          await command(state, [input.action], { signal });
       }
       if (input.waitMs !== undefined) {
         if (!Number.isInteger(input.waitMs) || input.waitMs < 0 || input.waitMs > 15_000)
@@ -1234,6 +893,10 @@ export function createAgentBrowserComputer(options: {
         if (input.waitMs) await delay(input.waitMs, undefined, { signal });
       }
       return observe(state, signal, input);
+    }).catch((error: unknown) => {
+      if (error instanceof DaemonCommandError)
+        throw new BrowserActionError('browser_action_failed');
+      throw error;
     });
   }
 
@@ -1242,11 +905,9 @@ export function createAgentBrowserComputer(options: {
     if (input.name !== undefined) downloadName(input.name);
     const state = await recoverBrowser(id);
     if (!state?.started) throw new Error('Open the file website first.');
-    if (state.injecting || state.manualUntil || state.saved.signInPending)
-      throw new BrowserLockedError();
+    if (state.injecting) throw new BrowserLockedError();
     return serialize(state, async () => {
-      if (state.injecting || state.manualUntil || state.saved.signInPending)
-        throw new BrowserLockedError();
+      if (state.injecting) throw new BrowserLockedError();
       signal?.throwIfAborted();
       markActivity(id);
       const current = await currentUrl(state, signal);
@@ -1360,9 +1021,8 @@ export function createAgentBrowserComputer(options: {
 
   async function injectCredentials(input: CredentialInput): Promise<CredentialSubmission> {
     const state = browsers.get(threadIdentity(input.threadId));
-    if (state?.saved.signInPending) throw new BrowserLockedError();
     if (!state?.started) throw new Error('The browser session has expired. Reopen the login page.');
-    if (state.injecting || state.manualUntil) throw new BrowserLockedError();
+    if (state.injecting) throw new BrowserLockedError();
     const url = browserUrl(input.origin);
     if (url.origin !== input.origin) throw new Error('An exact login origin is required.');
     const fields = credentialFields(input);
@@ -1374,25 +1034,44 @@ export function createAgentBrowserComputer(options: {
     markActivity(input.threadId);
     try {
       return await serialize(state, async () => {
-        if (state.manualUntil || state.saved.signInPending) throw new BrowserLockedError();
         try {
           await saveState(state);
           if (new URL(await currentUrl(state)).origin !== input.origin)
             throw new Error('The login page origin changed. Request credentials again.');
           const attempt = randomUUID();
-          const before = input.submitSelector
-            ? credentialFeedback(
-                await evaluate(
-                  state,
-                  credentialFeedbackScript(input.origin, input.kind ?? 'password', attempt, true),
-                ),
+          const socket = await daemonSocket(state);
+          if (fields.every((field) => /^@e\d+$/.test(field.selector))) {
+            for (const field of fields) {
+              const type = await requestDaemon(socket, {
+                action: 'getattribute',
+                selector: field.selector,
+                attribute: 'type',
+              });
+              if (
+                (field.password && type.value !== 'password') ||
+                (!field.password &&
+                  typeof type.value === 'string' &&
+                  !['text', 'email', 'tel', 'number', 'search', ''].includes(type.value))
               )
-            : undefined;
-          const socket = await manualSocket(state);
-          const result = await evaluate(
-            state,
-            credentialScript(input.origin, fields, input.submitSelector, attempt),
-          );
+                throw new Error('The login field changed. Request credentials again.');
+            }
+            for (const field of fields) {
+              if (new URL(await currentUrl(state)).origin !== input.origin)
+                throw new Error('The login page origin changed. Request credentials again.');
+              await requestDaemon(socket, { action: 'click', selector: field.selector });
+              if (new URL(await currentUrl(state)).origin !== input.origin)
+                throw new Error('The login page origin changed. Request credentials again.');
+              await requestDaemon(socket, {
+                action: 'fill',
+                selector: field.selector,
+                value: field.value,
+              });
+            }
+            return { status: 'submitted' as const };
+          }
+          if (fields.some((field) => /^@e\d+$/.test(field.selector)))
+            throw new Error('Select all sign-in fields from the current browser snapshot.');
+          const result = await evaluate(state, credentialScript(input.origin, fields, attempt));
           if (
             !result ||
             typeof result !== 'object' ||
@@ -1417,44 +1096,29 @@ export function createAgentBrowserComputer(options: {
               });
             }
           }
-          if (input.submitSelector) {
-            if (new URL(await currentUrl(state)).origin !== input.origin)
-              throw new Error('The login page origin changed. Request credentials again.');
-            await requestDaemon(socket, { action: 'click', selector: input.submitSelector });
-          }
-          if (input.submitSelector && before) {
-            const signal = AbortSignal.timeout(2000);
-            while (!signal.aborted) {
-              const feedback = credentialFeedback(
-                await evaluate(
-                  state,
-                  credentialFeedbackScript(input.origin, input.kind ?? 'password', attempt),
-                  signal,
-                ).catch((error: unknown) => {
-                  if (!state.started || state.closed || state.closing) throw error;
-                  return undefined;
-                }),
-              );
-              if (!state.started || state.closed || state.closing)
-                throw new Error('The browser session is unavailable.');
-              if (feedback?.advanced) break;
-              if (
-                feedback?.rejected &&
-                (!feedback.sameDocument || feedback.fingerprint !== before.fingerprint)
-              )
-                return { status: 'rejected' as const };
-              await delay(80, undefined, { signal }).catch(() => {});
-            }
-          }
           if (!state.started || state.closed || state.closing)
             throw new Error('The browser session is unavailable.');
           return { status: 'submitted' as const };
         } catch {
-          if (state.started && !state.closed && !state.closing)
-            await evaluate(
-              state,
-              `(() => { if(location.origin!==${JSON.stringify(input.origin)}) return false; for(const s of ${JSON.stringify(fields.map((field) => field.selector))}) { for(const e of document.querySelectorAll(s)) { e.value=''; e.dispatchEvent(new Event('input',{bubbles:true})); } } return true; })()`,
-            ).catch(() => {});
+          if (state.started && !state.closed && !state.closing) {
+            if (fields.every((field) => /^@e\d+$/.test(field.selector))) {
+              try {
+                if (new URL(await currentUrl(state)).origin === input.origin) {
+                  const socket = await daemonSocket(state);
+                  for (const field of fields)
+                    await requestDaemon(socket, {
+                      action: 'fill',
+                      selector: field.selector,
+                      value: '',
+                    }).catch(() => {});
+                }
+              } catch {}
+            } else
+              await evaluate(
+                state,
+                `(() => { if(location.origin!==${JSON.stringify(input.origin)}) return false; for(const s of ${JSON.stringify(fields.map((field) => field.selector))}) { for(const e of document.querySelectorAll(s)) { e.value=''; e.dispatchEvent(new Event('input',{bubbles:true})); } } return true; })()`,
+              ).catch(() => {});
+          }
           throw new Error(
             'Secure entry could not be confirmed. Check the login page before continuing.',
           );
@@ -1482,38 +1146,13 @@ export function createAgentBrowserComputer(options: {
 
   async function inspectLogin(id: string): Promise<LoginInspection> {
     const state = await recoverBrowser(id);
-    if (state?.saved.signInPending) throw new BrowserLockedError();
     if (state?.saved.navigationFailed || (!state && (await screens.load(id))?.navigationFailed))
       throw new BrowserActionError('browser_navigation_failed');
     if (!state?.started) throw new Error('Open the login page in this task browser first.');
-    if (state.injecting || state.manualUntil) throw new BrowserLockedError();
+    if (state.injecting) throw new BrowserLockedError();
     return serialize(state, () => {
-      if (state.injecting || state.manualUntil || state.saved.signInPending)
-        throw new BrowserLockedError();
+      if (state.injecting) throw new BrowserLockedError();
       return inspectPage(state);
-    });
-  }
-
-  async function selectLoginMethod(id: string, origin: string, methodId: string): Promise<void> {
-    const state = browsers.get(threadIdentity(id));
-    if (state?.saved.signInPending) throw new BrowserLockedError();
-    if (!state?.started) throw new Error('Open the login page in this task browser first.');
-    if (state.injecting || state.manualUntil) throw new BrowserLockedError();
-    await serialize(state, async () => {
-      if (state.injecting || state.manualUntil || state.saved.signInPending)
-        throw new BrowserLockedError();
-      const current = await inspectPage(state);
-      const method = current.methods.find((item) => item.id === methodId);
-      if (
-        current.origin !== origin ||
-        !method?.supported ||
-        !(['oauth', 'credentials'].includes(method.kind) && method.id !== 'credentials') ||
-        !method.selector
-      )
-        throw new Error('This sign-in method is no longer available on the current page.');
-      const result = await evaluate(state, credentialSubmitScript(origin, method.selector));
-      if (!(result && typeof result === 'object' && 'ok' in result && result.ok))
-        throw new Error('The sign-in method could not be opened.');
     });
   }
 
@@ -1530,7 +1169,6 @@ export function createAgentBrowserComputer(options: {
   }
 
   async function captureScreen(state: BrowserState, signal?: AbortSignal): Promise<Buffer> {
-    if (state.saved.signInPending) throw new BrowserLockedError();
     if (state.saved.navigationFailed) throw new BrowserActionError('browser_navigation_failed');
     if (state.recovered && state.saved.sensitive && !state.secrets.size)
       throw new Error('Reopen the login page before continuing this browser session.');
@@ -1549,7 +1187,6 @@ export function createAgentBrowserComputer(options: {
 
   async function lastKnownScreen(id: string): Promise<Buffer | null> {
     const saved = await screens.load(id);
-    if (saved?.signInPending) throw new BrowserLockedError();
     if (saved?.navigationFailed) throw new BrowserActionError('browser_navigation_failed');
     if (saved?.allowedOrigin && saved.url && new URL(saved.url).origin !== saved.allowedOrigin)
       throw new BrowserActionError('browser_origin_changed');
@@ -1563,7 +1200,6 @@ export function createAgentBrowserComputer(options: {
 
   async function getScreenshot(id: string, signal?: AbortSignal): Promise<Buffer | null> {
     const state = await recoverBrowser(id);
-    if (state?.saved.signInPending) throw new BrowserLockedError();
     if (!state?.started) return lastKnownScreen(id);
     if (state.injecting) throw new BrowserLockedError();
     return serialize(state, async () => {
@@ -1582,32 +1218,20 @@ export function createAgentBrowserComputer(options: {
   async function closeBrowser(id: string, idleAt?: number): Promise<void> {
     const state = browsers.get(threadIdentity(id)) ?? (await recoverBrowser(id, true));
     if (!state) return;
-    if (idleAt === undefined) {
-      state.closing = true;
-      stopManual(state);
-    }
+    if (idleAt === undefined) state.closing = true;
     const close = async () => {
       if (browsers.get(id) !== state) return;
       if (
         idleAt !== undefined &&
-        (state.lastUsed !== idleAt ||
-          state.busy ||
-          state.injecting ||
-          state.manualUntil > Date.now() ||
-          state.heldUntil > Date.now())
+        (state.lastUsed !== idleAt || state.busy || state.injecting || state.heldUntil > Date.now())
       )
         return;
       state.closing = true;
-      stopManual(state);
-      await state.signInWindow?.close({ force: true });
-      state.signInWindow = undefined;
       if (state.started && !state.closed && !state.injecting)
         await captureScreen(state).catch(() => {});
       state.closed = true;
       if (state.started || state.saved.navigationFailed) await command(state, ['close']);
-      await closeDisplay(state);
       state.started = false;
-      if (!state.saved.url) state.saved.signInPending = false;
       await saveState(state);
       state.secrets.clear();
       state.protectedSelectors.clear();
@@ -1640,26 +1264,24 @@ export function createAgentBrowserComputer(options: {
     await allocate(async () => {
       const previous = browsers.get(id) ?? (await recoverBrowser(id, true));
       if (previous?.saved.profileId === profileId) {
-        if (previous.saved.allowedOrigin !== allowedOrigin) {
+        if (previous.saved.allowedOrigin !== allowedOrigin || !previous.saved.restoreSession) {
           previous.saved.allowedOrigin = allowedOrigin;
+          previous.saved.restoreSession = true;
+          previous.saved.sensitive = true;
           previous.saved.capturedAt = undefined;
           await screens.clearImage(id);
           await saveState(previous);
         }
         return;
       }
-      if (previous?.injecting || previous?.manualUntil || previous?.saved.signInPending)
-        throw new BrowserLockedError();
+      if (previous?.injecting) throw new BrowserLockedError();
       if (previous) await closeBrowser(id);
       const relatedIds = await screens.profileScreens(profileId);
-      const restoreSession = (
-        await Promise.all(relatedIds.map((relatedId) => screens.load(relatedId)))
-      ).some((saved) => saved?.restoreSession);
       for (const otherId of relatedIds) {
         if (otherId === id) continue;
         const other = browsers.get(otherId) ?? (await recoverBrowser(otherId, true));
         if (!other) continue;
-        if (other.busy || other.injecting || other.manualUntil || other.heldUntil > Date.now())
+        if (other.busy || other.injecting || other.heldUntil > Date.now())
           throw new BrowserLockedError();
         await closeBrowser(otherId);
       }
@@ -1667,11 +1289,11 @@ export function createAgentBrowserComputer(options: {
       state.saved = {
         version: 1,
         url: '',
-        sensitive: restoreSession,
+        sensitive: true,
         active: false,
         profileId,
         allowedOrigin,
-        restoreSession,
+        restoreSession: true,
       };
       await screens.clearImage(id);
       await saveState(state);
@@ -1684,10 +1306,7 @@ export function createAgentBrowserComputer(options: {
       const ids = await screens.profileScreens(profileId);
       for (const id of ids) {
         const state = browsers.get(id) ?? (await recoverBrowser(id, true));
-        if (
-          state &&
-          (state.busy || state.injecting || state.manualUntil || state.heldUntil > Date.now())
-        )
+        if (state && (state.busy || state.injecting || state.heldUntil > Date.now()))
           throw new BrowserLockedError();
         if (state) await closeBrowser(id);
       }
@@ -1704,7 +1323,7 @@ export function createAgentBrowserComputer(options: {
 
   function browserStatus(): string {
     const count = [...browsers.values()].filter(
-      (state) => state.started || state.saved.navigationFailed || state.saved.signInPending,
+      (state) => state.started || state.saved.navigationFailed,
     ).length;
     return `${count} task browser session${count === 1 ? '' : 's'}; workspace browser proxy enabled`;
   }
@@ -1730,40 +1349,19 @@ export function createAgentBrowserComputer(options: {
         !disposed &&
         !activeCalls &&
         [...browsers.values()].every(
-          (state) =>
-            !state.busy &&
-            !state.closing &&
-            !state.injecting &&
-            state.heldUntil <= now &&
-            state.manualUntil <= now &&
-            (!state.signInWindow || state.signInWindow.closed),
+          (state) => !state.busy && !state.closing && !state.injecting && state.heldUntil <= now,
         )
       );
     },
-    currentSession: () => {
-      const manual = [...browsers.values()].find(
-        (state) => state.saved.url && state.manualUntil > Date.now(),
-      );
-      return manual
-        ? { threadId: manual.id, lastActivityAt: new Date(manual.lastUsed).toISOString() }
-        : lastSession;
-    },
+    currentSession: () => lastSession,
     bindProfile: tracked(bindProfile),
     deleteProfile: tracked(deleteProfile),
-    takeControl: tracked(takeControl),
-    openSignIn: tracked(openSignIn),
-    finishSignIn: tracked(finishSignIn),
-    signInScreenshot: tracked(signInScreenshot),
-    signInControl: tracked(signInControl),
-    control: tracked(manualControl),
-    releaseControl: tracked(releaseControl),
     act: tracked(browserAction),
     download: tracked(download),
     screenshot: tracked(getScreenshot),
     screenStatus: (id) => screenStatuses.get(threadIdentity(id)) ?? { state: 'unavailable' },
     injectCredentials: tracked(injectCredentials),
     inspectLogin: tracked(inspectLogin),
-    selectLoginMethod: tracked(selectLoginMethod),
     hold: tracked(hold),
     close: tracked(closeBrowser),
     status: browserStatus,

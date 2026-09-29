@@ -86,7 +86,7 @@ export const toolDefinitions = {
   ),
   browser: defineTool(
     'browser',
-    'Control your private browser. open {url}; snapshot (text, controls, scrollable areas; selector/offset/controlOffset page through more); click {selector}; fill {selector, text} (never secrets); press {key}; scroll {direction, selector?}; screenshot (image for you); share_screenshot {name?} (send the image to the user); download {url? | selector?, name?} (send a file to the user and copy it into the workspace; with neither, the open PDF or the last download). waitMs (up to 15000) waits for slow pages.',
+    'Control your private agent-browser session. open {url}; snapshot (text, controls, scrollable areas; selector/offset/controlOffset page through more); click {selector}; fill {selector, text} (never secrets); select {selector, text} by visible label or value; check/uncheck/hover {selector}; back/forward/reload; tab_list and tab_switch {tabId}; press {key}; scroll {direction, selector?}; screenshot (image for you); share_screenshot {name?} (send the image to the user); download {url? | selector?, name?} (send a file to the user and copy it into the workspace; with neither, the open PDF or the last download). waitMs (up to 15000) waits for slow pages.',
     Type.Object({
       action: literals([
         'open',
@@ -95,11 +95,21 @@ export const toolDefinitions = {
         'fill',
         'press',
         'scroll',
+        'select',
+        'check',
+        'uncheck',
+        'hover',
+        'back',
+        'forward',
+        'reload',
+        'tab_list',
+        'tab_switch',
         'screenshot',
         'share_screenshot',
         'download',
       ]),
       url: Type.Optional(Type.String({ maxLength: 8192 })),
+      tabId: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
       selector: Type.Optional(Type.String()),
       text: Type.Optional(Type.String({ maxLength: 8000 })),
       key: Type.Optional(
@@ -114,7 +124,7 @@ export const toolDefinitions = {
   ),
   sign_in: defineTool(
     'sign_in',
-    'Ask the user for website credentials through a secure form. Provide the current page origin and the field selectors from the browser. The values stay out of the model.',
+    'Ask the user for website credentials through a secure form. Use field references from the latest browser snapshot for the current page. The values stay out of the model.',
     Type.Object({
       origin: Type.String({ minLength: 1, maxLength: 2048 }),
       label: Type.String({ minLength: 1, maxLength: 100 }),
@@ -309,8 +319,7 @@ export function ottoTools(turn: Turn): OttoTool[] {
     bind(toolDefinitions.sign_in, async (input) => {
       const result = await context.requestCredential(input);
       if (result.filled) return 'Saved login entered.';
-      if (!result.url && result.invitation?.kind !== 'otp')
-        throw new Error('The secure sign-in request could not be created.');
+      if (!result.url) throw new Error('The secure sign-in request could not be created.');
       await turn.reply(vaultInvitation(result.invitation ?? input, result.url));
       await pause('credentials', undefined, { post: false });
       return 'Waiting for secure input.';

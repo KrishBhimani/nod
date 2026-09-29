@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Monitor, Terminal, FileText, ExternalLink } from 'lucide-react';
+import { Monitor, Terminal, FileText, ExternalLink, Maximize2 } from 'lucide-react';
 import { Button, Dialog, DialogContent, DialogTitle, Notice } from './ui';
 import { post, errorMessage, apiResponse } from '../lib/api';
 import { formatTime } from '../lib/date-format';
-import { BrowserControl } from './browser-control';
 import type { BrowserDetail, InspectorDetail } from '../hooks/use-inspector-state';
 import { browserErrorMessage } from '../../shared/browser-errors';
 
@@ -22,26 +21,7 @@ export function InspectorScreen({
   showDetails?: boolean;
   screenPath?: string;
 }) {
-  const [controlled, setControlled] = useState<{ threadId?: string; privateView: boolean } | null>(
-    null,
-  );
-  const controlActive = controlled !== null;
-  const privateControl = controlled?.privateView ?? false;
-  const browserId = controlled ? controlled.threadId : data?.currentBrowser?.threadId;
-  const controlChanged = useCallback(
-    (active: boolean, privateView: boolean) => {
-      setControlled((current) =>
-        active
-          ? current?.privateView === privateView
-            ? current
-            : { threadId: browserId, privateView }
-          : current
-            ? null
-            : current,
-      );
-    },
-    [browserId],
-  );
+  const browserId = data?.currentBrowser?.threadId;
   const activity = useRef(data?.currentBrowser?.lastActivityAt);
   activity.current = data?.currentBrowser?.lastActivityAt;
   const activeRef = useRef(active);
@@ -56,7 +36,6 @@ export function InspectorScreen({
   const [screenThread, setScreenThread] = useState<string>();
   const currentScreen = screenThread === browserId ? screen : '';
   const [screenState, setScreenState] = useState('Waiting for a browser session.');
-  const [frameKind, setFrameKind] = useState('live');
   const [updated, setUpdated] = useState<Date | null>(null);
   const [enlarged, setEnlarged] = useState(false);
   const [captureAttempt, setCaptureAttempt] = useState(0);
@@ -104,7 +83,6 @@ export function InspectorScreen({
           setUpdated(null);
           if (imageUrl.current) URL.revokeObjectURL(imageUrl.current);
           imageUrl.current = '';
-          setFrameKind('unavailable');
           const payload = response.status === 409 ? await response.json().catch(() => null) : null;
           if (stopped || detachedRef.current) return;
           const message = browserErrorMessage(payload?.code);
@@ -129,7 +107,6 @@ export function InspectorScreen({
           imageUrl.current = next;
           setScreenThread(browserId);
           setScreen(next);
-          setFrameKind(response.headers.get('X-Screen-State') ?? 'live');
           setUpdated(new Date(response.headers.get('X-Screen-Captured-At') ?? Date.now()));
           setScreenState('');
           if (previous) URL.revokeObjectURL(previous);
@@ -138,7 +115,6 @@ export function InspectorScreen({
         if (!stopped) {
           setScreen('');
           setUpdated(null);
-          setFrameKind('unavailable');
           if (imageUrl.current) URL.revokeObjectURL(imageUrl.current);
           imageUrl.current = '';
           setScreenState('Reconnecting to the browser…');
@@ -147,7 +123,7 @@ export function InspectorScreen({
         if (!stopped) timer = setTimeout(() => void frame(), 1000);
       }
     }
-    if (!privateControl) void frame();
+    void frame();
     return () => {
       stopped = true;
       controller.abort();
@@ -155,7 +131,7 @@ export function InspectorScreen({
       if (imageUrl.current) URL.revokeObjectURL(imageUrl.current);
       imageUrl.current = '';
     };
-  }, [browserId, captureAttempt, screenPath, privateControl, controlActive]);
+  }, [browserId, captureAttempt, screenPath]);
   useEffect(() => {
     if (!detached) return;
     const timer = setInterval(() => {
@@ -231,49 +207,64 @@ export function InspectorScreen({
       ) : (
         <>
           <section className="live-screen">
-            <BrowserControl
-              key={browserId}
-              threadId={browserId}
-              onControlChange={controlChanged}
-              screen={currentScreen}
-              emptyMessage={screenState}
-              live={frameKind === 'live'}
-              actions={
-                <>
-                  {openWindowAction}
-                  {capturePaused && !controlActive && (
+            <div className="browser-control">
+              <div className="browser-control-heading" role="group" aria-label="Browser view">
+                {screen && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Enlarge browser screen"
+                    onClick={() => setEnlarged(true)}
+                  >
+                    <Maximize2 size={15} />
+                  </Button>
+                )}
+                {openWindowAction}
+                {capturePaused && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCaptureAttempt((value) => value + 1)}
+                  >
+                    Retry view
+                  </Button>
+                )}
+                {browserId &&
+                  data?.currentBrowser?.threadId === browserId &&
+                  data.currentBrowser.status === 'running' && (
                     <Button
-                      variant="outline"
+                      variant="ghost"
                       size="sm"
-                      onClick={() => setCaptureAttempt((value) => value + 1)}
+                      disabled={stoppingBrowser === browserId}
+                      aria-label="Stop Otto"
+                      onClick={() => {
+                        const id = browserId;
+                        setStoppingBrowser(id);
+                        void post('/api/thread/stop')
+                          .then(() => onStopped(id))
+                          .catch((cause) => setError(errorMessage(cause)))
+                          .finally(() => setStoppingBrowser(undefined));
+                      }}
                     >
-                      Retry view
+                      Stop
                     </Button>
                   )}
-                  {browserId &&
-                    data?.currentBrowser?.threadId === browserId &&
-                    data.currentBrowser.status === 'running' && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        disabled={stoppingBrowser === browserId}
-                        aria-label="Stop Otto"
-                        onClick={() => {
-                          const id = browserId;
-                          setStoppingBrowser(id);
-                          void post('/api/thread/stop')
-                            .then(() => onStopped(id))
-                            .catch((cause) => setError(errorMessage(cause)))
-                            .finally(() => setStoppingBrowser(undefined));
-                        }}
-                      >
-                        Stop
-                      </Button>
-                    )}
-                </>
-              }
-              onEnlarge={() => setEnlarged(true)}
-            />
+              </div>
+              {currentScreen ? (
+                <button
+                  className="screen-preview"
+                  aria-label="Enlarge browser screen"
+                  onClick={() => setEnlarged(true)}
+                >
+                  <img src={currentScreen} alt="Browser screen" draggable={false} />
+                </button>
+              ) : (
+                <div className="screen-empty">
+                  <Monitor size={26} />
+                  <p>{screenState}</p>
+                </div>
+              )}
+            </div>
             {updated && (
               <div className="screen-caption">
                 Updated {formatTime(updated, undefined, { seconds: true })}

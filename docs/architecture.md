@@ -19,7 +19,7 @@ Code layout: `src/ports` defines capabilities without vendor types, `src/provide
 
 ## Thread and turns
 
-Each owner has one active `threads` row (`idle`, `running` or `manual_control`), shared by every channel. Its ID keys one persistent Pi session, one workspace and one browser computer.
+Each owner has one active `threads` row (`idle` or `running`), shared by every channel. Its ID keys one persistent Pi session, one workspace and one browser computer.
 
 Every user message, schedule fire, event wake, reaction and resume inserts a `turns` row (`source`: `user`, `schedule`, `event`, `resume`) and a `thread-drain` job in one transaction. The worker locks the thread and, while it is idle, claims the oldest queued turn. Turn status moves `queued` → `running` → `succeeded`, `waiting`, `failed` or `cancelled`. Each turn records its reply channel, so a Telegram message is answered on Telegram.
 
@@ -40,13 +40,13 @@ Pi-native tools (read, bash, edit, write, find, ls) are built in `providers/pi/s
 
 Otto tools: `send_message`, `ask_user`, `react_to_message`, `browser`, `sign_in`, `browser_session`, `apps`, `manage_apps`, `manage_personal_context`, `share_file`, `create_audio` and optional `web_search`. The last two run server-side because they use provider keys. Every tool call goes through one guard that checks cancellation, enforces read-only turns and records observations.
 
-Skills in `src/runtime/skills` (careful-research, sign-in, schedules-and-watches, connected-apps) are staged into the sandbox on each session open and hold workflow guidance.
+Skills in `src/runtime/skills` (careful-research, schedules-and-watches, connected-apps) are staged into the sandbox on each session open and hold workflow guidance.
 
 ## Sandbox and browser
 
 The workspace runs arbitrary commands as an unprivileged user with dropped capabilities and resource limits. Commands go through a supervisor that owns the process group, enforces timeouts and acknowledges completion; a lost acknowledgement fences the workspace. It never receives provider keys, the Docker socket or browser profiles. Network access follows Docker routing; there is no egress firewall.
 
-The browser is a separate trusted container. The host drives it over a fixed stdin bridge to a private Unix socket; the workspace shares neither its mounts nor its network namespace. The model gets bounded actions (open, snapshot, click, fill, press, scroll, screenshot, download), never JavaScript, CDP, profiles or Vault reads. Manual control pauses the thread and lets the owner drive the browser; native sign-in opens the same profile without automation for the user to finish a login.
+The browser is a separate trusted container. The host drives Vercel Labs agent-browser over a fixed stdin bridge to a private Unix socket. The workspace does not share its mounts or network namespace. Pi uses browser actions for navigation, forms, history, screenshots and downloads. Pi does not get JavaScript, CDP, profiles or Vault values.
 
 Providers: Docker locally, Cloudflare containers (separate browser and workspace roles per owner) in hosted mode, and an optional E2B combined sandbox.
 
@@ -58,7 +58,7 @@ The public Worker serves the web app and sends `/api/*` to a private Node gatewa
 
 **Approvals.** `action-policy.ts` lets clear ordinary requests and five reversible plan actions (goal create/update, schedule create/update/cancel) from the current owned user message run directly. Unknown, destructive or ambiguous actions persist a specific yes/no question bound to the action, account and arguments. A yes queues a `resume` turn that executes once; failure or interruption marks it uncertain and it is never re-run. Background turns and onboarding cannot grant authority.
 
-**Vault and sign-in.** AES-GCM encrypted logins and cards, keyed outside PostgreSQL (Keychain, `OTTO_VAULT_KEY`, or a per-user derived key in hosted mode). `sign_in` inspects grouped authentication choices and semantic fields; each method follows the user's choice. Secure forms collect reusable credentials, including PINs, and the broker injects them after rechecking owner, turn, exact origin and expiry. Registered verification-code replies are intercepted before persistence. Email challenges can use an exact owned mailbox, or resolve a masked recipient against the recently selected account; the server verifies the sender, freshness and account again before entering a code once. QR and device approval require user control. Saved website sessions keep a private browser profile.
+**Vault and sign-in.** AES-GCM encrypted logins and cards use a key outside PostgreSQL (Keychain, `OTTO_VAULT_KEY`, or a per-user derived key in hosted mode). Pi opens the website and chooses its sign-in steps with browser actions. The `sign_in` tool opens a secure form for a login or code. The trusted browser broker checks the owner, turn, exact origin and expiry, then fills the fields that Pi selected. Pi submits the form and checks the result. Registered code replies are also intercepted before they reach chat history. Email challenges can use an exact owned mailbox. The server checks the sender, time and account before it enters a code once. Saved website sessions keep a private browser profile.
 
 **Channels.** Telegram and WhatsApp settings are encrypted per owner. Inbound messages are saved to an inbox and become turns on the same thread; replies go through a durable outbox that rechecks owner and sender. Uncertain sends are not replayed.
 
