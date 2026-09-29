@@ -17,10 +17,18 @@ export interface ImagePreview {
 
 export function attachmentKind(mimeType: string) {
   const type = mimeType.split(';', 1)[0].trim().toLowerCase();
-  if (/^image\/(?:png|jpeg|webp|gif|avif|bmp)$/.test(type)) return 'image';
+  if (/^image\/(?:png|jpeg|webp|gif|avif|bmp|svg\+xml)$/.test(type)) return 'image';
   if (/^audio\/(?:mpeg|wav|x-wav|webm|ogg|mp4|aac|flac)$/.test(type)) return 'audio';
   if (/^video\/(?:mp4|webm|ogg)$/.test(type)) return 'video';
   return type === 'application/pdf' ? 'pdf' : null;
+}
+
+function vectorImage(mimeType: string) {
+  return mimeType.split(';', 1)[0].trim().toLowerCase() === 'image/svg+xml';
+}
+
+export function localPreviewable(mimeType: string) {
+  return Boolean(attachmentKind(mimeType)) && !vectorImage(mimeType);
 }
 
 export function previewableImage(mimeType: string) {
@@ -39,7 +47,15 @@ export function artifactImage(artifact: Artifact): ImagePreview | null {
 
 export function AttachmentThumbnail({ image }: { image: ImagePreview }) {
   const kind = attachmentKind(image.mimeType ?? 'image/png');
-  if (kind === 'image') return <img src={image.url} alt="" loading="lazy" />;
+  if (kind === 'image')
+    return (
+      <img
+        src={image.url}
+        alt=""
+        loading="lazy"
+        className={vectorImage(image.mimeType ?? '') ? 'is-vector' : undefined}
+      />
+    );
   if (kind === 'video')
     return (
       <>
@@ -79,7 +95,14 @@ function PreviewContent({ image }: { image: ImagePreview }) {
       </div>
     );
   if (kind === 'image')
-    return <img src={image.url} alt={image.name} onError={() => setFailed(true)} />;
+    return (
+      <img
+        src={image.url}
+        alt={image.name}
+        className={vectorImage(image.mimeType ?? '') ? 'is-vector' : undefined}
+        onError={() => setFailed(true)}
+      />
+    );
   if (kind === 'audio')
     return (
       <audio
@@ -123,7 +146,10 @@ export function ImageViewer({
   const safeImages = images.filter(
     (image) =>
       attachmentKind(image.mimeType ?? 'image/png') &&
-      (ownedArtifactUrl(image.url) || (allowLocalPreviews && image.url.startsWith('blob:'))),
+      (ownedArtifactUrl(image.url) ||
+        (allowLocalPreviews &&
+          image.url.startsWith('blob:') &&
+          localPreviewable(image.mimeType ?? 'image/png'))),
   );
   const index = safeImages.findIndex((image) => image.id === selectedId);
   const current = safeImages[index];

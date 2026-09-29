@@ -811,20 +811,6 @@ a svg {
   height: 38px;
   margin: 8px 0;
 }
-.file-attachment {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  border: 1px solid var(--border);
-  padding: 10px;
-  border-radius: 8px;
-  font-size: 12px;
-}
-.file-attachment small {
-  display: block;
-  color: var(--muted-foreground);
-  font-size: 10px;
-}
 .day-divider {
   display: flex;
   align-items: center;

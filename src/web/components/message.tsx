@@ -1,7 +1,6 @@
 import { Children, lazy, memo, Suspense, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  FileText,
   ExternalLink,
   Copy,
   Check,
@@ -15,7 +14,7 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
-import type { Artifact, Message } from '../../shared/contracts';
+import type { Message } from '../../shared/contracts';
 import { reactionEmoji } from '../../shared/emoji';
 import { Button, Loading, Notice } from './ui';
 import { BrandMark } from './brand';
@@ -24,7 +23,7 @@ import { credentialLinkLabel, safeMessageLink } from '../lib/message-links';
 import { remarkLocalLinks } from '../lib/markdown';
 import { nextReaction, reactionName } from '../lib/reactions';
 import { MessageLinkPreviews } from './link-previews';
-import { artifactPreview, ImageGallery, ownedArtifactUrl } from './attachment-images';
+import { MessageAttachments } from './attachment-card';
 
 const ReactionPicker = lazy(() => import('./emoji-picker'));
 
@@ -88,22 +87,6 @@ export const MessageText = memo(function MessageText({
   );
 });
 
-export function Attachment({ artifact }: { artifact: Artifact }) {
-  const url = ownedArtifactUrl(artifact.url) ? artifact.url : '';
-  if (!url) return null;
-  const image = artifactPreview(artifact);
-  if (image) return <ImageGallery images={[image]} />;
-  return (
-    <a className="file-attachment" href={url} download={artifact.name}>
-      <FileText size={18} />
-      <span>
-        {artifact.name}
-        <small>{Math.max(1, Math.round(artifact.size / 1024))} KB</small>
-      </span>
-    </a>
-  );
-}
-
 function ReactionGlyph({ value }: { value: string }) {
   return (
     <span className="reaction-emoji" aria-hidden="true">
@@ -147,10 +130,6 @@ export function MessageBubble({
     message.role === 'user'
       ? reactionEmoji(message.reactions?.find((item) => item.actor === 'assistant')?.reaction ?? '')
       : '';
-  const images = message.attachments.flatMap((artifact) => {
-    const image = artifactPreview(artifact);
-    return image ? [image] : [];
-  });
   useEffect(() => {
     setSelectedName('');
     setReaction(
@@ -356,14 +335,7 @@ export function MessageBubble({
             </blockquote>
           )}
           {message.attachments.length > 0 && (
-            <div className="message-attachments">
-              {images.length > 0 && <ImageGallery images={images} />}
-              {message.attachments
-                .filter((artifact) => !artifactPreview(artifact))
-                .map((artifact) => (
-                  <Attachment key={artifact.id} artifact={artifact} />
-                ))}
-            </div>
+            <MessageAttachments attachments={message.attachments} />
           )}
           {message.text && <MessageText text={message.text} previews={!streaming} />}
           {streaming && <span className="stream-cursor" />}
