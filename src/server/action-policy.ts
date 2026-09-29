@@ -34,6 +34,24 @@ export function isReversiblePlanAction(action: string) {
   ].includes(action);
 }
 
+export function requestsConnectedSchedule(action: string, instruction: string) {
+  if (action !== 'OTTO_schedule_create' || !instruction.trim() || instruction.length > 12_000)
+    return false;
+  const request = requestedInstruction(instruction).replace(
+    /"(?:\\.|[^"\\])*"|“[^”]*”|(?:^|\s)'(?:\\.|[^'\\])*'(?=\s|[.,!?]|$)/g,
+    ' ',
+  );
+  if (
+    /\b(?:don't|do not|never|não)\s+(?:schedule|remind|check|monitor|notify|alert)\b/i.test(request)
+  )
+    return false;
+  const timing =
+    /\b(?:daily|weekly|monthly|tomorrow|every\s+(?:day|morning|evening|night|week|weekday|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|each\s+(?:day|morning|evening|night|week|weekday|month)|at\s+\d{1,2}(?::\d{2})?|on\s+\d{4}-\d{2}-\d{2}|todos\s+os\s+dias|todas\s+as\s+manhãs)\b/i;
+  const work =
+    /\b(?:schedule|remind\s+me|set\s+up\s+a\s+reminder|check|monitor|review|notify|alert|tell|run|send|agenda|lembra-me|lembre-me|verifica|avisa)\b/i;
+  return request.split(/[.!?;]|\bthen\b/i).some((part) => timing.test(part) && work.test(part));
+}
+
 const intentWords: Record<Intent, RegExp> = {
   send: /^(?:send|post|reply|email|message|forward|envia|enviar|manda|responde|publica)\b/i,
   draft: /^(?:draft|compose|write|prepare|rascunha|prepara|escreve)\b/i,

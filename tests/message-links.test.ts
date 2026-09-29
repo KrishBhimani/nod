@@ -17,6 +17,17 @@ test('Apps links use the app route without obsolete aliases', () => {
   assert.equal(safeMessageLink(`${connect}#token`, origin), null);
 });
 
+test('isolated E2E consent links work only on the harness origin', () => {
+  const path = '/e2e/connect/7f455e58-c202-4401-bb22-0a4e853a3ef5';
+  const origin = 'http://localhost:4320';
+  assert.deepEqual(safeMessageLink(`${origin}${path}`, origin), {
+    href: path,
+    kind: 'navigation',
+  });
+  assert.equal(safeMessageLink(`${origin}${path}?next=/apps`, origin), null);
+  assert.equal(safeMessageLink(path, 'http://localhost:4310'), null);
+});
+
 test('markdown artifact links show the filename without markdown punctuation', () => {
   const path = '/api/artifacts/cf047140-c98b-496b-96e2-365472458734';
   assert.deepEqual(

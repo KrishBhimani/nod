@@ -192,6 +192,47 @@ test(
       );
 
       await t.test(
+        'a connected account can finish an owned schedule request after consent',
+        async () => {
+          const args = {
+            title: 'Daily spending check',
+            prompt: 'Check the connected spending Sheet.',
+            kind: 'recurring',
+            cron: '59 11 * * *',
+            timeZone: 'Europe/Madrid',
+          };
+          const authorized = await begin(
+            'Read my spending Sheet, then check it every morning at 11:59 Europe/Madrid.',
+          );
+          await db.pool.query(
+            "UPDATE tasks SET prompt='Continue after account consent',revision=1,action_resume_kind='connection',action_resume_revision=1 WHERE id=$1",
+            [authorized],
+          );
+          const before = calls.length;
+          await approvals.request(authorized, 'OTTO_schedule_create', args, { revision: 1 });
+          assert.equal(calls.length, before + 1);
+          assert.equal(calls.at(-1)?.sourceMessageId, (await row(authorized)).source_message_id);
+          for (const [instruction, resumeRevision] of [
+            ['Read my spending Sheet and summarize it.', 1],
+            ['Summarize my daily spending Sheet.', 1],
+            ['Read my spending Sheet, then check it every morning.', 0],
+            ['Read my spending Sheet, but do not schedule a daily check.', 1],
+          ] as const) {
+            const blocked = await begin(instruction);
+            await db.pool.query(
+              "UPDATE tasks SET prompt='Continue after account consent',revision=1,action_resume_kind='connection',action_resume_revision=$2 WHERE id=$1",
+              [blocked, resumeRevision],
+            );
+            await assert.rejects(
+              approvals.request(blocked, 'OTTO_schedule_create', args, { revision: 1 }),
+              /direct request/,
+            );
+            assert.equal(await proposal(blocked), undefined);
+          }
+        },
+      );
+
+      await t.test(
         'local planning cannot inherit background, stale, foreign or synthetic source authority',
         async () => {
           const before = calls.length;

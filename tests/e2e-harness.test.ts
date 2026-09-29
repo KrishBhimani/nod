@@ -423,6 +423,62 @@ test('synthetic app consent preserves callback state, verified account ownership
   }
 });
 
+test('synthetic spending Sheet returns fixed rows and stays read-only', async () => {
+  const app = Fastify();
+  const fixture = createIntegrationFixture('http://localhost:4320');
+  fixture.register(app);
+  const session = await fixture.provider.createSession('owner-a', {});
+  const account = await session.authorize(
+    'googlesheets',
+    'http://localhost:4320/api/apps/callback',
+  );
+  try {
+    await app.inject({ method: 'POST', url: `/e2e/connect/${account.accountId}` });
+    const listed = (await session.execute(
+      'GOOGLESHEETS_SEARCH_SPREADSHEETS',
+      { query: 'September spending' },
+      account.accountId,
+    )) as {
+      spreadsheets: Array<{ id: string; name: string; webViewLink: string }>;
+    };
+    assert.equal(listed.spreadsheets[0].name, 'September spending test');
+    assert.match(listed.spreadsheets[0].webViewLink, /otto-e2e-spending-2026-09/);
+    const info = (await session.execute(
+      'GOOGLESHEETS_GET_SPREADSHEET_INFO',
+      { spreadsheet_id: listed.spreadsheets[0].id },
+      account.accountId,
+    )) as {
+      properties: { title: string };
+      sheets: Array<{ properties: { title: string } }>;
+    };
+    assert.equal(info.properties.title, 'September spending test');
+    assert.deepEqual(
+      info.sheets.map((sheet) => sheet.properties.title),
+      ['Spending', 'Budget'],
+    );
+    const read = async (range: string) =>
+      (await session.execute(
+        'GOOGLESHEETS_BATCH_GET',
+        { spreadsheet_id: listed.spreadsheets[0].id, ranges: [range] },
+        account.accountId,
+      )) as {
+        valueRanges: Array<{ values: string[][] }>;
+      };
+    assert.deepEqual(
+      (await read('Spending!A1:E20')).valueRanges[0].values.slice(1).map((row) => row[3]),
+      ['32.50', '17.50', '125.00', '20.00', '20.00'],
+    );
+    assert.deepEqual(
+      (await read('Budget!A1:B20')).valueRanges[0].values.slice(1).map((row) => row[1]),
+      ['200.00', '100.00', '60.00'],
+    );
+    await assert.rejects(read('Unknown!A1:B20'), /not found/);
+    assert.equal(fixture.writes.length, 0);
+  } finally {
+    await app.close();
+  }
+});
+
 test('synthetic Gmail drafts remain unsent and destructive operations stay bound to observed account records', async () => {
   const app = Fastify();
   const audit: unknown[] = [];

@@ -12,6 +12,7 @@ import {
   explicitlyRequestsScheduledAction,
   forbidsTransmission,
   isReversiblePlanAction,
+  requestsConnectedSchedule,
 } from './action-policy.ts';
 import { actionConfirmation } from './action-presentation.ts';
 import { integrationResultSnapshot } from './integration-result.ts';
@@ -150,15 +151,21 @@ export async function createApprovals(
       }
       const explicit = scheduled || explicitlyRequestsAction(action, task.author_instruction);
       const currentSource = task.author_instruction === task.prompt;
-      const resumedSource =
-        !action.startsWith('OTTO_') &&
-        (explicit ||
-          (task.action_resume_kind === 'approval' &&
-            ['CONNECTED_HTTP', 'CONNECTED_MCP_CALL', 'CONNECTED_CLI'].includes(action))) &&
-        ['credentials', 'manual_control', 'connection', 'approval'].includes(
-          task.action_resume_kind,
-        ) &&
+      const connectedScheduleSource =
+        requestsConnectedSchedule(action, task.author_instruction) &&
+        task.revision > 0 &&
+        task.action_resume_kind === 'connection' &&
         task.action_resume_revision === expected.revision;
+      const resumedSource =
+        connectedScheduleSource ||
+        (!action.startsWith('OTTO_') &&
+          (explicit ||
+            (task.action_resume_kind === 'approval' &&
+              ['CONNECTED_HTTP', 'CONNECTED_MCP_CALL', 'CONNECTED_CLI'].includes(action))) &&
+          ['credentials', 'manual_control', 'connection', 'approval'].includes(
+            task.action_resume_kind,
+          ) &&
+          task.action_resume_revision === expected.revision);
       if (!scheduled && !currentSource && !resumedSource)
         throw new Error('This action needs a direct request from the user.');
       if (forbidsTransmission(action, task.author_instruction))
