@@ -704,9 +704,11 @@ export async function createApplication(
           result.requiresApproval
         ) {
           if (options?.readOnly)
-            throw new Error(
-              'Getting started can inspect connected apps but cannot change their data.',
-            );
+            return {
+              status: 'rejected',
+              code: 'read_only',
+              message: 'This task can only read connected apps. It cannot change their data.',
+            };
           return approvals.request(
             taskId,
             action,

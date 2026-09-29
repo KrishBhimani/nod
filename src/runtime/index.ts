@@ -80,6 +80,30 @@ function changesExternalState(name: string, params: unknown) {
   );
 }
 
+const readOnlyTools = [...outcomeCheckTools, 'report_outcome', 'send_message', 'download_app_file'];
+
+const readOnlyActions: Record<string, string[]> = {
+  manage_apps: ['list'],
+  manage_personal_context: [
+    'profile_get',
+    'notification_preferences_get',
+    'history_search',
+    'schedule_list',
+    'goal_list',
+  ],
+};
+
+const readOnlyRefusal =
+  'This task can only read. Use app reads, and browser open, snapshot or scroll.';
+
+function allowedReadOnly(name: string, params: unknown) {
+  const action = String((params as { action?: unknown }).action);
+  return (
+    !changesExternalState(name, params) &&
+    (readOnlyTools.includes(name) || readOnlyActions[name]?.includes(action) === true)
+  );
+}
+
 export function createAgentRuntime(dependencies: {
   agent: Agent;
   computer: Computer;
@@ -426,6 +450,18 @@ export function createAgentRuntime(dependencies: {
             input: params,
             startedAt: new Date().toISOString(),
           });
+          if ((context.readOnly || context.checkOutcome) && !allowedReadOnly(name, params)) {
+            await observe({
+              type: 'tool_end',
+              id,
+              name,
+              status: 'failed',
+              error: readOnlyRefusal,
+              finishedAt: new Date().toISOString(),
+              durationMs: performance.now() - started,
+            });
+            throw new Error(readOnlyRefusal);
+          }
           let result: AgentToolResult;
           try {
             context.signal.throwIfAborted();
@@ -434,11 +470,7 @@ export function createAgentRuntime(dependencies: {
             if (stopped || status !== 'succeeded')
               throw new Error('This execution segment has stopped.');
             await context.emit('tool_start', name.replaceAll('_', ' '));
-            if (changesExternalState(name, params)) {
-              if (context.checkOutcome)
-                throw new Error('Check the earlier outcome before you change anything.');
-              await context.startExternalAction?.();
-            }
+            if (changesExternalState(name, params)) await context.startExternalAction?.();
             const action = () => execute(params as Static<P>);
             const output = await (dependencies.withTool
               ? dependencies.withTool(context.taskId, id, name, action)

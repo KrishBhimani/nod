@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import pg from 'pg';
+import type { Agent, RuntimeContext } from '../src/ports/agent.ts';
+import { createAgentRuntime } from '../src/runtime/index.ts';
+import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 
 test(
   'completing onboarding starts one assistant-initiated welcome without a user message or reset',
@@ -25,6 +29,14 @@ test(
     const { configuration, ownerId, port } = await import('../src/server/config.ts');
     await db.initializeDatabase();
     await tasks.initializeTasks();
+    const { createPersonalService } = await import('../src/server/personal.ts');
+    await createPersonalService({
+      pool: db.pool,
+      ownerId,
+      scheduler: tasks.boss,
+      submitTask: tasks.submitTask,
+      refresh() {},
+    }).initialize({ workers: false });
     const accounts = createAccountStore(db.pool);
     await accounts.initialize();
     const app = await createApp({
@@ -157,6 +169,82 @@ test(
         "SELECT t.status,m.text FROM tasks t JOIN messages m ON m.task_id=t.id WHERE t.source_id='onboarding:welcome'",
       );
       assert.deepEqual(empty.rows, [{ status: 'succeeded', text: welcomeGreeting(undefined, []) }]);
+      await db.pool.query(
+        "DELETE FROM messages WHERE task_id IN (SELECT id FROM tasks WHERE source_id='onboarding:welcome')",
+      );
+      await db.pool.query("DELETE FROM tasks WHERE source_id='onboarding:welcome'");
+      const refusals: string[] = [];
+      const agent: Agent = {
+        open: async (input) => ({
+          resumed: false,
+          abort: () => {},
+          dispose: () => {},
+          prompt: async () => {
+            const tools = new Map(input.tools.map((entry) => [entry.name, entry]));
+            await tools.get('apps')!.execute({ action: 'GMAIL_FETCH_EMAILS', args: {} });
+            await tools
+              .get('shell')!
+              .execute({ command: 'curl https://example.test' })
+              .catch((error: Error) => refusals.push(error.message));
+            await tools.get('send_message')!.execute({ text: 'Two threads wait for your reply.' });
+          },
+        }),
+        dispose: () => {},
+      };
+      const runtime = createAgentRuntime({
+        agent,
+        computer: fakeComputer(),
+        workspace: fakeWorkspace(),
+      });
+      const seen: RuntimeContext[] = [];
+      const reads: boolean[] = [];
+      await tasks.startTaskWorkers({
+        runTask: async (context) => {
+          seen.push(context);
+          return context.readOnly ? runtime.runTask(context) : { status: 'succeeded' };
+        },
+        speech: {
+          synthesize: async () => {
+            throw new Error('Unused');
+          },
+        },
+        requestCredential: async () => ({}),
+        integration: async (_taskId, _action, _args, options) => {
+          reads.push(options.readOnly);
+          return { successful: true, data: { threads: 2 } };
+        },
+        manage: async () => ({}),
+      });
+      await tasks.startOnboarding('Alex', ['Gmail']);
+      const discovery = (
+        await db.pool.query("SELECT id FROM tasks WHERE source_id='onboarding:welcome'")
+      ).rows[0].id as string;
+      let finished = { status: '', error: null };
+      for (let attempt = 0; attempt < 800 && finished.status !== 'succeeded'; attempt++) {
+        finished = (await db.pool.query('SELECT status,error FROM tasks WHERE id=$1', [discovery]))
+          .rows[0];
+        assert.notEqual(finished.status, 'failed', finished.error ?? undefined);
+        await delay(25);
+      }
+      assert.equal(finished.status, 'succeeded');
+      assert.deepEqual(
+        (
+          await db.pool.query('SELECT text FROM messages WHERE task_id=$1 ORDER BY created_at,id', [
+            discovery,
+          ])
+        ).rows.map((row) => row.text),
+        [welcomeGreeting('Alex', ['Gmail']), 'Two threads wait for your reply.'],
+      );
+      assert.deepEqual(refusals, [
+        'This task can only read. Use app reads, and browser open, snapshot or scroll.',
+      ]);
+      assert.deepEqual(reads, [true]);
+      assert.deepEqual(
+        seen.filter((context) => context.readOnly).map((context) => context.taskId),
+        [discovery],
+      );
+      assert.ok(seen.some((context) => context.taskId === earlier && !context.readOnly));
+      await runtime.dispose();
     } finally {
       await app.close();
       await tasks.stopTasks();

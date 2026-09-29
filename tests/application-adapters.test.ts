@@ -123,15 +123,20 @@ test(
                 );
               }
               await call('apps', { action: 'GMAIL_FETCH_EMAILS', args: { max_results: 2 } });
-              await assert.rejects(
-                call('apps', {
-                  action: 'GMAIL_SEND_EMAIL',
-                  args: {
-                    recipient_email: 'fixture@example.test',
-                    subject: 'Must not send during setup',
-                  },
-                }),
-                /could not be completed/,
+              const refused = await call('apps', {
+                action: 'GMAIL_SEND_EMAIL',
+                args: {
+                  recipient_email: 'fixture@example.test',
+                  subject: 'Must not send during setup',
+                },
+              });
+              assert.deepEqual(
+                refused.content[0].type === 'text' && JSON.parse(refused.content[0].text),
+                {
+                  status: 'rejected',
+                  code: 'read_only',
+                  message: 'This task can only read connected apps. It cannot change their data.',
+                },
               );
               input.onEvent({
                 type: 'final',
