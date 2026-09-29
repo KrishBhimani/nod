@@ -59,7 +59,7 @@ function requestsPrivateValue(text: string, detail: string, shorthand = true) {
     new RegExp(
       shorthand
         ? `\\b${detail}\\b.{0,40}\\b(?:please|to continue|por favor)\\b`
-        : `(?:^|[.!?]\\s+)\\s*(?:(?:your|o teu|o seu|a tua|a sua|teu|seu|tua|sua)\\s+)?${detail}\\b\\s*,?\\s*(?:please|por favor)\\b`,
+        : `(?:^|[.!?:]\\s+)\\s*(?:(?:your|o teu|o seu|a tua|a sua|teu|seu|tua|sua)\\s+)?${detail}\\b\\s*,?\\s*(?:please|por favor)\\b`,
       'i',
     ).test(text)
   );

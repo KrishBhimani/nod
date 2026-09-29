@@ -8,6 +8,7 @@ import test from 'node:test';
 import pg from 'pg';
 import type { Agent, RuntimeContext } from '../src/ports/agent.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';
+import { createPreferencesStore } from '../src/server/preferences.ts';
 import type { ThreadDependencies } from '../src/server/thread.ts';
 import type { SubmitMessageResponse } from '../src/shared/contracts.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
@@ -511,6 +512,33 @@ test(
           1,
         );
         firstThreadId = first.threadId;
+      });
+
+      await t.test('turns retain owned manual and automatic region preferences', async () => {
+        const preferences = createPreferencesStore(db.pool, ownerId);
+        const otherOwner = `region-owner-${randomUUID()}`;
+        const otherPreferences = createPreferencesStore(db.pool, otherOwner);
+        const original = await preferences.get();
+        try {
+          await otherPreferences.update({ locale: 'en-CA', timeZone: 'America/Toronto' });
+          await preferences.update({ locale: 'en-US', timeZone: 'Europe/Lisbon' });
+          const manual = await thread.submitUserMessage('Manual region fixture');
+          await waitFor(settled(manual.turnId));
+          assert.equal(ran(manual.turnId)?.locale, 'en-US');
+
+          await preferences.update({ locale: null });
+          await preferences.update({ hourCycle: 'h23' });
+          assert.equal((await preferences.get()).locale, null);
+          assert.equal((await otherPreferences.get()).locale, 'en-CA');
+          const automatic = await thread.submitUserMessage('Automatic region fixture');
+          await waitFor(settled(automatic.turnId));
+          assert.equal(ran(automatic.turnId)?.locale, 'en-PT');
+          assert.equal(ran(automatic.turnId)?.timeZone, 'Europe/Lisbon');
+          assert.equal(ran(automatic.turnId)?.hourCycle, 'h23');
+        } finally {
+          await preferences.update(original);
+          await db.pool.query('DELETE FROM preferences WHERE owner_id=$1', [otherOwner]);
+        }
       });
 
       await t.test('a message sent during a running turn queues and runs after it', async () => {
@@ -1117,19 +1145,55 @@ test(
               [randomUUID(), ownerId, `Fixture ${i}`, freshThread, turn],
             );
           const foreignThread = randomUUID(),
-            foreign = randomUUID();
+            foreign = randomUUID(),
+            foreignTurn = randomUUID();
           await db.pool.query("INSERT INTO threads(id,owner_id) VALUES($1,'other-owner')", [
             foreignThread,
           ]);
           await db.pool.query(
-            "INSERT INTO messages(id,owner_id,role,text,thread_id) VALUES($1,'other-owner','assistant','private content',$2)",
-            [foreign, foreignThread],
+            "INSERT INTO turns(id,owner_id,thread_id,source,prompt,status) VALUES($1,'other-owner',$2,'user','Foreign fixture','succeeded')",
+            [foreignTurn, foreignThread],
+          );
+          await db.pool.query(
+            "INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id) VALUES($1,'other-owner','assistant','private content',$2,$3)",
+            [foreign, foreignThread, foreignTurn],
           );
           const archived = (
-            await db.pool.query('SELECT id FROM messages WHERE thread_id=$1 LIMIT 1', [
-              firstThreadId,
-            ])
-          ).rows[0].id as string;
+            await db.pool.query(
+              'SELECT id,turn_id FROM messages WHERE thread_id=$1 AND turn_id IS NOT NULL LIMIT 1',
+              [firstThreadId],
+            )
+          ).rows[0] as { id: string; turn_id: string };
+          const backgroundTurns: string[] = Array.from({ length: 51 }, () => randomUUID());
+          await db.pool.query(
+            "INSERT INTO turns(id,owner_id,thread_id,source,prompt,status,background) SELECT id,$2,$3,'schedule','Background fixture','succeeded',true FROM unnest($1::uuid[]) AS id",
+            [backgroundTurns, ownerId, freshThread],
+          );
+          const state = (await request('GET', '/api/state')).json<{
+            messages: Array<{ id: string; turnId: string | null }>;
+            turns: Array<{ id: string; status: string }>;
+          }>();
+          assert.ok(state.messages.some((message) => message.turnId === turn));
+          assert.deepEqual(
+            state.turns
+              .filter((entry) => entry.id === turn)
+              .map(({ id, status }) => ({ id, status })),
+            [{ id: turn, status: 'succeeded' }],
+          );
+          assert.equal(
+            state.turns.filter((entry) => backgroundTurns.includes(entry.id)).length,
+            50,
+          );
+          for (const id of [foreign, archived.id])
+            assert.equal(
+              state.messages.some((message) => message.id === id),
+              false,
+            );
+          for (const id of [foreignTurn, archived.turn_id])
+            assert.equal(
+              state.turns.some((entry) => entry.id === id),
+              false,
+            );
           const expected = new Set(
             (
               await db.pool.query('SELECT id FROM messages WHERE thread_id=$1', [freshThread])
@@ -1156,7 +1220,7 @@ test(
           const react = (id: string, reaction: string) =>
             request('POST', `/api/messages/${id}/reaction`, { reaction });
           assert.equal((await react(message, 'heart')).statusCode, 200);
-          for (const id of [foreign, archived])
+          for (const id of [foreign, archived.id])
             assert.equal((await react(id, 'heart')).statusCode, 404);
           assert.equal(
             (

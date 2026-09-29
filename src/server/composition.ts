@@ -710,7 +710,6 @@ export async function createApplication(
     computer,
     runtime,
     inspector,
-    providerUsage,
     configuration: () =>
       configuration({
         provider: adapters.model.provider,

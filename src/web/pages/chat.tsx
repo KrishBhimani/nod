@@ -186,14 +186,6 @@ export function Chat({
       };
     }),
   ]);
-  const finalAssistantMessages = new Map<string, string>();
-  const latestUserMessageAt = new Map<string, string>();
-  for (const message of visibleMessages) {
-    if (message.role === 'assistant' && message.turnId)
-      finalAssistantMessages.set(message.turnId, message.id);
-    if (message.role === 'user' && message.turnId)
-      latestUserMessageAt.set(message.turnId, message.createdAt);
-  }
   const unseen = away
     ? persistedMessages.filter(
         (message) => message.role === 'assistant' && Date.parse(message.createdAt) > away.since,
@@ -617,14 +609,6 @@ export function Chat({
                 )}
                 <MessageBubble
                   message={message}
-                  turn={
-                    message.turnId && finalAssistantMessages.get(message.turnId) === message.id
-                      ? (state.turns.find((turn) => turn.id === message.turnId) ?? message.turn)
-                      : undefined
-                  }
-                  turnStartedAt={
-                    message.turnId ? latestUserMessageAt.get(message.turnId) : undefined
-                  }
                   streaming={streamIds.has(message.streamId ?? '')}
                   inspectorEnabled={state.configuration.inspectorEnabled}
                   grouped={messagesAreGrouped(visibleMessages[index - 1], message, dateFormat)}

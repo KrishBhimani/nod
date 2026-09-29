@@ -245,6 +245,25 @@ test('setup links omit tokens and fragments and approval paths never become link
   assert.equal(setupLink(link, 'Click here for a prize')!.label, 'Vault');
   assert.equal(safeMessageLink('/approvals/action-id', origin), null);
   assert.equal(safeMessageLink(`${origin}/approvals/action-id`, origin), null);
+  const result = render(
+    `[Add login](/credentials/request-id?token=private-token#private-fragment) [Add login](${origin}/vault/another-id) [Add login](https://outside.example/credentials/request-id) [Connect Calendar](https://outside.example/connect)`,
+  );
+  for (const href of ['/credentials/request-id', '/vault/another-id']) {
+    const anchor = result.match(new RegExp(`<a\\b[^>]*href="${href}"[^>]*>`))?.[0];
+    assert.ok(anchor);
+    assert.match(anchor, /\brel="opener"/);
+    assert.match(anchor, /\breferrerPolicy="no-referrer"/);
+  }
+  for (const href of [
+    'https://outside.example/credentials/request-id',
+    'https://outside.example/connect',
+  ]) {
+    const anchor = result.match(new RegExp(`<a\\b[^>]*href="${href}"[^>]*>`))?.[0];
+    assert.ok(anchor);
+    assert.match(anchor, /\brel="noopener noreferrer"/);
+    assert.match(anchor, /\breferrerPolicy="no-referrer"/);
+  }
+  assert.doesNotMatch(result, /private-token|private-fragment/);
 });
 
 test('only intended app paths and credential-free HTTP URLs become links', () => {

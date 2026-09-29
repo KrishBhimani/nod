@@ -207,6 +207,7 @@ test('PIN and semantic login identifier requests never reach chat', async () => 
     'Email, please, to continue logging in.',
     'O teu email, por favor, para iniciar sessão.',
     'Your phone number, please, to sign in.',
+    'Sign in: your email, please.',
   ]) {
     for (const method of ['ask_user', 'send_message', 'final']) {
       let prompts = 0;

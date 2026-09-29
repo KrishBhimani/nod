@@ -3,6 +3,7 @@ import { Check, KeyRound, LockKeyhole, ArrowUpRight } from 'lucide-react';
 import type { CredentialRequest } from '../../shared/contracts';
 import { api } from '../lib/api';
 import { originLabel, suggestLoginName } from '../lib/vault-name';
+import { returnToChat } from '../lib/navigation';
 import { Button, Field, Input, Loading, Notice } from '../components/ui';
 import { BrandMark } from '../components/brand';
 
@@ -165,7 +166,7 @@ function CredentialForm({ id }: { id: string }) {
   }
   return (
     <main className="credential-page">
-      <a href="/" className="credential-brand" aria-label="Otto home">
+      <a href="/" onClick={returnToChat} className="credential-brand" aria-label="Otto home">
         <BrandMark />
         <span>otto</span>
       </a>
@@ -189,7 +190,9 @@ function CredentialForm({ id }: { id: string }) {
             <h1>Details submitted</h1>
             <p>Otto will continue from the website’s response.</p>
             <Button asChild>
-              <a href="/">Back to chat</a>
+              <a href="/" onClick={returnToChat}>
+                Back to chat
+              </a>
             </Button>
           </div>
         ) : expired ? (
@@ -207,7 +210,9 @@ function CredentialForm({ id }: { id: string }) {
               </Button>
             )}
             <Button variant="outline" asChild>
-              <a href="/">Back to chat</a>
+              <a href="/" onClick={returnToChat}>
+                Back to chat
+              </a>
             </Button>
           </div>
         ) : (
