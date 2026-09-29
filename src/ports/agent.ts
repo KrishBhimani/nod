@@ -41,7 +41,7 @@ export type BrowserConnectionRequest =
   | { action: 'connect'; url: string; connectionId?: string; label?: string }
   | { action: 'use'; url: string; connectionId: string };
 
-export interface MessageAttachment {
+interface MessageAttachment {
   name: string;
   mimeType: string;
   workspaceFile?: string;
