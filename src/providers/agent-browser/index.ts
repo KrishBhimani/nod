@@ -1041,7 +1041,35 @@ export function createAgentBrowserComputer(options: {
           const attempt = randomUUID();
           const socket = await daemonSocket(state);
           if (fields.every((field) => /^@e\d+$/.test(field.selector))) {
+            const inspection = await inspectPage(state);
+            if (
+              !inspection.methods.some((method) => method.id === 'credentials' && method.supported)
+            )
+              throw new Error('The current page does not support this credential step.');
             for (const field of fields) {
+              const marker = await requestDaemon(socket, {
+                action: 'getattribute',
+                selector: field.selector,
+                attribute: 'data-otto-login-field',
+              });
+              const kind = field.password ? 'password' : field.code ? 'otp' : 'identifier';
+              const target = inspection.fields.find(
+                (candidate) =>
+                  candidate.kind === kind &&
+                  candidate.selector === `[data-otto-login-field="${marker.value}"]`,
+              );
+              if (!target) throw new Error('The login field changed. Request credentials again.');
+              const count = await evaluate(
+                state,
+                `document.querySelectorAll(${JSON.stringify(target.selector)}).length`,
+              );
+              if (count !== 1) {
+                if (!field.code || count !== field.value.length || !/^\d+$/.test(field.value))
+                  throw new Error('The login field changed. Request credentials again.');
+                field.selector = target.selector;
+                state.protectedSelectors.add(target.selector);
+                continue;
+              }
               const type = await requestDaemon(socket, {
                 action: 'getattribute',
                 selector: field.selector,
@@ -1055,19 +1083,21 @@ export function createAgentBrowserComputer(options: {
               )
                 throw new Error('The login field changed. Request credentials again.');
             }
-            for (const field of fields) {
-              if (new URL(await currentUrl(state)).origin !== input.origin)
-                throw new Error('The login page origin changed. Request credentials again.');
-              await requestDaemon(socket, { action: 'click', selector: field.selector });
-              if (new URL(await currentUrl(state)).origin !== input.origin)
-                throw new Error('The login page origin changed. Request credentials again.');
-              await requestDaemon(socket, {
-                action: 'fill',
-                selector: field.selector,
-                value: field.value,
-              });
+            if (fields.every((field) => /^@e\d+$/.test(field.selector))) {
+              for (const field of fields) {
+                if (new URL(await currentUrl(state)).origin !== input.origin)
+                  throw new Error('The login page origin changed. Request credentials again.');
+                await requestDaemon(socket, { action: 'click', selector: field.selector });
+                if (new URL(await currentUrl(state)).origin !== input.origin)
+                  throw new Error('The login page origin changed. Request credentials again.');
+                await requestDaemon(socket, {
+                  action: 'fill',
+                  selector: field.selector,
+                  value: field.value,
+                });
+              }
+              return { status: 'submitted' as const };
             }
-            return { status: 'submitted' as const };
           }
           if (fields.some((field) => /^@e\d+$/.test(field.selector)))
             throw new Error('Select all sign-in fields from the current browser snapshot.');

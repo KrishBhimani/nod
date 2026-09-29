@@ -266,7 +266,15 @@ export function createAgentRuntime(dependencies: {
           await end({ status: 'succeeded', output });
           if (name === 'send_message') progressSent = true;
           if (['browser', 'browser_session', 'web_search', 'apps'].includes(name)) {
-            sourceChecks += 1;
+            const action = (params as { action?: unknown }).action;
+            if (
+              name === 'web_search' ||
+              (name === 'browser' &&
+                ['open', 'snapshot', 'back', 'forward', 'reload'].includes(String(action))) ||
+              (name === 'browser_session' && action === 'use') ||
+              (name === 'apps' && typeof action === 'string' && /(?:GET|LIST|SEARCH)/.test(action))
+            )
+              sourceChecks += 1;
             const url = (params as { url?: unknown }).url;
             if (typeof url === 'string') {
               try {

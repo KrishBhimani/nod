@@ -135,7 +135,7 @@ export const toolDefinitions = {
   ),
   browser_session: defineTool(
     'browser_session',
-    'Browser profiles for website accounts. connect opens a new private profile; use opens a saved profile; save checks and keeps the current signed-in profile.',
+    'Browser profiles for website accounts. connect opens a new private profile; use opens an existing profile; save checks and keeps the current signed-in profile.',
     Type.Union([
       Type.Object({
         action: Type.Literal('connect'),

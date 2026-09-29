@@ -195,10 +195,16 @@ export async function createBrowserConnections(
           /\/(?:login|log-in|signin|sign-in)\/?$/i.test(new URL(observation.url).pathname)
         )
           return { status: 'needs_sign_in' as const, connectionId: row.id, observation };
+        signal?.throwIfAborted();
         const saved = await pool.query(
           `UPDATE browser_connections SET state='saved',checked_at=now(),updated_at=now()
-           WHERE id=$1 AND owner_id=$2 AND thread_id=$3`,
-          [row.id, options.ownerId, turn.threadId],
+           WHERE id=$1 AND owner_id=$2 AND thread_id=$3
+           AND EXISTS (
+             SELECT 1 FROM turns u JOIN threads th ON th.id=u.thread_id AND th.owner_id=u.owner_id
+             WHERE u.id=$4 AND u.thread_id=$3 AND u.owner_id=$2 AND u.status='running'
+             AND th.archived_at IS NULL FOR UPDATE OF u
+           )`,
+          [row.id, options.ownerId, turn.threadId, turn.turnId],
         );
         if (!saved.rowCount)
           throw new BrowserConnectionError('This browser connection is unavailable.');
@@ -206,7 +212,7 @@ export async function createBrowserConnections(
         options.refresh?.();
         return { status: 'session_saved' as const, connectionId: row.id };
       }
-      if (!['saved', 'needs_sign_in'].includes(row.state) || !browser.bindProfile)
+      if (!['saved', 'needs_sign_in', 'pending'].includes(row.state) || !browser.bindProfile)
         return { status: 'rejected' as const, code: 'browser_connection_unavailable' };
       await browser.bindProfile(turn.threadId, row.profile_id, row.origin);
       const observation = await browser.act(
@@ -220,11 +226,25 @@ export async function createBrowserConnections(
         inspection.fields.length > 0 ||
         inspection.methods.length > 0 ||
         /\/(?:login|log-in|signin|sign-in)\/?$/i.test(new URL(observation.url).pathname);
-      await pool.query(
+      signal?.throwIfAborted();
+      const updated = await pool.query(
         `UPDATE browser_connections SET state=$3,thread_id=$4,checked_at=CASE WHEN $3='saved' THEN now() ELSE checked_at END,updated_at=now()
-         WHERE id=$1 AND owner_id=$2`,
-        [row.id, options.ownerId, needsSignIn ? 'needs_sign_in' : 'saved', turn.threadId],
+         WHERE id=$1 AND owner_id=$2
+         AND EXISTS (
+           SELECT 1 FROM turns u JOIN threads th ON th.id=u.thread_id AND th.owner_id=u.owner_id
+           WHERE u.id=$5 AND u.thread_id=$4 AND u.owner_id=$2 AND u.status='running'
+           AND th.archived_at IS NULL FOR UPDATE OF u
+         )`,
+        [
+          row.id,
+          options.ownerId,
+          needsSignIn ? 'needs_sign_in' : 'saved',
+          turn.threadId,
+          turn.turnId,
+        ],
       );
+      if (!updated.rowCount)
+        throw new BrowserConnectionError('This browser task is no longer active.');
       options.refresh?.();
       return {
         status: needsSignIn ? ('needs_sign_in' as const) : ('session_opened' as const),

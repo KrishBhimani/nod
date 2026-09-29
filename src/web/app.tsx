@@ -290,20 +290,29 @@ function Workspace({
 function AccountApp({ path, setPath }: { path: string; setPath(path: string): void }) {
   const sessionState = useSession();
   const { session } = sessionState;
+  const legacyBrowserLink = /^\/browser-connect\/[A-Za-z0-9_-]{43}\/?$/.test(path);
   useEffect(() => {
     if (sessionState.loading || !session?.user || !session.settings) return;
     const secure = /^\/(?:vault|credentials)\/[^/]+\/?$/.test(path) || path === '/browser';
     const next =
       !session.settings.onboardingCompleted && !secure
         ? '/onboarding'
-        : path === '/login' || path === '/onboarding'
-          ? '/'
-          : null;
+        : legacyBrowserLink
+          ? '/apps'
+          : path === '/login' || path === '/onboarding'
+            ? '/'
+            : null;
     if (next && next !== path) {
       window.history.replaceState(null, '', next);
       setPath(next);
     }
-  }, [sessionState.loading, session?.user?.id, session?.settings?.onboardingCompleted, path]);
+  }, [
+    sessionState.loading,
+    session?.user?.id,
+    session?.settings?.onboardingCompleted,
+    path,
+    legacyBrowserLink,
+  ]);
   if (sessionState.signingOut)
     return (
       <main className="initial-loading">
@@ -376,7 +385,7 @@ function AccountApp({ path, setPath }: { path: string; setPath(path: string): vo
   return (
     <Workspace
       key={key}
-      path={path === '/login' || path === '/onboarding' ? '/' : path}
+      path={legacyBrowserLink ? '/apps' : path === '/login' || path === '/onboarding' ? '/' : path}
       session={session}
       saving={sessionState.mutating}
       onAccountUpdate={sessionState.update}

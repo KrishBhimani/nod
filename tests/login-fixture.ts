@@ -128,6 +128,7 @@ export class LoginPage {
   stage: 'identifier' | 'password' | 'otp' | 'complete' = 'identifier';
   location = { origin: 'https://1.1.1.1', href: 'https://1.1.1.1/login' };
   input = new Element();
+  search = new Element();
   next = new Element();
   google = new Element();
   passkey = new Element();
@@ -138,6 +139,8 @@ export class LoginPage {
   closed = false;
   focused: LoginElement | null = null;
   constructor() {
+    this.search.name = 'search';
+    this.search.type = 'text';
     this.render();
   }
   render() {
@@ -186,8 +189,10 @@ export class LoginPage {
   }
   nodes(selector: string): LoginElement[] {
     const inputs = this.stage === 'complete' ? [] : [this.input];
+    if (selector === '@e1') return inputs;
+    if (selector === '@e2') return [this.search];
     const controls = [this.next, this.google, this.passkey, this.verification];
-    if (selector === 'input' || selector === 'input,textarea') return inputs;
+    if (selector === 'input' || selector === 'input,textarea') return [...inputs, this.search];
     if (selector === 'button,a,[role="button"],input[type="submit"]') return controls;
     if (selector.startsWith('[data-otto-login-field],'))
       return [...inputs, ...controls].filter((element) => element.matches(selector));

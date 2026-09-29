@@ -366,6 +366,7 @@ test('checkpoint status blocks credential injection until the private call finis
   const release = deferred();
   try {
     await f.open();
+    const selector = (await f.computer.inspectLogin('task')).fields[0].selector;
     f.before(async (command) => {
       if (command[0] === 'eval') {
         entered.resolve();
@@ -377,7 +378,7 @@ test('checkpoint status blocks credential injection until the private call finis
       origin: 'https://1.1.1.1',
       kind: 'identifier',
       username: 'synthetic@example.test',
-      usernameSelector: 'input',
+      usernameSelector: selector,
     });
     assert.equal(f.computer.canCheckpoint(), false);
     await entered.promise;
@@ -1472,6 +1473,37 @@ test('Pi can submit each staged sign-in step without exposing entered values', a
   }
 });
 
+test('browser references can fill only the current inspected sign-in field', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'otto-login-ref-'));
+  const fixture = stagedLoginBrowser();
+  const computer = createBrowserFixture({ dataRoot: directory, run: fixture.run });
+  try {
+    await computer.act('login', { action: 'open', url: 'https://1.1.1.1/login' });
+    await assert.rejects(
+      computer.injectCredentials({
+        threadId: 'login',
+        origin: 'https://1.1.1.1',
+        kind: 'identifier',
+        username: 'synthetic-account@example.test',
+        usernameSelector: '@e2',
+      }),
+      /Secure entry could not be confirmed/,
+    );
+    assert.equal(fixture.pages.get('login')?.search.value, '');
+    await computer.injectCredentials({
+      threadId: 'login',
+      origin: 'https://1.1.1.1',
+      kind: 'identifier',
+      username: 'synthetic-account@example.test',
+      usernameSelector: '@e1',
+    });
+    assert.equal(fixture.pages.get('login')?.input.value, 'synthetic-account@example.test');
+  } finally {
+    await computer.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('a signed-in job search box is not a sign-in field', () => {
   const dom = new JSDOM(
     '<main><h1>Jobs</h1><input aria-label="Search" placeholder="Search jobs"></main><footer>Sign in</footer>',
@@ -1524,6 +1556,8 @@ test('split-code observations hide each private input value and retain unrelated
       const command = args.slice(args.indexOf('--idle-timeout') + 2);
       let data: Record<string, unknown> = {};
       if (command[0] === 'get' && command[1] === 'url') data = { url: dom.window.location.href };
+      if (command[0] === 'get' && command[1] === 'attr')
+        data = { value: inputs[0].getAttribute(command[3]) };
       if (command[0] === 'eval') data = { result: await dom.window.eval(options?.input ?? '') };
       if (command[0] === 'fill') {
         const target = dom.window.document.querySelector<HTMLInputElement>(command[1]);
@@ -1561,7 +1595,7 @@ test('split-code observations hide each private input value and retain unrelated
       origin: dom.window.location.origin,
       kind: 'otp',
       code: '483729',
-      passwordSelector: otp.selector,
+      passwordSelector: '@e1',
     });
     const observation = await computer.act('fixture', { action: 'snapshot' });
     assert.match(snapshots.at(-1)!, /textbox "Digit 1" \[ref=e1\]: 4/);

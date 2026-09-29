@@ -109,7 +109,7 @@ test('credential entry masks and marks fields without writing private values', (
 });
 
 test('secure entry rejects fields hidden by an ancestor', () => {
-  for (const attribute of ['hidden', 'aria-hidden="true"', 'inert']) {
+  for (const attribute of ['hidden', 'aria-hidden="true"', 'aria-disabled="true"', 'inert']) {
     const dom = new JSDOM(`<div ${attribute}><input id="password" type="password"></div>`, {
       url: 'https://example.com/login',
       runScripts: 'outside-only',

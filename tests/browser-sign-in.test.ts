@@ -35,6 +35,7 @@ test(
         );
       }
       let signedIn = false;
+      let cancelTurnId: string | undefined;
       const bindings: string[] = [];
       const removed: string[] = [];
       const computer = {
@@ -49,6 +50,8 @@ test(
           };
         },
         async inspectLogin() {
+          if (cancelTurnId)
+            await pool.query("UPDATE turns SET status='cancelled' WHERE id=$1", [cancelTurnId]);
           return {
             origin: 'https://example.test',
             url: signedIn ? 'https://example.test/account' : 'https://example.test/login',
@@ -72,11 +75,36 @@ test(
       assert.equal(opened.status, 'profile_opened');
       assert.ok('connectionId' in opened);
       const connectionId = opened.connectionId;
+      assert.equal(
+        (
+          await service.request(
+            { action: 'use', url: 'https://example.test/login', connectionId },
+            first,
+          )
+        ).status,
+        'needs_sign_in',
+      );
       const save = { action: 'save' as const, url: 'https://example.test/login', connectionId };
       assert.equal((await service.request(save, first)).status, 'needs_sign_in');
       signedIn = true;
+      cancelTurnId = first.turnId;
+      await assert.rejects(service.request(save, first), /no longer active|unavailable/);
+      assert.equal((await service.list())[0].browserState, 'needs_sign_in');
+      await pool.query("UPDATE turns SET status='running' WHERE id=$1", [first.turnId]);
+      cancelTurnId = undefined;
       assert.equal((await service.request(save, first)).status, 'session_saved');
       assert.equal((await service.list())[0].browserState, 'saved');
+      cancelTurnId = second.turnId;
+      await assert.rejects(
+        service.request(
+          { action: 'use', url: 'https://example.test/account', connectionId },
+          second,
+        ),
+        /no longer active/,
+      );
+      assert.equal((await service.list())[0].browserState, 'saved');
+      await pool.query("UPDATE turns SET status='running' WHERE id=$1", [second.turnId]);
+      cancelTurnId = undefined;
       assert.equal(
         (
           await service.request(
@@ -86,7 +114,8 @@ test(
         ).status,
         'session_opened',
       );
-      assert.deepEqual(bindings, [bindings[0], bindings[0]]);
+      assert.equal(bindings.length, 4);
+      assert.equal(new Set(bindings).size, 1);
       assert.equal(
         (await service.request({ action: 'use', url: 'https://other.test/', connectionId }, second))
           .status,

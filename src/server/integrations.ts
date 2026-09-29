@@ -1457,7 +1457,8 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
           .filter(
             (connection) =>
               !connection.accessPaths?.some((path) => path.kind === 'browser') ||
-              ['saved', 'needs_sign_in'].includes(connection.browserState ?? ''),
+              !connection.browserState ||
+              ['saved', 'needs_sign_in', 'pending'].includes(connection.browserState),
           )
           .map(({ accountId: _accountId, browserUrl: _browserUrl, ...connection }) => ({
             ...connection,

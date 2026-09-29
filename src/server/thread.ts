@@ -624,6 +624,14 @@ async function interruptTurn(turnId: string) {
 }
 
 export async function startThreadWorkers(dependencies: ThreadDependencies) {
+  await pool.query(
+    "UPDATE turns u SET status='cancelled',finished_at=now(),error='Browser control ended during upgrade.' FROM threads th WHERE u.thread_id=th.id AND u.owner_id=th.owner_id AND u.owner_id=$1 AND u.status='queued' AND u.source_id LIKE 'control:%' AND th.status='manual_control'",
+    [ownerId],
+  );
+  await pool.query(
+    "UPDATE threads SET status='idle' WHERE owner_id=$1 AND status='manual_control'",
+    [ownerId],
+  );
   const interrupted = await pool.query(
     "SELECT id FROM turns WHERE owner_id=$1 AND status='running'",
     [ownerId],

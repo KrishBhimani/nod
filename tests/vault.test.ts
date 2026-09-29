@@ -1213,7 +1213,7 @@ async function seedNamedTurns(pool: pg.Pool, names: string[], owner = 'local-dev
 }
 
 test(
-  'Vault rejects a freshly blocked browser before creating, refreshing, filling or selecting a sign-in step',
+  'Vault rejects a freshly blocked browser before creating, refreshing or filling a sign-in step',
   { skip: !process.env.TEST_DATABASE_URL },
   async () => {
     const schema = `test_browser_block_${randomUUID().replaceAll('-', '')}`;
@@ -1225,6 +1225,7 @@ test(
     });
     const app = Fastify();
     let blocked = false;
+    let credentialsSupported = true;
     let injections = 0;
     let resumes = 0;
     const origin = 'https://accounts.example.com';
@@ -1240,7 +1241,12 @@ test(
           ...(blocked ? { issue: 'browser_not_supported' as const } : {}),
           fields: [{ kind: 'password', selector: '#password', label: 'Password' }],
           methods: [
-            { id: 'credentials', kind: 'credentials', label: 'Secure form', supported: true },
+            {
+              id: 'credentials',
+              kind: 'credentials',
+              label: 'Secure form',
+              supported: credentialsSupported,
+            },
             { id: 'oauth-google', kind: 'oauth', label: 'Google', supported: true },
           ],
         }),
@@ -1294,6 +1300,20 @@ test(
         assert.equal(response.statusCode, 409);
         assert.match(response.json().error, /blocked sign-in/);
       }
+      blocked = false;
+      credentialsSupported = false;
+      await assert.rejects(
+        vault.request(turns.new, 'local-development', input),
+        /does not support this credential step/,
+      );
+      credentialsSupported = true;
+      await assert.rejects(
+        vault.request(turns.new, 'local-development', {
+          ...input,
+          passwordSelector: '#other-field',
+        }),
+        /login field changed/,
+      );
       assert.equal(injections, 0);
       assert.equal(resumes, 0);
       assert.equal(

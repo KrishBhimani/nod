@@ -808,11 +808,28 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     if (observed) assertSupportedBrowser(observed);
     const kind = input.kind;
     const detected = observed?.fields.filter((field) => field.kind === kind) ?? [];
+    if (
+      observed &&
+      (!observed.methods.some((method) => method.id === 'credentials' && method.supported) ||
+        detected.length !== 1)
+    )
+      throw new VaultError('The current page does not support this credential step.', 409);
     const target =
       (kind === 'identifier' ? input.usernameSelector : input.passwordSelector) ??
       (detected.length === 1 ? detected[0].selector : undefined);
     if (!target)
       throw new VaultError('Choose a visible sign-in field from the current browser page.', 409);
+    if (
+      observed &&
+      ((!/^@e\d+$/.test(target) && target !== detected[0].selector) ||
+        (kind === 'password' &&
+          input.usernameSelector &&
+          !/^@e\d+$/.test(input.usernameSelector) &&
+          !observed.fields.some(
+            (field) => field.kind === 'identifier' && field.selector === input.usernameSelector,
+          )))
+    )
+      throw new VaultError('The login field changed. Request a fresh secure form.', 409);
     const resolved: CredentialInput = {
       origin,
       label: input.label,
@@ -839,9 +856,9 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       input: resolved,
       inspection: {
         origin,
-        url: origin,
+        url: observed?.url ?? origin,
         fields,
-        methods: [
+        methods: observed?.methods ?? [
           {
             id: 'credentials',
             kind: 'credentials' as const,
