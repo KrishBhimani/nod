@@ -12,10 +12,15 @@ test(
   { skip: !process.env.TEST_DATABASE_URL, timeout: 20_000 },
   async () => {
     const schema = `test_better_auth_${randomUUID().replaceAll('-', '').slice(0, 16)}`;
-    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 1 });
+    const root = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 1 });
+    await root.query(`CREATE DATABASE "${schema}"`);
+    const url = new URL(process.env.TEST_DATABASE_URL!);
+    url.pathname = `/${schema}`;
+    url.searchParams.delete('options');
+    const admin = new pg.Pool({ connectionString: url.href, max: 1 });
     await admin.query(`CREATE SCHEMA ${schema}`);
     const database = new pg.Pool({
-      connectionString: process.env.TEST_DATABASE_URL,
+      connectionString: url.href,
       options: `-c search_path=${schema}`,
       max: 2,
     });
@@ -129,8 +134,9 @@ test(
     } finally {
       globalThis.fetch = previousFetch;
       await database.end();
-      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
       await admin.end();
+      await root.query(`DROP DATABASE "${schema}"`);
+      await root.end();
     }
   },
 );

@@ -71,7 +71,7 @@ interface BrowserState {
   browserExecutable?: string;
   desktop?: SignInDesktop;
 }
-export class BrowserLockedError extends Error {
+class BrowserLockedError extends Error {
   statusCode = 423;
   constructor() {
     super('Browser observations are paused during credential entry.');
@@ -467,6 +467,7 @@ export function createAgentBrowserComputer(options: {
   async function currentUrl(state: BrowserState, signal?: AbortSignal): Promise<string> {
     const data = await command(state, ['get', 'url'], { signal });
     const url = String(data.url ?? data.value ?? '');
+    if (url === 'about:blank') return url;
     browserUrl(url);
     const storedUrl = new URL(url);
     storedUrl.search = '';
@@ -913,6 +914,12 @@ export function createAgentBrowserComputer(options: {
     if (state.injecting || state.manualUntil || state.saved.signInPending)
       throw new BrowserLockedError();
     const url = await currentUrl(state, signal);
+    if (url === 'about:blank')
+      return {
+        text: 'The page opened a new tab that has not loaded. Take a snapshot again.',
+        url,
+        candidates: [],
+      };
     if (state.saved.allowedOrigin && new URL(url).origin !== state.saved.allowedOrigin)
       throw new BrowserActionError('browser_origin_changed');
     const inputValues = await maskFields(state, signal);
@@ -1146,7 +1153,10 @@ export function createAgentBrowserComputer(options: {
         }
       }
       if (!target && !url) {
-        const type = await evaluate(state, 'document.contentType', signal);
+        const type =
+          current === 'about:blank'
+            ? undefined
+            : await evaluate(state, 'document.contentType', signal);
         if (type === 'application/pdf') url = current;
         else {
           const file = await waitForDownload(directory, signal);
