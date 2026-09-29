@@ -11,6 +11,7 @@ import test from 'node:test';
 import Fastify from 'fastify';
 import pg from 'pg';
 import { JSDOM } from 'jsdom';
+import { downloadArguments } from '../src/providers/composio/downloads.ts';
 import type { IntegrationService } from '../src/ports/integrations.ts';
 import { ChannelSetupFailure } from '../src/ports/channel-settings.ts';
 import { createChannelSettings } from '../src/server/channel-settings.ts';
@@ -472,6 +473,12 @@ test('synthetic spending Sheet returns fixed rows and stays read-only', async (t
       (await read('Budget!A1:B20')).valueRanges[0].values.slice(1).map((row) => row[1]),
       ['200.00', '100.00', '60.00'],
     );
+    assert.deepEqual((await read('Spending!B2:D3')).valueRanges[0].values, [
+      ['Food', 'Grocer One', '32.50'],
+      ['Food', 'Grocer Two', '17.50'],
+    ]);
+    assert.deepEqual((await read('Budget!B2:B3')).valueRanges[0].values, [['200.00'], ['100.00']]);
+    await assert.rejects(read('Spending!D3:B2'), /invalid/);
     await assert.rejects(read('Unknown!A1:B20'), /not found/);
     await t.test('cell ranges return only the requested rows and columns', async () => {
       assert.deepEqual((await read('Spending!A2')).valueRanges[0].values, [['2026-09-28']]);
@@ -530,6 +537,59 @@ test('synthetic spending Sheet returns fixed rows and stays read-only', async (t
       },
     );
     assert.equal(fixture.writes.length, 0);
+  } finally {
+    await app.close();
+  }
+});
+
+test('synthetic Drive CSV gives the same spending totals without a Sheets read', async () => {
+  const app = Fastify();
+  const audit: Array<{ kind: string; fields: Record<string, unknown> }> = [];
+  const fixture = createIntegrationFixture('http://localhost:4320', (kind, fields) => {
+    audit.push({ kind, fields: fields ?? {} });
+  });
+  fixture.register(app);
+  const session = await fixture.provider.createSession('owner-a', {});
+  const account = await session.authorize('googledrive', 'http://localhost:4320/api/apps/callback');
+  try {
+    await app.inject({ method: 'POST', url: `/e2e/connect/${account.accountId}` });
+    const found = (await session.execute(
+      'GOOGLEDRIVE_FIND_FILE',
+      { query: 'September spending export.csv' },
+      account.accountId,
+    )) as { files: Array<{ id: string; name: string }> };
+    assert.equal(found.files[0].name, 'September spending export.csv');
+    const args = { fileId: found.files[0].id };
+    assert.deepEqual(downloadArguments('GOOGLEDRIVE_DOWNLOAD_FILE', args), args);
+    const file = await session.download!('GOOGLEDRIVE_DOWNLOAD_FILE', args, account.accountId);
+    const rows = Buffer.from(file.bytes)
+      .toString('utf8')
+      .split('\n')
+      .slice(1)
+      .map((line) => line.split(','));
+    assert.deepEqual(
+      rows.map((row) => [row[1], row[3], row[4]]),
+      [
+        ['Food', '32.50', '200.00'],
+        ['Food', '17.50', '200.00'],
+        ['Transport', '125.00', '100.00'],
+        ['Software', '20.00', '60.00'],
+        ['Software', '20.00', '60.00'],
+      ],
+    );
+    assert.equal(file.name, 'September spending export.csv');
+    assert.equal(file.mimeType, 'text/csv');
+    assert.equal(
+      audit.some((item) => item.kind === 'fixture_integration_download'),
+      true,
+    );
+    assert.equal(fixture.writes.length, 0);
+    assert.equal(
+      audit
+        .filter((item) => item.kind === 'fixture_integration_execute')
+        .some((item) => String(item.fields.action).startsWith('GOOGLESHEETS_')),
+      false,
+    );
   } finally {
     await app.close();
   }
@@ -941,10 +1001,7 @@ test('synthetic sent mail exposes observed file references and downloads only th
         /does not match/,
       );
     await assert.rejects(session.download!('GMAIL_GET_ATTACHMENT', args, second), /does not match/);
-    await assert.rejects(
-      session.download!('GOOGLEDRIVE_DOWNLOAD_FILE', args, first),
-      /does not match/,
-    );
+    await assert.rejects(session.download!('GOOGLEDRIVE_DOWNLOAD_FILE', args, first), /not found/);
     const foreign = await fixture.provider.createSession('owner-b', {});
     await assert.rejects(foreign.download!('GMAIL_GET_ATTACHMENT', args, first), /Connect/);
     const inactive = await session.authorize('gmail', 'http://localhost:4320/api/apps/callback');

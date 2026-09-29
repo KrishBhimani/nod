@@ -349,6 +349,14 @@ const names: Record<IntegrationService, string> = {
   notion: 'Notion',
   linear: 'Linear',
 };
+const spendingCsv = [
+  'Date,Category,Merchant,Amount EUR,Monthly budget EUR,Kind',
+  '2026-09-28,Food,Grocer One,32.50,200.00,one-off',
+  '2026-09-28,Food,Grocer Two,17.50,200.00,one-off',
+  '2026-09-28,Transport,Rail Pass,125.00,100.00,one-off',
+  '2026-09-28,Software,Figma,20.00,60.00,subscription',
+  '2026-09-28,Software,Notion,20.00,60.00,subscription',
+].join('\n');
 const toolDefinitions = [
   {
     name: 'GMAIL_LIST_LABELS',
@@ -415,6 +423,20 @@ const toolDefinitions = [
     name: 'GOOGLECALENDAR_EVENTS_LIST',
     description: 'Read synthetic calendar events.',
     parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'GOOGLEDRIVE_FIND_FILE',
+    description: 'Find a synthetic CSV export by name in the selected Google Drive account.',
+    parameters: { type: 'object', properties: { query: { type: 'string' } } },
+  },
+  {
+    name: 'GOOGLEDRIVE_DOWNLOAD_FILE',
+    description: 'Download an observed synthetic CSV file by ID for private text analysis.',
+    parameters: {
+      type: 'object',
+      properties: { fileId: { type: 'string' } },
+      required: ['fileId'],
+    },
   },
   {
     name: 'GOOGLESHEETS_SEARCH_SPREADSHEETS',
@@ -787,6 +809,24 @@ export function createIntegrationFixture(baseUrl: string, audit: Audit = () => {
               ],
               fixture: true,
             };
+          if (action === 'GOOGLEDRIVE_FIND_FILE') {
+            const query = String(args.query ?? '').toLowerCase();
+            return {
+              files:
+                !query || 'september spending export.csv'.includes(query)
+                  ? [
+                      {
+                        id: 'otto-e2e-spending-csv-2026-09',
+                        name: 'September spending export.csv',
+                        mimeType: 'text/csv',
+                        webViewLink:
+                          'https://drive.google.com/file/d/otto-e2e-spending-csv-2026-09/view',
+                      },
+                    ]
+                  : [],
+              fixture: true,
+            };
+          }
           if (action === 'GOOGLESHEETS_SEARCH_SPREADSHEETS') {
             const query = String(args.query ?? '').toLowerCase();
             return {
@@ -893,7 +933,22 @@ export function createIntegrationFixture(baseUrl: string, audit: Audit = () => {
           if (signal?.aborted)
             throw new DOMException('Synthetic download cancelled.', 'AbortError');
           const account = accounts.get(accountId);
-          if (!account?.active || account.ownerId !== ownerId || account.service !== 'gmail')
+          if (!account?.active || account.ownerId !== ownerId)
+            throw new Error('Connect the selected synthetic account first.');
+          if (action === 'GOOGLEDRIVE_DOWNLOAD_FILE') {
+            if (
+              account.service !== 'googledrive' ||
+              args.fileId !== 'otto-e2e-spending-csv-2026-09'
+            )
+              throw new Error('The synthetic CSV file was not found in this account.');
+            audit('fixture_integration_download', { action, accountId });
+            return {
+              bytes: Buffer.from(spendingCsv),
+              name: 'September spending export.csv',
+              mimeType: 'text/csv',
+            };
+          }
+          if (account.service !== 'gmail')
             throw new Error('Connect the selected synthetic Gmail account first.');
           const message = sentMessages(account.number)[0];
           const attachment = message.attachments[0];

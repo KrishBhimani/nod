@@ -898,6 +898,11 @@ export async function startOnboarding(name?: string, apps: string[] = []) {
   const greeting = welcomeGreeting(name, apps);
   const started = await transaction(async (client) => {
     await lockConversation(client, ownerId);
+    const active = await client.query(
+      `SELECT 1 FROM tasks t WHERE t.owner_id=$1 AND t.channel='web' AND t.source='user' AND t.status IN ('queued','running','waiting_user','waiting_credentials') AND ${currentConversationSql()} LIMIT 1`,
+      [ownerId],
+    );
+    if (active.rowCount) return false;
     const prior = await client.query('SELECT id FROM tasks WHERE owner_id=$1 AND source_id=$2', [
       ownerId,
       welcomeSourceId,
@@ -1674,16 +1679,26 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
               args,
               controller.signal,
             );
+            const bytes = Buffer.from(file.bytes);
             const artifact = await current(async () =>
               (dependencies.artifacts ?? localArtifacts).storeArtifact(
-                Buffer.from(file.bytes),
+                bytes,
                 file.name,
                 file.mimeType,
                 taskId,
               ),
             );
             await reply(taskId, '', [artifact], revision);
-            return artifact;
+            if (file.mimeType.toLowerCase() !== 'text/csv' || bytes.length > 12_000)
+              return artifact;
+            try {
+              return {
+                ...artifact,
+                content: new TextDecoder('utf-8', { fatal: true }).decode(bytes),
+              };
+            } catch {
+              return artifact;
+            }
           }
         : undefined,
       manage: async (action, args) => {

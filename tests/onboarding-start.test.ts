@@ -55,6 +55,12 @@ test(
     try {
       const earlier = await tasks.submitTask('Earlier synthetic request');
       const before = (await app.inject({ url: '/api/state', headers })).json();
+      await tasks.startOnboarding('Alex', ['Gmail']);
+      assert.equal(
+        (await db.pool.query("SELECT id FROM tasks WHERE source_id='onboarding:welcome'")).rowCount,
+        0,
+      );
+      await tasks.cancelTask(earlier);
       const landing = () =>
         app.inject({ method: 'POST', url: '/api/account/welcome', headers, payload: {} });
       assert.equal((await landing()).statusCode, 409);
@@ -215,6 +221,17 @@ test(
         },
         manage: async () => ({}),
       });
+      const ordinary = await tasks.submitTask('Later synthetic request');
+      let ordinaryResult = { status: '', error: null };
+      for (let attempt = 0; attempt < 800 && ordinaryResult.status !== 'succeeded'; attempt++) {
+        ordinaryResult = (
+          await db.pool.query('SELECT status,error FROM tasks WHERE id=$1', [ordinary])
+        ).rows[0];
+        assert.notEqual(ordinaryResult.status, 'failed', ordinaryResult.error ?? undefined);
+        await delay(25);
+      }
+      assert.equal(ordinaryResult.status, 'succeeded');
+      assert.ok(seen.some((context) => context.taskId === ordinary && !context.readOnly));
       await tasks.startOnboarding('Alex', ['Gmail']);
       const discovery = (
         await db.pool.query("SELECT id FROM tasks WHERE source_id='onboarding:welcome'")
@@ -243,7 +260,6 @@ test(
         seen.filter((context) => context.readOnly).map((context) => context.taskId),
         [discovery],
       );
-      assert.ok(seen.some((context) => context.taskId === earlier && !context.readOnly));
       await runtime.dispose();
     } finally {
       await app.close();
