@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, Search } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
 import type { TaskEvent } from '../../shared/contracts';
 import type {
   InspectorObservationsResponse,
@@ -20,7 +20,7 @@ import {
   groupTaskActivity,
   type ToolStatusFilter,
 } from '../lib/inspector-observations';
-import { Button, Input, Loading, Notice } from './ui';
+import { Button, Loading, Notice, SearchField } from './ui';
 
 const statuses: Array<{ value: ToolStatusFilter; label: string }> = [
   { value: 'all', label: 'All' },
@@ -351,15 +351,12 @@ function ToolDrilldown({
   return (
     <div className="inspector-tool-drilldown">
       {definition && <p className="inspector-tool-description">{definition.description}</p>}
-      <label className="inspector-search">
-        <Search size={14} />
-        <Input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search loaded inputs, outputs and errors"
-          aria-label={`Search ${usage.name} calls`}
-        />
-      </label>
+      <SearchField
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Search loaded inputs, outputs and errors"
+        aria-label={`Search ${usage.name} calls`}
+      />
       {observationError && <Notice>{observationError}</Notice>}
       {!observations && !observationError && <Loading label="Loading calls…" />}
       {observations && (
@@ -539,15 +536,12 @@ export function InspectorTools({ taskId }: { taskId?: string }) {
         ))}
       </div>
       <div className="inspector-tool-filters">
-        <label className="inspector-search">
-          <Search size={14} />
-          <Input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder={view === 'calls' ? 'Search loaded calls' : 'Find a tool'}
-            aria-label={view === 'calls' ? 'Search loaded calls' : 'Find a tool'}
-          />
-        </label>
+        <SearchField
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder={view === 'calls' ? 'Search loaded calls' : 'Find a tool'}
+          aria-label={view === 'calls' ? 'Search loaded calls' : 'Find a tool'}
+        />
         {view !== 'catalog' && (
           <div className="inspector-scope-toggle" role="group" aria-label="Tool call status">
             {statuses.map((item) => (

@@ -22,11 +22,15 @@
   --control-hover: #f7f5f8;
   --control-foreground: #1b1924;
   --control-border: #e3ddd2;
+  --control-active: #efebe4;
+  --input-background: #fff;
+  --input-hover: #cbc3b6;
+  --switch-off: #6e697a;
   --secondary: #f1ece4;
   --secondary-foreground: #5c5868;
   --muted: #f1ece4;
   --border: #e3ddd2;
-  --input: #dedde4;
+  --input: #e3ddd2;
   --ring: #bc3666;
   --focus-shadow: #ffe2ec;
   --selection: #ffe2ea;
@@ -42,6 +46,12 @@
   --info-soft: #f2edf9;
   --overlay: #27162d66;
   --shadow-overlay: #1b19241f;
+  --control-radius: 8px;
+  --control-height: 36px;
+  --control-height-sm: 30px;
+  --input-height: 40px;
+  --menu-radius: 10px;
+  --menu-item-radius: 6px;
 }
 
 :root[data-theme='dark'] {
@@ -68,11 +78,15 @@
   --control-hover: #38383d;
   --control-foreground: #ededf0;
   --control-border: #313136;
+  --control-active: #3f3f45;
+  --input-background: #1f1f22;
+  --input: #3a3a40;
+  --input-hover: #4b4b52;
+  --switch-off: #5a5a62;
   --secondary: #333338;
   --secondary-foreground: #c4c4cb;
   --muted: #2a2a2e;
   --border: #313136;
-  --input: #3a3a40;
   --ring: #ff94b3;
   --focus-shadow: #4a2c39;
   --selection: #4d2f3c;

@@ -45,7 +45,7 @@ test('chat HTML cannot run scripts, submit forms, load trackers or link to local
     /href="\/api\/state"/,
   ])
     assert.doesNotMatch(result, expression);
-  assert.match(result, /type="checkbox"[^>]*disabled=""/);
+  assert.match(result, /<input(?=[^>]*type="checkbox")(?=[^>]*disabled="")[^>]*>/);
 });
 
 test('code examples stay literal and artifact images are allowed', () => {

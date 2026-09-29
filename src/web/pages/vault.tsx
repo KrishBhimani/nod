@@ -9,7 +9,7 @@ import { VaultEntryIcon, VaultSurface } from '../components/vault-surface';
 import { formatCardExpiry, VaultItemForm } from '../components/vault-item-form';
 import { originLabel } from '../lib/vault-name';
 import { cn } from '../lib/utils';
-import { Input, Loading, Notice } from '../components/ui';
+import { Loading, Notice, SearchField } from '../components/ui';
 
 const phoneQuery = '(max-width: 720px)';
 
@@ -194,15 +194,15 @@ export function Vault() {
             </Popover.Trigger>
             <Popover.Portal>
               <Popover.Content
-                className="connection-menu-options vault-new-menu"
+                className="connection-menu-options menu vault-new-menu"
                 align="end"
                 sideOffset={6}
               >
-                <button type="button" onClick={() => start('login')}>
+                <button type="button" className="menu-item" onClick={() => start('login')}>
                   <Globe size={16} aria-hidden="true" />
                   New login
                 </button>
-                <button type="button" onClick={() => start('card')}>
+                <button type="button" className="menu-item" onClick={() => start('card')}>
                   <CreditCard size={16} aria-hidden="true" />
                   New payment card
                 </button>
@@ -215,7 +215,7 @@ export function Vault() {
       <div className="vault-layout">
         {!pageMode && (
           <div className="vault-browser">
-            <Input
+            <SearchField
               className="vault-search"
               type="search"
               value={query}

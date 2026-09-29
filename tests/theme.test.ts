@@ -195,6 +195,7 @@ test('light and dark semantic text and button pairs meet normal-text contrast', 
         'surface-inset',
         'secondary',
         'muted',
+        'input-background',
       ]) {
         const values = [luminance(palette[foreground]!), luminance(palette[background]!)].sort(
           (a, b) => b - a,

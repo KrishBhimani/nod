@@ -163,7 +163,10 @@ test('a paused rescheduled one-time task stays visible while its previous execut
   try {
     const html = renderToStaticMarkup(createElement(SchedulePage));
     assert.match(html, /Paused future reminder/);
-    assert.match(html, /role="switch" aria-checked="false" aria-label="Paused future reminder on"/);
+    assert.match(
+      html,
+      /aria-label="Paused future reminder on" type="button" role="switch" aria-checked="false"/,
+    );
     assert.match(html, /<details class="schedule-inactive" open=""/);
     assert.doesNotMatch(html, /Already dispatched reminder/);
   } finally {

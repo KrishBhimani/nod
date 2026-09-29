@@ -3,7 +3,7 @@ import { ArrowUp, LoaderCircle, MessageCircle, Sparkles } from 'lucide-react';
 import type { AppState, Goal, Schedule } from '../../shared/contracts';
 import { BrandMark } from './brand';
 import { MessageText } from './message';
-import { Button, Input, Notice } from './ui';
+import { Button, Input, Notice, Switch } from './ui';
 import { api, errorMessage } from '../lib/api';
 import { pageDataCache } from '../lib/page-data-cache';
 import { focusChatMessage } from '../lib/secondary-pages';
@@ -336,17 +336,7 @@ function Toggle({
 }) {
   return (
     <span className="plan-toggle">
-      <button
-        type="button"
-        role="switch"
-        aria-checked={on}
-        aria-label={label}
-        className={`toggle${on ? ' toggle-on' : ''}`}
-        disabled={disabled}
-        onClick={onChange}
-      >
-        <span />
-      </button>
+      <Switch checked={on} aria-label={label} disabled={disabled} onCheckedChange={onChange} />
       <span aria-hidden="true">{text}</span>
     </span>
   );
@@ -525,7 +515,7 @@ export function NewPlan({ kind, conversation }: { kind: Kind; conversation: AppS
         {kind === 'goal' ? 'New goal' : 'New schedule'}
       </Button>
       {open && (
-        <div className="connection-menu-options new-plan-card">
+        <div className="connection-menu-options menu new-plan-card">
           <AskOtto subject={{ kind }} conversation={conversation} onClose={() => setOpen(false)} />
         </div>
       )}

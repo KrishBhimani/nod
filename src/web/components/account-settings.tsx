@@ -3,7 +3,17 @@ import { Clock3, LogOut, Monitor, Moon, SlidersHorizontal, Sun, UserRound } from
 import type { AccountPreferences, AccountTheme } from '../../shared/account';
 import type { AccountControls, AccountTab } from './account-menu';
 import { AccountAvatar, GoogleMark } from './account-avatar';
-import { Button, Dialog, DialogContent, DialogTitle, Field, Input, Loading, Notice } from './ui';
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  Field,
+  Input,
+  Loading,
+  Notice,
+  Switch,
+} from './ui';
 import { usePageData } from '../hooks/use-page-data';
 import { api, errorMessage } from '../lib/api';
 import { TimeZonePicker } from './time-zone-picker';
@@ -120,17 +130,12 @@ function PreferencesForm() {
             <strong>Quiet hours</strong>
           </div>
         </div>
-        <button
-          type="button"
-          className={`account-toggle${current.quietHoursEnabled ? ' on' : ''}`}
-          role="switch"
-          aria-checked={current.quietHoursEnabled}
+        <Switch
+          checked={current.quietHoursEnabled}
           aria-label="Quiet hours"
           disabled={saving}
-          onClick={() => setDraft({ ...current, quietHoursEnabled: !current.quietHoursEnabled })}
-        >
-          <span />
-        </button>
+          onCheckedChange={(quietHoursEnabled) => setDraft({ ...current, quietHoursEnabled })}
+        />
       </div>
       {current.quietHoursEnabled && (
         <div className="account-quiet-times">
@@ -226,6 +231,10 @@ export function AccountSettings({
       <DialogContent
         className="account-settings"
         aria-describedby={undefined}
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          (event.currentTarget as HTMLElement).focus();
+        }}
         onCloseAutoFocus={(event) => {
           const target = returnFocus();
           if (target?.isConnected) {

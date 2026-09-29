@@ -131,9 +131,8 @@
   background: transparent;
 }
 .account-menu-themes button[aria-checked='true'] {
-  background: var(--surface);
+  background: var(--hover);
   color: var(--foreground);
-  box-shadow: 0 1px 4px #00000015;
 }
 .account-menu-error {
   margin: 8px 10px;
@@ -147,19 +146,10 @@
   overflow: hidden;
 }
 .account-settings .dialog-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   top: 18px;
   right: 18px;
   width: 36px;
   height: 36px;
-  padding: 0;
-  border-radius: 8px;
-}
-.account-settings .dialog-close:hover {
-  background: var(--hover);
-  color: var(--foreground);
 }
 .account-settings-layout {
   display: grid;
@@ -201,6 +191,10 @@
 }
 .account-settings-layout > nav button[aria-selected='true'] {
   background: var(--accent-soft);
+  color: var(--foreground);
+  font-weight: 550;
+}
+.account-settings-layout > nav button[aria-selected='true'] svg {
   color: var(--accent);
 }
 .account-settings-body {
@@ -265,10 +259,6 @@
   min-width: 0;
   margin: 0;
 }
-.account-settings-body input {
-  min-width: 0;
-  width: 100%;
-}
 .account-profile-email {
   display: flex;
   align-items: center;
@@ -324,47 +314,11 @@
 .account-preference-row strong {
   font-weight: 400;
 }
-.account-preference-row select {
-  width: 50%;
-  min-width: 0;
-  max-width: 210px;
-  min-height: 40px;
-  padding: 10px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--control);
-  color: var(--foreground);
-  font: inherit;
-}
 .account-quiet-times {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 20px;
-}
-.account-toggle {
-  display: flex;
-  flex-shrink: 0;
-  width: 34px;
-  height: 21px;
-  padding: 3px;
-  border: 0;
-  border-radius: 14px;
-  background: var(--muted-foreground);
-  cursor: pointer;
-}
-.account-toggle > span {
-  width: 15px;
-  height: 15px;
-  border-radius: 50%;
-  background: #fff;
-  transition: transform 160ms ease;
-}
-.account-toggle.on {
-  background: var(--accent);
-}
-.account-toggle.on > span {
-  transform: translateX(13px);
 }
 .account-theme-previews {
   display: grid;
@@ -564,9 +518,6 @@
     width: 48px;
     height: 48px;
     font-size: 17px;
-  }
-  .account-settings-body input {
-    font-size: 16px;
   }
 }
 @container account-settings (max-width: 350px) {

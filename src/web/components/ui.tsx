@@ -2,7 +2,7 @@ import * as React from 'react';
 import { Slot } from '@radix-ui/react-slot';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { cva, type VariantProps } from 'class-variance-authority';
-import { LoaderCircle, X } from 'lucide-react';
+import { LoaderCircle, Search, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 const buttonVariants = cva('button', {
@@ -53,7 +53,10 @@ export function DialogContent({
       <DialogPrimitive.Overlay className="dialog-overlay" />
       <DialogPrimitive.Content className={cn('dialog-content', className)} {...props}>
         {children}
-        <DialogPrimitive.Close className="dialog-close" aria-label="Close">
+        <DialogPrimitive.Close
+          className="button button-ghost button-icon dialog-close"
+          aria-label="Close"
+        >
           <X size={18} />
         </DialogPrimitive.Close>
       </DialogPrimitive.Content>
@@ -77,6 +80,55 @@ export function Field({
       {hint && <span className="field-hint">{hint}</span>}
     </label>
   );
+}
+
+export function SearchField({
+  className,
+  inputRef,
+  onClear,
+  clearLabel = 'Clear search',
+  ...props
+}: React.InputHTMLAttributes<HTMLInputElement> & {
+  inputRef?: React.Ref<HTMLInputElement>;
+  onClear?: () => void;
+  clearLabel?: string;
+}) {
+  return (
+    <div className={cn('search-field', className)}>
+      <Search size={15} aria-hidden="true" />
+      <Input ref={inputRef} {...props} />
+      {onClear && props.value ? (
+        <Button type="button" variant="ghost" size="icon" aria-label={clearLabel} onClick={onClear}>
+          <X size={15} aria-hidden="true" />
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+export function Switch({
+  className,
+  checked,
+  onCheckedChange,
+  ...props
+}: Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'onChange'> & {
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <button
+      {...props}
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      className={cn('switch', className)}
+      onClick={() => onCheckedChange(!checked)}
+    >
+      <span />
+    </button>
+  );
+}
+export function Checkbox({ className, ...props }: React.InputHTMLAttributes<HTMLInputElement>) {
+  return <input {...props} type="checkbox" className={cn('checkbox', className)} />;
 }
 
 export function Notice({
