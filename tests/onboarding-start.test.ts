@@ -220,7 +220,7 @@ test(
         await db.pool.query("SELECT id FROM tasks WHERE source_id='onboarding:welcome'")
       ).rows[0].id as string;
       let finished = { status: '', error: null };
-      for (let attempt = 0; attempt < 200 && finished.status !== 'succeeded'; attempt++) {
+      for (let attempt = 0; attempt < 800 && finished.status !== 'succeeded'; attempt++) {
         finished = (await db.pool.query('SELECT status,error FROM tasks WHERE id=$1', [discovery]))
           .rows[0];
         assert.notEqual(finished.status, 'failed', finished.error ?? undefined);

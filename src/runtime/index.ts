@@ -423,7 +423,6 @@ export function createAgentRuntime(dependencies: {
             abort();
             throw new Error('Task tool budget reached.');
           }
-          if (context.readOnly && !allowedReadOnly(name, params)) throw new Error(readOnlyRefusal);
           const id = randomUUID();
           const started = performance.now();
           await observe({
@@ -433,6 +432,18 @@ export function createAgentRuntime(dependencies: {
             input: params,
             startedAt: new Date().toISOString(),
           });
+          if (context.readOnly && !allowedReadOnly(name, params)) {
+            await observe({
+              type: 'tool_end',
+              id,
+              name,
+              status: 'failed',
+              error: readOnlyRefusal,
+              finishedAt: new Date().toISOString(),
+              durationMs: performance.now() - started,
+            });
+            throw new Error(readOnlyRefusal);
+          }
           let result: AgentToolResult;
           try {
             context.signal.throwIfAborted();

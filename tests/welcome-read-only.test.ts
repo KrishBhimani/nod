@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import type { Agent, AgentTool, RuntimeContext } from '../src/ports/agent.ts';
+import type { Agent, AgentTool, RuntimeContext, RuntimeObservation } from '../src/ports/agent.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 
@@ -41,6 +41,7 @@ async function run(readOnly: boolean) {
   const integrationCalls: string[] = [];
   const manageCalls: string[] = [];
   const replies: string[] = [];
+  const observations: RuntimeObservation[] = [];
   let commands = 0;
   let writes = 0;
   let credentials = 0;
@@ -141,6 +142,9 @@ async function run(readOnly: boolean) {
       connections++;
       return {};
     },
+    observe: async (event) => {
+      observations.push(event);
+    },
     manage: async (action) => {
       manageCalls.push(action);
       return { results: [] };
@@ -155,6 +159,7 @@ async function run(readOnly: boolean) {
       integrationCalls,
       manageCalls,
       replies,
+      observations,
       commands,
       writes,
       credentials,
@@ -191,6 +196,15 @@ test('a read-only task refuses every outside action with a fixed error and still
   assert.equal(run1.connections, 1);
   assert.deepEqual(run1.replies, ['You have two threads that wait for your reply.']);
   assert.deepEqual(run1.result, { status: 'succeeded' });
+  const failures = run1.observations.filter(
+    (event) => event.type === 'tool_end' && event.status === 'failed',
+  );
+  assert.equal(failures.length, refused.length);
+  for (const event of failures) assert.equal(event.type === 'tool_end' && event.error, refusal);
+  assert.equal(
+    run1.observations.filter((event) => event.type === 'tool_start').length,
+    run1.observations.filter((event) => event.type === 'tool_end').length,
+  );
 });
 
 test('an ordinary task keeps browser clicks', async () => {
