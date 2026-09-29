@@ -215,8 +215,9 @@ test('onboarding completion waits for preparation and failure cannot change any 
 
 test('onboarding completion starts the welcome after preparation and a failed start saves nothing', async (t) => {
   let fail = true;
+  const writesAtStart: string[][] = [];
   const f = await fixture(undefined, async () => {
-    assert.deepEqual(f.calls.writes, []);
+    writesAtStart.push([...f.calls.writes]);
     if (fail) throw new Error('synthetic private runtime failure');
   });
   t.after(() => f.app.close());
@@ -237,6 +238,7 @@ test('onboarding completion starts the welcome after preparation and a failed st
   assert.equal((await request({ theme: 'dark' })).statusCode, 200);
   assert.deepEqual(f.calls.prepared, ['alex', 'alex']);
   assert.deepEqual(f.calls.started, ['alex', 'alex']);
+  assert.deepEqual(writesAtStart, [[], []]);
 });
 
 test('a revoked session cannot finish onboarding after a late successful preparation', async (t) => {

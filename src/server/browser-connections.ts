@@ -500,12 +500,16 @@ export async function createBrowserConnections(
       throw error;
     }
     if (input.data.connectionId) {
-      const found = await pool.query<{ id: string; origin: string }>(
-        'SELECT id,origin FROM browser_connections WHERE id=$1 AND owner_id=$2',
+      const found = await pool.query<{ id: string; origin: string; state: string }>(
+        'SELECT id,origin,state FROM browser_connections WHERE id=$1 AND owner_id=$2',
         [input.data.connectionId, options.ownerId],
       );
       signal?.throwIfAborted();
-      if (!found.rows.length)
+      const states =
+        input.data.action === 'connect'
+          ? ['pending', 'saved', 'needs_sign_in']
+          : ['saved', 'needs_sign_in'];
+      if (!found.rows.length || !states.includes(found.rows[0].state))
         return {
           status: 'rejected' as const,
           code: 'browser_connection_unavailable',
