@@ -15,7 +15,15 @@ export interface AccountControls {
   onLogout(): void;
 }
 
-export function AccountMenuItems({ account, close }: { account: AccountControls; close(): void }) {
+export function AccountMenuItems({
+  account,
+  close,
+  shortcuts = true,
+}: {
+  account: AccountControls;
+  close(): void;
+  shortcuts?: boolean;
+}) {
   const [error, setError] = useState('');
   const openSettings = (tab: AccountTab, trigger: HTMLElement) => {
     close();
@@ -41,14 +49,16 @@ export function AccountMenuItems({ account, close }: { account: AccountControls;
       <button
         type="button"
         role="menuitem"
-        aria-keyshortcuts="Meta+, Control+,"
+        aria-keyshortcuts={shortcuts ? 'Meta+, Control+,' : undefined}
         onClick={(event) => openSettings('Preferences', event.currentTarget)}
       >
         <Settings size={18} aria-hidden="true" />
         Settings
-        <kbd className="account-settings-shortcut">
-          {/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘,' : 'Ctrl+,'}
-        </kbd>
+        {shortcuts && (
+          <kbd className="account-settings-shortcut">
+            {/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘,' : 'Ctrl+,'}
+          </kbd>
+        )}
       </button>
       <div className="account-menu-themes" role="group" aria-label="Theme">
         <span>Theme</span>
