@@ -3,7 +3,12 @@ import type { FastifyInstance } from 'fastify';
 import type { Pool, PoolClient } from 'pg';
 import type { Job, PgBoss } from 'pg-boss';
 import { z } from 'zod';
-import type { Schedule, ScheduleRun, TaskStatus } from '../shared/contracts.ts';
+import type {
+  Schedule,
+  ScheduleObservation,
+  ScheduleRun,
+  TaskStatus,
+} from '../shared/contracts.ts';
 import type { submitTask } from './tasks.ts';
 import { currentConversationSql } from './conversations.ts';
 import type { WorkConsumers } from './work-admission.ts';
@@ -15,14 +20,24 @@ const timingSchema = z.object({
   runAt: z.iso.datetime({ offset: true }).nullable().optional(),
   timeZone: z.string().trim().min(1).max(100),
 });
+const observationSchema = z
+  .object({
+    status: z.enum(['verified', 'unavailable']),
+    sourceUrl: z.url().refine((value) => new URL(value).protocol === 'https:'),
+    value: z.string().trim().min(1).max(300).nullable(),
+    summary: z.string().trim().min(1).max(500),
+  })
+  .strict()
+  .refine((value) => (value.status === 'verified') === (value.value !== null));
 const createSchema = timingSchema
   .extend({
     title: z.string().trim().min(1).max(100),
     prompt: z.string().trim().min(1).max(6000),
+    baselineObservation: observationSchema.optional(),
   })
   .strict();
 const updateSchema = createSchema
-  .omit({ kind: true })
+  .omit({ kind: true, baselineObservation: true })
   .partial()
   .extend({ kind: z.enum(['once', 'recurring']).optional(), enabled: z.boolean().optional() })
   .strict();
@@ -34,7 +49,7 @@ const historySchema = z
   })
   .strict();
 const columns =
-  'id,title,prompt,kind,cron,run_at AS "runAt",time_zone AS "timeZone",enabled,revision,next_run_at AS "nextRun",job_id AS "jobId",delivery_channel AS "deliveryChannel",channel_source_id AS "channelSourceId",authority_instruction AS "authorityInstruction",authority_source_message_id AS "authoritySourceMessageId"';
+  'id,title,prompt,kind,cron,run_at AS "runAt",time_zone AS "timeZone",enabled,revision,next_run_at AS "nextRun",job_id AS "jobId",delivery_channel AS "deliveryChannel",channel_source_id AS "channelSourceId",authority_instruction AS "authorityInstruction",authority_source_message_id AS "authoritySourceMessageId",baseline_observation AS "baselineObservation"';
 
 export interface ScheduleDependencies {
   consumers?: WorkConsumers;
@@ -66,6 +81,7 @@ interface ScheduleRow {
   channelSourceId: string | null;
   authorityInstruction: string | null;
   authoritySourceMessageId: string | null;
+  baselineObservation: ScheduleObservation | null;
 }
 
 interface ScheduleJob {
@@ -85,6 +101,8 @@ interface RunRow {
   status: TaskStatus;
   error: string | null;
   cursorAt: string;
+  observation: ScheduleObservation | null;
+  observedAt: Date | null;
 }
 
 function invalid(message: string) {
@@ -102,6 +120,9 @@ function runValue(row: RunRow): ScheduleRun {
     createdAt: row.createdAt.toISOString(),
     status: row.status,
     error: row.error,
+    observation: row.observation
+      ? { ...row.observation, checkedAt: row.observedAt!.toISOString() }
+      : null,
   };
 }
 
@@ -227,8 +248,8 @@ export function createSchedules(dependencies: ScheduleDependencies) {
           [taskId, ownerId, row.channelSourceId],
         );
       await client.query(
-        `INSERT INTO schedule_runs(id,owner_id,schedule_id,schedule_revision,job_id,title,task_id,scheduled_for,time_zone,authority_instruction,authority_source_message_id,action_prompt)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        `INSERT INTO schedule_runs(id,owner_id,schedule_id,schedule_revision,job_id,title,task_id,scheduled_for,time_zone,authority_instruction,authority_source_message_id,action_prompt,baseline_observation)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
         [
           randomUUID(),
           ownerId,
@@ -242,6 +263,7 @@ export function createSchedules(dependencies: ScheduleDependencies) {
           row.authorityInstruction,
           row.authoritySourceMessageId,
           row.prompt,
+          row.baselineObservation ? JSON.stringify(row.baselineObservation) : null,
         ],
       );
       if (row.kind === 'once') {
@@ -280,6 +302,7 @@ export function createSchedules(dependencies: ScheduleDependencies) {
       ALTER TABLE schedules ADD COLUMN IF NOT EXISTS channel_source_id text;
       ALTER TABLE schedules ADD COLUMN IF NOT EXISTS authority_instruction text;
       ALTER TABLE schedules ADD COLUMN IF NOT EXISTS authority_source_message_id uuid;
+      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS baseline_observation jsonb;
       CREATE TABLE IF NOT EXISTS schedule_runs (
         id uuid PRIMARY KEY, owner_id text NOT NULL, schedule_id uuid NOT NULL,
         schedule_revision integer NOT NULL, job_id uuid UNIQUE NOT NULL,
@@ -290,6 +313,9 @@ export function createSchedules(dependencies: ScheduleDependencies) {
       ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS authority_instruction text;
       ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS authority_source_message_id uuid;
       ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS action_prompt text;
+      ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS baseline_observation jsonb;
+      ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS observation jsonb;
+      ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS observed_at timestamptz;
       CREATE INDEX IF NOT EXISTS schedule_runs_owner_time ON schedule_runs(owner_id,created_at DESC,id DESC);
       CREATE INDEX IF NOT EXISTS schedule_runs_schedule ON schedule_runs(owner_id,schedule_id,created_at DESC,id DESC);
     `);
@@ -357,7 +383,8 @@ export function createSchedules(dependencies: ScheduleDependencies) {
       await pool.query<RunRow>(
         `SELECT r.id,r.schedule_id AS "scheduleId",r.title,r.task_id AS "taskId",
            r.scheduled_for AS "scheduledFor",r.time_zone AS "timeZone",r.created_at AS "createdAt",
-           t.status,t.error,to_char(r.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "cursorAt"
+           t.status,t.error,r.observation,r.observed_at AS "observedAt",
+           to_char(r.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "cursorAt"
          FROM schedule_runs r JOIN tasks t ON t.id=r.task_id AND t.owner_id=r.owner_id
          WHERE r.owner_id=$1 AND ($2::uuid IS NULL OR r.schedule_id=$2)
            AND ($3::timestamptz IS NULL OR (r.created_at,r.id)<($3::timestamptz,$4::uuid))
@@ -384,6 +411,51 @@ export function createSchedules(dependencies: ScheduleDependencies) {
     };
   }
 
+  async function recordObservation(taskId: string, raw: unknown) {
+    z.uuid().parse(taskId);
+    const input = observationSchema.parse(raw);
+    const result = await transaction(async (client) => {
+      const row = (
+        await client.query<{
+          id: string;
+          scheduleId: string;
+          baselineObservation: ScheduleObservation | null;
+          observation: ScheduleObservation | null;
+        }>(
+          `SELECT r.id,r.schedule_id AS "scheduleId",r.baseline_observation AS "baselineObservation",
+             r.observation
+           FROM schedule_runs r JOIN tasks t ON t.id=r.task_id AND t.owner_id=r.owner_id
+           WHERE r.task_id=$1 AND r.owner_id=$2 AND t.status='running'
+           FOR UPDATE OF r`,
+          [taskId, ownerId],
+        )
+      ).rows[0];
+      if (!row) throw invalid('This task has no active scheduled run.');
+      if (row.observation) throw invalid('This run already has a saved observation.');
+      const previous = (
+        await client.query<{ observation: ScheduleObservation }>(
+          `SELECT observation FROM schedule_runs
+           WHERE owner_id=$1 AND schedule_id=$2 AND observation->>'status'='verified'
+           ORDER BY observed_at DESC,id DESC LIMIT 1`,
+          [ownerId, row.scheduleId],
+        )
+      ).rows[0]?.observation;
+      const prior = previous ?? row.baselineObservation;
+      const checkedAt = now().toISOString();
+      const observation = { ...input, checkedAt };
+      await client.query(
+        'UPDATE schedule_runs SET observation=$3,observed_at=$4 WHERE id=$1 AND owner_id=$2',
+        [row.id, ownerId, JSON.stringify(observation), checkedAt],
+      );
+      return {
+        observation,
+        previous: prior,
+      };
+    });
+    refresh();
+    return result;
+  }
+
   async function value(row: ScheduleRow): Promise<Schedule> {
     return {
       id: row.id,
@@ -397,6 +469,7 @@ export function createSchedules(dependencies: ScheduleDependencies) {
       revision: row.revision,
       nextRun: row.nextRun?.toISOString() ?? null,
       lastRun: (await history({ limit: 1 }, row.id)).runs[0] ?? null,
+      baselineObservation: row.baselineObservation,
     };
   }
 
@@ -520,8 +593,8 @@ export function createSchedules(dependencies: ScheduleDependencies) {
       const authorized = await authority(client, input.prompt, provenance);
       const saved = (
         await client.query<ScheduleRow>(
-          `INSERT INTO schedules(id,owner_id,title,prompt,kind,cron,run_at,time_zone,delivery_channel,channel_source_id,authority_instruction,authority_source_message_id)
-           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING ${columns}`,
+          `INSERT INTO schedules(id,owner_id,title,prompt,kind,cron,run_at,time_zone,delivery_channel,channel_source_id,authority_instruction,authority_source_message_id,baseline_observation)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING ${columns}`,
           [
             randomUUID(),
             ownerId,
@@ -535,6 +608,9 @@ export function createSchedules(dependencies: ScheduleDependencies) {
             route.sourceId,
             authorized.instruction,
             authorized.sourceMessageId,
+            input.baselineObservation
+              ? JSON.stringify({ ...input.baselineObservation, checkedAt: now().toISOString() })
+              : null,
           ],
         )
       ).rows[0]!;
@@ -645,5 +721,6 @@ export function createSchedules(dependencies: ScheduleDependencies) {
     registerRoutes,
     validateCreate,
     validateUpdate,
+    recordObservation,
   };
 }

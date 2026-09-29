@@ -18,6 +18,8 @@ import { parse } from 'dotenv';
 import {
   createIntegrationFixture,
   fixtureLogin,
+  fixtureHotel,
+  fixtureFlight,
   operatorPage,
   type Audit,
 } from './e2e-fixtures.ts';
@@ -233,7 +235,12 @@ try {
       const line = browserLogLine.slice(0, end);
       browserLogLine = browserLogLine.slice(end + 1);
       try {
-        const event = JSON.parse(line) as { kind: string; accepted?: boolean };
+        const event = JSON.parse(line) as {
+          kind: string;
+          accepted?: boolean;
+          offer?: string;
+          price?: number;
+        };
         if (
           [
             'fixture_manual_submit',
@@ -241,11 +248,15 @@ try {
             'fixture_password_submit',
             'fixture_otp_submit',
             'fixture_portal_view',
+            'fixture_price_view',
           ].includes(event.kind)
         )
           audit(
             event.kind,
-            typeof event.accepted === 'boolean' ? { accepted: event.accepted } : {},
+            Object.fromEntries(Object.entries(event).filter(([key]) => key !== 'kind')) as Record<
+              string,
+              string | number | boolean | null
+            >,
           );
       } catch {}
     }
@@ -316,6 +327,8 @@ try {
     fixture: true,
     model: { provider, name: model },
     fixtureLogin,
+    fixtureHotel,
+    fixtureFlight,
     timeline,
     writes: integration.writes,
   }));

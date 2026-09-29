@@ -41,6 +41,7 @@ const once: Schedule = {
   revision: 0,
   nextRun: '2030-04-01T08:30:00.000Z',
   lastRun: null,
+  baselineObservation: null,
 };
 const recurring: Schedule = {
   ...once,
@@ -61,6 +62,7 @@ const run: ScheduleRun = {
   createdAt: '2026-09-24T09:00:01.000Z',
   status: 'failed',
   error: 'The task could not finish.',
+  observation: null,
 };
 const click = (element: Element) =>
   element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -125,6 +127,25 @@ test('one-time and recurring schedules keep their timezone and draft changes wit
   assert.match(failed, /Could not finish/);
   assert.match(failed, /&lt;script&gt;/);
   assert.doesNotMatch(failed, /<script|internal-task|deleted-schedule/);
+  const checked = renderToStaticMarkup(
+    createElement(ScheduleRunRow, {
+      run: {
+        ...run,
+        observation: {
+          status: 'verified',
+          value: 'EUR 215',
+          summary: 'Return fare with taxes.',
+          sourceUrl: 'https://example.com/offer',
+          checkedAt: '2026-09-24T09:00:03.000Z',
+        },
+      },
+    }),
+  );
+  assert.match(checked, /EUR 215/);
+  assert.match(checked, /Checked/);
+  assert.match(checked, /dateTime="2026-09-24T09:00:03.000Z"/);
+  assert.match(checked, /Return fare with taxes/);
+  assert.match(checked, /https:\/\/example.com\/offer/);
 });
 
 test('a paused rescheduled one-time task stays visible while its previous execution remains in history', () => {

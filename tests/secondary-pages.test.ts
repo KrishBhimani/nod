@@ -54,6 +54,7 @@ const schedule: Schedule = {
   revision: 0,
   nextRun: '2026-09-28T08:30:00.000Z',
   lastRun: null,
+  baselineObservation: null,
 };
 
 test('connections keep multiple account identities under their service without inventing account details', () => {

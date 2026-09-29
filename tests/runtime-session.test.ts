@@ -1097,6 +1097,31 @@ test('shared tool validation rejects malformed arguments before provider callbac
   assert.equal(writes, 1);
 });
 
+test('scheduled observation tool accepts a source URL and binds the active task', async () => {
+  const observation = {
+    status: 'verified',
+    sourceUrl: 'https://example.com/flight',
+    value: 'EUR 240',
+    summary: 'Exact return fare for one adult.',
+  };
+  await fixture(
+    async (tools) => {
+      await assert.rejects(
+        call(tools, 'record_schedule_observation', { ...observation, runId: randomUUID() }),
+        /schema/,
+      );
+      await call(tools, 'record_schedule_observation', observation);
+    },
+    {
+      manage: async (action, args) => {
+        assert.equal(action, 'schedule_record_observation');
+        assert.deepEqual(args, observation);
+        return { previous: null };
+      },
+    },
+  );
+});
+
 test('a successful model retry clears the earlier failure result', async () => {
   const result = await fixture(async (_tools, emit) => {
     emit({ type: 'error' });

@@ -39,7 +39,9 @@
 | One-time timing, schedule tabs and read-only execution history         | `schedule-ui`                                                                                                 |
 | Inspector payload masking, ownership, usage and pagination             | `inspector-redaction`, `inspector-store`, `inspector-observations`                                            |
 | Paired activity, retained tool counts and provider coverage            | `inspector-ui`, `provider-usage`, `pi-agent`                                                                  |
-| Browser takeover locks, socket input, expiry and task resume           | `browser-manual`, `browser-control`, `takeover`                                                               |
+
+The `schedules` fixture checks one observation per active owned run, the previous verified observation, unavailable values and retained history. `runtime-session` checks the exact observation tool arguments before it calls the server. The price watch acceptance case uses a real Pi model and browser with synthetic offer pages; report it apart from these fixtures.
+| Browser takeover locks, socket input, expiry and task resume | `browser-manual`, `browser-control`, `takeover` |
 
 Inject fakes through ports and factories. Avoid global transport mocks when testing feature policy. Keep adapter protocol tests separate. No real email, channel delivery, paid action or personal data in fixtures. A passing substitute stack is not a live provider check.
 

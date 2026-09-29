@@ -207,6 +207,14 @@ export interface Schedule {
   revision: number;
   nextRun: string | null;
   lastRun: ScheduleRun | null;
+  baselineObservation: ScheduleObservation | null;
+}
+export interface ScheduleObservation {
+  status: 'verified' | 'unavailable';
+  sourceUrl: string;
+  value: string | null;
+  summary: string;
+  checkedAt: string;
 }
 export interface ScheduleRun {
   id: string;
@@ -218,6 +226,7 @@ export interface ScheduleRun {
   createdAt: string;
   status: TaskStatus;
   error: string | null;
+  observation: ScheduleObservation | null;
 }
 export interface ScheduleHistory {
   runs: ScheduleRun[];
