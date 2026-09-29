@@ -1,6 +1,12 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowUpRight } from 'lucide-react';
-import type { AppState, Artifact, Message, SubmitMessageResponse } from '../../shared/contracts';
+import type {
+  AppState,
+  Artifact,
+  Message,
+  MessageHistoryPage,
+  SubmitMessageResponse,
+} from '../../shared/contracts';
 import { integrationServices } from '../../shared/integrations';
 import { Composer, type ComposerHandle, type ComposerSendResult } from '../components/composer';
 import { MessageBubble } from '../components/message';
@@ -38,6 +44,9 @@ function verificationFailure(
     return 'That verification request is no longer available. Wait for a new code request.';
   return 'The verification code could not be confirmed. Check the sign-in request and try again.';
 }
+function scrollBehavior(): ScrollBehavior {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth';
+}
 export function Chat({
   state,
   streams,
@@ -65,16 +74,23 @@ export function Chat({
   const revision = state.conversationRevision ?? 0;
   const revisionRef = useRef(revision);
   revisionRef.current = revision;
-  const [historyPage, setHistoryPage] = useState<{ revision: number; messages: Message[] }>({
+  const [historyPage, setHistoryPage] = useState<{
+    revision: number;
+    messages: Message[];
+    hasMore?: boolean;
+  }>({
     revision,
     messages: [],
   });
   const older = historyPage.revision === revision ? historyPage.messages : [];
+  const hasEarlier =
+    (historyPage.revision === revision ? historyPage.hasMore : undefined) ??
+    state.hasEarlierMessages === true;
   const [loadingHistory, setLoadingHistory] = useState(false);
-  const [hasEarlier, setHasEarlier] = useState(true);
   const [activeTurn, setActiveTurn] = useState<string | null>(null);
   const [visibleTurns, setVisibleTurns] = useState<string[]>([]);
-  const [scrolledUp, setScrolledUp] = useState(false);
+  const [away, setAway] = useState<{ since: number; shown: boolean } | null>(null);
+  const returning = useRef(0);
   const bottom = useRef<HTMLDivElement>(null);
   const scroll = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
@@ -118,9 +134,15 @@ export function Chat({
     }),
   ];
   const onboardingVisible = allMessages.length === 0 && !working && !resetting;
+  const unseen = away
+    ? persistedMessages.filter(
+        (message) => message.role === 'assistant' && Date.parse(message.createdAt) > away.since,
+      ).length
+    : 0;
   useLayoutEffect(() => {
     if (stickToBottom.current)
       bottom.current?.scrollIntoView({ behavior: 'instant', block: 'end' });
+    else updateAway();
   }, [state.messages, streams, sending, resetting, optimistic]);
   useEffect(() => {
     const ids = new Set(state.messages.map((message) => message.id));
@@ -135,10 +157,9 @@ export function Chat({
     historyVersion.current++;
     setHistoryPage({ revision, messages: [] });
     setLoadingHistory(false);
-    setHasEarlier(true);
     setActiveTurn(null);
     setVisibleTurns([]);
-    setScrolledUp(false);
+    setAway(null);
     setReplyTo(null);
     setOptimistic([]);
     sendLock.current = null;
@@ -325,13 +346,13 @@ export function Chat({
         ...(before ? { before } : {}),
         ...(first ? { beforeId: first.id } : {}),
       });
-      const result = await api<Message[]>(`/api/messages?${query}`);
+      const result = await api<MessageHistoryPage>(`/api/messages?${query}`);
       if (version !== historyVersion.current || revisionRef.current !== revision) return;
       setHistoryPage((current) => ({
         revision,
-        messages: [...result, ...(current.revision === revision ? current.messages : [])],
+        messages: [...result.messages, ...(current.revision === revision ? current.messages : [])],
+        hasMore: result.hasMore,
       }));
-      setHasEarlier(result.length === 60);
       requestAnimationFrame(() => {
         if (scroll.current) scroll.current.scrollTop += scroll.current.scrollHeight - height;
       });
@@ -341,6 +362,23 @@ export function Chat({
     } finally {
       if (version === historyVersion.current) setLoadingHistory(false);
     }
+  }
+  function cancelReturn() {
+    returning.current = 0;
+  }
+  function updateAway() {
+    const element = scroll.current;
+    if (!element) return;
+    const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
+    if (distance >= 160 && Date.now() < returning.current) return;
+    returning.current = 0;
+    stickToBottom.current = distance < 160;
+    const since = Date.parse(allMessages.at(-1)?.createdAt ?? '') || Date.now();
+    setAway((current) => {
+      if (distance < 160) return null;
+      const shown = Boolean(current?.shown) || distance > element.clientHeight;
+      return current?.shown === shown ? current : { since: current?.since ?? since, shown };
+    });
   }
   function updateActiveTurn() {
     const element = scroll.current;
@@ -413,41 +451,46 @@ export function Chat({
           ).find((element) => element.dataset.messageId === id);
           if (!target) return;
           stickToBottom.current = false;
-          setScrolledUp(true);
+          returning.current = 0;
           setActiveTurn(id);
-          target.scrollIntoView({
-            block: 'start',
-            behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches
-              ? 'instant'
-              : 'smooth',
-          });
+          target.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
         }}
       />
       <div
         className="conversation-scroll"
         ref={scroll}
         onScroll={() => {
-          const element = scroll.current;
-          if (element) {
-            stickToBottom.current =
-              element.scrollHeight - element.scrollTop - element.clientHeight < 160;
-            setScrolledUp(!stickToBottom.current);
-            updateActiveTurn();
-          }
+          updateActiveTurn();
+          updateAway();
         }}
+        onWheel={cancelReturn}
+        onTouchStart={cancelReturn}
+        onPointerDown={cancelReturn}
+        onKeyDown={cancelReturn}
       >
         <div className="conversation-column">
-          {persistedMessages.length > 0 && hasEarlier && (
-            <div className="history-control">
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={loadingHistory}
-                onClick={() => void history()}
-              >
-                {loadingHistory ? 'Loading…' : 'Load earlier messages'}
-              </Button>
+          {loadingHistory ? (
+            <div className="history-skeleton" role="status" aria-label="Loading earlier messages">
+              <span className="history-skeleton-bubble" />
+              <span className="history-skeleton-row">
+                <span className="history-skeleton-mark" />
+                <span className="history-skeleton-lines">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+              </span>
+              <span className="history-skeleton-bubble" />
             </div>
+          ) : (
+            persistedMessages.length > 0 &&
+            hasEarlier && (
+              <div className="history-control">
+                <Button variant="ghost" size="sm" onClick={() => void history()}>
+                  Load earlier messages
+                </Button>
+              </div>
+            )
           )}
           {visibleMessages.length === 0 && (
             <div className="welcome">
@@ -544,23 +587,30 @@ export function Chat({
         </div>
       </div>
       <div className="chat-bottom conversation-column">
-        {scrolledUp && (
+        {away?.shown && (
           <Button
-            className="jump-latest"
+            className={`jump-latest${unseen ? ' has-unseen' : ''}`}
             variant="outline"
             size="sm"
+            aria-label={
+              unseen
+                ? `Back to latest, ${unseen} new ${unseen === 1 ? 'reply' : 'replies'}`
+                : 'Back to latest'
+            }
             onClick={() => {
-              historyVersion.current++;
-              setLoadingHistory(false);
-              setHasEarlier(true);
               stickToBottom.current = true;
-              requestAnimationFrame(() => bottom.current?.scrollIntoView({ block: 'end' }));
+              returning.current = Date.now() + 1000;
+              setAway(null);
+              bottom.current?.scrollIntoView({ block: 'end', behavior: scrollBehavior() });
             }}
           >
             <ArrowDown size={14} />
-            Back to latest
+            {unseen
+              ? `${unseen > 99 ? '99+' : unseen} new ${unseen === 1 ? 'reply' : 'replies'}`
+              : 'Back to latest'}
           </Button>
         )}
+        {away?.shown && <div className="jump-latest-fade" aria-hidden="true" />}
         {error && <Notice>{error}</Notice>}
         {connectionNotice && <Notice kind="info">{connectionNotice}</Notice>}
         {!state.configuration.llmReady && (

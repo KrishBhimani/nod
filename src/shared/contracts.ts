@@ -160,10 +160,15 @@ export interface Configuration {
 }
 export interface AppState {
   conversationRevision?: number;
+  hasEarlierMessages?: boolean;
   verificationRequests?: VerificationRequest[];
   messages: Message[];
   tasks: Task[];
   configuration: Configuration;
+}
+export interface MessageHistoryPage {
+  messages: Message[];
+  hasMore: boolean;
 }
 export interface InspectorState {
   tasks: Task[];
