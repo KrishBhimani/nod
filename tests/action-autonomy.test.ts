@@ -94,46 +94,42 @@ test(
         },
       );
 
-      await t.test(
-        'the Goals update draft executes its explicit change once without a confirmation',
-        async () => {
-          const goalId = randomUUID();
-          await db.pool.query('INSERT INTO goals(id,owner_id,title) VALUES($1,$2,$3)', [
-            goalId,
-            'local-development',
-            'Complete Northstar review',
-          ]);
-          const review = `Let's review the goal "Complete Northstar review" (ID: ${goalId}) and decide what to do next.`;
-          const id = await begin(
-            `${review}\nSet progress to 25% and change the next step to Prepare the NS-2048 summary. Keep the same target date.`,
-          );
-          const args = { id: goalId, progress: 25, nextAction: 'Prepare the NS-2048 summary.' };
-          const before = calls.length;
-          const result = await approvals.request(id, 'OTTO_goal_update', args, { revision: 0 });
-          assert.equal(result.requiresConfirmation, undefined);
-          assert.deepEqual(
-            await approvals.request(id, 'OTTO_goal_update', args, { revision: 0 }),
-            result,
-          );
-          assert.equal(calls.length, before + 1);
-          assert.deepEqual(calls.at(-1), {
-            action: 'OTTO_goal_update',
-            args,
-            sourceMessageId: (await row(id)).source_message_id,
-          });
-          assert.equal((await proposal(id)).status, 'completed');
-          assert.equal((await proposal(id)).confirmation_message_id, null);
-          assert.equal((await row(id)).status, 'running');
-          assert.equal(
-            (
-              await db.pool.query("SELECT id FROM messages WHERE task_id=$1 AND role='assistant'", [
-                id,
-              ])
-            ).rowCount,
-            0,
-          );
-        },
-      );
+      await t.test('an explicit goal update executes once without a confirmation', async () => {
+        const goalId = randomUUID();
+        await db.pool.query('INSERT INTO goals(id,owner_id,title) VALUES($1,$2,$3)', [
+          goalId,
+          'local-development',
+          'Complete Northstar review',
+        ]);
+        const id = await begin(
+          `Update the goal "Complete Northstar review" (ID: ${goalId}): set progress to 25% and change the next step to Prepare the NS-2048 summary. Keep the same target date.`,
+        );
+        const args = { id: goalId, progress: 25, nextAction: 'Prepare the NS-2048 summary.' };
+        const before = calls.length;
+        const result = await approvals.request(id, 'OTTO_goal_update', args, { revision: 0 });
+        assert.equal(result.requiresConfirmation, undefined);
+        assert.deepEqual(
+          await approvals.request(id, 'OTTO_goal_update', args, { revision: 0 }),
+          result,
+        );
+        assert.equal(calls.length, before + 1);
+        assert.deepEqual(calls.at(-1), {
+          action: 'OTTO_goal_update',
+          args,
+          sourceMessageId: (await row(id)).source_message_id,
+        });
+        assert.equal((await proposal(id)).status, 'completed');
+        assert.equal((await proposal(id)).confirmation_message_id, null);
+        assert.equal((await row(id)).status, 'running');
+        assert.equal(
+          (
+            await db.pool.query("SELECT id FROM messages WHERE task_id=$1 AND role='assistant'", [
+              id,
+            ])
+          ).rowCount,
+          0,
+        );
+      });
 
       await t.test(
         'natural local plan changes execute once without a required command phrase',
