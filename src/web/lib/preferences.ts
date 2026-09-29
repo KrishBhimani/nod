@@ -1,6 +1,6 @@
 import type { AccountPreferences } from '../../shared/account';
 import { api } from './api';
-import { browserLocale, setDateFormat } from './date-format';
+import { browserRegionLocale, setDateFormat } from './date-format';
 import { pageDataCache } from './page-data-cache';
 
 let writes: Promise<unknown> = Promise.resolve();
@@ -24,7 +24,7 @@ export function savePreferences(change: Partial<AccountPreferences>, signal?: Ab
 }
 
 export function saveBrowserLocale() {
-  browserLocaleSave ??= savePreferences({ locale: browserLocale() })
+  browserLocaleSave ??= savePreferences({ locale: browserRegionLocale() })
     .then(
       () => {},
       () => {},

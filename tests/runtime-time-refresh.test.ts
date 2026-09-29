@@ -287,11 +287,14 @@ test('the signed-in profile, region and clock reach the model but not observatio
     assert.equal(prompts.length, 1);
     assert.ok(
       prompts[0].includes(
-        '"preferredName":"Sam","fullName":"Samantha Synthetic","email":"sam.synthetic@example.test","locale":"pt-PT","clock":"h12","timeZone":"Europe/Lisbon"',
+        '"preferredName":"Sam","fullName":"Samantha Synthetic","email":"sam.synthetic@example.test","region":"Portugal","clock":"h12","timeZone":"Europe/Lisbon"',
       ),
     );
     assert.match(prompts[0], /Call the user by preferredName naturally/);
-    assert.match(prompts[0], /in the pt-PT format with a 12-hour clock/);
+    assert.match(
+      prompts[0],
+      /Write dates and times in English with the date order and number format of Portugal and a 12-hour clock\. If the user writes in another language, use that language for dates too\./,
+    );
     assert.deepEqual(
       observed.map((item) => (item as { type: string }).type),
       ['tool_start', 'tool_end', 'model_usage'],

@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import {
   Clock3,
   Globe,
-  Languages,
+  MapPin,
   LogOut,
   Monitor,
   Moon,
@@ -18,14 +18,20 @@ import { Button, Dialog, DialogContent, DialogTitle, Field, Input, Loading, Noti
 import { usePageData } from '../hooks/use-page-data';
 import { errorMessage } from '../lib/api';
 import { SearchPicker, TimeZonePicker } from './time-zone-picker';
-import { dateFormatFrom, formatDateTime, regionLocales } from '../lib/date-format';
+import {
+  dateFormatFrom,
+  formatDateTime,
+  localeRegion,
+  regionLocale,
+  regions,
+} from '../lib/date-format';
 import { savePreferences } from '../lib/preferences';
 
 const editablePreferences = ['quietHoursEnabled', 'quietStart', 'quietEnd'] as const;
 const regionLabels = {
   choose: 'Choose region',
   search: 'Search regions',
-  placeholder: 'Search language or country',
+  placeholder: 'Search country or region',
   clear: 'Clear region search',
   list: 'Regions',
   empty: 'No regions found.',
@@ -36,24 +42,11 @@ const clockOptions: Array<{ value: HourCycle; label: string }> = [
   { value: 'h23', label: '24-hour' },
 ];
 
-function localeName(locale: string, display: string) {
-  try {
-    const name =
-      new Intl.DisplayNames([display], { type: 'language', languageDisplay: 'standard' }).of(
-        locale,
-      ) ?? locale;
-    return name.charAt(0).toLocaleUpperCase(display) + name.slice(1);
-  } catch {
-    return locale;
-  }
-}
-
 function regionOptions(current: string) {
-  return [...new Set([current, ...regionLocales])].map((locale) => ({
-    value: locale,
-    label: localeName(locale, locale),
-    keywords: localeName(locale, 'en'),
-  }));
+  const names = new Intl.DisplayNames(['en'], { type: 'region' });
+  return [...new Set([current, ...regions])]
+    .map((region) => ({ value: region, label: names.of(region) ?? region, keywords: region }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'en'));
 }
 
 function LanguageAndRegion({ saved }: { saved: AccountPreferences }) {
@@ -66,6 +59,7 @@ function LanguageAndRegion({ saved }: { saved: AccountPreferences }) {
   const request = useRef<AbortController | null>(null);
   useEffect(() => () => request.current?.abort(), []);
   const format = dateFormatFrom(saved);
+  const region = localeRegion(saved.locale) ?? localeRegion(format.locale) ?? 'GB';
   const zones = [
     ...new Set([
       saved.timeZone,
@@ -97,19 +91,21 @@ function LanguageAndRegion({ saved }: { saved: AccountPreferences }) {
   }
   return (
     <section className="account-region" aria-labelledby={heading}>
-      <h4 id={heading}>Language and region</h4>
+      <h4 id={heading}>Date and time</h4>
       <div className="account-preference-row account-picker-row">
         <span id={regionLabel}>
-          <Languages size={18} aria-hidden="true" />
+          <MapPin size={18} aria-hidden="true" />
           Region
         </span>
         <SearchPicker
-          value={format.locale}
-          options={regionOptions(format.locale)}
+          value={region}
+          options={regionOptions(region)}
           labels={regionLabels}
           labelledBy={regionLabel}
           disabled={saving}
-          onChange={(locale) => void save({ locale })}
+          onChange={(next) => {
+            if (next !== region) void save({ locale: regionLocale(next) });
+          }}
         />
       </div>
       <div className="account-preference-row">

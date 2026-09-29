@@ -8,62 +8,72 @@ export interface DateFormat {
 }
 
 const fallbackLocale = 'en-GB';
-export const regionLocales = [
-  'en-GB',
-  'en-US',
-  'en-IE',
-  'en-CA',
-  'en-AU',
-  'en-NZ',
-  'en-IN',
-  'en-ZA',
-  'pt-PT',
-  'pt-BR',
-  'es-ES',
-  'es-MX',
-  'es-AR',
-  'fr-FR',
-  'fr-CA',
-  'fr-BE',
-  'fr-CH',
-  'de-DE',
-  'de-AT',
-  'de-CH',
-  'it-IT',
-  'nl-NL',
-  'nl-BE',
-  'sv-SE',
-  'da-DK',
-  'nb-NO',
-  'fi-FI',
-  'pl-PL',
-  'cs-CZ',
-  'ro-RO',
-  'hu-HU',
-  'el-GR',
-  'tr-TR',
-  'uk-UA',
-  'he-IL',
-  'hi-IN',
-  'ja-JP',
-  'ko-KR',
-  'zh-CN',
-  'zh-TW',
+export const regions = [
+  'GB',
+  'US',
+  'IE',
+  'CA',
+  'AU',
+  'NZ',
+  'IN',
+  'ZA',
+  'PT',
+  'BR',
+  'ES',
+  'MX',
+  'AR',
+  'FR',
+  'BE',
+  'CH',
+  'DE',
+  'AT',
+  'IT',
+  'NL',
+  'SE',
+  'DK',
+  'NO',
+  'FI',
+  'PL',
+  'CZ',
+  'RO',
+  'HU',
+  'GR',
+  'TR',
+  'UA',
+  'IL',
+  'JP',
+  'KR',
+  'CN',
+  'TW',
 ];
 
-function supportedLocale(value: string | null | undefined) {
+export function localeRegion(value: string | null | undefined) {
   if (!value) return null;
   try {
-    const [locale] = Intl.getCanonicalLocales(value);
-    if (locale && Intl.DateTimeFormat.supportedLocalesOf(locale).length) return locale;
-  } catch {}
-  return null;
+    return new Intl.Locale(value).maximize().region ?? null;
+  } catch {
+    return null;
+  }
 }
 
-export function browserLocale() {
-  return (
-    supportedLocale(typeof navigator === 'undefined' ? null : navigator.language) ?? fallbackLocale
-  );
+function browserRegion() {
+  return localeRegion(typeof navigator === 'undefined' ? null : navigator.language) ?? 'GB';
+}
+
+export function regionLocale(region: string) {
+  return `en-${region}`;
+}
+
+export function browserRegionLocale() {
+  return regionLocale(browserRegion());
+}
+
+function formattingLocale(saved: string | null | undefined) {
+  const candidate = regionLocale(localeRegion(saved) ?? browserRegion());
+  try {
+    if (new Intl.DateTimeFormat(candidate).resolvedOptions().locale === candidate) return candidate;
+  } catch {}
+  return fallbackLocale;
 }
 
 function validTimeZone(value: string | undefined) {
@@ -76,7 +86,7 @@ function validTimeZone(value: string | undefined) {
 }
 
 let current: DateFormat = {
-  locale: browserLocale(),
+  locale: formattingLocale(null),
   hourCycle: 'auto',
   timeZone: validTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone) ?? 'UTC',
 };
@@ -86,7 +96,7 @@ export function dateFormatFrom(
   preferences: Pick<Preferences, 'locale' | 'hourCycle' | 'timeZone'>,
 ): DateFormat {
   return {
-    locale: supportedLocale(preferences.locale) ?? browserLocale(),
+    locale: formattingLocale(preferences.locale),
     hourCycle: preferences.hourCycle ?? 'auto',
     timeZone: validTimeZone(preferences.timeZone) ?? current.timeZone,
   };

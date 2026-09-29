@@ -585,10 +585,10 @@ test('language and region choices save instantly and update the live example', a
         }),
       ),
     );
-    assert.equal(document.querySelector('.account-region h4')?.textContent, 'Language and region');
+    assert.equal(document.querySelector('.account-region h4')?.textContent, 'Date and time');
     assert.equal(
       document.querySelector('.account-region .time-zone-picker-trigger')?.textContent,
-      'English (United Kingdom)',
+      'United Kingdom',
     );
     assert.doesNotMatch(example(), /\b[ap]m\b/i);
     const twelveHour = [
@@ -606,22 +606,25 @@ test('language and region choices save instantly and update the live example', a
     await act(async () => {
       Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(
         search,
-        'portuguese portugal',
+        'portugal',
       );
       search.dispatchEvent(new Event('input', { bubbles: true }));
     });
     const options = [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')];
     assert.deepEqual(
       options.map((option) => option.textContent),
-      ['Português (Portugal)'],
+      ['Portugal'],
     );
     await act(async () => options[0].click());
-    assert.deepEqual(writes, [{ hourCycle: 'h12' }, { locale: 'pt-PT' }]);
+    assert.deepEqual(writes, [{ hourCycle: 'h12' }, { locale: 'en-PT' }]);
     assert.equal(
       document.querySelector('.account-region .time-zone-picker-trigger')?.textContent,
-      'Português (Portugal)',
+      'Portugal',
     );
-    assert.match(example(), /\d{1,2}\/\d{2}/);
+    assert.match(
+      example(),
+      /^Example: [A-Z][a-z]{2}, \d{1,2} [A-Z][a-z]{2,3}, \d{1,2}:\d{2} [ap]m$/,
+    );
     assert.equal(document.querySelector('.account-settings-actions'), null);
   } finally {
     await act(async () => root.unmount());
