@@ -331,11 +331,17 @@ test(
         "UPDATE turns SET status='waiting',waiting_reason='credentials',finished_at=now() WHERE id=$1",
         [codeTurnId],
       );
-      assert.equal((await send('ambiguous-code', 'Code: 481927 or 739126')).statusCode, 200);
-      await channels.drain();
-      assert.equal(injections, 0);
-      assert.deepEqual(submitted, ['2026']);
-      assert.doesNotMatch(await stored(), /481927|739126/);
+      for (const [messageId, text] of [
+        ['ambiguous-code', 'Code: 481927 or 739126'],
+        ['malformed-code', 'Code: +481927'],
+        ['empty-code', 'Código ='],
+      ]) {
+        assert.equal((await send(messageId, text)).statusCode, 200);
+        await channels.drain();
+        assert.equal(injections, 0);
+        assert.deepEqual(submitted, ['2026']);
+        assert.doesNotMatch(await stored(), /481927|739126/);
+      }
       assert.equal((await send('code', 'Código: 481 927')).statusCode, 200);
       await channels.drain();
       assert.equal(injections, 1);

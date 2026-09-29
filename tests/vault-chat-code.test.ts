@@ -280,6 +280,11 @@ test(
           await reset();
           await seed();
           for (const text of [
+            'Code: +123456',
+            'Code: +351912345678',
+            'Code = abcdef',
+            'Code:',
+            'Código =',
             'Code: 123456 or 654321',
             'O código é 739126 ou 928361',
             'Code: 123456 and please continue',
@@ -310,8 +315,9 @@ test(
           const unrelated = [
             'The year is 2026',
             'The code snippet has 123456 lines',
+            'Code snippet has 123456 lines',
+            'The code is in the email',
             'Order 123456 is ready',
-            'Code: +351912345678',
           ];
           await reset();
           await seed();
@@ -323,6 +329,11 @@ test(
             '2026',
             'The code is 739126',
             'Código: 739 126',
+            'Code: +123456',
+            'Code: +351912345678',
+            'Code = abcdef',
+            'Code:',
+            'Código =',
             'Code: 123456 or 654321',
             'Code: 2026-09-29',
             'Code: 12.34',
