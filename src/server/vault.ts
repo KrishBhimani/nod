@@ -1641,7 +1641,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       if (
         !username ||
         !email ||
-        normalizedEmail(email.recipient) !== username ||
+        normalizedEmail(email.recipient ?? '') !== username ||
         fresh.input.kind !== 'otp' ||
         fresh.inspection.origin !== origin ||
         !fresh.inspection.fields.some((field) => field.kind === 'otp') ||
