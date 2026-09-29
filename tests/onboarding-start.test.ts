@@ -18,6 +18,7 @@ test(
     process.env.PGBOSS_SCHEMA = bossSchema;
     const db = await import('../src/server/db.ts');
     const tasks = await import('../src/server/tasks.ts');
+    const { welcomeGreeting } = await import('../src/server/welcome.ts');
     const { createApp } = await import('../src/server/app.ts');
     const { createAccountSession } = await import('../src/server/account.ts');
     const { createAccountStore } = await import('../src/server/account-store.ts');
@@ -35,13 +36,20 @@ test(
       origin: `http://localhost:${port}`,
       localUser: { id: ownerId, name: 'You', email: null, avatarUrl: null },
       start: async (_owner, name) => {
-        await tasks.startOnboarding(name);
+        await tasks.startOnboarding(name, ['Gmail', 'Google Calendar', 'Slack']);
       },
     }).register(app);
     const headers = { host: `localhost:${port}`, origin: `http://localhost:${port}` };
     try {
       const earlier = await tasks.submitTask('Earlier synthetic request');
       const before = (await app.inject({ url: '/api/state', headers })).json();
+      const landing = () =>
+        app.inject({ method: 'POST', url: '/api/account/welcome', headers, payload: {} });
+      assert.equal((await landing()).statusCode, 409);
+      assert.equal(
+        (await db.pool.query("SELECT id FROM tasks WHERE source_id LIKE 'onboarding:%'")).rowCount,
+        0,
+      );
       assert.equal(
         (
           await app.inject({
@@ -72,25 +80,38 @@ test(
         ).json(),
         { ok: true },
       );
+      for (const response of await Promise.all([landing(), landing()]))
+        assert.deepEqual(response.json(), { ok: true });
       const welcome = await db.pool.query(
-        "SELECT id,source,source_id,source_message_id,channel,conversation_revision,prompt FROM tasks WHERE source_id LIKE 'onboarding:%'",
+        "SELECT id,status,source,source_id,source_message_id,channel,conversation_revision,prompt FROM tasks WHERE source_id LIKE 'onboarding:%'",
       );
       assert.equal(welcome.rowCount, 1);
       assert.equal(welcome.rows[0].source, 'event');
       assert.equal(welcome.rows[0].source_id, 'onboarding:welcome');
+      assert.equal(welcome.rows[0].status, 'queued');
+      const greeting =
+        'Hi Alex, I’m looking through your Gmail, Google Calendar and Slack for things I can take off your plate.';
+      assert.deepEqual(
+        (
+          await db.pool.query('SELECT role,text FROM messages WHERE task_id=$1', [
+            welcome.rows[0].id,
+          ])
+        ).rows,
+        [{ role: 'assistant', text: greeting }],
+      );
       const prompt = welcome.rows[0].prompt as string;
-      assert.match(prompt, /"firstName":"Alex"/);
+      assert.ok(prompt.includes(JSON.stringify({ greeting })));
+      assert.match(prompt, /Do not greet the user again/);
       assert.ok(prompt.indexOf('read-only tools only') < prompt.indexOf('send_message'));
       assert.match(prompt, /Before you write anything, look into each connected app/);
       assert.match(prompt, /Do not send, create, change or delete anything in any app/);
       assert.match(prompt, /normal approvals still apply/);
       assert.match(prompt, /hardest or most tedious one first/);
-      assert.match(prompt, /connect one app/);
-      assert.doesNotMatch(tasks.welcomePrompt(), /firstName/);
       assert.equal(
-        tasks.welcomePrompt(' Sam   Rivera ').includes(JSON.stringify({ firstName: 'Sam' })),
-        true,
+        welcomeGreeting(' Sam   Rivera ', ['Gmail']),
+        'Hi Sam, I’m looking through your Gmail for things I can take off your plate.',
       );
+      assert.match(welcomeGreeting(undefined, []), /^Hi, I’m Otto\..*Connect one app/);
       assert.equal(welcome.rows[0].source_message_id, null);
       assert.equal(welcome.rows[0].channel, 'web');
       assert.equal(welcome.rows[0].conversation_revision, before.conversationRevision);
@@ -106,7 +127,7 @@ test(
       assert.equal(after.conversationRevision, before.conversationRevision);
       assert.deepEqual(
         after.messages.map((message: { text: string }) => message.text),
-        ['Earlier synthetic request'],
+        ['Earlier synthetic request', greeting],
       );
       const typing = Object.fromEntries(
         after.tasks.map((task: { id: string; showTyping: boolean }) => [task.id, task.showTyping]),
@@ -124,6 +145,13 @@ test(
         .json()
         .tasks.filter((task: { showTyping: boolean }) => !task.showTyping);
       assert.equal(background.length, 1);
+      await db.pool.query('DELETE FROM messages WHERE task_id=$1', [welcome.rows[0].id]);
+      await db.pool.query('DELETE FROM tasks WHERE id=$1', [welcome.rows[0].id]);
+      await tasks.startOnboarding(undefined, []);
+      const empty = await db.pool.query(
+        "SELECT t.status,m.text FROM tasks t JOIN messages m ON m.task_id=t.id WHERE t.source_id='onboarding:welcome'",
+      );
+      assert.deepEqual(empty.rows, [{ status: 'succeeded', text: welcomeGreeting(undefined, []) }]);
     } finally {
       await app.close();
       await tasks.stopTasks();

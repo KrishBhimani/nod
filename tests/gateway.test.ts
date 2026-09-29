@@ -238,6 +238,17 @@ test('completing onboarding starts the welcome in the authenticated owner runtim
       [f.users[1], `${origin}/api/onboarding/start`, 'POST', '{"name":"Synthetic user"}', false],
     ],
   );
+  const landed = await f.app.inject({
+    method: 'POST',
+    url: '/api/account/welcome',
+    headers: { ...f.headers(1), origin, 'content-type': 'application/json' },
+    payload: '{}',
+  });
+  assert.equal(landed.statusCode, 200);
+  assert.deepEqual(
+    [f.calls.at(-1)!.owner, f.calls.at(-1)!.url, f.calls.at(-1)!.body],
+    [f.users[1], `${origin}/api/onboarding/start`, '{"name":"Synthetic user"}'],
+  );
   start = 503;
   const failed = await complete();
   assert.equal(failed.statusCode, 503);

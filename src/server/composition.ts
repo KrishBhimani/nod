@@ -696,7 +696,11 @@ export async function createApplication(
     });
   }
   const welcome = async (name?: string) => {
-    if (adapters.model.configured) await startOnboarding(name);
+    if (!adapters.model.configured) return;
+    const connected = (await integrations.list()).filter(
+      (connection) => connection.status === 'connected',
+    );
+    await startOnboarding(name, [...new Set(connected.map((connection) => connection.name))]);
   };
   const app = await createApp({
     admission,

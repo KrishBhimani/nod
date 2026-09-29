@@ -29,6 +29,7 @@ test(
     const { pool } = await import('../src/server/db.ts');
     const { dataRoot, ownerId, port } = await import('../src/server/config.ts');
     const { events } = await import('../src/server/events.ts');
+    const { welcomeGreeting } = await import('../src/server/welcome.ts');
     const integrationCalls: Array<{ action: string; args: Record<string, unknown> }> = [];
     const spoken: string[] = [];
     const browserTasks: string[] = [];
@@ -135,13 +136,6 @@ test(
               input.onEvent({
                 type: 'final',
                 text: 'Your inbox is connected. I can help prepare a reply.',
-              });
-              return;
-            }
-            if (currentInstruction.startsWith('Start the first conversation')) {
-              await call('manage_apps', { action: 'list' });
-              await call('send_message', {
-                text: 'Hi. Connect Gmail and I can find your replies.',
               });
               return;
             }
@@ -329,7 +323,7 @@ test(
       await waitFor(welcome, 'succeeded');
       assert.deepEqual(
         (await pool.query('SELECT role,text FROM messages WHERE task_id=$1', [welcome])).rows,
-        [{ role: 'assistant', text: 'Hi. Connect Gmail and I can find your replies.' }],
+        [{ role: 'assistant', text: welcomeGreeting(undefined, []) }],
       );
       assert.equal((await request('POST', '/api/apps/gmail/connect')).statusCode, 200);
       const connected = new URL(callback);

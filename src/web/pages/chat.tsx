@@ -60,22 +60,8 @@ const appSuggestions: Record<IntegrationService, string> = {
   linear: 'Review my open Linear issues',
 };
 const starterSuggestions = ['Plan my day', 'Help me research something', 'Start a goal'];
-function Welcome({ status, onPick }: { status?: string; onPick(label: string): void }) {
+function Welcome({ onPick }: { onPick(label: string): void }) {
   const { data, loading } = usePageData<Connection[]>('/api/apps');
-  if (status)
-    return (
-      <div className="welcome-pending thinking" role="status" aria-label={status}>
-        <div className="assistant-mark">
-          <BrandMark small />
-        </div>
-        <span className="thinking-dots" aria-hidden="true">
-          <i />
-          <i />
-          <i />
-        </span>
-        <span>Otto is looking through your apps.</span>
-      </div>
-    );
   const connected = integrationServiceIds.filter((slug) =>
     data?.some((connection) => connection.slug === slug && connection.status === 'connected'),
   );
@@ -157,6 +143,16 @@ export function Chat({
       .map((item) => item.message),
   ];
   const working = hasVisibleChatActivity(state.tasks);
+  const [welcoming, setWelcoming] = useState(
+    () => allMessages.length === 0 && !working && state.configuration.llmReady,
+  );
+  useEffect(() => {
+    if (!welcoming) return;
+    void post('/api/account/welcome', {})
+      .then(() => refresh())
+      .catch(() => {})
+      .finally(() => setWelcoming(false));
+  }, []);
   const pick = (label: string) => {
     setText(label);
     composer.current?.focus();
@@ -514,14 +510,7 @@ export function Chat({
               </Button>
             </div>
           )}
-          {visibleMessages.length === 0 && (
-            <Welcome
-              status={
-                resetting ? 'Starting setup' : working || sending ? 'Otto is typing' : undefined
-              }
-              onPick={pick}
-            />
-          )}
+          {visibleMessages.length === 0 && !welcoming && <Welcome onPick={pick} />}
           <div
             className="messages"
             role="log"
@@ -558,26 +547,24 @@ export function Chat({
                 />
               </Fragment>
             ))}
-            {(sending || resetting || working) &&
-              streamEntries.length === 0 &&
-              visibleMessages.length > 0 && (
-                <div
-                  className="thinking"
-                  role="status"
-                  aria-label={
-                    resetting ? 'Starting setup' : sending ? 'Sending message' : 'Otto is typing'
-                  }
-                >
-                  <div className="assistant-mark">
-                    <BrandMark small />
-                  </div>
-                  <span className="thinking-dots" aria-hidden="true">
-                    <i />
-                    <i />
-                    <i />
-                  </span>
+            {(sending || resetting || working) && streamEntries.length === 0 && (
+              <div
+                className="thinking"
+                role="status"
+                aria-label={
+                  resetting ? 'Starting setup' : sending ? 'Sending message' : 'Otto is typing'
+                }
+              >
+                <div className="assistant-mark">
+                  <BrandMark small />
                 </div>
-              )}
+                <span className="thinking-dots" aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                </span>
+              </div>
+            )}
           </div>
           <div ref={bottom} />
         </div>

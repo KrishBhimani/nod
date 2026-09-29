@@ -119,6 +119,22 @@ export function createAccountSession(options: {
     }
     return true;
   }
+  async function start(reply: FastifyReply, session: AuthenticatedSession, name?: string) {
+    try {
+      await options.start?.(
+        session.user.id,
+        (
+          name ??
+          (await options.accounts.read(session.user.id)).displayName ??
+          (options.authentication ? session.user.name : undefined)
+        )?.slice(0, 100),
+      );
+      return true;
+    } catch {
+      reply.code(503).send({ error: 'Setup could not be completed. Try again.' });
+      return false;
+    }
+  }
   function register(app: FastifyInstance) {
     app.get('/api/session', async (request, reply) => {
       reply.header('cache-control', 'no-store');
@@ -207,22 +223,24 @@ export function createAccountSession(options: {
       const input = accountUpdate.parse(request.body);
       if (input.onboardingCompleted) {
         if (!(await prepare(request, reply, session))) return;
-        try {
-          await options.start?.(
-            session.user.id,
-            (
-              input.name ??
-              (await options.accounts.read(session.user.id)).displayName ??
-              (options.authentication ? session.user.name : undefined)
-            )?.slice(0, 100),
-          );
-        } catch {
-          return reply.code(503).send({ error: 'Setup could not be completed. Try again.' });
-        }
+        if (!(await start(reply, session, input.name))) return;
       }
       await options.accounts.update(session.user.id, input);
       reply.header('cache-control', 'no-store');
       return response(request);
+    });
+    app.post('/api/account/welcome', async (request, reply) => {
+      if (!sameOrigin(request, reply)) return;
+      const session = await requirePrincipal(request, reply);
+      if (!session) return;
+      z.object({})
+        .strict()
+        .parse(request.body ?? {});
+      if (!(await options.accounts.read(session.user.id)).onboardingCompleted)
+        return reply.code(409).send({ error: 'Finish setup first.' });
+      if (!(await start(reply, session))) return;
+      reply.header('cache-control', 'no-store');
+      return { ok: true };
     });
   }
   return { principal, requirePrincipal, response, register };

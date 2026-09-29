@@ -372,22 +372,62 @@ test('setup cannot archive a conversation when its model is unavailable', async 
   }
 });
 
-test('empty chat shows typing while the first message is on its way and app suggestions otherwise', async () => {
+test('landing on an empty chat asks Otto to reach out once and shows the greeting with typing', async () => {
   const originalFetch = globalThis.fetch;
-  let tasks: AppState['tasks'] = [
-    {
-      id: 'welcome',
-      title: 'Welcome',
-      status: 'queued',
-      showTyping: true,
-      createdAt: '2026-09-28T12:00:00Z',
-      updatedAt: '2026-09-28T12:00:00Z',
-    },
-  ];
-  const apps: string[] = [];
+  const greeting: Message = {
+    id: 'greeting',
+    role: 'assistant',
+    text: 'Hi Alex, I’m looking through your Gmail for things I can take off your plate.',
+    taskId: 'welcome',
+    attachments: [],
+    createdAt: '2026-09-28T12:00:00Z',
+  };
+  let welcomed = 0;
+  globalThis.fetch = async (path, options) => {
+    if (path === '/api/account/welcome' && options?.method === 'POST') {
+      welcomed++;
+      return Response.json({ ok: true });
+    }
+    if (path === '/api/apps') return Response.json([]);
+    return Response.json({
+      ...base,
+      messages: welcomed ? [greeting] : [],
+      tasks: welcomed
+        ? [
+            {
+              id: 'welcome',
+              title: 'Welcome',
+              status: 'running',
+              showTyping: true,
+              createdAt: greeting.createdAt,
+              updatedAt: greeting.createdAt,
+            },
+          ]
+        : [],
+    });
+  };
+  pageDataCache.clear();
+  const fixture = await mount();
+  try {
+    await act(async () => {
+      await tick();
+    });
+    assert.equal(welcomed, 1);
+    assert.match(fixture.element.textContent ?? '', /Hi Alex, I’m looking through your Gmail/);
+    assert.ok(fixture.element.querySelector('[aria-label="Otto is typing"]'));
+    assert.doesNotMatch(fixture.element.textContent ?? '', /What’s on your mind|Make Otto yours/);
+  } finally {
+    await fixture.dispose();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('an empty chat after the welcome was sent shows app suggestions', async () => {
+  const originalFetch = globalThis.fetch;
+  const paths: string[] = [];
   globalThis.fetch = async (path) => {
-    if (path === '/api/apps') {
-      apps.push(String(path));
+    paths.push(String(path));
+    if (path === '/api/apps')
       return Response.json(
         ['gmail', 'googlecalendar', 'slack', 'notion'].map((slug) => ({
           slug,
@@ -396,29 +436,39 @@ test('empty chat shows typing while the first message is on its way and app sugg
           triggersEnabled: false,
         })),
       );
-    }
-    return Response.json({ ...base, messages: [], tasks });
+    if (path === '/api/account/welcome') return Response.json({ ok: true });
+    return Response.json({ ...base, messages: [] });
   };
   pageDataCache.clear();
   const fixture = await mount();
   try {
-    const text = () => fixture.element.textContent ?? '';
-    assert.ok(fixture.element.querySelector('[aria-label="Otto is typing"]'));
-    assert.doesNotMatch(text(), /What’s on your mind|Make Otto yours|Get started/);
-    tasks = [{ ...tasks[0], status: 'succeeded' }];
     await act(async () => {
-      Events.current.emit({ type: 'refresh' });
       await tick();
     });
-    assert.equal(fixture.element.querySelector('[aria-label="Otto is typing"]'), null);
-    assert.ok(apps.length >= 1);
     assert.deepEqual(
       [...fixture.element.querySelectorAll('.starter-actions button')].map(
         (button) => button.textContent,
       ),
       ['Find the email I still need to answer', 'Catch me up on my Slack mentions', 'Plan my day'],
     );
-    assert.doesNotMatch(text(), /Make Otto yours|Get started/);
+    assert.equal(paths.filter((path) => path === '/api/account/welcome').length, 1);
+    assert.doesNotMatch(fixture.element.textContent ?? '', /Make Otto yours|Get started/);
+  } finally {
+    await fixture.dispose();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a chat with messages does not ask Otto to reach out', async () => {
+  const originalFetch = globalThis.fetch;
+  const paths: string[] = [];
+  globalThis.fetch = async (path) => {
+    paths.push(String(path));
+    return Response.json(base);
+  };
+  const fixture = await mount();
+  try {
+    assert.equal(paths.includes('/api/account/welcome'), false);
   } finally {
     await fixture.dispose();
     globalThis.fetch = originalFetch;

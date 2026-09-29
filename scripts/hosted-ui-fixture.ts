@@ -6,6 +6,7 @@ import { createGateway } from '../src/server/gateway.ts';
 import type { AuthenticatedSession, AuthenticationProvider } from '../src/ports/authentication.ts';
 import type { StoredAccount } from '../src/server/account-store.ts';
 import { defaultPreferences, preferencesSchema } from '../src/server/preferences.ts';
+import { welcomeGreeting } from '../src/server/welcome.ts';
 import {
   integrationServiceIds,
   integrationServices,
@@ -29,7 +30,10 @@ const preferences = new Map<string, typeof defaultPreferences>();
 const connections = new Map<string, Set<IntegrationService>>([
   [users[0].id, new Set<IntegrationService>(['gmail', 'googlecalendar', 'slack'])],
 ]);
-const welcomes = new Map<string, { startedAt: number; taskId: string; messageId: string }>();
+const welcomes = new Map<
+  string,
+  { startedAt: number; taskId: string; messageId: string; archived?: boolean }
+>();
 const welcomeFindings: Partial<Record<IntegrationService, { text: string; start: string }>> = {
   gmail: {
     text: '**The Q4 vendor contract from Maria Lopez.** It has waited four days for your reply, and she asked again this morning. I can read the 12-page draft, list what changed and write a reply for you to approve.',
@@ -44,11 +48,15 @@ const welcomeFindings: Partial<Record<IntegrationService, { text: string; start:
     start: 'the release date',
   },
 };
-function welcomeText(owner: string) {
-  const name = users.find((user) => user.id === owner)?.name.split(' ')[0];
-  const apps = integrationServiceIds.filter((slug) => connections.get(owner)?.has(slug));
-  if (!apps.length)
-    return `Hi ${name}, good to meet you. No apps are connected yet, so I cannot see your work. I can still help now: plan your week around your top three priorities, or research a topic and give you a one-page summary.\n\nIf you connect Gmail in Apps, I will find the threads that wait for your reply and draft the answers for you to approve.\n\nWhere should I start?`;
+function welcomeApps(owner: string) {
+  return integrationServiceIds.filter((slug) => connections.get(owner)?.has(slug));
+}
+function welcomeMessages(owner: string, startedAt: number) {
+  const apps = welcomeApps(owner);
+  const greeting = welcomeGreeting(
+    users.find((user) => user.id === owner)?.name,
+    apps.map((slug) => integrationServices[slug].name),
+  );
   const findings = apps.slice(0, 3).map(
     (slug) =>
       welcomeFindings[slug] ?? {
@@ -56,9 +64,19 @@ function welcomeText(owner: string) {
         start: integrationServices[slug].name,
       },
   );
-  return `Hi ${name}. I went through your ${apps.length > 1 ? 'apps' : integrationServices[apps[0]].name}, and ${['one thing stands', 'two things stand', 'three things stand'][findings.length - 1]} out. I can take ${findings.length > 1 ? 'each one' : 'it'} off your plate:\n\n${findings
-    .map((finding, index) => `${index + 1}. ${finding.text}`)
-    .join('\n')}\n\nShould I start with ${findings[0].start}?`;
+  return [
+    { text: greeting, at: startedAt },
+    ...(findings.length
+      ? [
+          {
+            text: `${['One thing stands', 'Two things stand', 'Three things stand'][findings.length - 1]} out, and I can handle ${findings.length > 1 ? 'each one' : 'it'} for you:\n\n${findings
+              .map((finding, index) => `${index + 1}. ${finding.text}`)
+              .join('\n')}\n\nShould I start with ${findings[0].start}?`,
+            at: startedAt + 6_000,
+          },
+        ]
+      : []),
+  ];
 }
 const consent = new Map<
   string,
@@ -148,23 +166,23 @@ const app = await createGateway({
           });
         return Response.json({ ok: true });
       }
-      const welcome = welcomes.get(owner);
-      const replied = welcome && Date.now() - welcome.startedAt > 6_000;
+      const stored = welcomes.get(owner);
+      const welcome = stored?.archived ? undefined : stored;
+      const messages = welcome
+        ? welcomeMessages(owner, welcome.startedAt).filter((message) => message.at <= Date.now())
+        : [];
+      const replied = welcome && (!welcomeApps(owner).length || messages.length > 1);
       if (url.pathname === '/api/state')
         return Response.json({
           conversationRevision: 0,
-          messages: replied
-            ? [
-                {
-                  id: welcome.messageId,
-                  role: 'assistant',
-                  text: welcomeText(owner),
-                  taskId: welcome.taskId,
-                  attachments: [],
-                  createdAt: new Date(welcome.startedAt + 6_000).toISOString(),
-                },
-              ]
-            : [],
+          messages: messages.map((message, index) => ({
+            id: `${welcome!.messageId}-${index}`,
+            role: 'assistant',
+            text: message.text,
+            taskId: welcome!.taskId,
+            attachments: [],
+            createdAt: new Date(message.at).toISOString(),
+          })),
           tasks: welcome
             ? [
                 {
@@ -300,11 +318,12 @@ app.get('/fixture/chat', async (request, reply) => {
   if (!current) return reply.code(401).send('Sign in to use this fixture.');
   const search = new URL(request.url, origin).searchParams;
   welcomes.delete(current.user.id);
-  if (search.get('state') !== 'empty')
+  if (search.get('state') === 'empty')
     welcomes.set(current.user.id, {
       startedAt: Date.now(),
       taskId: randomUUID(),
       messageId: randomUUID(),
+      archived: true,
     });
   return reply.redirect('/');
 });

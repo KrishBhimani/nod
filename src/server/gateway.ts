@@ -198,9 +198,13 @@ export async function createGateway(options: {
   });
   app.addHook('preValidation', async (request) => {
     if (
-      ['/api/login', '/api/logout', '/api/account', '/api/account/prepare'].includes(
-        request.url.split('?')[0],
-      ) &&
+      [
+        '/api/login',
+        '/api/logout',
+        '/api/account',
+        '/api/account/prepare',
+        '/api/account/welcome',
+      ].includes(request.url.split('?')[0]) &&
       Buffer.isBuffer(request.body)
     ) {
       try {
