@@ -142,7 +142,7 @@ test('a paused rescheduled one-time task stays visible while its previous execut
   try {
     const html = renderToStaticMarkup(createElement(SchedulePage));
     assert.match(html, /Paused future reminder/);
-    assert.match(html, /role="switch" aria-label="Paused future reminder on"/);
+    assert.match(html, /role="switch" aria-checked="false" aria-label="Paused future reminder on"/);
     assert.match(html, /<details class="schedule-inactive" open=""/);
     assert.doesNotMatch(html, /Already dispatched reminder/);
   } finally {
@@ -378,8 +378,10 @@ test('schedule controls pause, resume and retime through the owned route with Un
     );
   try {
     await render(recurring);
-    const toggle = element.querySelector<HTMLInputElement>('[aria-label="Weekly review on"]')!;
-    assert.equal(toggle.checked, true);
+    const toggle = element.querySelector<HTMLButtonElement>(
+      '[role="switch"][aria-label="Weekly review on"]',
+    )!;
+    assert.equal(toggle.getAttribute('aria-checked'), 'true');
     await act(async () => click(toggle));
     assert.deepEqual(patches[0], {
       path: `/api/schedules/${recurring.id}`,

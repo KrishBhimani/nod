@@ -100,8 +100,8 @@ test('cached goals remain usable through failed refreshes and navigation', async
     );
     assert.match(container.textContent ?? '', /Could not load goals\./);
     assert.match(container.textContent ?? '', /25%/);
-    const pause = container.querySelector<HTMLInputElement>(
-      '[aria-label="Complete Northstar review active"]',
+    const pause = container.querySelector<HTMLButtonElement>(
+      '[role="switch"][aria-label="Complete Northstar review active"]',
     )!;
     assert.ok(pause);
     assert.equal(pause.disabled, false);
@@ -110,17 +110,23 @@ test('cached goals remain usable through failed refreshes and navigation', async
     assert.match(container.textContent ?? '', /Complete Northstar review/);
     await act(async () => reads[1](Response.json([{ ...goal, status: 'paused' }])));
     assert.equal(
-      container.querySelector<HTMLInputElement>('[aria-label="Complete Northstar review active"]')
-        ?.checked,
-      false,
+      container
+        .querySelector<HTMLButtonElement>(
+          '[role="switch"][aria-label="Complete Northstar review active"]',
+        )
+        ?.getAttribute('aria-checked'),
+      'false',
     );
     await act(async () => root.render(null));
     await act(async () => root.render(createElement(Goals)));
     assert.equal(container.querySelector('.loading'), null);
     assert.equal(
-      container.querySelector<HTMLInputElement>('[aria-label="Complete Northstar review active"]')
-        ?.checked,
-      false,
+      container
+        .querySelector<HTMLButtonElement>(
+          '[role="switch"][aria-label="Complete Northstar review active"]',
+        )
+        ?.getAttribute('aria-checked'),
+      'false',
     );
     await act(async () => reads[2](Response.json([{ ...goal, status: 'paused' }])));
   } finally {
@@ -155,10 +161,10 @@ test('goal controls save first-party changes in place with Undo and never open c
   const root = createRoot(container);
   try {
     await act(async () => root.render(createElement(Goals)));
-    const toggle = container.querySelector<HTMLInputElement>(
+    const toggle = container.querySelector<HTMLButtonElement>(
       '[role="switch"][aria-label="Complete Northstar review active"]',
     )!;
-    assert.equal(toggle.checked, true);
+    assert.equal(toggle.getAttribute('aria-checked'), 'true');
     await act(async () => click(toggle));
     assert.deepEqual(patches[0], { path: `/api/goals/${goal.id}`, body: { status: 'paused' } });
     assert.match(
@@ -170,7 +176,7 @@ test('goal controls save first-party changes in place with Undo and never open c
     )!;
     await act(async () => click(undo));
     assert.deepEqual(patches[1]?.body, { status: 'active' });
-    assert.equal(container.querySelector('.plan-toast'), null);
+    assert.equal(container.querySelector('.plan-toast .notice'), null);
     const progress = container.querySelector<HTMLInputElement>(
       '[aria-label="Complete Northstar review progress"]',
     )!;
@@ -348,9 +354,12 @@ test('paused-only goals stay visible and resumable outside the completed view', 
     assert.match(f.element.textContent!, /Resume a paused goal/);
     assert.equal(f.element.querySelector<HTMLDetailsElement>('.goals-paused')!.open, true);
     assert.equal(
-      f.element.querySelector<HTMLInputElement>('[aria-label="Complete Northstar review active"]')
-        ?.checked,
-      false,
+      f.element
+        .querySelector<HTMLButtonElement>(
+          '[role="switch"][aria-label="Complete Northstar review active"]',
+        )
+        ?.getAttribute('aria-checked'),
+      'false',
     );
     await act(async () => click(f.tab('completed')));
     assert.match(f.element.textContent!, /No completed goals yet/);

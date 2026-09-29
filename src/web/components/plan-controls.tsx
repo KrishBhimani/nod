@@ -3,7 +3,7 @@ import { ArrowUp, LoaderCircle, MessageCircle, Sparkles } from 'lucide-react';
 import type { AppState, Goal, Schedule } from '../../shared/contracts';
 import { BrandMark } from './brand';
 import { MessageText } from './message';
-import { Button } from './ui';
+import { Button, Input, Notice } from './ui';
 import { api, errorMessage } from '../lib/api';
 import { pageDataCache } from '../lib/page-data-cache';
 import { focusChatMessage } from '../lib/secondary-pages';
@@ -154,8 +154,7 @@ function AskOtto({
               submit(text);
             }}
           >
-            <Sparkles size={15} aria-hidden="true" />
-            <input
+            <Input
               ref={input}
               value={text}
               placeholder={otto.ask ? 'Anything else?' : placeholder}
@@ -175,9 +174,15 @@ function AskOtto({
           {!otto.ask && (
             <div className="ask-otto-chips">
               {chips.map((chip) => (
-                <button key={chip} type="button" onClick={() => submit(chip)}>
+                <Button
+                  key={chip}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => submit(chip)}
+                >
                   {chip}
-                </button>
+                </Button>
               ))}
             </div>
           )}
@@ -206,7 +211,7 @@ async function patchPlan(kind: Kind, id: string, body: Record<string, unknown>) 
   void pageDataCache.refresh(path, true);
 }
 
-type Toast = { id: number; text: string; undo?(): void };
+type Toast = { id: number; text: string; failed?: boolean; undo?(): void };
 let toast: Toast | null = null;
 const toastListeners = new Set<() => void>();
 function showToast(value: Toast | null) {
@@ -232,9 +237,9 @@ export function PlanToast() {
   }, [value]);
   useEffect(() => () => showToast(null), []);
   return (
-    <div className="plan-toast-region" aria-live="polite" aria-atomic="true">
+    <div className="plan-toast">
       {value && (
-        <div className="plan-toast">
+        <Notice kind={value.failed ? 'error' : 'success'}>
           <span>{value.text}</span>
           {value.undo && (
             <Button
@@ -248,7 +253,7 @@ export function PlanToast() {
               Undo
             </Button>
           )}
-        </div>
+        </Notice>
       )}
     </div>
   );
@@ -271,13 +276,13 @@ function useDirectChange(kind: Kind, id: string) {
           ? {
               undo: () =>
                 void patchPlan(kind, id, undo).catch((cause) =>
-                  showToast({ id: Date.now(), text: errorMessage(cause) }),
+                  showToast({ id: Date.now(), text: errorMessage(cause), failed: true }),
                 ),
             }
           : {}),
       });
     } catch (cause) {
-      showToast({ id: Date.now(), text: errorMessage(cause) });
+      showToast({ id: Date.now(), text: errorMessage(cause), failed: true });
     } finally {
       setBusy(false);
     }
@@ -306,6 +311,37 @@ function simpleCron(cron: string | null) {
   return match ? { minute: match[1], hour: match[2], day: match[3] } : null;
 }
 
+function Toggle({
+  label,
+  on,
+  text,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  on: boolean;
+  text: string;
+  disabled: boolean;
+  onChange(): void;
+}) {
+  return (
+    <span className="plan-toggle">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label={label}
+        className={`toggle${on ? ' toggle-on' : ''}`}
+        disabled={disabled}
+        onClick={onChange}
+      >
+        <span />
+      </button>
+      <span aria-hidden="true">{text}</span>
+    </span>
+  );
+}
+
 function Note({ change }: { change: { busy: boolean } }) {
   return change.busy ? <LoaderCircle size={14} className="spin" aria-label="Saving" /> : null;
 }
@@ -317,28 +353,24 @@ function ScheduleControls({ schedule, canPause }: { schedule: Schedule; canPause
   return (
     <div className="plan-controls">
       {canPause && (
-        <label className="plan-switch">
-          <input
-            type="checkbox"
-            role="switch"
-            aria-label={`${schedule.title} on`}
-            checked={schedule.enabled}
-            disabled={change.busy}
-            onChange={() =>
-              void change.apply(
-                { enabled: !schedule.enabled },
-                pauseNote('schedule', schedule.enabled, schedule.title),
-                { enabled: schedule.enabled },
-              )
-            }
-          />
-          <span aria-hidden="true" />
-          {schedule.enabled ? 'On' : 'Paused'}
-        </label>
+        <Toggle
+          label={`${schedule.title} on`}
+          on={schedule.enabled}
+          text={schedule.enabled ? 'On' : 'Paused'}
+          disabled={change.busy}
+          onChange={() =>
+            void change.apply(
+              { enabled: !schedule.enabled },
+              pauseNote('schedule', schedule.enabled, schedule.title),
+              { enabled: schedule.enabled },
+            )
+          }
+        />
       )}
       {cron && (
         <>
           <select
+            className="input plan-input"
             aria-label={`${schedule.title} days`}
             value={frequencies.some((item) => item.value === cron.day) ? cron.day : '*'}
             disabled={change.busy}
@@ -356,7 +388,8 @@ function ScheduleControls({ schedule, canPause }: { schedule: Schedule; canPause
               </option>
             ))}
           </select>
-          <input
+          <Input
+            className="plan-input"
             type="time"
             aria-label={`${schedule.title} time`}
             defaultValue={time}
@@ -388,25 +421,19 @@ function GoalControls({ goal }: { goal: Goal }) {
     });
   return (
     <div className="plan-controls">
-      <label className="plan-switch">
-        <input
-          type="checkbox"
-          role="switch"
-          aria-label={`${goal.title} active`}
-          checked={goal.status === 'active'}
-          disabled={change.busy}
-          onChange={() =>
-            void change.apply(
-              statusChange('goal', goal),
-              pauseNote('goal', goal.status === 'active', goal.title),
-              { status: goal.status },
-            )
-          }
-        />
-        <span aria-hidden="true" />
-        {goal.status === 'active' ? 'Active' : 'Paused'}
-      </label>
-      <span className="plan-range-value">{goal.progress}%</span>
+      <Toggle
+        label={`${goal.title} active`}
+        on={goal.status === 'active'}
+        text={goal.status === 'active' ? 'Active' : 'Paused'}
+        disabled={change.busy}
+        onChange={() =>
+          void change.apply(
+            statusChange('goal', goal),
+            pauseNote('goal', goal.status === 'active', goal.title),
+            { status: goal.status },
+          )
+        }
+      />
       <input
         className="plan-range"
         type="range"
@@ -423,6 +450,7 @@ function GoalControls({ goal }: { goal: Goal }) {
             save(event.currentTarget.value);
         }}
       />
+      <span className="plan-range-value">{goal.progress}%</span>
       <Note change={change} />
     </div>
   );
@@ -487,7 +515,7 @@ export function NewPlan({ kind, conversation }: { kind: Kind; conversation: AppS
         {kind === 'goal' ? 'New goal' : 'New schedule'}
       </Button>
       {open && (
-        <div className="new-plan-card">
+        <div className="connection-menu-options new-plan-card">
           <AskOtto subject={{ kind }} conversation={conversation} onClose={() => setOpen(false)} />
         </div>
       )}

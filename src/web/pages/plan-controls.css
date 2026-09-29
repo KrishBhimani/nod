@@ -1,17 +1,9 @@
 .secondary-heading-actions {
   position: relative;
 }
-.new-plan-card {
-  position: absolute;
-  z-index: 30;
-  top: calc(100% + 8px);
-  right: 0;
+.connection-menu-options.new-plan-card {
   width: min(460px, calc(100vw - 32px));
   padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  box-shadow: 0 12px 32px rgb(27 25 36 / 14%);
 }
 .ask-otto {
   display: grid;
@@ -29,52 +21,11 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 5px 5px 12px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--background);
-}
-.ask-otto-field:focus-within {
-  border-color: var(--ring);
-  box-shadow: 0 0 0 3px var(--focus-shadow);
-}
-.ask-otto-field > svg {
-  flex: none;
-  color: var(--accent);
-}
-.ask-otto-field input {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  outline: none;
-  background: transparent;
-  color: var(--foreground);
-  font-size: 13.5px;
-}
-.ask-otto-field input::placeholder {
-  color: var(--muted-foreground);
-}
-.ask-otto-field .button {
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
 }
 .ask-otto-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-}
-.ask-otto-chips button {
-  padding: 5px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-.ask-otto-chips button:hover {
-  border-color: var(--accent);
-  color: var(--foreground);
 }
 .ask-otto-exchange {
   display: grid;
@@ -83,9 +34,7 @@
 .ask-otto-request {
   justify-self: end;
   max-width: 85%;
-  padding: 7px 12px;
-  border-radius: 12px 12px 4px 12px;
-  background: var(--surface-subtle);
+  color: var(--muted-foreground);
   font-size: 13px;
   line-height: 1.5;
   overflow-wrap: anywhere;
@@ -113,9 +62,6 @@
   color: var(--muted-foreground);
   font-size: 13px;
 }
-.ask-otto-failed {
-  color: var(--accent);
-}
 .ask-otto-after {
   display: flex;
   flex-wrap: wrap;
@@ -128,125 +74,59 @@
   align-items: center;
   gap: 8px 12px;
   margin-top: 12px;
-  color: var(--text-secondary);
+  color: var(--muted-foreground);
   font-size: 12px;
 }
-.plan-controls select,
-.plan-controls input[type='time'] {
-  height: 30px;
-  padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--background);
-  color: var(--foreground);
-  font-size: 12.5px;
-  color-scheme: light dark;
+.plan-controls:empty {
+  display: none;
 }
-.plan-switch {
+.plan-controls .plan-input {
+  width: auto;
+  min-height: 32px;
+  padding: 4px 8px;
+  font-size: 12.5px;
+}
+.plan-toggle {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  cursor: pointer;
-}
-.plan-switch input {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
-}
-.plan-switch > span {
-  position: relative;
-  width: 30px;
-  height: 18px;
-  border-radius: 999px;
-  background: var(--border);
-  transition: background 140ms;
-}
-.plan-switch > span::after {
-  content: '';
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--surface);
-  transition: transform 140ms;
-}
-.plan-switch input:checked + span {
-  background: var(--primary);
-}
-.plan-switch input:checked + span::after {
-  transform: translateX(12px);
-}
-.plan-switch input:focus-visible + span {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
 }
 .plan-range {
   width: 140px;
-  accent-color: var(--primary);
 }
-.plan-toast-region {
+.plan-range-value {
+  min-width: 3ch;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+.plan-toast {
   position: fixed;
   z-index: 70;
   left: 50%;
   bottom: 20px;
-  transform: translateX(-50%);
   width: max-content;
   max-width: calc(100vw - 32px);
+  transform: translateX(-50%);
 }
-.plan-toast {
+.plan-toast .notice {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 8px 8px 16px;
-  border-radius: 12px;
-  background: var(--foreground);
-  color: var(--background);
-  box-shadow: 0 12px 32px rgb(27 25 36 / 22%);
-  font-size: 13px;
-  line-height: 1.45;
-  animation: plan-toast-in 160ms ease-out;
-}
-.plan-toast .button {
-  color: inherit;
-  font-weight: 700;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-.plan-toast .button:hover {
-  background: transparent;
-  color: inherit;
-}
-@keyframes plan-toast-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
+  margin: 0;
+  padding-block: 6px;
 }
 @media (max-width: 640px) {
-  .plan-toast-region {
+  .plan-toast {
     top: 64px;
     bottom: auto;
   }
-  .new-plan-card {
+  .connection-menu-options.new-plan-card {
     position: fixed;
     top: auto;
     left: 12px;
     right: 12px;
     bottom: 12px;
     width: auto;
+    max-width: none;
   }
-}
-.plan-range-value {
-  order: 1;
-  min-width: 3ch;
-  color: var(--foreground);
-  font-variant-numeric: tabular-nums;
-}
-.plan-controls .plan-range {
-  order: 0;
-}
-.plan-controls .plan-switch {
-  order: -1;
 }
