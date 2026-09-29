@@ -256,6 +256,10 @@
   --epr-highlight-color: var(--accent);
   max-height: calc(100dvh - 68px);
 }
+.message-reaction-options button:hover:not(:disabled),
+.message-reaction-options button:focus-visible {
+  background: var(--hover);
+}
 .message-reaction-options button[aria-checked='true'] {
   background: var(--accent-soft);
   color: var(--accent);

@@ -245,6 +245,11 @@ a svg {
   background: var(--hover);
   outline: none;
 }
+.menu > [role^='menuitem']:focus-visible,
+.menu-item:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
 .menu-item[aria-selected='true'],
 .menu > [aria-current='page'] {
   background: var(--accent-soft);
@@ -306,6 +311,7 @@ input[type='range']:disabled {
 }
 @media (max-width: 640px) {
   .input {
+    min-height: 44px;
     font-size: 16px;
   }
   .menu > [role^='menuitem'],

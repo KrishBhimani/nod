@@ -101,7 +101,7 @@ export function SearchField({
   clearLabel?: string;
 }) {
   return (
-    <label className={cn('search-field', className)}>
+    <div className={cn('search-field', className)}>
       <Search size={15} aria-hidden="true" />
       <Input ref={inputRef} {...props} />
       {onClear && props.value ? (
@@ -109,7 +109,7 @@ export function SearchField({
           <X size={15} aria-hidden="true" />
         </Button>
       ) : null}
-    </label>
+    </div>
   );
 }
 export function Switch({
@@ -123,19 +123,19 @@ export function Switch({
 }) {
   return (
     <button
+      {...props}
       type="button"
       role="switch"
       aria-checked={checked}
       className={cn('switch', className)}
       onClick={() => onCheckedChange(!checked)}
-      {...props}
     >
       <span />
     </button>
   );
 }
 export function Checkbox({ className, ...props }: React.InputHTMLAttributes<HTMLInputElement>) {
-  return <input type="checkbox" className={cn('checkbox', className)} {...props} />;
+  return <input {...props} type="checkbox" className={cn('checkbox', className)} />;
 }
 
 export function Notice({
