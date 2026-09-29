@@ -34,8 +34,15 @@ test(
     const spoken: string[] = [];
     const browserTasks: string[] = [];
     const phases = new Map<string, number>();
-    const taskIds: string[] = [];
-    const streams: Array<{ taskId: string; streamId?: string; done?: boolean; text: string }> = [];
+    const opened: string[] = [];
+    const threadIds = new Set<string>();
+    const streams: Array<{
+      threadId: string;
+      turnId: string;
+      streamId?: string;
+      done?: boolean;
+      text: string;
+    }> = [];
     const screen = Buffer.from('fixture-screen');
     let callback = '';
     let disposed = false;
@@ -87,8 +94,9 @@ test(
     };
     const agent: Agent = {
       open: async (input) => {
-        const phase = phases.get(input.taskId) ?? 0;
-        phases.set(input.taskId, phase + 1);
+        const phase = phases.get(input.threadId) ?? 0;
+        phases.set(input.threadId, phase + 1);
+        opened.push(input.turnId);
         return {
           resumed: phase > 0,
           abort: () => {},
@@ -135,7 +143,7 @@ test(
                 {
                   status: 'rejected',
                   code: 'read_only',
-                  message: 'This task can only read connected apps. It cannot change their data.',
+                  message: 'This turn can only read connected apps. It cannot change their data.',
                 },
               );
               input.onEvent({
@@ -144,8 +152,7 @@ test(
               });
               return;
             }
-            if (phase > 0) {
-              assert.match(currentInstruction, /Do not repeat/);
+            if (currentInstruction.includes('Do not repeat it.')) {
               input.onEvent({ type: 'message_start' });
               input.onEvent({ type: 'final', text: 'Approved action completed.' });
               input.onEvent({ type: 'message_end' });
@@ -201,7 +208,7 @@ test(
             input.onEvent({ type: 'final', text: 'Replacement providers completed the request.' });
             input.onEvent({ type: 'message_end' });
             const usage = createPiUsageTracker({
-              sessionId: input.taskId,
+              sessionId: input.threadId,
               provider: 'replacement',
               model: 'fixture',
               history: [],
@@ -262,7 +269,7 @@ test(
           },
           readArtifact: async (id, path) => readFile(join(dataRoot, 'workspaces', id, path)),
           open: (input) => ({
-            path: `/replacement/${input.taskId}`,
+            path: `/replacement/${input.threadId}`,
             instructions: 'Synthetic replacement workspace.',
             execute: async () => '42',
             readFile: (path) => readFile(join(input.workspacePath, path), 'utf8'),
@@ -304,12 +311,12 @@ test(
     };
     const waitFor = async (id: string, status: string) => {
       for (let attempt = 0; attempt < 300; attempt += 1) {
-        const row = (await pool.query('SELECT status,error FROM tasks WHERE id=$1', [id])).rows[0];
+        const row = (await pool.query('SELECT status,error FROM turns WHERE id=$1', [id])).rows[0];
         if (row?.status === status) return;
         assert.notEqual(row?.status, 'failed', row?.error);
         await delay(20);
       }
-      assert.fail(`Task did not reach ${status}.`);
+      assert.fail(`Turn did not reach ${status}.`);
     };
     events.on('event', onEvent);
     try {
@@ -322,12 +329,11 @@ test(
       );
       assert.equal(prepared, 2);
       const welcome = (
-        await pool.query("SELECT id FROM tasks WHERE source_id='onboarding:welcome'")
+        await pool.query("SELECT id FROM turns WHERE source_id='onboarding:welcome'")
       ).rows[0].id as string;
-      taskIds.push(welcome);
       await waitFor(welcome, 'succeeded');
       assert.deepEqual(
-        (await pool.query('SELECT role,text FROM messages WHERE task_id=$1', [welcome])).rows,
+        (await pool.query('SELECT role,text FROM messages WHERE turn_id=$1', [welcome])).rows,
         [{ role: 'assistant', text: welcomeGreeting(undefined, []) }],
       );
       assert.equal((await request('POST', '/api/apps/gmail/connect')).statusCode, 200);
@@ -337,22 +343,23 @@ test(
       assert.equal((await request('GET', connected.pathname + connected.search)).statusCode, 302);
       const submitted = await request('POST', '/api/messages', { text: 'Fixture read task' });
       assert.equal(submitted.statusCode, 200);
-      const id = submitted.json().taskId as string;
-      taskIds.push(id);
+      const id = submitted.json().turnId as string;
+      const threadId = submitted.json().threadId as string;
+      threadIds.add(threadId);
       await waitFor(id, 'succeeded');
       assert.deepEqual(integrationCalls, [
         { action: 'GMAIL_FETCH_EMAILS', args: { max_results: 1 } },
       ]);
       assert.deepEqual(spoken, ['Replacement speech output.']);
-      assert.deepEqual(browserTasks, [id, id]);
-      const screenResponse = await request('GET', `/api/inspector/screen?taskId=${id}`);
+      assert.deepEqual(browserTasks, [threadId, threadId]);
+      const screenResponse = await request('GET', '/api/inspector/screen');
       assert.equal(screenResponse.statusCode, 200);
       assert.deepEqual(screenResponse.rawPayload, screen);
       const catalog = (await request('GET', '/api/inspector/tools')).json();
       assert.equal(catalog.captureEnabled, true);
       assert.ok(catalog.tools.some((tool: { name: string }) => tool.name === 'apps'));
       const observations = (
-        await request('GET', `/api/inspector/observations?taskId=${id}`)
+        await request('GET', `/api/inspector/observations?turnId=${id}`)
       ).json();
       assert.ok(
         observations.calls.some(
@@ -402,8 +409,8 @@ test(
       );
       const artifacts = (
         await pool.query(
-          'SELECT id,name FROM artifacts WHERE owner_id=$1 AND task_id=$2 ORDER BY name',
-          [ownerId, id],
+          'SELECT id,name FROM artifacts WHERE owner_id=$1 AND thread_id=$2 ORDER BY name',
+          [ownerId, threadId],
         )
       ).rows;
       assert.deepEqual(
@@ -426,12 +433,12 @@ test(
       );
       const next = await request('POST', '/api/messages', { text: 'Fixture write task' });
       assert.equal(next.statusCode, 200);
-      const nextId = next.json().taskId as string;
-      taskIds.push(nextId);
-      await waitFor(nextId, 'waiting_user');
+      const nextId = next.json().turnId as string;
+      assert.equal(next.json().threadId, threadId);
+      await waitFor(nextId, 'waiting');
       assert.equal(integrationCalls.length, 1);
       const approval = (
-        await pool.query('SELECT id,confirmation_message_id FROM approvals WHERE task_id=$1', [
+        await pool.query('SELECT id,confirmation_message_id FROM approvals WHERE turn_id=$1', [
           nextId,
         ])
       ).rows[0];
@@ -440,34 +447,40 @@ test(
         replyToMessageId: approval.confirmation_message_id,
         clientMessageId: randomUUID(),
       };
-      assert.equal((await request('POST', '/api/messages', confirmation)).statusCode, 200);
-      await waitFor(nextId, 'succeeded');
+      const confirmed = await request('POST', '/api/messages', confirmation);
+      assert.equal(confirmed.statusCode, 200);
+      const executionId = confirmed.json().turnId as string;
+      assert.notEqual(executionId, nextId);
+      await waitFor(executionId, 'succeeded');
       assert.deepEqual(integrationCalls.at(-1), {
         action: 'GMAIL_SEND_EMAIL',
         args: { recipient_email: 'fixture@example.test', subject: 'Approved fixture' },
       });
       assert.equal(integrationCalls.length, 2);
-      assert.equal((await request('POST', '/api/messages', confirmation)).json().taskId, nextId);
+      assert.equal(
+        (await request('POST', '/api/messages', confirmation)).json().turnId,
+        executionId,
+      );
       assert.equal(integrationCalls.length, 2);
       assert.equal(
         (await pool.query('SELECT status FROM approvals WHERE id=$1', [approval.id])).rows[0]
           .status,
         'completed',
       );
-      assert.equal(phases.get(nextId), 2);
+      assert.equal(opened.filter((turn) => turn === nextId).length, 1);
+      assert.equal(opened.filter((turn) => turn === executionId).length, 1);
       const memoryRequest = await request('POST', '/api/messages', {
         text: 'Fixture memory task: Review whether I prefer concise replies.',
       });
       assert.equal(memoryRequest.statusCode, 200);
-      const memoryTaskId = memoryRequest.json().taskId as string;
-      taskIds.push(memoryTaskId);
-      await waitFor(memoryTaskId, 'waiting_user');
+      const memoryTaskId = memoryRequest.json().turnId as string;
+      await waitFor(memoryTaskId, 'waiting');
       const source = (
-        await pool.query("SELECT id FROM messages WHERE task_id=$1 AND role='user'", [memoryTaskId])
+        await pool.query("SELECT id FROM messages WHERE turn_id=$1 AND role='user'", [memoryTaskId])
       ).rows[0];
       const memoryApproval = (
         await pool.query(
-          'SELECT id,action,args,source_message_id,confirmation_message_id FROM approvals WHERE task_id=$1',
+          'SELECT id,action,args,source_message_id,confirmation_message_id FROM approvals WHERE turn_id=$1',
           [memoryTaskId],
         )
       ).rows[0];
@@ -479,8 +492,7 @@ test(
         text: 'Fixture unrelated message',
       });
       assert.equal(unrelated.statusCode, 200);
-      const unrelatedTaskId = unrelated.json().taskId as string;
-      taskIds.push(unrelatedTaskId);
+      const unrelatedTaskId = unrelated.json().turnId as string;
       await waitFor(unrelatedTaskId, 'succeeded');
       const latestUser = (
         await pool.query(
@@ -488,37 +500,34 @@ test(
         )
       ).rows[0];
       assert.notEqual(latestUser.id, source.id);
-      assert.equal(
-        (
-          await request('POST', '/api/messages', {
-            text: 'Yes',
-            replyToMessageId: memoryApproval.confirmation_message_id,
-            clientMessageId: randomUUID(),
-          })
-        ).statusCode,
-        200,
-      );
-      await waitFor(memoryTaskId, 'succeeded');
+      const memoryConfirmation = await request('POST', '/api/messages', {
+        text: 'Yes',
+        replyToMessageId: memoryApproval.confirmation_message_id,
+        clientMessageId: randomUUID(),
+      });
+      assert.equal(memoryConfirmation.statusCode, 200);
+      const memoryExecutionId = memoryConfirmation.json().turnId as string;
+      await waitFor(memoryExecutionId, 'succeeded');
       const memories = (await pool.query('SELECT text,source_message_id FROM memory_facts')).rows;
       assert.deepEqual(memories, [
         { text: 'I prefer concise replies.', source_message_id: source.id },
       ]);
       const savedMemory = (await request('GET', '/api/memory')).json();
       assert.equal(savedMemory[0].sourceMessageId, source.id);
-      assert.equal(phases.get(memoryTaskId), 2);
+      assert.equal(opened.filter((turn) => turn === memoryTaskId).length, 1);
+      assert.equal(opened.filter((turn) => turn === memoryExecutionId).length, 1);
       const learnedRequest = await request('POST', '/api/messages', {
         text: 'I prefer short messages.',
       });
       assert.equal(learnedRequest.statusCode, 200);
-      const learnedTaskId = learnedRequest.json().taskId as string;
-      taskIds.push(learnedTaskId);
+      const learnedTaskId = learnedRequest.json().turnId as string;
       await waitFor(learnedTaskId, 'succeeded');
       assert.equal(
-        (await pool.query('SELECT id FROM approvals WHERE task_id=$1', [learnedTaskId])).rowCount,
+        (await pool.query('SELECT id FROM approvals WHERE turn_id=$1', [learnedTaskId])).rowCount,
         0,
       );
       const learnedSource = (
-        await pool.query("SELECT id FROM messages WHERE task_id=$1 AND role='user'", [
+        await pool.query("SELECT id FROM messages WHERE turn_id=$1 AND role='user'", [
           learnedTaskId,
         ])
       ).rows[0];
@@ -530,15 +539,15 @@ test(
         ).rows[0].source_message_id,
         learnedSource.id,
       );
-      assert.equal(phases.get(learnedTaskId), 1);
+      assert.equal(opened.filter((turn) => turn === learnedTaskId).length, 1);
       const onboarding = await request('POST', '/api/onboarding', {});
       assert.equal(onboarding.statusCode, 200);
-      const onboardingId = onboarding.json().taskId as string;
-      taskIds.push(onboardingId);
+      const onboardingId = onboarding.json().turnId as string;
+      assert.equal(onboarding.json().threadId, threadId);
       await waitFor(onboardingId, 'succeeded');
       assert.equal(
         (
-          await pool.query("SELECT text FROM messages WHERE task_id=$1 AND role='user'", [
+          await pool.query("SELECT text FROM messages WHERE turn_id=$1 AND role='user'", [
             onboardingId,
           ])
         ).rows[0].text,
@@ -555,7 +564,7 @@ test(
         false,
       );
       assert.equal(
-        (await pool.query('SELECT id FROM approvals WHERE task_id=$1', [onboardingId])).rowCount,
+        (await pool.query('SELECT id FROM approvals WHERE turn_id=$1', [onboardingId])).rowCount,
         0,
       );
     } finally {
@@ -566,7 +575,9 @@ test(
       const files = (await pool.query('SELECT storage_path FROM artifacts')).rows;
       await Promise.all(files.map((file) => rm(String(file.storage_path), { force: true })));
       await Promise.all(
-        taskIds.map((id) => rm(join(dataRoot, 'workspaces', id), { recursive: true, force: true })),
+        [...threadIds].map((id) =>
+          rm(join(dataRoot, 'workspaces', id), { recursive: true, force: true }),
+        ),
       );
       await pool.end();
       await admin.query(`DROP SCHEMA ${bossSchema} CASCADE`);

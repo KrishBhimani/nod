@@ -653,8 +653,8 @@ test('allocation CAS rejects foreign owner, generation and resource replacement'
   await runAcceptance(f.journal, f.driver, lifecycleJourney);
   const record = (await f.journal.store.read(f.journal.plan.ownerId, 'computer'))!;
   for (const change of [
-    { ownerId: f.journal.plan.taskId },
-    { generation: f.journal.plan.taskId },
+    { ownerId: f.journal.plan.threadId },
+    { generation: f.journal.plan.threadId },
     { resourceId: 'replacement' },
   ]) {
     await assert.rejects(
@@ -757,7 +757,7 @@ for (const pauseDuringHold of [false, true])
               };
             }
             const task = input.command.match(/mkdir -p \/workspace\/([a-f0-9-]+)/)?.[1];
-            assert.equal(task, f.journal.plan.taskId);
+            assert.equal(task, f.journal.plan.threadId);
             const directory = join(f.root, 'workspace');
             await mkdir(directory, { recursive: true });
             const child = spawn('python3', ['-u', '-c', workspaceCommandProgram], {

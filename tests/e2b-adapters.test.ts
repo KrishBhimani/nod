@@ -47,7 +47,7 @@ async function fixture() {
         currentSession: () => session,
         status: () => 'Synthetic browser',
         act: async (id, input, signal) => {
-          session = { taskId: id, lastActivityAt: new Date().toISOString() };
+          session = { threadId: id, lastActivityAt: new Date().toISOString() };
           calls.push({ method: 'act', input });
           await action?.();
           if (holdAction) {
@@ -251,14 +251,14 @@ test('E2B shares one owned sandbox across private browser and supervised workspa
       'Synthetic page',
     );
     await first.computer.injectCredentials({
-      taskId: 'task-one',
+      threadId: 'task-one',
       origin: 'https://example.test',
       password: 'synthetic private value',
     });
     assert.equal((await first.computer.screenshot('task-one'))?.toString(), 'masked image');
     assert.equal((await first.computer.signInScreenshot!('task-one'))?.toString(), 'private image');
     const workspace = first.workspace.open({
-      taskId: 'task-one',
+      threadId: 'task-one',
       workspacePath: join(f.root, 'workspaces/task-one'),
       signal: new AbortController().signal,
     });
@@ -274,7 +274,7 @@ test('E2B shares one owned sandbox across private browser and supervised workspa
     );
     const connectedAbort = new AbortController();
     const connected = first.workspace.open({
-      taskId: 'task-one',
+      threadId: 'task-one',
       workspacePath: join(f.root, 'workspaces/task-one'),
       signal: connectedAbort.signal,
     });
@@ -321,8 +321,8 @@ test('E2B shares one owned sandbox across private browser and supervised workspa
       ),
       true,
     );
-    assert.equal(first.computer.currentSession!()?.taskId, 'task-one');
-    assert.equal(second.computer.currentSession!()?.taskId, 'task-two');
+    assert.equal(first.computer.currentSession!()?.threadId, 'task-one');
+    assert.equal(second.computer.currentSession!()?.threadId, 'task-two');
   } finally {
     await Promise.all([
       first.computer.dispose(),
@@ -428,7 +428,7 @@ test('E2B uncertain connections persist a fence and do not expose SDK errors', a
     assert.equal(f.connections(), 0);
     await assert.rejects(replacement.dispose(), /recovery/);
     const workspace = adapter.workspace.open({
-      taskId: 'task',
+      threadId: 'task',
       workspacePath: join(f.root, 'workspaces/task'),
       signal: new AbortController().signal,
     });
@@ -490,7 +490,7 @@ test('E2B shell cancellation drains its TERM-resistant process group before retu
   const adapter = f.create('owner');
   const abort = new AbortController();
   const workspace = adapter.workspace.open({
-    taskId: 'task',
+    threadId: 'task',
     workspacePath: join(f.root, 'workspaces/task'),
     signal: abort.signal,
   });
@@ -525,7 +525,7 @@ test('E2B configuration and workspace paths reject traversal before allocating a
     assert.throws(
       () =>
         adapter.workspace.open({
-          taskId: '../foreign',
+          threadId: '../foreign',
           workspacePath: '/tmp/foreign',
           signal: new AbortController().signal,
         }),
@@ -534,7 +534,7 @@ test('E2B configuration and workspace paths reject traversal before allocating a
     assert.throws(
       () =>
         adapter.workspace.open({
-          taskId: 'task',
+          threadId: 'task',
           workspacePath: '/tmp/foreign',
           signal: new AbortController().signal,
         }),
@@ -586,7 +586,7 @@ test('E2B missing terminal acknowledgement stays fenced after command transport 
   const f = await fixture();
   const adapter = f.create('owner');
   const workspace = adapter.workspace.open({
-    taskId: 'task',
+    threadId: 'task',
     workspacePath: join(f.root, 'workspaces/task'),
     signal: new AbortController().signal,
   });
@@ -772,7 +772,7 @@ test('E2B onboarding preparation shares one protected allocation with concurrent
     assert.equal(f.requests.length, 0);
     const browser = adapter.computer.act('task', { action: 'snapshot' });
     const workspace = adapter.workspace.open({
-      taskId: 'task',
+      threadId: 'task',
       workspacePath: join(f.root, 'workspaces/task'),
       signal: new AbortController().signal,
     });
@@ -810,7 +810,7 @@ test('E2B failed readiness preserves the allocated ID and fences both tools with
     assert.ok(failed.leaseId);
     await assert.rejects(adapter.computer.act('task', { action: 'snapshot' }), /safely/);
     const workspace = adapter.workspace.open({
-      taskId: 'task',
+      threadId: 'task',
       workspacePath: join(f.root, 'workspaces/task'),
       signal: new AbortController().signal,
     });
@@ -865,7 +865,7 @@ test('E2B individual capability disposal retains the shared lease until its peer
     const f = await fixture();
     const adapter = f.create('owner');
     const workspace = adapter.workspace.open({
-      taskId: 'task',
+      threadId: 'task',
       workspacePath: join(f.root, 'workspaces/task'),
       signal: new AbortController().signal,
     });
@@ -914,7 +914,7 @@ test('E2B deployment pause waits for browser quiescence and SDK pause before a s
     await paused.promise;
   });
   const workspace = adapter.workspace.open({
-    taskId: 'task',
+    threadId: 'task',
     workspacePath: join(f.root, 'workspaces/task'),
     signal: new AbortController().signal,
   });
@@ -1109,7 +1109,7 @@ test('E2B deployment pause leaves an accepted workspace command running and refu
   const f = await fixture();
   const adapter = f.create('owner');
   const workspace = adapter.workspace.open({
-    taskId: 'task',
+    threadId: 'task',
     workspacePath: join(f.root, 'workspaces/task'),
     signal: new AbortController().signal,
   });
@@ -1175,7 +1175,7 @@ test('one E2B transport failure fences an already accepted peer capability witho
     assert.equal(f.calls.filter((call) => call.method === 'act').length, 1);
     f.drop();
     const workspace = adapter.workspace.open({
-      taskId: 'task',
+      threadId: 'task',
       workspacePath: join(f.root, 'workspaces/task'),
       signal: new AbortController().signal,
     });

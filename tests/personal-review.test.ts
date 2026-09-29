@@ -35,8 +35,8 @@ test(
       {
         agent: {
           async open(options) {
-            const phase = phases.get(options.taskId) ?? 0;
-            phases.set(options.taskId, phase + 1);
+            const phase = phases.get(options.turnId) ?? 0;
+            phases.set(options.turnId, phase + 1);
             return {
               resumed: phase > 0,
               abort() {},
@@ -90,12 +90,12 @@ test(
       application.app.inject({ method, url: path, headers, payload });
     async function waitFor(id: string, status: string) {
       for (let attempt = 0; attempt < 300; attempt++) {
-        const task = (await pool.query('SELECT status,error FROM tasks WHERE id=$1', [id])).rows[0];
-        if (task.status === status) return;
-        assert.notEqual(task.status, 'failed', task.error);
+        const turn = (await pool.query('SELECT status,error FROM turns WHERE id=$1', [id])).rows[0];
+        if (turn.status === status) return;
+        assert.notEqual(turn.status, 'failed', turn.error);
         await delay(20);
       }
-      assert.fail(`Synthetic task did not become ${status}.`);
+      assert.fail(`Synthetic turn did not become ${status}.`);
     }
     async function propose(
       action: string,
@@ -107,16 +107,16 @@ test(
       plans.set(text, { action, args, invalid });
       const response = await request('POST', '/api/messages', { text });
       assert.equal(response.statusCode, 200);
-      const id = response.json().taskId as string;
-      ids.push(id);
+      const id = response.json().turnId as string;
+      ids.push(response.json().threadId as string);
       await waitFor(
         id,
-        invalid || directText || /^(goal|schedule)_/.test(action) ? 'succeeded' : 'waiting_user',
+        invalid || directText || /^(goal|schedule)_/.test(action) ? 'succeeded' : 'waiting',
       );
       return id;
     }
     const approvalsFor = async (id: string) =>
-      (await pool.query('SELECT * FROM approvals WHERE task_id=$1', [id])).rows;
+      (await pool.query('SELECT * FROM approvals WHERE turn_id=$1', [id])).rows;
     async function pendingPlan(action: string, args: Record<string, unknown>) {
       const id = await propose('memory_propose', { text: 'Synthetic pending plan fixture' });
       const [pending] = await approvalsFor(id);
@@ -194,10 +194,10 @@ test(
             ['schedule_update', { id: randomUUID(), enabled: false }],
             ['schedule_cancel', { id: randomUUID(), unexpected: true }],
           ];
-          const taskIds = await Promise.all(
+          const turnIds = await Promise.all(
             cases.map(([action, args]) => propose(action, args, true)),
           );
-          for (const id of taskIds) assert.equal((await approvalsFor(id)).length, 0);
+          for (const id of turnIds) assert.equal((await approvalsFor(id)).length, 0);
           assert.equal((await application.personal.listGoals()).length, 1);
           assert.equal((await application.personal.listSchedules()).length, 0);
         },
@@ -291,12 +291,12 @@ test(
             );
           }
           const selected = candidates[1];
-          const taskId = await propose('GMAIL_SEND_EMAIL', {
+          const turnId = await propose('GMAIL_SEND_EMAIL', {
             connectionId: selected.id,
             recipient_email: 'fixture@example.test',
             subject: 'Synthetic review',
           });
-          const [approval] = await approvalsFor(taskId);
+          const [approval] = await approvalsFor(turnId);
           const question = (
             await pool.query('SELECT text FROM messages WHERE id=$1', [
               approval.confirmation_message_id,
@@ -323,7 +323,7 @@ test(
             ).statusCode,
             404,
           );
-          assert.equal((await approvalsFor(taskId))[0].status, 'pending');
+          assert.equal((await approvalsFor(turnId))[0].status, 'pending');
           await assert.rejects(
             application.integrations.describeApproval('foreign', 'GMAIL_SEND_EMAIL', {
               connectionId: selected.id,
@@ -334,17 +334,17 @@ test(
       await t.test(
         'an explicit reversible goal request executes directly and retains validation and user provenance',
         async () => {
-          const taskId = await propose(
+          const turnId = await propose(
             'goal_create',
             { title: 'Direct fixture', nextAction: 'Review the plan' },
             false,
             'Create a goal titled Direct fixture with next action Review the plan.',
           );
-          const [action] = await approvalsFor(taskId);
+          const [action] = await approvalsFor(turnId);
           assert.equal(action.status, 'completed');
           assert.equal(action.confirmation_message_id, null);
           const source = (
-            await pool.query("SELECT id FROM messages WHERE task_id=$1 AND role='user'", [taskId])
+            await pool.query("SELECT id FROM messages WHERE turn_id=$1 AND role='user'", [turnId])
           ).rows[0];
           assert.equal(action.source_message_id, source.id);
           const goals = await application.personal.listGoals();
@@ -379,7 +379,7 @@ test(
           );
           for (const status of ['paused', 'active']) {
             const current = (await application.personal.listGoals())[0];
-            const taskId = await propose(
+            const turnId = await propose(
               'goal_update',
               { id: goal.id, status },
               false,
@@ -390,11 +390,13 @@ test(
             assert.equal(reloaded.progress, 25);
             assert.equal(reloaded.nextAction, 'Prepare the Northstar summary.');
             assert.equal(reloaded.targetDate, '2026-10-02');
-            const [saved] = await approvalsFor(taskId);
+            const [saved] = await approvalsFor(turnId);
             assert.equal(saved.status, 'completed');
             assert.equal(saved.confirmation_message_id, null);
             const source = (
-              await pool.query('SELECT source_message_id FROM tasks WHERE id=$1', [taskId])
+              await pool.query('SELECT message_id AS source_message_id FROM turns WHERE id=$1', [
+                turnId,
+              ])
             ).rows[0];
             assert.equal(saved.source_message_id, source.source_message_id);
           }
@@ -405,7 +407,7 @@ test(
         'an explicit goal completion persists without another confirmation',
         async () => {
           const goal = (await application.personal.listGoals())[0];
-          const taskId = await propose(
+          const turnId = await propose(
             'goal_update',
             { id: goal.id, status: 'completed', progress: 100 },
             false,
@@ -416,11 +418,13 @@ test(
           assert.equal(reloaded.progress, 100);
           assert.equal(reloaded.nextAction, goal.nextAction);
           assert.equal(reloaded.targetDate, goal.targetDate);
-          const [saved] = await approvalsFor(taskId);
+          const [saved] = await approvalsFor(turnId);
           assert.equal(saved.status, 'completed');
           assert.equal(saved.confirmation_message_id, null);
           const source = (
-            await pool.query('SELECT source_message_id FROM tasks WHERE id=$1', [taskId])
+            await pool.query('SELECT message_id AS source_message_id FROM turns WHERE id=$1', [
+              turnId,
+            ])
           ).rows[0];
           assert.equal(saved.source_message_id, source.source_message_id);
         },
@@ -444,7 +448,7 @@ test(
           const schedule = (await application.personal.listSchedules())[0];
           for (const enabled of [false, true]) {
             const current = (await application.personal.listSchedules())[0];
-            const taskId = await propose(
+            const turnId = await propose(
               enabled ? 'schedule_update' : 'schedule_cancel',
               enabled ? { id: schedule.id, enabled } : { id: schedule.id },
               false,
@@ -456,12 +460,12 @@ test(
             assert.equal(reloaded.timeZone, 'Europe/Lisbon');
             assert.equal(reloaded.prompt, 'Review the synthetic invoices.');
             assert.equal(Boolean(reloaded.nextRun), enabled);
-            const [saved] = await approvalsFor(taskId);
+            const [saved] = await approvalsFor(turnId);
             assert.equal(saved.status, 'completed');
             assert.equal(saved.confirmation_message_id, null);
           }
           const current = (await application.personal.listSchedules())[0];
-          const taskId = await propose(
+          const turnId = await propose(
             'schedule_update',
             { id: schedule.id, cron: '0 10 * * 1' },
             false,
@@ -471,11 +475,13 @@ test(
           assert.equal(reloaded.cron, '0 10 * * 1');
           assert.equal(reloaded.timeZone, 'Europe/Lisbon');
           assert.equal(reloaded.enabled, true);
-          const [saved] = await approvalsFor(taskId);
+          const [saved] = await approvalsFor(turnId);
           assert.equal(saved.status, 'completed');
           assert.equal(saved.confirmation_message_id, null);
           const source = (
-            await pool.query('SELECT source_message_id FROM tasks WHERE id=$1', [taskId])
+            await pool.query('SELECT message_id AS source_message_id FROM turns WHERE id=$1', [
+              turnId,
+            ])
           ).rows[0];
           assert.equal(saved.source_message_id, source.source_message_id);
         },

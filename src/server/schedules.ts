@@ -7,10 +7,9 @@ import type {
   Schedule,
   ScheduleObservation,
   ScheduleRun,
-  TaskStatus,
+  TurnStatus,
 } from '../shared/contracts.ts';
-import type { submitTask } from './tasks.ts';
-import { currentConversationSql } from './conversations.ts';
+import { activeThreadSql, type enqueueTurn } from './thread.ts';
 import type { WorkConsumers } from './work-admission.ts';
 
 const queue = 'scheduled-task';
@@ -66,7 +65,7 @@ export interface ScheduleDependencies {
     'createQueue' | 'work' | 'send' | 'cancel' | 'getJobById' | 'unschedule' | 'previewSchedule'
   >;
   stopConsumer?: (id: string) => Promise<void>;
-  submitTask: typeof submitTask;
+  enqueueTurn: typeof enqueueTurn;
   refresh(): void;
   now?: () => Date;
 }
@@ -100,11 +99,11 @@ interface RunRow {
   id: string;
   scheduleId: string;
   title: string;
-  taskId: string;
+  turnId: string;
   scheduledFor: Date;
   timeZone: string;
   createdAt: Date;
-  status: TaskStatus;
+  status: TurnStatus;
   error: string | null;
   messageId: string | null;
   messageText: string | null;
@@ -127,7 +126,7 @@ function runValue(row: RunRow): ScheduleRun {
     id: row.id,
     scheduleId: row.scheduleId,
     title: row.title,
-    taskId: row.taskId,
+    turnId: row.turnId,
     scheduledFor: row.scheduledFor.toISOString(),
     timeZone: row.timeZone,
     createdAt: row.createdAt.toISOString(),
@@ -143,7 +142,7 @@ function runValue(row: RunRow): ScheduleRun {
 }
 
 export function createSchedules(dependencies: ScheduleDependencies) {
-  const { pool, ownerId, scheduler, submitTask, refresh } = dependencies;
+  const { pool, ownerId, scheduler, enqueueTurn, refresh } = dependencies;
   const now = dependencies.now ?? (() => new Date());
   let workerStarted = false;
 
@@ -246,25 +245,18 @@ export function createSchedules(dependencies: ScheduleDependencies) {
       )
         return false;
       job.signal.throwIfAborted();
-      const taskId = await submitTask(
+      const turnId = await enqueueTurn(
         `Scheduled task: ${row.title}\n${row.prompt}\nOnly send a message if there is a useful result, a problem or a necessary question.`,
-        [],
-        undefined,
-        true,
         {
           sourceId: `schedule:${row.id}:${row.revision}:${job.data.scheduledFor}`,
           source: 'schedule',
           channel: row.deliveryChannel,
+          background: true,
           client,
         },
       );
-      if (row.channelSourceId)
-        await client.query(
-          'INSERT INTO channel_task_routes(task_id,owner_id,source_id) VALUES($1,$2,$3)',
-          [taskId, ownerId, row.channelSourceId],
-        );
       await client.query(
-        `INSERT INTO schedule_runs(id,owner_id,schedule_id,schedule_revision,job_id,title,task_id,scheduled_for,time_zone,authority_instruction,authority_source_message_id,action_prompt,baseline_observation)
+        `INSERT INTO schedule_runs(id,owner_id,schedule_id,schedule_revision,job_id,title,turn_id,scheduled_for,time_zone,authority_instruction,authority_source_message_id,action_prompt,baseline_observation)
          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
         [
           randomUUID(),
@@ -273,7 +265,7 @@ export function createSchedules(dependencies: ScheduleDependencies) {
           row.revision,
           job.id,
           row.title,
-          taskId,
+          turnId,
           row.nextRun,
           row.timeZone,
           row.authorityInstruction,
@@ -322,10 +314,17 @@ export function createSchedules(dependencies: ScheduleDependencies) {
       CREATE TABLE IF NOT EXISTS schedule_runs (
         id uuid PRIMARY KEY, owner_id text NOT NULL, schedule_id uuid NOT NULL,
         schedule_revision integer NOT NULL, job_id uuid UNIQUE NOT NULL,
-        title text NOT NULL, task_id uuid NOT NULL, scheduled_for timestamptz NOT NULL,
+        title text NOT NULL, turn_id uuid REFERENCES turns(id), scheduled_for timestamptz NOT NULL,
         time_zone text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
         UNIQUE(schedule_id,schedule_revision,scheduled_for)
       );
+      ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS turn_id uuid REFERENCES turns(id);
+      DO $$
+      BEGIN
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='schedule_runs' AND column_name='task_id') THEN
+          ALTER TABLE schedule_runs ALTER COLUMN task_id DROP NOT NULL;
+        END IF;
+      END $$;
       ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS authority_instruction text;
       ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS authority_source_message_id uuid;
       ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS action_prompt text;
@@ -334,6 +333,7 @@ export function createSchedules(dependencies: ScheduleDependencies) {
       ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS observed_at timestamptz;
       CREATE INDEX IF NOT EXISTS schedule_runs_owner_time ON schedule_runs(owner_id,created_at DESC,id DESC);
       CREATE INDEX IF NOT EXISTS schedule_runs_schedule ON schedule_runs(owner_id,schedule_id,created_at DESC,id DESC);
+      CREATE INDEX IF NOT EXISTS schedule_runs_turn ON schedule_runs(owner_id,turn_id);
     `);
     await scheduler.createQueue(queue, { retryLimit: 5, retryDelay: 15, retryBackoff: true });
     const schedules = await pool.query<{ id: string }>(
@@ -397,15 +397,15 @@ export function createSchedules(dependencies: ScheduleDependencies) {
     }
     const rows = (
       await pool.query<RunRow>(
-        `SELECT r.id,r.schedule_id AS "scheduleId",r.title,r.task_id AS "taskId",
+        `SELECT r.id,r.schedule_id AS "scheduleId",r.title,r.turn_id AS "turnId",
            r.scheduled_for AS "scheduledFor",r.time_zone AS "timeZone",r.created_at AS "createdAt",
-           t.status,t.error,r.observation,r.observed_at AS "observedAt",m.id AS "messageId",m.text AS "messageText",
+           u.status,u.error,r.observation,r.observed_at AS "observedAt",m.id AS "messageId",m.text AS "messageText",
            to_char(r.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "cursorAt"
-         FROM schedule_runs r JOIN tasks t ON t.id=r.task_id AND t.owner_id=r.owner_id
+         FROM schedule_runs r JOIN turns u ON u.id=r.turn_id AND u.owner_id=r.owner_id
          LEFT JOIN LATERAL (
            SELECT m.id,left(m.text,4000) AS text FROM messages m
-           WHERE m.task_id=t.id AND m.owner_id=t.owner_id AND m.role='assistant'
-             AND t.channel='web' AND ${currentConversationSql()}
+           WHERE m.turn_id=u.id AND m.owner_id=u.owner_id AND m.role='assistant'
+             AND u.channel='web' AND ${activeThreadSql('m')}
            ORDER BY date_trunc('milliseconds',m.created_at),m.id LIMIT 1
          ) m ON true
          WHERE r.owner_id=$1 AND ($2::uuid IS NULL OR r.schedule_id=$2)
@@ -433,9 +433,8 @@ export function createSchedules(dependencies: ScheduleDependencies) {
     };
   }
 
-  async function recordObservation(taskId: string, revision: number, raw: unknown) {
-    z.uuid().parse(taskId);
-    z.number().int().nonnegative().parse(revision);
+  async function recordObservation(turnId: string, raw: unknown) {
+    z.uuid().parse(turnId);
     const input = observationSchema.parse(raw);
     const result = await transaction(async (client) => {
       const row = (
@@ -447,10 +446,11 @@ export function createSchedules(dependencies: ScheduleDependencies) {
         }>(
           `SELECT r.id,r.schedule_id AS "scheduleId",r.baseline_observation AS "baselineObservation",
              r.observation
-           FROM schedule_runs r JOIN tasks t ON t.id=r.task_id AND t.owner_id=r.owner_id
-           WHERE r.task_id=$1 AND r.owner_id=$2 AND t.revision=$3 AND t.status='running'
-           FOR UPDATE OF r,t`,
-          [taskId, ownerId, revision],
+           FROM schedule_runs r JOIN turns u ON u.id=r.turn_id AND u.owner_id=r.owner_id
+           JOIN threads th ON th.id=u.thread_id AND th.archived_at IS NULL
+           WHERE r.turn_id=$1 AND r.owner_id=$2 AND u.status='running'
+           FOR UPDATE OF r,u`,
+          [turnId, ownerId],
         )
       ).rows[0];
       if (!row) throw invalid('This task has no active scheduled run.');
@@ -545,25 +545,28 @@ export function createSchedules(dependencies: ScheduleDependencies) {
 
   async function deliveryRoute(
     client: PoolClient,
-    provenance?: { taskId?: string; sourceMessageId: string | null },
+    provenance?: { turnId?: string; sourceMessageId: string | null },
   ) {
-    if (!provenance?.taskId) return { channel: 'web', sourceId: null };
-    const taskId = z.uuid().parse(provenance.taskId);
+    if (!provenance?.turnId) return { channel: 'web', sourceId: null };
+    const turnId = z.uuid().parse(provenance.turnId);
     const sourceMessageId = z.uuid().nullable().parse(provenance.sourceMessageId);
-    const task = (
+    const turn = (
       await client.query<{ channel: string; source: string }>(
-        `SELECT t.channel,t.source FROM tasks t
-         WHERE t.id=$1 AND t.owner_id=$2 AND ${currentConversationSql()}
+        `SELECT u.channel,u.source FROM turns u JOIN threads th ON th.id=u.thread_id
+         WHERE u.id=$1 AND u.owner_id=$2 AND th.archived_at IS NULL
            AND ($3::uuid IS NULL OR EXISTS(SELECT 1 FROM messages m
-             WHERE m.id=$3 AND m.task_id=t.id AND m.owner_id=t.owner_id AND m.role='user'))
-         FOR SHARE OF t`,
-        [taskId, ownerId, sourceMessageId],
+             WHERE m.id=$3 AND m.turn_id=u.id AND m.owner_id=u.owner_id AND m.role='user'))
+         FOR SHARE OF u`,
+        [turnId, ownerId, sourceMessageId],
       )
     ).rows[0];
     const unavailable = () => invalid('The schedule delivery conversation is unavailable.');
-    if (!task) throw unavailable();
-    if (task.channel === 'web') return { channel: 'web', sourceId: null };
-    if (!sourceMessageId && task.source === 'user') throw unavailable();
+    if (!turn) throw unavailable();
+    if (turn.channel === 'web') return { channel: 'web', sourceId: null };
+    if (!sourceMessageId) {
+      if (turn.source === 'user') throw unavailable();
+      return { channel: turn.channel, sourceId: null };
+    }
     const route = (
       await client.query<{
         source_id: string;
@@ -572,12 +575,8 @@ export function createSchedules(dependencies: ScheduleDependencies) {
         sender_id: string;
       }>(
         `SELECT i.source_id,i.provider,i.account_id,i.sender_id FROM channel_inbox i
-         JOIN tasks origin ON origin.id=i.task_id AND origin.owner_id=$2
-         WHERE i.state='submitted' AND
-           (($3::uuid IS NOT NULL AND i.task_id=$1 AND i.message_id=$3) OR
-            ($3::uuid IS NULL AND EXISTS(SELECT 1 FROM channel_task_routes r
-              WHERE r.task_id=$1 AND r.owner_id=$2 AND r.source_id=i.source_id)))`,
-        [taskId, ownerId, sourceMessageId],
+         WHERE i.state='submitted' AND i.owner_id=$2 AND i.turn_id=$1 AND i.message_id=$3`,
+        [turnId, ownerId, sourceMessageId],
       )
     ).rows[0];
     if (!route) throw unavailable();
@@ -585,21 +584,21 @@ export function createSchedules(dependencies: ScheduleDependencies) {
       .update(JSON.stringify([route.account_id, route.sender_id]))
       .digest('hex')
       .slice(0, 32);
-    if (task.channel !== `${route.provider}:${identity}`) throw unavailable();
-    return { channel: task.channel, sourceId: route.source_id };
+    if (turn.channel !== `${route.provider}:${identity}`) throw unavailable();
+    return { channel: turn.channel, sourceId: route.source_id };
   }
 
   async function authority(
     client: PoolClient,
     prompt: string,
-    provenance?: { taskId?: string; sourceMessageId: string | null },
+    provenance?: { turnId?: string; sourceMessageId: string | null },
   ) {
     if (!provenance) return { instruction: prompt, sourceMessageId: null };
     if (!provenance.sourceMessageId) return { instruction: null, sourceMessageId: null };
     const row = (
       await client.query<{ text: string }>(
-        "SELECT text FROM messages WHERE id=$1 AND owner_id=$2 AND role='user' AND ($3::uuid IS NULL OR task_id=$3) FOR SHARE",
-        [provenance.sourceMessageId, ownerId, provenance.taskId ?? null],
+        "SELECT text FROM messages WHERE id=$1 AND owner_id=$2 AND role='user' AND ($3::uuid IS NULL OR turn_id=$3) FOR SHARE",
+        [provenance.sourceMessageId, ownerId, provenance.turnId ?? null],
       )
     ).rows[0];
     if (!row) throw invalid('The schedule instruction is unavailable.');
@@ -608,7 +607,7 @@ export function createSchedules(dependencies: ScheduleDependencies) {
 
   async function create(
     raw: unknown,
-    provenance?: { taskId?: string; sourceMessageId: string | null },
+    provenance?: { turnId?: string; sourceMessageId: string | null },
   ) {
     const input = validateCreate(raw);
     const row = await transaction(async (client) => {
@@ -646,7 +645,7 @@ export function createSchedules(dependencies: ScheduleDependencies) {
   async function update(
     id: string,
     raw: unknown,
-    provenance?: { taskId?: string; sourceMessageId: string | null },
+    provenance?: { turnId?: string; sourceMessageId: string | null },
   ) {
     z.uuid().parse(id);
     const input = updateSchema.parse(raw);

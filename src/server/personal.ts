@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
 import { createPreferencesStore } from './preferences.ts';
-import { currentConversationSql } from './conversations.ts';
+import { activeThreadSql } from './thread.ts';
 import { createSchedules, type ScheduleDependencies } from './schedules.ts';
 
 const profileSchema = z
@@ -153,7 +153,7 @@ export function createPersonalService(dependencies: PersonalDependencies) {
   async function learnPersonalFact(
     action: 'memory_remember' | 'profile_learn',
     args: Record<string, unknown>,
-    provenance?: { sourceMessageId: string | null; taskId?: string },
+    provenance?: { sourceMessageId: string | null; turnId?: string },
   ) {
     const input =
       action === 'memory_remember'
@@ -181,14 +181,14 @@ export function createPersonalService(dependencies: PersonalDependencies) {
       await client.query('BEGIN');
       const source = (
         await client.query(
-          "SELECT id,text,task_id,created_at FROM messages WHERE id=$1 AND owner_id=$2 AND role='user' FOR SHARE",
+          "SELECT id,text,turn_id,thread_id,created_at FROM messages WHERE id=$1 AND owner_id=$2 AND role='user' FOR SHARE",
           [sourceMessageId, ownerId],
         )
       ).rows[0];
       const sourceText = String(source?.text ?? '').trim();
       if (
         !source ||
-        (provenance?.taskId && source.task_id !== provenance.taskId) ||
+        (provenance?.turnId && source.turn_id !== provenance.turnId) ||
         sourceText !== input.quote ||
         input.quote.endsWith('?')
       )
@@ -211,12 +211,12 @@ export function createPersonalService(dependencies: PersonalDependencies) {
             /^(?:my (?:phone|mobile)(?: number)? is|o meu (?:número|numero)(?: de (?:telefone|telemóvel))? é)\s+(.+?)\s*[.!]?$/i,
         };
         let value = input.quote.match(statements[input.field])?.[1];
-        if (!value && sourceText === input.quote && source.task_id) {
+        if (!value && sourceText === input.quote && source.thread_id) {
           const previous =
             (
               await client.query(
-                "SELECT text FROM messages WHERE owner_id=$1 AND task_id=$2 AND role='assistant' AND created_at<=$3 ORDER BY created_at DESC,id DESC LIMIT 1",
-                [ownerId, source.task_id, source.created_at],
+                "SELECT text FROM messages WHERE owner_id=$1 AND thread_id=$2 AND role='assistant' AND created_at<=$3 ORDER BY created_at DESC,id DESC LIMIT 1",
+                [ownerId, source.thread_id, source.created_at],
               )
             ).rows[0]?.text ?? '';
           const questions = {
@@ -313,7 +313,7 @@ export function createPersonalService(dependencies: PersonalDependencies) {
   async function manage(
     action: string,
     args: Record<string, unknown>,
-    provenance?: { sourceMessageId: string | null; taskId?: string; revision?: number },
+    provenance?: { sourceMessageId: string | null; turnId?: string },
   ) {
     if (action === 'memory_remember' || action === 'profile_learn')
       return learnPersonalFact(action, args, provenance);
@@ -333,11 +333,7 @@ export function createPersonalService(dependencies: PersonalDependencies) {
     }
     if (action === 'schedule_list') return schedules.list();
     if (action === 'schedule_record_observation')
-      return schedules.recordObservation(
-        provenance?.taskId ?? '',
-        provenance?.revision ?? -1,
-        args,
-      );
+      return schedules.recordObservation(provenance?.turnId ?? '', args);
     if (action === 'schedule_create') return schedules.create(args, provenance);
     if (action === 'schedule_update') {
       const { id, ...input } = args;
@@ -380,15 +376,15 @@ export function createPersonalService(dependencies: PersonalDependencies) {
     }
     if (action === 'history_search') {
       const query = z.string().min(1).max(200).parse(args.query);
-      const tasks = await pool.query(
-        `SELECT id,title,status,created_at,split_part(channel,':',1) AS channel FROM tasks t WHERE owner_id=$1 AND ${currentConversationSql()} AND to_tsvector('simple',title || ' ' || prompt) @@ plainto_tsquery('simple',$2) ORDER BY created_at DESC LIMIT 15`,
+      const turns = await pool.query(
+        `SELECT u.id,left(u.prompt,200) AS title,u.status,u.source,u.created_at,split_part(u.channel,':',1) AS channel FROM turns u WHERE u.owner_id=$1 AND ${activeThreadSql('u')} AND to_tsvector('simple',u.prompt) @@ plainto_tsquery('simple',$2) ORDER BY u.created_at DESC LIMIT 15`,
         [ownerId, query],
       );
       const messages = await pool.query(
-        `SELECT m.role,m.text,m.task_id,split_part(t.channel,':',1) AS channel FROM messages m JOIN tasks t ON t.id=m.task_id WHERE m.owner_id=$1 AND t.owner_id=$1 AND ${currentConversationSql()} AND to_tsvector('simple',m.text) @@ plainto_tsquery('simple',$2) ORDER BY m.created_at DESC LIMIT 15`,
+        `SELECT m.role,m.text,m.turn_id,split_part(COALESCE(u.channel,'web'),':',1) AS channel FROM messages m LEFT JOIN turns u ON u.id=m.turn_id AND u.owner_id=m.owner_id WHERE m.owner_id=$1 AND ${activeThreadSql('m')} AND to_tsvector('simple',m.text) @@ plainto_tsquery('simple',$2) ORDER BY m.created_at DESC LIMIT 15`,
         [ownerId, query],
       );
-      return { tasks: tasks.rows, messages: messages.rows };
+      return { turns: turns.rows, messages: messages.rows };
     }
     throw new Error('This personal-data action is not available.');
   }

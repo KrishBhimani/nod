@@ -18,7 +18,7 @@ test(
     process.env.DATABASE_URL = url.href;
     process.env.PGBOSS_SCHEMA = bossSchema;
     const db = await import('../src/server/db.ts');
-    const tasks = await import('../src/server/tasks.ts');
+    const thread = await import('../src/server/thread.ts');
     const { createPersonalService } = await import('../src/server/personal.ts');
     const { createTriage, getPreferences, updatePreferences, isQuietTime } =
       await import('../src/server/triage.ts');
@@ -27,8 +27,8 @@ test(
     const personal = createPersonalService({
       pool: db.pool,
       ownerId: 'local-development',
-      scheduler: tasks.boss,
-      submitTask: tasks.submitTask,
+      scheduler: thread.boss,
+      enqueueTurn: thread.enqueueTurn,
       refresh() {},
     });
     const contexts: object[] = [];
@@ -72,13 +72,14 @@ test(
       assert.equal((await getPreferences()).quietHoursEnabled, true);
       await assert.rejects(updatePreferences({ quietHoursEnabled: 'false' }));
       await db.pool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS reaction text');
-      await tasks.initializeTasks();
+      await thread.initializeThreads();
       await personal.initialize({ workers: false });
       await triage.initializeHeartbeat();
       assert.match((await getPreferences()).notificationRule, /time-sensitive/);
+      const active = await thread.activeThread(db.pool, 'local-development');
       await db.pool.query(
-        "INSERT INTO messages(id,owner_id,role,text,reaction) VALUES($1,'local-development','assistant','Synthetic reminder','dislike')",
-        [randomUUID()],
+        "INSERT INTO messages(id,owner_id,role,text,reaction,thread_id) VALUES($1,'local-development','assistant','Synthetic reminder','dislike',$2)",
+        [randomUUID(), active.id],
       );
       await triage.triageEvent('A synthetic meeting time changed', 'default-preferences-fixture');
       assert.equal(contexts.length, 1);
@@ -108,7 +109,7 @@ test(
         ).rows[0].decision,
         'digest',
       );
-      assert.equal((await db.pool.query('SELECT id FROM tasks')).rowCount, 0);
+      assert.equal((await db.pool.query('SELECT id FROM turns')).rowCount, 0);
       const clock = new Date('2026-09-26T23:00:00Z');
       assert.equal(isQuietTime({ ...defaultPreferences, timeZone: 'UTC' }, clock), true);
       assert.equal(
@@ -127,7 +128,7 @@ test(
       await triage.triageEvent('A synthetic urgent update', 'quiet-enabled-fixture');
       assert.equal(
         (
-          await db.pool.query('SELECT decision,task_id FROM notifications WHERE event_id=$1', [
+          await db.pool.query('SELECT decision,turn_id FROM notifications WHERE event_id=$1', [
             'quiet-enabled-fixture',
           ])
         ).rows[0].decision,
@@ -183,15 +184,26 @@ test(
         'quiet-disabled-fixture',
       );
       const delivered = (
-        await db.pool.query('SELECT decision,task_id FROM notifications WHERE event_id=$1', [
+        await db.pool.query('SELECT decision,turn_id FROM notifications WHERE event_id=$1', [
           'quiet-disabled-fixture',
         ])
       ).rows[0];
       assert.equal(delivered.decision, 'wake');
-      assert.ok(delivered.task_id);
+      assert.ok(delivered.turn_id);
+      const turn = (
+        await db.pool.query('SELECT source,source_id,background,thread_id FROM turns WHERE id=$1', [
+          delivered.turn_id,
+        ])
+      ).rows[0];
+      assert.deepEqual(turn, {
+        source: 'event',
+        source_id: 'notification:quiet-disabled-fixture',
+        background: true,
+        thread_id: active.id,
+      });
     } finally {
       await app.close();
-      await tasks.stopTasks();
+      await thread.stopThreadWorkers();
       await db.pool.end();
       await admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`);
       await admin.query(`DROP SCHEMA ${schema} CASCADE`);

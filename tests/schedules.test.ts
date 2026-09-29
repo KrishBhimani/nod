@@ -6,7 +6,6 @@ import Fastify from 'fastify';
 import pg from 'pg';
 import type { Job } from 'pg-boss';
 import { z } from 'zod';
-import { createPersonalService } from '../src/server/personal.ts';
 import type { Schedule, ScheduleHistory } from '../src/shared/contracts.ts';
 
 test(
@@ -23,7 +22,8 @@ test(
     process.env.DATABASE_URL = url.href;
     process.env.PGBOSS_SCHEMA = bossSchema;
     const db = await import('../src/server/db.ts');
-    const tasks = await import('../src/server/tasks.ts');
+    const { createPersonalService } = await import('../src/server/personal.ts');
+    const thread = await import('../src/server/thread.ts');
     let clock = new Date('2035-10-26T12:00:00.000Z');
     type Data = { scheduleId: string; revision: number; scheduledFor: string };
     let deliver: (jobs: Job<Data>[]) => Promise<unknown> = async () => {
@@ -33,12 +33,12 @@ test(
     const personal = createPersonalService({
       pool: db.pool,
       ownerId: 'local-development',
-      scheduler: tasks.boss,
+      scheduler: thread.boss,
       now: () => clock,
-      submitTask: async (...args) => {
-        assert.ok(args[4]?.client);
-        const id = await tasks.submitTask(...args);
-        if (failAfterTask) throw new Error('Synthetic failure after task creation.');
+      enqueueTurn: async (...args) => {
+        assert.ok(args[1]?.client);
+        const id = await thread.enqueueTurn(...args);
+        if (failAfterTask) throw new Error('Synthetic failure after turn creation.');
         return id;
       },
       refresh() {},
@@ -71,7 +71,7 @@ test(
     };
     const jobFor = async (id: string) => {
       const result = await db.pool.query('SELECT job_id FROM schedules WHERE id=$1', [id]);
-      const job = await tasks.boss.getJobById<Data>('scheduled-task', result.rows[0].job_id);
+      const job = await thread.boss.getJobById<Data>('scheduled-task', result.rows[0].job_id);
       assert.ok(job);
       return { ...job, signal: new AbortController().signal };
     };
@@ -80,13 +80,18 @@ test(
       assert.equal(response.statusCode, 200, response.body);
       return response.json<ScheduleHistory>().runs;
     };
+    const turnRef = async (turnId: string) => ({
+      turnId,
+      threadId: (await db.pool.query('SELECT thread_id FROM turns WHERE id=$1', [turnId])).rows[0]
+        .thread_id as string,
+    });
     const saved = async (id: string) =>
       (await personal.listSchedules()).find((schedule) => schedule.id === id)!;
     try {
       await db.initializeDatabase();
-      await tasks.initializeTasks();
+      await thread.initializeThreads();
       const workerMock = t.mock.method(
-        tasks.boss,
+        thread.boss,
         'work',
         async (_name: string, handler: unknown) => {
           deliver = handler as typeof deliver;
@@ -103,8 +108,8 @@ test(
         "INSERT INTO schedules(id,owner_id,title,prompt,cron,time_zone) VALUES($1,'local-development','Legacy fixture','Synthetic only','0 9 * * *','Europe/Lisbon')",
         [legacyId],
       );
-      await tasks.boss.createQueue('scheduled-task');
-      await tasks.boss.schedule(
+      await thread.boss.createQueue('scheduled-task');
+      await thread.boss.schedule(
         'scheduled-task',
         '0 9 * * *',
         { scheduleId: legacyId },
@@ -147,38 +152,28 @@ test(
           });
           await deliver([await jobFor(schedule.id)]);
           const run = (await runs(schedule.id))[0]!;
-          await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1", [run.taskId]);
+          await db.pool.query("UPDATE turns SET status='running' WHERE id=$1", [run.turnId]);
           assert.deepEqual(
-            await approvals.request(
-              run.taskId,
-              'GMAIL_SEND_EMAIL',
-              { to: 'alex@example.test', body: 'Synthetic fixture' },
-              { revision: 0 },
-            ),
+            await approvals.request(await turnRef(run.turnId), 'GMAIL_SEND_EMAIL', {
+              to: 'alex@example.test',
+              body: 'Synthetic fixture',
+            }),
             { sent: true },
           );
-          await approvals.request(
-            run.taskId,
-            'GMAIL_SEND_EMAIL',
-            { to: 'alex@example.test', body: 'Synthetic fixture' },
-            { revision: 0 },
-          );
+          await approvals.request(await turnRef(run.turnId), 'GMAIL_SEND_EMAIL', {
+            to: 'alex@example.test',
+            body: 'Synthetic fixture',
+          });
           assert.equal(executed.length, 1);
           await assert.rejects(
-            approvals.request(
-              run.taskId,
-              'SLACK_SEND_MESSAGE',
-              { text: 'No authority' },
-              { revision: 0 },
-            ),
+            approvals.request(await turnRef(run.turnId), 'SLACK_SEND_MESSAGE', {
+              text: 'No authority',
+            }),
           );
           await assert.rejects(
-            approvals.request(
-              run.taskId,
-              'GMAIL_DELETE_MESSAGE',
-              { message_id: 'fixture' },
-              { revision: 0 },
-            ),
+            approvals.request(await turnRef(run.turnId), 'GMAIL_DELETE_MESSAGE', {
+              message_id: 'fixture',
+            }),
           );
           const edited = await create({ cron: '5 9 * * *', prompt: 'Send an email to Alex.' });
           const source = randomUUID();
@@ -193,28 +188,22 @@ test(
           );
           await deliver([await jobFor(edited.id)]);
           const draft = (await runs(edited.id))[0]!;
-          await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1", [draft.taskId]);
+          await db.pool.query("UPDATE turns SET status='running' WHERE id=$1", [draft.turnId]);
           await assert.rejects(
-            approvals.request(
-              draft.taskId,
-              'GMAIL_SEND_EMAIL',
-              { to: 'alex@example.test' },
-              { revision: 0 },
-            ),
+            approvals.request(await turnRef(draft.turnId), 'GMAIL_SEND_EMAIL', {
+              to: 'alex@example.test',
+            }),
           );
           assert.equal(executed.length, 1);
-          const generic = await tasks.submitTask('Send an email to Alex.', [], undefined, true, {
+          const generic = await thread.enqueueTurn('Send an email to Alex.', {
             source: 'event',
             sourceId: 'synthetic-event',
           });
-          await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1", [generic]);
+          await db.pool.query("UPDATE turns SET status='running' WHERE id=$1", [generic]);
           await assert.rejects(
-            approvals.request(
-              generic,
-              'GMAIL_SEND_EMAIL',
-              { to: 'alex@example.test' },
-              { revision: 0 },
-            ),
+            approvals.request(await turnRef(generic), 'GMAIL_SEND_EMAIL', {
+              to: 'alex@example.test',
+            }),
           );
           assert.equal(executed.length, 1);
           await request('DELETE', `/api/schedules/${schedule.id}`);
@@ -246,7 +235,7 @@ test(
           await deliver([job]);
           assert.equal((await runs(schedule.id)).length, 1);
           assert.equal(
-            (await db.pool.query('SELECT * FROM tasks WHERE id=$1', [history[0]!.taskId])).rows[0]
+            (await db.pool.query('SELECT * FROM turns WHERE id=$1', [history[0]!.turnId])).rows[0]
               .source,
             'schedule',
           );
@@ -254,8 +243,8 @@ test(
             (await request('PATCH', `/api/schedules/${schedule.id}`, { enabled: true })).statusCode,
             400,
           );
-          await db.pool.query("UPDATE tasks SET status='succeeded' WHERE id=$1", [
-            history[0]!.taskId,
+          await db.pool.query("UPDATE turns SET status='succeeded' WHERE id=$1", [
+            history[0]!.turnId,
           ]);
           assert.equal((await runs(schedule.id))[0]!.status, 'succeeded');
         },
@@ -316,24 +305,22 @@ test(
             clock = new Date((await saved(schedule.id)).nextRun!);
             await deliver([await jobFor(schedule.id)]);
             const run = (await runs(schedule.id))[0]!;
-            await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1", [run.taskId]);
-            const revision = value === 'EUR 240' ? 1 : 0;
-            if (revision) {
-              await db.pool.query('UPDATE tasks SET revision=1 WHERE id=$1', [run.taskId]);
+            if (value === 'EUR 240') {
               await assert.rejects(
                 personal.manage(
                   'schedule_record_observation',
-                  { status: 'verified', sourceUrl, value, summary: 'Stale task.' },
-                  { taskId: run.taskId, sourceMessageId: null, revision: 0 },
+                  { status: 'verified', sourceUrl, value, summary: 'Queued turn.' },
+                  { turnId: run.turnId, sourceMessageId: null },
                 ),
                 /no active scheduled run/,
               );
               assert.equal((await runs(schedule.id))[0]!.observation, null);
             }
+            await db.pool.query("UPDATE turns SET status='running' WHERE id=$1", [run.turnId]);
             const result = await personal.manage(
               'schedule_record_observation',
               { status: 'verified', sourceUrl, value, summary: 'Same synthetic fare terms.' },
-              { taskId: run.taskId, sourceMessageId: null, revision },
+              { turnId: run.turnId, sourceMessageId: null },
             );
             assert.equal(result.previous?.value, previous);
             assert.equal((await runs(schedule.id))[0]!.observation?.value, value);
@@ -341,22 +328,22 @@ test(
               personal.manage(
                 'schedule_record_observation',
                 { status: 'verified', sourceUrl, value, summary: 'Duplicate.' },
-                { taskId: run.taskId, sourceMessageId: null, revision },
+                { turnId: run.turnId, sourceMessageId: null },
               ),
               /already has a saved observation/,
             );
-            await db.pool.query("UPDATE tasks SET status='succeeded' WHERE id=$1", [run.taskId]);
+            await db.pool.query("UPDATE turns SET status='succeeded' WHERE id=$1", [run.turnId]);
           }
           clock = new Date((await saved(schedule.id)).nextRun!);
           await deliver([await jobFor(schedule.id)]);
           const unavailableRun = (await runs(schedule.id))[0]!;
-          await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1", [
-            unavailableRun.taskId,
+          await db.pool.query("UPDATE turns SET status='running' WHERE id=$1", [
+            unavailableRun.turnId,
           ]);
           const unavailable = await personal.manage(
             'schedule_record_observation',
             { status: 'unavailable', sourceUrl, value: null, summary: 'Source did not load.' },
-            { taskId: unavailableRun.taskId, sourceMessageId: null, revision: 0 },
+            { turnId: unavailableRun.turnId, sourceMessageId: null },
           );
           assert.equal(unavailable.previous?.value, 'EUR 215');
           assert.deepEqual(
@@ -375,7 +362,7 @@ test(
           clock = new Date((await saved(deleted.id)).nextRun!);
           await deliver([await jobFor(deleted.id)]);
           const deletedRun = (await runs(deleted.id))[0]!;
-          await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1", [deletedRun.taskId]);
+          await db.pool.query("UPDATE turns SET status='running' WHERE id=$1", [deletedRun.turnId]);
           assert.equal((await request('DELETE', `/api/schedules/${deleted.id}`)).statusCode, 200);
           const afterDelete = await personal.manage(
             'schedule_record_observation',
@@ -385,7 +372,7 @@ test(
               value: 'EUR 215',
               summary: 'Same synthetic fare terms.',
             },
-            { taskId: deletedRun.taskId, sourceMessageId: null, revision: 0 },
+            { turnId: deletedRun.turnId, sourceMessageId: null },
           );
           assert.equal(afterDelete.previous?.value, 'EUR 240');
           assert.equal((await runs(deleted.id))[0]!.observation?.value, 'EUR 215');
@@ -428,17 +415,17 @@ test(
       });
 
       await t.test(
-        'task creation, run history and next occurrence roll back together',
+        'turn creation, run history and next occurrence roll back together',
         async () => {
           const schedule = await create({ kind: 'once', runAt: '2035-11-05T10:00:00Z' });
           const job = await jobFor(schedule.id);
-          const before = (await db.pool.query('SELECT count(*)::int AS count FROM tasks')).rows[0]
+          const before = (await db.pool.query('SELECT count(*)::int AS count FROM turns')).rows[0]
             .count;
           failAfterTask = true;
           await assert.rejects(deliver([job]), /Synthetic failure/);
           failAfterTask = false;
           assert.equal(
-            (await db.pool.query('SELECT count(*)::int AS count FROM tasks')).rows[0].count,
+            (await db.pool.query('SELECT count(*)::int AS count FROM turns')).rows[0].count,
             before,
           );
           assert.deepEqual(await runs(schedule.id), []);
@@ -455,7 +442,7 @@ test(
           const job = await jobFor(schedule.id);
           await personal.initialize({ workers: false });
           assert.equal((await jobFor(schedule.id)).id, job.id);
-          await tasks.boss.cancel('scheduled-task', job.id);
+          await thread.boss.cancel('scheduled-task', job.id);
           clock = new Date('2035-11-07T10:00:00Z');
           await personal.initialize({ workers: false });
           const replacement = await jobFor(schedule.id);
@@ -475,8 +462,8 @@ test(
           await deliver([await jobFor(schedule.id)]);
           const run = (await runs(schedule.id))[0]!;
           await db.pool.query(
-            "UPDATE tasks SET status='failed',error='Synthetic fixed error.' WHERE id=$1",
-            [run.taskId],
+            "UPDATE turns SET status='failed',error='Synthetic fixed error.' WHERE id=$1",
+            [run.turnId],
           );
           await request('DELETE', `/api/schedules/${schedule.id}`);
           const retained = (await runs(schedule.id))[0]!;
@@ -528,10 +515,11 @@ test(
           let run = (await runs(schedule.id))[0]!;
           assert.equal(run.messageId, null);
           assert.equal(run.messagePreview, null);
+          const { threadId } = await turnRef(run.turnId);
           const insert = (id: string, owner: string, role: string, text: string, at: string) =>
             db.pool.query(
-              'INSERT INTO messages(id,owner_id,role,text,task_id,created_at) VALUES($1,$2,$3,$4,$5,$6)',
-              [id, owner, role, text, run.taskId, at],
+              'INSERT INTO messages(id,owner_id,role,text,turn_id,thread_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7)',
+              [id, owner, role, text, run.turnId, threadId, at],
             );
           const first = randomUUID();
           await insert(
@@ -568,14 +556,11 @@ test(
           assert.match(run.messagePreview!, /^Synthetic summary word word .*…$/);
           assert.equal(run.messageText, `Synthetic   summary\n\n${'word '.repeat(60)}`);
           assert.equal((await saved(schedule.id)).lastRun?.messageId, first);
-          await db.pool.query("UPDATE tasks SET channel='telegram' WHERE id=$1", [run.taskId]);
+          await db.pool.query("UPDATE turns SET channel='telegram' WHERE id=$1", [run.turnId]);
           assert.equal((await runs(schedule.id))[0]!.messageId, null);
-          await db.pool.query("UPDATE tasks SET channel='web' WHERE id=$1", [run.taskId]);
+          await db.pool.query("UPDATE turns SET channel='web' WHERE id=$1", [run.turnId]);
           assert.equal((await runs(schedule.id))[0]!.messageId, first);
-          await db.pool.query(
-            `INSERT INTO conversations(owner_id,channel,revision) VALUES('local-development','web',1)
-             ON CONFLICT(owner_id,channel) DO UPDATE SET revision=conversations.revision+1`,
-          );
+          await thread.resetThread();
           const archived = (await runs(schedule.id))[0]!;
           assert.equal(archived.messageId, null);
           assert.equal(archived.messagePreview, null);
@@ -611,8 +596,8 @@ test(
           const liveScheduler = createPersonalService({
             pool: db.pool,
             ownerId: 'local-development',
-            scheduler: tasks.boss,
-            submitTask: tasks.submitTask,
+            scheduler: thread.boss,
+            enqueueTurn: thread.enqueueTurn,
             refresh() {},
           });
           await liveScheduler.initialize();
@@ -637,12 +622,12 @@ test(
             (await liveScheduler.listSchedules()).find((item) => item.id === schedule.id)?.enabled,
             false,
           );
-          await tasks.boss.offWork('scheduled-task', { wait: true });
+          await thread.boss.offWork('scheduled-task', { wait: true });
         },
       );
     } finally {
       await app.close();
-      await tasks.stopTasks();
+      await thread.stopThreadWorkers();
       await db.pool.end();
       await admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`);
       await admin.query(`DROP SCHEMA ${schema} CASCADE`);

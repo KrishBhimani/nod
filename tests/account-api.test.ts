@@ -25,7 +25,7 @@ test('authenticated API requests carry an expected account without changing auth
     await api('/api/preferences', { method: 'PATCH', body: '{}' });
     await api('/api/session');
     await api('/api/login', { method: 'POST', body: '{}' });
-    await apiResponse('/api/browser/screen?taskId=synthetic');
+    await apiResponse('/api/browser/screen?threadId=synthetic');
     assert.deepEqual(
       requests.map((value) => value.owner),
       ['alex', null, null, 'alex'],

@@ -29,9 +29,9 @@ async function fixture(
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'otto-click-recovery-'));
-  const taskId = randomUUID();
+  const threadId = randomUUID();
   const store = createFilesystemObjectStore(join(directory, 'objects'));
-  const checkpoint = await createPiCheckpoint({ store, taskId, directory });
+  const checkpoint = await createPiCheckpoint({ store, threadId, directory });
   const observations: RuntimeObservation[] = [];
   const agent: Agent = {
     open: async ({ tools }) => ({
@@ -49,7 +49,8 @@ async function fixture(
   };
   const runtime = createAgentRuntime({ agent, computer, workspace: fakeWorkspace() });
   const context: RuntimeContext = {
-    taskId,
+    threadId,
+    turnId: randomUUID(),
     ownerId: 'fixture',
     prompt: 'Open the synthetic destination after dismissing its covering dialog.',
     history: [],
@@ -74,10 +75,10 @@ async function fixture(
   };
   return {
     observations,
-    run: () => runtime.runTask(context),
+    run: () => runtime.runTurn(context),
     saved: async () =>
-      (await store.read(`sessions/${taskId}.jsonl`, 1024 * 1024))!.bytes.toString(),
-    restore: () => createPiCheckpoint({ store, taskId, directory: join(directory, 'restored') }),
+      (await store.read(`sessions/${threadId}.jsonl`, 1024 * 1024))!.bytes.toString(),
+    restore: () => createPiCheckpoint({ store, threadId, directory: join(directory, 'restored') }),
     async close() {
       try {
         await runtime.dispose();

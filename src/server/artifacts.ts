@@ -106,7 +106,7 @@ export function createArtifactService(options: {
     bytes: Buffer,
     name: string,
     mimeType: string,
-    taskId?: string,
+    threadId?: string,
     database: Pick<PoolClient, 'query'> = options.database,
   ): Promise<Artifact> {
     if (!bytes.length || bytes.length > maxFileSize)
@@ -114,15 +114,15 @@ export function createArtifactService(options: {
         statusCode: 400,
       });
     if (
-      taskId &&
+      threadId &&
       !(
-        await database.query('SELECT id FROM tasks WHERE id=$1 AND owner_id=$2', [
-          z.uuid().parse(taskId),
+        await database.query('SELECT id FROM threads WHERE id=$1 AND owner_id=$2', [
+          z.uuid().parse(threadId),
           options.ownerId,
         ])
       ).rowCount
     )
-      throw new Error('The task is unavailable.');
+      throw new Error('The conversation is unavailable.');
     const id = randomUUID();
     const key = `artifacts/${id}`;
     const version = options.store
@@ -139,8 +139,8 @@ export function createArtifactService(options: {
         .slice(0, 160) || 'file';
     try {
       const result = await database.query(
-        'INSERT INTO artifacts(id,owner_id,task_id,name,mime_type,size,storage_path) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',
-        [id, options.ownerId, taskId || null, safeName, mimeType, bytes.length, location(id)],
+        'INSERT INTO artifacts(id,owner_id,thread_id,name,mime_type,size,storage_path) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',
+        [id, options.ownerId, threadId || null, safeName, mimeType, bytes.length, location(id)],
       );
       return artifactView(result.rows[0]);
     } catch (error) {
@@ -151,38 +151,41 @@ export function createArtifactService(options: {
     }
   }
   async function publishArtifact(
-    taskId: string,
+    threadId: string,
     path: string,
     name: string | undefined,
     read: (
-      taskId: string,
+      threadId: string,
       path: string,
       maxBytes: number,
       purpose?: 'attachment' | 'publication',
     ) => Promise<Uint8Array>,
   ) {
-    z.uuid().parse(taskId);
+    z.uuid().parse(threadId);
     if (!path || path.length > 4096 || path.includes('\0') || path.includes('\\'))
       throw new Error('A workspace file path is required.');
-    const base = `/workspace/${taskId}`;
+    const base = `/workspace/${threadId}`;
     const actual = posix.resolve(base, path);
     if (!actual.startsWith(base + '/'))
-      throw new Error('Only files inside this task workspace can be published.');
+      throw new Error('Only files inside this workspace can be published.');
     return storeArtifact(
-      Buffer.from(await read(taskId, posix.relative(base, actual), maxFileSize, 'publication')),
+      Buffer.from(await read(threadId, posix.relative(base, actual), maxFileSize, 'publication')),
       name || posix.basename(actual),
       mimeTypes[extname(actual).toLowerCase()] || 'application/octet-stream',
-      taskId,
+      threadId,
     );
   }
-  async function readTaskArtifacts(taskId: string, ids: string[]): Promise<MessagingAttachment[]> {
-    z.uuid().parse(taskId);
+  async function readThreadArtifacts(
+    threadId: string,
+    ids: string[],
+  ): Promise<MessagingAttachment[]> {
+    z.uuid().parse(threadId);
     z.array(z.uuid()).min(1).max(10).parse(ids);
     const unique = [...new Set(ids)];
     const rows = (
       await options.database.query(
-        'SELECT a.id,a.name,a.mime_type,a.size,a.storage_path FROM artifacts a JOIN tasks t ON t.id=a.task_id WHERE a.id=ANY($1::uuid[]) AND a.owner_id=$2 AND t.owner_id=$2 AND a.task_id=$3',
-        [unique, options.ownerId, taskId],
+        'SELECT a.id,a.name,a.mime_type,a.size,a.storage_path FROM artifacts a JOIN threads th ON th.id=a.thread_id WHERE a.id=ANY($1::uuid[]) AND a.owner_id=$2 AND th.owner_id=$2 AND a.thread_id=$3',
+        [unique, options.ownerId, threadId],
       )
     ).rows;
     if (rows.length !== unique.length) throw new Error('An attachment is unavailable.');
@@ -196,7 +199,7 @@ export function createArtifactService(options: {
     }
     return result;
   }
-  return { storeArtifact, publishArtifact, readArtifact, readTaskArtifacts };
+  return { storeArtifact, publishArtifact, readArtifact, readThreadArtifacts };
 }
 
 export type ArtifactService = ReturnType<typeof createArtifactService>;
@@ -205,4 +208,4 @@ export const localArtifacts = createArtifactService({
   ownerId,
   localRoot: dataRoot,
 });
-export const { storeArtifact, publishArtifact, readTaskArtifacts } = localArtifacts;
+export const { storeArtifact, publishArtifact, readThreadArtifacts } = localArtifacts;

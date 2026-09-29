@@ -17,8 +17,11 @@ test(
       connectionString: process.env.TEST_DATABASE_URL,
       options: `-c search_path=${schema}`,
     });
-    await pool.query(`CREATE TABLE tasks(id uuid PRIMARY KEY, source_id text UNIQUE);
-    CREATE TABLE messages(id uuid PRIMARY KEY, owner_id text, role text, text text, task_id uuid, attachments jsonb DEFAULT '[]')`);
+    await pool.query(`CREATE TABLE threads(id uuid PRIMARY KEY, owner_id text NOT NULL, archived_at timestamptz);
+    CREATE TABLE turns(id uuid PRIMARY KEY, owner_id text NOT NULL, thread_id uuid NOT NULL REFERENCES threads(id), source_id text UNIQUE, channel text NOT NULL DEFAULT 'web', created_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE messages(id uuid PRIMARY KEY, owner_id text, role text, text text, thread_id uuid, turn_id uuid, attachments jsonb DEFAULT '[]', created_at timestamptz NOT NULL DEFAULT now())`);
+    const threadId = randomUUID();
+    await pool.query('INSERT INTO threads(id,owner_id) VALUES($1,$2)', [threadId, 'fixture-owner']);
     t.mock.method(globalThis, 'fetch', async () => {
       throw new Error('A replacement transport must not use an SDK or network here.');
     });
@@ -79,10 +82,10 @@ test(
           unsubscribed = true;
         };
       },
-      async submit(_text, sourceId, client) {
+      async submit(_text, sourceId, client, channel) {
         const result = await client.query(
-          'INSERT INTO tasks(id,source_id) VALUES($1,$2) RETURNING id',
-          [randomUUID(), sourceId],
+          'INSERT INTO turns(id,owner_id,thread_id,source_id,channel) VALUES($1,$2,$3,$4,$5) RETURNING id',
+          [randomUUID(), 'fixture-owner', threadId, sourceId, channel],
         );
         return result.rows[0].id;
       },
@@ -112,16 +115,30 @@ test(
       inbound = [message];
       await Promise.all([receive(), receive()]);
       await channels.drain();
-      const tasks = await pool.query('SELECT id FROM tasks');
-      assert.equal(tasks.rowCount, 1);
+      const turns = await pool.query('SELECT id FROM turns');
+      assert.equal(turns.rowCount, 1);
       assert.ok(receivedBodies.every((body) => body === '  exact raw fixture\n'));
       await pool.query(
-        'INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,$2,$3,$4,$5)',
-        [randomUUID(), 'fixture-owner', 'assistant', 'A completed reply', tasks.rows[0].id],
+        'INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id) VALUES($1,$2,$3,$4,$5,$6)',
+        [
+          randomUUID(),
+          'fixture-owner',
+          'assistant',
+          'A completed reply',
+          threadId,
+          turns.rows[0].id,
+        ],
       );
       await pool.query(
-        'INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,$2,$3,$4,$5)',
-        [randomUUID(), 'another-owner', 'assistant', 'Private other owner reply', tasks.rows[0].id],
+        'INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id) VALUES($1,$2,$3,$4,$5,$6)',
+        [
+          randomUUID(),
+          'another-owner',
+          'assistant',
+          'Private other owner reply',
+          threadId,
+          turns.rows[0].id,
+        ],
       );
       onRefresh();
       await channels.drain();

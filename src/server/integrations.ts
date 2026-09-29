@@ -22,6 +22,7 @@ import {
 } from './discovered-connections.ts';
 import type { WorkAdmission } from './work-admission.ts';
 import { BrowserConnectionError } from './browser-connections.ts';
+import type { TurnRef } from './thread.ts';
 import {
   normalizedEmail,
   verificationCode,
@@ -59,8 +60,7 @@ type ConnectionRow = {
   account_checked_at: Date | null;
   revoked: boolean;
   provider_id: string;
-  task_id: string | null;
-  task_revision: number | null;
+  turn_id: string | null;
 };
 type IntegrationOptions = {
   admission?: WorkAdmission;
@@ -68,7 +68,7 @@ type IntegrationOptions = {
   wake(prompt: string, eventId: string): Promise<void>;
   provider: IntegrationProvider;
   additionalProviders?: IntegrationProvider[];
-  resumeConnection?(taskId: string, revision: number, service: Slug): Promise<boolean>;
+  resumeConnection?(turnId: string, service: Slug): Promise<boolean>;
   baseUrl: string;
   refresh?(): void;
   discovered?: Awaited<ReturnType<typeof createDiscoveredConnections>>;
@@ -199,8 +199,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     ALTER TABLE integration_sessions ADD COLUMN IF NOT EXISTS configuration_version integer NOT NULL DEFAULT 1;
     ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS callback_return_to text NOT NULL DEFAULT 'apps';
     ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS provider_id text NOT NULL DEFAULT 'composio';
-    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS task_id uuid;
-    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS task_revision integer;
+    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS turn_id uuid;
     ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS id uuid NOT NULL DEFAULT gen_random_uuid();
     ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS account_name text;
     ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS account_email text;
@@ -564,11 +563,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     return rows[0];
   }
 
-  async function connect(
-    slug: Slug,
-    returnTo: ReturnTarget = 'apps',
-    task?: { id: string; revision: number },
-  ) {
+  async function connect(slug: Slug, returnTo: ReturnTarget = 'apps', turn?: TurnRef) {
     requireService(slug);
     const selected = providerFor(slug);
     const prior = await pool.query<{ provider_id: string }>(
@@ -598,8 +593,8 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
           502,
         );
       await pool.query(
-        `INSERT INTO app_connections (owner_id,slug,pending_account_id,callback_hash,callback_expires,provider_id,callback_return_to,task_id,task_revision)
-         VALUES ($1,$2,$3,$4,now() + interval '10 minutes',$5,$6,$7,$8)`,
+        `INSERT INTO app_connections (owner_id,slug,pending_account_id,callback_hash,callback_expires,provider_id,callback_return_to,turn_id)
+         VALUES ($1,$2,$3,$4,now() + interval '10 minutes',$5,$6,$7)`,
         [
           configuredOwner,
           slug,
@@ -607,8 +602,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
           createHash('sha256').update(nonce).digest('hex'),
           selected.id,
           returnTo,
-          task?.id ?? null,
-          task?.revision ?? null,
+          turn?.turnId ?? null,
         ],
       );
       return { url: attempt.url, ...(returnTo === 'window' ? { attempt: nonce } : {}) };
@@ -675,12 +669,8 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     }
     await resetSession(configuredOwner);
     if (supportsWatch(row.slug, providerForRow(row))) await activateWatch(connectedId);
-    if (row.task_id && row.task_revision !== null)
-      return (
-        (await options
-          .resumeConnection?.(row.task_id, row.task_revision, row.slug)
-          .catch(() => false)) ?? false
-      );
+    if (row.turn_id)
+      return (await options.resumeConnection?.(row.turn_id, row.slug).catch(() => false)) ?? false;
     return false;
   }
 
@@ -893,7 +883,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     ownerId: string,
     action: string,
     args: Record<string, unknown>,
-    taskId?: string,
+    turn?: TurnRef,
     signal?: AbortSignal,
   ) {
     if (
@@ -904,7 +894,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       assertOwner(ownerId);
       if (!options.discovered)
         throw new IntegrationError('Discovered connections are unavailable.', 503);
-      return options.discovered.execute(action, args, false, taskId, signal);
+      return options.discovered.execute(action, args, false, turn, signal);
     }
     const row = await approvedConnection(ownerId, action, args);
     if ((integrationDownloadActions as readonly string[]).includes(action))
@@ -935,7 +925,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     ownerId: string,
     action: string,
     args: Record<string, unknown>,
-    taskId?: string,
+    turn?: TurnRef,
     signal?: AbortSignal,
   ) {
     assertOwner(ownerId);
@@ -948,7 +938,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         throw new IntegrationError('Discovered connections are unavailable.', 503);
       const read = await options.discovered.isRead(action, args);
       return read
-        ? options.discovered.execute(action, args, true, taskId, signal)
+        ? options.discovered.execute(action, args, true, turn, signal)
         : { requiresApproval: true, action, args };
     }
     if (action === 'SEARCH_TOOLS') {
@@ -1495,7 +1485,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     manageConnections: async (
       action: 'list' | 'connect' | 'propose',
       service?: string,
-      task?: { id: string; revision: number },
+      turn?: TurnRef,
       proposal?: unknown,
     ) => {
       if (action === 'list')
@@ -1513,10 +1503,10 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       if (action === 'propose') {
         if (!options.discovered)
           throw new IntegrationError('Discovered connections are unavailable.', 503);
-        return options.discovered.propose(proposal, task);
+        return options.discovered.propose(proposal, turn);
       }
       const slug = slugSchema.parse(service);
-      return { name: catalogs[slug].name, ...(await connect(slug, task ? 'chat' : 'apps', task)) };
+      return { name: catalogs[slug].name, ...(await connect(slug, turn ? 'chat' : 'apps', turn)) };
     },
     status: list,
     drain,

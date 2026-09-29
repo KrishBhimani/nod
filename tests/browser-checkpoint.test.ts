@@ -110,7 +110,7 @@ test('private quiesce accepts no task, leaves absent namespaces absent and requi
         id: randomUUID(),
         namespace: 'sk-' + 'a'.repeat(24),
         method: 'quiesce',
-        taskId: 'task',
+        threadId: 'task',
       }).success,
       false,
     );
@@ -154,7 +154,7 @@ test('quiesce refuses a pending request without aborting or querying its browser
     disposals++;
   };
   const f = await workerFixture(() => computer);
-  const active = f.request({ method: 'act', taskId: 'task', input: { action: 'snapshot' } });
+  const active = f.request({ method: 'act', threadId: 'task', input: { action: 'snapshot' } });
   try {
     await entered.promise;
     assert.equal(result(await f.request({ method: 'quiesce' })), false);
@@ -198,7 +198,7 @@ test('quiesce fences new calls until disposal finishes and then allows a fresh n
     await entered.promise;
     const rejected = await f.request({
       method: 'act',
-      taskId: 'task',
+      threadId: 'task',
       input: { action: 'snapshot' },
     });
     assert.equal(rejected.ok, false);
@@ -208,7 +208,7 @@ test('quiesce fences new calls until disposal finishes and then allows a fresh n
     release.resolve();
     assert.equal(result(await quiescing), true);
     assert.equal(disposals, 1);
-    result(await f.request({ method: 'act', taskId: 'task', input: { action: 'snapshot' } }));
+    result(await f.request({ method: 'act', threadId: 'task', input: { action: 'snapshot' } }));
     assert.equal(creations, 2);
     assert.equal(actions, 1);
   } finally {
@@ -391,7 +391,7 @@ test('checkpoint status blocks credential injection until the private call finis
       }
     });
     const injecting = f.computer.injectCredentials({
-      taskId: 'task',
+      threadId: 'task',
       origin: 'https://1.1.1.1',
       kind: 'identifier',
       username: 'synthetic@example.test',

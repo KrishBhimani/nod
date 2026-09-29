@@ -4,7 +4,7 @@ import {
   type SpawnOptionsWithoutStdio,
 } from 'node:child_process';
 import { serviceEnvironment } from '../process.ts';
-import { taskId } from '../../ports/task-identity.ts';
+import { threadIdentity } from '../../ports/thread-identity.ts';
 import type { CommandProcess } from '../command-process.ts';
 
 export const workspaceCommandProgram = `import os,sys,json,base64,selectors,subprocess,signal,time,threading,re,tempfile,shutil
@@ -120,7 +120,7 @@ export type WorkspaceCommandLauncher = (
 
 export async function runWorkspaceCommand(options: {
   container: string;
-  taskId: string;
+  threadId: string;
   args: string[];
   input?: string;
   environment?: Record<string, string>;
@@ -133,7 +133,7 @@ export async function runWorkspaceCommand(options: {
 }): Promise<{ stdout: Buffer; stderr: Buffer; exitCode: number }> {
   if (!/^otto-workspace(?:-[a-zA-Z0-9_-]+)?$/.test(options.container))
     throw new Error('WORKSPACE_CONTAINER must identify an Otto workspace.');
-  const id = taskId(options.taskId);
+  const id = threadIdentity(options.threadId);
   return runSupervisedCommand({
     ...options,
     launch: () =>

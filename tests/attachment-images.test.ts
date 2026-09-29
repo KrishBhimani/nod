@@ -51,7 +51,7 @@ test('sent images form a capped gallery with overflow, preserve files, and share
     id: 'fixture',
     role: 'user',
     text: '',
-    taskId: 'fixture-task',
+    turnId: 'fixture-turn',
     createdAt: '2026-09-25T12:00:00Z',
     attachments: [
       ...pictures,
@@ -150,7 +150,7 @@ test('mixed owned media keep visual tiles in the gallery, documents in cards and
   const message: Message = {
     id: 'mixed-media',
     role: 'assistant',
-    taskId: 'mixed-media-task',
+    turnId: 'mixed-media-turn',
     text: '',
     createdAt: '2026-09-25T12:00:00Z',
     attachments: media,
@@ -308,7 +308,7 @@ test('owned Markdown and CSV open readable previews with safe links and exact ta
   const message: Message = {
     id: 'document-preview',
     role: 'assistant',
-    taskId: 'document-preview-task',
+    turnId: 'document-preview-turn',
     text: '',
     createdAt: '2026-09-25T12:00:00Z',
     attachments: [markdown, csv],

@@ -393,8 +393,8 @@ test(
         ownerId: 'local-development',
         provider: provider('composio', ['notion']),
         additionalProviders: [provider('direct', ['notion', 'linear'])],
-        resumeConnection: async (taskId, revision, service) => {
-          resumes.push(`${taskId}:${revision}:${service}`);
+        resumeConnection: async (turnId, service) => {
+          resumes.push(`${turnId}:${service}`);
           return true;
         },
         baseUrl: 'http://localhost:4310',
@@ -494,8 +494,11 @@ test(
         (directOnly as { tools: Record<string, unknown> }).tools.NOTION_RETRIEVE_PAGE,
         { provider: 'direct' },
       );
-      const taskId = randomUUID();
-      await integrations.manageConnections('connect', 'linear', { id: taskId, revision: 3 });
+      const turnId = randomUUID();
+      await integrations.manageConnections('connect', 'linear', {
+        threadId: randomUUID(),
+        turnId,
+      });
       failInspectOnce = true;
       const firstCallback = await app.inject({
         url: `/api/apps/callback?state=${state}&code=fixture`,
@@ -511,7 +514,7 @@ test(
         chatCallback.headers.location,
         'http://localhost:4310/?connection=continued&service=linear',
       );
-      assert.deepEqual(resumes, [`${taskId}:3:linear`]);
+      assert.deepEqual(resumes, [`${turnId}:linear`]);
       const linear = (await integrations.list()).find((item) => item.slug === 'linear');
       assert.equal(linear?.status, 'connected');
       assert.deepEqual(

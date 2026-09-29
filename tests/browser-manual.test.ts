@@ -134,7 +134,7 @@ test('capacity eviction preserves manual takeover while removing an idle browser
     for (const id of ['two', 'three', 'four', 'five'])
       await f.computer.act(id, { action: 'open', url: 'https://1.1.1.1/login' });
     assert.equal(f.page().closed, false);
-    assert.equal(f.computer.currentSession?.()?.taskId, 'fixture');
+    assert.equal(f.computer.currentSession?.()?.threadId, 'fixture');
     await f.computer.control!('fixture', { action: 'click', x: 0.5, y: 0.5 });
     assert.ok(f.actions.some((action) => action.action === 'mouseup'));
     assert.match(f.computer.status(), /^4 /);
@@ -160,7 +160,7 @@ test('manual input uses normalized socket commands, masks typed data, and locks 
     );
     await assert.rejects(
       f.computer.injectCredentials({
-        taskId: 'fixture',
+        threadId: 'fixture',
         origin: 'https://1.1.1.1',
         passwordSelector: '#password',
         password: secret,
@@ -283,7 +283,7 @@ test('takeover reserves its lock before socket checks and blocks already queued 
     await delay(0);
     await assert.rejects(
       f.computer.injectCredentials({
-        taskId: 'fixture',
+        threadId: 'fixture',
         origin: 'https://1.1.1.1',
         passwordSelector: '#password',
         password: 'private-fixture',

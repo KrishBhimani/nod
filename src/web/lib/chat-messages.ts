@@ -1,4 +1,4 @@
-import type { Message, Task } from '../../shared/contracts';
+import type { Message, Turn } from '../../shared/contracts';
 import { isSameDay, type DateFormat } from './date-format';
 
 export function visibleConversationTurns(
@@ -13,9 +13,9 @@ export function visibleConversationTurns(
     .map((turn) => turn.id);
 }
 
-export function hasVisibleChatActivity(tasks: Pick<Task, 'status' | 'showTyping'>[]) {
-  return tasks.some(
-    (task) => task.showTyping !== false && ['queued', 'running'].includes(task.status),
+export function hasVisibleChatActivity(turns: Pick<Turn, 'status' | 'showTyping'>[]) {
+  return turns.some(
+    (turn) => turn.showTyping !== false && ['queued', 'running'].includes(turn.status),
   );
 }
 
@@ -38,7 +38,7 @@ export function collapseScreenshotMessages(messages: Message[]) {
     const artifact = message.attachments[0];
     const isScreenshot =
       message.role === 'assistant' &&
-      Boolean(message.taskId) &&
+      Boolean(message.turnId) &&
       message.attachments.length === 1 &&
       artifact.mimeType === 'image/png' &&
       (message.text === 'Browser screenshot.' ||
@@ -48,7 +48,7 @@ export function collapseScreenshotMessages(messages: Message[]) {
       !message.replyToMessageId &&
       !message.replyTo;
     const previous = result.at(-1);
-    if (isScreenshot && previousWasScreenshot && previous?.taskId === message.taskId) {
+    if (isScreenshot && previousWasScreenshot && previous?.turnId === message.turnId) {
       const attachments = [...previous.attachments, artifact];
       result[result.length - 1] = {
         ...previous,

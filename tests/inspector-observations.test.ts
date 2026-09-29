@@ -22,15 +22,14 @@ import {
   formatModelCost,
   formatToolDuration,
   mergeObservationPage,
-  groupTaskActivity,
+  groupTurnActivity,
   compactActivityText,
 } from '../src/web/lib/inspector-observations.ts';
 
 function call(id: string, patch: Partial<ToolCall> = {}): ToolCall {
   return {
     id,
-    taskId: 'fixture-task',
-    revision: 1,
+    turnId: 'fixture-turn',
     name: 'browser',
     input: { action: 'read', url: 'https://example.com' },
     output: null,
@@ -45,8 +44,7 @@ function call(id: string, patch: Partial<ToolCall> = {}): ToolCall {
 function usage(id: string, patch: Partial<ModelUsage> = {}): ModelUsage {
   return {
     id,
-    taskId: 'fixture-task',
-    revision: 1,
+    turnId: 'fixture-turn',
     provider: 'fixture',
     model: 'fixture-model',
     inputTokens: 100,
@@ -373,12 +371,11 @@ test('inspector payloads and tool errors render as escaped text without executin
   assert.match(html, /Input JSON/);
   assert.match(html, /Output JSON/);
   assert.match(html, /Private developer data/);
-  assert.match(html, /revision 1/);
 });
 
 test('tool usage rows show retained totals, failures and measured durations without inventing per-tool cost', () => {
   const html = renderToStaticMarkup(
-    createElement(ToolUsageGroup, { taskId: 'fixture-task', usage: toolUsage() }),
+    createElement(ToolUsageGroup, { turnId: 'fixture-turn', usage: toolUsage() }),
   );
   assert.match(html, /204/);
   assert.match(html, /2 failed/);
@@ -388,7 +385,7 @@ test('tool usage rows show retained totals, failures and measured durations with
   assert.doesNotMatch(html, /USD|estimate|invoice/);
   const unknown = renderToStaticMarkup(
     createElement(ToolUsageGroup, {
-      taskId: 'fixture-task',
+      turnId: 'fixture-turn',
       usage: toolUsage({
         durationSamples: 0,
         averageDurationMs: null,
@@ -402,22 +399,22 @@ test('tool usage rows show retained totals, failures and measured durations with
 });
 
 test('activity pairs legacy tool starts and outcomes without duplicate rows or raw kinds', () => {
-  const event = (id: string, type: string, summary: string, second: number, taskId = 'task-a') => ({
+  const event = (id: string, type: string, summary: string, second: number, turnId = 'turn-a') => ({
     id,
     type,
     summary,
-    taskId,
+    turnId,
     createdAt: new Date(Date.UTC(2026, 8, 25, 10, 0, second)).toISOString(),
   });
-  const result = groupTaskActivity(
+  const result = groupTurnActivity(
     [
-      event('1', 'started', 'Task started.', 0),
+      event('1', 'started', 'Turn started.', 0),
       event('2', 'tool_start', 'browse web', 1),
       event('3', 'tool_start', 'execute code', 2),
       event('4', 'tool_failed', 'execute code', 4),
       event('5', 'tool_complete', 'browse web', 5),
       event('6', 'tool_start', 'browse web', 6),
-      event('7', 'tool_complete', 'browse web', 9, 'task-b'),
+      event('7', 'tool_complete', 'browse web', 9, 'turn-b'),
     ].reverse(),
   );
   assert.equal(result.length, 5);
@@ -425,14 +422,14 @@ test('activity pairs legacy tool starts and outcomes without duplicate rows or r
   assert.equal(result.find((item) => item.id === '3')?.status, 'failed');
   assert.equal(result.find((item) => item.id === '6')?.status, 'running');
   assert.equal(result.find((item) => item.id === '7')?.durationMs, null);
-  assert.equal(result.at(-1)?.title, 'Task started');
+  assert.equal(result.at(-1)?.title, 'Turn started');
 });
 
 test('activity prefers exact tool records even when same-name calls overlap', () => {
   const events = ['tool_start', 'tool_start', 'tool_complete', 'tool_failed'].map(
     (type, index) => ({
       id: `event-${index}`,
-      taskId: 'fixture-task',
+      turnId: 'fixture-turn',
       type,
       summary: 'browser',
       createdAt: `2026-09-24T12:00:0${index}.000Z`,
@@ -447,7 +444,7 @@ test('activity prefers exact tool records even when same-name calls overlap', ()
       finishedAt: '2026-09-24T12:00:02.080Z',
     }),
   ];
-  const result = groupTaskActivity(events, exact);
+  const result = groupTurnActivity(events, exact);
   assert.equal(result.length, 2);
   assert.equal(result.find((item) => item.id === 'a')?.durationMs, 3200);
   assert.equal(result.find((item) => item.id === 'b')?.durationMs, 80);
@@ -507,13 +504,13 @@ test('provider usage distinguishes adapter operations, unknown prices and partia
   assert.doesNotMatch(partial, /<img/);
 });
 
-test('legacy activity does not invent durations for overlapping same-name calls or leave completed tasks running', () => {
+test('legacy activity does not invent durations for overlapping same-name calls or leave completed turns running', () => {
   const types = ['tool_start', 'tool_start', 'tool_complete', 'failed'];
-  const result = groupTaskActivity(
+  const result = groupTurnActivity(
     types.map((type, index) => ({
       id: `event-${index}`,
       type,
-      taskId: 'task-a',
+      turnId: 'turn-a',
       summary: 'browser',
       createdAt: `2026-09-24T12:00:0${index}.000Z`,
     })),
@@ -523,45 +520,45 @@ test('legacy activity does not invent durations for overlapping same-name calls 
   assert.ok(result.every((item) => item.status !== 'running'));
 });
 
-test('recorded tools do not hide unrecorded tools or older tasks in activity', () => {
+test('recorded tools do not hide unrecorded tools or older turns in activity', () => {
   const events = [
     {
       id: 'old',
-      taskId: 'old-task',
+      turnId: 'old-turn',
       type: 'tool_complete',
       summary: 'browser',
       createdAt: '2026-09-24T12:00:01.000Z',
     },
     {
       id: 'earlier',
-      taskId: 'fixture-task',
+      turnId: 'fixture-turn',
       type: 'tool_complete',
       summary: 'browser',
       createdAt: '2026-09-24T11:00:00.000Z',
     },
     {
       id: 'missing',
-      taskId: 'fixture-task',
+      turnId: 'fixture-turn',
       type: 'tool_complete',
       summary: 'execute code',
       createdAt: '2026-09-24T12:00:00.000Z',
     },
     {
       id: 'matched',
-      taskId: 'fixture-task',
+      turnId: 'fixture-turn',
       type: 'tool_complete',
       summary: 'browser',
       createdAt: '2026-09-24T12:00:01.000Z',
     },
     {
       id: 'later',
-      taskId: 'fixture-task',
+      turnId: 'fixture-turn',
       type: 'tool_complete',
       summary: 'browser',
       createdAt: '2026-09-24T12:00:03.000Z',
     },
   ];
-  const result = groupTaskActivity(events, [
+  const result = groupTurnActivity(events, [
     call('recorded', {
       status: 'succeeded',
       finishedAt: '2026-09-24T12:00:02.000Z',
@@ -572,5 +569,5 @@ test('recorded tools do not hide unrecorded tools or older tasks in activity', (
     new Set(result.map((item) => item.id)),
     new Set(['old', 'earlier', 'missing', 'later', 'recorded']),
   );
-  assert.equal(groupTaskActivity(events, []).length, 5);
+  assert.equal(groupTurnActivity(events, []).length, 5);
 });

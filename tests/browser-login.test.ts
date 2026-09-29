@@ -297,7 +297,7 @@ test('staged identifier, password and OTP entry waits for Next and keeps secrets
       /secure credential/,
     );
     const identifier = computer.injectCredentials({
-      taskId: 'login',
+      threadId: 'login',
       origin: first.origin,
       kind: 'identifier',
       username: 'synthetic-account@example.test',
@@ -313,7 +313,7 @@ test('staged identifier, password and OTP entry waits for Next and keeps secrets
       ['password'],
     );
     await computer.injectCredentials({
-      taskId: 'login',
+      threadId: 'login',
       origin: password.origin,
       kind: 'password',
       password: 'synthetic-password',
@@ -326,7 +326,7 @@ test('staged identifier, password and OTP entry waits for Next and keeps secrets
       ['otp'],
     );
     await computer.injectCredentials({
-      taskId: 'login',
+      threadId: 'login',
       origin: otp.origin,
       kind: 'otp',
       code: '739204',

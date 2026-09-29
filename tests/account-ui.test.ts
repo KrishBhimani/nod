@@ -993,9 +993,10 @@ test('automatic locale saving retries while the cached preferences stay unchange
     }
     if (path === '/api/state')
       return Response.json({
-        conversationRevision: 0,
+        threadId: 'thread-0',
+        threadStatus: 'idle',
         messages: [],
-        tasks: [],
+        turns: [],
         configuration: {
           provider: 'fixture',
           model: 'fixture',

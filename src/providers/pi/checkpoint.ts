@@ -48,16 +48,15 @@ function entries(bytes: Uint8Array): FileEntry[] {
 
 export async function createPiCheckpoint(options: {
   store: PrivateObjectStore;
-  taskId: string;
+  threadId: string;
   directory: string;
-  fresh?: boolean;
 }) {
-  const key = `sessions/${options.taskId}.jsonl`;
+  const key = `sessions/${options.threadId}.jsonl`;
   const saved = await options.store.read(key, maximum);
   const manager = SessionManager.inMemory(
     options.directory,
     undefined,
-    saved && !options.fresh ? entries(saved.bytes) : undefined,
+    saved ? entries(saved.bytes) : undefined,
   );
   let version = saved?.version ?? null;
   let failed = false;

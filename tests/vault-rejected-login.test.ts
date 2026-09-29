@@ -9,6 +9,7 @@ import pg from 'pg';
 import { createBrowserFixture as createAgentBrowserComputer } from './browser-fixture.ts';
 import { createVault, openCredential } from '../src/server/vault.ts';
 import { stagedLoginBrowser } from './login-fixture.ts';
+import type { TurnRef } from '../src/server/thread.ts';
 
 test(
   'website-rejected passwords and OTPs return fresh one-use forms without resuming or saving rejected details',
@@ -28,20 +29,44 @@ test(
     const key = randomBytes(32);
     const resumed: string[] = [];
     await pool.query(
-      "CREATE TABLE tasks(id text PRIMARY KEY,owner_id text NOT NULL,status text NOT NULL DEFAULT 'running',revision integer NOT NULL DEFAULT 0)",
+      'CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz)',
     );
     await pool.query(
-      "INSERT INTO tasks(id,owner_id) VALUES('corrected','local-development'),('other','local-development'),('saved-identifier','local-development')",
+      "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running')",
     );
+    const turns: Record<string, TurnRef> = {};
+    const threads: Record<string, string> = {};
+    for (const name of ['corrected', 'other', 'saved-identifier']) {
+      const turn = { threadId: randomUUID(), turnId: randomUUID() };
+      await pool.query("INSERT INTO threads(id,owner_id) VALUES($1,'local-development')", [
+        turn.threadId,
+      ]);
+      await pool.query(
+        "INSERT INTO turns(id,owner_id,thread_id) VALUES($1,'local-development',$2)",
+        [turn.turnId, turn.threadId],
+      );
+      turns[name] = turn;
+      threads[name] = turn.threadId;
+    }
+    const correctedTurns = async () =>
+      (
+        await pool.query('SELECT id,status FROM turns WHERE thread_id=$1', [threads.corrected])
+      ).rows.map((row) => (row.id === turns.corrected.turnId ? row.status : 'earlier'));
     const vault = await createVault(pool, {
       keyStore: { id: 'fixture', configured: true, getKey: async () => key },
       inspect: computer.inspectLogin,
       hold: computer.hold,
       inject: computer.injectCredentials,
       retry: async () => {},
-      resume: async (id) => {
-        resumed.push(id);
-        await pool.query("UPDATE tasks SET revision=revision+1,status='running' WHERE id=$1", [id]);
+      resume: async (turnId) => {
+        const name = Object.keys(turns).find((key) => turns[key].turnId === turnId)!;
+        resumed.push(name);
+        const next = { threadId: turns[name].threadId, turnId: randomUUID() };
+        await pool.query(
+          "INSERT INTO turns(id,owner_id,thread_id,source,source_id) VALUES($1,'local-development',$2,'resume',$3)",
+          [next.turnId, next.threadId, `credentials:${turnId}`],
+        );
+        turns[name] = next;
       },
     });
     vault.registerRoutes(app);
@@ -50,9 +75,9 @@ test(
       label: 'Fixture website',
       kind: 'password' as const,
     };
-    const request = async (id: string) => {
-      const result = await vault.request(id, 'local-development', input);
-      await pool.query("UPDATE tasks SET status='waiting_credentials' WHERE id=$1", [id]);
+    const request = async (name: string) => {
+      const result = await vault.request(turns[name], 'local-development', input);
+      await pool.query("UPDATE turns SET status='waiting' WHERE id=$1", [turns[name].turnId]);
       return result.url.replace('/vault/', '/api/credential-requests/');
     };
     const submit = (url: string, payload: Record<string, string>) =>
@@ -62,8 +87,8 @@ test(
         payload: { ...('password' in payload ? { label: 'Fixture login' } : {}), ...payload },
       });
     try {
-      await computer.act('corrected', { action: 'open', url: 'https://1.1.1.1/login' });
-      const page = fixture.pages.get('corrected')!;
+      await computer.act(threads.corrected, { action: 'open', url: 'https://1.1.1.1/login' });
+      const page = fixture.pages.get(threads.corrected)!;
       const render = page.render.bind(page);
       page.render = () => {
         render();
@@ -84,7 +109,7 @@ test(
         };
       };
       page.render();
-      await computer.act('other', { action: 'open', url: 'https://1.1.1.1/login' });
+      await computer.act(threads.other, { action: 'open', url: 'https://1.1.1.1/login' });
       const otherRequest = await request('other');
       const identifier = await request('corrected');
       assert.equal(
@@ -100,7 +125,7 @@ test(
       assert.equal(rejectedPasswordResponse.json().ok, false);
       assert.match(rejectedPasswordResponse.json().error, /not accepted/);
       assert.equal(page.stage, 'password');
-      const rejectedObservation = await computer.act('corrected', { action: 'snapshot' });
+      const rejectedObservation = await computer.act(threads.corrected, { action: 'snapshot' });
       assert.equal(rejectedObservation.text.includes('fixture-wrong-password'), false);
       assert.equal((await app.inject({ url: rejectedPassword })).json().status, 'filled');
       const correctedPassword = rejectedPasswordResponse
@@ -112,10 +137,7 @@ test(
       assert.equal(freshPassword.expiresAt, passwordExpiry);
       assert.equal((await pool.query('SELECT * FROM vault_entries')).rowCount, 0);
       assert.deepEqual(resumed, ['corrected']);
-      assert.deepEqual(
-        (await pool.query("SELECT status,revision FROM tasks WHERE id='corrected'")).rows[0],
-        { status: 'waiting_credentials', revision: 1 },
-      );
+      assert.deepEqual((await correctedTurns()).sort(), ['earlier', 'waiting']);
       assert.equal(
         (await submit(rejectedPassword, { password: 'must-not-repeat' })).statusCode,
         409,
@@ -151,26 +173,28 @@ test(
         page.stage === 'complete'
           ? nodes(selector).filter((element) => element === page.echo)
           : nodes(selector);
-      const completedInspection = await computer.inspectLogin('corrected');
+      const completedInspection = await computer.inspectLogin(threads.corrected);
       assert.deepEqual(completedInspection.fields, []);
       assert.deepEqual(completedInspection.methods, []);
       const formsBeforeStaleRequest = (
         await pool.query('SELECT count(*)::int AS count FROM credential_requests')
       ).rows[0].count;
       await assert.rejects(
-        vault.request('corrected', 'local-development', { ...input, kind: 'otp' }),
+        vault.request(turns.corrected, 'local-development', { ...input, kind: 'otp' }),
         /no sign-in step/i,
       );
       assert.equal(
         (await pool.query('SELECT count(*)::int AS count FROM credential_requests')).rows[0].count,
         formsBeforeStaleRequest,
       );
-      assert.deepEqual(
-        (await pool.query("SELECT status,revision FROM tasks WHERE id='corrected'")).rows[0],
-        { status: 'running', revision: 3 },
-      );
+      assert.deepEqual((await correctedTurns()).sort(), [
+        'earlier',
+        'earlier',
+        'earlier',
+        'running',
+      ]);
       assert.equal((await app.inject({ url: otherRequest })).json().status, 'pending');
-      assert.equal(fixture.pages.get('other')!.stage, 'identifier');
+      assert.equal(fixture.pages.get(threads.other)!.stage, 'identifier');
       assert.equal((await pool.query('SELECT * FROM vault_entries')).rowCount, 1);
       const persisted = JSON.stringify(
         (await pool.query('SELECT * FROM credential_requests')).rows,
@@ -184,13 +208,21 @@ test(
       ])
         assert.equal(persisted.includes(secret), false);
       assert.equal(
-        (await computer.act('corrected', { action: 'snapshot' })).text.includes('739204'),
+        (await computer.act(threads.corrected, { action: 'snapshot' })).text.includes('739204'),
         false,
       );
 
-      await computer.act('saved-identifier', { action: 'open', url: 'https://1.1.1.1/login' });
-      await vault.fillSaved('saved-identifier', 'local-development', entries.at(-1).id, input);
-      assert.equal(fixture.pages.get('saved-identifier')!.stage, 'password');
+      await computer.act(threads['saved-identifier'], {
+        action: 'open',
+        url: 'https://1.1.1.1/login',
+      });
+      await vault.fillSaved(
+        turns['saved-identifier'],
+        'local-development',
+        entries.at(-1).id,
+        input,
+      );
+      assert.equal(fixture.pages.get(threads['saved-identifier'])!.stage, 'password');
       const savedPassword = await request('saved-identifier');
       assert.equal(
         (await submit(savedPassword, { password: 'fixture-new-password' })).statusCode,

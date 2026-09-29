@@ -12,8 +12,6 @@ import type { MessagingTransport } from '../ports/messaging.ts';
 import type { ChannelAccountRegistry, ChannelSetupVerifier } from '../ports/channel-settings.ts';
 import type { PrivateObjectStore } from '../ports/object-storage.ts';
 import type { LinkPreviewProvider } from '../ports/link-preview.ts';
-import type { ConversationRouter } from '../ports/conversation.ts';
-import type { RecordProviderUsage } from '../ports/provider-usage.ts';
 import { agentModels } from '../shared/model-defaults.ts';
 import { createChatSdkTransport } from '../providers/chat-sdk/index.ts';
 import { createChatSdkSetupVerifier } from '../providers/chat-sdk/settings.ts';
@@ -43,7 +41,6 @@ import { createKeychainKeyStore } from '../providers/keychain/key-store.ts';
 import { createOpenAIRelevanceClassifier } from '../providers/openai/relevance.ts';
 import { createOpenAISpeechProvider } from '../providers/openai/speech.ts';
 import { createPiAgent } from '../providers/pi/index.ts';
-import { createPiConversationRouter } from '../providers/pi/conversation.ts';
 import { createPublicLinkPreviewProvider } from '../providers/public-web/link-preview.ts';
 import { createWebSearch } from '../providers/public-web/search.ts';
 import { createAgentRuntime } from '../runtime/index.ts';
@@ -81,24 +78,23 @@ import { events, refresh } from './events.ts';
 import { createIntegrations } from './integrations.ts';
 import { createInspectorStore } from './inspector.ts';
 import { createPromptInspector } from './inspector-prompts.ts';
-import { createInspectorWork } from './inspector-work.ts';
 import { createPersonalService } from './personal.ts';
 import { createSpeech } from './speech.ts';
 import {
   boss,
   createUserMessageService,
-  initializeTasks,
-  pauseOwnedTaskForControl,
-  resumeOwnedTaskFromControl,
-  resumeTask,
-  resumeConnectedTask,
+  enqueueTurn,
+  initializeThreads,
+  pauseForControl,
   restartOnboarding,
+  resumeAfterConnection,
+  resumeAfterCredentials,
+  resumeFromControl,
+  retryCredentials,
   startOnboarding,
-  retryTaskCredentials,
-  startTaskWorkers,
-  stopTasks,
-  submitTask,
-} from './tasks.ts';
+  startThreadWorkers,
+  stopThreadWorkers,
+} from './thread.ts';
 import { createTriage } from './triage.ts';
 import { createVault } from './vault.ts';
 import { createTakeover } from './takeover.ts';
@@ -122,7 +118,6 @@ export interface ApplicationAdapters {
   confirmComputerShutdown?(): Promise<void>;
   objectStore?: PrivateObjectStore;
   channelAccounts?: ChannelAccountRegistry;
-  createConversationRouter?(onUsage: RecordProviderUsage): ConversationRouter;
   agent: Agent;
   computer: Computer;
   workspace: Workspace;
@@ -250,8 +245,6 @@ export function createDefaultAdapters(
           }),
         }
       : {}),
-    createConversationRouter: (onUsage) =>
-      createPiConversationRouter({ provider, model: env.ROUTING_MODEL, apiKey, onUsage }),
     agent: createPiAgent({
       provider,
       model,
@@ -334,7 +327,7 @@ export async function createApplication(
   await mkdir(dataRoot, { recursive: true, mode: 0o700 });
   await initializeDatabase();
   await adapters.initialize?.();
-  await initializeTasks();
+  await initializeThreads();
   const artifacts = adapters.objectStore
     ? createArtifactService({ database: pool, ownerId, store: adapters.objectStore })
     : localArtifacts;
@@ -488,7 +481,7 @@ export async function createApplication(
     pool,
     ownerId,
     scheduler: boss,
-    submitTask,
+    enqueueTurn,
     refresh,
     consumers,
     stopConsumer: (id) => boss.offWork('scheduled-task', { id, wait: true }),
@@ -512,10 +505,10 @@ export async function createApplication(
     transport: createDiscoveredTransport(),
     oauth: createDiscoveredOAuth(),
     runCli: workspace.connectedCliAvailable
-      ? async (taskId, command, args, envName, token, timeoutSeconds, signal) => {
-          const workspacePath = join(dataRoot, 'workspaces', taskId);
+      ? async (threadId, command, args, envName, token, timeoutSeconds, signal) => {
+          const workspacePath = join(dataRoot, 'workspaces', threadId);
           const session = workspace.open({
-            taskId,
+            threadId,
             workspacePath,
             signal: signal
               ? AbortSignal.any([
@@ -528,7 +521,7 @@ export async function createApplication(
           return session.executeProgram(command, args, { [envName]: token }, timeoutSeconds);
         }
       : undefined,
-    resumeConnection: resumeConnectedTask,
+    resumeConnection: resumeAfterConnection,
     refresh,
   });
   let vault!: Awaited<ReturnType<typeof createVault>>;
@@ -537,7 +530,7 @@ export async function createApplication(
     admission,
     ownerId,
     provider: integrationProvider,
-    resumeConnection: resumeConnectedTask,
+    resumeConnection: resumeAfterConnection,
     ...(adapters.directIntegrations
       ? {
           additionalProviders: [
@@ -560,8 +553,8 @@ export async function createApplication(
   vault = await createVault(pool, {
     admission,
     keyStore: adapters.keyStore,
-    resume: resumeTask,
-    retry: retryTaskCredentials,
+    resume: resumeAfterCredentials,
+    retry: retryCredentials,
     inject: computer.injectCredentials,
     inspect: computer.inspectLogin,
     hold: computer.hold,
@@ -581,7 +574,7 @@ export async function createApplication(
   browserConnections = await createBrowserConnections(pool, {
     ownerId,
     computer,
-    resume: resumeConnectedTask,
+    resume: resumeAfterConnection,
     saveLogin: async (origin, label, username, password) =>
       (await vault.saveLogin({ origin, label, username, password })).id,
     refresh,
@@ -596,12 +589,12 @@ export async function createApplication(
     (action, args, provenance) =>
       action.startsWith('OTTO_')
         ? personal.manage(action.slice('OTTO_'.length), args, provenance)
-        : providerUsage.withTask(provenance.taskId, () =>
+        : providerUsage.withTurn(provenance.turnId, () =>
             integrations.executeApproved(
               ownerId,
               action,
               args,
-              provenance.taskId,
+              { threadId: provenance.threadId, turnId: provenance.turnId },
               provenance.signal,
             ),
           ),
@@ -628,33 +621,30 @@ export async function createApplication(
           }
         : await accountProfiles.read(),
     );
-  const userMessages = createUserMessageService({
-    routeConversation: adapters.createConversationRouter?.(providerUsage.record),
-    confirmAction: approvals.acceptChat,
-  });
+  const userMessages = createUserMessageService({ confirmAction: approvals.acceptChat });
   if (options.workers !== false) {
     await inspector.recover().catch(() => {});
     await triage.initializeHeartbeat();
-    await startTaskWorkers({
+    await startThreadWorkers({
       consumers,
       artifacts,
       writeArtifact: workspace.writeArtifact?.bind(workspace),
       readArtifact: workspace.readArtifact?.bind(workspace),
       executeConfirmation: approvals.executeConfirmed,
       reactToMessage: reactions.react,
-      downloadIntegrationFile: (_taskId, action, args, signal) =>
+      downloadIntegrationFile: (_turn, action, args, signal) =>
         integrations.download(ownerId, action, args, signal),
-      runTask: (context) => providerUsage.withTask(context.taskId, () => runtime.runTask(context)),
+      runTurn: (context) => providerUsage.withTurn(context.turnId, () => runtime.runTurn(context)),
       observe: inspector.record,
       recordFailure: inspector.recordFailure,
       inspectPrompt: promptInspector.record,
       finishObservationSegment: inspector.finishSegment,
       accountProfile,
       connections: integrations.manageConnections,
-      browserConnection: (request, task, signal) =>
-        browserConnections.request(request, task, signal),
+      browserConnection: (request, turn, signal) =>
+        browserConnections.request(request, turn, signal),
       speech,
-      manage: async (taskId, action, args, provenance) => {
+      manage: async (turn, action, args, provenance) => {
         if (
           [
             'profile_update',
@@ -668,18 +658,17 @@ export async function createApplication(
           ].includes(action)
         )
           return approvals.request(
-            taskId,
+            turn,
             `OTTO_${action}`,
             await personal.validateReview(action, args),
-            { revision: provenance?.revision },
           );
-        return personal.manage(action, args, provenance);
+        return personal.manage(action, args, { ...provenance, turnId: turn.turnId });
       },
-      requestCredential: async (taskId, input) => {
-        if (input.kind === 'otp' && (await vault.fillEmailCode(taskId, ownerId, input)))
+      requestCredential: async (turn, input) => {
+        if (input.kind === 'otp' && (await vault.fillEmailCode(turn, ownerId, input)))
           return { filled: true };
         if (input.kind !== 'otp') {
-          const selected = await vault.fillSelected(taskId, ownerId, input);
+          const selected = await vault.fillSelected(turn, ownerId, input);
           if (selected) return { filled: true };
           if (selected === undefined) {
             const matches = (await vault.list(ownerId)).filter(
@@ -687,16 +676,16 @@ export async function createApplication(
             );
             if (matches.length === 1) {
               try {
-                await vault.fillSaved(taskId, ownerId, matches[0].id, input);
+                await vault.fillSaved(turn, ownerId, matches[0].id, input);
                 return { filled: true };
               } catch {}
             }
           }
         }
-        return vault.request(taskId, ownerId, input);
+        return vault.request(turn, ownerId, input);
       },
-      integration: async (taskId, action, args, options) => {
-        const result = await integrations.execute(ownerId, action, args, taskId, options?.signal);
+      integration: async (turn, action, args, options) => {
+        const result = await integrations.execute(ownerId, action, args, turn, options?.signal);
         if (
           result &&
           typeof result === 'object' &&
@@ -707,15 +696,14 @@ export async function createApplication(
             return {
               status: 'rejected',
               code: 'read_only',
-              message: 'This task can only read connected apps. It cannot change their data.',
+              message: 'This turn can only read connected apps. It cannot change their data.',
             };
           return approvals.request(
-            taskId,
+            turn,
             action,
             'args' in result && result.args && typeof result.args === 'object'
               ? (result.args as Record<string, unknown>)
               : args,
-            { revision: options?.revision },
             options?.signal,
           );
         }
@@ -736,9 +724,9 @@ export async function createApplication(
     artifacts,
     submitMessage: userMessages.submit,
     verification: chatVerification,
-    onboard: async (timeZone, conversationRevision) => {
+    onboard: async (timeZone, threadId) => {
       if (timeZone) await triage.updatePreferences({ timeZone });
-      return restartOnboarding(conversationRevision);
+      return restartOnboarding(threadId);
     },
     startOnboarding: welcome,
     speech,
@@ -781,21 +769,6 @@ export async function createApplication(
   }
   providerUsage.registerRoutes(app);
   promptInspector.registerRoutes(app);
-  createInspectorWork(inspectorDatabase, {
-    ownerId,
-    enabled: () => configuration().inspectorEnabled,
-    secrets: inspectorSecrets,
-    async reviewStatus() {
-      const registered =
-        options.workers === false ? undefined : (await boss.getSchedules('heartbeat'))[0];
-      return {
-        configured: adapters.relevance.configured,
-        scheduled: Boolean(registered),
-        cron: registered?.cron ?? null,
-        timeZone: registered?.timezone ?? null,
-      };
-    },
-  }).registerRoutes(app);
   if (adapters.linkPreviews) {
     const previews = adapters.linkPreviews;
     createLinkPreviews({
@@ -822,9 +795,9 @@ export async function createApplication(
     ownerId,
     computer,
     enabled: () => configuration().inspectorEnabled,
-    pause: pauseOwnedTaskForControl,
-    resume: resumeOwnedTaskFromControl,
-    waitForTask: runtime.waitForTask,
+    pause: pauseForControl,
+    resume: resumeFromControl,
+    waitForThread: runtime.waitForThread,
   }).registerRoutes(app);
   let channels: Awaited<ReturnType<typeof createChannels>> | undefined;
   let channelSettings: Awaited<ReturnType<typeof createChannelSettings>> | undefined;
@@ -868,7 +841,7 @@ export async function createApplication(
       admission,
       ownerId,
       appOrigin: runtimeMode === 'tenant' ? publicOrigin : undefined,
-      resolveAttachments: artifacts.readTaskArtifacts,
+      resolveAttachments: artifacts.readThreadArtifacts,
       ...(channelSettings ? { pair: channelSettings.pair } : {}),
       transport: meterMessaging(messaging, providerUsage),
       acceptVerification: (text, input) => chatVerification.accept(text, input),
@@ -881,17 +854,15 @@ export async function createApplication(
           events.off('event', onEvent);
         };
       },
-      prepare: (text, sourceId, channel) => userMessages.prepare(text, [], { sourceId, channel }),
-      submit: async (text, sourceId, client, channel, preparedRoute, messageId) =>
+      submit: async (text, sourceId, client, channel, messageId) =>
         (
           await userMessages.submit(text, [], {
             sourceId,
             channel,
             client,
-            preparedRoute,
             clientMessageId: messageId,
           })
-        ).taskId,
+        ).turnId,
     });
     channels.registerRoutes(app);
     await channelSettings?.recover();
@@ -919,7 +890,7 @@ export async function createApplication(
     const failures: unknown[] = [];
     for (const close of [
       () => channels?.close(),
-      () => stopTasks(),
+      () => stopThreadWorkers(),
       finishWork,
       async () => {
         await runtime.dispose();

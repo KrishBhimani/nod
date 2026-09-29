@@ -26,8 +26,8 @@ export interface ProviderUsageSummary {
 }
 
 export interface ProviderUsageResponse {
-  scope: 'task' | 'owner';
-  taskId?: string;
+  scope: 'turn' | 'owner';
+  turnId?: string;
   retentionDays: number;
   captureEnabled: boolean;
   droppedEvents: number;

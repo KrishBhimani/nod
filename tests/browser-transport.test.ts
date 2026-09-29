@@ -438,7 +438,7 @@ for (const failedClose of [false, true]) {
       });
       await assert.rejects(
         f.computer.injectCredentials({
-          taskId: 'fixture',
+          threadId: 'fixture',
           origin: login.origin,
           kind: 'identifier',
           username: 'private-credential-fixture@example.test',
@@ -487,7 +487,7 @@ test('completed credential feedback errors remain optional while the browser is 
     });
     assert.deepEqual(
       await f.computer.injectCredentials({
-        taskId: 'fixture',
+        threadId: 'fixture',
         origin: login.origin,
         kind: 'identifier',
         username: 'private-credential-fixture@example.test',
@@ -536,7 +536,7 @@ test('closing during successful credential feedback cannot report submission or 
     });
     const rejected = assert.rejects(
       f.computer.injectCredentials({
-        taskId: 'fixture',
+        threadId: 'fixture',
         origin: login.origin,
         kind: 'identifier',
         username: 'private-credential-fixture@example.test',

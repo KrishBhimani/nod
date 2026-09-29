@@ -54,12 +54,11 @@ test('the standalone browser mounts without waiting for unrelated application st
       '89628f27-7ed2-4bd3-93d4-b9f83194fcce',
     );
     if (path === '/api/state') throw new Error('Unrelated state is unavailable.');
-    if (path === '/api/browser/control/workspace')
+    if (path === '/api/browser/control')
       return new Response(
         JSON.stringify({
           paused: false,
           active: false,
-          revision: null,
           mode: null,
           signInAvailable: true,
           resumable: false,
@@ -73,11 +72,7 @@ test('the standalone browser mounts without waiting for unrelated application st
   const root = createRoot(document.getElementById('root')!);
   try {
     await act(async () => root.render(createElement(App)));
-    assert.deepEqual(calls.toSorted(), [
-      '/api/browser',
-      '/api/browser/control/workspace',
-      '/api/session',
-    ]);
+    assert.deepEqual(calls.toSorted(), ['/api/browser', '/api/browser/control', '/api/session']);
     assert.equal(document.querySelector('h1')?.textContent, 'Workspace browser');
     const control = [...document.querySelectorAll('button')].find(
       (button) => button.textContent === 'Take control',

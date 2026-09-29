@@ -78,8 +78,9 @@ for (const [prompt, solicitation] of [
         }),
       });
       try {
-        const result = await runtime.runTask({
-          taskId: randomUUID(),
+        const result = await runtime.runTurn({
+          threadId: randomUUID(),
+          turnId: randomUUID(),
           ownerId: 'fixture-owner',
           prompt,
           history: [],
@@ -178,8 +179,9 @@ async function signInFailureFixture(options: {
     workspace: fakeWorkspace(),
   });
   try {
-    const result = await runtime.runTask({
-      taskId: randomUUID(),
+    const result = await runtime.runTurn({
+      threadId: randomUUID(),
+      turnId: randomUUID(),
       ownerId: 'fixture-owner',
       prompt: options.prompt ?? 'Get my bookmarks on x.com.',
       history: [],

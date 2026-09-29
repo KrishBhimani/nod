@@ -64,12 +64,12 @@ const base: Message = {
   id: 'fixture-message',
   role: 'assistant',
   text: '**A helpful reply**',
-  taskId: 'fixture-task',
+  turnId: 'fixture-turn',
   attachments: [],
   createdAt: '2026-09-25T12:00:00Z',
 };
 
-test('adjacent screenshots from one task appear as one gallery', () => {
+test('adjacent screenshots from one turn appear as one gallery', () => {
   const image = (id: string): Message => ({
     ...base,
     id,
@@ -81,8 +81,8 @@ test('adjacent screenshots from one task appear as one gallery', () => {
   });
   const first = image('one');
   const second = image('two');
-  const otherTask = { ...image('three'), taskId: 'another-task' };
-  const result = collapseScreenshotMessages([first, second, { ...base, id: 'answer' }, otherTask]);
+  const otherTurn = { ...image('three'), turnId: 'another-turn' };
+  const result = collapseScreenshotMessages([first, second, { ...base, id: 'answer' }, otherTurn]);
   assert.equal(result.length, 3);
   assert.equal(result[0].text, '2 screenshots');
   assert.deepEqual(
@@ -100,7 +100,7 @@ function click(element: Element) {
   element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 }
 
-test('typing activity excludes background and other channel tasks while preserving ordinary user work', () => {
+test('typing activity excludes background and other channel turns while preserving ordinary user work', () => {
   assert.equal(
     hasVisibleChatActivity([
       { status: 'queued', showTyping: false },
@@ -112,7 +112,7 @@ test('typing activity excludes background and other channel tasks while preservi
   assert.equal(hasVisibleChatActivity([{ status: 'queued' }]), true);
   assert.equal(
     hasVisibleChatActivity([
-      { status: 'waiting_user', showTyping: true },
+      { status: 'waiting', showTyping: true },
       { status: 'succeeded', showTyping: true },
       { status: 'cancelled', showTyping: true },
     ]),
@@ -159,7 +159,7 @@ test('message actions reply and copy, inspect the selected assistant message, an
     assert.equal(footer.contains(element.querySelector('[aria-label="Copy message"]')), false);
     assert.equal(element.querySelector('.message-body')!.contains(footer), false);
     await act(async () => click(element.querySelector('[aria-label="Inspect message"]')!));
-    assert.deepEqual(inspected, [{ messageId: base.id, taskId: base.taskId }]);
+    assert.deepEqual(inspected, [{ messageId: base.id, turnId: base.turnId }]);
     await act(async () => click(element.querySelector('[aria-label="Copy message"]')!));
     assert.equal(copied, base.text);
     await act(async () => click(element.querySelector('[aria-label="Reply to message"]')!));

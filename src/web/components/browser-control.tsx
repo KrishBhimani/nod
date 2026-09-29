@@ -9,7 +9,6 @@ import { useBrowserInput } from '../hooks/use-browser-input';
 interface ControlState {
   paused: boolean;
   active: boolean;
-  revision: number | null;
   mode: 'manual' | 'sign_in' | null;
   signInAvailable: boolean;
   resumable?: boolean;
@@ -17,13 +16,12 @@ interface ControlState {
 const initialState: ControlState = {
   paused: false,
   active: false,
-  revision: null,
   mode: null,
   signInAvailable: false,
 };
 
 export function BrowserControl({
-  taskId,
+  threadId,
   screen,
   emptyMessage,
   live,
@@ -35,7 +33,7 @@ export function BrowserControl({
   finishLabel,
   onCompleted,
 }: {
-  taskId?: string;
+  threadId?: string;
   screen: string | null;
   emptyMessage: string;
   live: boolean;
@@ -51,7 +49,7 @@ export function BrowserControl({
   finishLabel?: string;
   onCompleted?(result: { loginSaved?: boolean }): void;
 }) {
-  const path = controlPath ?? `/api/browser/control/${encodeURIComponent(taskId ?? 'workspace')}`;
+  const path = controlPath ?? '/api/browser/control';
   const [control, setControl] = useState({ path, value: initialState });
   const state = control.path === path ? control.value : initialState;
   const setState = (value: ControlState | ((previous: ControlState) => ControlState)) => {
@@ -68,17 +66,19 @@ export function BrowserControl({
   const controls = useRef<HTMLDivElement>(null);
   const inputHint = useId();
   const signingIn = state.active && state.mode === 'sign_in';
-  const resumable = Boolean(taskId) && state.resumable !== false;
+  const resumable = Boolean(threadId) && state.resumable !== false;
   const operation = useRef(0);
   const busyRef = useRef(false);
-  const signIn = useSignInScreen(path, state.revision, signingIn);
+  const [session, setSession] = useState(0);
+  const activeSession = state.active ? session : null;
+  const signIn = useSignInScreen(path, activeSession, signingIn);
   const signInScreenReady = Boolean(signIn.screen);
   const currentScreen = signingIn ? signIn.screen : screen;
   const currentLive = signingIn ? Boolean(signIn.screen) : live;
   const canInteract = Boolean(currentScreen) && currentLive && !busy;
   const input = useBrowserInput({
     path,
-    revision: state.revision,
+    session: activeSession,
     enabled: state.active && canInteract,
     onError: setError,
     onExit: () => controls.current?.querySelector('button')?.focus(),
@@ -104,7 +104,7 @@ export function BrowserControl({
     operation.current++;
     busyRef.current = false;
     setBusy(false);
-    setState({ paused: false, active: false, revision: null, mode: null, signInAvailable: false });
+    setState({ paused: false, active: false, mode: null, signInAvailable: false });
     setError('');
     const refresh = () => {
       if (busyRef.current) return;
@@ -138,19 +138,18 @@ export function BrowserControl({
     try {
       const result = await post<{
         ok?: boolean;
-        revision?: number;
         mode?: ControlState['mode'];
         resumable?: boolean;
         loginSaved?: boolean;
-      }>(`${path}/${kind}`, kind === 'start' ? {} : { revision: state.revision });
+      }>(`${path}/${kind}`, {});
       if (operation.current !== version) return;
       if (result.ok === false) throw new Error('The browser could not continue. Try again.');
-      if (kind === 'start' && typeof result.revision === 'number')
+      if (kind === 'start') setSession((value) => value + 1);
+      if (kind === 'start' && result.mode)
         setState((previous) => ({
           ...previous,
           paused: true,
           active: true,
-          revision: result.revision!,
           mode: result.mode ?? (previous.signInAvailable ? 'sign_in' : 'manual'),
           resumable: result.resumable,
         }));

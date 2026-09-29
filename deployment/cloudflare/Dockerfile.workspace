@@ -2,7 +2,7 @@ FROM node:24.21.0-bookworm-slim AS helpers
 WORKDIR /build
 COPY src/providers/docker/command.ts ./src/providers/docker/command.ts
 COPY src/providers/process.ts ./src/providers/process.ts
-COPY src/ports/task-identity.ts ./src/ports/task-identity.ts
+COPY src/ports/thread-identity.ts ./src/ports/thread-identity.ts
 RUN node --experimental-transform-types --input-type=module -e 'import { writeFileSync } from "node:fs"; import { workspaceCommandProgram } from "./src/providers/docker/command.ts"; writeFileSync("/workspace-command.py", workspaceCommandProgram)'
 
 FROM node:24.21.0-bookworm-slim

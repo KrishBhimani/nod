@@ -22,7 +22,10 @@ test(
       options: `-c search_path=${schema}`,
     });
     await pool.query(
-      "CREATE TABLE tasks(id text PRIMARY KEY,owner_id text NOT NULL,revision integer NOT NULL DEFAULT 0,status text NOT NULL DEFAULT 'running')",
+      'CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz)',
+    );
+    await pool.query(
+      "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running')",
     );
     const key = randomBytes(32);
     const headers = { host: 'localhost:4310', origin: 'http://localhost:4310' };
@@ -32,8 +35,8 @@ test(
       const vault = await createVault(pool, {
         keyStore: { id: 'fixture', configured: true, getKey },
         inject: async () => assert.fail('Editing must not fill a browser.'),
-        resume: async () => assert.fail('Editing must not resume a task.'),
-        retry: async () => assert.fail('Editing must not retry a task.'),
+        resume: async () => assert.fail('Editing must not resume a turn.'),
+        retry: async () => assert.fail('Editing must not retry a turn.'),
       });
       vault.registerRoutes(instance);
       return instance;

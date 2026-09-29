@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY --from=dependencies /app/package.json /app/package-lock.json ./
 COPY --from=dependencies /app/node_modules ./node_modules
-COPY src/ports/computer.ts src/ports/task-identity.ts ./src/ports/
+COPY src/ports/computer.ts src/ports/thread-identity.ts ./src/ports/
 COPY src/shared/browser-errors.ts src/shared/browser-input.ts ./src/shared/
 COPY src/providers/process.ts ./src/providers/
 COPY src/providers/agent-browser ./src/providers/agent-browser/

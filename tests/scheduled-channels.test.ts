@@ -5,8 +5,6 @@ import { setTimeout as delay } from 'node:timers/promises';
 import pg from 'pg';
 import type { Job } from 'pg-boss';
 import type { InboundMessage, MessagingTransport } from '../src/ports/messaging.ts';
-import { createChannels } from '../src/server/channels.ts';
-import { createPersonalService } from '../src/server/personal.ts';
 import type { Schedule } from '../src/shared/contracts.ts';
 
 test(
@@ -23,7 +21,9 @@ test(
     process.env.DATABASE_URL = url.href;
     process.env.PGBOSS_SCHEMA = bossSchema;
     const db = await import('../src/server/db.ts');
-    const tasks = await import('../src/server/tasks.ts');
+    const thread = await import('../src/server/thread.ts');
+    const { createChannels } = await import('../src/server/channels.ts');
+    const { createPersonalService } = await import('../src/server/personal.ts');
     const ownerId = 'local-development';
     let clock = new Date('2035-10-26T12:00:00Z');
     type Data = { scheduleId: string; revision: number; scheduledFor: string };
@@ -33,7 +33,6 @@ test(
     const inbox: InboundMessage[] = [];
     const sent: Array<Parameters<MessagingTransport['post']>[0]> = [];
     let uncertain = false;
-    let selectedTaskId: string | undefined;
     const transport: MessagingTransport = {
       channels: [
         {
@@ -60,8 +59,8 @@ test(
     const personal = createPersonalService({
       pool: db.pool,
       ownerId,
-      scheduler: tasks.boss,
-      submitTask: tasks.submitTask,
+      scheduler: thread.boss,
+      enqueueTurn: thread.enqueueTurn,
       now: () => clock,
       refresh() {},
     });
@@ -72,16 +71,15 @@ test(
         transport,
         intervalMs: 60_000,
         subscribe: () => () => {},
-        submit: async (text, sourceId, client, channel, _prepared, messageId) =>
+        submit: async (text, sourceId, client, channel, messageId) =>
           (
-            await tasks.submitUserMessage(text, [], {
+            await thread.submitUserMessage(text, [], {
               sourceId,
               client,
               channel,
               clientMessageId: messageId,
-              ...(selectedTaskId ? { taskId: selectedTaskId } : {}),
             })
-          ).taskId,
+          ).turnId,
       });
     const receive = async (text: string, threadId = 'original-thread') => {
       const messageId = randomUUID();
@@ -98,8 +96,8 @@ test(
       const sourceId = `channel:telegram:fixture-bot:${messageId}`;
       const row = (
         await db.pool.query(
-          `SELECT i.task_id,i.message_id,t.channel,m.text FROM channel_inbox i
-           JOIN tasks t ON t.id=i.task_id JOIN messages m ON m.id=i.message_id
+          `SELECT i.turn_id,i.message_id,u.channel,m.text FROM channel_inbox i
+           JOIN turns u ON u.id=i.turn_id JOIN messages m ON m.id=i.message_id
            WHERE i.source_id=$1 AND i.state='submitted'`,
           [sourceId],
         )
@@ -107,14 +105,14 @@ test(
       assert.ok(row);
       assert.equal(row.text, text);
       return {
-        taskId: row.task_id as string,
+        turnId: row.turn_id as string,
         sourceMessageId: row.message_id as string,
         channel: row.channel as string,
         sourceId,
       };
     };
     const create = (
-      provenance?: { taskId: string; sourceMessageId: string | null },
+      provenance?: { turnId: string; sourceMessageId: string | null },
       timing: Record<string, unknown> = {},
     ) =>
       personal.manage(
@@ -131,35 +129,34 @@ test(
       ) as Promise<Schedule>;
     const jobFor = async (id: string) => {
       const saved = await db.pool.query('SELECT job_id FROM schedules WHERE id=$1', [id]);
-      const job = await tasks.boss.getJobById<Data>('scheduled-task', saved.rows[0].job_id);
+      const job = await thread.boss.getJobById<Data>('scheduled-task', saved.rows[0].job_id);
       assert.ok(job);
       return { ...job, signal: new AbortController().signal };
     };
     const runs = async (id: string) =>
       (
         await db.pool.query(
-          `SELECT r.task_id,t.channel,c.source_id FROM schedule_runs r
-           JOIN tasks t ON t.id=r.task_id
-           LEFT JOIN channel_task_routes c ON c.task_id=t.id
+          `SELECT r.turn_id,u.channel,u.source,u.background FROM schedule_runs r
+           JOIN turns u ON u.id=r.turn_id
            WHERE r.schedule_id=$1 ORDER BY r.created_at,r.id`,
           [id],
         )
       ).rows;
-    const reply = async (taskId: string, text: string) => {
+    const reply = async (turnId: string, text: string) => {
       const id = randomUUID();
       await db.pool.query(
-        "INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,$2,'assistant',$3,$4)",
-        [id, ownerId, text, taskId],
+        "INSERT INTO messages(id,owner_id,role,text,turn_id,thread_id) SELECT $1,$2,'assistant',$3,id,thread_id FROM turns WHERE id=$4",
+        [id, ownerId, text, turnId],
       );
-      await db.pool.query("UPDATE tasks SET status='succeeded' WHERE id=$1", [taskId]);
+      await db.pool.query("UPDATE turns SET status='succeeded' WHERE id=$1", [turnId]);
       await channels!.drain();
       return id;
     };
     try {
       await db.initializeDatabase();
-      await tasks.initializeTasks();
+      await thread.initializeThreads();
       const workerMock = t.mock.method(
-        tasks.boss,
+        thread.boss,
         'work',
         async (_name: string, handler: unknown) => {
           deliver = handler as typeof deliver;
@@ -180,8 +177,9 @@ test(
           const dispatched = await runs(schedule.id);
           assert.equal(dispatched.length, 1);
           assert.equal(dispatched[0].channel, origin.channel);
-          assert.equal(dispatched[0].source_id, origin.sourceId);
-          await reply(dispatched[0].task_id, 'One-off fixture reminder.');
+          assert.equal(dispatched[0].source, 'schedule');
+          assert.equal(dispatched[0].background, true);
+          await reply(dispatched[0].turn_id, 'One-off fixture reminder.');
           await channels!.drain();
           assert.deepEqual(sent, [
             {
@@ -196,26 +194,6 @@ test(
         },
       );
 
-      await t.test('accepted follow-up message identity selects its exact thread', async () => {
-        await db.pool.query(
-          "UPDATE tasks SET status='waiting_user',waiting_reason='question' WHERE id=$1",
-          [origin.taskId],
-        );
-        selectedTaskId = origin.taskId;
-        const followup = await receive('Make another reminder.', 'followup-thread');
-        selectedTaskId = undefined;
-        assert.equal(followup.taskId, origin.taskId);
-        assert.notEqual(followup.sourceMessageId, origin.sourceMessageId);
-        const schedule = await create(followup);
-        const job = await jobFor(schedule.id);
-        clock = new Date(job.data.scheduledFor);
-        await deliver([job]);
-        const dispatched = (await runs(schedule.id))[0];
-        assert.equal(dispatched.source_id, followup.sourceId);
-        await reply(dispatched.task_id, 'Follow-up fixture reminder.');
-        assert.equal(sent.at(-1)!.threadId, 'followup-thread');
-      });
-
       await t.test(
         'service-level background route inheritance does not require model recipient arguments',
         async () => {
@@ -224,14 +202,13 @@ test(
           clock = new Date(job.data.scheduledFor);
           await deliver([job]);
           const first = (await runs(schedule.id))[0];
-          const followup = await create({ taskId: first.task_id, sourceMessageId: null });
+          const followup = await create({ turnId: first.turn_id, sourceMessageId: null });
           const next = await jobFor(followup.id);
           clock = new Date(next.data.scheduledFor);
           await deliver([next]);
           const inherited = (await runs(followup.id))[0];
-          assert.equal(inherited.source_id, origin.sourceId);
           assert.equal(inherited.channel, origin.channel);
-          await reply(inherited.task_id, 'Background follow-up fixture.');
+          await reply(inherited.turn_id, 'Background follow-up fixture.');
           assert.equal(sent.at(-1)!.threadId, 'original-thread');
         },
       );
@@ -252,16 +229,16 @@ test(
           clock = new Date(first.data.scheduledFor);
           await deliver([first]);
           const firstRun = (await runs(schedule.id))[0];
-          await reply(firstRun.task_id, 'Recurring fixture one.');
+          await reply(firstRun.turn_id, 'Recurring fixture one.');
           await personal.manage('schedule_update', { id: schedule.id, title: 'Renamed reminder' });
           const second = await jobFor(schedule.id);
           clock = new Date(second.data.scheduledFor);
           await deliver([second]);
           const executions = await runs(schedule.id);
-          const secondRun = executions.find((run) => run.task_id !== firstRun.task_id)!;
-          await reply(secondRun.task_id, 'Recurring fixture two.');
+          const secondRun = executions.find((run) => run.turn_id !== firstRun.turn_id)!;
+          await reply(secondRun.turn_id, 'Recurring fixture two.');
           assert.equal(executions.length, 2);
-          assert.ok(executions.every((run) => run.source_id === origin.sourceId));
+          assert.ok(executions.every((run) => run.channel === origin.channel));
           const third = await jobFor(schedule.id);
           const before = sent.length;
           await personal.manage('schedule_cancel', { id: schedule.id });
@@ -285,9 +262,8 @@ test(
         await deliver([job]);
         const dispatched = (await runs(schedule.id))[0];
         assert.equal(dispatched.channel, 'web');
-        assert.equal(dispatched.source_id, null);
         const before = sent.length;
-        await reply(dispatched.task_id, 'Web fixture reminder.');
+        await reply(dispatched.turn_id, 'Web fixture reminder.');
         assert.equal(sent.length, before);
       });
 
@@ -303,19 +279,23 @@ test(
           );
           await assert.rejects(create({ ...origin, sourceMessageId: randomUUID() }), /unavailable/);
           await assert.rejects(
-            create({ taskId: randomUUID(), sourceMessageId: null }),
+            create({ turnId: randomUUID(), sourceMessageId: null }),
             /unavailable/,
           );
           await assert.rejects(
-            create({ taskId: origin.taskId, sourceMessageId: null }),
+            create({ turnId: origin.turnId, sourceMessageId: null }),
             /unavailable/,
           );
           const foreign = randomUUID();
+          const foreignThread = randomUUID();
+          await db.pool.query("INSERT INTO threads(id,owner_id) VALUES($1,'foreign')", [
+            foreignThread,
+          ]);
           await db.pool.query(
-            "INSERT INTO tasks(id,owner_id,title,prompt,channel) VALUES($1,'foreign','Other','Other',$2)",
-            [foreign, origin.channel],
+            "INSERT INTO turns(id,owner_id,thread_id,source,prompt,channel) VALUES($1,'foreign',$2,'schedule','Other',$3)",
+            [foreign, foreignThread, origin.channel],
           );
-          await assert.rejects(create({ taskId: foreign, sourceMessageId: null }), /unavailable/);
+          await assert.rejects(create({ turnId: foreign, sourceMessageId: null }), /unavailable/);
         },
       );
 
@@ -328,7 +308,7 @@ test(
           await deliver([job]);
           uncertain = true;
           const before = sent.length;
-          const messageId = await reply((await runs(schedule.id))[0].task_id, 'Uncertain fixture.');
+          const messageId = await reply((await runs(schedule.id))[0].turn_id, 'Uncertain fixture.');
           assert.equal(sent.length, before + 1);
           assert.equal(
             (
@@ -360,7 +340,7 @@ test(
             channels: [{ ...transport.channels[0]!, allowedSenderIds: [] }],
           });
           const before = sent.length;
-          const messageId = await reply((await runs(schedule.id))[0].task_id, 'Revoked fixture.');
+          const messageId = await reply((await runs(schedule.id))[0].turn_id, 'Revoked fixture.');
           const state = (
             await db.pool.query('SELECT state,reason FROM channel_outbox WHERE message_id=$1', [
               messageId,
@@ -379,8 +359,8 @@ test(
           const live = createPersonalService({
             pool: db.pool,
             ownerId,
-            scheduler: tasks.boss,
-            submitTask: tasks.submitTask,
+            scheduler: thread.boss,
+            enqueueTurn: thread.enqueueTurn,
             refresh() {},
           });
           await live.initialize();
@@ -411,11 +391,11 @@ test(
           assert.equal(due.scheduled_for.toISOString(), runAt);
           assert.ok(due.created_at.getTime() >= new Date(runAt).getTime());
           const before = sent.length;
-          await reply(dispatched[0].task_id, 'Real-timer fixture reminder.');
+          await reply(dispatched[0].turn_id, 'Real-timer fixture reminder.');
           await channels!.drain();
           assert.equal(sent.length, before + 1);
           assert.equal(sent.at(-1)!.threadId, 'original-thread');
-          await tasks.boss.offWork('scheduled-task', { wait: true });
+          await thread.boss.offWork('scheduled-task', { wait: true });
         },
       );
 
@@ -431,7 +411,7 @@ test(
         });
         const before = sent.length;
         const messageId = await reply(
-          (await runs(schedule.id))[0].task_id,
+          (await runs(schedule.id))[0].turn_id,
           'Expired-window fixture.',
         );
         const state = (
@@ -444,7 +424,7 @@ test(
       });
     } finally {
       await channels?.close();
-      await tasks.stopTasks();
+      await thread.stopThreadWorkers();
       await db.pool.end();
       await admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`);
       await admin.query(`DROP SCHEMA ${schema} CASCADE`);

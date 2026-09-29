@@ -1,11 +1,5 @@
-export type TaskStatus =
-  | 'queued'
-  | 'running'
-  | 'waiting_credentials'
-  | 'waiting_user'
-  | 'succeeded'
-  | 'failed'
-  | 'cancelled';
+export type TurnStatus = 'queued' | 'running' | 'succeeded' | 'waiting' | 'failed' | 'cancelled';
+export type ThreadStatus = 'idle' | 'running' | 'manual_control';
 export interface Artifact {
   id: string;
   name: string;
@@ -21,7 +15,7 @@ export interface Message {
   id: string;
   role: 'user' | 'assistant';
   text: string;
-  taskId: string | null;
+  turnId: string | null;
   createdAt: string;
   attachments: Artifact[];
   streamId?: string | null;
@@ -29,39 +23,32 @@ export interface Message {
   reactions?: Array<{ actor: 'user' | 'assistant'; reaction: MessageReaction }>;
   replyToMessageId?: string | null;
   replyTo?: { id: string; role: 'user' | 'assistant'; text: string } | null;
-  task?: Task;
+  turn?: Turn;
 }
 export interface SubmitMessageResponse {
-  taskId: string;
-  continued: boolean;
+  turnId: string;
   messageId: string;
   messageText?: string;
   verificationStatus?: 'pending' | 'submitted' | 'rejected' | 'unavailable';
 }
-export interface TaskReviewRequired {
-  error: string;
-  code: 'task_review_required';
-  taskId: string;
-  summary: string;
-}
 export interface VerificationRequest {
   id: string;
-  taskId: string;
+  turnId: string;
   expiresAt: string;
 }
-export interface Task {
+export interface Turn {
   id: string;
-  title: string;
-  status: TaskStatus;
+  status: TurnStatus;
+  source: 'user' | 'schedule' | 'event' | 'resume';
   createdAt: string;
-  updatedAt: string;
+  finishedAt?: string | null;
   costUsd?: number | null;
   error?: string | null;
   showTyping?: boolean;
 }
-export interface TaskEvent {
+export interface TurnEvent {
   id: string;
-  taskId: string;
+  turnId: string;
   type: string;
   summary: string;
   createdAt: string;
@@ -106,7 +93,7 @@ export interface VaultCardSecurityCode {
 }
 export interface CredentialRequest {
   id: string;
-  taskId: string;
+  turnId: string;
   origin: string;
   label: string;
   kind: 'identifier' | 'password' | 'otp';
@@ -152,11 +139,12 @@ export interface Configuration {
   localOnly: boolean;
 }
 export interface AppState {
-  conversationRevision?: number;
+  threadId: string;
+  threadStatus: ThreadStatus;
   hasEarlierMessages?: boolean;
   verificationRequests?: VerificationRequest[];
   messages: Message[];
-  tasks: Task[];
+  turns: Turn[];
   configuration: Configuration;
 }
 export interface MessageHistoryPage {
@@ -164,10 +152,10 @@ export interface MessageHistoryPage {
   hasMore: boolean;
 }
 export interface InspectorState {
-  tasks: Task[];
-  events: TaskEvent[];
+  turns: Turn[];
+  events: TurnEvent[];
   runtime: { browser: string; workspace: string; database: string };
-  currentBrowser?: { taskId: string; title: string; status: string; lastActivityAt: string };
+  currentBrowser?: { threadId: string; title: string; status: string; lastActivityAt: string };
 }
 export interface Goal {
   id: string;
@@ -202,11 +190,11 @@ export interface ScheduleRun {
   id: string;
   scheduleId: string;
   title: string;
-  taskId: string;
+  turnId: string;
   scheduledFor: string;
   timeZone: string;
   createdAt: string;
-  status: TaskStatus;
+  status: TurnStatus;
   error: string | null;
   observation: ScheduleObservation | null;
   messageId: string | null;

@@ -154,7 +154,7 @@ test('sign-in stops automation first, keeps the task profile and blocks observat
     );
     await assert.rejects(
       fixture.computer.injectCredentials({
-        taskId: 'fixture',
+        threadId: 'fixture',
         origin: 'https://1.1.1.1',
         kind: 'password',
         password: 'secret',
@@ -497,7 +497,7 @@ test('native sign-in does not save or reopen a known credential in the return UR
   const encoded = encodeURIComponent(secret);
   try {
     await fixture.computer.injectCredentials({
-      taskId: 'fixture',
+      threadId: 'fixture',
       origin: 'https://1.1.1.1',
       kind: 'identifier',
       username: secret,

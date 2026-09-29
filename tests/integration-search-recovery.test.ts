@@ -84,7 +84,8 @@ async function fixture(
   const connectionId = randomUUID();
   const calendarId = randomUUID();
   const foreignId = randomUUID();
-  const taskId = randomUUID();
+  const threadId = randomUUID();
+  const turnId = randomUUID();
   const searches: string[] = [];
   const calls: Array<{ action: string; args: Record<string, unknown>; accountId?: string }> = [];
   const sessions: Array<{ owner: string; accounts: unknown }> = [];
@@ -157,7 +158,7 @@ async function fixture(
     [connectionId, owner, calendarId, foreignId, randomUUID()],
   );
   const store = createFilesystemObjectStore(join(directory, 'objects'));
-  const checkpoint = await createPiCheckpoint({ store, taskId, directory });
+  const checkpoint = await createPiCheckpoint({ store, threadId, directory });
   const agent: Agent = {
     open: async ({ tools }) => ({
       resumed: false,
@@ -178,7 +179,8 @@ async function fixture(
   };
   runtime = createAgentRuntime({ agent, computer: fakeComputer(), workspace: fakeWorkspace() });
   const context: RuntimeContext = {
-    taskId,
+    threadId,
+    turnId,
     ownerId: owner,
     prompt: 'Get the synthetic Gmail label count without reading or changing messages.',
     history: [],
@@ -203,13 +205,13 @@ async function fixture(
       throw new Error('Unexpected fixture credential request.');
     },
     integration: (action, args) =>
-      integrations.execute(owner, action, args, taskId, context.signal),
+      integrations.execute(owner, action, args, { threadId, turnId }, context.signal),
     manage: async () => {
       throw new Error('Unexpected fixture management.');
     },
   };
   const saved = async () =>
-    (await store.read(`sessions/${taskId}.jsonl`, 1024 * 1024))!.bytes.toString();
+    (await store.read(`sessions/${threadId}.jsonl`, 1024 * 1024))!.bytes.toString();
   return {
     searches,
     calls,
@@ -223,8 +225,8 @@ async function fixture(
     calendarId,
     foreignId,
     saved,
-    run: () => runtime!.runTask(context),
-    restore: () => createPiCheckpoint({ store, taskId, directory: join(directory, 'restored') }),
+    run: () => runtime!.runTurn(context),
+    restore: () => createPiCheckpoint({ store, threadId, directory: join(directory, 'restored') }),
   };
 }
 

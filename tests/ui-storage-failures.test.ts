@@ -74,7 +74,7 @@ for (const mode of ['read', 'write'] as const)
           ? new Response(JSON.stringify({ error: 'Fixture is offline.' }), { status: 503 })
           : new Response(
               JSON.stringify({
-                tasks: [],
+                turns: [],
                 events: [],
                 currentBrowser: null,
                 runtime: { browser: 'Ready', workspace: 'Ready', database: 'Ready' },

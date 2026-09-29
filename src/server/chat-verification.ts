@@ -2,13 +2,12 @@ import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import type { CredentialKeyStore } from '../ports/key-store.ts';
 import type { SubmitMessageResponse, VerificationRequest } from '../shared/contracts.ts';
-import { currentConversationSql, lockConversation } from './conversations.ts';
+import { lockThread } from './thread.ts';
 
 interface VerificationInput {
   clientMessageId: string;
   channel?: string;
-  conversationRevision?: number;
-  taskId?: string;
+  threadId?: string;
   replyToMessageId?: string;
   verificationRequestId?: string;
   forceNew?: boolean;
@@ -33,7 +32,7 @@ export async function createChatVerification(
     keyStore: Pick<CredentialKeyStore, 'getKey'>;
     submitCode: (
       ownerId: string,
-      taskId: string,
+      turnId: string,
       code: string,
       requestId: string,
     ) => Promise<{ status: VerificationStatus }>;
@@ -68,12 +67,11 @@ export async function createChatVerification(
 
   async function pending(channel = 'web'): Promise<VerificationRequest[]> {
     const result = await pool.query<VerificationRequest>(
-      `SELECT r.id,t.id AS "taskId",r.expires_at AS "expiresAt"
-       FROM credential_requests r JOIN tasks t ON t.id::text=r.task_id
-       WHERE r.owner_id=$1 AND t.owner_id=$1 AND t.channel=$2
+      `SELECT r.id,u.id AS "turnId",r.expires_at AS "expiresAt"
+       FROM credential_requests r JOIN turns u ON u.id=r.turn_id JOIN threads th ON th.id=r.thread_id
+       WHERE r.owner_id=$1 AND u.owner_id=$1 AND th.owner_id=$1 AND u.channel=$2
          AND r.kind='otp' AND r.status='pending' AND r.expires_at>now()
-         AND t.status IN ('running','waiting_credentials') AND t.revision=r.task_revision
-         AND ${currentConversationSql()} ORDER BY r.expires_at,r.id LIMIT 50`,
+         AND th.archived_at IS NULL ORDER BY r.expires_at,r.id LIMIT 50`,
       [options.ownerId, channel],
     );
     return result.rows;
@@ -92,23 +90,17 @@ export async function createChatVerification(
       throw conflict('Send the verification code by itself in the sign-in conversation.');
     const channel = input.channel ?? 'web';
     const client = await pool.connect();
-    let reserved: { taskId: string; requestId: string; revision: number } | undefined;
+    let reserved: { turnId: string; requestId: string } | undefined;
     try {
       await client.query('BEGIN');
-      const revision = await lockConversation(client, options.ownerId, channel);
-      if (input.conversationRevision !== undefined && input.conversationRevision !== revision)
+      const thread = await lockThread(client, options.ownerId);
+      if (input.threadId !== undefined && input.threadId !== thread.id)
         throw conflict('This conversation has been reset. Reload it before continuing.');
-      await client.query(
-        `SELECT t.id FROM tasks t WHERE t.owner_id=$1 AND t.channel=$2
-         AND t.status IN ('queued','running','waiting_credentials','waiting_user') AND ${currentConversationSql()}
-         ORDER BY t.id FOR NO KEY UPDATE`,
-        [options.ownerId, channel],
-      );
       const previous = (
         await client.query(
-          `SELECT m.owner_id,m.task_id,m.reply_to_message_id,t.owner_id AS task_owner_id,
-           t.channel,t.conversation_revision,v.request_id,v.status,v.code_fingerprint
-           FROM messages m LEFT JOIN tasks t ON t.id=m.task_id
+          `SELECT m.owner_id,m.thread_id,m.turn_id,m.reply_to_message_id,u.owner_id AS turn_owner_id,
+           u.channel,v.request_id,v.status,v.code_fingerprint
+           FROM messages m LEFT JOIN turns u ON u.id=m.turn_id
            LEFT JOIN chat_verification_submissions v ON v.message_id=m.id WHERE m.id=$1`,
           [input.clientMessageId],
         )
@@ -122,11 +114,10 @@ export async function createChatVerification(
         const codeFingerprint = await fingerprint(code, input);
         if (
           previous.owner_id !== options.ownerId ||
-          previous.task_owner_id !== options.ownerId ||
+          previous.turn_owner_id !== options.ownerId ||
           previous.channel !== channel ||
-          previous.conversation_revision !== revision ||
+          previous.thread_id !== thread.id ||
           previous.reply_to_message_id !== (input.replyToMessageId ?? null) ||
-          (input.taskId && previous.task_id !== input.taskId) ||
           (input.verificationRequestId && previous.request_id !== input.verificationRequestId) ||
           incompatible ||
           typeof previous.code_fingerprint !== 'string' ||
@@ -136,51 +127,42 @@ export async function createChatVerification(
           throw conflict('This message ID is already in use. Send this as a new message.');
         await client.query('COMMIT');
         return {
-          taskId: previous.task_id,
-          continued: true,
+          turnId: previous.turn_id,
           messageId: input.clientMessageId,
           messageText: previous.status === 'pending' ? pendingMessage : maskedMessage,
           verificationStatus: previous.status,
         };
       }
-      let taskId = input.taskId;
+      let turnId: string | undefined;
       if (input.replyToMessageId) {
         const target = (
           await client.query(
-            `SELECT t.id FROM messages m JOIN tasks t ON t.id=m.task_id
-             WHERE m.id=$1 AND m.owner_id=$2 AND t.owner_id=$2 AND t.channel=$3
-               AND ${currentConversationSql()}`,
-            [input.replyToMessageId, options.ownerId, channel],
+            `SELECT u.id FROM messages m JOIN turns u ON u.id=m.turn_id
+             WHERE m.id=$1 AND m.owner_id=$2 AND u.owner_id=$2 AND u.channel=$3 AND m.thread_id=$4`,
+            [input.replyToMessageId, options.ownerId, channel, thread.id],
           )
         ).rows[0];
-        if (!target || (taskId && taskId !== target.id))
-          throw conflict('The reply is unavailable in this conversation.');
-        taskId = target.id;
+        if (!target) throw conflict('The reply is unavailable in this conversation.');
+        turnId = target.id;
       }
-      const requests = await client.query<{ id: string; task_id: string; revision: number }>(
-        `SELECT r.id,t.id AS task_id,t.revision FROM credential_requests r JOIN tasks t ON t.id::text=r.task_id
-         WHERE r.owner_id=$1 AND t.owner_id=$1 AND t.channel=$2
+      const requests = await client.query<{ id: string; turn_id: string }>(
+        `SELECT r.id,r.turn_id FROM credential_requests r JOIN turns u ON u.id=r.turn_id
+         WHERE r.owner_id=$1 AND u.owner_id=$1 AND u.channel=$2 AND r.thread_id=$5
            AND r.kind='otp' AND r.status='pending' AND r.expires_at>now()
-           AND t.status='waiting_credentials' AND t.revision=r.task_revision
-           AND ($3::uuid IS NULL OR t.id=$3) AND ($4::text IS NULL OR r.id=$4)
-           AND ${currentConversationSql()} ORDER BY r.expires_at,r.id LIMIT 2 FOR UPDATE OF t`,
-        [options.ownerId, channel, taskId ?? null, input.verificationRequestId ?? null],
+           AND ($3::uuid IS NULL OR r.turn_id=$3) AND ($4::text IS NULL OR r.id=$4)
+           ORDER BY r.expires_at,r.id LIMIT 2 FOR UPDATE OF r`,
+        [options.ownerId, channel, turnId ?? null, input.verificationRequestId ?? null, thread.id],
       );
       if (!requests.rowCount) {
         if (input.verificationRequestId) throw conflict(unavailableMessage);
         const waiting = await client.query(
-          `SELECT r.expires_at<=now() AS expired FROM credential_requests r JOIN tasks t ON t.id::text=r.task_id
-           WHERE r.owner_id=$1 AND t.owner_id=$1 AND t.channel=$2 AND r.kind='otp' AND r.status='pending'
-             AND t.status IN ('running','waiting_credentials') AND t.revision=r.task_revision
-             AND ($3::uuid IS NULL OR t.id=$3) AND ${currentConversationSql()} LIMIT 1`,
-          [options.ownerId, channel, taskId ?? null],
+          `SELECT 1 FROM credential_requests r JOIN turns u ON u.id=r.turn_id
+           WHERE r.owner_id=$1 AND u.owner_id=$1 AND u.channel=$2 AND r.thread_id=$4
+             AND r.kind='otp' AND r.status='pending'
+             AND ($3::uuid IS NULL OR r.turn_id=$3) LIMIT 1`,
+          [options.ownerId, channel, turnId ?? null, thread.id],
         );
-        if (waiting.rows[0])
-          throw conflict(
-            waiting.rows[0].expired
-              ? unavailableMessage
-              : 'The sign-in step is getting ready. Send the code again in a moment.',
-          );
+        if (waiting.rows[0]) throw conflict(unavailableMessage);
         await input.persistOrdinary?.(client);
         await client.query('COMMIT');
         return;
@@ -194,13 +176,14 @@ export async function createChatVerification(
       const request = requests.rows[0]!;
       const codeFingerprint = await fingerprint(code, input);
       await client.query(
-        `INSERT INTO messages(id,owner_id,role,text,task_id,reply_to_message_id)
-         VALUES($1,$2,'user',$3,$4,$5)`,
+        `INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id,reply_to_message_id)
+         VALUES($1,$2,'user',$3,$4,$5,$6)`,
         [
           input.clientMessageId,
           options.ownerId,
           pendingMessage,
-          request.task_id,
+          thread.id,
+          request.turn_id,
           input.replyToMessageId ?? null,
         ],
       );
@@ -209,7 +192,7 @@ export async function createChatVerification(
         [input.clientMessageId, request.id, codeFingerprint],
       );
       await client.query('COMMIT');
-      reserved = { taskId: request.task_id, requestId: request.id, revision: request.revision };
+      reserved = { turnId: request.turn_id, requestId: request.id };
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -221,7 +204,7 @@ export async function createChatVerification(
     try {
       const result = await options.submitCode(
         options.ownerId,
-        reserved.taskId,
+        reserved.turnId,
         code,
         reserved.requestId,
       );
@@ -244,17 +227,15 @@ export async function createChatVerification(
           ? 'That code did not work. Reply with a fresh verification code to try again.'
           : 'The code could not be applied. Check the sign-in step, then send a fresh code when it is ready.';
       await pool.query(
-        `INSERT INTO messages(id,owner_id,role,text,task_id)
-         SELECT $1,$2,'assistant',$3,t.id FROM tasks t
-         WHERE t.id=$4 AND t.owner_id=$2 AND t.revision=$5 AND t.status='waiting_credentials'
-           AND ${currentConversationSql()}`,
-        [randomUUID(), options.ownerId, message, reserved.taskId, reserved.revision],
+        `INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id)
+         SELECT $1,$2,'assistant',$3,u.thread_id,u.id FROM turns u JOIN threads th ON th.id=u.thread_id
+         WHERE u.id=$4 AND u.owner_id=$2 AND th.archived_at IS NULL`,
+        [randomUUID(), options.ownerId, message, reserved.turnId],
       );
     }
     options.refresh();
     return {
-      taskId: reserved.taskId,
-      continued: true,
+      turnId: reserved.turnId,
       messageId: input.clientMessageId,
       messageText: maskedMessage,
       verificationStatus: status,

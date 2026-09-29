@@ -108,7 +108,8 @@ async function fixture(options: {
     }),
   });
   const context: RuntimeContext = {
-    taskId: id,
+    threadId: id,
+    turnId: id,
     ownerId: 'fixture',
     prompt: 'Calculate the synthetic fixture result.',
     history: [],
@@ -150,9 +151,9 @@ async function fixture(options: {
     events,
     saved,
     executions: () => executions,
-    run: () => runtime.runTask(context),
+    run: () => runtime.runTurn(context),
     restore: () =>
-      createPiCheckpoint({ store, taskId: id, directory: join(directory, 'replacement') }),
+      createPiCheckpoint({ store, threadId: id, directory: join(directory, 'replacement') }),
     async close() {
       try {
         await runtime.dispose();

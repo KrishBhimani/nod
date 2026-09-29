@@ -6,15 +6,14 @@ import { createInspectorStore } from '../src/server/inspector.ts';
 import { createProviderUsageStore } from '../src/server/provider-usage.ts';
 import {
   completeObservationRefresh,
-  groupTaskActivity,
+  groupTurnActivity,
   mergeObservationPage,
 } from '../src/web/lib/inspector-observations.ts';
 import type { InspectorFailure, InspectorObservationsResponse } from '../src/shared/inspector.ts';
 
 const failure = (id: string, second = 1): InspectorFailure => ({
   id,
-  taskId: 'task',
-  revision: 0,
+  turnId: 'turn',
   occurredAt: `2026-09-25T10:00:0${second}.000Z`,
   diagnostic: { name: 'Error', message: 'Workspace path is outside the configured root.' },
 });
@@ -38,15 +37,15 @@ const page = (failures: InspectorFailure[]): InspectorObservationsResponse => ({
   hasOlder: false,
 });
 
-test('private failure details enrich one public activity row and remain available without a task timeline', () => {
+test('private failure details enrich one public activity row and remain available without a turn timeline', () => {
   const diagnostic = failure('private');
-  const items = groupTaskActivity(
+  const items = groupTurnActivity(
     [
       {
         id: 'public',
-        taskId: 'task',
+        turnId: 'turn',
         type: 'failed',
-        summary: 'I could not finish this task.',
+        summary: 'I could not finish this turn.',
         createdAt: diagnostic.occurredAt,
       },
     ],
@@ -55,9 +54,9 @@ test('private failure details enrich one public activity row and remain availabl
   );
   assert.equal(items.length, 1);
   assert.equal(items[0]!.id, 'public');
-  assert.equal(items[0]!.title, 'Task failed');
+  assert.equal(items[0]!.title, 'Turn failed');
   assert.deepEqual(items[0]!.diagnostic, diagnostic.diagnostic);
-  assert.equal(groupTaskActivity([], [], [diagnostic])[0]!.id, 'private');
+  assert.equal(groupTurnActivity([], [], [diagnostic])[0]!.id, 'private');
 });
 
 test('failure-only recordings merge, deduplicate, detect retention and bridge refresh pages', async () => {
@@ -116,13 +115,13 @@ test('failure capture bounds pending writes and close drains accepted work', asy
   } as unknown as pg.Pool;
   const store = createInspectorStore(pool, { ownerId: 'fixture', enabled: () => true });
   const writes = Array.from({ length: 20 }, () =>
-    store.recordFailure(randomUUID(), 0, new Error('Synthetic bounded failure.')),
+    store.recordFailure(randomUUID(), new Error('Synthetic bounded failure.')),
   );
   let closed = false;
   const closing = store.close().then(() => {
     closed = true;
   });
-  await store.recordFailure(randomUUID(), 0, new Error('After close.'));
+  await store.recordFailure(randomUUID(), new Error('After close.'));
   await Promise.resolve();
   assert.equal(closed, false);
   release();
@@ -166,7 +165,7 @@ test('Activity exposes expandable escaped diagnostic text for failures before an
   try {
     await act(async () => root.render(createElement(InspectorActivity, { events: [] })));
     assert.equal(element.querySelectorAll('.event-list > li').length, 1);
-    assert.match(element.textContent!, /Task failed|Private failure details|Root unavailable/);
+    assert.match(element.textContent!, /Turn failed|Private failure details|Root unavailable/);
     assert.ok(element.querySelector('details pre')?.textContent?.includes('<img'));
     assert.equal(element.querySelector('img'), null);
   } finally {
@@ -195,10 +194,9 @@ test(
     process.env.DATABASE_URL = url.href;
     const { pool, initializeDatabase } = await import('../src/server/db.ts');
     const ownerId = 'local-development';
-    const taskId = randomUUID();
+    const turnId = randomUUID();
     const foreignId = randomUUID();
     const cancelledId = randomUUID();
-    const staleId = randomUUID();
     const archivedId = randomUUID();
     const runningId = randomUUID();
     let enabled = true;
@@ -210,26 +208,36 @@ test(
     });
     try {
       await initializeDatabase();
-      const { initializeTaskSchema } = await import('../src/server/tasks.ts');
-      await initializeTaskSchema();
       await createProviderUsageStore(pool, {
         ownerId,
         enabled: () => true,
         coverage: [],
       }).initialize();
+      const threadId = randomUUID();
+      const foreignThreadId = randomUUID();
+      const archivedThreadId = randomUUID();
       await pool.query(
-        `INSERT INTO tasks(id,owner_id,title,prompt,status,revision,channel,conversation_revision,error) VALUES
-        ($1,$7,'owned','owned','failed',0,'web',0,'Fixed public failure.'),
-        ($2,'foreign','foreign','foreign','failed',0,'web',0,NULL),
-        ($3,$7,'cancelled','cancelled','cancelled',0,'web',0,NULL),
-        ($4,$7,'stale','stale','failed',1,'web',0,NULL),
-        ($5,$7,'archived','archived','failed',0,'archived',0,NULL),
-        ($6,$7,'running','running','running',0,'web',0,NULL)`,
-        [taskId, foreignId, cancelledId, staleId, archivedId, runningId, ownerId],
+        "INSERT INTO threads(id,owner_id,archived_at) VALUES($1,$4,NULL),($2,'foreign',NULL),($3,$4,now())",
+        [threadId, foreignThreadId, archivedThreadId, ownerId],
       );
       await pool.query(
-        "INSERT INTO conversations(owner_id,channel,revision) VALUES($1,'archived',1)",
-        [ownerId],
+        `INSERT INTO turns(id,owner_id,thread_id,source,prompt,status,error) VALUES
+        ($1,$6,$7,'user','owned','failed','Fixed public failure.'),
+        ($2,'foreign',$8,'user','foreign','failed',NULL),
+        ($3,$6,$7,'user','cancelled','cancelled',NULL),
+        ($4,$6,$9,'user','archived','failed',NULL),
+        ($5,$6,$7,'user','running','running',NULL)`,
+        [
+          turnId,
+          foreignId,
+          cancelledId,
+          archivedId,
+          runningId,
+          ownerId,
+          threadId,
+          foreignThreadId,
+          archivedThreadId,
+        ],
       );
       const error = Object.assign(
         new Error(
@@ -241,11 +249,11 @@ test(
         { code: 'WORKSPACE_ROOT', response: { body: 'provider-body-private' } },
       );
       error.stack = `Error: ${error.message}\n    at open (/private/workspace.ts:42:9)\nAuthorization: Bearer synthetic-header-secret`;
-      await store.recordFailure(taskId, 0, error);
-      await store.recordFailure(taskId, 0, error);
-      for (const id of [foreignId, cancelledId, staleId, archivedId, runningId])
-        await store.recordFailure(id, 0, error);
-      const recorded = await store.read(taskId);
+      await store.recordFailure(turnId, error);
+      await store.recordFailure(turnId, error);
+      for (const id of [foreignId, cancelledId, archivedId, runningId])
+        await store.recordFailure(id, error);
+      const recorded = await store.read(turnId);
       assert.equal(recorded?.failures?.length, 1);
       assert.equal(recorded?.summary.failures, 1);
       assert.equal(recorded?.summary.calls, 0);
@@ -260,17 +268,17 @@ test(
       );
       assert.equal((await pool.query('SELECT * FROM inspector_records')).rowCount, 1);
       assert.equal(
-        (await pool.query('SELECT error FROM tasks WHERE id=$1', [taskId])).rows[0].error,
+        (await pool.query('SELECT error FROM turns WHERE id=$1', [turnId])).rows[0].error,
         'Fixed public failure.',
       );
       assert.equal(await store.read(foreignId), null);
       enabled = false;
-      await pool.query("UPDATE tasks SET status='failed' WHERE id=$1", [runningId]);
-      await store.recordFailure(runningId, 0, error);
+      await pool.query("UPDATE turns SET status='failed' WHERE id=$1", [runningId]);
+      await store.recordFailure(runningId, error);
       assert.equal((await pool.query('SELECT * FROM inspector_records')).rowCount, 1);
       enabled = true;
       await pool.query("UPDATE inspector_records SET recorded_at=now()-interval '8 days'");
-      assert.equal((await store.read(taskId))?.failures?.length, 0);
+      assert.equal((await store.read(turnId))?.failures?.length, 0);
     } finally {
       await store.close();
       await pool.end();

@@ -320,10 +320,10 @@ test('missing database setup permits module imports but fails before database in
   const local = await fixture();
   try {
     const databaseModule = new URL('../src/server/db.ts', import.meta.url).href;
-    const tasksModule = new URL('../src/server/tasks.ts', import.meta.url).href;
+    const threadModule = new URL('../src/server/thread.ts', import.meta.url).href;
     const script = `
       const { initializeDatabase, pool } = await import(${JSON.stringify(databaseModule)});
-      await import(${JSON.stringify(tasksModule)});
+      await import(${JSON.stringify(threadModule)});
       try {
         await initializeDatabase();
         process.exitCode = 2;

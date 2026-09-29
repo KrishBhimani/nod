@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { BrowserActionError, browserDownloadBytes, type Computer } from '../../ports/computer.ts';
-import { taskId } from '../../ports/task-identity.ts';
+import { threadIdentity } from '../../ports/thread-identity.ts';
 import type { CommandProcess } from '../command-process.ts';
 import { loginInspectionSchema } from '../agent-browser/login.ts';
 import {
@@ -42,7 +42,7 @@ export function createBridgeComputer(options: {
     if (
       (input.method === 'act' ||
         input.method === 'download' ||
-        (input.method === 'close' && input.taskId === currentSession?.taskId)) &&
+        (input.method === 'close' && input.threadId === currentSession?.threadId)) &&
       order >= activitySequence
     ) {
       activitySequence = order;
@@ -54,8 +54,8 @@ export function createBridgeComputer(options: {
       statusSequence = order;
       status = value.status;
     }
-    if (value.screen && order >= (screens.get(value.screen.taskId)?.sequence ?? 0)) {
-      const { taskId: id, ...screen } = value.screen;
+    if (value.screen && order >= (screens.get(value.screen.threadId)?.sequence ?? 0)) {
+      const { threadId: id, ...screen } = value.screen;
       screens.set(id, { sequence: order, value: screen });
       if (screens.size > 256) screens.delete(screens.keys().next().value!);
     }
@@ -91,7 +91,7 @@ export function createBridgeComputer(options: {
       }
       if (input.method === 'act' || input.method === 'download') {
         activitySequence = order;
-        currentSession = { taskId: input.taskId, lastActivityAt: new Date().toISOString() };
+        currentSession = { threadId: input.threadId, lastActivityAt: new Date().toISOString() };
       }
       let output = '';
       let bytes = 0;
@@ -181,7 +181,7 @@ export function createBridgeComputer(options: {
     id: string,
     signal?: AbortSignal,
   ) {
-    const value = await call({ method, taskId: taskId(id) }, signal);
+    const value = await call({ method, threadId: threadIdentity(id) }, signal);
     if (value === null) return null;
     if (
       typeof value !== 'string' ||
@@ -205,13 +205,13 @@ export function createBridgeComputer(options: {
     },
     currentSession: () => currentSession,
     bindProfile: async (id, profileId, allowedOrigin) => {
-      await call({ method: 'bindProfile', taskId: taskId(id), profileId, allowedOrigin });
-      screens.delete(taskId(id));
+      await call({ method: 'bindProfile', threadId: threadIdentity(id), profileId, allowedOrigin });
+      screens.delete(threadIdentity(id));
     },
     deleteProfile: async (profileId) => {
       await call({ method: 'deleteProfile', profileId });
     },
-    screenStatus: (id) => screens.get(taskId(id))?.value ?? { state: 'unavailable' },
+    screenStatus: (id) => screens.get(threadIdentity(id))?.value ?? { state: 'unavailable' },
     status: () => (uncertain ? 'Workspace browser needs a restart.' : status),
     act: async (id, input, signal) =>
       z
@@ -223,7 +223,7 @@ export function createBridgeComputer(options: {
             .max(100),
         })
         .strict()
-        .parse(await call({ method: 'act', taskId: taskId(id), input }, signal)),
+        .parse(await call({ method: 'act', threadId: threadIdentity(id), input }, signal)),
     screenshot: (id, signal) => image('screenshot', id, signal),
     async download(id, input, signal) {
       const result = z
@@ -243,7 +243,7 @@ export function createBridgeComputer(options: {
             .regex(/^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/),
         })
         .strict()
-        .parse(await call({ method: 'download', taskId: taskId(id), input }, signal));
+        .parse(await call({ method: 'download', threadId: threadIdentity(id), input }, signal));
       if (result.data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(result.data))
         throw new Error('The browser file is unavailable.');
       const bytes = Buffer.from(result.data, 'base64');
@@ -257,31 +257,33 @@ export function createBridgeComputer(options: {
     },
     signInScreenshot: (id, signal) => image('signInScreenshot', id, signal),
     takeControl: async (id) => {
-      await call({ method: 'takeControl', taskId: taskId(id) });
+      await call({ method: 'takeControl', threadId: threadIdentity(id) });
     },
     openSignIn: async (id) => {
-      await call({ method: 'openSignIn', taskId: taskId(id) });
+      await call({ method: 'openSignIn', threadId: threadIdentity(id) });
     },
     finishSignIn: async (id) => {
-      await call({ method: 'finishSignIn', taskId: taskId(id) });
+      await call({ method: 'finishSignIn', threadId: threadIdentity(id) });
     },
     control: async (id, input) => {
-      await call({ method: 'control', taskId: taskId(id), input });
+      await call({ method: 'control', threadId: threadIdentity(id), input });
     },
     signInControl: async (id, input) => {
-      await call({ method: 'signInControl', taskId: taskId(id), input });
+      await call({ method: 'signInControl', threadId: threadIdentity(id), input });
     },
     releaseControl: async (id) => {
-      await call({ method: 'releaseControl', taskId: taskId(id) });
+      await call({ method: 'releaseControl', threadId: threadIdentity(id) });
     },
     inspectLogin: async (id) =>
-      loginInspectionSchema.parse(await call({ method: 'inspectLogin', taskId: taskId(id) })),
+      loginInspectionSchema.parse(
+        await call({ method: 'inspectLogin', threadId: threadIdentity(id) }),
+      ),
     selectLoginMethod: async (id, origin, methodId) => {
-      await call({ method: 'selectLoginMethod', taskId: taskId(id), origin, methodId });
+      await call({ method: 'selectLoginMethod', threadId: threadIdentity(id), origin, methodId });
     },
     injectCredentials: async (input) => {
       const {
-        taskId: id,
+        threadId: id,
         origin,
         kind,
         username,
@@ -300,7 +302,7 @@ export function createBridgeComputer(options: {
             await call({
               method: 'injectCredentials',
               input: {
-                taskId: taskId(id),
+                threadId: threadIdentity(id),
                 origin,
                 kind,
                 username,
@@ -315,10 +317,10 @@ export function createBridgeComputer(options: {
       );
     },
     hold: async (id, until) => {
-      await call({ method: 'hold', taskId: taskId(id), until });
+      await call({ method: 'hold', threadId: threadIdentity(id), until });
     },
     close: async (id) => {
-      await call({ method: 'close', taskId: taskId(id) });
+      await call({ method: 'close', threadId: threadIdentity(id) });
     },
     dispose: () => {
       disposing ??= (async () => {

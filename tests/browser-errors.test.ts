@@ -46,7 +46,8 @@ async function runtimeFailure(error: Error, name: string, cancelled = false) {
     workspace: fakeWorkspace(),
   });
   const context: RuntimeContext = {
-    taskId: randomUUID(),
+    threadId: randomUUID(),
+    turnId: randomUUID(),
     ownerId: 'fixture-owner',
     prompt: 'Read the example page.',
     workspacePath: directory,
@@ -72,8 +73,8 @@ async function runtimeFailure(error: Error, name: string, cancelled = false) {
     manage: async () => ({}),
   };
   try {
-    if (cancelled) await assert.rejects(runtime.runTask(context), { name: 'AbortError' });
-    else await runtime.runTask(context);
+    if (cancelled) await assert.rejects(runtime.runTurn(context), { name: 'AbortError' });
+    else await runtime.runTurn(context);
     return { received, observations };
   } finally {
     await runtime.dispose();
@@ -120,7 +121,7 @@ test('cancellation takes precedence over a typed browser failure', async () => {
 });
 
 test(
-  'screen HTTP errors preserve ownership and expose only a recognized fixed browser category',
+  'screen HTTP errors use the owner thread and expose only a recognized fixed browser category',
   { skip: !process.env.TEST_DATABASE_URL, timeout: 20_000 },
   async () => {
     const schema = `test_browser_errors_${randomUUID().replaceAll('-', '')}`;
@@ -132,38 +133,39 @@ test(
     const { pool, initializeDatabase } = await import('../src/server/db.ts');
     const { createApp } = await import('../src/server/app.ts');
     const { configuration, ownerId, port } = await import('../src/server/config.ts');
-    const taskId = randomUUID();
-    const foreignId = randomUUID();
     let enabled = true;
     let captures = 0;
+    const captured: string[] = [];
     let failure: Error = new BrowserActionError('browser_navigation_failed');
     failure.message = privateError;
     const app = await createApp({
       configuration: () => configuration({ inspectorEnabled: enabled }),
       computer: fakeComputer({
-        screenshot: async () => {
+        screenshot: async (threadId) => {
           captures++;
+          captured.push(threadId);
           throw failure;
         },
       }),
     });
-    const request = (id = taskId) =>
+    const request = () =>
       app.inject({
-        url: `/api/inspector/screen?taskId=${id}`,
+        url: '/api/inspector/screen',
         headers: { host: `localhost:${port}` },
       });
     try {
       await initializeDatabase();
-      await pool.query(
-        "INSERT INTO tasks(id,owner_id,title,prompt,status) VALUES($1,$2,'fixture','fixture','running'),($3,'foreign','fixture','fixture','running')",
-        [taskId, ownerId, foreignId],
-      );
+      const threadId = randomUUID();
+      await pool.query("INSERT INTO threads(id,owner_id) VALUES($1,$2),($3,'foreign')", [
+        threadId,
+        ownerId,
+        randomUUID(),
+      ]);
       const result = await request();
       assert.equal(result.statusCode, 409);
       assert.deepEqual(result.json(), { code: 'browser_navigation_failed', error: diagnostic });
       assert.equal(result.headers['cache-control'], 'no-store');
-      assert.equal((await request(foreignId)).statusCode, 404);
-      assert.equal(captures, 1);
+      assert.deepEqual(captured, [threadId]);
       enabled = false;
       assert.equal((await request()).statusCode, 404);
       assert.equal(captures, 1);

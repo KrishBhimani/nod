@@ -26,12 +26,12 @@ test(
     const secretKey = randomBytes(32);
     const calls: string[] = [];
     const cliCalls: Array<{
-      taskId: string;
+      threadId: string;
       command: string;
       args: string[];
       signal?: AbortSignal;
     }> = [];
-    const task = { id: randomUUID(), revision: 7 };
+    const turn = { threadId: randomUUID(), turnId: randomUUID() };
     const transport: DiscoveredTransport = {
       validateEndpoint: async (endpoint) => endpoint,
       http: async (endpoint, headers, method, body) => {
@@ -110,7 +110,7 @@ test(
       },
       matchesSubscription: () => false,
     };
-    const resumes: Array<[string, number, string]> = [];
+    const resumes: Array<[string, string]> = [];
     const browserEntry = {
       kind: 'login' as const,
       id: randomUUID(),
@@ -138,11 +138,11 @@ test(
         keyStore,
         grantVault,
         transport,
-        runCli: async (taskId, command, args, envName, suppliedToken, _timeout, signal) => {
+        runCli: async (threadId, command, args, envName, suppliedToken, _timeout, signal) => {
           assert.equal(command, 'fixture');
           assert.equal(envName, 'FIXTURE_TOKEN');
           assert.equal(suppliedToken, token);
-          cliCalls.push({ taskId, command, args, signal });
+          cliCalls.push({ threadId, command, args, signal });
           return { exitCode: 0, output: `result ${suppliedToken}` };
         },
         oauth: {
@@ -185,8 +185,8 @@ test(
             };
           },
         },
-        resumeConnection: async (id, revision, name) => {
-          resumes.push([id, revision, name]);
+        resumeConnection: async (id, name) => {
+          resumes.push([id, name]);
           return true;
         },
       });
@@ -215,7 +215,7 @@ test(
         { id: browserEntry.id, kind: 'browser', endpoint: 'https://github.com' },
       ]);
       await assert.rejects(() =>
-        integrations.manageConnections('propose', undefined, task, {
+        integrations.manageConnections('propose', undefined, turn, {
           service: 'fixturecli',
           name: 'Fixture CLI',
           paths: [
@@ -229,7 +229,7 @@ test(
         }),
       );
       await assert.rejects(() =>
-        integrations.manageConnections('propose', undefined, task, {
+        integrations.manageConnections('propose', undefined, turn, {
           service: 'fixturecli',
           name: 'Fixture CLI',
           paths: [
@@ -238,20 +238,20 @@ test(
         }),
       );
       await assert.rejects(() =>
-        integrations.manageConnections('propose', undefined, task, {
+        integrations.manageConnections('propose', undefined, turn, {
           service: 'github',
           name: 'GitHub',
           paths: [{ kind: 'http', endpoint: 'https://api.github.com/' }],
         }),
       );
       await assert.rejects(() =>
-        integrations.manageConnections('propose', undefined, task, {
+        integrations.manageConnections('propose', undefined, turn, {
           service: 'github',
           name: 'GitHub',
           paths: [{ kind: 'http', endpoint: 'https://api.github.com/', testPath: 'https://[' }],
         }),
       );
-      const proposed = await integrations.manageConnections('propose', undefined, task, {
+      const proposed = await integrations.manageConnections('propose', undefined, turn, {
         service: 'GitHub',
         name: 'GitHub',
         setupUrl: 'https://github.com/settings/tokens',
@@ -276,7 +276,7 @@ test(
       });
       assert.equal(complete.statusCode, 200);
       assert.equal(complete.json().continued, true);
-      assert.deepEqual(resumes, [[task.id, task.revision, 'GitHub']]);
+      assert.deepEqual(resumes, [[turn.turnId, 'GitHub']]);
       const ciphertext = (
         await pool.query<{ ciphertext: string }>('SELECT ciphertext FROM vault_app_grants')
       ).rows[0]?.ciphertext;
@@ -404,7 +404,7 @@ test(
         calls.includes('PATCH https://api.example.test/v1/repos/demo/app/git/refs/heads/feature'),
       );
       assert.ok(calls.includes('POST https://api.example.test/v1/repos/demo/app/pulls'));
-      const cliProposal = await integrations.manageConnections('propose', undefined, task, {
+      const cliProposal = await integrations.manageConnections('propose', undefined, turn, {
         service: 'fixturecli',
         name: 'Fixture CLI',
         paths: [
@@ -455,7 +455,7 @@ test(
           pathId: cliPath.id,
           argv: ['account', 'show'],
         },
-        task.id,
+        turn,
       );
       assert.equal(JSON.stringify(cliRead).includes(token), false);
       assert.equal((cliRead as { output: string }).output, 'result [redacted]');
@@ -469,7 +469,7 @@ test(
           argv: ['account', 'list'],
           readOnly: true,
         },
-        task.id,
+        turn,
         cliSignal,
       );
       assert.equal((declaredRead as { output: string }).output, 'result [redacted]');
@@ -481,7 +481,7 @@ test(
       };
       assert.equal(
         (
-          (await integrations.execute('fixture-owner', 'CONNECTED_CLI', cliWriteArgs, task.id)) as {
+          (await integrations.execute('fixture-owner', 'CONNECTED_CLI', cliWriteArgs, turn)) as {
             requiresApproval: boolean;
           }
         ).requiresApproval,
@@ -492,7 +492,7 @@ test(
         'fixture-owner',
         'CONNECTED_CLI',
         cliWriteArgs,
-        task.id,
+        turn,
       );
       assert.equal(JSON.stringify(cliWrite).includes(token), false);
       assert.equal(
@@ -501,7 +501,7 @@ test(
             'fixture-owner',
             'CONNECTED_CLI',
             { ...cliWriteArgs, readOnly: true },
-            task.id,
+            turn,
           )) as { requiresApproval: boolean }
         ).requiresApproval,
         true,
@@ -517,7 +517,7 @@ test(
               argv: ['api', 'records', '--method', 'POST'],
               readOnly: true,
             },
-            task.id,
+            turn,
           )) as { requiresApproval: boolean }
         ).requiresApproval,
         true,
@@ -532,8 +532,8 @@ test(
         ],
       );
       assert.deepEqual(
-        cliCalls.map((call) => call.taskId),
-        [task.id, task.id, task.id, task.id],
+        cliCalls.map((call) => call.threadId),
+        [turn.threadId, turn.threadId, turn.threadId, turn.threadId],
       );
       assert.ok(cliCalls.every((call) => call.command === 'fixture'));
       assert.equal(
@@ -562,7 +562,7 @@ test(
             path,
           }),
         );
-      const oauthProposal = await integrations.manageConnections('propose', undefined, task, {
+      const oauthProposal = await integrations.manageConnections('propose', undefined, turn, {
         service: 'fixturedesk',
         name: 'Fixture Desk',
         paths: [
@@ -608,7 +608,7 @@ test(
       });
       assert.equal(callback.statusCode, 302);
       assert.match(callback.headers.location ?? '', /connection=continued/);
-      assert.deepEqual(resumes.at(-1), [task.id, task.revision, 'Fixture Desk']);
+      assert.deepEqual(resumes.at(-1), [turn.turnId, 'Fixture Desk']);
       const oauthAccount = (await integrations.list()).find((item) => item.slug === 'fixturedesk')!;
       assert.equal(oauthAccount.accessPaths?.[0].kind, 'mcp');
       assert.equal(

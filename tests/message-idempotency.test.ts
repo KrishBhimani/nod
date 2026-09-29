@@ -18,20 +18,10 @@ test(
     process.env.DATABASE_URL = url.href;
     process.env.PGBOSS_SCHEMA = bossSchema;
     const db = await import('../src/server/db.ts');
-    const tasks = await import('../src/server/tasks.ts');
+    const thread = await import('../src/server/thread.ts');
     const { createApp } = await import('../src/server/app.ts');
     const { configuration, port } = await import('../src/server/config.ts');
-    let routeCalls = 0;
-    const messages = tasks.createUserMessageService({
-      routeConversation: async () => {
-        routeCalls++;
-        return {
-          kind: 'new_outcome',
-          title: 'Synthetic requested work',
-          objective: 'Complete the synthetic requested work.',
-        };
-      },
-    });
+    const messages = thread.createUserMessageService();
     const app = await createApp({
       submitMessage: messages.submit,
       configuration: () => ({ ...configuration(), llmReady: true }),
@@ -49,78 +39,62 @@ test(
         payload: JSON.stringify(payload),
       });
     const counts = async () => ({
-      tasks: (await db.pool.query('SELECT count(*)::int AS count FROM tasks')).rows[0].count,
+      turns: (await db.pool.query('SELECT count(*)::int AS count FROM turns')).rows[0].count,
       messages: (await db.pool.query('SELECT count(*)::int AS count FROM messages')).rows[0].count,
       jobs: (
         await db.pool.query(
-          `SELECT count(*)::int AS count FROM ${bossSchema}.job WHERE name='assistant-task'`,
+          `SELECT count(*)::int AS count FROM ${bossSchema}.job WHERE name='thread-drain'`,
         )
       ).rows[0].count,
-      inputs: (await db.pool.query('SELECT count(*)::int AS count FROM pending_task_inputs'))
-        .rows[0].count,
     });
-    let first: SubmitMessageResponse;
+    let first: SubmitMessageResponse & { threadId: string };
     const firstMessageId = randomUUID();
     try {
       await db.initializeDatabase();
-      await tasks.initializeTasks();
+      await thread.initializeThreads();
+      await t.test('concurrent identical submissions store one message, turn and job', async () => {
+        const payload = {
+          clientMessageId: firstMessageId,
+          text: '  Prepare the synthetic report  ',
+        };
+        const responses = await Promise.all([send(payload), send(payload)]);
+        for (const response of responses) assert.equal(response.statusCode, 200, response.body);
+        first = responses[0]!.json();
+        assert.deepEqual(responses[1]!.json(), first);
+        assert.equal(first.messageId, firstMessageId);
+        assert.deepEqual(await counts(), { turns: 1, messages: 1, jobs: 1 });
+        const saved = (
+          await db.pool.query('SELECT text,turn_id,thread_id FROM messages WHERE id=$1', [
+            firstMessageId,
+          ])
+        ).rows[0];
+        assert.equal(saved.text, 'Prepare the synthetic report');
+        assert.equal(saved.turn_id, first.turnId);
+        assert.equal(saved.thread_id, first.threadId);
+        assert.deepEqual((await send(payload)).json(), first);
+        assert.deepEqual(await counts(), { turns: 1, messages: 1, jobs: 1 });
+      });
       await t.test(
-        'concurrent identical submissions store one message, outcome, task and job',
-        async () => {
-          const payload = {
-            clientMessageId: firstMessageId,
-            text: '  Prepare the synthetic report  ',
-            conversationRevision: 0,
-          };
-          const responses = await Promise.all([send(payload), send(payload)]);
-          for (const response of responses) assert.equal(response.statusCode, 200, response.body);
-          first = responses[0]!.json<SubmitMessageResponse>();
-          assert.deepEqual(responses[1]!.json(), first);
-          assert.equal(first.messageId, firstMessageId);
-          assert.equal(first.continued, false);
-          assert.deepEqual(await counts(), { tasks: 1, messages: 1, jobs: 1, inputs: 0 });
-          assert.equal((await db.pool.query('SELECT * FROM outcomes')).rowCount, 1);
-          assert.equal(
-            (await db.pool.query('SELECT text,task_id FROM messages WHERE id=$1', [firstMessageId]))
-              .rows[0].text,
-            'Prepare the synthetic report',
-          );
-          const before = routeCalls;
-          assert.deepEqual((await send(payload)).json(), first);
-          assert.equal(routeCalls, before);
-        },
-      );
-      await t.test(
-        'a queued reply keeps its stable ID and repeated HTTP retries do not queue twice',
+        'a reply queues its own turn on the same thread and HTTP retries do not queue twice',
         async () => {
           const clientMessageId = randomUUID();
           const payload = {
             clientMessageId,
             text: 'Add a short conclusion to that report',
             replyToMessageId: firstMessageId,
-            conversationRevision: 0,
+            threadId: first.threadId,
           };
           const responses = await Promise.all([send(payload), send(payload)]);
           for (const response of responses) assert.equal(response.statusCode, 200, response.body);
-          const reply = responses[0]!.json<SubmitMessageResponse>();
-          assert.deepEqual(reply, {
-            taskId: first.taskId,
-            continued: true,
-            messageId: clientMessageId,
-          });
+          const reply = responses[0]!.json<SubmitMessageResponse & { threadId: string }>();
+          assert.equal(reply.messageId, clientMessageId);
+          assert.equal(reply.threadId, first.threadId);
+          assert.notEqual(reply.turnId, first.turnId);
           assert.deepEqual(responses[1]!.json(), reply);
-          assert.deepEqual(await counts(), { tasks: 1, messages: 2, jobs: 1, inputs: 1 });
-          assert.equal(
-            (
-              await db.pool.query('SELECT message_id FROM pending_task_inputs WHERE task_id=$1', [
-                first.taskId,
-              ])
-            ).rows[0].message_id,
-            clientMessageId,
-          );
+          assert.deepEqual(await counts(), { turns: 2, messages: 2, jobs: 2 });
           assert.equal((await send({ ...payload, replyToMessageId: undefined })).statusCode, 409);
           assert.equal((await send({ ...payload, text: 'A changed instruction' })).statusCode, 409);
-          assert.deepEqual(await counts(), { tasks: 1, messages: 2, jobs: 1, inputs: 1 });
+          assert.deepEqual(await counts(), { turns: 2, messages: 2, jobs: 2 });
         },
       );
       await t.test('attachment IDs retain request order and cannot change on replay', async () => {
@@ -152,40 +126,31 @@ test(
         assert.equal((await send({ ...payload, attachmentIds: [] })).statusCode, 409);
         assert.deepEqual(await counts(), before);
       });
-      await t.test(
-        'foreign, assistant and other-channel message IDs cannot be reused',
-        async () => {
-          const foreignTask = randomUUID(),
-            foreignId = randomUUID(),
-            assistantId = randomUUID(),
-            channelId = randomUUID();
-          await db.pool.query(
-            "INSERT INTO tasks(id,owner_id,title,prompt,status) VALUES($1,'another-owner','Private fixture','Private fixture','succeeded')",
-            [foreignTask],
-          );
-          await db.pool.query(
-            "INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,'another-owner','user','Same synthetic text',$2),($3,'local-development','assistant','Same synthetic text',$4)",
-            [foreignId, foreignTask, assistantId, first.taskId],
-          );
-          await tasks.submitTask('Same synthetic text', [], undefined, false, {
-            channel: 'telegram:fixture',
-            messageId: channelId,
-          });
-          const before = await counts();
-          for (const id of [foreignId, assistantId, channelId])
-            assert.equal(
-              (await send({ clientMessageId: id, text: 'Same synthetic text' })).statusCode,
-              409,
-            );
-          assert.deepEqual(await counts(), before);
+      await t.test('foreign and assistant message IDs cannot be reused', async () => {
+        const foreignThread = randomUUID(),
+          foreignId = randomUUID(),
+          assistantId = randomUUID();
+        await db.pool.query("INSERT INTO threads(id,owner_id) VALUES($1,'another-owner')", [
+          foreignThread,
+        ]);
+        await db.pool.query(
+          "INSERT INTO messages(id,owner_id,role,text,thread_id) VALUES($1,'another-owner','user','Same synthetic text',$2),($3,'local-development','assistant','Same synthetic text',$4)",
+          [foreignId, foreignThread, assistantId, first.threadId],
+        );
+        const before = await counts();
+        for (const id of [foreignId, assistantId])
           assert.equal(
-            (await send({ clientMessageId: 'not-a-uuid', text: 'Invalid ID' })).statusCode,
-            400,
+            (await send({ clientMessageId: id, text: 'Same synthetic text' })).statusCode,
+            409,
           );
-        },
-      );
+        assert.deepEqual(await counts(), before);
+        assert.equal(
+          (await send({ clientMessageId: 'not-a-uuid', text: 'Invalid ID' })).statusCode,
+          400,
+        );
+      });
       await t.test(
-        'reset rejects old IDs even without an explicit generation and new messages receive a generated ID',
+        'reset rejects old IDs and stale thread IDs and new messages receive a generated ID',
         async () => {
           const reset = await app.inject({
             method: 'POST',
@@ -194,32 +159,33 @@ test(
             payload: '{}',
           });
           assert.equal(reset.statusCode, 200, reset.body);
-          for (const conversationRevision of [undefined, 0, 1])
+          const next = reset.json<{ ok: boolean; threadId: string }>().threadId;
+          assert.notEqual(next, first.threadId);
+          for (const threadId of [undefined, first.threadId, next])
             assert.equal(
               (
                 await send({
                   clientMessageId: firstMessageId,
                   text: 'Prepare the synthetic report',
-                  conversationRevision,
+                  threadId,
                 })
               ).statusCode,
               409,
             );
-          const accepted = await send({
-            text: 'New conversation request',
-            conversationRevision: 1,
-          });
+          assert.equal(
+            (await send({ text: 'Stale request', threadId: first.threadId })).statusCode,
+            409,
+          );
+          const accepted = await send({ text: 'New conversation request', threadId: next });
           assert.equal(accepted.statusCode, 200, accepted.body);
-          const body = accepted.json<SubmitMessageResponse>();
+          const body = accepted.json<SubmitMessageResponse & { threadId: string }>();
           assert.match(body.messageId, /^[0-9a-f-]{36}$/);
           assert.notEqual(body.messageId, firstMessageId);
+          assert.equal(body.threadId, next);
           assert.equal(
-            (
-              await db.pool.query('SELECT conversation_revision FROM tasks WHERE id=$1', [
-                body.taskId,
-              ])
-            ).rows[0].conversation_revision,
-            1,
+            (await db.pool.query('SELECT thread_id FROM turns WHERE id=$1', [body.turnId])).rows[0]
+              .thread_id,
+            next,
           );
           assert.equal(
             (await db.pool.query('SELECT id FROM messages WHERE id=$1', [body.messageId])).rowCount,
@@ -229,7 +195,7 @@ test(
       );
     } finally {
       await app.close();
-      await tasks.stopTasks();
+      await thread.stopThreadWorkers();
       await db.pool.end();
       await admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`);
       await admin.query(`DROP SCHEMA ${schema} CASCADE`);

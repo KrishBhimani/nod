@@ -165,7 +165,7 @@ test('Vault periodic retries stop entering during drain and resume pending crede
   const database = {
     query: async (sql: string, values?: unknown[]) => {
       if (sql.startsWith('SELECT r.*'))
-        return { rows: [...pending].map((id) => ({ id, task_id: id, task_revision: 1 })) };
+        return { rows: [...pending].map((id) => ({ id, turn_id: id })) };
       if (sql.startsWith('UPDATE credential_requests SET resume_pending'))
         pending.delete(String(values?.[0]));
       return { rows: [] };

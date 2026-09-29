@@ -7,7 +7,7 @@ import { createProviderUsageStore } from '../src/server/provider-usage.ts';
 import type { ModelUsageObservation } from '../src/ports/agent.ts';
 
 test(
-  'inspector records owned task segments, private payloads, usage and stable history',
+  'inspector records owned turns, private payloads, usage and stable history',
   { skip: !process.env.TEST_DATABASE_URL, timeout: 45_000 },
   async (t) => {
     const schema = `test_inspector_${randomUUID().replaceAll('-', '')}`;
@@ -38,8 +38,8 @@ test(
     });
     const headers = { host: `localhost:${port}`, origin: `http://localhost:${port}` };
     const request = (path: string) => app.inject({ url: path, headers });
-    const taskId = randomUUID();
-    const foreignTaskId = randomUUID();
+    const turnId = randomUUID();
+    const foreignTurnId = randomUUID();
     const time = new Date().toISOString();
     const usage = (id = randomUUID()): ModelUsageObservation => ({
       type: 'model_usage',
@@ -55,8 +55,8 @@ test(
       costSource: 'sdk_estimate',
       createdAt: time,
     });
-    async function start(id = randomUUID(), revision = 0, target = taskId) {
-      await store.record(target, revision, {
+    async function start(id = randomUUID(), target = turnId) {
+      await store.record(target, {
         type: 'tool_start',
         id,
         name: 'fixture_tool',
@@ -85,9 +85,17 @@ test(
           }
         },
       );
+      const threadId = randomUUID();
+      const foreignThreadId = randomUUID();
+      await pool.query('INSERT INTO threads(id,owner_id) VALUES($1,$2),($3,$4)', [
+        threadId,
+        ownerId,
+        foreignThreadId,
+        'foreign',
+      ]);
       await pool.query(
-        "INSERT INTO tasks(id,owner_id,title,prompt,status) VALUES($1,$2,'fixture','fixture','running'),($3,'foreign','foreign','foreign','running')",
-        [taskId, ownerId, foreignTaskId],
+        "INSERT INTO turns(id,owner_id,thread_id,source,prompt,status) VALUES($1,$2,$3,'user','fixture','running'),($4,'foreign',$5,'user','foreign','running')",
+        [turnId, ownerId, threadId, foreignTurnId, foreignThreadId],
       );
       await t.test(
         'catalog is available before the first run and HTTP access stays private',
@@ -97,7 +105,7 @@ test(
           assert.equal(catalog.json().tools[0].name, 'fixture_tool');
           assert.equal(catalog.headers['cache-control'], 'no-store');
           assert.equal(
-            (await request(`/api/inspector/observations?taskId=${foreignTaskId}`)).statusCode,
+            (await request(`/api/inspector/observations?turnId=${foreignTurnId}`)).statusCode,
             404,
           );
           assert.equal(
@@ -110,15 +118,15 @@ test(
             403,
           );
           assert.equal(
-            (await request(`/api/inspector/observations?taskId=${taskId}&beforeId=${randomUUID()}`))
+            (await request(`/api/inspector/observations?turnId=${turnId}&beforeId=${randomUUID()}`))
               .statusCode,
             400,
           );
           assert.equal(
-            (await request('/api/inspector/observations?taskId=invalid')).statusCode,
+            (await request('/api/inspector/observations?turnId=invalid')).statusCode,
             400,
           );
-          assert.equal((await store.read(taskId))!.summary.knownCostUsd, null);
+          assert.equal((await store.read(turnId))!.summary.knownCostUsd, null);
           const all = await request('/api/inspector/observations');
           assert.equal(all.statusCode, 200);
           assert.equal(all.json().scope, 'owner');
@@ -129,7 +137,7 @@ test(
         async () => {
           const id = await start();
           await start(id);
-          await store.record(taskId, 0, {
+          await store.record(turnId, {
             type: 'tool_end',
             id,
             name: 'fixture_tool',
@@ -142,7 +150,7 @@ test(
             durationMs: 12,
             finishedAt: time,
           });
-          await store.record(taskId, 0, {
+          await store.record(turnId, {
             type: 'tool_end',
             id,
             name: 'fixture_tool',
@@ -153,7 +161,7 @@ test(
           });
           for (const status of ['failed', 'cancelled'] as const) {
             const next = await start();
-            await store.record(taskId, 0, {
+            await store.record(turnId, {
               type: 'tool_end',
               id: next,
               name: 'fixture_tool',
@@ -163,7 +171,7 @@ test(
               finishedAt: time,
             });
           }
-          const read = (await store.read(taskId))!;
+          const read = (await store.read(turnId))!;
           assert.equal(read.summary.calls, 3);
           assert.equal(read.toolUsage.length, 1);
           assert.deepEqual(read.toolUsage[0], {
@@ -191,25 +199,25 @@ test(
           const raw = JSON.stringify((await pool.query('SELECT * FROM inspector_records')).rows);
           for (const value of [secret, 'form-private', 'returned-private', 'private-link'])
             assert.ok(!raw.includes(value), value);
-          await start(randomUUID(), 0, foreignTaskId);
+          await start(randomUUID(), foreignTurnId);
           assert.equal(
-            (await pool.query('SELECT id FROM inspector_records WHERE task_id=$1', [foreignTaskId]))
+            (await pool.query('SELECT id FROM inspector_records WHERE turn_id=$1', [foreignTurnId]))
               .rowCount,
             0,
           );
         },
       );
       await t.test(
-        'usage counts once, preserves unknown prices and records billed work after revision changes',
+        'usage counts once, preserves unknown prices and records billed work after the turn ends',
         async () => {
           const priced = usage();
-          await store.record(taskId, 0, priced);
-          await store.record(taskId, 0, priced);
-          await store.record(taskId, 0, { ...usage(), costUsd: 999, costSource: 'unavailable' });
-          await store.record(taskId, 0, { ...usage(), costUsd: 0 });
+          await store.record(turnId, priced);
+          await store.record(turnId, priced);
+          await store.record(turnId, { ...usage(), costUsd: 999, costSource: 'unavailable' });
+          await store.record(turnId, { ...usage(), costUsd: 0 });
           const pending = await start();
-          await pool.query('UPDATE tasks SET revision=1 WHERE id=$1', [taskId]);
-          await store.record(taskId, 0, {
+          await pool.query("UPDATE turns SET status='cancelled' WHERE id=$1", [turnId]);
+          await store.record(turnId, {
             type: 'tool_end',
             id: pending,
             name: 'fixture_tool',
@@ -218,9 +226,9 @@ test(
             durationMs: 25,
             finishedAt: time,
           });
-          await start(randomUUID(), 0);
-          await store.record(taskId, 0, usage());
-          const read = (await store.read(taskId))!;
+          await start();
+          await store.record(turnId, usage());
+          const read = (await store.read(turnId))!;
           assert.equal(read.calls.find((row) => row.id === pending)!.status, 'interrupted');
           assert.equal(read.calls.find((row) => row.id === pending)!.output, null);
           assert.equal(read.summary.calls, 4);
@@ -230,32 +238,33 @@ test(
           assert.equal(read.summary.inputTokens, 48);
           assert.equal(read.summary.cacheReadTokens, 12);
           assert.equal(read.summary.totalTokens, 84);
+          await pool.query("UPDATE turns SET status='running' WHERE id=$1", [turnId]);
         },
       );
       await t.test(
         'disable stops capture and all new inspector routes; interrupted work is recoverable',
         async () => {
           enabled = false;
-          await start(randomUUID(), 1);
-          await store.record(taskId, 1, usage());
-          assert.equal((await store.read(taskId))!.summary.calls, 4);
-          assert.equal((await store.read(taskId))!.summary.modelRequests, 4);
+          await start();
+          await store.record(turnId, usage());
+          assert.equal((await store.read(turnId))!.summary.calls, 4);
+          assert.equal((await store.read(turnId))!.summary.modelRequests, 4);
           for (const path of [
             '/api/inspector/tools',
-            `/api/inspector/observations?taskId=${taskId}`,
+            `/api/inspector/observations?turnId=${turnId}`,
           ])
             assert.equal((await request(path)).statusCode, 404);
           enabled = true;
-          const first = await start(randomUUID(), 1);
-          await store.finishSegment(taskId, 1);
+          const first = await start();
+          await store.finishSegment(turnId);
           assert.equal(
-            (await store.read(taskId))!.calls.find((row) => row.id === first)!.status,
+            (await store.read(turnId))!.calls.find((row) => row.id === first)!.status,
             'interrupted',
           );
-          const second = await start(randomUUID(), 1);
+          const second = await start();
           await store.recover();
           assert.equal(
-            (await store.read(taskId))!.calls.find((row) => row.id === second)!.status,
+            (await store.read(turnId))!.calls.find((row) => row.id === second)!.status,
             'interrupted',
           );
         },
@@ -264,15 +273,15 @@ test(
         'mixed history pages at tied timestamps without duplicates and retains full totals',
         async () => {
           for (let index = 0; index < 105; index++) {
-            if (index % 2) await start(randomUUID(), 1);
-            else await store.record(taskId, 1, usage());
+            if (index % 2) await start();
+            else await store.record(turnId, usage());
           }
-          const first = (await request(`/api/inspector/observations?taskId=${taskId}`)).json();
+          const first = (await request(`/api/inspector/observations?turnId=${turnId}`)).json();
           assert.equal(first.calls.length + first.usage.length, 100);
           assert.equal(first.hasOlder, true);
           const next = (
             await request(
-              `/api/inspector/observations?taskId=${taskId}&before=${encodeURIComponent(first.nextBefore)}&beforeId=${first.nextBeforeId}`,
+              `/api/inspector/observations?turnId=${turnId}&before=${encodeURIComponent(first.nextBefore)}&beforeId=${first.nextBeforeId}`,
             )
           ).json();
           const ids = [...first.calls, ...first.usage, ...next.calls, ...next.usage].map(
@@ -287,8 +296,8 @@ test(
             [ids[0]],
           );
           assert.equal(
-            (await store.read(taskId))!.summary.calls +
-              (await store.read(taskId))!.summary.modelRequests,
+            (await store.read(turnId))!.summary.calls +
+              (await store.read(turnId))!.summary.modelRequests,
             114,
           );
           await createInspectorStore(pool, { ownerId, enabled: () => true }).recover();
@@ -303,19 +312,19 @@ test(
         async () => {
           const target = randomUUID();
           await pool.query(
-            "INSERT INTO tasks(id,owner_id,title,prompt,status) VALUES($1,$2,'aggregate fixture','fixture','running')",
-            [target, ownerId],
+            "INSERT INTO turns(id,owner_id,thread_id,source,prompt,status) VALUES($1,$2,$3,'user','aggregate fixture','running')",
+            [target, ownerId, threadId],
           );
           await pool.query(
-            `INSERT INTO inspector_records(id,owner_id,task_id,revision,kind,name,status,input,started_at,duration_ms)
-          SELECT gen_random_uuid(),$1,$2,0,'tool',CASE WHEN i<=125 THEN 'browser' ELSE 'shell' END,
+            `INSERT INTO inspector_records(id,owner_id,thread_id,turn_id,kind,name,status,input,started_at,duration_ms)
+          SELECT gen_random_uuid(),$1,$3,$2,'tool',CASE WHEN i<=125 THEN 'browser' ELSE 'shell' END,
             CASE WHEN i<=120 THEN 'succeeded' WHEN i<=130 THEN 'failed' ELSE 'running' END,
             jsonb_build_object('index',i),now()-i*interval '1 second',CASE WHEN i<=130 THEN i*10 ELSE NULL END
           FROM generate_series(1,150) i`,
-            [ownerId, target],
+            [ownerId, target, threadId],
           );
           const first = (
-            await request(`/api/inspector/observations?taskId=${target}&tool=browser`)
+            await request(`/api/inspector/observations?turnId=${target}&tool=browser`)
           ).json();
           assert.equal(first.calls.length, 100);
           assert.equal(first.usage.length, 0);
@@ -336,7 +345,7 @@ test(
           assert.equal(browser.maxDurationMs, 1250);
           const second = (
             await request(
-              `/api/inspector/observations?taskId=${target}&tool=browser&before=${encodeURIComponent(first.nextBefore)}&beforeId=${first.nextBeforeId}`,
+              `/api/inspector/observations?turnId=${target}&tool=browser&before=${encodeURIComponent(first.nextBefore)}&beforeId=${first.nextBeforeId}`,
             )
           ).json();
           assert.equal(second.calls.length, 25);
@@ -350,12 +359,12 @@ test(
           const absent = (await store.read(target, { tool: 'unknown_tool' }))!;
           assert.equal(absent.calls.length, 0);
           assert.equal(absent.summary.calls, 150);
-          await pool.query("UPDATE tasks SET status='succeeded' WHERE id=$1", [target]);
+          await pool.query("UPDATE turns SET status='succeeded' WHERE id=$1", [target]);
           const finished = (await store.read(target, { tool: 'shell' }))!;
           assert.equal(finished.toolUsage.find((row) => row.name === 'shell')!.running, 0);
           assert.equal(finished.toolUsage.find((row) => row.name === 'shell')!.interrupted, 20);
           assert.equal(finished.calls.filter((row) => row.status === 'interrupted').length, 20);
-          assert.equal(await store.read(foreignTaskId, { tool: 'browser' }), null);
+          assert.equal(await store.read(foreignTurnId, { tool: 'browser' }), null);
         },
       );
     } finally {

@@ -15,11 +15,10 @@ test(
     process.env.DATABASE_URL = url.href;
     const db = await import('../src/server/db.ts');
     const { createApp } = await import('../src/server/app.ts');
+    const { activeThread } = await import('../src/server/thread.ts');
     const { ownerId, port, configuration } = await import('../src/server/config.ts');
-    const taskId = randomUUID();
-    const foreignId = randomUUID();
     const capturedAt = '2026-09-25T12:00:00.000Z';
-    let currentId: string | undefined = taskId;
+    let currentId: string | undefined;
     let locked = false;
     let fail = false;
     let inspectorEnabled = false;
@@ -30,7 +29,7 @@ test(
       computer: {
         status: () => 'Ready',
         currentSession: () =>
-          currentId ? { taskId: currentId, lastActivityAt: capturedAt } : undefined,
+          currentId ? { threadId: currentId, lastActivityAt: capturedAt } : undefined,
         screenStatus: () => ({ state: 'live', capturedAt }),
         screenshot: async (id) => {
           captures.push(id!);
@@ -44,94 +43,115 @@ test(
     });
     const request = (path: string) =>
       app.inject({ url: path, headers: { host: `localhost:${port}` } });
+    const insertTurn = async (threadId: string, owner: string, prompt: string) => {
+      const id = randomUUID();
+      await db.pool.query(
+        "INSERT INTO turns(id,owner_id,thread_id,source,prompt,status) VALUES($1,$2,$3,'event',$4,'running')",
+        [id, owner, threadId, prompt],
+      );
+      return id;
+    };
     try {
       await db.initializeDatabase();
-      for (const [id, owner] of [
-        [taskId, ownerId],
-        [foreignId, 'other'],
-      ])
-        await db.pool.query(
-          "INSERT INTO tasks(id,owner_id,title,prompt,status) VALUES($1,$2,'Synthetic browser','Synthetic prompt','running')",
-          [id, owner],
-        );
+      const thread = await activeThread(db.pool);
+      const foreignThread = await activeThread(db.pool, 'other');
+      const turnId = await insertTurn(thread.id, ownerId, 'Synthetic browser');
+      const foreignTurnId = await insertTurn(foreignThread.id, 'other', 'Foreign browser');
+      currentId = thread.id;
       const metadata = await request('/api/browser');
       assert.equal(metadata.statusCode, 200);
       assert.equal(metadata.headers['cache-control'], 'no-store');
       assert.deepEqual(metadata.json(), {
         currentBrowser: {
-          taskId,
+          threadId: thread.id,
           title: 'Synthetic browser',
           status: 'running',
           lastActivityAt: capturedAt,
         },
       });
-      for (const path of ['/api/inspector', `/api/inspector/screen?taskId=${taskId}`])
+      for (const path of ['/api/inspector', '/api/inspector/screen'])
         assert.equal((await request(path)).statusCode, 404);
-      const frame = await request(`/api/browser/screen?taskId=${taskId}`);
+      const frame = await request('/api/browser/screen');
       assert.equal(frame.statusCode, 200);
       assert.match(String(frame.headers['content-type']), /^image\/png/);
       assert.equal(frame.headers['cache-control'], 'no-store');
       assert.equal(frame.headers['referrer-policy'], 'no-referrer');
       assert.equal(frame.headers['x-screen-state'], 'live');
       assert.equal(frame.body, 'synthetic-public-browser-frame');
-      for (const id of [foreignId, randomUUID()])
-        assert.equal((await request(`/api/browser/screen?taskId=${id}`)).statusCode, 404);
-      assert.deepEqual(captures, [taskId]);
+      assert.deepEqual(captures, [thread.id]);
       inspectorEnabled = true;
-      await db.pool.query("UPDATE tasks SET status='waiting_credentials' WHERE id=$1", [taskId]);
+      await db.pool.query(
+        "UPDATE turns SET status='waiting',waiting_reason='credentials' WHERE id=$1",
+        [turnId],
+      );
       for (const path of ['/api/browser/screen', '/api/inspector/screen']) {
-        const pending = await request(`${path}?taskId=${taskId}`);
+        const pending = await request(path);
         assert.equal(pending.statusCode, 423);
         assert.equal(pending.headers['cache-control'], 'no-store');
         assert.equal(pending.body.includes('synthetic-public-browser-frame'), false);
       }
-      assert.deepEqual(captures, [taskId]);
-      await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1", [taskId]);
+      assert.deepEqual(captures, [thread.id]);
+      await db.pool.query("UPDATE turns SET status='running',waiting_reason=NULL WHERE id=$1", [
+        turnId,
+      ]);
       onCapture = async () => {
-        await db.pool.query("UPDATE tasks SET status='waiting_credentials' WHERE id=$1", [taskId]);
+        await db.pool.query(
+          "UPDATE turns SET status='waiting',waiting_reason='credentials' WHERE id=$1",
+          [turnId],
+        );
       };
-      const becamePrivate = await request(`/api/browser/screen?taskId=${taskId}`);
+      const becamePrivate = await request('/api/browser/screen');
       assert.equal(becamePrivate.statusCode, 423);
       assert.equal(becamePrivate.body.includes('synthetic-public-browser-frame'), false);
-      assert.deepEqual(captures, [taskId, taskId]);
-      await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1", [taskId]);
+      assert.deepEqual(captures, [thread.id, thread.id]);
+      await db.pool.query("UPDATE turns SET status='running',waiting_reason=NULL WHERE id=$1", [
+        turnId,
+      ]);
       onCapture = async () => {
-        await db.pool.query("UPDATE tasks SET status='waiting_credentials' WHERE id=$1", [taskId]);
-        await db.pool.query("UPDATE tasks SET status='running',revision=revision+1 WHERE id=$1", [
-          taskId,
-        ]);
+        await db.pool.query('UPDATE threads SET archived_at=now() WHERE id=$1', [thread.id]);
       };
-      const obsolete = await request(`/api/browser/screen?taskId=${taskId}`);
+      const obsolete = await request('/api/browser/screen');
       assert.equal(obsolete.statusCode, 409);
       assert.equal(obsolete.body.includes('synthetic-public-browser-frame'), false);
       onCapture = undefined;
-      const resumed = await request(`/api/browser/screen?taskId=${taskId}`);
+      const next = await activeThread(db.pool);
+      assert.notEqual(next.id, thread.id);
+      const resumed = await request('/api/browser/screen');
       assert.equal(resumed.statusCode, 200);
       assert.equal(resumed.body, 'synthetic-public-browser-frame');
+      assert.equal(captures.at(-1), next.id);
       locked = true;
-      const privateFrame = await request(`/api/browser/screen?taskId=${taskId}`);
+      const privateFrame = await request('/api/browser/screen');
       assert.equal(privateFrame.statusCode, 423);
       assert.equal(privateFrame.headers['cache-control'], 'no-store');
       assert.equal(privateFrame.body.includes('synthetic-public-browser-frame'), false);
       locked = false;
       fail = true;
-      const failed = await request(`/api/browser/screen?taskId=${taskId}`);
+      const failed = await request('/api/browser/screen');
       assert.equal(failed.statusCode, 500);
       assert.equal(failed.body.includes('synthetic-private-provider-detail'), false);
-      currentId = foreignId;
-      assert.deepEqual((await request('/api/browser')).json(), { currentBrowser: null });
+      const nextTurnId = await insertTurn(next.id, ownerId, 'Next browser');
       currentId = undefined;
+      assert.deepEqual((await request('/api/browser')).json(), { currentBrowser: null });
       await db.pool.query(
-        "INSERT INTO task_events(id,task_id,type,summary) VALUES($1,$2,'tool_complete','browser')",
-        [randomUUID(), taskId],
+        "INSERT INTO turn_events(id,turn_id,type,summary) VALUES($1,$2,'tool_complete','browser')",
+        [randomUUID(), turnId],
       );
       await db.pool.query(
-        "INSERT INTO task_events(id,task_id,type,summary) VALUES($1,$2,'tool_complete','browser')",
-        [randomUUID(), foreignId],
+        "INSERT INTO turn_events(id,turn_id,type,summary) VALUES($1,$2,'tool_complete','browser')",
+        [randomUUID(), foreignTurnId],
+      );
+      assert.deepEqual((await request('/api/browser')).json(), { currentBrowser: null });
+      await db.pool.query(
+        "INSERT INTO turn_events(id,turn_id,type,summary) VALUES($1,$2,'tool_complete','browser')",
+        [randomUUID(), nextTurnId],
       );
       const fallback = (await request('/api/browser')).json();
-      assert.equal(fallback.currentBrowser.taskId, taskId);
+      assert.equal(fallback.currentBrowser.threadId, next.id);
+      assert.equal(fallback.currentBrowser.title, 'Next browser');
       assert.deepEqual(Object.keys(fallback), ['currentBrowser']);
+      currentId = thread.id;
+      assert.deepEqual((await request('/api/browser')).json(), { currentBrowser: null });
     } finally {
       await app.close();
       await db.pool.end();

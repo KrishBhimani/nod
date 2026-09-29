@@ -40,7 +40,7 @@ test(
     process.env.DATABASE_URL = url.href;
     process.env.PGBOSS_SCHEMA = bossSchema;
     const db = await import('../src/server/db.ts');
-    const tasks = await import('../src/server/tasks.ts');
+    const thread = await import('../src/server/thread.ts');
     const { createPersonalService } = await import('../src/server/personal.ts');
     const { dataRoot } = await import('../src/server/config.ts');
     const admission = createWorkAdmission();
@@ -48,39 +48,43 @@ test(
     const drain = createTenantDrain({ admission, consumers });
     const finish = gate();
     const signals = new Map<string, AbortSignal>();
-    const ids: string[] = [];
+    const threadIds = new Set<string>();
     const blocker = await db.pool.connect();
     const blocked = async () =>
       Boolean(
         (
           await admin.query(
-            "SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock' AND query LIKE 'UPDATE tasks SET status=''running''%'",
+            "SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock' AND query LIKE 'SELECT * FROM turns WHERE thread_id=%'",
             [schema],
           )
         ).rowCount,
       );
     const state = async (id: string) =>
-      (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [id])).rows[0].status;
+      (await db.pool.query('SELECT status FROM turns WHERE id=$1', [id])).rows[0].status;
+    const submit = async (text: string) => {
+      const result = await thread.submitUserMessage(text);
+      threadIds.add(result.threadId);
+      return result.turnId;
+    };
     try {
       await db.initializeDatabase();
-      await tasks.initializeTasks();
+      await thread.initializeThreads();
       await createPersonalService({
         pool: db.pool,
         ownerId: 'local-development',
-        scheduler: tasks.boss,
-        submitTask: tasks.submitTask,
+        scheduler: thread.boss,
+        enqueueTurn: thread.enqueueTurn,
         refresh() {},
       }).initialize({ workers: false });
-      const first = await tasks.submitTask('Synthetic held natural-drain task');
-      ids.push(first);
+      const first = await submit('Synthetic held natural-drain turn');
       await blocker.query('BEGIN');
-      await blocker.query('SELECT id FROM tasks WHERE id=$1 FOR UPDATE', [first]);
-      await tasks.startTaskWorkers({
+      await blocker.query('SELECT id FROM turns WHERE id=$1 FOR UPDATE', [first]);
+      await thread.startThreadWorkers({
         consumers,
-        async runTask(context) {
-          signals.set(context.taskId, context.signal);
-          if (context.taskId === first) await finish.promise;
-          if (context.prompt === 'Synthetic running shutdown task')
+        async runTurn(context) {
+          signals.set(context.turnId, context.signal);
+          if (context.turnId === first) await finish.promise;
+          if (context.prompt === 'Synthetic running shutdown turn')
             await new Promise<void>((resolve) =>
               context.signal.addEventListener('abort', () => resolve(), { once: true }),
             );
@@ -112,8 +116,7 @@ test(
       await waitFor(() => signals.has(first));
       assert.equal(signals.get(first)!.aborted, false);
       assert.equal(received, false);
-      const second = await tasks.submitTask('Synthetic queued-during-drain task');
-      ids.push(second);
+      const second = await submit('Synthetic queued-during-drain turn');
       await delay(100);
       assert.equal(signals.has(second), false);
       assert.equal(await state(second), 'queued');
@@ -125,39 +128,31 @@ test(
       await drain.resume(input);
       await waitFor(async () => (await state(second)) === 'succeeded');
       assert.equal(signals.get(second)!.aborted, false);
-      await consumers.pause();
-      const third = await tasks.submitTask('Synthetic shutdown-before-start task');
-      ids.push(third);
-      await blocker.query('BEGIN');
-      await blocker.query('SELECT id FROM tasks WHERE id=$1 FOR UPDATE', [third]);
-      await consumers.resume();
-      await waitFor(blocked);
-      const fourth = await tasks.submitTask('Synthetic running shutdown task');
-      ids.push(fourth);
-      await waitFor(() => signals.has(fourth));
+      const running = await submit('Synthetic running shutdown turn');
+      await waitFor(() => signals.has(running));
+      const queued = await submit('Synthetic shutdown-before-start turn');
       admission.close();
-      const closingConsumers = consumers.close();
-      const stopping = tasks.stopTasks();
-      await blocker.query('COMMIT');
-      await Promise.all([closingConsumers, stopping]);
-      assert.equal(signals.has(third), false);
-      assert.equal(await state(third), 'running');
-      assert.equal(signals.get(fourth)!.aborted, true);
-      assert.equal(await state(fourth), 'running');
+      await Promise.all([consumers.close(), thread.stopThreadWorkers()]);
+      assert.equal(signals.has(queued), false);
+      assert.equal(await state(queued), 'queued');
+      assert.equal(signals.get(running)!.aborted, true);
+      assert.equal(await state(running), 'running');
       await assert.rejects(consumers.resume());
       assert.throws(() => admission.resume());
     } finally {
       finish.resolve();
       await blocker.query('ROLLBACK');
       blocker.release();
-      await tasks.stopTasks();
+      await thread.stopThreadWorkers();
       await consumers.close();
       await db.pool.end();
       await admin.query(`DROP SCHEMA ${schema} CASCADE`);
       await admin.query(`DROP SCHEMA ${bossSchema} CASCADE`);
       await admin.end();
       await Promise.all(
-        ids.map((id) => rm(join(dataRoot, 'workspaces', id), { recursive: true, force: true })),
+        [...threadIds].map((id) =>
+          rm(join(dataRoot, 'workspaces', id), { recursive: true, force: true }),
+        ),
       );
     }
   },
@@ -175,7 +170,7 @@ test(
       options: `-c search_path=${schema}`,
     });
     await pool.query(
-      `CREATE TABLE tasks(id uuid PRIMARY KEY); CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text,role text,text text,task_id uuid,attachments jsonb DEFAULT '[]')`,
+      `CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text,archived_at timestamptz); CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text,channel text); CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text,role text,text text,thread_id uuid,turn_id uuid,attachments jsonb DEFAULT '[]')`,
     );
     const admission = createWorkAdmission();
     const consumers = createWorkConsumers();
@@ -223,7 +218,7 @@ test(
         submissions++;
         await submit.promise;
         const id = randomUUID();
-        await client.query('INSERT INTO tasks(id) VALUES($1)', [id]);
+        await client.query('INSERT INTO turns(id) VALUES($1)', [id]);
         return id;
       },
       subscribe: (listener) => {

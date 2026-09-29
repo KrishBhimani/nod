@@ -35,11 +35,11 @@ function PromptText({ label, text }: { label: string; text: string }) {
   );
 }
 
-export function InspectorPrompts({ taskId }: { taskId?: string }) {
-  return <PromptHistory key={taskId ?? 'all'} taskId={taskId} />;
+export function InspectorPrompts({ turnId }: { turnId?: string }) {
+  return <PromptHistory key={turnId ?? 'all'} turnId={turnId} />;
 }
 
-function PromptHistory({ taskId }: { taskId?: string }) {
+function PromptHistory({ turnId }: { turnId?: string }) {
   const dateFormat = useDateFormat();
   const [data, setData] = useState<InspectorPromptsResponse | null>(null);
   const [error, setError] = useState('');
@@ -57,7 +57,7 @@ function PromptHistory({ taskId }: { taskId?: string }) {
       pending = true;
       try {
         const next = await api<InspectorPromptsResponse>(
-          '/api/inspector/prompts' + (taskId ? '?taskId=' + encodeURIComponent(taskId) : ''),
+          '/api/inspector/prompts' + (turnId ? '?turnId=' + encodeURIComponent(turnId) : ''),
           { signal: controller.signal },
         );
         if (stopped) return;
@@ -78,7 +78,7 @@ function PromptHistory({ taskId }: { taskId?: string }) {
       controller.abort();
       clearInterval(timer);
     };
-  }, [taskId, older]);
+  }, [turnId, older]);
   async function loadEarlier() {
     if (!data?.nextBefore || !data.nextBeforeId || loadingOlder) return;
     const controller = new AbortController();
@@ -89,7 +89,7 @@ function PromptHistory({ taskId }: { taskId?: string }) {
       const params = new URLSearchParams({
         before: data.nextBefore,
         beforeId: data.nextBeforeId,
-        ...(taskId ? { taskId } : {}),
+        ...(turnId ? { turnId } : {}),
       });
       const next = await api<InspectorPromptsResponse>('/api/inspector/prompts?' + params, {
         signal: controller.signal,

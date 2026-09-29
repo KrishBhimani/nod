@@ -26,7 +26,7 @@ test(
     const { pool } = await import('../src/server/db.ts');
     const { ownerId, port, dataRoot } = await import('../src/server/config.ts');
     const key = randomBytes(32);
-    const seen: Array<{ taskId: string; system: string; prompt: string }> = [];
+    const seen: Array<{ turnId: string; system: string; prompt: string }> = [];
     const sent: string[] = [];
     const sentAttachments: MessagingAttachment[][] = [];
     const screenshotBytes = Buffer.from('masked screenshot delivery fixture');
@@ -38,7 +38,7 @@ test(
           abort() {},
           dispose() {},
           prompt: async (prompt) => {
-            seen.push({ taskId: options.taskId, system: options.systemPrompt, prompt });
+            seen.push({ turnId: options.turnId, system: options.systemPrompt, prompt });
             const marker = 'Request data (JSON):\n';
             const markerIndex = prompt.indexOf(marker);
             assert.notEqual(markerIndex, -1);
@@ -86,13 +86,6 @@ test(
                 assert.equal(result.reason, 'unavailable');
               }
               await assert.rejects(
-                call('send_message', {
-                  text: 'Wrong channel reply',
-                  replyToMessageId: webMessageId,
-                }),
-                /could not be completed/,
-              );
-              await assert.rejects(
                 call('remember', { quote: 'My name is Morgan.' }),
                 /could not be completed/,
               );
@@ -104,7 +97,7 @@ test(
               });
               assert.equal(search.content[0].type, 'text');
               if (search.content[0].type === 'text')
-                assert.deepEqual(JSON.parse(search.content[0].text), { tasks: [], messages: [] });
+                assert.deepEqual(JSON.parse(search.content[0].text), { turns: [], messages: [] });
             }
             if (currentInstruction === 'Send the screenshot.') {
               await call('send_screenshot', {});
@@ -209,14 +202,14 @@ test(
     };
     const finished = async (id: string) =>
       waitFor(async () => {
-        const row = (await pool.query('SELECT status,error FROM tasks WHERE id=$1', [id])).rows[0];
+        const row = (await pool.query('SELECT status,error FROM turns WHERE id=$1', [id])).rows[0];
         assert.notEqual(row?.status, 'failed', row?.error);
         return row?.status === 'succeeded';
       });
     const sendWeb = async (text: string) => {
       const response = await request('POST', '/api/messages', { text });
       assert.equal(response.statusCode, 200);
-      const id = response.json().taskId as string;
+      const id = response.json().turnId as string;
       await finished(id);
       return id;
     };
@@ -230,7 +223,7 @@ test(
     try {
       const nameTask = await sendWeb('My name is Morgan.');
       webMessageId = (
-        await pool.query("SELECT id FROM messages WHERE task_id=$1 AND role='user'", [nameTask])
+        await pool.query("SELECT id FROM messages WHERE turn_id=$1 AND role='user'", [nameTask])
       ).rows[0].id;
       assert.equal((await pool.query('SELECT * FROM profiles')).rowCount, 0);
       await sendWeb('I prefer brief replies.');
@@ -251,14 +244,13 @@ test(
         'INSERT INTO preferences(owner_id,time_zone) VALUES($1,$2) ON CONFLICT(owner_id) DO UPDATE SET time_zone=excluded.time_zone',
         [ownerId, 'America/New_York'],
       );
-      const foreignTask = randomUUID();
+      const foreignThread = randomUUID();
+      await pool.query("INSERT INTO threads(id,owner_id) VALUES($1,'foreign-owner')", [
+        foreignThread,
+      ]);
       await pool.query(
-        "INSERT INTO tasks(id,owner_id,title,prompt,status,channel) VALUES($1,'foreign-owner','Foreign','Foreign','succeeded','web')",
-        [foreignTask],
-      );
-      await pool.query(
-        "INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,'foreign-owner','user','Foreign private identity',$2),($3,$4,'user','Foreign task private identity',$2)",
-        [randomUUID(), foreignTask, randomUUID(), ownerId],
+        "INSERT INTO messages(id,owner_id,role,text,thread_id) VALUES($1,'foreign-owner','user','Foreign private identity',$2),($3,$4,'user','Foreign task private identity',$2)",
+        [randomUUID(), foreignThread, randomUUID(), ownerId],
       );
       assert.equal((await sendTelegram(1, { senderId: 'unapproved-sender' })).statusCode, 200);
       assert.equal((await sendTelegram(2, { accountId: 'wrong-bot' })).statusCode, 200);
@@ -266,11 +258,11 @@ test(
       assert.equal((await pool.query('SELECT * FROM channel_inbox')).rowCount, 0);
       assert.equal((await sendTelegram(3)).statusCode, 200);
       await application.channels!.drain();
-      const channelTask = (await pool.query('SELECT task_id FROM channel_inbox')).rows[0]
-        .task_id as string;
+      const channelTask = (await pool.query('SELECT turn_id FROM channel_inbox')).rows[0]
+        .turn_id as string;
       await finished(channelTask);
-      const observed = seen.find((item) => item.taskId === channelTask)!;
-      assert.match(observed.system, /My name is Morgan/);
+      const observed = seen.find((item) => item.turnId === channelTask)!;
+      assert.match(observed.prompt, /My name is Morgan/);
       assert.match(observed.system, /I prefer brief replies/);
       assert.match(observed.system, /Porto/);
       assert.ok(observed.system.includes('+351912345678'));
@@ -286,8 +278,11 @@ test(
         'fixture-approved-owner',
         'fixture-bot-account',
       ])
-        assert.equal(observed.system.includes(privateValue), false, privateValue);
-      assert.equal(observed.prompt.includes('My name is Morgan'), false);
+        assert.equal(
+          `${observed.system}${observed.prompt}`.includes(privateValue),
+          false,
+          privateValue,
+        );
       assert.equal(
         (await pool.query("SELECT * FROM memory_facts WHERE text='My name is Morgan.'")).rowCount,
         0,
@@ -308,11 +303,11 @@ test(
       assert.equal((await sendTelegram(4, { text: 'Check context after reset.' })).statusCode, 200);
       await application.channels!.drain();
       const afterTask = (
-        await pool.query("SELECT task_id FROM channel_inbox WHERE source_id LIKE '%:4'")
-      ).rows[0].task_id as string;
+        await pool.query("SELECT turn_id FROM channel_inbox WHERE source_id LIKE '%:4'")
+      ).rows[0].turn_id as string;
       await finished(afterTask);
-      const after = seen.find((item) => item.taskId === afterTask)!;
-      assert.equal(after.system.includes('My name is Morgan.'), false);
+      const after = seen.find((item) => item.turnId === afterTask)!;
+      assert.equal(`${after.system}${after.prompt}`.includes('My name is Morgan.'), false);
       assert.match(after.system, /I prefer brief replies/);
       assert.match(after.system, /Porto/);
       assert.match(after.system, /Finish the fixture workbook/);
@@ -325,8 +320,8 @@ test(
       assert.equal((await sendTelegram(5, { text: 'Send the screenshot.' })).statusCode, 200);
       await application.channels!.drain();
       const screenshotTask = (
-        await pool.query("SELECT task_id FROM channel_inbox WHERE source_id LIKE '%:5'")
-      ).rows[0].task_id as string;
+        await pool.query("SELECT turn_id FROM channel_inbox WHERE source_id LIKE '%:5'")
+      ).rows[0].turn_id as string;
       await finished(screenshotTask);
       await application.channels!.drain();
       const delivered = sentAttachments.flat();
@@ -336,7 +331,7 @@ test(
       assert.deepEqual(Buffer.from(delivered[0].bytes), screenshotBytes);
       assert.equal(
         (
-          await pool.query("SELECT id FROM messages WHERE task_id=$1 AND role='assistant'", [
+          await pool.query("SELECT id FROM messages WHERE turn_id=$1 AND role='assistant'", [
             screenshotTask,
           ])
         ).rowCount,
@@ -346,10 +341,10 @@ test(
       await application.app.close();
       const files = (await pool.query('SELECT storage_path FROM artifacts')).rows;
       await Promise.all(files.map(({ storage_path }) => rm(storage_path, { force: true })));
-      const ownedTasks = (await pool.query('SELECT id FROM tasks WHERE owner_id=$1', [ownerId]))
+      const ownedThreads = (await pool.query('SELECT id FROM threads WHERE owner_id=$1', [ownerId]))
         .rows;
       await Promise.all(
-        ownedTasks.map(({ id }) =>
+        ownedThreads.map(({ id }) =>
           rm(join(dataRoot, 'workspaces', id), { recursive: true, force: true }),
         ),
       );

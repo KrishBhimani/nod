@@ -231,7 +231,7 @@ test('authenticated workspace binds SSE to its account, supports settings shortc
       finishState(
         Response.json({
           messages: [{ text: 'Old private conversation' }],
-          tasks: [],
+          turns: [],
           configuration: {},
         }),
       ),
@@ -281,9 +281,10 @@ test('the workspace shell shows a chat skeleton and mounts prefetched pages befo
     await act(async () =>
       finishState!(
         Response.json({
-          conversationRevision: 0,
+          threadId: 'thread-0',
+          threadStatus: 'idle',
           messages: [],
-          tasks: [],
+          turns: [],
           configuration: {
             provider: 'fixture',
             model: 'fixture',
@@ -369,12 +370,13 @@ test('Open conversation before app state arrives keeps the target and loads its 
     id: 'requested-message',
     role: 'user',
     text: 'Adjust my plan',
-    taskId: null,
+    turnId: null,
     attachments: [],
     createdAt: '2026-09-28T10:00:00Z',
   };
   const state = {
-    conversationRevision: 3,
+    threadId: 'thread-3',
+    threadStatus: 'idle',
     hasEarlierMessages: true,
     messages: [
       {
@@ -384,7 +386,7 @@ test('Open conversation before app state arrives keeps the target and loads its 
         createdAt: '2026-09-29T10:00:00Z',
       },
     ],
-    tasks: [],
+    turns: [],
     configuration: {
       provider: 'fixture',
       model: 'fixture',
@@ -407,7 +409,7 @@ test('Open conversation before app state arrives keeps the target and loads its 
       });
     if (path.startsWith('/api/messages?')) {
       history.push(path);
-      return Response.json({ conversationRevision: 3, messages: [target], hasMore: false });
+      return Response.json({ messages: [target], hasMore: false });
     }
     return Response.json([]);
   };
@@ -431,7 +433,7 @@ test('Open conversation before app state arrives keeps the target and loads its 
     assert.equal(history.length, 1);
     const query = new URL(history[0], window.location.origin).searchParams;
     assert.equal(query.get('beforeId'), 'recent-message');
-    assert.equal(query.get('conversationRevision'), '3');
+    assert.equal(query.get('threadId'), 'thread-3');
     const message = element.querySelector<HTMLElement>('[data-message-id="requested-message"]');
     assert.ok(message);
     assert.equal(document.activeElement, message);

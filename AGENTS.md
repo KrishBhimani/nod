@@ -7,7 +7,7 @@ Start with [README](README.md) for setup and current limits. Read the area guide
 | Change                                                            | Guide                                                              |
 | ----------------------------------------------------------------- | ------------------------------------------------------------------ |
 | HTTP, persistence, queues, credentials, approvals, personal data  | [src/server/AGENTS.md](src/server/AGENTS.md)                       |
-| Agent tools, task segments, context, cancellation                 | [src/runtime/AGENTS.md](src/runtime/AGENTS.md)                     |
+| Agent tools, turns, context, cancellation                         | [src/runtime/AGENTS.md](src/runtime/AGENTS.md)                     |
 | Model, browser, workspace, integrations, speech, channel adapters | [src/providers/AGENTS.md](src/providers/AGENTS.md)                 |
 | Pages, conversation, inspector, forms, streaming                  | [src/web/AGENTS.md](src/web/AGENTS.md)                             |
 | Fixtures and validation                                           | [tests/AGENTS.md](tests/AGENTS.md)                                 |
@@ -23,7 +23,7 @@ Hosted ownership is process-immutable: `gateway.ts` authenticates Google session
 
 The selected hosted architecture uses Cloudflare Containers for the application and computers. Admission defaults to eight total provisioned users: one shared gateway and up to eight each of tenant runtimes, browser containers and workspace containers. Each owner has a private runtime and separate keyless browser/workspace roles; computer containers start on first use, not during signup. Keep their process, profile and checkpoint boundaries separate. E2B and other provider changes are deferred; retain the optional E2B implementation and its acceptance gates without making it a prerequisite for Cloudflare. Provider/model/integration configuration is operator-selected. Keep all computer APIs developer-only behind the signed capability; ordinary users never choose providers. Hosted Inspector capture requires both an allowlisted developer UUID and explicit `DEV_INSPECTOR=true`. New storage/runtime providers must preserve owner boundaries, conditional writes, cancellation, uncertain-action fences and durable recovery. Keep development and production databases, keys and provider projects separate; start from [hosted environment example](deployment/hosted.env.example).
 
-Keep chat central and quiet. Preserve task/channel identity, account-bound approvals, owned-message provenance, and task revisions. The Internet-connected workspace must remain separate from provider keys, host access, and authenticated browser profiles.
+Keep chat central and quiet. Preserve thread, turn and channel identity, account-bound approvals, and owned-message provenance. The Internet-connected workspace must remain separate from provider keys, host access, and authenticated browser profiles.
 
 Run focused checks while editing, then `npm run check`, `npm run test:integration`, and `npm run build`; see [development](docs/development.md). Use synthetic data and disposable schemas. Update the owning guide when an entry point changes. Report automated fixtures, UI flows, and live account checks separately.
 

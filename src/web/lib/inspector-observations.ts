@@ -1,5 +1,5 @@
 import { formatNumber } from './date-format';
-import type { TaskEvent } from '../../shared/contracts';
+import type { TurnEvent } from '../../shared/contracts';
 import type {
   InspectorObservationsResponse,
   InspectorFailure,
@@ -57,7 +57,7 @@ export function mergeObservationPage(
   const cursor = kind === 'older' ? page : current;
   return {
     scope: kind === 'refresh' ? page.scope : current.scope,
-    taskId: kind === 'refresh' ? page.taskId : current.taskId,
+    turnId: kind === 'refresh' ? page.turnId : current.turnId,
     calls: [...new Map(calls.map((call) => [call.id, call])).values()].sort(
       (a, b) => b.startedAt.localeCompare(a.startedAt) || b.id.localeCompare(a.id),
     ),
@@ -142,22 +142,22 @@ export function compactActivityText(text: string, limit = 160) {
   return compact.length > limit ? `${compact.slice(0, limit - 1)}…` : compact;
 }
 
-export function groupTaskActivity(
-  events: TaskEvent[],
+export function groupTurnActivity(
+  events: TurnEvent[],
   calls?: ToolCall[],
   failures: InspectorFailure[] = [],
 ): ActivityItem[] {
   if (failures.length) {
     const recorded = new Map(
-      failures.map((failure) => [`${failure.taskId}:${failure.occurredAt}`, failure]),
+      failures.map((failure) => [`${failure.turnId}:${failure.occurredAt}`, failure]),
     );
     const matching = new Map(
       events
         .filter((event) => event.type === 'failed')
-        .map((event) => [event.id, recorded.get(`${event.taskId}:${event.createdAt}`)]),
+        .map((event) => [event.id, recorded.get(`${event.turnId}:${event.createdAt}`)]),
     );
     const matched = new Set<string>();
-    const items = groupTaskActivity(events, calls).map((item) => {
+    const items = groupTurnActivity(events, calls).map((item) => {
       const failure = matching.get(item.id);
       if (!failure) return item;
       matched.add(failure.id);
@@ -169,7 +169,7 @@ export function groupTaskActivity(
         .filter((failure) => !matched.has(failure.id))
         .map((failure): ActivityItem => ({
           id: failure.id,
-          title: 'Task failed',
+          title: 'Turn failed',
           status: 'failed',
           startedAt: failure.occurredAt,
           finishedAt: failure.occurredAt,
@@ -184,7 +184,7 @@ export function groupTaskActivity(
       const candidates = events.filter(
         (event) =>
           !represented.has(event.id) &&
-          event.taskId === call.taskId &&
+          event.turnId === call.turnId &&
           event.summary.trim().replaceAll('_', ' ').toLowerCase() ===
             call.name.replaceAll('_', ' ').toLowerCase() &&
           event.createdAt >= call.startedAt &&
@@ -202,7 +202,7 @@ export function groupTaskActivity(
       }
     }
     return [
-      ...groupTaskActivity(events.filter((event) => !represented.has(event.id))),
+      ...groupTurnActivity(events.filter((event) => !represented.has(event.id))),
       ...calls.map((call) => ({
         id: call.id,
         title: compactActivityText(call.name.replaceAll('_', ' ')),
@@ -217,17 +217,18 @@ export function groupTaskActivity(
   const pending = new Map<string, ActivityItem[]>();
   const ambiguous = new Set<string>();
   const labels: Record<string, string> = {
-    started: 'Task started',
-    queued: 'Task queued',
-    succeeded: 'Task completed',
-    completed: 'Task completed',
-    cancelled: 'Task cancelled',
-    failed: 'Task failed',
+    started: 'Turn started',
+    queued: 'Turn queued',
+    succeeded: 'Turn completed',
+    completed: 'Turn completed',
+    cancelled: 'Turn cancelled',
+    failed: 'Turn failed',
     waiting_credentials: 'Waiting for sign-in',
     waiting_user: 'Waiting for your input',
+    waiting: 'Waiting for your input',
   };
   for (const event of [...events].sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
-    const key = `${event.taskId}:${event.summary.trim().toLowerCase()}`;
+    const key = `${event.turnId}:${event.summary.trim().toLowerCase()}`;
     if (event.type === 'tool_start') {
       const item: ActivityItem = {
         id: event.id,
@@ -267,7 +268,7 @@ export function groupTaskActivity(
     } else {
       if (['failed', 'succeeded', 'cancelled'].includes(event.type)) {
         for (const [pendingKey, queue] of pending) {
-          if (!pendingKey.startsWith(`${event.taskId}:`)) continue;
+          if (!pendingKey.startsWith(`${event.turnId}:`)) continue;
           for (const active of queue) {
             active.status = 'interrupted';
             active.finishedAt = event.createdAt;

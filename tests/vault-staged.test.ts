@@ -9,6 +9,7 @@ import pg from 'pg';
 import { createBrowserFixture as createAgentBrowserComputer } from './browser-fixture.ts';
 import { createVault, openCredential } from '../src/server/vault.ts';
 import { LoginPage, stagedLoginBrowser } from './login-fixture.ts';
+import type { TurnRef } from '../src/server/thread.ts';
 
 test(
   'secure forms follow staged fields, preserve the waiting page and bind method selection to the task',
@@ -32,10 +33,25 @@ test(
     const key = randomBytes(32);
     let resumed = 0;
     await pool.query(
-      "CREATE TABLE tasks(id text PRIMARY KEY,owner_id text NOT NULL,status text NOT NULL DEFAULT 'running',revision integer NOT NULL DEFAULT 0)",
+      'CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz)',
     );
-    for (const id of ['staged', 'oauth', 'autofill', 'changed', 'split-code'])
-      await pool.query("INSERT INTO tasks(id,owner_id) VALUES($1,'local-development')", [id]);
+    await pool.query(
+      "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running')",
+    );
+    const turns: Record<string, TurnRef> = {};
+    const threads: Record<string, string> = {};
+    for (const name of ['staged', 'oauth', 'autofill', 'changed', 'split-code']) {
+      const turn = { threadId: randomUUID(), turnId: randomUUID() };
+      await pool.query("INSERT INTO threads(id,owner_id) VALUES($1,'local-development')", [
+        turn.threadId,
+      ]);
+      await pool.query(
+        "INSERT INTO turns(id,owner_id,thread_id) VALUES($1,'local-development',$2)",
+        [turn.turnId, turn.threadId],
+      );
+      turns[name] = turn;
+      threads[name] = turn.threadId;
+    }
     const vault = await createVault(pool, {
       keyStore: { id: 'fixture', configured: true, getKey: async () => key },
       inspect: computer.inspectLogin,
@@ -43,14 +59,20 @@ test(
       inject: computer.injectCredentials,
       selectMethod: computer.selectLoginMethod,
       retry: async () => {},
-      resume: async (id) => {
+      resume: async (turnId) => {
         resumed += 1;
-        await pool.query("UPDATE tasks SET revision=revision+1,status='running' WHERE id=$1", [id]);
+        const name = Object.keys(turns).find((key) => turns[key].turnId === turnId)!;
+        const next = { threadId: turns[name].threadId, turnId: randomUUID() };
+        await pool.query(
+          "INSERT INTO turns(id,owner_id,thread_id,source,source_id) VALUES($1,'local-development',$2,'resume',$3)",
+          [next.turnId, next.threadId, `credentials:${turnId}`],
+        );
+        turns[name] = next;
       },
     });
     vault.registerRoutes(app);
-    const secureRequest = async (id: string, origin = 'https://1.1.1.1') => {
-      const request = await vault.request(id, 'local-development', {
+    const secureRequest = async (name: string, origin = 'https://1.1.1.1') => {
+      const request = await vault.request(turns[name], 'local-development', {
         origin,
         label: 'Synthetic login',
         kind: 'password',
@@ -58,11 +80,11 @@ test(
         passwordSelector: '#missing-password',
         submitSelector: '#old-button',
       });
-      await pool.query("UPDATE tasks SET status='waiting_credentials' WHERE id=$1", [id]);
+      await pool.query("UPDATE turns SET status='waiting' WHERE id=$1", [turns[name].turnId]);
       return request.url.replace('/vault/', '/api/credential-requests/');
     };
     try {
-      await computer.act('staged', { action: 'open', url: 'https://1.1.1.1/login' });
+      await computer.act(threads.staged, { action: 'open', url: 'https://1.1.1.1/login' });
       const first = await secureRequest('staged');
       const form = (await app.inject({ url: first })).json();
       assert.equal(form.kind, 'identifier');
@@ -86,7 +108,8 @@ test(
         400,
       );
       await pool.query(
-        'UPDATE credential_requests SET inspection=jsonb_set(inspection,\'{methods}\', \'[{"id":"credentials","label":"Unsupported old scan","kind":"credentials","supported":false}]\'::jsonb) WHERE task_id=\'staged\'',
+        'UPDATE credential_requests SET inspection=jsonb_set(inspection,\'{methods}\', \'[{"id":"credentials","label":"Unsupported old scan","kind":"credentials","supported":false}]\'::jsonb) WHERE turn_id=$1',
+        [turns.staged.turnId],
       );
       const refreshed = await app.inject({ method: 'POST', url: first + '/refresh' });
       assert.equal(refreshed.statusCode, 200);
@@ -95,7 +118,7 @@ test(
           .supported,
         true,
       );
-      assert.ok(await computer.screenshot('staged'));
+      assert.ok(await computer.screenshot(threads.staged));
       assert.equal(
         (
           await app.inject({
@@ -113,7 +136,7 @@ test(
       assert.equal((await pool.query('SELECT * FROM vault_entries')).rowCount, 0);
       assert.equal((await app.inject({ method: 'POST', url: first + '/refresh' })).statusCode, 409);
       assert.equal(
-        await vault.fillSelected('staged', 'local-development', {
+        await vault.fillSelected(turns.staged, 'local-development', {
           origin: 'https://1.1.1.1',
           label: 'Synthetic login',
           kind: 'password',
@@ -127,7 +150,7 @@ test(
         (await app.inject({ method: 'POST', url: third, payload: { code: '739204' } })).statusCode,
         200,
       );
-      assert.equal(fixture.pages.get('staged')?.stage, 'complete');
+      assert.equal(fixture.pages.get(threads.staged)?.stage, 'complete');
       assert.equal(resumed, 2);
       const entries = (await pool.query('SELECT * FROM vault_entries')).rows;
       assert.equal(entries.length, 1);
@@ -146,34 +169,34 @@ test(
           .statusCode,
         409,
       );
-      await computer.close('staged');
+      await computer.close(threads.staged);
 
-      await computer.act('autofill', { action: 'open', url: 'https://1.1.1.1/login' });
-      await computer.hold('autofill', Date.now() + 2000);
-      await vault.fillSaved('autofill', 'local-development', entries[0].id, {
+      await computer.act(threads.autofill, { action: 'open', url: 'https://1.1.1.1/login' });
+      await computer.hold(threads.autofill, Date.now() + 2000);
+      await vault.fillSaved(turns.autofill, 'local-development', entries[0].id, {
         origin: 'https://1.1.1.1',
         label: 'Synthetic',
         kind: 'identifier',
       });
-      assert.equal(fixture.pages.get('autofill')?.stage, 'password');
-      await vault.fillSaved('autofill', 'local-development', entries[0].id, {
+      assert.equal(fixture.pages.get(threads.autofill)?.stage, 'password');
+      await vault.fillSaved(turns.autofill, 'local-development', entries[0].id, {
         origin: 'https://1.1.1.1',
         label: 'Synthetic',
         kind: 'password',
       });
-      assert.equal(fixture.pages.get('autofill')?.stage, 'otp');
+      assert.equal(fixture.pages.get(threads.autofill)?.stage, 'otp');
       await assert.rejects(
-        vault.fillSaved('autofill', 'local-development', entries[0].id, {
+        vault.fillSaved(turns.autofill, 'local-development', entries[0].id, {
           origin: 'https://1.1.1.1',
           label: 'Synthetic',
           kind: 'otp',
         }),
       );
-      await computer.close('autofill');
+      await computer.close(threads.autofill);
 
-      await computer.act('oauth', { action: 'open', url: 'https://1.1.1.1/login' });
-      fixture.pages.get('oauth')!.stage = 'complete';
-      fixture.pages.get('oauth')!.render();
+      await computer.act(threads.oauth, { action: 'open', url: 'https://1.1.1.1/login' });
+      fixture.pages.get(threads.oauth)!.stage = 'complete';
+      fixture.pages.get(threads.oauth)!.render();
       const oauthUrl = await secureRequest('oauth');
       const oauthForm = (await app.inject({ url: oauthUrl })).json();
       assert.deepEqual(oauthForm.fields, []);
@@ -198,7 +221,7 @@ test(
         ).statusCode,
         200,
       );
-      assert.equal((await computer.inspectLogin('oauth')).origin, 'https://2.2.2.2');
+      assert.equal((await computer.inspectLogin(threads.oauth)).origin, 'https://2.2.2.2');
       assert.equal(
         (
           await app.inject({
@@ -210,11 +233,11 @@ test(
         409,
       );
       await assert.rejects(secureRequest('oauth'), /origin changed/);
-      await computer.close('oauth');
+      await computer.close(threads.oauth);
 
-      await computer.act('changed', { action: 'open', url: 'https://1.1.1.1/login' });
+      await computer.act(threads.changed, { action: 'open', url: 'https://1.1.1.1/login' });
       const changed = await secureRequest('changed');
-      const page = fixture.pages.get('changed')!;
+      const page = fixture.pages.get(threads.changed)!;
       page.stage = 'password';
       page.render();
       assert.equal(
@@ -228,9 +251,7 @@ test(
         409,
       );
       assert.deepEqual(page.entered, []);
-      await pool.query(
-        "UPDATE tasks SET status='cancelled',revision=revision+1 WHERE id='changed'",
-      );
+      await pool.query('UPDATE threads SET archived_at=now() WHERE id=$1', [threads.changed]);
       assert.equal(
         (
           await app.inject({
@@ -242,10 +263,10 @@ test(
         409,
       );
       assert.equal(page.location.origin, 'https://1.1.1.1');
-      await computer.close('changed');
+      await computer.close(threads.changed);
 
-      await computer.act('split-code', { action: 'open', url: 'https://1.1.1.1/login' });
-      const split = fixture.pages.get('split-code')!;
+      await computer.act(threads['split-code'], { action: 'open', url: 'https://1.1.1.1/login' });
+      const split = fixture.pages.get(threads['split-code'])!;
       split.stage = 'otp';
       split.render();
       const extra = new LoginPage();

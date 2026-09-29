@@ -14,7 +14,7 @@ import {
 import type { Agent, AgentEvent } from '../../ports/agent.ts';
 import type { PrivateObjectStore } from '../../ports/object-storage.ts';
 import { createPiCheckpoint } from './checkpoint.ts';
-import { taskId } from '../../ports/task-identity.ts';
+import { threadIdentity } from '../../ports/thread-identity.ts';
 import { createPiUsageTracker, piUsageMetrics, usageId } from './usage.ts';
 import { agentModels } from '../../shared/model-defaults.ts';
 
@@ -62,7 +62,7 @@ export function createPiAgent(options: {
       if (disposed) throw new Error('The agent service has stopped.');
       if (!options.apiKey)
         throw new Error('Configure the selected model provider to enable the assistant.');
-      const directory = resolve(options.sessionRoot, taskId(input.taskId));
+      const directory = resolve(options.sessionRoot, threadIdentity(input.threadId));
       await mkdir(directory, { recursive: true, mode: 0o700 });
       const runtime = await ModelRuntime.create({
         credentials: new InMemoryCredentialStore(),
@@ -78,16 +78,11 @@ export function createPiAgent(options: {
       const durable = options.objectStore
         ? await createPiCheckpoint({
             store: options.objectStore,
-            taskId: input.taskId,
+            threadId: input.threadId,
             directory,
-            fresh: input.fresh,
           })
         : undefined;
-      const manager =
-        durable?.manager ??
-        (input.fresh
-          ? SessionManager.create(directory, directory)
-          : SessionManager.continueRecent(directory, directory));
+      const manager = durable?.manager ?? SessionManager.continueRecent(directory, directory);
       const completedEvents: AgentEvent[] = [];
       const checkpoint = async () => {
         await durable?.checkpoint();
@@ -174,7 +169,7 @@ export function createPiAgent(options: {
               category: 'agent',
               operation: 'compaction',
               model: model.id,
-              taskId: input.taskId,
+              turnId: input.turnId,
               status: event.aborted ? 'cancelled' : event.errorMessage ? 'failed' : 'succeeded',
               durationMs: compaction ? performance.now() - compaction.started : 0,
               ...piUsageMetrics(event.result?.usage),
@@ -196,7 +191,7 @@ export function createPiAgent(options: {
               category: 'agent',
               operation: event.entry.kind === 'cache_warm' ? 'cache_warm' : 'auxiliary',
               model: event.entry.model,
-              taskId: input.taskId,
+              turnId: input.turnId,
               status: 'succeeded',
               durationMs: 0,
               ...piUsageMetrics(event.entry.usage),

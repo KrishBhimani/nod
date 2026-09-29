@@ -59,7 +59,7 @@ const run: ScheduleRun = {
   id: 'run-recent',
   scheduleId: 'deleted-schedule',
   title: 'Past reminder',
-  taskId: 'internal-task',
+  turnId: 'internal-turn',
   scheduledFor: '2026-09-24T09:00:00.000Z',
   timeZone: 'Europe/Lisbon',
   createdAt: '2026-09-24T09:00:01.000Z',
@@ -298,7 +298,7 @@ test('history refresh updates loaded older active runs, keeps existing rows and 
   const requests: Array<{ path: string; resolve(value: Response): void }> = [];
   globalThis.fetch = async (url) =>
     new Promise((resolve) => requests.push({ path: String(url), resolve }));
-  const recent = { ...run, status: 'waiting_user' as const, error: null };
+  const recent = { ...run, status: 'waiting' as const, error: null };
   pageDataCache.update('/api/schedules', () => []);
   pageDataCache.update<ScheduleHistory>(historyPath, () => ({
     runs: [recent],

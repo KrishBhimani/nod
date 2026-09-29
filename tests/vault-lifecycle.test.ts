@@ -22,8 +22,8 @@ test('Vault shutdown drains the active resume and leaves later credentials pendi
       if (sql.startsWith('SELECT r.*'))
         return {
           rows: [
-            { id: 'request-a', task_id: 'task-a', task_revision: 1 },
-            { id: 'request-b', task_id: 'task-b', task_revision: 1 },
+            { id: 'request-a', turn_id: 'turn-a' },
+            { id: 'request-b', turn_id: 'turn-b' },
           ],
         };
       if (sql.startsWith('UPDATE credential_requests SET resume_pending'))
@@ -56,7 +56,7 @@ test('Vault shutdown drains the active resume and leaves later credentials pendi
     release();
     await Promise.all([pending, closing]);
     await vault.resumePending();
-    assert.deepEqual(resumed, ['task-a']);
+    assert.deepEqual(resumed, ['turn-a']);
     assert.deepEqual(completed, ['request-a']);
   } finally {
     release();

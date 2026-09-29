@@ -12,7 +12,7 @@ import { validateJevChoice } from '../src/providers/jev/browser.ts';
 import { isPublicAddress, publicUrl } from '../src/providers/agent-browser/network.ts';
 import { runProcess, serviceEnvironment } from '../src/providers/process.ts';
 import { createDockerWorkspace, workspaceFile } from '../src/providers/docker/index.ts';
-import { taskId } from '../src/ports/task-identity.ts';
+import { threadIdentity } from '../src/ports/thread-identity.ts';
 
 test('public web validation rejects local, private, rebinding and credential URLs', async () => {
   for (const address of [
@@ -67,7 +67,7 @@ test('workspace paths cannot address host files or other task directories', () =
   );
   for (const path of ['/etc/passwd', '../task-b/private.txt', '..\\secret', 'file\0name'])
     assert.throws(() => workspaceFile('task-a', path));
-  assert.throws(() => taskId('../escape'));
+  assert.throws(() => threadIdentity('../escape'));
 });
 
 test('workspace artifact reads reject paths outside the container task', async () => {
@@ -87,7 +87,7 @@ test('workspace artifact reads reject paths outside the container task', async (
       },
     });
     runner.open({
-      taskId: 'task-a',
+      threadId: 'task-a',
       workspacePath: workspace,
       signal: new AbortController().signal,
     });
@@ -98,7 +98,7 @@ test('workspace artifact reads reject paths outside the container task', async (
     assert.equal(launched, 0);
     assert.throws(() =>
       runner.open({
-        taskId: 'task-b',
+        threadId: 'task-b',
         workspacePath: workspace,
         signal: new AbortController().signal,
       }),

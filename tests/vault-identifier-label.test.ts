@@ -6,6 +6,7 @@ import pg from 'pg';
 import type { CredentialKind, LoginInspection } from '../src/ports/computer.ts';
 import { createVault, sealCredential } from '../src/server/vault.ts';
 import type { VaultLoginDetails, VaultLoginEntry } from '../src/shared/contracts.ts';
+import type { TurnRef } from '../src/server/thread.ts';
 
 test(
   'Vault labels come from observed fields and survive staged sign-in and edits',
@@ -23,7 +24,8 @@ test(
     const origin = 'https://accounts.example.test';
     const pages = new Map<string, { kind: CredentialKind; label: string; origin: string }>();
     await pool.query(`
-      CREATE TABLE tasks(id text PRIMARY KEY,owner_id text NOT NULL,revision integer NOT NULL DEFAULT 0,status text NOT NULL DEFAULT 'running');
+      CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz);
+      CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running');
       CREATE TABLE vault_entries(id text PRIMARY KEY,owner_id text NOT NULL,label text NOT NULL,origin text NOT NULL,username_hint text NOT NULL,ciphertext text NOT NULL,updated_at timestamptz NOT NULL DEFAULT now());
     `);
     const legacy = { id: randomUUID(), owner_id: owner, origin };
@@ -35,10 +37,11 @@ test(
       'INSERT INTO vault_entries(id,owner_id,label,origin,username_hint,ciphertext) VALUES($1,$2,$3,$4,$5,$6)',
       [legacy.id, owner, 'Legacy', origin, 'le…', legacyCiphertext],
     );
+    const chains = new Map<string, TurnRef>();
     const options = {
       keyStore: { id: 'fixture', configured: true, getKey: async () => key },
-      inspect: async (taskId: string): Promise<LoginInspection> => {
-        const page = pages.get(taskId)!;
+      inspect: async (threadId: string): Promise<LoginInspection> => {
+        const page = pages.get(threadId)!;
         return {
           origin: page.origin,
           url: `${page.origin}/login`,
@@ -48,31 +51,44 @@ test(
       },
       inject: async () => {},
       retry: async () => {},
-      resume: async (taskId: string, revision: number) => {
-        const result = await pool.query(
-          "UPDATE tasks SET status='running',revision=revision+1 WHERE id=$1 AND revision=$2 AND status='waiting_credentials'",
-          [taskId, revision],
-        );
+      resume: async (turnId: string) => {
+        const current = [...chains.values()].find((turn) => turn.turnId === turnId)!;
+        const result = await pool.query("SELECT 1 FROM turns WHERE id=$1 AND status='waiting'", [
+          turnId,
+        ]);
         assert.equal(result.rowCount, 1);
+        const next = randomUUID();
+        await pool.query(
+          "INSERT INTO turns(id,owner_id,thread_id,source,source_id) VALUES($1,$2,$3,'resume',$4)",
+          [next, owner, current.threadId, `credentials:${turnId}`],
+        );
+        current.turnId = next;
       },
     };
     let app = Fastify();
     let vault = await createVault(pool, options);
     vault.registerRoutes(app);
-    const form = async (taskId: string, kind: CredentialKind, label: string, website = origin) => {
-      pages.set(taskId, { kind, label, origin: website });
-      const request = await vault.request(taskId, owner, {
+    const form = async (id: string, kind: CredentialKind, label: string, website = origin) => {
+      const turn = chains.get(id)!;
+      pages.set(turn.threadId, { kind, label, origin: website });
+      const request = await vault.request({ ...turn }, owner, {
         origin: website,
         kind,
         label: 'Untrusted model label',
       });
-      await pool.query("UPDATE tasks SET status='waiting_credentials' WHERE id=$1", [taskId]);
+      await pool.query("UPDATE turns SET status='waiting' WHERE id=$1", [turn.turnId]);
       return request.url.replace('/vault/', '/api/credential-requests/');
     };
     const task = async () => {
-      const id = randomUUID();
-      await pool.query('INSERT INTO tasks(id,owner_id) VALUES($1,$2)', [id, owner]);
-      return id;
+      const turn = { threadId: randomUUID(), turnId: randomUUID() };
+      await pool.query('INSERT INTO threads(id,owner_id) VALUES($1,$2)', [turn.threadId, owner]);
+      await pool.query('INSERT INTO turns(id,owner_id,thread_id) VALUES($1,$2,$3)', [
+        turn.turnId,
+        owner,
+        turn.threadId,
+      ]);
+      chains.set(turn.threadId, turn);
+      return turn.threadId;
     };
     const submit = async (url: string, payload: object) => {
       const result = await app.inject({ method: 'POST', url, payload });

@@ -5,6 +5,7 @@ import Fastify from 'fastify';
 import pg from 'pg';
 import type { LoginInspection } from '../src/ports/computer.ts';
 import { createVault } from '../src/server/vault.ts';
+import type { TurnRef } from '../src/server/thread.ts';
 
 const owner = 'local-development';
 const origin = 'https://app20.toconline.pt';
@@ -23,6 +24,47 @@ function inspection(kind: 'password' | 'otp'): LoginInspection {
   };
 }
 
+async function seedTurns(pool: pg.Pool) {
+  await pool.query(
+    'CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz)',
+  );
+  await pool.query(
+    "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running')",
+  );
+  let threadId = '';
+  const tasks = new Map<string, TurnRef>();
+  const archive = async () => {
+    if (threadId) await pool.query('UPDATE threads SET archived_at=now() WHERE id=$1', [threadId]);
+    threadId = randomUUID();
+    await pool.query('INSERT INTO threads(id,owner_id) VALUES($1,$2)', [threadId, owner]);
+  };
+  await archive();
+  const start = async (name: string, resumeOf?: string) => {
+    const turn = { threadId, turnId: randomUUID() };
+    await pool.query(
+      'INSERT INTO turns(id,owner_id,thread_id,source,source_id) VALUES($1,$2,$3,$4,$5)',
+      [
+        turn.turnId,
+        owner,
+        turn.threadId,
+        resumeOf ? 'resume' : 'user',
+        resumeOf ? `credentials:${resumeOf}` : null,
+      ],
+    );
+    tasks.set(name, turn);
+    return turn;
+  };
+  const resume = async (turnId: string) => {
+    const name = [...tasks].find(([, value]) => value.turnId === turnId)?.[0];
+    if (!name) return;
+    await pool.query("UPDATE turns SET status='waiting' WHERE id=$1 AND status='running'", [
+      turnId,
+    ]);
+    await start(name, turnId);
+  };
+  return { task: (name: string) => tasks.get(name)!, start, resume, archive };
+}
+
 test(
   'automatic email codes use a recent selected account once and recheck task, page and mailbox before fill',
   { skip: !process.env.TEST_DATABASE_URL },
@@ -34,9 +76,8 @@ test(
       connectionString: process.env.TEST_DATABASE_URL,
       options: `-c search_path=${schema}`,
     });
-    await pool.query(
-      "CREATE TABLE tasks(id text PRIMARY KEY,owner_id text NOT NULL,status text NOT NULL DEFAULT 'running',revision integer NOT NULL DEFAULT 0)",
-    );
+    const turns = await seedTurns(pool);
+    const { task } = turns;
     const app = Fastify();
     t.after(async () => {
       await app.close();
@@ -45,7 +86,7 @@ test(
       await admin.end();
     });
     const pages = new Map<string, LoginInspection>();
-    const injected: Array<{ taskId: string; code?: string }> = [];
+    const injected: Array<{ threadId: string; code?: string }> = [];
     let read = 0;
     let lookup: (() => Promise<void>) | undefined;
     let available = true;
@@ -55,13 +96,11 @@ test(
       keyStore: { id: 'fixture', configured: true, getKey: async () => randomKey },
       inspect: async (id) => pages.get(id)!,
       inject: async (value) => {
-        injected.push({ taskId: value.taskId, code: value.code });
-        if (value.kind === 'password') pages.set(value.taskId, inspection('otp'));
+        injected.push({ threadId: value.threadId, code: value.code });
+        if (value.kind === 'password') pages.set(value.threadId, inspection('otp'));
         return { status: reject && value.kind === 'otp' ? 'rejected' : 'submitted' };
       },
-      resume: async (id) => {
-        await pool.query("UPDATE tasks SET revision=revision+1,status='running' WHERE id=$1", [id]);
-      },
+      resume: turns.resume,
       retry: async () => {},
       emailCode: async (request, signal) => {
         read++;
@@ -85,13 +124,15 @@ test(
       })
     ).json();
     assert.ok(saved.id);
+    const page = (id: string) => pages.get(task(id).threadId)!;
     const start = async (id: string) => {
-      await pool.query('INSERT INTO tasks(id,owner_id) VALUES($1,$2)', [id, owner]);
-      pages.set(id, inspection('password'));
-      await vault.fillSaved(id, owner, saved.id, input);
-      assert.equal(pages.get(id)?.fields[0]?.kind, 'otp');
+      const turn = await turns.start(id);
+      pages.set(turn.threadId, inspection('password'));
+      await vault.fillSaved(turn, owner, saved.id, input);
+      assert.equal(page(id).fields[0]?.kind, 'otp');
     };
-    const fill = (id: string) => vault.fillEmailCode(id, owner, otpInput);
+    const fill = (id: string) => vault.fillEmailCode(task(id), owner, otpInput);
+    const root = (id: string) => task(id).turnId;
     await start('success');
     assert.equal(await fill('success'), true);
     assert.equal(await fill('success'), false);
@@ -107,27 +148,27 @@ test(
       [
         'wrong-recipient',
         async (id: string) => {
-          pages.get(id)!.emailCode!.recipient = 'other@example.com';
+          page(id).emailCode!.recipient = 'other@example.com';
         },
       ],
       [
         'no-metadata',
         async (id: string) => {
-          delete pages.get(id)!.emailCode;
+          delete page(id).emailCode;
         },
       ],
       [
         'wrong-origin',
         async (id: string) => {
-          pages.get(id)!.origin = 'https://evil.com';
+          page(id).origin = 'https://evil.com';
         },
       ],
       [
         'legacy',
         async (id: string) => {
           await pool.query(
-            'UPDATE credential_account_selections SET credential_entered_at=NULL WHERE task_id=$1',
-            [id],
+            'UPDATE credential_account_selections SET credential_entered_at=NULL WHERE root_turn_id=$1',
+            [root(id)],
           );
         },
       ],
@@ -135,17 +176,15 @@ test(
         'old-auth',
         async (id: string) => {
           await pool.query(
-            "UPDATE credential_account_selections SET credential_entered_at=now()-interval '6 minutes' WHERE task_id=$1",
-            [id],
+            "UPDATE credential_account_selections SET credential_entered_at=now()-interval '6 minutes' WHERE root_turn_id=$1",
+            [root(id)],
           );
         },
       ],
       [
         'cancelled',
         async (id: string) => {
-          await pool.query("UPDATE tasks SET status='cancelled',revision=revision+1 WHERE id=$1", [
-            id,
-          ]);
+          await pool.query("UPDATE turns SET status='cancelled' WHERE id=$1", [task(id).turnId]);
         },
       ],
     ] as const) {
@@ -155,47 +194,42 @@ test(
       assert.equal(read, 2, id);
     }
     await start('wrong-owner');
-    assert.equal(await vault.fillEmailCode('wrong-owner', 'other', otpInput), false);
+    assert.equal(await vault.fillEmailCode(task('wrong-owner'), 'other', otpInput), false);
     assert.equal(read, 2);
     for (const [id, change] of [
       [
         'late-cancel',
         async (id: string) => {
-          await pool.query("UPDATE tasks SET status='cancelled',revision=revision+1 WHERE id=$1", [
-            id,
-          ]);
+          await pool.query("UPDATE turns SET status='cancelled' WHERE id=$1", [task(id).turnId]);
         },
       ],
       [
         'late-page',
         async (id: string) => {
-          pages.get(id)!.emailCode!.recipient = 'other@example.com';
+          page(id).emailCode!.recipient = 'other@example.com';
         },
       ],
       [
-        'late-revision',
-        async (id: string) => {
-          await pool.query('UPDATE tasks SET revision=revision+1 WHERE id=$1', [id]);
+        'late-archive',
+        async () => {
+          await turns.archive();
         },
       ],
       [
         'late-expiry',
         async (id: string) => {
           await pool.query(
-            'UPDATE credential_account_selections SET expires_at=now() WHERE task_id=$1',
-            [id],
+            'UPDATE credential_account_selections SET expires_at=now() WHERE root_turn_id=$1',
+            [root(id)],
           );
         },
       ],
     ] as const) {
       await start(id);
       lookup = () => change(id);
+      const codes = injected.filter((value) => value.code).length;
       assert.equal(await fill(id), false, id);
-      assert.equal(
-        injected.some((value) => value.taskId === id && value.code),
-        false,
-        id,
-      );
+      assert.equal(injected.filter((value) => value.code).length, codes, id);
     }
     lookup = undefined;
     await start('revoked');
@@ -214,10 +248,9 @@ test(
     assert.equal(await fill('rejected'), false);
     assert.equal(await fill('rejected'), false);
     reject = false;
-    await pool.query('INSERT INTO tasks(id,owner_id) VALUES($1,$2)', ['manual-password', owner]);
-    pages.set('manual-password', inspection('password'));
-    const manual = await vault.request('manual-password', owner, input);
-    await pool.query("UPDATE tasks SET status='waiting_credentials' WHERE id='manual-password'");
+    const manualTurn = await turns.start('manual-password');
+    pages.set(manualTurn.threadId, inspection('password'));
+    const manual = await vault.request(manualTurn, owner, input);
     const readsBeforePassword = read;
     assert.equal(await fill('manual-password'), false);
     assert.equal(read, readsBeforePassword);
@@ -234,7 +267,8 @@ test(
     assert.equal(
       (
         await pool.query(
-          "SELECT blocked FROM credential_account_selections WHERE task_id='manual-password'",
+          'SELECT blocked FROM credential_account_selections WHERE root_turn_id=$1',
+          [manualTurn.turnId],
         )
       ).rows[0]?.blocked,
       true,
@@ -272,14 +306,9 @@ test(
       connectionString: process.env.TEST_DATABASE_URL,
       options: `-c search_path=${schema}`,
     });
-    await pool.query(
-      "CREATE TABLE tasks(id text PRIMARY KEY,owner_id text NOT NULL,status text NOT NULL DEFAULT 'running',revision integer NOT NULL DEFAULT 0)",
-    );
-    await pool.query('INSERT INTO tasks(id,owner_id) VALUES($1,$2),($3,$2)', [
-      'chat',
-      owner,
-      'other',
-    ]);
+    const turns = await seedTurns(pool);
+    const chat = await turns.start('chat');
+    const other = await turns.start('other');
     const app = Fastify();
     t.after(async () => {
       await app.close();
@@ -297,50 +326,48 @@ test(
         assert.equal(input.code, code);
         return { status: reject ? 'rejected' : 'submitted' };
       },
-      resume: async (id) => {
-        await pool.query("UPDATE tasks SET status='running',revision=revision+1 WHERE id=$1", [id]);
-      },
+      resume: turns.resume,
       retry: async () => {},
     });
     vault.registerRoutes(app);
-    await vault.request('chat', owner, otpInput);
-    await pool.query("UPDATE tasks SET status='waiting_credentials' WHERE id='chat'");
+    await vault.request(chat, owner, otpInput);
     const pending = async () =>
       (
         await pool.query(
-          "SELECT id FROM credential_requests WHERE task_id='chat' AND status='pending' ORDER BY id",
+          "SELECT id FROM credential_requests WHERE turn_id=$1 AND status='pending' ORDER BY id",
+          [chat.turnId],
         )
       ).rows.map((row) => row.id as string);
     const requestId = (await pending())[0];
-    assert.deepEqual(await vault.submitChatCode('other-owner', 'chat', code, requestId), {
+    assert.deepEqual(await vault.submitChatCode('other-owner', chat.turnId, code, requestId), {
       status: 'unavailable',
     });
-    assert.deepEqual(await vault.submitChatCode(owner, 'other', code, requestId), {
+    assert.deepEqual(await vault.submitChatCode(owner, other.turnId, code, requestId), {
       status: 'unavailable',
     });
-    assert.deepEqual(await vault.submitChatCode(owner, 'chat', code, 'stale-request'), {
+    assert.deepEqual(await vault.submitChatCode(owner, chat.turnId, code, 'stale-request'), {
       status: 'unavailable',
     });
-    assert.deepEqual(await vault.submitChatCode(owner, 'chat', 'my code 381742', requestId), {
+    assert.deepEqual(await vault.submitChatCode(owner, chat.turnId, 'my code 381742', requestId), {
       status: 'invalid',
     });
-    assert.deepEqual(await vault.submitChatCode(owner, 'chat', '3817', requestId), {
+    assert.deepEqual(await vault.submitChatCode(owner, chat.turnId, '3817', requestId), {
       status: 'unavailable',
     });
     assert.equal(injected, 0);
-    assert.deepEqual(await vault.submitChatCode(owner, 'chat', code, requestId), {
+    assert.deepEqual(await vault.submitChatCode(owner, chat.turnId, code, requestId), {
       status: 'rejected',
     });
     const retryId = (await pending())[0];
     assert.notEqual(retryId, requestId);
-    assert.deepEqual(await vault.submitChatCode(owner, 'chat', code, requestId), {
+    assert.deepEqual(await vault.submitChatCode(owner, chat.turnId, code, requestId), {
       status: 'unavailable',
     });
     reject = false;
-    assert.deepEqual(await vault.submitChatCode(owner, 'chat', code, retryId), {
+    assert.deepEqual(await vault.submitChatCode(owner, chat.turnId, code, retryId), {
       status: 'submitted',
     });
-    assert.deepEqual(await vault.submitChatCode(owner, 'chat', code, retryId), {
+    assert.deepEqual(await vault.submitChatCode(owner, chat.turnId, code, retryId), {
       status: 'unavailable',
     });
     assert.equal(injected, 2);

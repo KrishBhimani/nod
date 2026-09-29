@@ -72,15 +72,16 @@ const message = (id: string, role: Message['role'], createdAt: string): Message 
   id,
   role,
   text: `Synthetic ${id}`,
-  taskId: 'fixture-task',
+  turnId: 'fixture-turn',
   attachments: [],
   createdAt,
 });
 const base: AppState = {
-  conversationRevision: 0,
+  threadId: 'fixture-thread',
+  threadStatus: 'idle',
   hasEarlierMessages: false,
   messages: [message('latest', 'assistant', '2026-09-25T12:00:00Z')],
-  tasks: [],
+  turns: [],
   configuration: {
     provider: 'fixture',
     model: 'fixture',
@@ -94,15 +95,18 @@ const base: AppState = {
 };
 
 let finish!: (response: Response) => void;
+const historyPaths: string[] = [];
 let previousFetch: typeof fetch;
 const mounted: Array<() => Promise<void>> = [];
 beforeEach(() => {
   previousFetch = globalThis.fetch;
   globalThis.fetch = async (path) => {
-    if (String(path).startsWith('/api/messages?'))
+    if (String(path).startsWith('/api/messages?')) {
+      historyPaths.push(String(path));
       return new Promise((resolve) => {
         finish = resolve;
       });
+    }
     throw new Error('Unexpected fixture request');
   };
 });
@@ -126,7 +130,7 @@ async function mount(state: AppState, streams: Record<string, string> = {}) {
           state: next,
           streams: nextStreams,
           refresh: async () => {},
-          resetConversation: async () => 0,
+          resetConversation: async () => 'fixture-thread',
         }),
       );
       await tick();
@@ -158,6 +162,10 @@ test('Load earlier messages follows the server flags and shows a skeleton while 
   await fixture.render({ ...base, hasEarlierMessages: true });
   await act(async () => fixture.button(/Load earlier messages/)!.click());
   assert.equal(fixture.button(/Load earlier messages/), undefined);
+  assert.equal(
+    new URL(historyPaths.at(-1)!, 'http://localhost').searchParams.get('threadId'),
+    'fixture-thread',
+  );
   assert.ok(
     fixture.element.querySelector('[role="status"][aria-label="Loading earlier messages"]'),
   );

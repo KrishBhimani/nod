@@ -21,51 +21,51 @@ test(
     process.env.DATABASE_URL = url.href;
     process.env.PGBOSS_SCHEMA = bossSchema;
     const db = await import('../src/server/db.ts');
-    const tasks = await import('../src/server/tasks.ts');
+    const thread = await import('../src/server/thread.ts');
     const { welcomeGreeting } = await import('../src/server/welcome.ts');
     const { createApp } = await import('../src/server/app.ts');
     const { createAccountSession } = await import('../src/server/account.ts');
     const { createAccountStore } = await import('../src/server/account-store.ts');
     const { configuration, ownerId, port } = await import('../src/server/config.ts');
     await db.initializeDatabase();
-    await tasks.initializeTasks();
+    await thread.initializeThreads();
     const { createPersonalService } = await import('../src/server/personal.ts');
     await createPersonalService({
       pool: db.pool,
       ownerId,
-      scheduler: tasks.boss,
-      submitTask: tasks.submitTask,
+      scheduler: thread.boss,
+      enqueueTurn: thread.enqueueTurn,
       refresh() {},
     }).initialize({ workers: false });
     const accounts = createAccountStore(db.pool);
     await accounts.initialize();
     const app = await createApp({
       configuration: () => ({ ...configuration(), llmReady: true }),
-      startOnboarding: tasks.startOnboarding,
+      startOnboarding: thread.startOnboarding,
     });
     createAccountSession({
       accounts,
       origin: `http://localhost:${port}`,
       localUser: { id: ownerId, name: 'You', email: null, avatarUrl: null },
       start: async (_owner, name) => {
-        await tasks.startOnboarding(name, ['Gmail', 'Google Calendar', 'Slack']);
+        await thread.startOnboarding(name, ['Gmail', 'Google Calendar', 'Slack']);
       },
     }).register(app);
     const headers = { host: `localhost:${port}`, origin: `http://localhost:${port}` };
     try {
-      const earlier = await tasks.submitTask('Earlier synthetic request');
+      const { turnId: earlier } = await thread.submitUserMessage('Earlier synthetic request');
       const before = (await app.inject({ url: '/api/state', headers })).json();
-      await tasks.startOnboarding('Alex', ['Gmail']);
+      await thread.startOnboarding('Alex', ['Gmail']);
       assert.equal(
-        (await db.pool.query("SELECT id FROM tasks WHERE source_id='onboarding:welcome'")).rowCount,
+        (await db.pool.query("SELECT id FROM turns WHERE source_id='onboarding:welcome'")).rowCount,
         0,
       );
-      await tasks.cancelTask(earlier);
+      await thread.stopThread();
       const landing = () =>
         app.inject({ method: 'POST', url: '/api/account/welcome', headers, payload: {} });
       assert.equal((await landing()).statusCode, 409);
       assert.equal(
-        (await db.pool.query("SELECT id FROM tasks WHERE source_id LIKE 'onboarding:%'")).rowCount,
+        (await db.pool.query("SELECT id FROM turns WHERE source_id LIKE 'onboarding:%'")).rowCount,
         0,
       );
       assert.equal(
@@ -101,7 +101,7 @@ test(
       for (const response of await Promise.all([landing(), landing()]))
         assert.deepEqual(response.json(), { ok: true });
       const welcome = await db.pool.query(
-        "SELECT id,status,source,source_id,source_message_id,channel,conversation_revision,prompt FROM tasks WHERE source_id LIKE 'onboarding:%'",
+        "SELECT id,status,source,source_id,message_id,channel,thread_id,prompt,read_only,background FROM turns WHERE source_id LIKE 'onboarding:%'",
       );
       assert.equal(welcome.rowCount, 1);
       assert.equal(welcome.rows[0].source, 'event');
@@ -111,7 +111,7 @@ test(
         'Hi Alex, I’m looking through your Gmail, Google Calendar and Slack for things I can take off your plate.';
       assert.deepEqual(
         (
-          await db.pool.query('SELECT role,text FROM messages WHERE task_id=$1', [
+          await db.pool.query('SELECT role,text FROM messages WHERE turn_id=$1', [
             welcome.rows[0].id,
           ])
         ).rows,
@@ -135,50 +135,48 @@ test(
         'Hi Alex, I’m looking through your Gmail, Slack, Notion and 2 more apps for things I can take off your plate.',
       );
       assert.match(prompt, /If only one item is useful, offer only that one/);
-      assert.equal(welcome.rows[0].source_message_id, null);
+      assert.equal(welcome.rows[0].message_id, null);
       assert.equal(welcome.rows[0].channel, 'web');
-      assert.equal(welcome.rows[0].conversation_revision, before.conversationRevision);
+      assert.equal(welcome.rows[0].read_only, true);
+      assert.equal(welcome.rows[0].background, true);
+      assert.equal(welcome.rows[0].thread_id, before.threadId);
       assert.equal(
         (
-          await db.pool.query("SELECT id FROM messages WHERE task_id=$1 AND role='user'", [
+          await db.pool.query("SELECT id FROM messages WHERE turn_id=$1 AND role='user'", [
             welcome.rows[0].id,
           ])
         ).rowCount,
         0,
       );
       const after = (await app.inject({ url: '/api/state', headers })).json();
-      assert.equal(after.conversationRevision, before.conversationRevision);
+      assert.equal(after.threadId, before.threadId);
       assert.deepEqual(
         after.messages.map((message: { text: string }) => message.text),
         ['Earlier synthetic request', greeting],
       );
       const typing = Object.fromEntries(
-        after.tasks.map((task: { id: string; showTyping: boolean }) => [task.id, task.showTyping]),
+        after.turns.map((turn: { id: string; showTyping: boolean }) => [turn.id, turn.showTyping]),
       );
       assert.deepEqual(typing, { [earlier]: true, [welcome.rows[0].id]: true });
-      assert.equal(
-        (await app.inject({ url: `/api/tasks/${welcome.rows[0].id}`, headers })).json().showTyping,
-        true,
-      );
-      await tasks.submitTask('Synthetic background event', [], undefined, true, {
+      await thread.enqueueTurn('Synthetic background event', {
         source: 'event',
         sourceId: `event:${randomUUID()}`,
       });
       const background = (await app.inject({ url: '/api/state', headers }))
         .json()
-        .tasks.filter((task: { showTyping: boolean }) => !task.showTyping);
+        .turns.filter((turn: { showTyping: boolean }) => !turn.showTyping);
       assert.equal(background.length, 1);
-      await db.pool.query('DELETE FROM messages WHERE task_id=$1', [welcome.rows[0].id]);
-      await db.pool.query('DELETE FROM tasks WHERE id=$1', [welcome.rows[0].id]);
-      await tasks.startOnboarding(undefined, []);
+      await db.pool.query('DELETE FROM messages WHERE turn_id=$1', [welcome.rows[0].id]);
+      await db.pool.query('DELETE FROM turns WHERE id=$1', [welcome.rows[0].id]);
+      await thread.startOnboarding(undefined, []);
       const empty = await db.pool.query(
-        "SELECT t.status,m.text FROM tasks t JOIN messages m ON m.task_id=t.id WHERE t.source_id='onboarding:welcome'",
+        "SELECT t.status,m.text FROM turns t JOIN messages m ON m.turn_id=t.id WHERE t.source_id='onboarding:welcome'",
       );
       assert.deepEqual(empty.rows, [{ status: 'succeeded', text: welcomeGreeting(undefined, []) }]);
       await db.pool.query(
-        "DELETE FROM messages WHERE task_id IN (SELECT id FROM tasks WHERE source_id='onboarding:welcome')",
+        "DELETE FROM messages WHERE turn_id IN (SELECT id FROM turns WHERE source_id='onboarding:welcome')",
       );
-      await db.pool.query("DELETE FROM tasks WHERE source_id='onboarding:welcome'");
+      await db.pool.query("DELETE FROM turns WHERE source_id='onboarding:welcome'");
       const refusals: string[] = [];
       const agent: Agent = {
         open: async (input) => ({
@@ -204,10 +202,10 @@ test(
       });
       const seen: RuntimeContext[] = [];
       const reads: boolean[] = [];
-      await tasks.startTaskWorkers({
-        runTask: async (context) => {
+      await thread.startThreadWorkers({
+        runTurn: async (context) => {
           seen.push(context);
-          return context.readOnly ? runtime.runTask(context) : { status: 'succeeded' };
+          return context.readOnly ? runtime.runTurn(context) : { status: 'succeeded' };
         },
         speech: {
           synthesize: async () => {
@@ -215,30 +213,30 @@ test(
           },
         },
         requestCredential: async () => ({}),
-        integration: async (_taskId, _action, _args, options) => {
+        integration: async (_turn, _action, _args, options) => {
           reads.push(options.readOnly);
           return { successful: true, data: { threads: 2 } };
         },
         manage: async () => ({}),
       });
-      const ordinary = await tasks.submitTask('Later synthetic request');
+      const { turnId: ordinary } = await thread.submitUserMessage('Later synthetic request');
       let ordinaryResult = { status: '', error: null };
       for (let attempt = 0; attempt < 800 && ordinaryResult.status !== 'succeeded'; attempt++) {
         ordinaryResult = (
-          await db.pool.query('SELECT status,error FROM tasks WHERE id=$1', [ordinary])
+          await db.pool.query('SELECT status,error FROM turns WHERE id=$1', [ordinary])
         ).rows[0];
         assert.notEqual(ordinaryResult.status, 'failed', ordinaryResult.error ?? undefined);
         await delay(25);
       }
       assert.equal(ordinaryResult.status, 'succeeded');
-      assert.ok(seen.some((context) => context.taskId === ordinary && !context.readOnly));
-      await tasks.startOnboarding('Alex', ['Gmail']);
+      assert.ok(seen.some((context) => context.turnId === ordinary && !context.readOnly));
+      await thread.startOnboarding('Alex', ['Gmail']);
       const discovery = (
-        await db.pool.query("SELECT id FROM tasks WHERE source_id='onboarding:welcome'")
+        await db.pool.query("SELECT id FROM turns WHERE source_id='onboarding:welcome'")
       ).rows[0].id as string;
       let finished = { status: '', error: null };
       for (let attempt = 0; attempt < 800 && finished.status !== 'succeeded'; attempt++) {
-        finished = (await db.pool.query('SELECT status,error FROM tasks WHERE id=$1', [discovery]))
+        finished = (await db.pool.query('SELECT status,error FROM turns WHERE id=$1', [discovery]))
           .rows[0];
         assert.notEqual(finished.status, 'failed', finished.error ?? undefined);
         await delay(25);
@@ -246,24 +244,24 @@ test(
       assert.equal(finished.status, 'succeeded');
       assert.deepEqual(
         (
-          await db.pool.query('SELECT text FROM messages WHERE task_id=$1 ORDER BY created_at,id', [
+          await db.pool.query('SELECT text FROM messages WHERE turn_id=$1 ORDER BY created_at,id', [
             discovery,
           ])
         ).rows.map((row) => row.text),
         [welcomeGreeting('Alex', ['Gmail']), 'Two threads wait for your reply.'],
       );
       assert.deepEqual(refusals, [
-        'This task can only read. Use app reads, and browser open, snapshot or scroll.',
+        'This turn can only read. Use app reads, and browser open, snapshot or scroll.',
       ]);
       assert.deepEqual(reads, [true]);
       assert.deepEqual(
-        seen.filter((context) => context.readOnly).map((context) => context.taskId),
+        seen.filter((context) => context.readOnly).map((context) => context.turnId),
         [discovery],
       );
       await runtime.dispose();
     } finally {
       await app.close();
-      await tasks.stopTasks();
+      await thread.stopThreadWorkers();
       await db.pool.end();
       await admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`);
       await admin.query(`DROP SCHEMA ${schema} CASCADE`);

@@ -51,7 +51,8 @@ async function fixture(
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'otto-browser-connection-recovery-'));
   const owner = randomUUID();
-  const taskId = randomUUID();
+  const threadId = randomUUID();
+  const turnId = randomUUID();
   const calls: string[] = [];
   const observations: RuntimeObservation[] = [];
   const questions: string[] = [];
@@ -78,10 +79,6 @@ async function fixture(
           rows: [{ id: params[0], origin: 'https://example.test', state: options.sessionState }],
           rowCount: 1,
         };
-      }
-      if (sql === 'SELECT status,revision FROM tasks WHERE id=$1 AND owner_id=$2') {
-        assert.deepEqual(params, [taskId, owner]);
-        return { rows: [{ status: 'running', revision: 0 }], rowCount: 1 };
       }
       assert.ok(
         sql.includes('INSERT INTO browser_connections') ||
@@ -148,7 +145,7 @@ async function fixture(
   const modelResults = new Map<string, AgentToolResult & { isError: boolean }>();
   const checkpoint = options.piCalls
     ? undefined
-    : await createPiCheckpoint({ store, taskId, directory });
+    : await createPiCheckpoint({ store, threadId, directory });
   const scripted: Agent = {
     open: async ({ tools }) => ({
       resumed: false,
@@ -213,7 +210,8 @@ async function fixture(
     }
   });
   const context: RuntimeContext = {
-    taskId,
+    threadId,
+    turnId,
     ownerId: owner,
     prompt: 'Inspect a synthetic saved account. Do not submit any credentials.',
     history: [],
@@ -233,8 +231,7 @@ async function fixture(
     },
     integration: async () => ({}),
     manage: async () => ({}),
-    browserConnection: (input) =>
-      service.request(input, { id: taskId, revision: 0 }, context.signal),
+    browserConnection: (input) => service.request(input, { threadId, turnId }, context.signal),
     waitForUser: async (question) => {
       questions.push(question);
     },
@@ -250,10 +247,10 @@ async function fixture(
     questions,
     modelResults,
     store,
-    run: () => runtime.runTask(context),
+    run: () => runtime.runTurn(context),
     saved: async () =>
-      (await store.read(`sessions/${taskId}.jsonl`, 1024 * 1024))!.bytes.toString(),
-    restore: () => createPiCheckpoint({ store, taskId, directory: join(directory, 'restored') }),
+      (await store.read(`sessions/${threadId}.jsonl`, 1024 * 1024))!.bytes.toString(),
+    restore: () => createPiCheckpoint({ store, threadId, directory: join(directory, 'restored') }),
   };
 }
 

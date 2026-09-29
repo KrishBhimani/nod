@@ -209,11 +209,11 @@ test('goal controls save first-party changes in place with Undo and never open c
 
 test('Ask Otto sends a named request through the conversation and shows the reply in place', async () => {
   const previousFetch = globalThis.fetch;
-  const posts: Array<{ text: string; clientMessageId: string; conversationRevision?: number }> = [];
+  const posts: Array<{ text: string; clientMessageId: string; threadId?: string }> = [];
   globalThis.fetch = async (path, options) => {
     if (path === '/api/messages' && options?.method === 'POST') {
       posts.push(JSON.parse(String(options.body)));
-      return Response.json({ taskId: 'ask-task', messageId: posts[0].clientMessageId });
+      return Response.json({ turnId: 'ask-turn', messageId: posts[0].clientMessageId });
     }
     return Response.json([goal]);
   };
@@ -224,10 +224,11 @@ test('Ask Otto sends a named request through the conversation and shows the repl
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
-  const conversation = (tasks: AppState['tasks'], messages: AppState['messages']): AppState => ({
-    conversationRevision: 3,
+  const conversation = (turns: AppState['turns'], messages: AppState['messages']): AppState => ({
+    threadId: 'thread-3',
+    threadStatus: 'idle',
     messages,
-    tasks,
+    turns,
     configuration: {} as AppState['configuration'],
   });
   try {
@@ -243,20 +244,20 @@ test('Ask Otto sends a named request through the conversation and shows the repl
     await act(async () => click(chip));
     assert.equal(posts.length, 1);
     assert.equal(posts[0].text, 'About the goal "Complete Northstar review": Mark it 50% done');
-    assert.equal(posts[0].conversationRevision, 3);
+    assert.equal(posts[0].threadId, 'thread-3');
     assert.match(container.textContent ?? '', /Otto is on it/);
-    const task = { id: 'ask-task', title: 'Goal', createdAt: '', updatedAt: '' };
+    const turn = { id: 'ask-turn', source: 'user' as const, createdAt: '' };
     await act(async () =>
       root.render(
         createElement(Goals, {
           conversation: conversation(
-            [{ ...task, status: 'succeeded' }],
+            [{ ...turn, status: 'succeeded' }],
             [
               {
                 id: 'reply',
                 role: 'assistant',
                 text: 'Done. The goal is 50% done.',
-                taskId: 'ask-task',
+                turnId: 'ask-turn',
                 attachments: [],
                 createdAt: '2026-09-29T08:00:00.000Z',
               },
@@ -274,7 +275,7 @@ test('Ask Otto sends a named request through the conversation and shows the repl
     await act(async () =>
       root.render(
         createElement(Goals, {
-          conversation: conversation([{ ...task, status: 'waiting_credentials' }], []),
+          conversation: conversation([{ ...turn, status: 'waiting' }], []),
         }),
       ),
     );
@@ -413,7 +414,7 @@ test('Ask Otto retries a failed request with the same message ID', async () => {
       posts.push(JSON.parse(String(options.body)));
       return posts.length === 1
         ? Response.json({ error: 'Otto is unavailable.' }, { status: 503 })
-        : Response.json({ taskId: 'retry-task', messageId: posts[0].clientMessageId });
+        : Response.json({ turnId: 'retry-turn', messageId: posts[0].clientMessageId });
     }
     return Response.json([goal]);
   };

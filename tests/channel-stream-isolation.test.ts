@@ -12,7 +12,7 @@ import type { AppState, MessageHistoryPage } from '../src/shared/contracts.ts';
 import { initialStreamState, streamReducer, type StreamAction } from '../src/web/lib/streams.ts';
 
 test(
-  'web SSE and persisted chat exclude replies from every external channel while retaining web reminders',
+  'web SSE excludes external-channel and background deltas while the shared thread retains every reply',
   { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
   async (t) => {
     const suffix = randomUUID().replaceAll('-', '').slice(0, 16);
@@ -28,7 +28,7 @@ test(
     process.env.OTTO_DATA_ROOT = dataRoot;
     process.env.OTTO_MODE = 'local';
     const db = await import('../src/server/db.ts');
-    const tasks = await import('../src/server/tasks.ts');
+    const thread = await import('../src/server/thread.ts');
     const { createApp } = await import('../src/server/app.ts');
     const { createPersonalService } = await import('../src/server/personal.ts');
     const { port } = await import('../src/server/config.ts');
@@ -51,19 +51,19 @@ test(
     const headers = { host: `localhost:${port}` };
     try {
       await db.initializeDatabase();
-      await tasks.initializeTasks();
+      await thread.initializeThreads();
       const personal = createPersonalService({
         pool: db.pool,
         ownerId: 'local-development',
-        scheduler: tasks.boss,
-        submitTask: tasks.submitTask,
+        scheduler: thread.boss,
+        enqueueTurn: thread.enqueueTurn,
         refresh() {},
       });
       await personal.initialize({ workers: false });
-      await tasks.startTaskWorkers({
-        async runTask(context) {
-          contexts.set(context.taskId, context);
-          return new Promise<RuntimeResult>((resolve) => releases.set(context.taskId, resolve));
+      await thread.startThreadWorkers({
+        async runTurn(context) {
+          contexts.set(context.turnId, context);
+          return new Promise<RuntimeResult>((resolve) => releases.set(context.turnId, resolve));
         },
         speech: {
           synthesize: async () => {
@@ -128,14 +128,24 @@ test(
         { ownerId: 'local-development' },
       ].map((routing, index) => ({
         type: 'delta',
-        taskId: randomUUID(),
+        threadId: randomUUID(),
+        turnId: randomUUID(),
         text: `rejected-stream-${index}`,
         streamId: `rejected-stream-${index}`,
-        conversationRevision: 0,
         ...routing,
       }));
       for (const mode of modes) {
-        const id = await tasks.submitTask(`Synthetic ${mode.marker}`, [], undefined, false, mode);
+        const id =
+          mode.source === 'user'
+            ? (
+                await thread.submitUserMessage(`Synthetic ${mode.marker}`, [], {
+                  channel: mode.channel,
+                })
+              ).turnId
+            : await thread.enqueueTurn(`Synthetic ${mode.marker}`, {
+                source: mode.source,
+                channel: mode.channel,
+              });
         ids.set(mode.marker, id);
         await waitFor(() => contexts.has(id));
         const context = contexts.get(id)!;
@@ -147,7 +157,7 @@ test(
         releases.get(id)!({ status: 'succeeded' });
         await waitFor(
           async () =>
-            (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [id])).rows[0]?.status ===
+            (await db.pool.query('SELECT status FROM turns WHERE id=$1', [id])).rows[0]?.status ===
             'succeeded',
         );
       }
@@ -160,51 +170,46 @@ test(
       const history = (
         await app.inject({ method: 'GET', url: '/api/messages', headers })
       ).json<MessageHistoryPage>().messages;
-      const expected = ['web-event', 'web-reminder', 'web-reply'];
-      await t.test(
-        'reload and history retain web replies and quiet background reminders',
-        async () => {
-          assert.deepEqual(
-            persisted.messages
-              .filter((message) => message.role === 'assistant')
-              .map((message) => message.text)
-              .sort(),
-            expected,
-          );
-          assert.deepEqual(
-            history
-              .filter((message) => message.role === 'assistant')
-              .map((message) => message.text)
-              .sort(),
-            expected,
-          );
-          assert.equal(
-            (await db.pool.query("SELECT id FROM messages WHERE role='assistant'")).rowCount,
-            modes.length,
-          );
-          assert.ok(visible.includes('web-reply'));
-          assert.equal(
-            wire.some(
-              (event) => event.type === 'delta' && event.taskId === ids.get('web-reminder'),
-            ),
-            false,
-          );
-          assert.equal(
-            wire.some((event) => event.type === 'delta' && event.taskId === ids.get('web-event')),
-            false,
-          );
-          assert.equal(
-            wire.some((event) => 'ownerId' in event || 'channel' in event),
-            false,
-          );
-        },
-      );
+      const expected = modes.map((mode) => mode.marker).sort();
+      await t.test('reload and history retain every reply in the shared thread', async () => {
+        assert.deepEqual(
+          persisted.messages
+            .filter((message) => message.role === 'assistant')
+            .map((message) => message.text)
+            .sort(),
+          expected,
+        );
+        assert.deepEqual(
+          history
+            .filter((message) => message.role === 'assistant')
+            .map((message) => message.text)
+            .sort(),
+          expected,
+        );
+        assert.equal(
+          (await db.pool.query("SELECT id FROM messages WHERE role='assistant'")).rowCount,
+          modes.length,
+        );
+        assert.ok(visible.includes('web-reply'));
+        assert.equal(
+          wire.some((event) => event.type === 'delta' && event.turnId === ids.get('web-reminder')),
+          false,
+        );
+        assert.equal(
+          wire.some((event) => event.type === 'delta' && event.turnId === ids.get('web-event')),
+          false,
+        );
+        assert.equal(
+          wire.some((event) => 'ownerId' in event || 'channel' in event),
+          false,
+        );
+      });
       const foreignIds = new Set(
         modes.filter((mode) => mode.channel !== 'web').map((mode) => ids.get(mode.marker)),
       );
       await t.test('external-channel task deltas never leave the web SSE response', () => {
         assert.deepEqual(
-          wire.filter((event) => event.type === 'delta' && foreignIds.has(String(event.taskId))),
+          wire.filter((event) => event.type === 'delta' && foreignIds.has(String(event.turnId))),
           [],
           'External-channel assistant bytes reached the web SSE response.',
         );
@@ -219,14 +224,8 @@ test(
       await t.test('SSE rejects foreign-owner, foreign-destination and unscoped events', () => {
         assert.deepEqual(
           wire.filter((event) =>
-            rejectedEvents.some((rejected) => rejected.taskId === event.taskId),
+            rejectedEvents.some((rejected) => rejected.turnId === event.turnId),
           ),
-          [],
-        );
-      });
-      await t.test('web state omits external-channel task metadata', () => {
-        assert.deepEqual(
-          persisted.tasks.filter((task) => foreignIds.has(task.id)),
           [],
         );
       });
@@ -237,7 +236,7 @@ test(
       } finally {
         for (const release of releases.values()) release({ status: 'succeeded' });
         await app.close();
-        await tasks.stopTasks();
+        await thread.stopThreadWorkers();
         await db.pool.end();
         await admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`);
         await admin.query(`DROP SCHEMA ${schema} CASCADE`);

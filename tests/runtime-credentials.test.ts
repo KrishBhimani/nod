@@ -61,7 +61,7 @@ function page(
       location.origin = 'https://other.example';
     };
   const fields = credentialFields({
-    taskId: 'fixture',
+    threadId: 'fixture',
     origin: 'https://example.com',
     kind: 'password',
     username: 'fixture-user',
@@ -115,7 +115,7 @@ test('credential entry masks fields, returns no values and rechecks origin after
 test('secure entry rejects transient refs and missing secrets before browser execution', () => {
   assert.throws(() =>
     credentialFields({
-      taskId: 'fixture',
+      threadId: 'fixture',
       origin: 'https://example.com',
       password: 'fixture',
       passwordSelector: '@e2',
@@ -123,7 +123,7 @@ test('secure entry rejects transient refs and missing secrets before browser exe
   );
   assert.throws(() =>
     credentialFields({
-      taskId: 'fixture',
+      threadId: 'fixture',
       origin: 'https://example.com',
       kind: 'otp',
       password: 'not-a-code',

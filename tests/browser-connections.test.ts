@@ -20,7 +20,7 @@ async function fixture() {
     cleanup.unshift(() => pool.end());
     const app = Fastify();
     cleanup.unshift(() => app.close());
-    const bindings: Array<{ taskId: string; profileId: string; origin?: string }> = [];
+    const bindings: Array<{ threadId: string; profileId: string; origin?: string }> = [];
     const inputs: CredentialInput[] = [];
     const closed: string[] = [];
     const removed: string[] = [];
@@ -47,14 +47,14 @@ async function fixture() {
       pageUrl: 'https://www.linkedin.com/messaging/',
     };
     const computer = {
-      async bindProfile(taskId: string, profileId: string, origin?: string) {
-        bindings.push({ taskId, profileId, origin });
+      async bindProfile(threadId: string, profileId: string, origin?: string) {
+        bindings.push({ threadId, profileId, origin });
       },
       async deleteProfile(profileId: string) {
         if (state.failDelete) throw new Error('Synthetic profile removal failed.');
         removed.push(profileId);
       },
-      async act(_taskId: string, input: { action: string; url?: string }) {
+      async act(_threadId: string, input: { action: string; url?: string }) {
         if (input.action === 'click' && input.url === undefined) {
           state.technogymLoginOpen = true;
           state.pageUrl = 'https://www.technogym.com/login';
@@ -105,8 +105,8 @@ async function fixture() {
         return { status: 'submitted' as const };
       },
       async hold() {},
-      async close(taskId: string) {
-        closed.push(taskId);
+      async close(threadId: string) {
+        closed.push(threadId);
       },
       async openSignIn() {},
       async finishSignIn() {},
@@ -117,7 +117,7 @@ async function fixture() {
       async releaseControl() {},
     } as unknown as Computer;
     await pool.query(
-      'CREATE TABLE tasks (id uuid PRIMARY KEY,owner_id text,status text,revision integer)',
+      "CREATE TABLE threads (id uuid PRIMARY KEY,owner_id text,status text NOT NULL DEFAULT 'idle',archived_at timestamptz)",
     );
     const service = await createBrowserConnections(pool, {
       ownerId: 'owner-a',
@@ -158,6 +158,10 @@ async function fixture() {
 }
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+
+function turnRef() {
+  return { threadId: randomUUID(), turnId: randomUUID() };
+}
 
 function connectionTest(name: string, run: (value: Fixture) => Promise<void>) {
   test(name, { skip: !process.env.TEST_DATABASE_URL }, async () => {
@@ -310,12 +314,12 @@ connectionTest(
     const connectionId = await saveLinkedIn(value);
     const other = await createBrowserConnections(pool, { ownerId: 'owner-b', computer });
     await assert.rejects(
-      other.use(connectionId, { id: randomUUID(), revision: 0 }, 'https://www.linkedin.com/'),
+      other.use(connectionId, turnRef(), 'https://www.linkedin.com/'),
       /unavailable/,
     );
     const rejected = await other.request(
       { action: 'use', connectionId, url: 'https://www.linkedin.com/' },
-      { id: randomUUID(), revision: 0 },
+      turnRef(),
     );
     assert.ok('status' in rejected);
     assert.equal(rejected.status, 'rejected');
@@ -330,10 +334,7 @@ connectionTest(
         'https://api.linkedin.com/jobs/',
         'https://www.linkedin.com:8443/jobs/',
       ]) {
-        const mismatch = await service.request(
-          { action, connectionId, url },
-          { id: randomUUID(), revision: 0 },
-        );
+        const mismatch = await service.request({ action, connectionId, url }, turnRef());
         assert.ok('code' in mismatch);
         assert.equal(mismatch.status, 'rejected');
         assert.equal(mismatch.code, 'browser_connection_origin_mismatch');
@@ -348,31 +349,28 @@ connectionTest(
     await pool.query("UPDATE browser_connections SET checked_at='2000-01-01' WHERE id=$1", [
       connectionId,
     ]);
-    const nextTask = randomUUID();
+    const nextTurn = turnRef();
     const used = await service.request(
       { action: 'use', connectionId, url: 'https://www.linkedin.com/jobs/' },
-      { id: nextTask, revision: 0 },
+      nextTurn,
     );
     assert.ok('status' in used);
     assert.equal(used.status, 'session_opened');
     assert.ok(new Date((await service.list())[0].checkedAt!).getTime() > Date.UTC(2020, 0, 1));
     assert.equal(bindings.at(-1)?.profileId, bindings[0].profileId);
     assert.equal(bindings.at(-1)?.origin, 'https://www.linkedin.com');
-    assert.ok(closed.includes(connectionId));
-    state.blocked = true;
-    const denied = await service.use(
-      connectionId,
-      { id: nextTask, revision: 0 },
-      'https://www.linkedin.com/messaging/',
+    assert.equal(bindings.at(-1)?.threadId, nextTurn.threadId);
+    assert.equal(
+      (await pool.query('SELECT thread_id FROM browser_connections WHERE id=$1', [connectionId]))
+        .rows[0].thread_id,
+      nextTurn.threadId,
     );
+    state.blocked = true;
+    const denied = await service.use(connectionId, nextTurn, 'https://www.linkedin.com/messaging/');
     assert.equal(denied.status, 'site_blocked');
     state.blocked = false;
     await assert.rejects(
-      service.use(
-        connectionId,
-        { id: randomUUID(), revision: 0 },
-        'https://www.technogym.com/en-IE/',
-      ),
+      service.use(connectionId, turnRef(), 'https://www.technogym.com/en-IE/'),
       /another website/,
     );
     state.failDelete = true;
@@ -381,11 +379,12 @@ connectionTest(
     state.failDelete = false;
     await service.disconnect(connectionId);
     assert.deepEqual(removed, [bindings[0].profileId]);
+    assert.equal(closed.at(-1), nextTurn.threadId);
   },
 );
 
 connectionTest(
-  'model connect can renew a pending session created outside a task',
+  'model connect can renew a pending session created outside a chat turn',
   async (value) => {
     const { service, pool, bindings } = value;
     const pending = await service.begin({ url: 'https://www.linkedin.com/' });
@@ -393,23 +392,27 @@ connectionTest(
       await pool.query('SELECT * FROM browser_connections WHERE id=$1', [pending.connectionId])
     ).rows[0];
     assert.equal(before.state, 'pending');
-    assert.equal(before.task_id, null);
-    const taskId = randomUUID();
-    await pool.query("INSERT INTO tasks VALUES($1,'owner-a','running',0)", [taskId]);
+    assert.equal(before.thread_id, null);
+    assert.equal(before.turn_id, null);
+    const turn = turnRef();
+    await pool.query("INSERT INTO threads(id,owner_id,status) VALUES($1,'owner-a','running')", [
+      turn.threadId,
+    ]);
     const result = await service.request(
       { action: 'connect', connectionId: pending.connectionId, url: 'https://www.linkedin.com/' },
-      { id: taskId, revision: 0 },
+      turn,
     );
     assert.ok('url' in result);
     assert.notEqual(result.url, pending.url);
     assert.equal(result.connectionId, pending.connectionId);
-    assert.equal(bindings.at(-1)?.taskId, taskId);
+    assert.equal(bindings.at(-1)?.threadId, turn.threadId);
     assert.equal(bindings.at(-1)?.profileId, before.profile_id);
     const after = (
       await pool.query('SELECT * FROM browser_connections WHERE id=$1', [pending.connectionId])
     ).rows[0];
     assert.equal(after.state, 'pending');
-    assert.equal(after.task_id, taskId);
+    assert.equal(after.thread_id, turn.threadId);
+    assert.equal(after.turn_id, turn.turnId);
   },
 );
 
@@ -482,19 +485,18 @@ connectionTest('site blocks and login ports keep separate connection states', as
 });
 
 connectionTest(
-  'an expired session gives its task a new link and rejects stale credentials',
+  'an expired session gives its turn a new link and rejects credentials after reset',
   async (value) => {
     const { app, pool, service, state, inputs } = value;
     const connectionId = await saveLinkedIn(value);
-    const task = { id: randomUUID(), revision: 2 };
-    await pool.query('INSERT INTO tasks(id,owner_id,status,revision) VALUES($1,$2,$3,$4)', [
-      task.id,
+    const turn = turnRef();
+    await pool.query('INSERT INTO threads(id,owner_id,status) VALUES($1,$2,$3)', [
+      turn.threadId,
       'owner-a',
       'running',
-      task.revision,
     ]);
     state.signedIn = false;
-    const reconnect = await service.use(connectionId, task, 'https://www.linkedin.com/jobs/');
+    const reconnect = await service.use(connectionId, turn, 'https://www.linkedin.com/jobs/');
     assert.equal(reconnect.status, 'needs_sign_in');
     assert.match(reconnect.url, /^\/browser-connect\/[A-Za-z0-9_-]{43}$/);
     const token = reconnect.url.split('/').at(-1)!;
@@ -502,8 +504,8 @@ connectionTest(
       method: 'GET',
       url: `/api/browser-connections/attempt/${token}`,
     });
-    assert.equal(description.json().fromTask, true);
-    await pool.query("UPDATE tasks SET status='cancelled' WHERE id=$1", [task.id]);
+    assert.equal(description.json().fromChat, true);
+    await pool.query('UPDATE threads SET archived_at=now() WHERE id=$1', [turn.threadId]);
     const stale = await app.inject({
       method: 'POST',
       url: `/api/browser-connections/attempt/${token}/credentials`,
@@ -518,18 +520,17 @@ connectionTest(
   },
 );
 
-connectionTest('credential entry holds the waiting task through injection', async (value) => {
+connectionTest('credential entry holds the thread through injection', async (value) => {
   const { app, pool, service, state } = value;
   state.loginOrigin = 'https://www.linkedin.com';
-  const task = { id: randomUUID(), revision: 4 };
-  await pool.query('INSERT INTO tasks(id,owner_id,status,revision) VALUES($1,$2,$3,$4)', [
-    task.id,
+  const turn = turnRef();
+  await pool.query('INSERT INTO threads(id,owner_id,status) VALUES($1,$2,$3)', [
+    turn.threadId,
     'owner-a',
     'running',
-    task.revision,
   ]);
-  const started = await service.begin({ url: 'https://www.linkedin.com/messaging/' }, task);
-  await pool.query("UPDATE tasks SET status='waiting_user' WHERE id=$1", [task.id]);
+  const started = await service.begin({ url: 'https://www.linkedin.com/messaging/' }, turn);
+  await pool.query("UPDATE threads SET status='idle' WHERE id=$1", [turn.threadId]);
   const renewed = await app.inject({
     method: 'POST',
     url: '/api/browser-connections',
@@ -541,7 +542,7 @@ connectionTest('credential entry holds the waiting task through injection', asyn
     method: 'GET',
     url: `/api/browser-connections/attempt/${token}`,
   });
-  assert.equal(description.json().fromTask, true);
+  assert.equal(description.json().fromChat, true);
   let releaseInjection!: () => void;
   state.waitForInjection = new Promise<void>((resolve) => {
     releaseInjection = resolve;
@@ -559,14 +560,13 @@ connectionTest('credential entry holds the waiting task through injection', asyn
     },
   });
   await entered;
-  const cancellation = pool.query(
-    "UPDATE tasks SET status='cancelled',revision=revision+1 WHERE id=$1",
-    [task.id],
-  );
+  const cancellation = pool.query('UPDATE threads SET archived_at=now() WHERE id=$1', [
+    turn.threadId,
+  ]);
   const probe = await pool.connect();
   try {
     await assert.rejects(
-      probe.query('SELECT id FROM tasks WHERE id=$1 FOR UPDATE NOWAIT', [task.id]),
+      probe.query('SELECT id FROM threads WHERE id=$1 FOR UPDATE NOWAIT', [turn.threadId]),
       {
         code: '55P03',
       },

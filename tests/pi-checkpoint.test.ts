@@ -20,7 +20,7 @@ async function fixture() {
   return {
     directory,
     store,
-    taskId: randomUUID(),
+    threadId: randomUUID(),
     close: () => rm(directory, { recursive: true, force: true }),
   };
 }
@@ -31,7 +31,7 @@ test('Pi restores durable tool results after losing the entire actor disk withou
   try {
     const checkpoint = await createPiCheckpoint({
       store: f.store,
-      taskId: f.taskId,
+      threadId: f.threadId,
       directory: join(f.directory, 'old'),
     });
     checkpoint.manager.appendMessage({
@@ -41,13 +41,13 @@ test('Pi restores durable tool results after losing the entire actor disk withou
     });
     await checkpoint.execute('call-one', 'fixture_action', async () => {
       executions++;
-      const saved = await f.store.read(`sessions/${f.taskId}.jsonl`, 1024 * 1024);
+      const saved = await f.store.read(`sessions/${f.threadId}.jsonl`, 1024 * 1024);
       assert.match(saved!.bytes.toString(), /otto_tool_pending/);
       return { content: [{ type: 'text', text: 'action receipt' }] };
     });
     const resumed = await createPiCheckpoint({
       store: f.store,
-      taskId: f.taskId,
+      threadId: f.threadId,
       directory: join(f.directory, 'new'),
     });
     assert.equal(
@@ -67,7 +67,7 @@ test('Pi restores durable tool results after losing the entire actor disk withou
     assert.equal(executions, 1);
     const reopened = await createPiCheckpoint({
       store: f.store,
-      taskId: f.taskId,
+      threadId: f.threadId,
       directory: join(f.directory, 'newer'),
     });
     assert.equal(
@@ -96,7 +96,7 @@ test('a missing action receipt fences restart and a failed pre-action checkpoint
   try {
     const checkpoint = await createPiCheckpoint({
       store,
-      taskId: f.taskId,
+      threadId: f.threadId,
       directory: f.directory,
     });
     await assert.rejects(
@@ -107,10 +107,10 @@ test('a missing action receipt fences restart and a failed pre-action checkpoint
       /could not be saved/,
     );
     assert.equal(executions, 0);
-    const interruptedTaskId = randomUUID();
+    const interruptedThreadId = randomUUID();
     const second = await createPiCheckpoint({
       store: f.store,
-      taskId: interruptedTaskId,
+      threadId: interruptedThreadId,
       directory: f.directory,
     });
     await assert.rejects(
@@ -124,7 +124,7 @@ test('a missing action receipt fences restart and a failed pre-action checkpoint
     const pending = second.manager.getEntries().find((entry) => entry.type === 'custom');
     assert.ok(pending);
     await assert.rejects(
-      createPiCheckpoint({ store: f.store, taskId: interruptedTaskId, directory: f.directory }),
+      createPiCheckpoint({ store: f.store, threadId: interruptedThreadId, directory: f.directory }),
       /interrupted before its result/,
     );
     await assert.rejects(second.checkpoint(), /could not be saved/);
@@ -214,7 +214,8 @@ test('real Pi awaits durable final checkpoints and restores a conversation in a 
   const final: string[] = [];
   try {
     const session = await first.open({
-      taskId: f.taskId,
+      threadId: f.threadId,
+      turnId: randomUUID(),
       systemPrompt: 'fixture',
       tools: [],
       shouldStop: () => false,
@@ -233,7 +234,8 @@ test('real Pi awaits durable final checkpoints and restores a conversation in a 
     await first.dispose();
     await rm(join(f.directory, 'first'), { recursive: true, force: true });
     const restored = await second.open({
-      taskId: f.taskId,
+      threadId: f.threadId,
+      turnId: randomUUID(),
       systemPrompt: 'fixture',
       tools: [],
       shouldStop: () => false,
@@ -294,7 +296,8 @@ test('real Pi persists its user message and tool intent before a side effect and
   });
   try {
     const session = await agent.open({
-      taskId: f.taskId,
+      threadId: f.threadId,
+      turnId: randomUUID(),
       systemPrompt: 'fixture',
       shouldStop: () => false,
       onEvent() {},
@@ -304,7 +307,7 @@ test('real Pi persists its user message and tool intent before a side effect and
           description: 'fixture',
           parameters: { type: 'object', properties: {} },
           async execute() {
-            const saved = await f.store.read(`sessions/${f.taskId}.jsonl`, 1024 * 1024);
+            const saved = await f.store.read(`sessions/${f.threadId}.jsonl`, 1024 * 1024);
             assert.match(saved!.bytes.toString(), /synthetic user request/);
             assert.match(saved!.bytes.toString(), /otto_tool_pending/);
             assert.match(saved!.bytes.toString(), /toolCall/);
@@ -320,7 +323,7 @@ test('real Pi persists its user message and tool intent before a side effect and
     await agent.dispose();
     const resumed = await createPiCheckpoint({
       store: f.store,
-      taskId: f.taskId,
+      threadId: f.threadId,
       directory: join(f.directory, 'replacement'),
     });
     assert.equal(
@@ -394,7 +397,8 @@ test('the real runtime error wrapper leaves an uncertain browser action fenced a
     workspace: fakeWorkspace(),
   });
   const context: RuntimeContext = {
-    taskId: f.taskId,
+    threadId: f.threadId,
+    turnId: randomUUID(),
     ownerId: 'fixture',
     prompt: 'Run the fixture action',
     history: [],
@@ -414,63 +418,22 @@ test('the real runtime error wrapper leaves an uncertain browser action fenced a
     manage: async () => ({}),
   };
   try {
-    await assert.rejects(runtime.runTask(context), /could not be saved/);
+    await assert.rejects(runtime.runTurn(context), /could not be saved/);
     assert.equal(effects, 1);
     assert.equal(turns, 1);
-    const saved = await f.store.read(`sessions/${f.taskId}.jsonl`, 1024 * 1024);
+    const saved = await f.store.read(`sessions/${f.threadId}.jsonl`, 1024 * 1024);
     assert.match(saved!.bytes.toString(), /otto_tool_pending/);
     assert.doesNotMatch(saved!.bytes.toString(), /otto_tool_completed/);
     await assert.rejects(
       createPiCheckpoint({
         store: f.store,
-        taskId: f.taskId,
+        threadId: f.threadId,
         directory: join(f.directory, 'replacement'),
       }),
       /interrupted before its result/,
     );
   } finally {
     await runtime.dispose();
-    await f.close();
-  }
-});
-
-test('a fresh Pi session replaces an interrupted checkpoint only when requested', async () => {
-  const f = await fixture();
-  try {
-    const first = await createPiCheckpoint({
-      store: f.store,
-      taskId: f.taskId,
-      directory: join(f.directory, 'first'),
-    });
-    await assert.rejects(
-      first.execute('call', 'browser', async () => {
-        throw new Error('fixture read failure');
-      }),
-      /result could be confirmed/,
-    );
-    await assert.rejects(
-      createPiCheckpoint({ store: f.store, taskId: f.taskId, directory: join(f.directory, 'a') }),
-      /interrupted before its result/,
-    );
-    const fresh = await createPiCheckpoint({
-      store: f.store,
-      taskId: f.taskId,
-      directory: join(f.directory, 'fresh'),
-      fresh: true,
-    });
-    assert.equal(
-      fresh.manager.getEntries().some((entry) => entry.type === 'custom'),
-      false,
-    );
-    const saved = await f.store.read(`sessions/${f.taskId}.jsonl`, 1024 * 1024);
-    assert.doesNotMatch(saved!.bytes.toString(), /otto_tool_pending/);
-    const resumed = await createPiCheckpoint({
-      store: f.store,
-      taskId: f.taskId,
-      directory: join(f.directory, 'resumed'),
-    });
-    assert.ok(resumed.manager);
-  } finally {
     await f.close();
   }
 });

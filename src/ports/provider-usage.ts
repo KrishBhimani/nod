@@ -1,5 +1,4 @@
 import type { ProviderCategory } from '../shared/provider-usage.ts';
-import type { ConversationRoutingFailureCode } from './conversation.ts';
 
 export interface ProviderUsageEvent {
   id?: string;
@@ -7,14 +6,10 @@ export interface ProviderUsageEvent {
   category: ProviderCategory;
   operation: string;
   model?: string;
-  taskId?: string;
+  turnId?: string;
   toolCallId?: string;
   toolName?: string;
   status: 'succeeded' | 'failed' | 'cancelled';
-  routingFailure?: {
-    code: ConversationRoutingFailureCode;
-    httpStatus?: number;
-  };
   durationMs: number;
   inputTokens?: number;
   outputTokens?: number;

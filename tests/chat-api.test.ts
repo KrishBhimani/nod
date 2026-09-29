@@ -4,7 +4,7 @@ import test from 'node:test';
 import pg from 'pg';
 
 test(
-  'history paging, message reactions and task lookup preserve ownership and stable order',
+  'history paging and message reactions preserve ownership, thread scope and stable order',
   { skip: !process.env.TEST_DATABASE_URL },
   async () => {
     const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
@@ -15,28 +15,40 @@ test(
     process.env.DATABASE_URL = url.href;
     const { pool, initializeDatabase } = await import('../src/server/db.ts');
     const { createApp } = await import('../src/server/app.ts');
-    const { initializeTaskSchema } = await import('../src/server/tasks.ts');
+    const { activeThread, initializeThreadSchema } = await import('../src/server/thread.ts');
     const { ownerId, port } = await import('../src/server/config.ts');
     const app = await createApp();
     const headers = { host: `localhost:${port}`, origin: `http://localhost:${port}` };
     try {
       await initializeDatabase();
-      await initializeTaskSchema();
-      const task = randomUUID(),
-        otherTask = randomUUID();
+      await initializeThreadSchema();
+      const thread = (await activeThread(pool)).id;
+      const otherThread = randomUUID(),
+        archivedThread = randomUUID(),
+        turn = randomUUID();
+      await pool.query("INSERT INTO threads(id,owner_id) VALUES($1,'other-owner')", [otherThread]);
+      await pool.query('INSERT INTO threads(id,owner_id,archived_at) VALUES($1,$2,now())', [
+        archivedThread,
+        ownerId,
+      ]);
       await pool.query(
-        "INSERT INTO tasks(id,owner_id,title,prompt) VALUES($1,$2,'Mine','Fixture'),($3,'other-owner','Private','Fixture')",
-        [task, ownerId, otherTask],
+        "INSERT INTO turns(id,owner_id,thread_id,source,prompt,status) VALUES($1,$2,$3,'user','Fixture','succeeded')",
+        [turn, ownerId, thread],
       );
       for (let i = 0; i < 135; i++)
         await pool.query(
-          "INSERT INTO messages(id,owner_id,role,text,task_id,created_at) VALUES($1,$2,'assistant',$3,$4,'2026-09-20 12:00:00.123456+00'::timestamptz)",
-          [randomUUID(), ownerId, `Fixture ${i}`, task],
+          "INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id,created_at) VALUES($1,$2,'assistant',$3,$4,$5,'2026-09-20 12:00:00.123456+00'::timestamptz)",
+          [randomUUID(), ownerId, `Fixture ${i}`, thread, turn],
         );
-      const foreign = randomUUID();
+      const foreign = randomUUID(),
+        archived = randomUUID();
       await pool.query(
-        "INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,'other-owner','assistant','private content',$2)",
-        [foreign, otherTask],
+        "INSERT INTO messages(id,owner_id,role,text,thread_id) VALUES($1,'other-owner','assistant','private content',$2)",
+        [foreign, otherThread],
+      );
+      await pool.query(
+        "INSERT INTO messages(id,owner_id,role,text,thread_id) VALUES($1,$2,'assistant','archived content',$3)",
+        [archived, ownerId, archivedThread],
       );
       const seen = new Set<string>();
       let cursor = '';
@@ -49,30 +61,38 @@ test(
         for (const row of rows) {
           assert.ok(!seen.has(row.id));
           assert.notEqual(row.text, 'private content');
-          assert.equal(row.task?.title, 'Mine');
-          assert.equal(row.task?.costUsd, null);
+          assert.notEqual(row.text, 'archived content');
+          assert.equal(row.turnId, turn);
+          assert.equal(row.turn?.id, turn);
+          assert.equal(row.turn?.costUsd, null);
           seen.add(row.id);
         }
-        cursor = `?before=${encodeURIComponent(rows[0].createdAt)}&beforeId=${rows[0].id}`;
+        cursor = `?before=${encodeURIComponent(rows[0].createdAt)}&beforeId=${rows[0].id}&threadId=${thread}`;
       }
       assert.equal(seen.size, 135);
+      assert.equal(
+        (await app.inject({ url: `/api/messages?threadId=${archivedThread}`, headers })).statusCode,
+        409,
+      );
       await pool.query(
-        "UPDATE tasks SET source='onboarding',source_id='onboarding:welcome',status='running',created_at=now()-interval '1 day' WHERE id=$1",
-        [task],
+        "UPDATE turns SET source='event',source_id='onboarding:welcome',background=true,status='running',created_at=now()-interval '1 day' WHERE id=$1",
+        [turn],
       );
       for (let index = 0; index < 51; index++)
         await pool.query(
-          "INSERT INTO tasks(id,owner_id,title,prompt) VALUES($1,$2,'Newer fixture','Fixture')",
-          [randomUUID(), ownerId],
+          "INSERT INTO turns(id,owner_id,thread_id,source,prompt,background) VALUES($1,$2,$3,'schedule','Newer fixture',true)",
+          [randomUUID(), ownerId, thread],
         );
       const state = (await app.inject({ url: '/api/state', headers })).json();
+      assert.equal(state.threadId, thread);
+      assert.equal(state.turns.length, 51);
       assert.equal(
-        state.tasks.find((candidate: { id: string }) => candidate.id === task)?.showTyping,
+        state.turns.find((candidate: { id: string }) => candidate.id === turn)?.showTyping,
         true,
       );
       const olderPage = (await app.inject({ url: '/api/messages', headers })).json();
       assert.ok(
-        olderPage.messages.every((row: { task: { showTyping: boolean } }) => row.task.showTyping),
+        olderPage.messages.every((row: { turn: { showTyping: boolean } }) => row.turn.showTyping),
       );
       const message = [...seen][0];
       assert.equal(
@@ -90,17 +110,18 @@ test(
         (await pool.query('SELECT reaction FROM messages WHERE id=$1', [message])).rows[0].reaction,
         'heart',
       );
-      assert.equal(
-        (
-          await app.inject({
-            method: 'POST',
-            url: `/api/messages/${foreign}/reaction`,
-            headers,
-            payload: { reaction: 'heart' },
-          })
-        ).statusCode,
-        404,
-      );
+      for (const id of [foreign, archived])
+        assert.equal(
+          (
+            await app.inject({
+              method: 'POST',
+              url: `/api/messages/${id}/reaction`,
+              headers,
+              payload: { reaction: 'heart' },
+            })
+          ).statusCode,
+          404,
+        );
       assert.equal(
         (
           await app.inject({
@@ -112,8 +133,6 @@ test(
         ).statusCode,
         400,
       );
-      assert.equal((await app.inject({ url: `/api/tasks/${task}`, headers })).json().title, 'Mine');
-      assert.equal((await app.inject({ url: `/api/tasks/${otherTask}`, headers })).statusCode, 404);
       assert.equal(
         (
           await app.inject({

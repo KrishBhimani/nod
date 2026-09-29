@@ -54,7 +54,8 @@ export interface RuntimeAccount {
 }
 
 export interface RuntimeContext {
-  taskId: string;
+  threadId: string;
+  turnId: string;
   ownerId: string;
   prompt: string;
   background?: boolean;
@@ -75,7 +76,6 @@ export interface RuntimeContext {
     assistantReaction?: MessageReaction | null;
     attachments?: MessageAttachment[];
   }>;
-  sharedHistory?: Array<{ role: string; text: string; createdAt: string | Date; channel: string }>;
   memories: string[];
   personalContext?: {
     profile: { name: string; location: string; phone: string; preferences: string };
@@ -105,10 +105,6 @@ export interface RuntimeContext {
   ): Promise<unknown>;
   browserConnection?(request: BrowserConnectionRequest): Promise<unknown>;
   waitForUser?(question: string): Promise<void>;
-  startExternalAction?(): Promise<void>;
-  freshSession?: boolean;
-  checkOutcome?: boolean;
-  reportOutcome?(outcome: 'completed' | 'not_completed', message: string): Promise<void>;
   delta(text: string, streamId?: string, done?: boolean): void;
   remember(text: string): Promise<void>;
   publish(path: string, name?: string): Promise<Artifact>;
@@ -175,12 +171,12 @@ export type AgentEvent =
   | ModelUsageObservation
   | { type: 'error' };
 export interface AgentSessionOptions {
-  taskId: string;
+  threadId: string;
+  turnId: string;
   systemPrompt: string;
   tools: AgentTool[];
   onEvent(event: AgentEvent): void;
   shouldStop(): boolean;
-  fresh?: boolean;
 }
 export interface AgentSession {
   resumed: boolean;

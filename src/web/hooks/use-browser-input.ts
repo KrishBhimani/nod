@@ -8,7 +8,7 @@ import { api } from '../lib/api';
 
 export function useBrowserInput(options: {
   path: string;
-  revision: number | null;
+  session: number | null;
   enabled: boolean;
   onError(message: string): void;
   onExit(): void;
@@ -21,9 +21,9 @@ export function useBrowserInput(options: {
   const flush = useRef<() => Promise<boolean>>(async () => true);
   useEffect(() => {
     const element = surface.current;
-    if (!element || !options.enabled || options.revision === null) return;
+    if (!element || !options.enabled || options.session === null) return;
     const queue: BrowserInput[] = [];
-    const session = `${options.path}:${options.revision}`;
+    const session = `${options.path}:${options.session}`;
     let stopped = false;
     let generation = 0;
     let composing = false;
@@ -62,14 +62,14 @@ export function useBrowserInput(options: {
           try {
             const result = await api<{ ok: boolean }>(`${options.path}/input`, {
               method: 'POST',
-              body: JSON.stringify({ revision: options.revision, input }),
+              body: JSON.stringify({ input }),
               signal: AbortSignal.timeout(15_000),
             });
             if (!result.ok) throw new Error();
           } catch {
             if (
               latest.current.path === options.path &&
-              latest.current.revision === options.revision
+              latest.current.session === options.session
             ) {
               discard();
               rejected.current = session;
@@ -259,6 +259,6 @@ export function useBrowserInput(options: {
       window.removeEventListener('blur', discard);
       document.removeEventListener('visibilitychange', visibility);
     };
-  }, [options.path, options.revision, options.enabled]);
+  }, [options.path, options.session, options.enabled]);
   return { surface, image, flush: () => flush.current() };
 }

@@ -5,8 +5,16 @@ import pg from 'pg';
 import Fastify from 'fastify';
 import { createPromptInspector } from '../src/server/inspector-prompts.ts';
 
+async function createTurnTables(pool: pg.Pool) {
+  await pool.query('CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text)');
+  await pool.query(
+    'CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text,thread_id uuid REFERENCES threads(id),prompt text,message_id uuid,status text)',
+  );
+  await pool.query('CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text,text text)');
+}
+
 test(
-  'prompt inspection is private, redacted, bounded and revision fenced',
+  'prompt inspection is private, redacted, bounded and turn fenced',
   { skip: !process.env.TEST_DATABASE_URL },
   async () => {
     const schema = `test_prompts_${randomUUID().replaceAll('-', '')}`;
@@ -26,20 +34,21 @@ test(
     });
     const app = Fastify();
     store.registerRoutes(app);
-    const taskId = randomUUID(),
-      foreign = randomUUID();
+    const turnId = randomUUID(),
+      finished = randomUUID(),
+      foreign = randomUUID(),
+      threadId = randomUUID();
     try {
+      await createTurnTables(pool);
+      await pool.query("INSERT INTO threads VALUES($1,'owner')", [threadId]);
       await pool.query(
-        'CREATE TABLE tasks(id uuid PRIMARY KEY,owner_id text,title text,revision integer,status text)',
-      );
-      await pool.query(
-        "INSERT INTO tasks VALUES($1,'owner','Fixture',3,'running'),($2,'foreign','Private',0,'running')",
-        [taskId, foreign],
+        "INSERT INTO turns VALUES($1,'owner',$4,'Fixture',NULL,'running'),($2,'owner',$4,'Finished',NULL,'succeeded'),($3,'foreign',$4,'Private',NULL,'running')",
+        [turnId, finished, foreign, threadId],
       );
       await store.initialize();
-      await pool.query('UPDATE tasks SET title=$1 WHERE id=$2', [
+      await pool.query('UPDATE turns SET prompt=$1 WHERE id=$2', [
         'Use provider-secret-fixture; password=title-secret',
-        taskId,
+        turnId,
       ]);
       const snapshot = {
         id: randomUUID(),
@@ -58,12 +67,12 @@ test(
         reason: 'user' as const,
         createdAt: new Date().toISOString(),
       };
-      await store.record(taskId, 3, snapshot);
-      await store.record(taskId, 2, { ...snapshot, id: randomUUID() });
-      await store.record(foreign, 0, { ...snapshot, id: randomUUID() });
+      await store.record(turnId, snapshot);
+      await store.record(finished, { ...snapshot, id: randomUUID() });
+      await store.record(foreign, { ...snapshot, id: randomUUID() });
       const recorded = (await store.read({}))!;
       assert.equal(recorded.prompts.length, 1);
-      assert.equal(recorded.prompts[0]!.taskId, taskId);
+      assert.equal(recorded.prompts[0]!.turnId, turnId);
       assert.doesNotMatch(
         JSON.stringify(recorded),
         /provider-secret-fixture|do-not-store|private-token|title-secret|synthetic-nested-prompt-secret/,
@@ -77,8 +86,8 @@ test(
       );
       assert.match(recorded.prompts[0]!.instruction, /\[truncated\]/);
       assert.ok(recorded.prompts[0]!.instruction.length < 49_000);
-      assert.equal(await store.read({ taskId: foreign }), null);
-      assert.equal((await app.inject('/api/inspector/prompts?taskId=' + foreign)).statusCode, 404);
+      assert.equal(await store.read({ turnId: foreign }), null);
+      assert.equal((await app.inject('/api/inspector/prompts?turnId=' + foreign)).statusCode, 404);
       const response = await app.inject('/api/inspector/prompts');
       assert.equal(response.headers['cache-control'], 'no-store');
       await pool.query(
@@ -100,7 +109,7 @@ test(
       assert.doesNotMatch(legacy.body, /legacy-nested-prompt-secret/);
       assert.match(legacy.body, /Legacy useful context/);
       enabled = false;
-      await store.record(taskId, 3, { ...snapshot, id: randomUUID() });
+      await store.record(turnId, { ...snapshot, id: randomUUID() });
       assert.equal((await app.inject('/api/inspector/prompts')).statusCode, 404);
       assert.equal(
         (await pool.query('SELECT count(*)::int AS count FROM inspector_prompts')).rows[0].count,
@@ -110,7 +119,7 @@ test(
       await pool.query("UPDATE inspector_prompts SET created_at=now()-interval '8 days'");
       assert.equal((await store.read({}))!.prompts.length, 0);
       await store.close();
-      await store.record(taskId, 3, { ...snapshot, id: randomUUID() });
+      await store.record(turnId, { ...snapshot, id: randomUUID() });
       assert.equal(
         (await pool.query('SELECT count(*)::int AS count FROM inspector_prompts')).rows[0].count,
         1,
@@ -186,20 +195,25 @@ test(
     };
     const previous = createPromptInspector(pool, options);
     const restarted = createPromptInspector(pool, options);
-    const taskId = randomUUID();
+    const turnId = randomUUID();
+    const threadId = randomUUID();
     const expiredId = randomUUID();
     const currentId = randomUUID();
     const foreignId = randomUUID();
     try {
-      await pool.query('CREATE TABLE tasks(id uuid PRIMARY KEY)');
-      await pool.query('INSERT INTO tasks VALUES($1)', [taskId]);
+      await createTurnTables(pool);
+      await pool.query("INSERT INTO threads VALUES($1,'owner')", [threadId]);
+      await pool.query("INSERT INTO turns VALUES($1,'owner',$2,'Fixture',NULL,'running')", [
+        turnId,
+        threadId,
+      ]);
       await previous.initialize();
       await pool.query(
-        `INSERT INTO inspector_prompts(id,owner_id,task_id,revision,payload,provider,model,created_at) VALUES
-        ($1,'owner',$4,0,'{}','fixture','fixture',now()-interval '8 days'),
-        ($2,'owner',$4,0,'{}','fixture','fixture',now()),
-        ($3,'other',$4,0,'{}','fixture','fixture',now()-interval '8 days')`,
-        [expiredId, currentId, foreignId, taskId],
+        `INSERT INTO inspector_prompts(id,owner_id,thread_id,turn_id,payload,provider,model,created_at) VALUES
+        ($1,'owner',$5,$4,'{}','fixture','fixture',now()-interval '8 days'),
+        ($2,'owner',$5,$4,'{}','fixture','fixture',now()),
+        ($3,'other',$5,$4,'{}','fixture','fixture',now()-interval '8 days')`,
+        [expiredId, currentId, foreignId, turnId, threadId],
       );
       await previous.close();
       await restarted.initialize();

@@ -4,11 +4,11 @@ type DeltaEvent = {
   type: 'delta';
   ownerId: string;
   channel: string;
-  taskId: string;
+  threadId: string;
+  turnId: string;
   text: string;
   streamId?: string;
   done?: boolean;
-  conversationRevision?: number;
 };
 export type ServerEvent = { type: 'refresh' } | DeltaEvent;
 

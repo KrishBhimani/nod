@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { Artifact, InspectorState } from '../../shared/contracts';
 import { api, errorMessage } from '../lib/api';
 
-export type InspectorDetail = InspectorState & { artifacts?: (Artifact & { taskId: string })[] };
+export type InspectorDetail = InspectorState & { artifacts?: (Artifact & { threadId: string })[] };
 
 export type BrowserDetail = { currentBrowser?: InspectorDetail['currentBrowser'] | null };
 
@@ -37,9 +37,9 @@ function useBrowserSnapshot<T extends BrowserDetail>(path: string, enabled: bool
       clearTimeout(timer);
     };
   }, [enabled, path]);
-  function browserStopped(taskId: string) {
+  function browserStopped(threadId: string) {
     setData((current) =>
-      current?.currentBrowser?.taskId === taskId
+      current?.currentBrowser?.threadId === threadId
         ? {
             ...current,
             currentBrowser: { ...current.currentBrowser, status: 'cancelled' },

@@ -158,7 +158,7 @@ test(
     try {
       const command = launch({
         role: 'workspace',
-        taskId: 'task-123',
+        threadId: 'task-123',
         origin: fixture.origin,
       });
       command.process.stdin.write('héllo ');
@@ -194,10 +194,10 @@ test(
         Buffer.concat([Buffer.from('héllo 🌍'), Buffer.from([0, 255, 10])]),
       );
       const created = JSON.parse(fixture.calls[0].body.toString());
-      assert.deepEqual(Object.keys(created).sort(), ['id', 'role', 'taskId']);
+      assert.deepEqual(Object.keys(created).sort(), ['id', 'role', 'threadId']);
       assert.match(created.id, /^[0-9a-f-]{36}$/);
       assert.equal(created.role, 'workspace');
-      assert.equal(created.taskId, 'task-123');
+      assert.equal(created.threadId, 'task-123');
       assert.ok(fixture.calls.every((call) => call.headers['x-otto-generation'] === '17'));
       assert.ok(fixture.calls.slice(1).every((call) => call.path.includes(created.id)));
       assert.equal(command.process.stdin.destroyed, true);
@@ -583,7 +583,7 @@ test('Cloudflare rejects unsupported origins, identities and task paths before c
     { generation: '-1' },
     { generation: '01' },
     { role: 'workspace' },
-    { role: 'workspace', taskId: '../private' },
+    { role: 'workspace', threadId: '../private' },
   ];
   for (const value of invalid) {
     assert.throws(

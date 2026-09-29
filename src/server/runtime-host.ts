@@ -23,7 +23,6 @@ const forwardedEnvironment = [
   'E2B_SANDBOX_TIMEOUT_MS',
   'LLM_PROVIDER',
   'LLM_MODEL',
-  'ROUTING_MODEL',
   'TRIAGE_MODEL',
   'OPENAI_API_KEY',
   'ANTHROPIC_API_KEY',

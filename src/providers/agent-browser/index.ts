@@ -14,7 +14,7 @@ import type {
   ManualBrowserInput,
 } from '../../ports/computer.ts';
 import { BrowserActionError } from '../../ports/computer.ts';
-import { taskId } from '../../ports/task-identity.ts';
+import { threadIdentity } from '../../ports/thread-identity.ts';
 import { runProcess, serviceEnvironment } from '../process.ts';
 import { createBrowserProxy, browserUrl } from './network.ts';
 import {
@@ -78,7 +78,7 @@ class BrowserLockedError extends Error {
   }
 }
 export function browserSessionId(id: string): string {
-  return `sk-${createHash('sha256').update(taskId(id)).digest('hex').slice(0, 24)}`;
+  return `sk-${createHash('sha256').update(threadIdentity(id)).digest('hex').slice(0, 24)}`;
 }
 
 export function redactBrowserText(text: string, secrets: Iterable<string>): string {
@@ -154,9 +154,9 @@ export function createAgentBrowserComputer(options: {
   resolveSignInBrowser?: typeof resolveSignInBrowser;
 }): Computer & { canCheckpoint(): boolean } {
   const browsers = new Map<string, BrowserState>();
-  let lastSession: { taskId: string; lastActivityAt: string } | undefined;
+  let lastSession: { threadId: string; lastActivityAt: string } | undefined;
   const markActivity = (id: string) => {
-    lastSession = { taskId: id, lastActivityAt: new Date().toISOString() };
+    lastSession = { threadId: id, lastActivityAt: new Date().toISOString() };
   };
   const runtimeRoot = resolve(options.dataRoot, 'runtime');
   const profilePath = (state: BrowserState) =>
@@ -205,7 +205,7 @@ export function createAgentBrowserComputer(options: {
   }
   function stateFor(id: string): BrowserState {
     if (disposed) throw new Error('The browser service has stopped.');
-    taskId(id);
+    threadIdentity(id);
     let state = browsers.get(id);
     if (!state) {
       state = {
@@ -567,7 +567,7 @@ export function createAgentBrowserComputer(options: {
     id: string,
     allowSensitive = false,
   ): Promise<BrowserState | undefined> {
-    taskId(id);
+    threadIdentity(id);
     const existing = browsers.get(id);
     if (existing) return existing;
     if (disposed) return undefined;
@@ -688,7 +688,7 @@ export function createAgentBrowserComputer(options: {
 
   async function manualControl(id: string, raw: ManualBrowserInput): Promise<void> {
     const input = manualInputSchema.parse(raw);
-    const state = browsers.get(taskId(id));
+    const state = browsers.get(threadIdentity(id));
     if (!state?.started) throw new Error('The browser session is no longer available.');
     const controller = state.manualAbort;
     const check = () => {
@@ -769,7 +769,7 @@ export function createAgentBrowserComputer(options: {
   }
 
   async function releaseControl(id: string): Promise<void> {
-    const state = browsers.get(taskId(id));
+    const state = browsers.get(threadIdentity(id));
     if (!state) return;
     stopManual(state);
     await serialize(state, async () => {
@@ -858,7 +858,7 @@ export function createAgentBrowserComputer(options: {
     ) => Promise<T>,
     signal?: AbortSignal,
   ): Promise<T> {
-    const state = browsers.get(taskId(id));
+    const state = browsers.get(threadIdentity(id));
     const controller = state?.manualAbort;
     const window = state?.signInWindow;
     const check = () => {
@@ -1359,7 +1359,7 @@ export function createAgentBrowserComputer(options: {
   }
 
   async function injectCredentials(input: CredentialInput): Promise<CredentialSubmission> {
-    const state = browsers.get(taskId(input.taskId));
+    const state = browsers.get(threadIdentity(input.threadId));
     if (state?.saved.signInPending) throw new BrowserLockedError();
     if (!state?.started) throw new Error('The browser session has expired. Reopen the login page.');
     if (state.injecting || state.manualUntil) throw new BrowserLockedError();
@@ -1371,7 +1371,7 @@ export function createAgentBrowserComputer(options: {
       state.protectedSelectors.add(field.selector);
     }
     state.injecting = true;
-    markActivity(input.taskId);
+    markActivity(input.threadId);
     try {
       return await serialize(state, async () => {
         if (state.manualUntil || state.saved.signInPending) throw new BrowserLockedError();
@@ -1475,7 +1475,7 @@ export function createAgentBrowserComputer(options: {
   }
 
   async function selectLoginMethod(id: string, origin: string, methodId: string): Promise<void> {
-    const state = browsers.get(taskId(id));
+    const state = browsers.get(threadIdentity(id));
     if (state?.saved.signInPending) throw new BrowserLockedError();
     if (!state?.started) throw new Error('Open the login page in this task browser first.');
     if (state.injecting || state.manualUntil) throw new BrowserLockedError();
@@ -1498,7 +1498,7 @@ export function createAgentBrowserComputer(options: {
   }
 
   async function hold(id: string, until: number | null): Promise<void> {
-    const state = browsers.get(taskId(id));
+    const state = browsers.get(threadIdentity(id));
     if (!state?.started) return;
     await serialize(state, async () => {
       if (until !== null && !Number.isFinite(until))
@@ -1560,7 +1560,7 @@ export function createAgentBrowserComputer(options: {
   }
 
   async function closeBrowser(id: string, idleAt?: number): Promise<void> {
-    const state = browsers.get(taskId(id)) ?? (await recoverBrowser(id, true));
+    const state = browsers.get(threadIdentity(id)) ?? (await recoverBrowser(id, true));
     if (!state) return;
     if (idleAt === undefined) {
       state.closing = true;
@@ -1616,7 +1616,7 @@ export function createAgentBrowserComputer(options: {
     const allowedOrigin = rawAllowedOrigin ? browserUrl(rawAllowedOrigin).origin : undefined;
     if (rawAllowedOrigin && allowedOrigin !== rawAllowedOrigin)
       throw new Error('An exact website origin is required.');
-    taskId(id);
+    threadIdentity(id);
     await allocate(async () => {
       const previous = browsers.get(id) ?? (await recoverBrowser(id, true));
       if (previous?.saved.profileId === profileId) {
@@ -1725,7 +1725,7 @@ export function createAgentBrowserComputer(options: {
         (state) => state.saved.url && state.manualUntil > Date.now(),
       );
       return manual
-        ? { taskId: manual.id, lastActivityAt: new Date(manual.lastUsed).toISOString() }
+        ? { threadId: manual.id, lastActivityAt: new Date(manual.lastUsed).toISOString() }
         : lastSession;
     },
     bindProfile: tracked(bindProfile),
@@ -1740,7 +1740,7 @@ export function createAgentBrowserComputer(options: {
     act: tracked(browserAction),
     download: tracked(download),
     screenshot: tracked(getScreenshot),
-    screenStatus: (id) => screenStatuses.get(taskId(id)) ?? { state: 'unavailable' },
+    screenStatus: (id) => screenStatuses.get(threadIdentity(id)) ?? { state: 'unavailable' },
     injectCredentials: tracked(injectCredentials),
     inspectLogin: tracked(inspectLogin),
     selectLoginMethod: tracked(selectLoginMethod),

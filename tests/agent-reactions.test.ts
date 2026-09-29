@@ -3,11 +3,9 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import pg from 'pg';
-import { createAgentReactionService } from '../src/server/agent-reactions.ts';
-import { lockConversation } from '../src/server/conversations.ts';
 
 test(
-  'trusted agent reactions are restrained and scoped to the current owned web conversation',
+  'trusted agent reactions are restrained and scoped to the active owned thread',
   { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
   async (t) => {
     const schema = `test_agent_reactions_${randomUUID().replaceAll('-', '')}`;
@@ -18,7 +16,8 @@ test(
     url.searchParams.set('application_name', schema);
     process.env.DATABASE_URL = url.href;
     const { pool, initializeDatabase } = await import('../src/server/db.ts');
-    const { initializeTaskSchema } = await import('../src/server/tasks.ts');
+    const { activeThread, lockThread } = await import('../src/server/thread.ts');
+    const { createAgentReactionService } = await import('../src/server/agent-reactions.ts');
     async function waitForBlockedReaction() {
       for (let attempt = 0; attempt < 100; attempt++) {
         const result = await admin.query(
@@ -41,32 +40,34 @@ test(
         },
       });
       async function seed(
-        options: { owner?: string; channel?: string; generation?: number; source?: string } = {},
+        options: { owner?: string; channel?: string; source?: string; archived?: boolean } = {},
       ) {
-        const taskId = randomUUID();
+        const owner = options.owner ?? ownerId;
+        let threadId: string;
+        if (options.archived) {
+          threadId = randomUUID();
+          await pool.query('INSERT INTO threads(id,owner_id,archived_at) VALUES($1,$2,now())', [
+            threadId,
+            owner,
+          ]);
+        } else threadId = (await activeThread(pool, owner)).id;
+        const turnId = randomUUID();
         const messageId = randomUUID();
         await pool.query(
-          "INSERT INTO tasks(id,owner_id,title,prompt,status,channel,conversation_revision,source) VALUES($1,$2,'Synthetic milestone','Synthetic milestone','running',$3,$4,$5)",
-          [
-            taskId,
-            options.owner ?? ownerId,
-            options.channel ?? 'web',
-            options.generation ?? 0,
-            options.source ?? 'user',
-          ],
+          "INSERT INTO turns(id,owner_id,thread_id,source,prompt,status,channel,message_id) VALUES($1,$2,$3,$4,'Synthetic milestone','running',$5,$6)",
+          [turnId, owner, threadId, options.source ?? 'user', options.channel ?? 'web', messageId],
         );
         await pool.query(
-          "INSERT INTO messages(id,owner_id,task_id,role,text) VALUES($1,$2,$3,'user','Synthetic milestone')",
-          [messageId, options.owner ?? ownerId, taskId],
+          "INSERT INTO messages(id,owner_id,thread_id,turn_id,role,text) VALUES($1,$2,$3,$4,'user','Synthetic milestone')",
+          [messageId, owner, threadId, turnId],
         );
-        return { taskId, messageId, revision: 0, reaction: '🎉', visibleMessageIds: [messageId] };
+        return { threadId, turnId, messageId, reaction: '🎉' };
       }
       return { ownerId, service, seed, refreshes: () => refreshes };
     }
     try {
       await initializeDatabase();
       await initializeDatabase();
-      await initializeTaskSchema();
       await t.test(
         'one badge is idempotent, can be removed, and cannot be repeatedly replaced',
         async () => {
@@ -102,12 +103,12 @@ test(
           });
           assert.equal(refreshes(), 2);
           assert.equal(
-            (await pool.query('SELECT id FROM task_events WHERE task_id=$1', [input.taskId]))
+            (await pool.query('SELECT id FROM turn_events WHERE turn_id=$1', [input.turnId]))
               .rowCount,
             0,
           );
           assert.equal(
-            (await pool.query('SELECT id FROM messages WHERE task_id=$1', [input.taskId])).rowCount,
+            (await pool.query('SELECT id FROM messages WHERE turn_id=$1', [input.turnId])).rowCount,
             1,
           );
         },
@@ -139,45 +140,41 @@ test(
         },
       );
       await t.test(
-        'targets must be visible, owned user messages in the exact current channel and generation',
+        'targets must be owned user messages in the active thread of a running web user turn',
         async () => {
           const { ownerId, service, seed } = await setup();
-          const current = await seed({ generation: 1 });
-          await pool.query(
-            "INSERT INTO conversations(owner_id,channel,revision) VALUES($1,'web',1)",
-            [ownerId],
-          );
-          const foreign = await seed({ owner: randomUUID(), generation: 1 });
-          const channel = await seed({ channel: 'telegram:fixture', generation: 1 });
-          const archived = await seed();
+          const current = await seed();
+          const foreign = await seed({ owner: randomUUID() });
+          const archived = await seed({ archived: true });
           const assistant = randomUUID();
           await pool.query(
-            "INSERT INTO messages(id,owner_id,task_id,role,text) VALUES($1,$2,$3,'assistant','Synthetic answer')",
-            [assistant, ownerId, current.taskId],
+            "INSERT INTO messages(id,owner_id,thread_id,turn_id,role,text) VALUES($1,$2,$3,$4,'assistant','Synthetic answer')",
+            [assistant, ownerId, current.threadId, current.turnId],
           );
           for (const messageId of [
             foreign.messageId,
-            channel.messageId,
             archived.messageId,
             assistant,
+            randomUUID(),
           ]) {
-            await assert.rejects(
-              service.react({ ...current, messageId, visibleMessageIds: [messageId] }),
-              /cannot receive/,
-            );
+            await assert.rejects(service.react({ ...current, messageId }), /cannot receive/);
           }
-          await assert.rejects(
-            service.react({ ...current, visibleMessageIds: [] }),
-            /not in this conversation/,
-          );
           await assert.rejects(
             service.react({ ...current, reaction: 'not an emoji' }),
             /one emoji/,
           );
-          await assert.rejects(service.react({ ...current, revision: 1 }), /no longer active/);
+          await assert.rejects(
+            service.react({ ...current, turnId: randomUUID() }),
+            /no longer active/,
+          );
+          await assert.rejects(
+            service.react({ ...current, threadId: archived.threadId }),
+            /no longer active/,
+          );
           await assert.rejects(service.react(foreign), /no longer active/);
+          await assert.rejects(service.react(archived), /no longer active/);
           const external = await seed({ channel: 'telegram:fixture' });
-          const background = await seed({ generation: 1, source: 'event' });
+          const background = await seed({ source: 'event' });
           assert.deepEqual(await service.react(external), {
             status: 'skipped',
             reason: 'unavailable',
@@ -186,7 +183,7 @@ test(
             status: 'skipped',
             reason: 'unavailable',
           });
-          await pool.query("UPDATE tasks SET status='cancelled' WHERE id=$1", [current.taskId]);
+          await pool.query("UPDATE turns SET status='cancelled' WHERE id=$1", [current.turnId]);
           await assert.rejects(service.react(current), /no longer active/);
           assert.equal(
             (
@@ -200,7 +197,7 @@ test(
         },
       );
       await t.test(
-        'reset fences a queued reaction and the new conversation has its own cooldown',
+        'reset fences a queued reaction and the new thread has its own cooldown',
         async () => {
           const { ownerId, service, seed } = await setup();
           const reacted = await seed();
@@ -209,11 +206,8 @@ test(
           const client = await pool.connect();
           try {
             await client.query('BEGIN');
-            await lockConversation(client, ownerId);
-            await client.query(
-              "INSERT INTO conversations(owner_id,channel,revision) VALUES($1,'web',1)",
-              [ownerId],
-            );
+            const thread = await lockThread(client, ownerId);
+            await client.query('UPDATE threads SET archived_at=now() WHERE id=$1', [thread.id]);
             const pending = assert.rejects(service.react(stale), /no longer active/);
             await waitForBlockedReaction();
             await client.query('COMMIT');
@@ -229,13 +223,13 @@ test(
             ).rows[0].assistant_reaction,
             null,
           );
-          assert.deepEqual(await service.react(await seed({ generation: 1 })), {
+          assert.deepEqual(await service.react(await seed()), {
             status: 'updated',
           });
         },
       );
       await t.test(
-        'cancellation while waiting for the current segment lock cannot publish a badge',
+        'cancellation while waiting for the current turn lock cannot publish a badge',
         async () => {
           const { service, seed } = await setup();
           const input = await seed();
@@ -243,8 +237,8 @@ test(
           const client = await pool.connect();
           try {
             await client.query('BEGIN');
-            await client.query('SELECT id FROM tasks WHERE id=$1 FOR NO KEY UPDATE', [
-              input.taskId,
+            await client.query('SELECT id FROM turns WHERE id=$1 FOR NO KEY UPDATE', [
+              input.turnId,
             ]);
             const pending = assert.rejects(service.react({ ...input, signal: controller.signal }), {
               name: 'AbortError',

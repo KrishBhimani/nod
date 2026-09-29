@@ -8,7 +8,7 @@ import type { Agent, AgentTool, RuntimeContext, RuntimeObservation } from '../sr
 import { createAgentRuntime } from '../src/runtime/index.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 
-const refusal = 'This task can only read. Use app reads, and browser open, snapshot or scroll.';
+const refusal = 'This turn can only read. Use app reads, and browser open, snapshot or scroll.';
 
 const refused: Array<[string, Record<string, unknown>]> = [
   ['browser', { action: 'click', selector: '@send' }],
@@ -99,7 +99,7 @@ async function run(readOnly: boolean) {
       }),
     }),
     computer: fakeComputer({
-      act: async (_taskId, action) => {
+      act: async (_threadId, action) => {
         browserActions.push(action.action);
         return { text: 'Synthetic inbox', url: 'https://mail.example.test/', candidates: [] };
       },
@@ -107,7 +107,8 @@ async function run(readOnly: boolean) {
     chooseBrowserAction: async () => ({ outcome: 'DONE', elapsedMs: 1 }),
   });
   const context: RuntimeContext = {
-    taskId: randomUUID(),
+    threadId: randomUUID(),
+    turnId: randomUUID(),
     ownerId: 'synthetic-owner',
     prompt: 'Synthetic welcome discovery',
     background: true,
@@ -151,7 +152,7 @@ async function run(readOnly: boolean) {
     },
   };
   try {
-    const result = await runtime.runTask(context);
+    const result = await runtime.runTurn(context);
     return {
       result,
       outcomes,
@@ -171,7 +172,7 @@ async function run(readOnly: boolean) {
   }
 }
 
-test('a read-only task refuses every outside action with a fixed error and still posts its findings', async () => {
+test('a read-only turn refuses every outside action with a fixed error and still posts its findings', async () => {
   const run1 = await run(true);
   for (const [name, args] of refused)
     assert.equal(
@@ -207,7 +208,7 @@ test('a read-only task refuses every outside action with a fixed error and still
   );
 });
 
-test('an ordinary task keeps browser clicks', async () => {
+test('an ordinary turn keeps browser clicks', async () => {
   const ordinary = await run(false);
   assert.deepEqual(ordinary.browserActions, ['open', 'snapshot', 'scroll', 'click']);
   assert.match(ordinary.outcomes.get('browser click')!, /Synthetic inbox/);

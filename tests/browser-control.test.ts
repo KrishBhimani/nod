@@ -26,12 +26,12 @@ const { createRoot } = await import('react-dom/client');
 
 test('a missing live frame disables manual input while keeping the agent resumable', async () => {
   const priorFetch = globalThis.fetch;
-  let control = { active: true, paused: true, revision: 7 as number | null };
+  let control = { active: true, paused: true };
   const writes: Array<{ path: string; body: unknown }> = [];
   globalThis.fetch = async (path, init) => {
     if (init?.method === 'POST') {
       writes.push({ path: String(path), body: JSON.parse(String(init.body)) });
-      control = { active: false, paused: false, revision: null };
+      control = { active: false, paused: false };
     }
     return new Response(JSON.stringify(control));
   };
@@ -41,7 +41,7 @@ test('a missing live frame disables manual input while keeping the agent resumab
   const render = (screen: string | null) =>
     root.render(
       createElement(BrowserControl, {
-        taskId: 'task-one',
+        threadId: 'thread-one',
         screen,
         emptyMessage: 'Browser unavailable',
         live: Boolean(screen),
@@ -60,9 +60,7 @@ test('a missing live frame disables manual input while keeping the agent resumab
     assert.equal(resume.disabled, false);
     assert.ok(buttons.filter((button) => button !== resume).every((button) => button.disabled));
     await act(async () => resume.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-    assert.deepEqual(writes, [
-      { path: '/api/browser/control/task-one/resume', body: { revision: 7 } },
-    ]);
+    assert.deepEqual(writes, [{ path: '/api/browser/control/resume', body: {} }]);
     assert.equal(element.querySelector('textarea'), null);
   } finally {
     await act(async () => root.unmount());
@@ -75,10 +73,14 @@ function mountControl() {
   const element = document.createElement('div');
   document.body.append(element);
   const root = createRoot(element);
-  const render = (taskId = 'task-one', screen: string | null = 'data:image/png;base64,fixture') =>
+  const render = (
+    controlPath = '/api/browser/control',
+    screen: string | null = 'data:image/png;base64,fixture',
+  ) =>
     root.render(
       createElement(BrowserControl, {
-        taskId,
+        threadId: 'thread-one',
+        controlPath,
         screen,
         emptyMessage: 'Browser unavailable',
         live: Boolean(screen),
@@ -107,7 +109,6 @@ function mountControl() {
 const idleState = {
   active: false,
   paused: false,
-  revision: null as number | null,
   mode: null as 'manual' | 'sign_in' | null,
   signInAvailable: true,
 };
@@ -115,11 +116,10 @@ const signInState = {
   ...idleState,
   active: true,
   paused: true,
-  revision: 7,
   mode: 'sign_in' as const,
 };
 
-test('workspace sign-in uses a private frame and input, then explicitly resumes the task', async () => {
+test('workspace sign-in uses a private frame and input, then explicitly resumes the thread', async () => {
   const priorFetch = globalThis.fetch;
   const priorCreate = URL.createObjectURL;
   const priorRevoke = URL.revokeObjectURL;
@@ -134,14 +134,14 @@ test('workspace sign-in uses a private frame and input, then explicitly resumes 
     if (String(path).includes('/sign-in-screen')) {
       assert.equal(init?.cache, 'no-store');
       assert.equal(init?.credentials, 'same-origin');
-      assert.equal(String(path), '/api/browser/control/task-one/sign-in-screen?revision=7');
+      assert.equal(String(path), '/api/browser/control/sign-in-screen');
       return new Response(new Uint8Array([1]), { headers: { 'content-type': 'image/png' } });
     }
     if (init?.method === 'POST') {
       writes.push({ path: String(path), body: JSON.parse(String(init.body)) });
       if (String(path).endsWith('/start')) {
         control = signInState;
-        return new Response(JSON.stringify({ revision: 7 }));
+        return new Response(JSON.stringify({ mode: 'sign_in', resumable: true }));
       }
       if (String(path).endsWith('/resume')) control = idleState;
       return new Response(JSON.stringify({ ok: true }));
@@ -170,12 +170,12 @@ test('workspace sign-in uses a private frame and input, then explicitly resumes 
     );
     await act(async () => f.click('Resume agent'));
     assert.deepEqual(writes, [
-      { path: '/api/browser/control/task-one/start', body: {} },
+      { path: '/api/browser/control/start', body: {} },
       {
-        path: '/api/browser/control/task-one/input',
-        body: { revision: 7, input: { action: 'press', key: 'Tab' } },
+        path: '/api/browser/control/input',
+        body: { input: { action: 'press', key: 'Tab' } },
       },
-      { path: '/api/browser/control/task-one/resume', body: { revision: 7 } },
+      { path: '/api/browser/control/resume', body: {} },
     ]);
     assert.equal(
       f.element.querySelector<HTMLImageElement>('.screen-preview img')?.src,
@@ -205,14 +205,14 @@ test('Take control remains available without a screenshot and rejected actions s
   };
   const f = mountControl();
   try {
-    await act(async () => f.render('task-one', null));
+    await act(async () => f.render('/api/browser/control', null));
     assert.equal(f.button('Take control')?.disabled, false);
     assert.equal(f.button('Sign in in browser'), undefined);
     await act(async () => f.click('Take control'));
     assert.match(f.element.textContent ?? '', /Could not open the browser/);
     assert.equal(f.button('Resume agent'), undefined);
     control = signInState;
-    await act(async () => f.render('task-two', null));
+    await act(async () => f.render('/api/inspector/control', null));
     await act(async () => f.click('Resume agent'));
     assert.equal(f.button('Resume agent')?.disabled, false);
     assert.equal(f.element.querySelector('textarea'), null);
@@ -237,7 +237,7 @@ test('a delayed poll cannot replace an accepted native sign-in state', async (co
     if (init?.method === 'POST') {
       assert.ok(String(path).endsWith('/start'));
       control = signInState;
-      return new Response(JSON.stringify({ revision: 7 }));
+      return new Response(JSON.stringify({ mode: 'sign_in', resumable: true }));
     }
     reads++;
     if (reads === 2)
@@ -261,7 +261,7 @@ test('a delayed poll cannot replace an accepted native sign-in state', async (co
   }
 });
 
-test('a late sign-in response cannot update another browser task', async () => {
+test('a late sign-in response cannot update another control surface', async () => {
   const priorFetch = globalThis.fetch;
   let finishSignIn!: (value: Response) => void;
   const reads: string[] = [];
@@ -277,11 +277,13 @@ test('a late sign-in response cannot update another browser task', async () => {
   try {
     await act(async () => f.render());
     await act(async () => f.click('Take control'));
-    await act(async () => f.render('task-two'));
-    await act(async () => finishSignIn(new Response(JSON.stringify({ revision: 7 }))));
+    await act(async () => f.render('/api/inspector/control'));
+    await act(async () =>
+      finishSignIn(new Response(JSON.stringify({ mode: 'sign_in', resumable: true }))),
+    );
     assert.equal(f.button('Resume agent'), undefined);
     assert.equal(f.button('Take control')?.disabled, false);
-    assert.deepEqual(reads, ['/api/browser/control/task-one', '/api/browser/control/task-two']);
+    assert.deepEqual(reads, ['/api/browser/control', '/api/inspector/control']);
   } finally {
     await f.close();
     globalThis.fetch = priorFetch;
@@ -305,7 +307,7 @@ test('private sign-in frames clear on blur and reject delayed bytes from a hidde
     if (String(path).includes('/sign-in-screen'))
       return new Promise<Response>((resolve) => pending.push({ signal: init!.signal!, resolve }));
     return new Response(
-      JSON.stringify(String(path).includes('task-one') ? signInState : idleState),
+      JSON.stringify(String(path).startsWith('/api/browser/') ? signInState : idleState),
     );
   };
   const frame = () =>
@@ -338,7 +340,7 @@ test('private sign-in frames clear on blur and reject delayed bytes from a hidde
     assert.equal(f.element.querySelector<HTMLImageElement>('img')?.src, 'blob:private-2');
     await act(async () => context.mock.timers.tick(1000));
     assert.equal(pending.length, 4);
-    await act(async () => f.render('task-two', null));
+    await act(async () => f.render('/api/inspector/control', null));
     assert.equal(pending[3].signal.aborted, true);
     assert.equal(pending.length, 4);
     assert.equal(f.element.querySelector('img'), null);

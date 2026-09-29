@@ -23,20 +23,20 @@ test(
       coverage: [],
     });
     const inspector = createInspectorStore(pool, { ownerId: 'owner', enabled: () => true });
-    const firstTask = randomUUID();
-    const secondTask = randomUUID();
-    const foreignTask = randomUUID();
+    const firstTurn = randomUUID();
+    const secondTurn = randomUUID();
+    const foreignTurn = randomUUID();
     const now = new Date().toISOString();
-    async function call(taskId: string, name: string) {
+    async function call(turnId: string, name: string) {
       const id = randomUUID();
-      await inspector.record(taskId, 0, {
+      await inspector.record(turnId, {
         type: 'tool_start',
         id,
         name,
         input: {},
         startedAt: now,
       });
-      await inspector.record(taskId, 0, {
+      await inspector.record(turnId, {
         type: 'tool_end',
         id,
         name,
@@ -55,21 +55,28 @@ test(
       durationMs: 3,
     };
     try {
-      await pool.query(`CREATE TABLE tasks(id uuid PRIMARY KEY,owner_id text NOT NULL,revision integer NOT NULL DEFAULT 0,status text NOT NULL DEFAULT 'running');
-      CREATE TABLE inspector_records(id uuid PRIMARY KEY,owner_id text NOT NULL,task_id uuid NOT NULL REFERENCES tasks(id),revision integer NOT NULL,kind text NOT NULL,name text NOT NULL,status text NOT NULL,input jsonb,output jsonb,error text,usage jsonb,duration_ms double precision,started_at timestamptz NOT NULL,finished_at timestamptz,recorded_at timestamptz NOT NULL DEFAULT now());`);
+      await pool.query(`CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz);
+      CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),status text NOT NULL DEFAULT 'running',finished_at timestamptz);
+      CREATE TABLE inspector_records(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid REFERENCES threads(id),turn_id uuid REFERENCES turns(id),kind text NOT NULL,name text NOT NULL,status text NOT NULL,input jsonb,output jsonb,error text,usage jsonb,duration_ms double precision,started_at timestamptz NOT NULL,finished_at timestamptz,recorded_at timestamptz NOT NULL DEFAULT now());`);
+      const ownerThread = randomUUID();
+      const foreignThread = randomUUID();
+      await pool.query("INSERT INTO threads(id,owner_id) VALUES($1,'owner'),($2,'foreign')", [
+        ownerThread,
+        foreignThread,
+      ]);
       await pool.query(
-        "INSERT INTO tasks(id,owner_id) VALUES($1,'owner'),($2,'owner'),($3,'foreign')",
-        [firstTask, secondTask, foreignTask],
+        "INSERT INTO turns(id,owner_id,thread_id) VALUES($1,'owner',$4),($2,'owner',$4),($3,'foreign',$5)",
+        [firstTurn, secondTurn, foreignTurn, ownerThread, foreignThread],
       );
       await store.initialize();
-      const firstCall = await call(firstTask, 'browser');
-      const secondCall = await call(secondTask, 'google');
+      const firstCall = await call(firstTurn, 'browser');
+      const secondCall = await call(secondTurn, 'google');
       let release!: () => void;
       const gate = new Promise<void>((resolve) => {
         release = resolve;
       });
       await Promise.all([
-        store.withTool(firstTask, firstCall, 'browser', async () => {
+        store.withTool(firstTurn, firstCall, 'browser', async () => {
           await gate;
           store.record({ ...event, costUsd: 0.02, pricing: 'reported' });
           store.record(event);
@@ -81,7 +88,7 @@ test(
             pricing: 'sdk_estimate',
           });
         }),
-        store.withTool(secondTask, secondCall, 'google', async () => {
+        store.withTool(secondTurn, secondCall, 'google', async () => {
           await Promise.resolve();
           store.record({
             ...event,
@@ -92,28 +99,28 @@ test(
           release();
         }),
       ]);
-      store.withTool(firstTask, firstCall, 'wrong_name', () =>
+      store.withTool(firstTurn, firstCall, 'wrong_name', () =>
         store.record({ ...event, costUsd: 0.07, pricing: 'reported' }),
       );
-      store.withTool(firstTask, secondCall, 'google', () =>
+      store.withTool(firstTurn, secondCall, 'google', () =>
         store.record({ ...event, costUsd: 0.08, pricing: 'reported' }),
       );
-      store.withTool(foreignTask, firstCall, 'browser', () =>
+      store.withTool(foreignTurn, firstCall, 'browser', () =>
         store.record({ ...event, costUsd: 99, pricing: 'reported' }),
       );
-      assert.throws(() => store.withTool(firstTask, 'invalid', 'browser', () => {}));
+      assert.throws(() => store.withTool(firstTurn, 'invalid', 'browser', () => {}));
       assert.throws(() =>
-        store.withTool(firstTask, firstCall, 'secret name with spaces', () => {}),
+        store.withTool(firstTurn, firstCall, 'secret name with spaces', () => {}),
       );
       await store.flush();
-      const first = (await inspector.read(firstTask))!;
-      assert.equal(first.scope, 'task');
+      const first = (await inspector.read(firstTurn))!;
+      assert.equal(first.scope, 'turn');
       assert.equal(first.calls[0].directCostUsd, 0.02);
       assert.equal(first.calls[0].providerOperations, 2);
       assert.equal(first.calls[0].pricedOperations, 1);
       assert.equal(first.calls[0].pricing, 'reported');
       assert.equal(first.toolUsage[0].directCostUsd, 0.02);
-      const second = (await inspector.read(secondTask))!;
+      const second = (await inspector.read(secondTurn))!;
       assert.equal(second.calls[0].directCostUsd, 0.03);
       const all = (await inspector.read())!;
       assert.equal(all.scope, 'owner');
@@ -122,12 +129,12 @@ test(
       assert.equal(all.summary.pricedProviderOperations, 2);
       assert.equal(all.summary.directProviderCostUsd, 0.05);
       assert.equal(all.summary.knownCostUsd, null);
-      assert.equal(await inspector.read(foreignTask), null);
+      assert.equal(await inspector.read(foreignTurn), null);
       const providerRows = await pool.query('SELECT * FROM provider_usage ORDER BY cost_usd');
       assert.equal(providerRows.rows.find((row) => row.category === 'agent').tool_call_id, null);
       assert.equal(providerRows.rows.filter((row) => row.tool_call_id).length, 3);
       assert.equal(
-        providerRows.rows.some((row) => row.task_id === foreignTask),
+        providerRows.rows.some((row) => row.turn_id === foreignTurn),
         false,
       );
       assert.ok(
@@ -136,8 +143,8 @@ test(
         ) < 1e-9,
       );
       for (let index = 0; index < 105; index++) {
-        const id = await call(firstTask, 'browser');
-        store.withTool(firstTask, id, 'browser', () =>
+        const id = await call(firstTurn, 'browser');
+        store.withTool(firstTurn, id, 'browser', () =>
           store.record({ ...event, costUsd: 0.001, pricing: 'sdk_estimate' }),
         );
       }
@@ -164,7 +171,7 @@ test(
         "UPDATE provider_usage SET recorded_at=now()-interval '8 days' WHERE tool_call_id=$1",
         [firstCall],
       );
-      const retained = (await inspector.read(firstTask))!;
+      const retained = (await inspector.read(firstTurn))!;
       assert.ok(Math.abs(retained.toolUsage[0].directCostUsd! - 0.105) < 1e-9);
       assert.equal(retained.summary.providerOperations, 105);
     } finally {

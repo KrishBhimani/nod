@@ -17,24 +17,24 @@ export function InspectorScreen({
 }: {
   data: (BrowserDetail & Partial<Pick<InspectorDetail, 'runtime' | 'artifacts'>>) | null;
   active: boolean;
-  onStopped(taskId: string): void;
+  onStopped(threadId: string): void;
   allowDetach?: boolean;
   showDetails?: boolean;
   screenPath?: string;
 }) {
-  const [controlled, setControlled] = useState<{ taskId?: string; privateView: boolean } | null>(
+  const [controlled, setControlled] = useState<{ threadId?: string; privateView: boolean } | null>(
     null,
   );
   const controlActive = controlled !== null;
   const privateControl = controlled?.privateView ?? false;
-  const browserId = controlled ? controlled.taskId : data?.currentBrowser?.taskId;
+  const browserId = controlled ? controlled.threadId : data?.currentBrowser?.threadId;
   const controlChanged = useCallback(
     (active: boolean, privateView: boolean) => {
       setControlled((current) =>
         active
           ? current?.privateView === privateView
             ? current
-            : { taskId: browserId, privateView }
+            : { threadId: browserId, privateView }
           : current
             ? null
             : current,
@@ -53,8 +53,8 @@ export function InspectorScreen({
   const popup = useRef<Window | null>(null);
   const [stoppingBrowser, setStoppingBrowser] = useState<string>();
   const [screen, setScreen] = useState('');
-  const [screenTask, setScreenTask] = useState<string>();
-  const currentScreen = screenTask === browserId ? screen : '';
+  const [screenThread, setScreenThread] = useState<string>();
+  const currentScreen = screenThread === browserId ? screen : '';
   const [screenState, setScreenState] = useState('Waiting for a browser session.');
   const [frameKind, setFrameKind] = useState('live');
   const [updated, setUpdated] = useState<Date | null>(null);
@@ -91,7 +91,7 @@ export function InspectorScreen({
       const requestedActivity = activity.current ?? '';
       try {
         const response = await apiResponse(
-          `${screenPath}?taskId=${encodeURIComponent(browserId)}`,
+          `${screenPath}?threadId=${encodeURIComponent(browserId)}`,
           {
             cache: 'no-store',
             credentials: 'same-origin',
@@ -127,7 +127,7 @@ export function InspectorScreen({
           const next = URL.createObjectURL(bytes),
             previous = imageUrl.current;
           imageUrl.current = next;
-          setScreenTask(browserId);
+          setScreenThread(browserId);
           setScreen(next);
           setFrameKind(response.headers.get('X-Screen-State') ?? 'live');
           setUpdated(new Date(response.headers.get('X-Screen-Captured-At') ?? Date.now()));
@@ -233,7 +233,7 @@ export function InspectorScreen({
           <section className="live-screen">
             <BrowserControl
               key={browserId}
-              taskId={browserId}
+              threadId={browserId}
               onControlChange={controlChanged}
               screen={currentScreen}
               emptyMessage={screenState}
@@ -251,17 +251,17 @@ export function InspectorScreen({
                     </Button>
                   )}
                   {browserId &&
-                    data?.currentBrowser?.taskId === browserId &&
+                    data?.currentBrowser?.threadId === browserId &&
                     data.currentBrowser.status === 'running' && (
                       <Button
                         variant="ghost"
                         size="sm"
                         disabled={stoppingBrowser === browserId}
-                        aria-label="Stop browser task"
+                        aria-label="Stop Otto"
                         onClick={() => {
                           const id = browserId;
                           setStoppingBrowser(id);
-                          void post(`/api/tasks/${encodeURIComponent(id)}/cancel`)
+                          void post('/api/thread/stop')
                             .then(() => onStopped(id))
                             .catch((cause) => setError(errorMessage(cause)))
                             .finally(() => setStoppingBrowser(undefined));
@@ -297,11 +297,11 @@ export function InspectorScreen({
             </section>
           )}
           {showDetails &&
-            (data?.artifacts ?? []).filter((item) => item.taskId === browserId).length > 0 && (
+            (data?.artifacts ?? []).filter((item) => item.threadId === browserId).length > 0 && (
               <section className="inspector-section">
                 <h3>Files</h3>
                 {data?.artifacts
-                  ?.filter((item) => item.taskId === browserId)
+                  ?.filter((item) => item.threadId === browserId)
                   .map((item) => (
                     <a
                       className="inspector-file"

@@ -14,7 +14,7 @@ function value(result: AgentToolResult) {
   return JSON.parse(content.text);
 }
 
-test('a LinkedIn task pauses for sign-in and reads 50 synthetic offers after reuse', async () => {
+test('a LinkedIn thread pauses for sign-in and reads 50 synthetic offers after reuse', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'sk-linkedin-task-'));
   const connectionId = randomUUID();
   const questions: string[] = [];
@@ -68,14 +68,16 @@ test('a LinkedIn task pauses for sign-in and reads 50 synthetic offers after reu
     agent,
     workspace: fakeWorkspace(),
     computer: fakeComputer({
-      act: async (_taskId, action) => {
+      act: async (_threadId, action) => {
         if (action.action === 'click') page += 1;
         return observation();
       },
     }),
   });
+  const threadId = randomUUID();
   const context = (): RuntimeContext => ({
-    taskId: randomUUID(),
+    threadId,
+    turnId: randomUUID(),
     ownerId: 'synthetic-owner',
     prompt: 'Find the last 50 job offers I got on LinkedIn. Send nothing.',
     history: [],
@@ -102,11 +104,11 @@ test('a LinkedIn task pauses for sign-in and reads 50 synthetic offers after reu
         : { status: 'session_opened', connectionId, observation: observation() },
   });
   try {
-    const first = await runtime.runTask(context());
+    const first = await runtime.runTurn(context());
     assert.equal(first.status, 'waiting_user');
     assert.match(questions[0], /Connect website/);
     assert.match(questions[0], /browser-connect/);
-    const second = await runtime.runTask(context());
+    const second = await runtime.runTurn(context());
     assert.equal(second.status, 'succeeded');
     assert.equal(offers.size, 50);
     assert.ok(offers.has('Offer 01'));
@@ -136,8 +138,9 @@ test('website account work asks for a Vault login before a browser connection', 
     computer: fakeComputer(),
   });
   try {
-    await runtime.runTask({
-      taskId: randomUUID(),
+    await runtime.runTurn({
+      threadId: randomUUID(),
+      turnId: randomUUID(),
       ownerId: 'synthetic-owner',
       prompt: 'Sign in to the toll website and get my latest statement.',
       history: [],

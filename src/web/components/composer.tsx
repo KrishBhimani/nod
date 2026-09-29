@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
-import { ArrowUp, Paperclip, X, FileText, LoaderCircle, CornerUpLeft } from 'lucide-react';
+import { ArrowUp, Paperclip, X, FileText, LoaderCircle, CornerUpLeft, Square } from 'lucide-react';
 import type { Artifact, Message } from '../../shared/contracts';
 import { api, errorMessage } from '../lib/api';
 import { createComposerExtensions } from '../lib/composer-editor';
@@ -39,10 +39,12 @@ interface ComposerProps {
   replyTo: Pick<Message, 'id' | 'role' | 'text'> | null;
   clearReply(): void;
   onSend(text: string, attachments: Artifact[]): Promise<ComposerSendResult>;
+  onStop?(): void;
+  stopping?: boolean;
 }
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
-  { ready, sending, text, setText, replyTo, clearReply, onSend },
+  { ready, sending, text, setText, replyTo, clearReply, onSend, onStop, stopping = false },
   ref,
 ) {
   const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
@@ -371,17 +373,33 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               <Paperclip size={18} />
             </Button>
           </div>
-          <Button
-            type="submit"
-            size="icon"
-            className="send-button"
-            aria-label="Send message"
-            disabled={
-              !ready || sending || pendingUploads > 0 || (!text.trim() && !attachments.length)
-            }
-          >
-            {sending ? <LoaderCircle size={18} className="spin" /> : <ArrowUp size={19} />}
-          </Button>
+          <div className="composer-right">
+            {onStop && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="stop-button"
+                aria-label="Stop Otto"
+                title="Stop"
+                disabled={stopping}
+                onClick={onStop}
+              >
+                <Square size={14} fill="currentColor" />
+              </Button>
+            )}
+            <Button
+              type="submit"
+              size="icon"
+              className="send-button"
+              aria-label="Send message"
+              disabled={
+                !ready || sending || pendingUploads > 0 || (!text.trim() && !attachments.length)
+              }
+            >
+              {sending ? <LoaderCircle size={18} className="spin" /> : <ArrowUp size={19} />}
+            </Button>
+          </div>
         </div>
       </form>
       <ImageViewer

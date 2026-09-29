@@ -1,29 +1,29 @@
 export interface StreamState {
-  conversationRevision: number;
-  active: Record<string, { taskId: string; text: string }>;
+  threadId: string;
+  active: Record<string, { turnId: string; text: string }>;
   completed: string[];
 }
 
 export type StreamAction =
   | {
       type: 'delta';
-      taskId: string;
+      turnId: string;
       text: string;
       streamId?: string;
       done?: boolean;
-      conversationRevision?: number;
+      threadId?: string;
     }
   | {
       type: 'persisted';
       streamIds: string[];
-      discardedTaskIds?: string[];
-      conversationRevision?: number;
+      discardedTurnIds?: string[];
+      threadId?: string;
     }
   | { type: 'reset' }
-  | { type: 'conversation'; conversationRevision: number };
+  | { type: 'thread'; threadId: string };
 
 export const initialStreamState: StreamState = {
-  conversationRevision: 0,
+  threadId: '',
   active: {},
   completed: [],
 };
@@ -41,30 +41,31 @@ function closeStreams(state: StreamState, ids: string[]): StreamState {
 
 export function streamReducer(state: StreamState, action: StreamAction): StreamState {
   if (action.type === 'reset') return { ...state, active: {} };
-  const revision = action.conversationRevision ?? state.conversationRevision;
-  if (revision < state.conversationRevision) return state;
-  if (revision > state.conversationRevision)
-    state = { conversationRevision: revision, active: {}, completed: [] };
-  if (action.type === 'conversation') return state;
+  const threadId = action.threadId ?? state.threadId;
+  if (threadId !== state.threadId) {
+    if (action.type === 'delta' && state.threadId) return state;
+    state = { threadId, active: {}, completed: [] };
+  }
+  if (action.type === 'thread') return state;
   if (action.type === 'persisted') {
-    const discarded = new Set(action.discardedTaskIds ?? []);
+    const discarded = new Set(action.discardedTurnIds ?? []);
     return closeStreams(state, [
       ...action.streamIds,
       ...Object.entries(state.active)
-        .filter(([, stream]) => discarded.has(stream.taskId))
+        .filter(([, stream]) => discarded.has(stream.turnId))
         .map(([id]) => id),
     ]);
   }
-  const id = action.streamId || `task:${action.taskId}`;
+  const id = action.streamId || `turn:${action.turnId}`;
   if (action.done) return closeStreams(state, [id]);
   if (!action.text || state.completed.includes(id)) return state;
   const current = state.active[id];
-  if (current && current.taskId !== action.taskId) return state;
+  if (current && current.turnId !== action.turnId) return state;
   return {
     ...state,
     active: {
       ...state.active,
-      [id]: { taskId: action.taskId, text: (current?.text ?? '') + action.text },
+      [id]: { turnId: action.turnId, text: (current?.text ?? '') + action.text },
     },
   };
 }

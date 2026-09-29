@@ -31,7 +31,8 @@ test(
       expiryYear,
     };
     await pool.query(`
-      CREATE TABLE tasks(id text PRIMARY KEY,owner_id text NOT NULL,revision integer NOT NULL DEFAULT 0,status text NOT NULL DEFAULT 'running');
+      CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz);
+      CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running');
       CREATE TABLE vault_entries(id text PRIMARY KEY,owner_id text NOT NULL,label text NOT NULL,origin text NOT NULL,username_hint text NOT NULL,ciphertext text NOT NULL,updated_at timestamptz NOT NULL DEFAULT now());
     `);
     const login = { id: randomUUID(), owner_id: owner, origin: 'https://login.example.test' };
@@ -218,9 +219,17 @@ test(
       await t.test(
         'cards never appear in login choices, invitations or automatic fills',
         async () => {
-          const taskId = randomUUID();
-          await pool.query('INSERT INTO tasks(id,owner_id) VALUES($1,$2)', [taskId, owner]);
-          const requested = await vault.request(taskId, owner, {
+          const turn = { threadId: randomUUID(), turnId: randomUUID() };
+          await pool.query('INSERT INTO threads(id,owner_id) VALUES($1,$2)', [
+            turn.threadId,
+            owner,
+          ]);
+          await pool.query('INSERT INTO turns(id,owner_id,thread_id) VALUES($1,$2,$3)', [
+            turn.turnId,
+            owner,
+            turn.threadId,
+          ]);
+          const requested = await vault.request(turn, owner, {
             origin: 'https://cards.example.test',
             label: 'Login',
             kind: 'password',
@@ -235,7 +244,7 @@ test(
           });
           assert.deepEqual(description.json().savedEntries, []);
           await assert.rejects(
-            vault.fillSaved(taskId, owner, first.id, {
+            vault.fillSaved(turn, owner, first.id, {
               origin: 'https://cards.example.test',
               label: 'Login',
               kind: 'password',

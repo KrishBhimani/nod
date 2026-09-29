@@ -2,8 +2,8 @@
 
 Otto is a personal assistant you use through one chat. It can browse websites, run commands, and create files in a Linux workspace. It can also track goals, run scheduled tasks, and use accounts that you connect.
 
-- **Chat:** Send messages and files, follow task progress, and keep chat history between sessions.
-- **Computer:** Let Otto use its own browser and workspace. In local mode, you can take control of the browser when a task needs your input.
+- **Chat:** Send messages and files, follow progress, stop work, and keep chat history between sessions.
+- **Computer:** Let Otto use its own browser and workspace. In local mode, you can take control of the browser when Otto needs your input.
 - **Planning:** Keep goals and schedules in the app. Use the Vault to save website logins and payment cards.
 
 ## Start on your computer
@@ -18,7 +18,7 @@ The first run installs dependencies, creates `.env`, and starts PostgreSQL and t
 
 Chat needs a model key. For OpenAI, set `LLM_PROVIDER=openai` and `OPENAI_API_KEY`. For Anthropic, set `LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`. Put these settings in the ignored `.env` file or export them in the shell that starts Otto. If a setting is in both places, the shell value takes priority. Restart Otto after you edit `.env`. Keep keys out of chat and Git.
 
-The local setup supports one owner and listens only on `127.0.0.1`. Chat and computer tasks need Docker and a model key. They do not need Cloudflare, E2B, or Google sign-in.
+The local setup supports one owner and listens only on `127.0.0.1`. Chat and the computer need Docker and a model key. They do not need Cloudflare, E2B, or Google sign-in.
 
 ## Optional connections
 
@@ -26,9 +26,9 @@ The local setup supports one owner and listens only on `127.0.0.1`. Chat and com
 - **Channels:** Set up Telegram or WhatsApp from **Channels**. Telegram can poll locally. WhatsApp needs a Meta callback and an eligible account. See [channel setup](docs/channels.md).
 - **Vault:** On macOS, Keychain supplies the encryption key. Other hosts need `OTTO_VAULT_KEY`. See [vault setup](docs/vault.md).
 
-Invalid app tool searches can be corrected within the task. If an earlier external action has no confirmed outcome, Otto blocks repeating it; a later fix does not clear that protection. See [connection execution and recovery](docs/composio.md).
+Invalid app tool searches can be corrected within the same turn. If an approved outside action is interrupted while it runs, Otto marks it uncertain and never runs it again; check the app before asking for it again. See [connection execution and recovery](docs/composio.md).
 
-Press Ctrl-C to stop the server. Run `docker compose stop` to stop its containers. Task files stay in `.local/`. PostgreSQL, browser data, and installed workspace tools stay in Docker volumes. Keep these stores if you want to keep your local data.
+Press Ctrl-C to stop the server. Run `docker compose stop` to stop its containers. Workspace files stay in `.local/`. PostgreSQL, browser data, and installed workspace tools stay in Docker volumes. Keep these stores if you want to keep your local data.
 
 ## Hosted mode
 
@@ -40,6 +40,6 @@ Before enabling E2B, follow its [development acceptance procedure](deployment/e2
 
 The production pilot is available at [otto.n8n-maintenance.workers.dev](https://otto.n8n-maintenance.workers.dev). Google sign-in, onboarding, all five Google metadata reads, public browser navigation and browser-to-chat PDF delivery have live checks at this origin. Gmail and Calendar events have reached the signed ingress and classification pipeline. Authenticated Via Verde statement retrieval and Telegram delivery remain unverified. Hosted computers use Cloudflare; E2B is deferred. The [dated cutover record](docs/testing/results/2026-09-28-otto-cutover.md) records exact releases, manual and automatic deployment results, legacy-resource retirement and remaining acceptance work.
 
-Account and environment deletion are operator maintenance procedures. Follow the [scoped reset runbook](docs/environment-reset.md) to preserve other accounts and shared configuration; [the verified single-account reset](docs/testing/results/2026-09-29-owner-erasure.md) records the checks and retention limits. Deleting an account does not fix or replay a task with an unknown outcome.
+Account and environment deletion are operator maintenance procedures. Follow the [scoped reset runbook](docs/environment-reset.md) to preserve other accounts and shared configuration; [the verified single-account reset](docs/testing/results/2026-09-29-owner-erasure.md) records the checks and retention limits. Deleting an account does not fix or replay an action with an unknown outcome.
 
 The [system guide](docs/system-guide.md) describes product behavior and limits. [Architecture](docs/architecture.md) and the [API contract](docs/api-contract.md) describe the code.

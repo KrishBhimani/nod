@@ -17,7 +17,7 @@ type Attempt = {
   label: string;
   origin: string;
   state: 'pending' | 'saved';
-  fromTask: boolean;
+  fromChat: boolean;
   expiresAt: string;
   inspection: Inspection | null;
 };
@@ -40,7 +40,7 @@ export function BrowserConnection({ token }: { token: string }) {
   );
   const [activity, setActivity] = useState<'credentials' | 'finish' | null>(null);
   const [workingSeconds, setWorkingSeconds] = useState(0);
-  const returnTo = attempt?.fromTask ? '/' : '/apps';
+  const returnTo = attempt?.fromChat ? '/' : '/apps';
   const controlChanged = useCallback(
     (active: boolean, _privateView: boolean, phase: typeof browserPhase) => {
       setPrivateActive(active);
@@ -247,7 +247,7 @@ export function BrowserConnection({ token }: { token: string }) {
         </a>
         <a className="browser-connection-back" href={returnTo}>
           <ArrowLeft size={16} />
-          {attempt?.fromTask ? 'Back to chat' : 'Back to Apps'}
+          {attempt?.fromChat ? 'Back to chat' : 'Back to Apps'}
         </a>
       </header>
       <div className="browser-connection-layout">
@@ -329,7 +329,7 @@ export function BrowserConnection({ token }: { token: string }) {
                   The browser session is saved, but Vault could not save the login.
                 </Notice>
               )}
-              <a href={returnTo}>Return to {attempt?.fromTask ? 'chat' : 'Apps'}</a>
+              <a href={returnTo}>Return to {attempt?.fromChat ? 'chat' : 'Apps'}</a>
             </div>
           ) : attempt ? (
             <>

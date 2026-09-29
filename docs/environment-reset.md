@@ -1,6 +1,6 @@
 # Resetting accounts and environments
 
-A full reset removes every account and its application data from one explicitly selected environment. A single-account erasure removes one explicitly selected account and preserves every other account. Both are operator maintenance procedures, distinct from the **Get started** action or `POST /api/conversation/reset`: those archive the current web conversation and preserve accounts and saved data. There is no public account-erasure endpoint or general-purpose reset CLI.
+A full reset removes every account and its application data from one explicitly selected environment. A single-account erasure removes one explicitly selected account and preserves every other account. Both are operator maintenance procedures, distinct from the **Get started** action or `POST /api/conversation/reset`: those archive the owner's current thread and preserve accounts and saved data. There is no public account-erasure endpoint or general-purpose reset CLI.
 
 Use a dedicated database, object bucket and provider projects for each environment. Verify the exact public origin, database identity, bucket, provider project and deployed release before making changes. Never use a production reset as test-fixture cleanup.
 
@@ -18,11 +18,11 @@ Capture a private manifest of account IDs, tenant schemas and roles, runtime gen
 
 ## Close admission and stop work
 
-For Cloudflare hosting, use the [deployment barrier](../deployment/cloudflare/README.md) to drain accepted tasks naturally and obtain exact tenant/computer stop receipts. Local process hosting, including E2B computers, has no Cloudflare deployment barrier; do not reset it until a supported natural-drain and exact-stop procedure has been documented and completed. Keep admission closed throughout deletion. Stop the gateway and prevent health checks, scheduled wakeups and anonymous session checks from restarting it during the reset; its in-memory registry must not survive the reset.
+For Cloudflare hosting, use the [deployment barrier](../deployment/cloudflare/README.md) to drain accepted turns naturally and obtain exact tenant/computer stop receipts. Local process hosting, including E2B computers, has no Cloudflare deployment barrier; do not reset it until a supported natural-drain and exact-stop procedure has been documented and completed. Keep admission closed throughout deletion. Stop the gateway and prevent health checks, scheduled wakeups and anonymous session checks from restarting it during the reset; its in-memory registry must not survive the reset.
 
 A stopped-looking dashboard row is insufficient. Confirm native process termination, settled startup and the expected generation for every tenant and computer. Unknown outcomes remain fenced. Do not clear Durable Object storage or generation guards to bypass an uncertain stop.
 
-An unresolved historical action can prevent the normal deployment drain even after its computer has terminated. An explicitly authorized account or environment erasure may discard that action's stored data within the approved scope after independently confirming physical termination of every affected runtime. Use a separate authenticated maintenance lock, preserve uncertainty until erasure, and record this as an erasure operation. Never relabel it as a clean task completion or replay the action to make a deployment check pass. Keep the failed deployment barrier closed until the selected registry entries and user resources are gone; only then reconcile and reopen that same operation.
+An unresolved historical action can prevent the normal deployment drain even after its computer has terminated. An explicitly authorized account or environment erasure may discard that action's stored data within the approved scope after independently confirming physical termination of every affected runtime. Use a separate authenticated maintenance lock, preserve uncertainty until erasure, and record this as an erasure operation. Never relabel it as a clean turn completion or replay the action to make a deployment check pass. Keep the failed deployment barrier closed until the selected registry entries and user resources are gone; only then reconcile and reopen that same operation.
 
 ## Remove user resources
 

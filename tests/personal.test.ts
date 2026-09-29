@@ -46,8 +46,8 @@ test(
       pool,
       ownerId: 'fixture-owner',
       scheduler,
-      submitTask: async () => {
-        throw new Error('No task execution is expected in this fixture.');
+      enqueueTurn: async () => {
+        throw new Error('No turn execution is expected in this fixture.');
       },
       refresh() {},
     });
@@ -76,13 +76,15 @@ test(
         `SELECT s.cron,s.time_zone AS timezone FROM schedules s JOIN ${bossSchema}.job j ON j.id=s.job_id AND j.name='scheduled-task' WHERE s.id=$1 AND j.state IN ('created','retry','active')`,
         [id],
       );
+    const threadId = randomUUID();
     try {
       await scheduler.start();
+      await pool.query(`CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz);
+        CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid REFERENCES threads(id),source text NOT NULL DEFAULT 'user',
+          prompt text NOT NULL DEFAULT '',status text NOT NULL DEFAULT 'queued',error text,channel text NOT NULL DEFAULT 'web',created_at timestamptz NOT NULL DEFAULT now())`);
       await personal.initialize({ workers: false });
-      await pool.query(`CREATE TABLE tasks(id uuid PRIMARY KEY,owner_id text NOT NULL,status text NOT NULL DEFAULT 'queued',error text,
-          channel text NOT NULL DEFAULT 'web',conversation_revision integer NOT NULL DEFAULT 0);
-        CREATE TABLE conversations(owner_id text NOT NULL,channel text NOT NULL,revision integer NOT NULL DEFAULT 0,PRIMARY KEY(owner_id,channel));
-        CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text NOT NULL,role text NOT NULL,text text NOT NULL DEFAULT '',task_id uuid,created_at timestamptz NOT NULL DEFAULT now());
+      await pool.query(`CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text NOT NULL,role text NOT NULL,text text NOT NULL DEFAULT '',
+          thread_id uuid,turn_id uuid,created_at timestamptz NOT NULL DEFAULT now());
         CREATE TABLE memory_facts(id uuid PRIMARY KEY,owner_id text NOT NULL,text text NOT NULL,
           source_message_id uuid REFERENCES messages(id),UNIQUE(owner_id,text))`);
       await pool.query(`CREATE TABLE preferences(owner_id text PRIMARY KEY,notification_rule text NOT NULL DEFAULT '',
@@ -128,18 +130,18 @@ test(
         'automatic learning requires an exact owned user statement and preserves provenance without approval',
         async () => {
           const id = randomUUID(),
-            taskId = randomUUID(),
+            turnId = randomUUID(),
             foreign = randomUUID(),
             assistant = randomUUID();
           await pool.query(
-            "INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,'fixture-owner','user','I prefer concise replies',$4),($2,'other-owner','user','I prefer concise replies',$4),($3,'fixture-owner','assistant','I prefer concise replies',$4)",
-            [id, foreign, assistant, taskId],
+            "INSERT INTO messages(id,owner_id,role,text,turn_id,thread_id) VALUES($1,'fixture-owner','user','I prefer concise replies',$4,$5),($2,'other-owner','user','I prefer concise replies',$4,$5),($3,'fixture-owner','assistant','I prefer concise replies',$4,$5)",
+            [id, foreign, assistant, turnId, threadId],
           );
           assert.deepEqual(
             await personal.manage(
               'memory_remember',
               { quote: 'I prefer concise replies' },
-              { sourceMessageId: id, taskId },
+              { sourceMessageId: id, turnId },
             ),
             { ok: true },
           );
@@ -182,7 +184,7 @@ test(
             personal.manage(
               'memory_remember',
               { quote: 'I prefer concise replies' },
-              { sourceMessageId: id, taskId: randomUUID() },
+              { sourceMessageId: id, turnId: randomUUID() },
             ),
           );
           await assert.rejects(
@@ -231,7 +233,7 @@ test(
       await t.test(
         'contextual and corrected preferences retain the complete direct user statement',
         async () => {
-          const taskId = randomUUID();
+          const turnId = randomUUID();
           for (const quote of [
             'For travel plans, I prefer short bullet lists. Please remember this preference.',
             'Correction: I prefer short bullet lists only for travel plans.',
@@ -241,14 +243,14 @@ test(
           ]) {
             const source = randomUUID();
             await pool.query(
-              "INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,'fixture-owner','user',$2,$3)",
-              [source, quote, taskId],
+              "INSERT INTO messages(id,owner_id,role,text,turn_id,thread_id) VALUES($1,'fixture-owner','user',$2,$3,$4)",
+              [source, quote, turnId, threadId],
             );
             assert.deepEqual(
               await personal.manage(
                 'memory_remember',
                 { quote },
-                { sourceMessageId: source, taskId },
+                { sourceMessageId: source, turnId },
               ),
               { ok: true },
             );
@@ -265,7 +267,7 @@ test(
               personal.manage(
                 'memory_remember',
                 { quote: 'I prefer short bullet lists.' },
-                { sourceMessageId: source, taskId },
+                { sourceMessageId: source, turnId },
               ),
               /complete current user statement/,
             );
@@ -280,11 +282,11 @@ test(
           ]) {
             const source = randomUUID();
             await pool.query(
-              "INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,'fixture-owner','user',$2,$3)",
-              [source, quote, taskId],
+              "INSERT INTO messages(id,owner_id,role,text,turn_id,thread_id) VALUES($1,'fixture-owner','user',$2,$3,$4)",
+              [source, quote, turnId, threadId],
             );
             await assert.rejects(
-              personal.manage('memory_remember', { quote }, { sourceMessageId: source, taskId }),
+              personal.manage('memory_remember', { quote }, { sourceMessageId: source, turnId }),
               /explicit personal fact or preference/,
             );
             assert.equal(
@@ -302,7 +304,7 @@ test(
             locationSource = randomUUID(),
             shortSource = randomUUID(),
             questionSource = randomUUID(),
-            taskId = randomUUID();
+            turnId = randomUUID();
           await pool.query(
             "INSERT INTO messages(id,owner_id,role,text) VALUES($1,'fixture-owner','user','My name is Fixture Person'),($2,'fixture-owner','user','I live in Lisbon')",
             [nameSource, locationSource],
@@ -327,13 +329,13 @@ test(
           assert.equal((await personal.getProfile()).name, 'Fixture Person');
           assert.equal((await personal.getProfile()).location, 'Lisbon');
           await pool.query(
-            "INSERT INTO messages(id,owner_id,role,text,task_id,created_at) VALUES($1,'fixture-owner','assistant','What should I call you?',$3,now()-interval '1 second'),($2,'fixture-owner','user','Filipe',$3,now())",
-            [questionSource, shortSource, taskId],
+            "INSERT INTO messages(id,owner_id,role,text,turn_id,thread_id,created_at) VALUES($1,'fixture-owner','assistant','What should I call you?',$3,$4,now()-interval '1 second'),($2,'fixture-owner','user','Filipe',$3,$4,now())",
+            [questionSource, shortSource, turnId, randomUUID()],
           );
           await personal.manage(
             'profile_learn',
             { field: 'name', value: 'Filipe', quote: 'Filipe' },
-            { sourceMessageId: shortSource, taskId },
+            { sourceMessageId: shortSource, turnId },
           );
           assert.equal((await personal.getProfile()).name, 'Filipe');
           assert.equal((await personal.getProfile()).location, 'Lisbon');
@@ -359,32 +361,32 @@ test(
             'I would rather not',
             "I don't want to share that",
           ]) {
-            const taskId = randomUUID(),
+            const turnId = randomUUID(),
               source = randomUUID();
             await pool.query(
-              "INSERT INTO messages(id,owner_id,role,text,task_id,created_at) VALUES($1,'fixture-owner','assistant',$2,$3,now()-interval '1 second'),($4,'fixture-owner','user',$5,$3,now())",
-              [randomUUID(), question, taskId, source, text],
+              "INSERT INTO messages(id,owner_id,role,text,turn_id,thread_id,created_at) VALUES($1,'fixture-owner','assistant',$2,$3,$6,now()-interval '1 second'),($4,'fixture-owner','user',$5,$3,$6,now())",
+              [randomUUID(), question, turnId, source, text, randomUUID()],
             );
             await assert.rejects(
               personal.manage(
                 'profile_learn',
                 { field, value: text, quote: text },
-                { sourceMessageId: source, taskId },
+                { sourceMessageId: source, turnId },
               ),
             );
           }
         }
         assert.deepEqual(await personal.getProfile(), before);
-        const taskId = randomUUID(),
+        const turnId = randomUUID(),
           source = randomUUID();
         await pool.query(
-          "INSERT INTO messages(id,owner_id,role,text,task_id,created_at) VALUES($1,'fixture-owner','assistant','What should I call you?',$2,now()-interval '1 second'),($3,'fixture-owner','user','Noel',$2,now())",
-          [randomUUID(), taskId, source],
+          "INSERT INTO messages(id,owner_id,role,text,turn_id,thread_id,created_at) VALUES($1,'fixture-owner','assistant','What should I call you?',$2,$4,now()-interval '1 second'),($3,'fixture-owner','user','Noel',$2,$4,now())",
+          [randomUUID(), turnId, source, randomUUID()],
         );
         await personal.manage(
           'profile_learn',
           { field: 'name', value: 'Noel', quote: 'Noel' },
-          { taskId, sourceMessageId: source },
+          { turnId, sourceMessageId: source },
         );
         assert.equal((await personal.getProfile()).name, 'Noel');
         const initial = (await pool.query('SELECT id FROM memory_facts')).rowCount;
@@ -513,7 +515,7 @@ test(
           pool,
           ownerId: 'another-owner',
           scheduler,
-          submitTask: async () => '',
+          enqueueTurn: async () => '',
           refresh() {},
         });
         assert.equal((await another.getProfile()).name, '');

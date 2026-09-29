@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
-import type { TaskEvent } from '../../shared/contracts';
+import type { TurnEvent } from '../../shared/contracts';
 import type {
   InspectorObservationsResponse,
   InspectorToolsResponse,
@@ -18,7 +18,7 @@ import {
   formatModelCost,
   formatToolDuration,
   mergeObservationPage,
-  groupTaskActivity,
+  groupTurnActivity,
   type ToolStatusFilter,
 } from '../lib/inspector-observations';
 import { Button, Loading, Notice, SearchField } from './ui';
@@ -48,9 +48,7 @@ export function ToolCallRecord({ call }: { call: ToolCall }) {
         <ChevronDown size={13} className="inspector-disclosure" />
         <span className="inspector-record-title">
           <strong>{call.name}</strong>
-          <small>
-            {formatTime(call.startedAt, undefined, { seconds: true })} · revision {call.revision}
-          </small>
+          <small>{formatTime(call.startedAt, undefined, { seconds: true })}</small>
         </span>
         <span className="inspector-record-state">
           <span className={`inspector-status inspector-status-${call.status}`}>{call.status}</span>
@@ -115,7 +113,7 @@ export function ModelUsageSummary({
       </p>
     );
   return (
-    <section className="inspector-usage-summary" aria-label="Retained task model usage">
+    <section className="inspector-usage-summary" aria-label="Retained model usage">
       <div className="inspector-cost-heading">
         <span>Assistant model requests · SDK estimate</span>
         <strong>{formatModelCost(summary.knownCostUsd)}</strong>
@@ -174,8 +172,7 @@ export function ModelUsageRecord({ usage }: { usage: ModelUsage }) {
         <span className="inspector-record-title">
           <strong>{usage.model}</strong>
           <small>
-            {usage.provider} · revision {usage.revision} ·{' '}
-            {formatTime(usage.createdAt, undefined, { seconds: true })}
+            {usage.provider} · {formatTime(usage.createdAt, undefined, { seconds: true })}
           </small>
         </span>
         <span className="inspector-record-state">
@@ -216,7 +213,7 @@ export function ModelUsageRecord({ usage }: { usage: ModelUsage }) {
   );
 }
 
-function useInspectorObservations(taskId?: string, tool?: string) {
+function useInspectorObservations(turnId?: string, tool?: string) {
   const [observations, setObservations] = useState<InspectorObservationsResponse | null>(null);
   const [observationError, setObservationError] = useState('');
   const [loadingEarlier, setLoadingEarlier] = useState(false);
@@ -247,7 +244,7 @@ function useInspectorObservations(taskId?: string, tool?: string) {
       setRefreshing(true);
       try {
         const next = await api<InspectorObservationsResponse>(
-          `/api/inspector/observations?${new URLSearchParams({ ...(taskId ? { taskId } : {}), ...(tool ? { tool } : {}) })}`,
+          `/api/inspector/observations?${new URLSearchParams({ ...(turnId ? { turnId } : {}), ...(tool ? { tool } : {}) })}`,
           { signal: request.signal },
         );
         if (request.signal.aborted) return;
@@ -259,7 +256,7 @@ function useInspectorObservations(taskId?: string, tool?: string) {
                 next,
                 async (cursor) => {
                   const params = new URLSearchParams({
-                    ...(taskId ? { taskId } : {}),
+                    ...(turnId ? { turnId } : {}),
                     before: cursor.before,
                     ...(tool ? { tool } : {}),
                   });
@@ -292,7 +289,7 @@ function useInspectorObservations(taskId?: string, tool?: string) {
       request.abort();
       clearTimeout(timer);
     };
-  }, [taskId, tool]);
+  }, [turnId, tool]);
 
   async function loadEarlier() {
     if (!observations?.hasOlder || !observations.nextBefore || busy.current) return;
@@ -301,7 +298,7 @@ function useInspectorObservations(taskId?: string, tool?: string) {
     busy.current = true;
     setLoadingEarlier(true);
     const params = new URLSearchParams({
-      ...(taskId ? { taskId } : {}),
+      ...(turnId ? { turnId } : {}),
       before: observations.nextBefore,
       ...(tool ? { tool } : {}),
     });
@@ -332,18 +329,18 @@ function useInspectorObservations(taskId?: string, tool?: string) {
 }
 
 function ToolDrilldown({
-  taskId,
+  turnId,
   usage,
   definition,
   status,
 }: {
-  taskId?: string;
+  turnId?: string;
   usage: ToolUsage;
   definition?: InspectorTool;
   status: ToolStatusFilter;
 }) {
   const { observations, observationError, loadingEarlier, refreshing, loadEarlier } =
-    useInspectorObservations(taskId, usage.name);
+    useInspectorObservations(turnId, usage.name);
   const [query, setQuery] = useState('');
   const calls = useMemo(
     () => filterToolCalls(observations?.calls ?? [], query, status),
@@ -438,12 +435,12 @@ function ToolUsageFacts({ usage }: { usage: ToolUsage }) {
 }
 
 export function ToolUsageGroup({
-  taskId,
+  turnId,
   usage,
   definition,
   status = 'all',
 }: {
-  taskId?: string;
+  turnId?: string;
   usage: ToolUsage;
   definition?: InspectorTool;
   status?: ToolStatusFilter;
@@ -466,13 +463,13 @@ export function ToolUsageGroup({
         </span>
       </summary>
       {open && (
-        <ToolDrilldown taskId={taskId} usage={usage} definition={definition} status={status} />
+        <ToolDrilldown turnId={turnId} usage={usage} definition={definition} status={status} />
       )}
     </details>
   );
 }
 
-export function InspectorTools({ taskId }: { taskId?: string }) {
+export function InspectorTools({ turnId }: { turnId?: string }) {
   const [catalog, setCatalog] = useState<InspectorToolsResponse | null>(null);
   const [catalogError, setCatalogError] = useState('');
   const [catalogAttempt, setCatalogAttempt] = useState(0);
@@ -480,7 +477,7 @@ export function InspectorTools({ taskId }: { taskId?: string }) {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<ToolStatusFilter>('all');
   const { observations, observationError, loadingEarlier, refreshing, loadEarlier } =
-    useInspectorObservations(taskId);
+    useInspectorObservations(turnId);
   useEffect(() => {
     const request = new AbortController();
     setCatalogError('');
@@ -513,7 +510,7 @@ export function InspectorTools({ taskId }: { taskId?: string }) {
     <div className="inspector-tools">
       <div className="inspector-section-heading">
         <h3>Tools</h3>
-        <span>{taskId ? 'Message activity' : 'All activity'} · 7 days</span>
+        <span>{turnId ? 'Message activity' : 'All activity'} · 7 days</span>
       </div>
       <div className="inspector-view-switch" role="group" aria-label="Tool views">
         {(
@@ -603,7 +600,7 @@ export function InspectorTools({ taskId }: { taskId?: string }) {
                     {usage.map((row) => (
                       <ToolUsageGroup
                         key={row.name}
-                        taskId={taskId}
+                        turnId={turnId}
                         usage={row}
                         definition={catalog?.tools.find((tool) => tool.name === row.name)}
                         status={status}
@@ -664,14 +661,14 @@ export function InspectorTools({ taskId }: { taskId?: string }) {
   );
 }
 
-export function InspectorModels({ taskId }: { taskId?: string }) {
+export function InspectorModels({ turnId }: { turnId?: string }) {
   const { observations, observationError, loadingEarlier, refreshing, loadEarlier } =
-    useInspectorObservations(taskId);
+    useInspectorObservations(turnId);
   return (
     <section className="inspector-models inspector-tools" aria-label="Assistant model requests">
       <div className="inspector-section-heading">
         <h3>Model requests</h3>
-        <span>{taskId ? 'Message activity' : 'All activity'} · 7 days</span>
+        <span>{turnId ? 'Message activity' : 'All activity'} · 7 days</span>
       </div>
       {observationError && <Notice>{observationError}</Notice>}
       {!observations && !observationError && <Loading label="Loading model requests…" />}
@@ -699,10 +696,10 @@ export function InspectorModels({ taskId }: { taskId?: string }) {
   );
 }
 
-export function InspectorActivity({ taskId, events }: { taskId?: string; events: TaskEvent[] }) {
+export function InspectorActivity({ turnId, events }: { turnId?: string; events: TurnEvent[] }) {
   const { observations, observationError, loadingEarlier, refreshing, loadEarlier } =
-    useInspectorObservations(taskId);
-  const items = groupTaskActivity(
+    useInspectorObservations(turnId);
+  const items = groupTurnActivity(
     events,
     observations && observations.summary.calls > 0 ? observations.calls : undefined,
     observations?.failures,
@@ -719,11 +716,11 @@ export function InspectorActivity({ taskId, events }: { taskId?: string; events:
     <section className="inspector-section inspector-activity">
       <div className="inspector-section-heading">
         <h3>Recent actions</h3>
-        <span>{taskId ? 'Message activity' : 'All activity'}</span>
+        <span>{turnId ? 'Message activity' : 'All activity'}</span>
       </div>
       {observationError && (
         <p className="inspector-data-note">
-          Call recordings are temporarily unavailable. Showing the task timeline.
+          Call recordings are temporarily unavailable. Showing the turn timeline.
         </p>
       )}
       {items.length ? (
@@ -756,7 +753,7 @@ export function InspectorActivity({ taskId, events }: { taskId?: string; events:
           ))}
         </ol>
       ) : (
-        <p className="inspector-empty">No actions recorded for this task yet.</p>
+        <p className="inspector-empty">No actions recorded for this turn yet.</p>
       )}
       {observations?.hasOlder && (
         <Button

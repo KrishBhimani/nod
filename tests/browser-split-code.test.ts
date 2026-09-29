@@ -42,7 +42,7 @@ test('Portuguese login submit controls advance the observed password form', () =
       credentialScript(
         'https://example.com',
         credentialFields({
-          taskId: 'test',
+          threadId: 'test',
           origin: 'https://example.com',
           kind: 'password',
           username: 'demo@example.com',
@@ -82,7 +82,7 @@ test('one private code fills a visible six-digit group and triggers its normal i
       credentialScript(
         'https://example.com',
         credentialFields({
-          taskId: 'test',
+          threadId: 'test',
           origin: 'https://example.com',
           kind: 'otp',
           code: '483729',
@@ -128,7 +128,7 @@ test('split-code entry refuses changed, partial, hidden or unrelated groups befo
         credentialScript(
           'https://example.com',
           credentialFields({
-            taskId: 'test',
+            threadId: 'test',
             origin: 'https://example.com',
             kind: 'otp',
             code: change === 'short-code' ? '12345' : change === 'non-digit' ? '12x456' : '123456',
@@ -168,7 +168,7 @@ test('retry replaces a rejected split code before the website can submit a mixed
       credentialScript(
         'https://example.com',
         credentialFields({
-          taskId: 'test',
+          threadId: 'test',
           origin: 'https://example.com',
           kind: 'otp',
           code: '483729',
@@ -211,7 +211,7 @@ test('split-code entry stops when an input handler changes the observed group', 
         credentialScript(
           'https://example.com',
           credentialFields({
-            taskId: 'test',
+            threadId: 'test',
             origin: 'https://example.com',
             kind: 'otp',
             code: '483729',

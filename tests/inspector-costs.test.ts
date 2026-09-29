@@ -154,8 +154,7 @@ test('tool rows show direct provider prices and partial operation coverage witho
       call: {
         ...common,
         id: 'call',
-        taskId: 'task',
-        revision: 1,
+        turnId: 'turn',
         input: {},
         output: null,
         status: 'running',
@@ -257,7 +256,7 @@ test('tools default to owner-wide recordings and do not repeat the overall cost'
         payloadLimitBytes: 16384,
       });
     assert.equal(url.pathname, '/api/inspector/observations');
-    assert.equal(url.searchParams.has('taskId'), false);
+    assert.equal(url.searchParams.has('turnId'), false);
     return response({
       scope: 'owner',
       calls: [],
@@ -289,7 +288,7 @@ test('tools default to owner-wide recordings and do not repeat the overall cost'
       urls.some((url) => url.pathname === '/api/inspector/providers'),
       false,
     );
-    assert.doesNotMatch(element.textContent!, /Overall recorded cost|select a task/);
+    assert.doesNotMatch(element.textContent!, /Overall recorded cost|select a task|select a turn/);
   } finally {
     await act(async () => root.unmount());
     element.remove();

@@ -25,13 +25,12 @@ Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => t
 after(() => dom.window.close());
 const { createRoot } = await import('react-dom/client');
 
-type InputWrite = { path: string; revision: number; input?: Record<string, unknown> };
+type InputWrite = { path: string; input?: Record<string, unknown> };
 async function mountInput(send?: (write: InputWrite) => Promise<Response>) {
   const previousFetch = globalThis.fetch;
   const writes: InputWrite[] = [];
   const pending = new Set<() => void>();
   let active = true;
-  let revision = 7;
   globalThis.fetch = async (path, options) => {
     if (options?.method === 'POST') {
       const write = { path: String(path), ...JSON.parse(String(options.body)) } as InputWrite;
@@ -52,18 +51,17 @@ async function mountInput(send?: (write: InputWrite) => Promise<Response>) {
         active,
         paused: active,
         mode: 'manual',
-        revision: active ? revision : null,
       }),
     );
   };
   const element = document.createElement('div');
   document.body.append(element);
   const root = createRoot(element);
-  const render = async (taskId = 'task-one', live = true) =>
+  const render = async (threadId = 'thread-one', live = true) =>
     act(async () =>
       root.render(
         createElement(BrowserControl, {
-          taskId,
+          threadId,
           screen: 'data:image/png;base64,fixture',
           emptyMessage: '',
           live,
@@ -99,9 +97,6 @@ async function mountInput(send?: (write: InputWrite) => Promise<Response>) {
     surface,
     writes,
     render,
-    setRevision: (value: number) => {
-      revision = value;
-    },
     button,
     close,
   };
@@ -132,8 +127,7 @@ test('the focused browser surface forwards keyboard presses directly', async () 
     assert.equal(enter.defaultPrevented, true);
     assert.deepEqual(f.writes, [
       {
-        path: '/api/browser/control/task-one/input',
-        revision: 7,
+        path: '/api/browser/control/input',
         input: { action: 'press', key: 'Enter' },
       },
     ]);
@@ -319,49 +313,6 @@ test('pointer coordinates and bounded two-axis scrolling follow the focused imag
   }
 });
 
-for (const sameTask of [false, true])
-  test(`hidden sessions discard unsent text without fencing ${sameTask ? 'a newer revision' : 'another task'}`, async () => {
-    let finish!: (response: Response) => void;
-    const f = await mountInput(async () =>
-      f.writes.length === 1
-        ? new Promise<Response>((resolve) => {
-            finish = resolve;
-          })
-        : new Response(JSON.stringify({ ok: true })),
-    );
-    try {
-      f.surface.focus();
-      await act(async () => {
-        text(f.surface, 'accepted');
-        text(f.surface, 'must-discard');
-      });
-      assert.equal(f.writes.length, 1);
-      window.dispatchEvent(new Event('blur'));
-      await f.render('task-two');
-      if (sameTask) {
-        f.setRevision(8);
-        await f.render();
-      }
-      await act(async () =>
-        finish(new Response(JSON.stringify({ error: 'must-not-appear' }), { status: 500 })),
-      );
-      assert.equal(f.writes.length, 1);
-      assert.doesNotMatch(f.element.textContent!, /must-discard|must-not-appear/);
-      const next = f.element.querySelector('textarea')!;
-      next.focus();
-      await act(async () => text(next, 'new-lease-input'));
-      assert.equal(f.writes.length, 2);
-      assert.equal(
-        f.writes[1].path,
-        `/api/browser/control/${sameTask ? 'task-one' : 'task-two'}/input`,
-      );
-      assert.equal(f.writes[1].revision, sameTask ? 8 : 7);
-      assert.doesNotMatch(f.element.textContent!, /Browser input stopped/);
-    } finally {
-      await f.close();
-    }
-  });
-
 for (const refreshScreen of [false, true])
   test(`late input failure fences the same lease after ${refreshScreen ? 'screen suspension' : 'window blur'}`, async () => {
     let finish!: (response: Response) => void;
@@ -380,7 +331,7 @@ for (const refreshScreen of [false, true])
         window.dispatchEvent(new Event('blur'));
       });
       if (refreshScreen) {
-        await f.render('task-one', false);
+        await f.render('thread-one', false);
         await f.render();
       }
       await act(async () =>
@@ -395,7 +346,7 @@ for (const refreshScreen of [false, true])
         f.button().focus();
         f.button().click();
       });
-      assert.equal(f.writes.at(-1)?.path, '/api/browser/control/task-one/resume');
+      assert.equal(f.writes.at(-1)?.path, '/api/browser/control/resume');
     } finally {
       await f.close();
     }
@@ -427,7 +378,7 @@ test('failed input clears the queue, stops later typing and still permits ending
       f.button().focus();
       f.button().click();
     });
-    assert.equal(f.writes.at(-1)?.path, '/api/browser/control/task-one/resume');
+    assert.equal(f.writes.at(-1)?.path, '/api/browser/control/resume');
   } finally {
     await f.close();
   }

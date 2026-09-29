@@ -10,7 +10,7 @@ import { focusChatMessage } from '../lib/secondary-pages';
 
 type Kind = 'goal' | 'schedule';
 type Subject = { kind: Kind; title?: string };
-type Ask = { text: string; messageId: string; taskId?: string; error?: string };
+type Ask = { text: string; messageId: string; turnId?: string; error?: string };
 
 function subjectPrefix(subject: Subject) {
   if (!subject.title) return subject.kind === 'goal' ? 'New goal: ' : 'New schedule: ';
@@ -19,40 +19,38 @@ function subjectPrefix(subject: Subject) {
 
 function useAskOtto(conversation: AppState | null) {
   const [ask, setAsk] = useState<Ask | null>(null);
-  const answer = ask?.taskId
+  const answer = ask?.turnId
     ? conversation?.messages
-        .filter((message) => message.taskId === ask.taskId && message.role === 'assistant')
+        .filter((message) => message.turnId === ask.turnId && message.role === 'assistant')
         .at(-1)
     : undefined;
-  const task = conversation?.tasks.find((item) => item.id === ask?.taskId);
+  const turn = conversation?.turns.find((item) => item.id === ask?.turnId);
   const status: 'idle' | 'working' | 'waiting' | 'done' | 'failed' = !ask
     ? 'idle'
-    : ask.error || task?.status === 'failed' || task?.status === 'cancelled'
+    : ask.error || turn?.status === 'failed' || turn?.status === 'cancelled'
       ? 'failed'
-      : !task || task.status === 'queued' || task.status === 'running'
+      : !turn || turn.status === 'queued' || turn.status === 'running'
         ? 'working'
-        : task.status === 'waiting_user' || task.status === 'waiting_credentials'
+        : turn.status === 'waiting'
           ? 'waiting'
           : 'done';
   async function send(text: string) {
     const messageId =
-      ask?.error && ask.text === text && !ask.taskId ? ask.messageId : crypto.randomUUID();
+      ask?.error && ask.text === text && !ask.turnId ? ask.messageId : crypto.randomUUID();
     setAsk({ text, messageId });
     try {
-      const result = await api<{ taskId: string }>('/api/messages', {
+      const result = await api<{ turnId: string }>('/api/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           clientMessageId: messageId,
           text,
           attachmentIds: [],
-          ...(conversation?.conversationRevision !== undefined
-            ? { conversationRevision: conversation.conversationRevision }
-            : {}),
+          ...(conversation?.threadId ? { threadId: conversation.threadId } : {}),
         }),
       });
       setAsk((current) =>
-        current?.messageId === messageId ? { ...current, taskId: result.taskId } : current,
+        current?.messageId === messageId ? { ...current, turnId: result.turnId } : current,
       );
     } catch (cause) {
       setAsk((current) =>
@@ -138,7 +136,7 @@ function AskOtto({
           </div>
           {otto.status !== 'working' && (
             <div className="ask-otto-after">
-              {otto.ask.taskId && (
+              {otto.ask.turnId && (
                 <Button
                   variant="ghost"
                   size="sm"

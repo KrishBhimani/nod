@@ -97,7 +97,7 @@ test('a restarted credential session serves only its cached masked image without
     await original.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
     const inspection = await original.inspectLogin('fixture');
     await original.injectCredentials({
-      taskId: 'fixture',
+      threadId: 'fixture',
       origin: inspection.origin,
       kind: 'identifier',
       username: 'synthetic-secret@example.test',

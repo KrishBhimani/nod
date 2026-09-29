@@ -24,7 +24,7 @@ for (const key of [
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', { configurable: true, value: true });
 after(() => dom.window.close());
 const { createRoot } = await import('react-dom/client');
-const taskId = 'f69e3934-3672-45cc-9834-6f6803530558';
+const threadId = 'f69e3934-3672-45cc-9834-6f6803530558';
 const capturedAt = new Date().toISOString();
 const json = (value: unknown) =>
   new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });
@@ -47,20 +47,19 @@ async function mounted(screen: (capture: number) => Promise<Response>) {
     requests.push({ url, method: init?.method || 'GET' });
     if (url.pathname === '/api/inspector')
       return json({
-        tasks: [
+        turns: [
           {
-            id: taskId,
-            title: 'Browser fixture',
+            id: 'b6d7c3a0-5f0e-4b8e-9d2a-3f1c2e4a5b6c',
+            source: 'user',
             status: 'running',
             createdAt: capturedAt,
-            updatedAt: capturedAt,
           },
         ],
         events: [],
         artifacts: [],
         runtime: { browser: 'Ready', workspace: 'Ready', database: 'Ready' },
         currentBrowser: {
-          taskId,
+          threadId,
           lastActivityAt: activity,
           title: 'Browser fixture',
           status: 'running',
@@ -76,11 +75,11 @@ async function mounted(screen: (capture: number) => Promise<Response>) {
         providers: [],
         coverage: [],
       });
-    if (url.pathname.startsWith('/api/browser/control/'))
-      return json({ active: false, paused: false, revision: 0 });
-    if (url.pathname === `/api/tasks/${taskId}/cancel`) return json({ ok: true });
+    if (url.pathname.startsWith('/api/browser/control'))
+      return json({ active: false, paused: false });
+    if (url.pathname === '/api/thread/stop') return json({ ok: true });
     if (url.pathname === '/api/inspector/screen') {
-      assert.equal(url.searchParams.get('taskId'), taskId);
+      assert.equal(url.searchParams.get('threadId'), threadId);
       return screen(++captures);
     }
     if (url.pathname === '/api/inspector/tools')
@@ -202,11 +201,8 @@ test('switching inspector tabs retains a valid browser frame and does not restar
     );
     assert.ok(
       fixture.requests
-        .filter((request) => request.url.pathname.startsWith('/api/browser/control/'))
-        .every(
-          (request) =>
-            request.url.pathname.endsWith(taskId) || request.url.pathname.endsWith('/workspace'),
-        ),
+        .filter((request) => request.url.pathname.startsWith('/api/browser/control'))
+        .every((request) => request.url.pathname === '/api/browser/control'),
     );
   } finally {
     await fixture.close();
@@ -216,18 +212,16 @@ test('switching inspector tabs retains a valid browser frame and does not restar
 test('stopping browser work targets the current screen session and leaves inspection available', async () => {
   const fixture = await mounted(frame);
   try {
-    const stop = fixture.element.querySelector<HTMLButtonElement>(
-      '[aria-label="Stop browser task"]',
-    )!;
+    const stop = fixture.element.querySelector<HTMLButtonElement>('[aria-label="Stop Otto"]')!;
     assert.ok(stop);
     await act(async () => stop.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     assert.deepEqual(
       fixture.requests
         .filter((request) => request.method === 'POST')
         .map((request) => request.url.pathname),
-      [`/api/tasks/${taskId}/cancel`],
+      ['/api/thread/stop'],
     );
-    assert.equal(fixture.element.querySelector('[aria-label="Stop browser task"]'), null);
+    assert.equal(fixture.element.querySelector('[aria-label="Stop Otto"]'), null);
     assert.ok(fixture.element.querySelector('.screen-preview img'));
   } finally {
     await fixture.close();

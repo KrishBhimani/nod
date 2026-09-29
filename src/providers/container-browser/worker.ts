@@ -28,19 +28,19 @@ type Namespace = {
 };
 
 function metadata(computer?: Computer, request?: BrowserRequest): BrowserMetadata {
-  const taskId =
+  const threadId =
     request &&
-    ('taskId' in request
-      ? request.taskId
+    ('threadId' in request
+      ? request.threadId
       : request.method === 'injectCredentials'
-        ? request.input.taskId
+        ? request.input.threadId
         : undefined);
   try {
-    const screen = taskId ? computer?.screenStatus?.(taskId) : undefined;
+    const screen = threadId ? computer?.screenStatus?.(threadId) : undefined;
     return browserMetadata.parse({
       status: computer?.status() ?? 'Workspace browser is unavailable.',
       currentSession: computer?.currentSession?.() ?? null,
-      ...(screen && { screen: { taskId, ...screen } }),
+      ...(screen && { screen: { threadId, ...screen } }),
     });
   } catch {
     return { status: 'Workspace browser is unavailable.', currentSession: null };
@@ -52,15 +52,15 @@ async function dispatch(computer: Computer, request: BrowserRequest, signal: Abo
   switch (request.method) {
     case 'bindProfile':
       if (!computer.bindProfile) throw new Error();
-      return computer.bindProfile(request.taskId, request.profileId, request.allowedOrigin);
+      return computer.bindProfile(request.threadId, request.profileId, request.allowedOrigin);
     case 'deleteProfile':
       if (!computer.deleteProfile) throw new Error();
       return computer.deleteProfile(request.profileId);
     case 'act':
-      return computer.act(request.taskId, request.input, signal);
+      return computer.act(request.threadId, request.input, signal);
     case 'download': {
       if (!computer.download) throw new Error();
-      const file = await computer.download(request.taskId, request.input, signal);
+      const file = await computer.download(request.threadId, request.input, signal);
       signal.throwIfAborted();
       if (
         !Buffer.isBuffer(file.bytes) ||
@@ -88,7 +88,7 @@ async function dispatch(computer: Computer, request: BrowserRequest, signal: Abo
       const method =
         request.method === 'screenshot' ? computer.screenshot : computer.signInScreenshot;
       if (!method) throw new Error();
-      const image = await method.call(computer, request.taskId, signal);
+      const image = await method.call(computer, request.threadId, signal);
       if (image && image.length > imageBytes) throw new Error();
       return image?.toString('base64') ?? null;
     }
@@ -98,24 +98,24 @@ async function dispatch(computer: Computer, request: BrowserRequest, signal: Abo
     case 'releaseControl': {
       const method = computer[request.method];
       if (!method) throw new Error();
-      return method.call(computer, request.taskId);
+      return method.call(computer, request.threadId);
     }
     case 'control':
     case 'signInControl': {
       const method = computer[request.method];
       if (!method) throw new Error();
-      return method.call(computer, request.taskId, request.input);
+      return method.call(computer, request.threadId, request.input);
     }
     case 'inspectLogin':
-      return computer.inspectLogin(request.taskId);
+      return computer.inspectLogin(request.threadId);
     case 'selectLoginMethod':
-      return computer.selectLoginMethod(request.taskId, request.origin, request.methodId);
+      return computer.selectLoginMethod(request.threadId, request.origin, request.methodId);
     case 'injectCredentials':
       return computer.injectCredentials(request.input);
     case 'hold':
-      return computer.hold(request.taskId, request.until);
+      return computer.hold(request.threadId, request.until);
     case 'close':
-      return computer.close(request.taskId);
+      return computer.close(request.threadId);
     case 'status':
       return null;
     case 'dispose':

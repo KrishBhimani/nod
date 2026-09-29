@@ -54,7 +54,7 @@ export function createCloudflareAdapters(options: {
     status: 'Remote Linux workspace is ready.',
     instructions:
       'This is your own remote Linux workspace, separate from the user’s device and the trusted browser. Node, Python, pipx, git, curl, ffmpeg and poppler-utils (pdftotext, pdfinfo) are installed. You are an unprivileged user and cannot use sudo. Install trusted command-line tools with npm install -g <package> or pipx install <package>. Internet access follows the server-selected provider policy. There is no graphical display; use a supported CLI or the browser web app. Keep task outputs under this task workspace.',
-    runCommand: (taskId, args, input) => {
+    runCommand: (threadId, args, input) => {
       if (workspaceUnavailable)
         throw new WorkspaceCommandError(
           true,
@@ -69,7 +69,7 @@ export function createCloudflareAdapters(options: {
           launch({
             role: 'workspace',
             generation,
-            taskId,
+            threadId,
             fetch: requestFetch,
             onUncertain: () => {
               workspaceUnavailable = true;

@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import pg from 'pg';
-import { createChatVerification } from '../src/server/chat-verification.ts';
 
 test(
   'chat verification intercepts owned codes before message routing and plaintext persistence',
@@ -18,18 +17,18 @@ test(
     url.searchParams.set('options', `-c search_path=${schema}`);
     process.env.DATABASE_URL = url.href;
     const db = await import('../src/server/db.ts');
-    const tasks = await import('../src/server/tasks.ts');
+    const { createChatVerification } = await import('../src/server/chat-verification.ts');
+    const thread = await import('../src/server/thread.ts');
     const { createApp } = await import('../src/server/app.ts');
     const { ownerId, port, configuration } = await import('../src/server/config.ts');
     await db.initializeDatabase();
-    await tasks.initializeTaskSchema();
     await db.pool.query(`CREATE TABLE credential_requests (
-    id text PRIMARY KEY,task_id text NOT NULL,owner_id text NOT NULL,kind text NOT NULL,
-    status text NOT NULL DEFAULT 'pending',task_revision integer NOT NULL DEFAULT 0,
+    id text PRIMARY KEY,thread_id uuid REFERENCES threads(id),turn_id uuid REFERENCES turns(id),
+    owner_id text NOT NULL,kind text NOT NULL,status text NOT NULL DEFAULT 'pending',
     expires_at timestamptz NOT NULL DEFAULT now()+interval '10 minutes'
   )`);
     const ordinary: string[] = [];
-    const injected: Array<{ owner: string; taskId: string; code: string; requestId: string }> = [];
+    const injected: Array<{ owner: string; turnId: string; code: string; requestId: string }> = [];
     let outcome: 'submitted' | 'rejected' | 'unavailable' = 'submitted';
     let hold: Promise<void> | undefined;
     let started: (() => void) | undefined;
@@ -38,17 +37,14 @@ test(
       ownerId,
       keyStore: { getKey: async () => Buffer.alloc(32, 61) },
       refresh() {},
-      async submitCode(owner, taskId, code, requestId) {
-        injected.push({ owner, taskId, code, requestId });
+      async submitCode(owner, turnId, code, requestId) {
+        injected.push({ owner, turnId, code, requestId });
         started?.();
         await hold;
         if (throwPrivateError) throw new Error(`Untrusted website echoed ${code}`);
         if (outcome === 'submitted') {
           await db.pool.query("UPDATE credential_requests SET status='filled' WHERE id=$1", [
             requestId,
-          ]);
-          await db.pool.query("UPDATE tasks SET status='running',revision=revision+1 WHERE id=$1", [
-            taskId,
           ]);
         }
         return { status: outcome };
@@ -59,7 +55,7 @@ test(
       configuration: () => ({ ...configuration(), llmReady: true }),
       submitMessage: async (text, _attachments, input) => {
         ordinary.push(text);
-        return { taskId: randomUUID(), continued: false, messageId: input?.clientMessageId };
+        return { threadId: randomUUID(), turnId: randomUUID(), messageId: input!.clientMessageId! };
       },
     });
     const headers = { host: `localhost:${port}`, origin: `http://localhost:${port}` };
@@ -68,56 +64,50 @@ test(
         method: 'POST',
         url: '/api/messages',
         headers,
-        payload: { text, clientMessageId: randomUUID(), conversationRevision: 0, ...extra },
+        payload: { text, clientMessageId: randomUUID(), ...extra },
       });
     async function seed(
       options: {
         owner?: string;
         channel?: string;
-        status?: string;
         kind?: string;
-        revision?: number;
-        requestRevision?: number;
         expired?: boolean;
-        generation?: number;
+        archived?: boolean;
       } = {},
     ) {
-      const taskId = randomUUID();
+      const owner = options.owner ?? ownerId;
+      const threadId = (await thread.activeThread(db.pool, owner)).id;
+      const turnId = randomUUID();
       const requestId = randomUUID();
       const messageId = randomUUID();
       await db.pool.query(
-        `INSERT INTO tasks(id,owner_id,title,prompt,status,channel,revision,conversation_revision)
-      VALUES($1,$2,'Sign in','Sign in',$3,$4,$5,$6)`,
-        [
-          taskId,
-          options.owner ?? ownerId,
-          options.status ?? 'waiting_credentials',
-          options.channel ?? 'web',
-          options.revision ?? 0,
-          options.generation ?? 0,
-        ],
+        `INSERT INTO turns(id,owner_id,thread_id,source,prompt,channel,status,waiting_reason)
+      VALUES($1,$2,$3,'user','Sign in',$4,'waiting','credentials')`,
+        [turnId, owner, threadId, options.channel ?? 'web'],
       );
       await db.pool.query(
-        `INSERT INTO credential_requests(id,task_id,owner_id,kind,task_revision,expires_at)
+        `INSERT INTO credential_requests(id,thread_id,turn_id,owner_id,kind,expires_at)
       VALUES($1,$2,$3,$4,$5,now()+$6::interval)`,
         [
           requestId,
-          taskId,
-          options.owner ?? ownerId,
+          threadId,
+          turnId,
+          owner,
           options.kind ?? 'otp',
-          options.requestRevision ?? 0,
           options.expired ? '-1 minute' : '10 minutes',
         ],
       );
       await db.pool.query(
-        "INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,$2,'assistant','Reply with the verification code.',$3)",
-        [messageId, options.owner ?? ownerId, taskId],
+        "INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id) VALUES($1,$2,'assistant','Reply with the verification code.',$3,$4)",
+        [messageId, owner, threadId, turnId],
       );
-      return { taskId, requestId, messageId };
+      if (options.archived)
+        await db.pool.query('UPDATE threads SET archived_at=now() WHERE id=$1', [threadId]);
+      return { threadId, turnId, requestId, messageId };
     }
     async function reset() {
       await db.pool.query(
-        'DELETE FROM chat_verification_submissions; DELETE FROM messages; DELETE FROM credential_requests; DELETE FROM tasks; DELETE FROM conversations',
+        'DELETE FROM chat_verification_submissions; DELETE FROM messages; DELETE FROM credential_requests; DELETE FROM turn_events; DELETE FROM turns; DELETE FROM threads',
       );
       ordinary.length = 0;
       injected.length = 0;
@@ -137,7 +127,7 @@ test(
           assert.deepEqual(Object.keys(before.verificationRequests[0]).sort(), [
             'expiresAt',
             'id',
-            'taskId',
+            'turnId',
           ]);
           const response = await send(' 739126 ', { verificationRequestId: request.requestId });
           assert.equal(response.statusCode, 200, response.body);
@@ -146,7 +136,7 @@ test(
           assert.deepEqual(injected, [
             {
               owner: ownerId,
-              taskId: request.taskId,
+              turnId: request.turnId,
               code: '739126',
               requestId: request.requestId,
             },
@@ -159,7 +149,6 @@ test(
             'SELECT row_to_json(m) AS row FROM messages m UNION ALL SELECT row_to_json(v) FROM chat_verification_submissions v',
           );
           assert.doesNotMatch(JSON.stringify(persisted.rows), /739126/);
-          assert.equal((await db.pool.query('SELECT * FROM pending_task_inputs')).rowCount, 0);
           assert.equal((await db.pool.query('SELECT * FROM inspector_records')).rowCount, 0);
         },
       );
@@ -343,7 +332,11 @@ test(
             configuration: () => ({ ...configuration(), llmReady: true }),
             submitMessage: async (text, _attachments, input) => {
               ordinary.push(text);
-              return { taskId: randomUUID(), continued: false, messageId: input?.clientMessageId };
+              return {
+                threadId: randomUUID(),
+                turnId: randomUUID(),
+                messageId: input!.clientMessageId!,
+              };
             },
           });
           const ordinarySend = (text: string, extra: Record<string, unknown> = {}) =>
@@ -361,7 +354,7 @@ test(
             assert.equal((await ordinarySend('2027', { forceNew: true })).statusCode, 400);
             assert.equal((await ordinarySend('2027')).statusCode, 200);
             await seed();
-            const other = await seed({ kind: 'password', status: 'running' });
+            const other = await seed({ kind: 'password' });
             assert.equal(
               (await ordinarySend('2048', { replyToMessageId: other.messageId })).statusCode,
               200,
@@ -370,11 +363,11 @@ test(
             assert.equal(
               await unavailable.accept('6060', {
                 clientMessageId: receiptId,
-                taskId: other.taskId,
+                replyToMessageId: other.messageId,
                 persistOrdinary: async (client) => {
                   await client.query(
-                    "INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,$2,'user','6060',$3)",
-                    [receiptId, ownerId, other.taskId],
+                    "INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id) VALUES($1,$2,'user','6060',$3,$4)",
+                    [receiptId, ownerId, other.threadId, other.turnId],
                   );
                 },
               }),
@@ -480,7 +473,7 @@ test(
           await reset();
           assert.equal((await send('2026')).statusCode, 200);
           await seed();
-          const other = await seed({ kind: 'password', status: 'running' });
+          const other = await seed({ kind: 'password' });
           assert.equal((await send('2048', { replyToMessageId: other.messageId })).statusCode, 200);
           assert.equal((await send('123')).statusCode, 200);
           assert.equal((await send('Use 456789 for the report')).statusCode, 200);
@@ -489,15 +482,13 @@ test(
         },
       );
       await t.test(
-        'foreign, other-channel, stale, expired and cancelled requests cannot accept a code',
+        'foreign, other-channel, expired, reset-thread and non-code requests cannot accept a code',
         async () => {
           for (const options of [
             { owner: 'someone-else' },
             { channel: 'telegram:other' },
-            { revision: 1 },
             { expired: true },
-            { status: 'cancelled' },
-            { generation: 1 },
+            { archived: true },
             { kind: 'password' },
           ]) {
             await reset();
@@ -510,41 +501,34 @@ test(
           }
         },
       );
-      await t.test(
-        'early and expired code replies cannot fall through before or after a credential wait',
-        async () => {
-          for (const options of [{ status: 'running' }, { expired: true }]) {
-            await reset();
-            await seed(options);
-            const response = await send('892647');
-            assert.equal(response.statusCode, 409, response.body);
-            assert.equal(injected.length, 0);
-            assert.deepEqual(ordinary, []);
-            assert.equal(
-              (await db.pool.query("SELECT * FROM messages WHERE role='user'")).rowCount,
-              0,
-            );
-          }
-        },
-      );
+      await t.test('expired code replies cannot fall through after a credential wait', async () => {
+        await reset();
+        await seed({ expired: true });
+        const response = await send('892647');
+        assert.equal(response.statusCode, 409, response.body);
+        assert.equal(injected.length, 0);
+        assert.deepEqual(ordinary, []);
+        assert.equal((await db.pool.query("SELECT * FROM messages WHERE role='user'")).rowCount, 0);
+      });
       await t.test(
         'reset fences and invalid explicit code input never persist or route plaintext',
         async () => {
           await reset();
           const request = await seed();
-          await db.pool.query(
-            "INSERT INTO conversations(owner_id,channel,revision) VALUES($1,'web',1)",
-            [ownerId],
-          );
           assert.equal(
-            (await send('582491', { verificationRequestId: request.requestId })).statusCode,
+            (
+              await send('582491', {
+                verificationRequestId: request.requestId,
+                threadId: randomUUID(),
+              })
+            ).statusCode,
             409,
           );
           assert.equal(
             (
               await send('my password', {
                 verificationRequestId: request.requestId,
-                conversationRevision: 1,
+                threadId: request.threadId,
               })
             ).statusCode,
             409,

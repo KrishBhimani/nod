@@ -1035,6 +1035,14 @@ input[type='range']:disabled {
 .composer-left .button {
   color: var(--muted-foreground);
 }
+.composer-right {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.stop-button {
+  color: var(--muted-foreground);
+}
 .send-button {
   background: var(--primary);
   color: var(--primary-foreground);

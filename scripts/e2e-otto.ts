@@ -265,7 +265,6 @@ try {
     { createApplication },
     { pool },
     { createPiAgent },
-    { createPiConversationRouter },
     { createContainerBrowserComputer },
     { createDockerWorkspace },
     { createOpenAIRelevanceClassifier },
@@ -275,7 +274,6 @@ try {
     import('../src/server/composition.ts'),
     import('../src/server/db.ts'),
     import('../src/providers/pi/index.ts'),
-    import('../src/providers/pi/conversation.ts'),
     import('../src/providers/container-browser/index.ts'),
     import('../src/providers/docker/index.ts'),
     import('../src/providers/openai/relevance.ts'),
@@ -289,8 +287,6 @@ try {
     throw new Error('Speech is disabled in this acceptance harness.');
   };
   application = await createApplication({
-    createConversationRouter: (onUsage) =>
-      createPiConversationRouter({ provider, model: environment.ROUTING_MODEL, apiKey, onUsage }),
     agent: createPiAgent({
       provider,
       model,

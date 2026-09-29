@@ -49,7 +49,7 @@ function fakeComputer() {
   const calls: Array<{ method: string; input?: unknown }> = [];
   let session: ReturnType<NonNullable<Computer['currentSession']>>;
   let act: Computer['act'] = async (id, input) => {
-    session = { taskId: id, lastActivityAt: new Date().toISOString() };
+    session = { threadId: id, lastActivityAt: new Date().toISOString() };
     return {
       text: input.text ?? 'Synthetic page',
       url: input.url ?? 'https://example.com/',
@@ -197,7 +197,7 @@ test('container browser routes through the private bridge and preserves images, 
       (await computer.act('task-1', { action: 'snapshot', controlOffset: 80 })).candidates[0].id,
       longSelector,
     );
-    assert.equal(computer.currentSession?.()?.taskId, 'task-1');
+    assert.equal(computer.currentSession?.()?.threadId, 'task-1');
     assert.equal(computer.status(), 'Synthetic workspace browser');
     assert.equal((await computer.screenshot('task-1'))?.toString(), 'masked synthetic image');
     assert.equal(computer.screenStatus?.('task-1').state, 'live');
@@ -207,7 +207,7 @@ test('container browser routes through the private bridge and preserves images, 
     );
     await computer.signInControl?.('task-1', { action: 'type', text: 'Synthetic 🔒' });
     await computer.injectCredentials({
-      taskId: 'task-1',
+      threadId: 'task-1',
       origin: 'https://example.com',
       username: 'synthetic@example.test',
       password: 'Synthetic 🔑',
@@ -225,7 +225,7 @@ test('container browser routes through the private bridge and preserves images, 
       },
     );
     assert.deepEqual(inputs.find((entry) => entry.method === 'injectCredentials')?.input, {
-      taskId: 'task-1',
+      threadId: 'task-1',
       origin: 'https://example.com',
       username: 'synthetic@example.test',
       password: 'Synthetic 🔑',
@@ -260,7 +260,7 @@ test('Vault broker metadata stays local while identifier, password and OTP input
   const dataRoot = '/synthetic/vault-broker';
   const inputs: CredentialInjection[] = [
     {
-      taskId: 'task',
+      threadId: 'task',
       origin: 'https://example.com',
       label: 'Synthetic saved account',
       kind: 'identifier',
@@ -269,7 +269,7 @@ test('Vault broker metadata stays local while identifier, password and OTP input
       submitSelector: '#continue',
     },
     {
-      taskId: 'task',
+      threadId: 'task',
       origin: 'https://example.com',
       label: 'Synthetic saved account',
       kind: 'password',
@@ -280,7 +280,7 @@ test('Vault broker metadata stays local while identifier, password and OTP input
       submitSelector: '#continue',
     },
     {
-      taskId: 'task',
+      threadId: 'task',
       origin: 'https://example.com',
       label: 'Synthetic verification step',
       kind: 'otp',
@@ -444,7 +444,7 @@ test('malformed methods and namespaces never reach a computer or filesystem path
         id: randomUUID(),
         namespace: browserNamespace('/synthetic/invalid'),
         method: 'act',
-        taskId: '../outside',
+        threadId: '../outside',
         input: { action: 'snapshot' },
       },
     ]) {
@@ -545,7 +545,7 @@ test('a disconnected bridge aborts its request and namespace disposal waits for 
           id: randomUUID(),
           namespace: browserNamespace(dataRoot),
           method: 'act',
-          taskId: 'task',
+          threadId: 'task',
           input: { action: 'snapshot' },
         },
       }) + '\n',
@@ -592,7 +592,7 @@ test('a duplicate request cannot remove another request from the namespace drain
         id: randomUUID(),
         namespace: browserNamespace(dataRoot),
         method: 'act',
-        taskId: 'task',
+        threadId: 'task',
         input: { action: 'snapshot' },
       },
     };
@@ -659,7 +659,7 @@ test('a restarted host cannot reuse a disconnected namespace until work and disp
           id: randomUUID(),
           namespace: browserNamespace(dataRoot),
           method: 'act',
-          taskId: 'task',
+          threadId: 'task',
           input: { action: 'snapshot' },
         },
       }) + '\n',
@@ -693,10 +693,10 @@ test('a later screenshot reaching the worker first cannot erase accepted browser
     const computer = fixture.client('/synthetic/reordered-activity');
     const action = computer.act('new-task', { action: 'open', url: 'https://example.com' });
     await computer.screenshot('old-task');
-    assert.equal(computer.currentSession?.()?.taskId, 'new-task');
+    assert.equal(computer.currentSession?.()?.threadId, 'new-task');
     release.resolve();
     await action;
-    assert.equal(computer.currentSession?.()?.taskId, 'new-task');
+    assert.equal(computer.currentSession?.()?.threadId, 'new-task');
   } finally {
     release.resolve();
     await fixture.close();

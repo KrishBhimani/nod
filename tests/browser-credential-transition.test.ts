@@ -74,7 +74,7 @@ test(
       await computer.act('credential-transition', { action: 'open', url: origin });
       const submission = await computer
         .injectCredentials({
-          taskId: 'credential-transition',
+          threadId: 'credential-transition',
           origin,
           kind: 'password',
           password: 'synthetic-credential-must-stay-private',

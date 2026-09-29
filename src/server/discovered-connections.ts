@@ -13,6 +13,7 @@ import type {
 import type { Connection } from '../shared/contracts.ts';
 import { integrationResultSnapshot } from './integration-result.ts';
 import type { createAppGrantVault } from './vault-app-grants.ts';
+import type { TurnRef } from './thread.ts';
 
 const pathSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -76,8 +77,8 @@ type ProposalRow = {
   oauth_state_hash: string | null;
   oauth_ciphertext: string | null;
   connection_id: string | null;
-  task_id: string | null;
-  task_revision: number | null;
+  thread_id: string | null;
+  turn_id: string | null;
 };
 
 export class DiscoveredConnectionError extends Error {
@@ -184,7 +185,7 @@ export async function createDiscoveredConnections(
     transport: DiscoveredTransport;
     oauth: DiscoveredOAuth;
     runCli?: (
-      taskId: string,
+      threadId: string,
       command: string,
       args: string[],
       envName: string,
@@ -192,7 +193,7 @@ export async function createDiscoveredConnections(
       timeoutSeconds?: number,
       signal?: AbortSignal,
     ) => Promise<{ exitCode: number; output: string }>;
-    resumeConnection?: (taskId: string, revision: number, service: string) => Promise<boolean>;
+    resumeConnection?: (turnId: string, service: string) => Promise<boolean>;
     refresh?: () => void;
   },
 ) {
@@ -205,7 +206,7 @@ export async function createDiscoveredConnections(
     );
     CREATE TABLE IF NOT EXISTS discovered_connection_proposals (
       id uuid PRIMARY KEY,owner_id text NOT NULL,service text NOT NULL,name text NOT NULL,
-      paths jsonb NOT NULL,connection_id uuid,task_id uuid,task_revision integer,
+      paths jsonb NOT NULL,connection_id uuid,thread_id uuid,turn_id uuid,
       setup_url text,setup_text text,
       account_name text,oauth_state_hash text,oauth_ciphertext text,
       expires_at timestamptz NOT NULL DEFAULT now()+interval '15 minutes'
@@ -215,6 +216,8 @@ export async function createDiscoveredConnections(
     ALTER TABLE discovered_connection_proposals ADD COLUMN IF NOT EXISTS account_name text;
     ALTER TABLE discovered_connection_proposals ADD COLUMN IF NOT EXISTS oauth_state_hash text;
     ALTER TABLE discovered_connection_proposals ADD COLUMN IF NOT EXISTS oauth_ciphertext text;
+    ALTER TABLE discovered_connection_proposals ADD COLUMN IF NOT EXISTS thread_id uuid;
+    ALTER TABLE discovered_connection_proposals ADD COLUMN IF NOT EXISTS turn_id uuid;
   `);
   const legacy = (
     await pool.query<{ id: string; ciphertext: string }>(
@@ -264,7 +267,7 @@ export async function createDiscoveredConnections(
       })),
     }));
   }
-  async function propose(input: unknown, task?: { id: string; revision: number }) {
+  async function propose(input: unknown, turn?: TurnRef) {
     const parsed = proposalSchema.parse(input);
     let name = parsed.name;
     if (parsed.paths.some((path) => path.auth === 'oauth')) {
@@ -311,7 +314,7 @@ export async function createDiscoveredConnections(
     const id = randomUUID();
     await pool.query(
       `INSERT INTO discovered_connection_proposals
-       (id,owner_id,service,name,paths,connection_id,task_id,task_revision,setup_url,setup_text)
+       (id,owner_id,service,name,paths,connection_id,thread_id,turn_id,setup_url,setup_text)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [
         id,
@@ -320,8 +323,8 @@ export async function createDiscoveredConnections(
         name,
         JSON.stringify(paths),
         parsed.connectionId ?? null,
-        task?.id ?? null,
-        task?.revision ?? null,
+        turn?.threadId ?? null,
+        turn?.turnId ?? null,
         setupUrl,
         parsed.setupText ?? null,
       ],
@@ -331,7 +334,7 @@ export async function createDiscoveredConnections(
   async function proposal(id: string) {
     const row = (
       await pool.query<ProposalRow>(
-        `SELECT id,owner_id,service,name,paths,connection_id,task_id,task_revision,setup_url,setup_text,account_name,oauth_state_hash,oauth_ciphertext
+        `SELECT id,owner_id,service,name,paths,connection_id,thread_id,turn_id,setup_url,setup_text,account_name,oauth_state_hash,oauth_ciphertext
        FROM discovered_connection_proposals
        WHERE id=$1 AND owner_id=$2 AND expires_at>now()`,
         [z.uuid().parse(id), owner],
@@ -388,12 +391,9 @@ export async function createDiscoveredConnections(
       client.release();
     }
     options.refresh?.();
-    const continued =
-      pending.task_id && pending.task_revision !== null
-        ? await options
-            .resumeConnection?.(pending.task_id, pending.task_revision, pending.name)
-            .catch(() => false)
-        : false;
+    const continued = pending.turn_id
+      ? await options.resumeConnection?.(pending.turn_id, pending.name).catch(() => false)
+      : false;
     return { ok: true, continued: Boolean(continued) };
   }
   async function complete(id: string, input: unknown) {
@@ -421,7 +421,7 @@ export async function createDiscoveredConnections(
           if (response.status < 200 || response.status >= 300) throw new Error();
         } else {
           const result = await options.runCli?.(
-            pending.task_id ?? pending.id,
+            pending.thread_id ?? pending.id,
             path.command,
             path.testArgs,
             path.envName,
@@ -526,7 +526,7 @@ export async function createDiscoveredConnections(
       return {
         outcome: 'cancelled' as const,
         service: pending.service,
-        returnTo: pending.task_id ? ('chat' as const) : ('apps' as const),
+        returnTo: pending.turn_id ? ('chat' as const) : ('apps' as const),
       };
     }
     const path = pending.paths[0];
@@ -534,7 +534,7 @@ export async function createDiscoveredConnections(
       return {
         outcome: 'failed' as const,
         service: pending.service,
-        returnTo: pending.task_id ? ('chat' as const) : ('apps' as const),
+        returnTo: pending.turn_id ? ('chat' as const) : ('apps' as const),
       };
     try {
       const saved = JSON.parse(
@@ -565,13 +565,13 @@ export async function createDiscoveredConnections(
       return {
         outcome: result.continued ? ('continued' as const) : ('connected' as const),
         service: pending.service,
-        returnTo: pending.task_id ? ('chat' as const) : ('apps' as const),
+        returnTo: pending.turn_id ? ('chat' as const) : ('apps' as const),
       };
     } catch {
       return {
         outcome: 'failed' as const,
         service: pending.service,
-        returnTo: pending.task_id ? ('chat' as const) : ('apps' as const),
+        returnTo: pending.turn_id ? ('chat' as const) : ('apps' as const),
       };
     }
   }
@@ -762,7 +762,7 @@ export async function createDiscoveredConnections(
     action: string,
     args: Record<string, unknown>,
     readOnlyRequired = false,
-    taskId?: string,
+    turn?: TurnRef,
     signal?: AbortSignal,
   ) {
     const { row, path } = await selected(args);
@@ -787,13 +787,13 @@ export async function createDiscoveredConnections(
     }
     if (action === 'CONNECTED_CLI') {
       if (path.kind !== 'cli') throw error('Choose a CLI access path.');
-      if (!taskId || !options.runCli) throw error('CLI connections are unavailable.', 503);
+      if (!turn || !options.runCli) throw error('CLI connections are unavailable.', 503);
       const argv = z.array(z.string().min(1).max(1000)).min(1).max(32).parse(args.argv);
       if (readOnlyRequired && !cliRead(args, argv, path.testArgs))
         throw error('This CLI command needs confirmation.', 409);
       try {
         const result = await options.runCli(
-          taskId,
+          turn.threadId,
           path.command,
           argv,
           path.envName,

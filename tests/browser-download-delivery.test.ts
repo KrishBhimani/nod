@@ -63,7 +63,7 @@ test(
     process.env.OTTO_MODE = 'local';
     const db = await import('../src/server/db.ts');
     cleanup.push(() => db.pool.end());
-    const tasks = await import('../src/server/tasks.ts');
+    const threads = await import('../src/server/thread.ts');
     const { createApp } = await import('../src/server/app.ts');
     const { createPersonalService } = await import('../src/server/personal.ts');
     const { createArtifactService, localArtifacts } = await import('../src/server/artifacts.ts');
@@ -88,7 +88,7 @@ test(
       );
       for (const result of results) if (result.status === 'rejected') throw result.reason;
     });
-    cleanup.push(() => tasks.stopTasks());
+    cleanup.push(() => threads.stopThreadWorkers());
     let channels: Awaited<ReturnType<typeof createChannels>> | undefined;
     const forbidden = async () => {
       throw new Error('Unused fixture capability.');
@@ -99,12 +99,12 @@ test(
         if (await condition()) return;
         await delay(25);
       }
-      assert.fail('The synthetic task did not reach its expected boundary.');
+      assert.fail('The synthetic turn did not reach its expected boundary.');
     };
     const succeeded = (id: string) =>
       waitFor(async () => {
-        const row = (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [id])).rows[0];
-        assert.notEqual(row?.status, 'failed', 'The synthetic download task failed.');
+        const row = (await db.pool.query('SELECT status FROM turns WHERE id=$1', [id])).rows[0];
+        assert.notEqual(row?.status, 'failed', 'The synthetic download turn failed.');
         return row?.status === 'succeeded';
       });
     t.mock.method(
@@ -147,26 +147,33 @@ test(
     );
     try {
       await db.initializeDatabase();
-      await tasks.initializeTasks();
+      await threads.initializeThreads();
       await createPersonalService({
         pool: db.pool,
         ownerId,
-        scheduler: tasks.boss,
-        submitTask: tasks.submitTask,
+        scheduler: threads.boss,
+        enqueueTurn: threads.enqueueTurn,
         refresh() {},
       }).initialize({ workers: false });
       channels = await createChannels(db.pool, {
         ownerId,
         transport: createChatSdkTransport(db.pool, telegram),
-        resolveAttachments: localArtifacts.readTaskArtifacts,
+        resolveAttachments: localArtifacts.readThreadArtifacts,
         subscribe: () => () => {},
         intervalMs: 600_000,
-        submit: (text, sourceId, client, channel, _prepared, messageId) =>
-          tasks.submitTask(text, [], undefined, false, { sourceId, client, channel, messageId }),
+        submit: async (text, sourceId, client, channel, messageId) =>
+          (
+            await threads.submitUserMessage(text, [], {
+              sourceId,
+              client,
+              channel,
+              clientMessageId: messageId,
+            })
+          ).turnId,
       });
       cleanup.push(() => channels!.close());
       channels.registerRoutes(app);
-      await tasks.startTaskWorkers({
+      await threads.startThreadWorkers({
         artifacts: {
           ...localArtifacts,
           async storeArtifact(...args) {
@@ -184,15 +191,15 @@ test(
             return artifact;
           },
         },
-        runTask: async (context) => {
+        runTurn: async (context) => {
           if (context.prompt.startsWith('Held ')) {
-            held.set(context.taskId, context);
-            await new Promise<void>((resolve) => release.set(context.taskId, resolve));
+            held.set(context.turnId, context);
+            await new Promise<void>((resolve) => release.set(context.turnId, resolve));
             return { status: 'succeeded' } satisfies RuntimeResult;
           }
           const runtime = runtimes.get(context.prompt);
-          assert.ok(runtime, 'A task must use its assigned synthetic runtime.');
-          return runtime.runTask(context);
+          assert.ok(runtime, 'A turn must use its assigned synthetic runtime.');
+          return runtime.runTurn(context);
         },
         speech: { synthesize: forbidden },
         requestCredential: forbidden,
@@ -217,20 +224,20 @@ test(
           const computer =
             mode === 'adapter fixture'
               ? fakeComputer({
-                  act: async (taskId, input) => {
+                  act: async (threadId, input) => {
                     assert.deepEqual(input, { action: 'open', url: `${fixture.origin}/session` });
-                    active.add(taskId);
+                    active.add(threadId);
                     return {
                       text: 'Synthetic invoices',
                       url: `${fixture.origin}/session`,
                       candidates: [],
                     };
                   },
-                  download: async (taskId, input, signal) => {
-                    assert.ok(active.has(taskId));
+                  download: async (threadId, input, signal) => {
+                    assert.ok(active.has(threadId));
                     signal?.throwIfAborted();
                     assert.deepEqual(input, { selector: '#download', name: 'invoice.pdf' });
-                    downloadCalls.push(taskId);
+                    downloadCalls.push(threadId);
                     return {
                       bytes: Buffer.from(browserDownloadPdf),
                       name: 'invoice.pdf',
@@ -269,7 +276,7 @@ test(
                 assert.equal(artifact.mimeType, 'application/pdf');
                 assert.equal(artifact.name, 'invoice.pdf');
                 assert.equal(artifact.size, browserDownloadPdf.length);
-                captured.set(input.taskId, artifact);
+                captured.set(input.turnId, artifact);
               },
               abort() {},
               dispose() {},
@@ -292,7 +299,8 @@ test(
           const prompt = `Download the synthetic invoice using ${mode}.`;
           runtimes.set(prompt, runtime);
           try {
-            const webId = await tasks.submitTask(prompt);
+            const web = await threads.submitUserMessage(prompt);
+            const webId = web.turnId;
             await succeeded(webId);
             const webFile = captured.get(webId)!;
             assert.ok(webFile);
@@ -329,10 +337,10 @@ test(
             assert.equal(accepted.statusCode, 200);
             await channels!.drain();
             const inbox = (
-              await db.pool.query('SELECT task_id FROM channel_inbox WHERE text=$1', [prompt])
+              await db.pool.query('SELECT turn_id FROM channel_inbox WHERE text=$1', [prompt])
             ).rows;
             assert.equal(inbox.length, 1);
-            const telegramId = inbox[0].task_id as string;
+            const telegramId = inbox[0].turn_id as string;
             assert.notEqual(telegramId, webId);
             await succeeded(telegramId);
             await channels!.drain();
@@ -351,13 +359,14 @@ test(
             assert.equal(sent.length, beforeSend + 1);
             const deliveries = (
               await db.pool.query(
-                'SELECT o.state,m.owner_id,m.task_id,m.attachments FROM channel_outbox o JOIN messages m ON m.id=o.message_id WHERE m.task_id=$1',
+                'SELECT o.state,m.owner_id,m.thread_id,m.attachments FROM channel_outbox o JOIN messages m ON m.id=o.message_id WHERE m.turn_id=$1',
                 [telegramId],
               )
             ).rows;
             assert.equal(deliveries.length, 1);
             assert.equal(deliveries[0].state, 'sent');
             assert.equal(deliveries[0].owner_id, ownerId);
+            assert.equal(deliveries[0].thread_id, web.threadId);
             assert.equal(deliveries[0].attachments[0].id, telegramFile.id);
             const state = (
               await app.inject({ method: 'GET', url: '/api/state', headers })
@@ -365,18 +374,15 @@ test(
             const history = (
               await app.inject({ method: 'GET', url: '/api/messages', headers })
             ).json<MessageHistoryPage>().messages;
-            for (const messages of [state.messages, history]) {
-              assert.equal(
-                messages.some((message) => message.taskId === telegramId),
-                false,
-              );
-              assert.equal(
-                messages
-                  .flatMap((message) => message.attachments)
-                  .some((file) => file.id === webFile.id),
-                true,
-              );
-            }
+            assert.equal(state.threadId, web.threadId);
+            for (const messages of [state.messages, history])
+              for (const file of [webFile, telegramFile])
+                assert.equal(
+                  messages
+                    .flatMap((message) => message.attachments)
+                    .some((attachment) => attachment.id === file.id),
+                  true,
+                );
             const foreign = createArtifactService({
               database: db.pool,
               ownerId: 'foreign-owner',
@@ -384,7 +390,7 @@ test(
             });
             await assert.rejects(foreign.readArtifact(webFile.id), /unavailable/);
             await assert.rejects(
-              localArtifacts.readTaskArtifacts(telegramId, [webFile.id]),
+              localArtifacts.readThreadArtifacts(randomUUID(), [webFile.id]),
               /unavailable/,
             );
             await db.pool.query("UPDATE artifacts SET owner_id='foreign-owner' WHERE id=$1", [
@@ -398,7 +404,8 @@ test(
               webFile.id,
               ownerId,
             ]);
-            if (mode === 'adapter fixture') assert.deepEqual(downloadCalls, [webId, telegramId]);
+            if (mode === 'adapter fixture')
+              assert.deepEqual(downloadCalls, [web.threadId, web.threadId]);
             else {
               assert.equal(fixture.authenticatedDownloads(), 2);
               assert.equal(fixture.unauthenticatedDownloads(), 1);
@@ -409,140 +416,126 @@ test(
           }
         });
       }
+      const submitHeld = async (text: string) => {
+        const submitted = await threads.submitUserMessage(text);
+        await waitFor(() => held.has(submitted.turnId));
+        return submitted;
+      };
+      const pdfFile = () => ({
+        bytes: browserDownloadPdf,
+        name: 'invoice.pdf',
+        mimeType: 'application/pdf',
+      });
       await t.test(
-        'four concurrent browser publications share their four transaction clients',
+        'four concurrent browser publications in one turn share their transaction clients',
         async () => {
-          const ids = await Promise.all(
-            Array.from({ length: 4 }, (_, index) =>
-              tasks.submitTask(`Held concurrent browser publication ${index}`),
-            ),
-          );
-          await waitFor(() => ids.every((id) => held.has(id)));
-          const entered = new Set<string>();
+          const { threadId, turnId } = await submitHeld('Held concurrent browser publications');
+          let entered = 0;
           let resume!: () => void;
           const resumed = new Promise<void>((resolve) => {
             resume = resolve;
           });
-          for (const id of ids)
-            publicationStarts.set(id, { enter: () => entered.add(id), resume: resumed });
+          publicationStarts.set(threadId, { enter: () => entered++, resume: resumed });
+          const context = held.get(turnId)!;
           const publishing = Promise.allSettled(
-            ids.map((id) =>
-              held.get(id)!.publishBrowserFile!({
-                bytes: browserDownloadPdf,
-                name: 'invoice.pdf',
-                mimeType: 'application/pdf',
-              }),
-            ),
+            Array.from({ length: 4 }, () => context.publishBrowserFile!(pdfFile())),
           );
           try {
-            await waitFor(() => entered.size === 4);
-            assert.equal(db.pool.totalCount, 4);
-            assert.equal(db.pool.idleCount, 0);
+            await waitFor(
+              () => entered === 1 && db.pool.totalCount === 4 && db.pool.idleCount === 0,
+            );
             resume();
             const results = await publishing;
             assert.deepEqual(
               results.map((result) => result.status),
               Array(4).fill('fulfilled'),
             );
-            for (const [index, result] of results.entries()) {
+            assert.equal(entered, 4);
+            const published = results.map((result) => {
               assert.equal(result.status, 'fulfilled');
-              const messages = (
-                await db.pool.query(
-                  "SELECT attachments FROM messages WHERE task_id=$1 AND owner_id=$2 AND role='assistant'",
-                  [ids[index], ownerId],
-                )
-              ).rows;
-              assert.deepEqual(
-                messages.map((message) => message.attachments),
-                [[result.value]],
-              );
-              assert.deepEqual(
-                await localArtifacts.readArtifact(result.value.id),
-                browserDownloadPdf,
-              );
-            }
+              return result.value;
+            });
+            const messages = (
+              await db.pool.query(
+                "SELECT attachments FROM messages WHERE turn_id=$1 AND owner_id=$2 AND role='assistant'",
+                [turnId, ownerId],
+              )
+            ).rows;
+            const byId = (left: Artifact, right: Artifact) => left.id.localeCompare(right.id);
+            assert.deepEqual(
+              messages.map((message) => message.attachments[0]).sort(byId),
+              [...published].sort(byId),
+            );
+            assert.ok(messages.every((message) => message.attachments.length === 1));
+            for (const artifact of published)
+              assert.deepEqual(await localArtifacts.readArtifact(artifact.id), browserDownloadPdf);
           } finally {
             resume();
             await publishing;
-            for (const id of ids) {
-              publicationStarts.delete(id);
-              release.get(id)!();
-            }
+            publicationStarts.delete(threadId);
+            release.get(turnId)!();
           }
         },
       );
       await t.test(
-        'cancelled and obsolete task callbacks cannot publish captured bytes',
+        'cancelled and obsolete turn callbacks cannot publish captured bytes',
         async () => {
           for (const kind of ['cancelled', 'obsolete'] as const) {
-            const id = await tasks.submitTask(`Held ${kind} browser publication`);
-            await waitFor(() => held.has(id));
-            const context = held.get(id)!;
+            const { threadId, turnId } = await submitHeld(`Held ${kind} browser publication`);
+            const context = held.get(turnId)!;
             assert.ok(context.publishBrowserFile);
-            if (kind === 'cancelled') await tasks.cancelTask(id);
+            const artifactCount = async () =>
+              (await db.pool.query('SELECT id FROM artifacts WHERE thread_id=$1', [threadId]))
+                .rowCount;
+            const before = await artifactCount();
+            if (kind === 'cancelled') await threads.stopThread();
             else {
-              await db.pool.query('UPDATE tasks SET revision=revision+1 WHERE id=$1', [id]);
+              await db.pool.query('UPDATE threads SET archived_at=now() WHERE id=$1', [threadId]);
               assert.equal(context.signal.aborted, false);
             }
-            await assert.rejects(
-              context.publishBrowserFile({
-                bytes: browserDownloadPdf,
-                name: 'invoice.pdf',
-                mimeType: 'application/pdf',
-              }),
-              { statusCode: 409 },
-            );
-            assert.equal(
-              (await db.pool.query('SELECT id FROM artifacts WHERE task_id=$1', [id])).rowCount,
-              0,
-            );
+            await assert.rejects(context.publishBrowserFile(pdfFile()), { statusCode: 409 });
+            assert.equal(await artifactCount(), before);
             assert.equal(
               (
                 await db.pool.query(
-                  "SELECT id FROM messages WHERE task_id=$1 AND role='assistant'",
-                  [id],
+                  "SELECT id FROM messages WHERE turn_id=$1 AND role='assistant'",
+                  [turnId],
                 )
               ).rowCount,
               0,
             );
-            release.get(id)!();
+            release.get(turnId)!();
           }
         },
       );
       await t.test(
         'failed message insertion rolls back metadata without deleting retained bytes',
         async () => {
-          const id = await tasks.submitTask('Held rejected browser publication');
-          await waitFor(() => held.has(id));
+          const { threadId, turnId } = await submitHeld('Held rejected browser publication');
           let artifact: Artifact | undefined;
-          publications.set(id, {
+          publications.set(threadId, {
             stored: (file) => {
               artifact = file;
             },
             resume: Promise.resolve(),
           });
           await db.pool.query(
-            `ALTER TABLE messages ADD CONSTRAINT reject_browser_publication CHECK (role<>'assistant' OR task_id IS DISTINCT FROM '${id}'::uuid)`,
+            `ALTER TABLE messages ADD CONSTRAINT reject_browser_publication CHECK (role<>'assistant' OR turn_id IS DISTINCT FROM '${turnId}'::uuid)`,
           );
           try {
-            await assert.rejects(
-              held.get(id)!.publishBrowserFile!({
-                bytes: browserDownloadPdf,
-                name: 'invoice.pdf',
-                mimeType: 'application/pdf',
-              }),
-              { code: '23514' },
-            );
+            await assert.rejects(held.get(turnId)!.publishBrowserFile!(pdfFile()), {
+              code: '23514',
+            });
             assert.ok(artifact);
             assert.equal(
-              (await db.pool.query('SELECT id FROM artifacts WHERE task_id=$1', [id])).rowCount,
+              (await db.pool.query('SELECT id FROM artifacts WHERE id=$1', [artifact.id])).rowCount,
               0,
             );
             assert.equal(
               (
                 await db.pool.query(
-                  "SELECT id FROM messages WHERE task_id=$1 AND role='assistant'",
-                  [id],
+                  "SELECT id FROM messages WHERE turn_id=$1 AND role='assistant'",
+                  [turnId],
                 )
               ).rowCount,
               0,
@@ -554,16 +547,15 @@ test(
             );
           } finally {
             await db.pool.query('ALTER TABLE messages DROP CONSTRAINT reject_browser_publication');
-            publications.delete(id);
-            release.get(id)!();
+            publications.delete(threadId);
+            release.get(turnId)!();
           }
         },
       );
       await t.test(
         'committed attachment bytes survive a failed refresh acknowledgement',
         async () => {
-          const id = await tasks.submitTask('Held committed browser publication');
-          await waitFor(() => held.has(id));
+          const { turnId } = await submitHeld('Held committed browser publication');
           const { events } = await import('../src/server/events.ts');
           const failure = new Error('Synthetic refresh acknowledgement failure.');
           const rejectRefresh = () => {
@@ -571,34 +563,28 @@ test(
           };
           events.once('event', rejectRefresh);
           try {
-            await assert.rejects(
-              held.get(id)!.publishBrowserFile!({
-                bytes: browserDownloadPdf,
-                name: 'invoice.pdf',
-                mimeType: 'application/pdf',
-              }),
-              failure,
-            );
+            await assert.rejects(held.get(turnId)!.publishBrowserFile!(pdfFile()), failure);
             const rows = (
               await db.pool.query(
-                "SELECT a.id FROM artifacts a JOIN messages m ON m.task_id=a.task_id AND m.attachments @> jsonb_build_array(jsonb_build_object('id',a.id)) WHERE a.task_id=$1 AND a.owner_id=$2 AND m.owner_id=$2 AND m.role='assistant'",
-                [id, ownerId],
+                "SELECT a.id FROM artifacts a JOIN messages m ON m.thread_id=a.thread_id AND m.attachments @> jsonb_build_array(jsonb_build_object('id',a.id)) WHERE m.turn_id=$1 AND a.owner_id=$2 AND m.owner_id=$2 AND m.role='assistant'",
+                [turnId, ownerId],
               )
             ).rows;
             assert.equal(rows.length, 1);
             assert.deepEqual(await localArtifacts.readArtifact(rows[0].id), browserDownloadPdf);
           } finally {
             events.off('event', rejectRefresh);
-            release.get(id)!();
+            release.get(turnId)!();
           }
         },
       );
       await t.test(
-        'publication keeps its message when cancellation or reset waits on stored bytes',
+        'publication keeps its message when stop or reset waits on stored bytes',
         async () => {
-          for (const action of ['cancel', 'reset'] as const) {
-            const id = await tasks.submitTask(`Held ${action} during browser publication`);
-            await waitFor(() => held.has(id));
+          for (const action of ['stop', 'reset'] as const) {
+            const { threadId, turnId } = await submitHeld(
+              `Held ${action} during browser publication`,
+            );
             let markStored!: (artifact: Artifact) => void;
             const stored = new Promise<Artifact>((resolve) => {
               markStored = resolve;
@@ -607,18 +593,13 @@ test(
             const resumed = new Promise<void>((resolve) => {
               resume = resolve;
             });
-            publications.set(id, { stored: markStored, resume: resumed });
-            const publishing = held.get(id)!.publishBrowserFile!({
-              bytes: browserDownloadPdf,
-              name: 'invoice.pdf',
-              mimeType: 'application/pdf',
-            }).then(
+            publications.set(threadId, { stored: markStored, resume: resumed });
+            const publishing = held.get(turnId)!.publishBrowserFile!(pdfFile()).then(
               (artifact) => ({ artifact }),
               (error: unknown) => ({ error }),
             );
             const artifact = await stored;
-            const cancelling =
-              action === 'cancel' ? tasks.cancelTask(id) : tasks.resetConversation();
+            const cancelling = action === 'stop' ? threads.stopThread() : threads.resetThread();
             try {
               assert.equal(
                 (await admin.query(`SELECT id FROM ${schema}.artifacts WHERE id=$1`, [artifact.id]))
@@ -627,7 +608,7 @@ test(
               );
               await waitFor(async () => {
                 const blocked = await admin.query(
-                  "SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock' AND query LIKE 'UPDATE tasks SET status=''cancelled''%'",
+                  "SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock' AND query LIKE 'UPDATE turns SET status=''cancelled''%'",
                   [schema],
                 );
                 return blocked.rowCount === 1;
@@ -638,8 +619,8 @@ test(
               assert.deepEqual(result, { artifact });
               const messages = (
                 await db.pool.query(
-                  "SELECT attachments FROM messages WHERE task_id=$1 AND owner_id=$2 AND role='assistant'",
-                  [id, ownerId],
+                  "SELECT attachments FROM messages WHERE turn_id=$1 AND owner_id=$2 AND role='assistant'",
+                  [turnId, ownerId],
                 )
               ).rows;
               assert.deepEqual(
@@ -647,7 +628,8 @@ test(
                 [[artifact]],
               );
               assert.equal(
-                (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [id])).rows[0].status,
+                (await db.pool.query('SELECT status FROM turns WHERE id=$1', [turnId])).rows[0]
+                  .status,
                 'cancelled',
               );
               assert.deepEqual(await localArtifacts.readArtifact(artifact.id), browserDownloadPdf);
@@ -655,8 +637,8 @@ test(
               resume();
               await publishing;
               await cancelling;
-              publications.delete(id);
-              release.get(id)!();
+              publications.delete(threadId);
+              release.get(turnId)!();
             }
           }
         },

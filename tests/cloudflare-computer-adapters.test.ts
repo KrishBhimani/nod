@@ -36,7 +36,7 @@ async function fixture() {
     owner: string;
     role: string;
     generation: string;
-    taskId?: string;
+    threadId?: string;
     frames: string[];
   }> = [];
   let hold:
@@ -50,7 +50,7 @@ async function fixture() {
       const selected = basename(directory);
       return {
         status: () => 'Synthetic browser',
-        act: async (_taskId, input, signal) => {
+        act: async (_threadId, input, signal) => {
           calls.push({ namespace: selected, method: 'act', input });
           if (hold) {
             const waiting = hold;
@@ -97,7 +97,7 @@ async function fixture() {
         owner: ownerId,
         role: input.role,
         generation: input.generation,
-        taskId: input.taskId,
+        threadId: input.threadId,
         frames: [] as string[],
       };
       launches.push(record);
@@ -115,8 +115,8 @@ async function fixture() {
         return child as CommandProcess;
       }
       if (input.role === 'workspace') {
-        assert.ok(input.taskId);
-        const directory = join(root, 'workspaces', ownerId, input.taskId);
+        assert.ok(input.threadId);
+        const directory = join(root, 'workspaces', ownerId, input.threadId);
         mkdirSync(directory, { recursive: true });
         const child = spawn('python3', ['-u', '-c', workspaceCommandProgram], {
           cwd: directory,
@@ -190,13 +190,13 @@ test('Cloudflare adapters bind owner namespaces and generations while keeping br
       namespace(ownerB),
     );
     await a.computer.injectCredentials({
-      taskId: 'same-task',
+      threadId: 'same-task',
       origin: 'https://example.test',
       password: 'synthetic-browser-only',
     });
     const session = (adapters: typeof a, owner: string) =>
       adapters.workspace.open({
-        taskId: 'same-task',
+        threadId: 'same-task',
         workspacePath: join(f.root, 'roots', owner, 'same-task'),
         signal: new AbortController().signal,
       });
@@ -212,7 +212,8 @@ test('Cloudflare adapters bind owner namespaces and generations while keeping br
         .filter((call) => call.role === 'workspace')
         .every(
           (call) =>
-            call.taskId === 'same-task' && !call.frames.join('').includes('synthetic-browser-only'),
+            call.threadId === 'same-task' &&
+            !call.frames.join('').includes('synthetic-browser-only'),
         ),
     );
     assert.equal(
@@ -222,7 +223,7 @@ test('Cloudflare adapters bind owner namespaces and generations while keeping br
     assert.throws(
       () =>
         a.workspace.open({
-          taskId: 'same-task',
+          threadId: 'same-task',
           workspacePath: join(f.root, 'roots', ownerB, 'same-task'),
           signal: new AbortController().signal,
         }),
@@ -278,7 +279,7 @@ test('unused disposal never creates computers and uncertain workspace traffic st
   assert.equal(f.launches.length, 0);
   const adapters = createCloudflareAdapters(f.options(ownerB));
   const session = adapters.workspace.open({
-    taskId: 'task',
+    threadId: 'task',
     workspacePath: join(f.root, 'roots', ownerB, 'task'),
     signal: new AbortController().signal,
   });

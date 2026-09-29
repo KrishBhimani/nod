@@ -6,14 +6,14 @@ import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import pg from 'pg';
 import type { RuntimeContext } from '../src/ports/agent.ts';
-import type { TaskDependencies } from '../src/server/tasks.ts';
+import type { ThreadDependencies } from '../src/server/thread.ts';
 
 test(
-  'PostgreSQL task boundaries preserve atomic dispatch, dedupe, recovery, and cancellation',
-  { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
+  'PostgreSQL thread boundaries preserve atomic dispatch, dedupe, interruption, and cancellation',
+  { skip: !process.env.TEST_DATABASE_URL, timeout: 60_000 },
   async (t) => {
     const suffix = randomUUID().replaceAll('-', '').slice(0, 16);
-    const schema = `test_tasks_${suffix}`;
+    const schema = `test_threads_${suffix}`;
     const bossSchema = `test_boss_${suffix}`;
     const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
     await admin.query(`CREATE SCHEMA ${schema}`);
@@ -22,13 +22,13 @@ test(
     process.env.DATABASE_URL = databaseUrl.href;
     process.env.PGBOSS_SCHEMA = bossSchema;
     const db = await import('../src/server/db.ts');
-    const tasks = await import('../src/server/tasks.ts');
+    const thread = await import('../src/server/thread.ts');
     const { createPersonalService } = await import('../src/server/personal.ts');
     const personal = createPersonalService({
       pool: db.pool,
       ownerId: 'local-development',
-      scheduler: tasks.boss,
-      submitTask: tasks.submitTask,
+      scheduler: thread.boss,
+      enqueueTurn: thread.enqueueTurn,
       refresh() {},
     });
     const { createTriage } = await import('../src/server/triage.ts');
@@ -52,9 +52,8 @@ test(
       savedUpdates: Array<{ summary: string }>;
       feedback: Array<{ feedback: string }>;
     }> = [];
-    const ran = new Set<string>();
     const segments: RuntimeContext[] = [];
-    let rolledBackTask = '';
+    let rolledBackTurn = '';
     const triage = createTriage({
       getProfile: personal.getProfile,
       listGoals: personal.listGoals,
@@ -71,16 +70,14 @@ test(
     const { createAccountProfileStore, runtimeAccount } =
       await import('../src/server/account-profile.ts');
     const accountProfiles = createAccountProfileStore(db.pool, 'local-development');
-    const dependencies: TaskDependencies = {
+    const dependencies: ThreadDependencies = {
       accountProfile: async () => runtimeAccount(await accountProfiles.read()),
       speech: {
         synthesize: async () => {
           throw new Error('Unused fixture');
         },
       },
-      recoveryDelaysSeconds: [0, 0],
-      runTask: async (context) => {
-        ran.add(context.taskId);
+      runTurn: async (context) => {
         segments.push(context);
         assert.equal(context.personalContext?.profile.phone, 'PRIVATE-PHONE-FIXTURE');
         assert.equal(context.personalContext?.profile.name, 'Fixture Person');
@@ -101,6 +98,7 @@ test(
         }
         if (context.prompt === 'attachment-fixture') {
           assert.equal(context.attachments.length, 1);
+          assert.equal(context.workspacePath, join(dataRoot, 'workspaces', context.threadId));
           assert.ok(context.attachments[0].path.startsWith(`${context.workspacePath}/`));
           assert.equal(
             await readFile(context.attachments[0].path, 'utf8'),
@@ -124,7 +122,7 @@ test(
         if (context.prompt === 'remote-attachment-fixture') {
           assert.equal(context.attachments.length, 1);
           assert.equal(
-            Buffer.from(remoteUploads.get(context.taskId)!).toString(),
+            Buffer.from(remoteUploads.get(context.threadId)!).toString(),
             'remote synthetic bytes',
           );
           await assert.rejects(readFile(context.attachments[0].path), { code: 'ENOENT' });
@@ -143,15 +141,23 @@ test(
       },
     };
     async function waitFor(predicate: () => Promise<boolean>) {
-      for (let attempt = 0; attempt < 300; attempt++) {
+      for (let attempt = 0; attempt < 2000; attempt++) {
         if (await predicate()) return;
         await delay(10);
       }
       assert.fail('The database fixture did not reach the expected state.');
     }
+    const turnStatus = async (id: string) =>
+      (await db.pool.query('SELECT status FROM turns WHERE id=$1', [id])).rows[0]?.status;
+    const drainJobs = async (threadId: string) =>
+      (
+        await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'threadId'=$1`, [
+          threadId,
+        ])
+      ).rowCount ?? 0;
     try {
       await db.initializeDatabase();
-      await tasks.initializeTasks();
+      await thread.initializeThreads();
       await personal.initialize({ workers: false });
       await triage.initializeHeartbeat();
       await db.pool.query('INSERT INTO profiles(owner_id,data) VALUES($1,$2)', [
@@ -173,11 +179,14 @@ test(
         email: 'fixture@example.test',
         preferredName: 'Fixture',
       });
+      const threadId = (await thread.activeThread(db.pool)).id;
 
-      await t.test('task and job roll back together in the caller transaction', async () => {
+      await t.test('turn and drain job roll back together in the caller transaction', async () => {
+        const jobsBefore = await drainJobs(threadId);
         await assert.rejects(
           db.transaction(async (client) => {
-            rolledBackTask = await tasks.submitTask('rollback-fixture', [], undefined, true, {
+            rolledBackTurn = await thread.enqueueTurn('rollback-fixture', {
+              source: 'schedule',
               sourceId: 'rollback-fixture',
               client,
             });
@@ -186,23 +195,17 @@ test(
           /Injected rollback/,
         );
         assert.equal(
-          (await db.pool.query('SELECT id FROM tasks WHERE id=$1', [rolledBackTask])).rowCount,
+          (await db.pool.query('SELECT id FROM turns WHERE id=$1', [rolledBackTurn])).rowCount,
           0,
         );
-        assert.equal(
-          (
-            await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [
-              rolledBackTask,
-            ])
-          ).rowCount,
-          0,
-        );
+        assert.equal(await drainJobs(threadId), jobsBefore);
       });
 
-      await t.test('parallel source dispatch creates one task and one job', async () => {
+      await t.test('parallel source dispatch creates one turn and one drain job', async () => {
+        const jobsBefore = await drainJobs(threadId);
         const ids = await Promise.all(
           Array.from({ length: 6 }, () =>
-            tasks.submitTask('schedule-fixture', [], undefined, true, {
+            thread.enqueueTurn('schedule-fixture', {
               sourceId: 'schedule:one-job',
               source: 'schedule',
             }),
@@ -210,17 +213,15 @@ test(
         );
         assert.equal(new Set(ids).size, 1);
         assert.equal(
-          (
-            await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [
-              ids[0],
-            ])
-          ).rowCount,
-          1,
+          (await db.pool.query('SELECT thread_id FROM turns WHERE id=$1', [ids[0]])).rows[0]
+            .thread_id,
+          threadId,
         );
+        assert.equal(await drainJobs(threadId), jobsBefore + 1);
       });
 
       await t.test(
-        'duplicate triage events commit exactly one notification and one wake job',
+        'duplicate triage events commit exactly one notification and one wake turn',
         async () => {
           await Promise.all(
             Array.from({ length: 5 }, () =>
@@ -228,26 +229,19 @@ test(
             ),
           );
           const notices = await db.pool.query(
-            "SELECT task_id FROM notifications WHERE event_id='fixture-event'",
+            "SELECT turn_id FROM notifications WHERE event_id='fixture-event'",
           );
           assert.equal(notices.rowCount, 1);
-          assert.ok(notices.rows[0].task_id);
-          assert.equal(
-            (
-              await db.pool.query(
-                "SELECT id FROM tasks WHERE source_id='notification:fixture-event'",
-              )
-            ).rowCount,
-            1,
+          assert.ok(notices.rows[0].turn_id);
+          const turns = await db.pool.query(
+            "SELECT id,source,background FROM turns WHERE source_id='notification:fixture-event'",
           );
-          assert.equal(
-            (
-              await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [
-                notices.rows[0].task_id,
-              ])
-            ).rowCount,
-            1,
-          );
+          assert.equal(turns.rowCount, 1);
+          assert.deepEqual(turns.rows[0], {
+            id: notices.rows[0].turn_id,
+            source: 'event',
+            background: true,
+          });
           const oldId = randomUUID();
           await db.pool.query(
             "INSERT INTO notifications(id,event_id,owner_id,summary,decision,reason) VALUES($1,'old-pending-fixture','local-development','Pending dispatch','wake','Fixture')",
@@ -260,7 +254,7 @@ test(
           assert.equal(
             (
               await db.pool.query(
-                "SELECT id FROM tasks WHERE source_id='notification:old-pending-fixture'",
+                "SELECT id FROM turns WHERE source_id='notification:old-pending-fixture'",
               )
             ).rowCount,
             1,
@@ -275,53 +269,55 @@ test(
           await triage.recoverPendingNotifications();
           const muted = (
             await db.pool.query(
-              "SELECT decision,task_id FROM notifications WHERE event_id='newly-muted-fixture'",
+              "SELECT decision,turn_id FROM notifications WHERE event_id='newly-muted-fixture'",
             )
           ).rows[0];
           assert.equal(muted.decision, 'digest');
-          assert.equal(muted.task_id, null);
+          assert.equal(muted.turn_id, null);
           await db.pool.query(
             "UPDATE preferences SET notification_rule='Notify about fixture events' WHERE owner_id='local-development'",
           );
         },
       );
 
-      await t.test('credential resume and approved continuations are idempotent', async () => {
+      await t.test('credential resume and source-keyed messages are idempotent', async () => {
         const id = randomUUID();
         await db.pool.query(
-          "INSERT INTO tasks(id,owner_id,title,prompt,status) VALUES($1,'local-development','Resume fixture','Resume fixture','waiting_credentials')",
-          [id],
+          "INSERT INTO turns(id,owner_id,thread_id,source,prompt,channel,status,waiting_reason,finished_at) VALUES($1,'local-development',$2,'user','Resume fixture','telegram:fixture','waiting','credentials',now())",
+          [id, threadId],
         );
         await Promise.all([
-          tasks.resumeTask(id, 0),
-          tasks.resumeTask(id, 0),
-          tasks.resumeTask(id, 0),
+          thread.resumeAfterCredentials(id),
+          thread.resumeAfterCredentials(id),
+          thread.resumeAfterCredentials(id),
         ]);
-        assert.equal(
-          (await db.pool.query('SELECT revision FROM tasks WHERE id=$1', [id])).rows[0].revision,
-          1,
+        const resumed = await db.pool.query(
+          'SELECT source,channel,background,thread_id FROM turns WHERE source_id=$1',
+          [`credentials:${id}`],
         );
-        assert.equal(
-          (await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [id]))
-            .rowCount,
-          1,
-        );
-        await db.pool.query("UPDATE tasks SET status='waiting_user' WHERE id=$1", [id]);
-        await Promise.all(
+        assert.equal(resumed.rowCount, 1);
+        assert.deepEqual(resumed.rows[0], {
+          source: 'resume',
+          channel: 'telegram:fixture',
+          background: false,
+          thread_id: threadId,
+        });
+        const results = await Promise.all(
           Array.from({ length: 3 }, () =>
-            tasks.submitTask('Approved fixture result', [], id, true, {
+            thread.submitUserMessage('Approved fixture result', [], {
               sourceId: 'approval:fixture',
             }),
           ),
         );
+        assert.equal(new Set(results.map((result) => result.turnId)).size, 1);
+        assert.equal(new Set(results.map((result) => result.messageId)).size, 1);
         assert.equal(
-          (await db.pool.query('SELECT revision FROM tasks WHERE id=$1', [id])).rows[0].revision,
-          2,
-        );
-        assert.equal(
-          (await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [id]))
-            .rowCount,
-          2,
+          (
+            await db.pool.query(
+              "SELECT id FROM messages WHERE role='user' AND text='Approved fixture result'",
+            )
+          ).rowCount,
+          1,
         );
       });
 
@@ -346,27 +342,27 @@ test(
           assert.equal(classifications.length, beforeExternal);
           const external = (
             await db.pool.query(
-              "SELECT kind,decision,task_id FROM notifications WHERE event_id='heartbeat:external-fixture'",
+              "SELECT kind,decision,turn_id FROM notifications WHERE event_id='heartbeat:external-fixture'",
             )
           ).rows[0];
           assert.equal(external.kind, 'external');
           assert.equal(external.decision, 'digest');
-          assert.equal(external.task_id, null);
+          assert.equal(external.turn_id, null);
           await Promise.all([
             triage.reviewHeartbeat('goal-fixture'),
             triage.reviewHeartbeat('goal-fixture'),
           ]);
           const review = (
             await db.pool.query(
-              "SELECT kind,task_id FROM notifications WHERE event_id='heartbeat:goal-fixture'",
+              "SELECT kind,turn_id FROM notifications WHERE event_id='heartbeat:goal-fixture'",
             )
           ).rows[0];
           assert.equal(review.kind, 'review');
-          assert.ok(review.task_id);
+          assert.ok(review.turn_id);
           assert.equal(
             (
               await db.pool.query(
-                "SELECT id FROM tasks WHERE source_id='notification:heartbeat:goal-fixture'",
+                "SELECT id FROM turns WHERE source_id='notification:heartbeat:goal-fixture'",
               )
             ).rowCount,
             1,
@@ -387,11 +383,11 @@ test(
           await triage.recoverPendingNotifications();
           const paused = (
             await db.pool.query(
-              "SELECT decision,task_id FROM notifications WHERE event_id='heartbeat:paused-fixture'",
+              "SELECT decision,turn_id FROM notifications WHERE event_id='heartbeat:paused-fixture'",
             )
           ).rows[0];
           assert.equal(paused.decision, 'digest');
-          assert.equal(paused.task_id, null);
+          assert.equal(paused.turn_id, null);
           const beforeEmpty = classifications.length;
           await triage.reviewHeartbeat('no-context-fixture');
           assert.equal(classifications.length, beforeEmpty);
@@ -426,11 +422,11 @@ test(
           await triage.reviewHeartbeat('quiet-fixture');
           const quiet = (
             await db.pool.query(
-              "SELECT decision,task_id FROM notifications WHERE event_id='heartbeat:quiet-fixture'",
+              "SELECT decision,turn_id FROM notifications WHERE event_id='heartbeat:quiet-fixture'",
             )
           ).rows[0];
           assert.equal(quiet.decision, 'digest');
-          assert.equal(quiet.task_id, null);
+          assert.equal(quiet.turn_id, null);
           assert.equal(
             classifications
               .at(-1)!
@@ -458,18 +454,18 @@ test(
           await triage.reviewHeartbeat('saved-review-fixture');
           const reviewed = (
             await db.pool.query(
-              "SELECT task_id FROM notifications WHERE event_id='heartbeat:saved-review-fixture'",
+              "SELECT turn_id FROM notifications WHERE event_id='heartbeat:saved-review-fixture'",
             )
           ).rows[0];
           const saved = (
             await db.pool.query(
-              "SELECT task_id FROM notifications WHERE event_id='saved-update-fixture'",
+              "SELECT turn_id FROM notifications WHERE event_id='saved-update-fixture'",
             )
           ).rows[0];
-          assert.ok(reviewed.task_id);
-          assert.equal(saved.task_id, reviewed.task_id);
+          assert.ok(reviewed.turn_id);
+          assert.equal(saved.turn_id, reviewed.turn_id);
           assert.match(
-            (await db.pool.query('SELECT prompt FROM tasks WHERE id=$1', [reviewed.task_id]))
+            (await db.pool.query('SELECT prompt FROM turns WHERE id=$1', [reviewed.turn_id]))
               .rows[0].prompt,
             /Saved connection fixture for later review/,
           );
@@ -485,94 +481,86 @@ test(
           assert.equal(
             (
               await db.pool.query(
-                "SELECT task_id FROM notifications WHERE event_id='saved-update-fixture'",
+                "SELECT turn_id FROM notifications WHERE event_id='saved-update-fixture'",
               )
-            ).rows[0].task_id,
-            reviewed.task_id,
+            ).rows[0].turn_id,
+            reviewed.turn_id,
           );
         },
       );
 
       await t.test(
-        'restart recovers interrupted work once: outside actions are checked and reads retry',
+        'restart interrupts running turns once without retrying them and drains queued turns',
         async () => {
-          const missingJob = await tasks.submitTask('recovery-fixture', [], undefined, true, {
+          const missingJob = await thread.enqueueTurn('recovery-fixture', {
+            source: 'schedule',
             sourceId: 'recovery-fixture',
           });
-          await db.pool.query(`DELETE FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [
-            missingJob,
+          await db.pool.query(`DELETE FROM ${bossSchema}.job WHERE data->>'threadId'=$1`, [
+            threadId,
           ]);
-          const interrupted = randomUUID();
-          const legacy = randomUUID();
-          const readOnly = randomUUID();
+          const foreground = randomUUID();
+          const background = randomUUID();
           await db.pool.query(
-            "INSERT INTO tasks(id,owner_id,title,prompt,status,external_action) VALUES($1,'local-development','Interrupted','Do not repeat','running',true),($2,'local-development','Legacy','Do not repeat','running',NULL),($3,'local-development','Read only','Read the synthetic page','running',false)",
-            [interrupted, legacy, readOnly],
+            "INSERT INTO turns(id,owner_id,thread_id,source,prompt,status,background,started_at) VALUES($1,'local-development',$3,'user','Do not repeat','running',false,now()),($2,'local-development',$3,'schedule','Do not repeat quietly','running',true,now())",
+            [foreground, background, threadId],
           );
-          await tasks.startTaskWorkers(dependencies);
-          await waitFor(
-            async () =>
-              (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [missingJob])).rows[0]
-                .status === 'succeeded',
-          );
-          await waitFor(async () =>
+          await db.pool.query("UPDATE threads SET status='running' WHERE id=$1", [threadId]);
+          await thread.startThreadWorkers(dependencies);
+          await waitFor(async () => (await turnStatus(missingJob)) === 'succeeded');
+          assert.equal(
             (
-              await db.pool.query('SELECT status FROM tasks WHERE id=ANY($1::uuid[])', [
-                [interrupted, legacy, readOnly],
-              ])
-            ).rows.every((row) => row.status === 'succeeded'),
+              await db.pool.query(
+                "SELECT id FROM turns WHERE thread_id=$1 AND status IN ('queued','running')",
+                [threadId],
+              )
+            ).rowCount,
+            0,
           );
-          const recovered = (id: string) =>
-            segments
-              .filter((context) => context.taskId === id)
-              .map((context) => [
-                context.checkOutcome,
-                context.freshSession,
-                context.prompt.slice(0, 22),
-              ]);
-          assert.deepEqual(recovered(interrupted), [[true, true, 'An earlier attempt at ']]);
-          assert.deepEqual(recovered(legacy), [[true, true, 'An earlier attempt at ']]);
-          assert.deepEqual(recovered(readOnly), [[false, true, 'Read the synthetic pag']]);
-          for (const id of [interrupted, legacy, readOnly]) {
-            const task = (
-              await db.pool.query('SELECT revision,recovery_attempts FROM tasks WHERE id=$1', [id])
-            ).rows[0];
-            assert.deepEqual(task, { revision: 1, recovery_attempts: 1 });
+          for (const id of [foreground, background]) {
+            assert.equal(await turnStatus(id), 'failed');
             assert.equal(
-              (
-                await db.pool.query(
-                  "SELECT id FROM task_events WHERE task_id=$1 AND type='recovering'",
-                  [id],
-                )
-              ).rowCount,
-              1,
-            );
-            assert.equal(
-              (
-                await db.pool.query(
-                  "SELECT id FROM messages WHERE task_id=$1 AND role='assistant'",
-                  [id],
-                )
-              ).rowCount,
-              0,
+              segments.some((context) => context.turnId === id),
+              false,
             );
           }
+          const interruptedReplies = async (id: string) =>
+            (
+              await db.pool.query(
+                "SELECT text,thread_id FROM messages WHERE turn_id=$1 AND role='assistant'",
+                [id],
+              )
+            ).rows;
+          assert.deepEqual(await interruptedReplies(foreground), [
+            { text: thread.interruptedMessage, thread_id: threadId },
+          ]);
+          assert.deepEqual(await interruptedReplies(background), []);
+          assert.equal(
+            (
+              await db.pool.query(
+                "SELECT id FROM turns WHERE thread_id=$1 AND source='resume' AND created_at > (SELECT created_at FROM turns WHERE id=$2)",
+                [threadId, foreground],
+              )
+            ).rowCount,
+            0,
+          );
+          assert.ok(segments.every((context) => context.threadId === threadId));
         },
       );
 
       await t.test(
-        'cancelled segments cannot write replies, memory, events, or invoke tools',
+        'stopped turns cannot write replies, memory, events, or invoke tools',
         async () => {
-          const id = await tasks.submitTask('cancel-fence-fixture');
+          const { turnId: id } = await thread.submitUserMessage('cancel-fence-fixture');
           await waitFor(async () => Boolean(captured));
-          await tasks.cancelTask(id);
+          await thread.stopThread();
           const context = captured!;
+          assert.equal(context.signal.aborted, true);
           await assert.rejects(context.reply('late-reply-fixture'));
           await assert.rejects(context.emit('late-event-fixture', 'must not persist'));
           await assert.rejects(context.remember('late-memory-fixture'));
           await assert.rejects(context.manage('profile_update', { name: 'Injected' }));
           await assert.rejects(context.integration('GMAIL_FETCH_EMAILS', {}));
-          await assert.rejects(context.startExternalAction!());
           await assert.rejects(
             context.requestCredential({
               origin: 'https://example.com',
@@ -582,18 +570,9 @@ test(
             }),
           );
           await assert.rejects(context.publish('/no-such-file'));
-          await assert.rejects(
-            tasks.submitTask('Stale approved continuation', [], id, true, {
-              sourceId: 'stale-approval',
-            }),
-          );
-          await tasks.resumeTask(id, 0);
           release();
           await delay(30);
-          assert.equal(
-            (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [id])).rows[0].status,
-            'cancelled',
-          );
+          assert.equal(await turnStatus(id), 'cancelled');
           assert.equal(
             (await db.pool.query("SELECT id FROM messages WHERE text='late-reply-fixture'"))
               .rowCount,
@@ -605,11 +584,11 @@ test(
             0,
           );
           assert.equal(
-            (await db.pool.query("SELECT id FROM task_events WHERE type='late-event-fixture'"))
+            (await db.pool.query("SELECT id FROM turn_events WHERE type='late-event-fixture'"))
               .rowCount,
             0,
           );
-          await tasks.submitTask('event-memory-fixture', [], undefined, true, { source: 'event' });
+          await thread.enqueueTurn('event-memory-fixture', { source: 'event' });
           await waitFor(async () => eventMemoryBlocked);
         },
       );
@@ -622,17 +601,17 @@ test(
             'text/plain',
           );
           artifactIds.push(artifact.id);
-          await tasks.submitTask('attachment-fixture', [artifact]);
+          await thread.submitUserMessage('attachment-fixture', [artifact]);
           await waitFor(async () => copiedAttachmentRead);
         },
       );
       await t.test(
-        'task uploads reach the configured remote workspace before execution',
+        'turn uploads reach the configured remote workspace before execution',
         async () => {
-          dependencies.writeArtifact = async (taskId, path, bytes, signal) => {
+          dependencies.writeArtifact = async (target, path, bytes, signal) => {
             assert.match(path, /^[a-f0-9-]{36}-remote.txt$/);
             assert.equal(signal?.aborted, false);
-            remoteUploads.set(taskId, bytes);
+            remoteUploads.set(target, bytes);
           };
           const artifact = await storeArtifact(
             Buffer.from('remote synthetic bytes'),
@@ -640,99 +619,90 @@ test(
             'text/plain',
           );
           artifactIds.push(artifact.id);
-          await tasks.submitTask('remote-attachment-fixture', [artifact]);
+          await thread.submitUserMessage('remote-attachment-fixture', [artifact]);
           await waitFor(async () => remoteAttachmentRead);
         },
       );
-      await t.test(
-        'replies and continuations stage owned downloaded files but never foreign artifacts',
-        async () => {
-          dependencies.writeArtifact = undefined;
-          const sourceTask = await tasks.submitTask('pdf-source-fixture');
-          await waitFor(
-            async () =>
-              (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [sourceTask])).rows[0]
-                ?.status === 'succeeded',
-          );
-          const download = (
-            await db.pool.query(
-              "SELECT id,attachments FROM messages WHERE task_id=$1 AND role='assistant' AND jsonb_array_length(attachments)=1",
-              [sourceTask],
-            )
-          ).rows[0];
-          const pdf = download.attachments[0];
-          artifactIds.push(pdf.id);
-          const stagedName = `${pdf.id}-statement.pdf`;
-          const foreignTask = randomUUID();
-          const foreignArtifact = randomUUID();
-          const foreignMessage = randomUUID();
-          const foreignAttachments = JSON.stringify([
-            {
-              id: foreignArtifact,
-              name: 'foreign.pdf',
-              mimeType: 'application/pdf',
-              size: 12,
-              url: '',
-            },
-          ]);
+      await t.test('replies stage owned downloaded files but never foreign artifacts', async () => {
+        dependencies.writeArtifact = undefined;
+        const { turnId: sourceTurn } = await thread.submitUserMessage('pdf-source-fixture');
+        await waitFor(async () => (await turnStatus(sourceTurn)) === 'succeeded');
+        const download = (
           await db.pool.query(
-            "INSERT INTO tasks(id,owner_id,title,prompt,status) VALUES($1,'foreign-owner','Foreign','Foreign','succeeded')",
-            [foreignTask],
-          );
-          await db.pool.query(
-            "INSERT INTO artifacts(id,owner_id,task_id,name,mime_type,size,storage_path) VALUES($1,'foreign-owner',$2,'foreign.pdf','application/pdf',12,'/nonexistent/foreign.pdf')",
-            [foreignArtifact, foreignTask],
-          );
-          await db.pool.query(
-            "INSERT INTO messages(id,owner_id,role,text,task_id,attachments) VALUES($1,'foreign-owner','assistant','',$2,$3)",
-            [foreignMessage, foreignTask, foreignAttachments],
-          );
-          await db.pool.query(
-            "INSERT INTO messages(id,owner_id,role,text,task_id,attachments) VALUES($1,'local-development','assistant','',$2,$3)",
-            [randomUUID(), sourceTask, foreignAttachments],
-          );
-          const staged = (context: RuntimeContext) =>
-            context.attachments.map((item) => item.path.slice(context.workspacePath.length + 1));
+            "SELECT id,attachments FROM messages WHERE turn_id=$1 AND role='assistant' AND jsonb_array_length(attachments)=1",
+            [sourceTurn],
+          )
+        ).rows[0];
+        const pdf = download.attachments[0];
+        artifactIds.push(pdf.id);
+        const stagedName = `${pdf.id}-statement.pdf`;
+        const foreignThread = randomUUID();
+        const foreignArtifact = randomUUID();
+        const foreignMessage = randomUUID();
+        const foreignAttachments = JSON.stringify([
+          {
+            id: foreignArtifact,
+            name: 'foreign.pdf',
+            mimeType: 'application/pdf',
+            size: 12,
+            url: '',
+          },
+        ]);
+        await db.pool.query("INSERT INTO threads(id,owner_id) VALUES($1,'foreign-owner')", [
+          foreignThread,
+        ]);
+        await db.pool.query(
+          "INSERT INTO artifacts(id,owner_id,thread_id,name,mime_type,size,storage_path) VALUES($1,'foreign-owner',$2,'foreign.pdf','application/pdf',12,'/nonexistent/foreign.pdf')",
+          [foreignArtifact, foreignThread],
+        );
+        await db.pool.query(
+          "INSERT INTO messages(id,owner_id,role,text,thread_id,attachments) VALUES($1,'foreign-owner','assistant','',$2,$3)",
+          [foreignMessage, foreignThread, foreignAttachments],
+        );
+        await db.pool.query(
+          "INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id,attachments) VALUES($1,'local-development','assistant','',$2,$3,$4)",
+          [randomUUID(), threadId, sourceTurn, foreignAttachments],
+        );
+        const staged = (context: RuntimeContext) =>
+          context.attachments.map((item) => item.path.slice(context.workspacePath.length + 1));
 
-          await tasks.submitTask('pdf-reply-file-fixture', [], undefined, false, {
-            replyToMessageId: download.id,
-          });
-          await waitFor(async () => fileContexts.has('pdf-reply-file-fixture'));
-          const reply = fileContexts.get('pdf-reply-file-fixture')!;
-          assert.deepEqual(staged(reply), [stagedName]);
-          assert.equal(
-            await readFile(reply.attachments[0].path, 'utf8'),
-            '%PDF-1.4 synthetic statement',
-          );
-          const described = [
-            { name: 'statement.pdf', mimeType: 'application/pdf', workspaceFile: stagedName },
-          ];
-          assert.deepEqual(reply.replyTo?.attachments, described);
-          assert.deepEqual(
-            reply.history.find((item) => item.id === download.id)?.attachments,
-            described,
-          );
-          assert.deepEqual(
-            reply.history.find((item) => item.attachments?.[0]?.name === 'foreign.pdf')
-              ?.attachments,
-            [{ name: 'foreign.pdf', mimeType: 'application/pdf' }],
-          );
+        await thread.submitUserMessage('pdf-reply-file-fixture', [], {
+          replyToMessageId: download.id,
+        });
+        await waitFor(async () => fileContexts.has('pdf-reply-file-fixture'));
+        const reply = fileContexts.get('pdf-reply-file-fixture')!;
+        assert.deepEqual(staged(reply), [stagedName]);
+        assert.equal(
+          await readFile(reply.attachments[0].path, 'utf8'),
+          '%PDF-1.4 synthetic statement',
+        );
+        const described = [
+          { name: 'statement.pdf', mimeType: 'application/pdf', workspaceFile: stagedName },
+        ];
+        assert.deepEqual(reply.replyTo?.attachments, described);
+        assert.deepEqual(
+          reply.history.find((item) => item.id === download.id)?.attachments,
+          described,
+        );
+        assert.deepEqual(
+          reply.history.find((item) => item.attachments?.[0]?.name === 'foreign.pdf')?.attachments,
+          [{ name: 'foreign.pdf', mimeType: 'application/pdf' }],
+        );
 
-          await tasks.submitTask('foreign-reply-file-fixture', [], undefined, false, {
+        await assert.rejects(
+          thread.submitUserMessage('foreign-reply-file-fixture', [], {
             replyToMessageId: foreignMessage,
-          });
-          await waitFor(async () => fileContexts.has('foreign-reply-file-fixture'));
-          const foreign = fileContexts.get('foreign-reply-file-fixture')!;
-          assert.equal(foreign.replyTo, undefined);
-          assert.deepEqual(foreign.attachments, []);
-
-          await tasks.submitTask('pdf-continue-file-fixture', [], sourceTask);
-          await waitFor(async () => fileContexts.has('pdf-continue-file-fixture'));
-          assert.deepEqual(staged(fileContexts.get('pdf-continue-file-fixture')!), [stagedName]);
-          assert.equal(JSON.stringify([...fileContexts.values()]).includes(foreignArtifact), false);
-        },
-      );
-      await t.test('staging stops at the total size budget without failing the task', async () => {
+          }),
+          { statusCode: 404 },
+        );
+        assert.equal(
+          (await db.pool.query("SELECT id FROM turns WHERE prompt='foreign-reply-file-fixture'"))
+            .rowCount,
+          0,
+        );
+        assert.equal(JSON.stringify([...fileContexts.values()]).includes(foreignArtifact), false);
+      });
+      await t.test('staging stops at the total size budget without failing the turn', async () => {
         const large = [];
         for (const index of [1, 2, 3, 4]) {
           const artifact = await storeArtifact(
@@ -743,19 +713,17 @@ test(
           artifactIds.push(artifact.id);
           large.push(artifact);
         }
-        const task = await tasks.submitTask('budget-file-fixture', large);
+        const { turnId } = await thread.submitUserMessage('budget-file-fixture', large);
         await waitFor(async () => fileContexts.has('budget-file-fixture'));
         assert.equal(fileContexts.get('budget-file-fixture')!.attachments.length, 3);
-        await waitFor(
-          async () =>
-            (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [task])).rows[0]
-              ?.status === 'succeeded',
-        );
+        await waitFor(async () => (await turnStatus(turnId)) === 'succeeded');
       });
     } finally {
       release();
-      await tasks.stopTasks();
-      const ids = (await db.pool.query('SELECT id FROM tasks')).rows.map((row) => row.id as string);
+      await thread.stopThreadWorkers();
+      const ids = (await db.pool.query('SELECT id FROM threads')).rows.map(
+        (row) => row.id as string,
+      );
       await db.pool.end();
       for (const id of ids)
         await rm(join(dataRoot, 'workspaces', id), { recursive: true, force: true });

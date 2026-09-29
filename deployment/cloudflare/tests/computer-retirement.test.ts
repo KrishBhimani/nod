@@ -343,7 +343,7 @@ test('both controller roles retire only through deployment drain and keep ordina
         body: JSON.stringify({
           id: randomUUID(),
           role,
-          ...(role === 'workspace' && { taskId: 'synthetic' }),
+          ...(role === 'workspace' && { threadId: 'synthetic' }),
         }),
       }),
     );
@@ -524,7 +524,7 @@ test('a current unused failure retires only to a stopped marker and preserves it
           body: JSON.stringify({
             id: randomUUID(),
             role,
-            ...(role === 'workspace' && { taskId: 'synthetic' }),
+            ...(role === 'workspace' && { threadId: 'synthetic' }),
           }),
         }),
       );

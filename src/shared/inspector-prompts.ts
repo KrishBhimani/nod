@@ -1,8 +1,7 @@
 export interface InspectorPrompt {
   id: string;
-  taskId: string;
+  turnId: string;
   title: string;
-  revision: number;
   system: string;
   instruction: string;
   resumed: boolean;

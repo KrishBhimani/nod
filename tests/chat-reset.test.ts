@@ -84,15 +84,16 @@ const message: Message = {
   id: 'old-message',
   role: 'assistant',
   text: 'Archived conversation',
-  taskId: 'old-task',
+  turnId: 'old-turn',
   attachments: [],
   createdAt: '2026-09-25T12:00:00Z',
 };
 const base: AppState = {
-  conversationRevision: 0,
+  threadId: 'thread-0',
+  threadStatus: 'idle',
   hasEarlierMessages: true,
   messages: [message],
-  tasks: [],
+  turns: [],
   configuration: {
     provider: 'fixture',
     model: 'fixture',
@@ -179,8 +180,8 @@ test('restart setup clears archived messages, history, replies and stale streams
     if (path === '/api/onboarding') {
       current = {
         ...base,
-        conversationRevision: 1,
-        messages: [{ ...message, id: 'new-message', taskId: 'new-task', text: 'Fresh setup' }],
+        threadId: 'thread-1',
+        messages: [{ ...message, id: 'new-message', turnId: 'new-turn', text: 'Fresh setup' }],
       };
       return new Response('{}');
     }
@@ -199,8 +200,8 @@ test('restart setup clears archived messages, history, replies and stale streams
         .click();
       Events.current.emit({
         type: 'delta',
-        conversationRevision: 0,
-        taskId: 'old-task',
+        threadId: 'thread-0',
+        turnId: 'old-turn',
         streamId: 'old-stream',
         text: 'Old partial reply',
       });
@@ -220,7 +221,7 @@ test('restart setup clears archived messages, history, replies and stale streams
       1,
     );
     await act(async () => {
-      finishReset(new Response(JSON.stringify({ ok: true, conversationRevision: 1 })));
+      finishReset(new Response(JSON.stringify({ ok: true, threadId: 'thread-1' })));
       await tick();
     });
     assert.deepEqual(
@@ -230,7 +231,7 @@ test('restart setup clears archived messages, history, replies and stale streams
           path: '/api/onboarding',
           body: {
             timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-            conversationRevision: 1,
+            threadId: 'thread-1',
           },
         },
       ],
@@ -246,15 +247,15 @@ test('restart setup clears archived messages, history, replies and stale streams
       await staleRefresh;
       Events.current.emit({
         type: 'delta',
-        conversationRevision: 0,
-        taskId: 'old-task',
+        threadId: 'thread-0',
+        turnId: 'old-turn',
         streamId: 'late-stream',
         text: 'Stale stream',
       });
       Events.current.emit({
         type: 'delta',
-        conversationRevision: 1,
-        taskId: 'new-task',
+        threadId: 'thread-1',
+        turnId: 'new-turn',
         streamId: 'new-stream',
         text: 'New partial reply',
       });
@@ -269,7 +270,7 @@ test('restart setup clears archived messages, history, replies and stale streams
     assert.equal(fixture.app().state?.configuration.integrationsReady, true);
     assert.match(
       requests.find((request) => request.path.startsWith('/api/messages?'))!.path,
-      /conversationRevision=0/,
+      /threadId=thread-0/,
     );
   } finally {
     await fixture.dispose();
@@ -287,7 +288,7 @@ test('the restart setup event resets once and a failed reset preserves the exist
     if (path === '/api/conversation/reset')
       return failReset
         ? new Response(JSON.stringify({ error: 'Restart failed.' }), { status: 503 })
-        : new Response(JSON.stringify({ ok: true, conversationRevision: 1 }));
+        : new Response(JSON.stringify({ ok: true, threadId: 'thread-1' }));
     if (path === '/api/apps') return Response.json([]);
     return new Response('{}');
   };
@@ -322,10 +323,10 @@ test('reconnecting preserves the current streamed prefix until its saved message
     await act(async () =>
       Events.current.emit({
         type: 'delta',
-        taskId: 'running',
+        threadId: 'thread-0',
+        turnId: 'running',
         streamId: 'stream',
         text: 'First ',
-        conversationRevision: 0,
       }),
     );
     await act(async () => {
@@ -336,10 +337,10 @@ test('reconnecting preserves the current streamed prefix until its saved message
     await act(async () =>
       Events.current.emit({
         type: 'delta',
-        taskId: 'running',
+        threadId: 'thread-0',
+        turnId: 'running',
         streamId: 'stream',
         text: 'second',
-        conversationRevision: 0,
       }),
     );
     assert.equal(fixture.app().streams.stream, 'First second');
@@ -383,7 +384,7 @@ test('landing on an empty chat asks Otto to reach out once and shows the greetin
     id: 'greeting',
     role: 'assistant',
     text: 'Hi Alex, I’m looking through your Gmail for things I can take off your plate.',
-    taskId: 'welcome',
+    turnId: 'welcome',
     attachments: [],
     createdAt: '2026-09-28T12:00:00Z',
   };
@@ -402,15 +403,14 @@ test('landing on an empty chat asks Otto to reach out once and shows the greetin
     return Response.json({
       ...base,
       messages: welcomed ? [greeting] : [],
-      tasks: welcomed
+      turns: welcomed
         ? [
             {
               id: 'welcome',
-              title: 'Welcome',
+              source: 'event',
               status: 'running',
               showTyping: true,
               createdAt: greeting.createdAt,
-              updatedAt: greeting.createdAt,
             },
           ]
         : [],
@@ -510,7 +510,7 @@ test('a failed welcome request shows its error and releases the composer', async
         { status: 503 },
       );
     if (path === '/api/apps') return Response.json([]);
-    return Response.json({ ...base, messages: [], tasks: [] });
+    return Response.json({ ...base, messages: [], turns: [] });
   };
   pageDataCache.clear();
   let fixture: Awaited<ReturnType<typeof mount>> | undefined;

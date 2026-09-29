@@ -1,33 +1,54 @@
 import { useEffect, useRef, useState } from 'react';
-import { Activity, Monitor, X, Coins, Wrench, ScrollText, BrainCircuit } from 'lucide-react';
+import {
+  Activity,
+  Monitor,
+  X,
+  Coins,
+  Wrench,
+  ScrollText,
+  BrainCircuit,
+  ChevronDown,
+} from 'lucide-react';
+import type { Turn } from '../../shared/contracts';
 import { Button, Notice } from '../components/ui';
 import { InspectorScreen } from '../components/inspector-screen';
 import { useInspectorState } from '../hooks/use-inspector-state';
 import { InspectorActivity, InspectorModels, InspectorTools } from '../components/inspector-tools';
-import { compactActivityText } from '../lib/inspector-observations';
 import { InspectorProviders } from '../components/inspector-providers';
 import { InspectorPrompts } from '../components/inspector-prompts';
-import { InspectorWork } from '../components/inspector-work';
+import { ConnectionMenu } from '../components/connection-menu';
+import { statusLabels } from '../components/turn-status';
 import { readUiPreference, writeUiPreference } from '../lib/ui-preferences';
-import { useDateFormat } from '../lib/date-format';
+import { formatDateTime, useDateFormat } from '../lib/date-format';
+
+const sourceLabels: Record<Turn['source'], string> = {
+  user: 'Message',
+  schedule: 'Schedule',
+  event: 'Event',
+  resume: 'Resume',
+};
+
+function turnLabel(turn: Turn) {
+  return `${sourceLabels[turn.source]} · ${formatDateTime(turn.createdAt)} · ${statusLabels[turn.status]}`;
+}
 
 export function Inspector({
   onClose,
   focus,
 }: {
   onClose(): void;
-  focus?: { messageId: string; taskId: string };
+  focus?: { messageId: string; turnId: string };
 }) {
   useDateFormat();
   const { data, error, browserStopped } = useInspectorState();
-  const [scope, setScope] = useState(focus?.taskId);
-  const [scopeSource, setScopeSource] = useState<'message' | 'work'>('message');
+  const [scope, setScope] = useState(focus?.turnId);
+  const [scopeSource, setScopeSource] = useState<'message' | 'picked'>('message');
   const [width, setWidth] = useState(() =>
     Math.max(330, Math.min(900, Number(readUiPreference('otto.inspector.width')) || 480)),
   );
   useEffect(() => {
-    if (focus?.taskId) {
-      setScope(focus.taskId);
+    if (focus?.turnId) {
+      setScope(focus.turnId);
       setScopeSource('message');
       setTab('tools');
     }
@@ -39,8 +60,9 @@ export function Inspector({
     'screen',
   );
   const panel = useRef<HTMLElement>(null);
-  const task = data?.tasks.find((item) => item.id === scope);
-  const events = data?.events.filter((event) => !scope || event.taskId === scope) ?? [];
+  const turns = data?.turns ?? [];
+  const turn = turns.find((item) => item.id === scope);
+  const events = data?.events.filter((event) => !scope || event.turnId === scope) ?? [];
   const views = [
     ['screen', 'Screen', Monitor],
     ['activity', 'Activity', Activity],
@@ -136,13 +158,57 @@ export function Inspector({
         aria-labelledby={`inspector-tab-${tab}`}
         tabIndex={0}
       >
-        {tab !== 'screen' && tab !== 'costs' && scope && (
+        {tab !== 'screen' && tab !== 'costs' && (scope || turns.length > 0) && (
           <div className="inspector-scope">
             <span>
               {scope
-                ? `${scopeSource === 'message' ? 'From this message' : 'This work'}${task ? ': ' + compactActivityText(task.title, 65) : ''}`
+                ? `${scopeSource === 'message' ? 'From this message' : 'This turn'}${turn ? ': ' + turnLabel(turn) : ''}`
                 : 'All activity'}
             </span>
+            {turns.length > 0 && (
+              <ConnectionMenu
+                label="Choose a turn"
+                trigger={
+                  <>
+                    Turn
+                    <ChevronDown size={14} aria-hidden="true" />
+                  </>
+                }
+              >
+                {(close) => (
+                  <>
+                    <button
+                      type="button"
+                      className="menu-item"
+                      role="menuitemradio"
+                      aria-checked={!scope}
+                      onClick={() => {
+                        setScope(undefined);
+                        close();
+                      }}
+                    >
+                      All activity
+                    </button>
+                    {turns.map((item) => (
+                      <button
+                        type="button"
+                        key={item.id}
+                        className="menu-item"
+                        role="menuitemradio"
+                        aria-checked={item.id === scope}
+                        onClick={() => {
+                          setScope(item.id);
+                          setScopeSource('picked');
+                          close();
+                        }}
+                      >
+                        {turnLabel(item)}
+                      </button>
+                    ))}
+                  </>
+                )}
+              </ConnectionMenu>
+            )}
             {scope && (
               <Button variant="ghost" size="sm" onClick={() => setScope(undefined)}>
                 Show all
@@ -158,23 +224,14 @@ export function Inspector({
         />
         {tab === 'activity' &&
           (scope ? (
-            <InspectorActivity key={scope} taskId={scope} events={events} />
+            <InspectorActivity key={scope} turnId={scope} events={events} />
           ) : (
-            <>
-              <InspectorWork
-                onInspect={(taskId) => {
-                  setScope(taskId);
-                  setScopeSource('work');
-                  setTab('tools');
-                }}
-              />
-              <InspectorActivity events={events} />
-            </>
+            <InspectorActivity events={events} />
           ))}
-        {tab === 'tools' && <InspectorTools key={scope ?? 'all'} taskId={scope} />}
-        {tab === 'models' && <InspectorModels key={scope ?? 'all'} taskId={scope} />}
+        {tab === 'tools' && <InspectorTools key={scope ?? 'all'} turnId={scope} />}
+        {tab === 'models' && <InspectorModels key={scope ?? 'all'} turnId={scope} />}
         {tab === 'costs' && <InspectorProviders />}
-        {tab === 'prompts' && <InspectorPrompts key={scope ?? 'all'} taskId={scope} />}
+        {tab === 'prompts' && <InspectorPrompts key={scope ?? 'all'} turnId={scope} />}
       </div>
     </aside>
   );

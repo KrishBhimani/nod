@@ -55,7 +55,8 @@ test('Pi drains every session before reporting an abort failure and retries fail
   try {
     for (let index = 0; index < 2; index += 1)
       await agent.open({
-        taskId: randomUUID(),
+        threadId: randomUUID(),
+        turnId: randomUUID(),
         systemPrompt: 'fixture',
         tools: [],
         shouldStop: () => false,
@@ -86,7 +87,8 @@ test('Pi drains every session before reporting an abort failure and retries fail
     assert.equal(events.length, 6);
     await assert.rejects(
       agent.open({
-        taskId: randomUUID(),
+        threadId: randomUUID(),
+        turnId: randomUUID(),
         systemPrompt: 'fixture',
         tools: [],
         shouldStop: () => false,
@@ -110,7 +112,8 @@ test('real Pi sessions persist a credential pause and resume without replaying c
   let remembered = 0;
   let phase = 0;
   const context: RuntimeContext = {
-    taskId: id,
+    threadId: id,
+    turnId: randomUUID(),
     ownerId: 'fixture',
     prompt: 'Sign in to the fixture',
     history: [{ role: 'user', text: 'Older fixture context' }],
@@ -225,12 +228,12 @@ test('real Pi sessions persist a credential pause and resume without replaying c
     workspace: fakeWorkspace(),
   });
   try {
-    assert.equal((await runtime.runTask(context)).status, 'waiting_credentials');
+    assert.equal((await runtime.runTurn(context)).status, 'waiting_credentials');
     assert.equal(remembered, 0);
     phase = 1;
     assert.equal(
       (
-        await runtime.runTask({
+        await runtime.runTurn({
           ...context,
           prompt: 'Secure entry completed',
           history: [{ role: 'user', text: 'New context from the continuous conversation' }],
@@ -241,7 +244,7 @@ test('real Pi sessions persist a credential pause and resume without replaying c
     assert.equal(prompts.length, 2);
     assert.equal(prompts[1].includes('Older fixture context'), true);
     assert.equal(prompts[1].includes('Secure entry completed'), true);
-    assert.equal(prompts[1].includes('New context from the continuous conversation'), true);
+    assert.equal(prompts[1].includes('New context from the continuous conversation'), false);
     assert.match(
       prompts[1],
       /Earlier assistant messages asking for private values outside that trusted request are obsolete/,
@@ -352,8 +355,8 @@ test('token-limited Pi replies are not completed messages and retain prior tool 
     },
     computer: fakeComputer(),
     workspace: fakeWorkspace({
-      open: (taskId) => ({
-        ...workspace.open(taskId),
+      open: (threadId) => ({
+        ...workspace.open(threadId),
         execute: async () => {
           commands += 1;
           assert.deepEqual(
@@ -367,8 +370,9 @@ test('token-limited Pi replies are not completed messages and retain prior tool 
   });
   try {
     await assert.rejects(
-      runtime.runTask({
-        taskId: `test-${randomUUID()}`,
+      runtime.runTurn({
+        threadId: `test-${randomUUID()}`,
+        turnId: randomUUID(),
         ownerId: 'fixture-owner',
         prompt: 'Inspect the fixture',
         history: [],
@@ -479,7 +483,8 @@ test('Responses commentary and final answer remain separate visible messages', a
   });
   try {
     const session = await agent.open({
-      taskId: `test-${randomUUID()}`,
+      threadId: `test-${randomUUID()}`,
+      turnId: randomUUID(),
       systemPrompt: 'Fixture',
       tools: [],
       onEvent: (event) => events.push(event),
@@ -725,7 +730,8 @@ test('real Pi retry followed by a tool pause reports only new usage despite repe
   });
   try {
     const session = await agent.open({
-      taskId: `test-${randomUUID()}`,
+      threadId: `test-${randomUUID()}`,
+      turnId: randomUUID(),
       systemPrompt: 'Fixture',
       shouldStop: () => paused,
       onEvent: (event) => events.push(event),
@@ -778,7 +784,8 @@ test('Pi reports compaction and cache warming usage without private summaries or
   });
   try {
     const session = await agent.open({
-      taskId: randomUUID(),
+      threadId: randomUUID(),
+      turnId: randomUUID(),
       systemPrompt: 'fixture',
       tools: [],
       shouldStop: () => false,

@@ -150,7 +150,7 @@ function fixture(
       lifecycle.launch(ownerId, {
         id,
         generation,
-        taskId: role === 'workspace' ? 'task' : undefined,
+        threadId: role === 'workspace' ? 'thread' : undefined,
       }),
     completed: (id: string, generation = '1', code = 0) =>
       lifecycle.completed(ownerId, { id, generation, code }),
@@ -297,7 +297,7 @@ test('owner, environment, role and active generation cannot be replaced', async 
   const state = f.state();
   const destroys = f.events.filter((event) => event === 'destroy').length;
   await assert.rejects(
-    f.lifecycle.launch(randomUUID(), { id: randomUUID(), generation: '1', taskId: 'task' }),
+    f.lifecycle.launch(randomUUID(), { id: randomUUID(), generation: '1', threadId: 'thread' }),
   );
   await assert.rejects(f.launch(randomUUID(), '2'));
   await assert.rejects(
@@ -310,7 +310,7 @@ test('owner, environment, role and active generation cannot be replaced', async 
     createComputerLifecycle({ ...f.options, environment: 'production' }).launch(f.ownerId, {
       id: randomUUID(),
       generation: '1',
-      taskId: 'task',
+      threadId: 'thread',
     }),
   );
   assert.deepEqual(f.state(), state);
@@ -403,7 +403,7 @@ test('failed or unconfirmed destruction of an unused role cannot publish a stopp
       assert.equal(f.state(), undefined);
       assert.equal(f.writes.length, 0);
       await assert.rejects(
-        lifecycle.launch(f.ownerId, { id: randomUUID(), generation: '2', taskId: 'task' }),
+        lifecycle.launch(f.ownerId, { id: randomUUID(), generation: '2', threadId: 'thread' }),
       );
       assert.equal(f.events.includes('launch'), false);
       assert.equal(f.state(), undefined);

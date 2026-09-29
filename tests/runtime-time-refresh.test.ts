@@ -17,7 +17,8 @@ import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 
 function context(directory: string, overrides: Partial<RuntimeContext> = {}): RuntimeContext {
   return {
-    taskId: `test-${randomUUID()}`,
+    threadId: `test-${randomUUID()}`,
+    turnId: `test-${randomUUID()}`,
     ownerId: 'clock-fixture',
     prompt: 'Continue the fixture request.',
     timeZone: 'Europe/Lisbon',
@@ -79,7 +80,7 @@ test('secure continuation refreshes the trusted clock and its Inspector snapshot
     workspace: fakeWorkspace(),
   });
   try {
-    const result = await runtime.runTask(
+    const result = await runtime.runTurn(
       context(directory, {
         inspectPrompt: async (snapshot) => {
           snapshots.push(snapshot);
@@ -179,13 +180,13 @@ test('reopening a persisted Pi session sends the current date and owner time zon
   });
   let runtime = openRuntime();
   try {
-    assert.equal((await runtime.runTask(task)).status, 'succeeded');
+    assert.equal((await runtime.runTurn(task)).status, 'succeeded');
     await runtime.dispose();
     t.mock.timers.setTime(Date.parse('2026-09-26T00:01:00Z'));
     runtime = openRuntime();
     assert.equal(
       (
-        await runtime.runTask({
+        await runtime.runTurn({
           ...task,
           timeZone: 'America/Los_Angeles',
           prompt: 'Continue the fixture after the time zone changed.',
@@ -266,7 +267,7 @@ test('the signed-in profile, region and clock reach the model but not observatio
     workspace: fakeWorkspace(),
   });
   try {
-    const result = await runtime.runTask(
+    const result = await runtime.runTurn(
       context(directory, {
         locale: 'pt-PT',
         hourCycle: 'h12',

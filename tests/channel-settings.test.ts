@@ -11,6 +11,15 @@ import { createChannels } from '../src/server/channels.ts';
 import type { MessagingTransport } from '../src/ports/messaging.ts';
 
 const token = '987:fixture-never-live';
+
+async function createFixtureTables(pool: pg.Pool, owner: string) {
+  await pool.query(`CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,status text NOT NULL DEFAULT 'idle',created_at timestamptz NOT NULL DEFAULT now(),archived_at timestamptz);
+    CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text UNIQUE,channel text NOT NULL DEFAULT 'web',status text NOT NULL DEFAULT 'queued',created_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text NOT NULL,role text NOT NULL,text text NOT NULL,thread_id uuid REFERENCES threads(id),turn_id uuid REFERENCES turns(id),attachments jsonb NOT NULL DEFAULT '[]',created_at timestamptz NOT NULL DEFAULT now())`);
+  const threadId = randomUUID();
+  await pool.query('INSERT INTO threads(id,owner_id) VALUES($1,$2)', [threadId, owner]);
+  return threadId;
+}
 test('channel verifier checks the selected accounts and requires an explicit change from an existing Telegram webhook', async () => {
   const calls: string[] = [];
   let existingWebhook = '';
@@ -418,9 +427,7 @@ test(
       connectionString: process.env.TEST_DATABASE_URL,
       options: `-c search_path=${schema}`,
     });
-    await pool.query(
-      'CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text,role text,text text,task_id uuid,attachments jsonb)',
-    );
+    const threadId = await createFixtureTables(pool, 'local-development');
     let release: () => void = () => {};
     let started: () => void = () => {};
     const blocked = new Promise<void>((done) => {
@@ -460,15 +467,19 @@ test(
     });
     channels.registerRoutes(app);
     try {
-      const task = randomUUID();
+      const turn = randomUUID();
       const message = randomUUID();
       await pool.query(
-        "INSERT INTO channel_inbox(source_id,provider,account_id,sender_id,thread_id,text,received_at,task_id,state,owner_id) VALUES('fixture','telegram','bot','123','telegram:123','Fixture',now(),$1,'submitted','local-development')",
-        [task],
+        "INSERT INTO turns(id,owner_id,thread_id,channel,status) VALUES($1,'local-development',$2,'telegram:fixture','succeeded')",
+        [turn, threadId],
       );
       await pool.query(
-        "INSERT INTO messages(id,owner_id,role,text,task_id,attachments) VALUES($1,'local-development','assistant','Fixture reply',$2,'[]')",
-        [message, task],
+        "INSERT INTO channel_inbox(source_id,provider,account_id,sender_id,thread_id,text,received_at,turn_id,state,owner_id,channel) VALUES('fixture','telegram','bot','123','telegram:123','Fixture',now(),$1,'submitted','local-development','telegram:fixture')",
+        [turn],
+      );
+      await pool.query(
+        "INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id,attachments) VALUES($1,'local-development','assistant','Fixture reply',$2,$3,'[]')",
+        [message, threadId, turn],
       );
       const draining = channels.drain();
       await sending;
@@ -514,9 +525,7 @@ for (const mode of ['polling', 'webhook'] as const)
         connectionString: process.env.TEST_DATABASE_URL,
         options: `-c search_path=${schema}`,
       });
-      await pool.query(
-        "CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text,role text,text text,task_id uuid,attachments jsonb DEFAULT '[]')",
-      );
+      await createFixtureTables(pool, 'local-development');
       const base = `https://api.telegram.org/bot${token}`;
       const updates: { update_id: number }[] = [];
       const sent: Record<string, unknown>[] = [];

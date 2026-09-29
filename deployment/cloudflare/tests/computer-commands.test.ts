@@ -99,7 +99,7 @@ function processFixture() {
 
 function fixture(overrides: Partial<Parameters<typeof createComputerCommands>[0]> = {}) {
   const processes: ReturnType<typeof processFixture>[] = [];
-  const launches: Array<{ id: string; generation: string; taskId?: string }> = [];
+  const launches: Array<{ id: string; generation: string; threadId?: string }> = [];
   const completed: Array<{ id: string; generation: string; code: number }> = [];
   const uncertain: Array<{ id: string; generation: string }> = [];
   let allowed = true;
@@ -142,7 +142,7 @@ function fixture(overrides: Partial<Parameters<typeof createComputerCommands>[0]
         '/v1/commands',
         {
           method: 'POST',
-          body: JSON.stringify({ id, role, ...(role === 'workspace' && { taskId: 'task' }) }),
+          body: JSON.stringify({ id, role, ...(role === 'workspace' && { threadId: 'thread' }) }),
         },
         version,
       ),
@@ -178,7 +178,7 @@ function attachClient(f: ReturnType<typeof fixture>) {
   const process = launchCloudflareCommand({
     role: 'workspace',
     generation: '1',
-    taskId: 'task',
+    threadId: 'thread',
     fetch: (input, init) => f.registry.fetch(new Request(input, init)) as Promise<Response>,
     onUncertain() {
       uncertain++;
@@ -195,16 +195,16 @@ function attachClient(f: ReturnType<typeof fixture>) {
   return { process, terminal, stdout, stderr, uncertain: () => uncertain };
 }
 
-test('computer command creation validates identities, role, task and generation before launch', async () => {
+test('computer command creation validates identities, role, thread and generation before launch', async () => {
   for (const role of ['browser', 'workspace'] as const) {
     const f = fixture({ role });
     try {
-      const valid = { id: randomUUID(), role, ...(role === 'workspace' && { taskId: 'task' }) };
+      const valid = { id: randomUUID(), role, ...(role === 'workspace' && { threadId: 'thread' }) };
       for (const body of [
         { ...valid, id: '../private' },
         { ...valid, role: role === 'browser' ? 'workspace' : 'browser' },
-        { ...valid, taskId: role === 'browser' ? 'task' : undefined },
-        { ...valid, taskId: '../private' },
+        { ...valid, threadId: role === 'browser' ? 'thread' : undefined },
+        { ...valid, threadId: '../private' },
         { ...valid, arbitrary: 'private synthetic value' },
         null,
         [],
@@ -231,7 +231,7 @@ test('computer command creation validates identities, role, task and generation 
       assert.equal(f.launches.length, 0);
       const id = await create(f);
       assert.deepEqual(f.launches, [
-        { id, generation: '1', taskId: role === 'workspace' ? 'task' : undefined },
+        { id, generation: '1', threadId: role === 'workspace' ? 'thread' : undefined },
       ]);
       assert.equal((await f.create(id)).status, 409);
       assert.equal((await f.request(`/v1/commands/${id}/output`, {}, '2')).status, 404);

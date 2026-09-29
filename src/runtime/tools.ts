@@ -293,18 +293,6 @@ export const toolDefinitions = {
       ),
     ]),
   ),
-  report_outcome: defineTool(
-    'report_outcome',
-    'Report what you found about the earlier outside action, then stop. Use completed when it went through, not_completed when it did not happen, and unknown with one short question when you cannot check. Write message as one short plain sentence for the user.',
-    Type.Object({
-      outcome: Type.Union([
-        Type.Literal('completed'),
-        Type.Literal('not_completed'),
-        Type.Literal('unknown'),
-      ]),
-      message: Type.String({ minLength: 1, maxLength: 500, pattern: '\\S' }),
-    }),
-  ),
   browser_fast_step: defineTool(
     'browser_fast_step',
     'Ask the configured fast browser chooser to select and execute one click or scroll from the current browser. It cannot type. DONE is a suggestion requiring verification. Reports measured request time.',
@@ -319,7 +307,6 @@ export function inspectToolCatalog(
   return Object.values(toolDefinitions)
     .filter(
       (tool) =>
-        tool.name !== 'report_outcome' &&
         (includeBrowserChooser || tool.name !== 'browser_fast_step') &&
         (includeWebSearch || tool.name !== 'web_search'),
     )

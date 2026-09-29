@@ -33,8 +33,8 @@ test(
       process.env.OTTO_MODE = 'local';
       const db = await import('../src/server/db.ts');
       cleanups.push(() => db.pool.end());
-      const tasks = await import('../src/server/tasks.ts');
-      cleanups.push(() => tasks.stopTasks());
+      const thread = await import('../src/server/thread.ts');
+      cleanups.push(() => thread.stopThreadWorkers());
       const { createApp } = await import('../src/server/app.ts');
       const { ownerId, port } = await import('../src/server/config.ts');
       const app = await createApp();
@@ -49,28 +49,29 @@ test(
         );
         return response.json<T>();
       };
-      const add = async (taskId: string, count: number, start: number) =>
+      const add = async (threadId: string, count: number, start: number) =>
         db.pool.query(
-          `INSERT INTO messages(id,owner_id,role,text,task_id,created_at)
+          `INSERT INTO messages(id,owner_id,role,text,thread_id,created_at)
          SELECT gen_random_uuid(),$1,'assistant','Synthetic '||n,$2,timestamptz '2026-09-01T00:00:00Z'+n*interval '1 second'
          FROM generate_series($3::int,$3::int+$4::int-1) n`,
-          [ownerId, taskId, start, count],
+          [ownerId, threadId, start, count],
         );
       await db.initializeDatabase();
-      await tasks.initializeTasks();
-      const taskId = await tasks.submitTask('Synthetic history');
-      await db.pool.query('UPDATE messages SET created_at=$2 WHERE task_id=$1', [
-        taskId,
+      await thread.initializeThreads();
+      const { threadId } = await thread.submitUserMessage('Synthetic history');
+      await db.pool.query('UPDATE messages SET created_at=$2 WHERE thread_id=$1', [
+        threadId,
         '2026-08-31T00:00:00Z',
       ]);
       let state = await get<AppState>('/api/state');
+      assert.equal(state.threadId, threadId);
       assert.equal(state.messages.length, 1);
       assert.equal(state.hasEarlierMessages, false);
-      await add(taskId, 149, 1);
+      await add(threadId, 149, 1);
       state = await get<AppState>('/api/state');
       assert.equal(state.messages.length, 150);
       assert.equal(state.hasEarlierMessages, false);
-      await add(taskId, 60, 150);
+      await add(threadId, 60, 150);
       state = await get<AppState>('/api/state');
       assert.equal(state.messages.length, 150);
       assert.equal(state.hasEarlierMessages, true);
@@ -83,7 +84,7 @@ test(
       assert.equal(page.hasMore, false);
       assert.equal(page.messages[0].text, 'Synthetic history');
       assert.equal(page.messages.at(-1)!.text, 'Synthetic 59');
-      await add(taskId, 1, -1);
+      await add(threadId, 1, -1);
       const longer = await get<MessageHistoryPage>(`/api/messages?${query}`);
       assert.equal(longer.messages.length, 60);
       assert.equal(longer.hasMore, true);

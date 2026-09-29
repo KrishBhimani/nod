@@ -5,6 +5,29 @@ import Fastify from 'fastify';
 import pg from 'pg';
 import type { LoginInspection } from '../src/ports/computer.ts';
 import { createVault } from '../src/server/vault.ts';
+import type { TurnRef } from '../src/server/thread.ts';
+
+async function seedTurns(pool: pg.Pool, names: string[], owner = 'local-development') {
+  await pool.query(
+    'CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz)',
+  );
+  await pool.query(
+    "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running')",
+  );
+  const threadId = randomUUID();
+  await pool.query('INSERT INTO threads(id,owner_id) VALUES($1,$2)', [threadId, owner]);
+  const turns: Record<string, TurnRef> = {};
+  for (const name of names) {
+    const turnId = randomUUID();
+    await pool.query('INSERT INTO turns(id,owner_id,thread_id) VALUES($1,$2,$3)', [
+      turnId,
+      owner,
+      threadId,
+    ]);
+    turns[name] = { threadId, turnId };
+  }
+  return turns;
+}
 
 test(
   'Vault rejects a freshly blocked browser before creating, refreshing, filling or selecting a sign-in step',
@@ -25,11 +48,7 @@ test(
     const origin = 'https://accounts.example.com';
     const input = { origin, label: 'Synthetic sign-in', kind: 'password' as const };
     try {
-      await pool.query(
-        "CREATE TABLE tasks(id text PRIMARY KEY,owner_id text NOT NULL,status text NOT NULL DEFAULT 'running',revision integer NOT NULL DEFAULT 0)",
-      );
-      for (const id of ['new', 'refresh', 'submit', 'method', 'saved'])
-        await pool.query("INSERT INTO tasks(id,owner_id) VALUES($1,'local-development')", [id]);
+      const turns = await seedTurns(pool, ['new', 'refresh', 'submit', 'method', 'saved']);
       const key = randomBytes(32);
       const vault = await createVault(pool, {
         keyStore: { id: 'fixture', configured: true, getKey: async () => key },
@@ -55,12 +74,6 @@ test(
         },
       });
       vault.registerRoutes(app);
-      const paths = new Map<string, string>();
-      for (const id of ['refresh', 'submit', 'method']) {
-        const request = await vault.request(id, 'local-development', input);
-        paths.set(id, request.url.replace('/vault/', '/api/credential-requests/'));
-        await pool.query("UPDATE tasks SET status='waiting_credentials' WHERE id=$1", [id]);
-      }
       const saved = await app.inject({
         method: 'POST',
         url: '/api/vault',
@@ -79,9 +92,9 @@ test(
         assert.match((error as Error).message, /Resume agent/);
         return true;
       };
-      await assert.rejects(vault.request('new', 'local-development', input), isBlocked);
+      await assert.rejects(vault.request(turns.new, 'local-development', input), isBlocked);
       await assert.rejects(
-        vault.fillSaved('saved', 'local-development', saved.json().id, input),
+        vault.fillSaved(turns.saved, 'local-development', saved.json().id, input),
         isBlocked,
       );
       for (const [id, suffix, payload] of [
@@ -89,9 +102,13 @@ test(
         ['submit', '', { password: 'fixture-password' }],
         ['method', '/method', { methodId: 'oauth-google' }],
       ] as const) {
+        blocked = false;
+        const request = await vault.request(turns[id], 'local-development', input);
+        await pool.query("UPDATE turns SET status='waiting' WHERE id=$1", [turns[id].turnId]);
+        blocked = true;
         const response = await app.inject({
           method: 'POST',
-          url: `${paths.get(id)}${suffix}`,
+          url: `${request.url.replace('/vault/', '/api/credential-requests/')}${suffix}`,
           payload,
         });
         assert.equal(response.statusCode, 409);
@@ -102,7 +119,8 @@ test(
       assert.equal(selections, 0);
       assert.equal(resumes, 0);
       assert.equal(
-        (await pool.query("SELECT 1 FROM credential_requests WHERE task_id='new'")).rowCount,
+        (await pool.query('SELECT 1 FROM credential_requests WHERE turn_id=$1', [turns.new.turnId]))
+          .rowCount,
         0,
       );
       assert.equal(

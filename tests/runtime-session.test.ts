@@ -41,7 +41,8 @@ async function fixture(
   let userPrompt = '';
   let promptImages: AgentImage[] = [];
   const context: RuntimeContext = {
-    taskId: 'test-' + randomUUID(),
+    threadId: 'test-' + randomUUID(),
+    turnId: randomUUID(),
     ownerId: 'test-owner',
     prompt: 'Help with a fixture',
     history: [],
@@ -99,7 +100,7 @@ async function fixture(
     ...runtimeOptions,
   });
   try {
-    const result = await runtime.runTask(context);
+    const result = await runtime.runTurn(context);
     return {
       result,
       replies,
@@ -265,13 +266,10 @@ test('message attachment metadata names the staged workspace copy', async () => 
   assert.deepEqual(instruction.recentConversation[0].attachments, history);
   const system = result.supplied.systemPrompt;
   const replyTarget = JSON.parse(
-    system.split('Reply target data: ')[1].split('.\nCurrent conversation context')[0],
+    system.split('Reply target data: ')[1].split('.\nLearn about the user')[0],
   );
   assert.deepEqual(replyTarget.attachments, replied);
-  const conversation = JSON.parse(
-    system.split('(refreshes even when continuing earlier work):\n')[1].split('\n')[0],
-  );
-  assert.deepEqual(conversation[0].attachments, history);
+  assert.doesNotMatch(system, /fixture-statement\.pdf/);
   assert.match(result.userPrompt, /for a PDF, extract the text with pdftotext/);
 });
 
@@ -639,7 +637,7 @@ test('chat connection shows one sign-in link and waits for its callback', async 
   ]);
 });
 
-test('waitForTask drains an in-flight browser action even after the model prompt ends on abort', async () => {
+test('waitForThread drains an in-flight browser action even after the model prompt ends on abort', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'otto-drain-'));
   const controller = new AbortController();
   let started!: () => void;
@@ -681,8 +679,9 @@ test('waitForTask drains an in-flight browser action even after the model prompt
   });
   try {
     const execution = runtime
-      .runTask({
-        taskId: id,
+      .runTurn({
+        threadId: id,
+        turnId: randomUUID(),
         ownerId: 'fixture',
         prompt: 'Open a fixture page',
         history: [],
@@ -705,16 +704,16 @@ test('waitForTask drains an in-flight browser action even after the model prompt
     await actionStarted;
     controller.abort();
     let drained = false;
-    const drain = runtime.waitForTask(id).then(() => {
+    const drain = runtime.waitForThread(id).then(() => {
       drained = true;
     });
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(drained, false);
-    assert.equal(runtime.status().activeTasks, 1);
+    assert.equal(runtime.status().activeThreads, 1);
     release();
     assert.ok((await execution) instanceof Error);
     await drain;
-    assert.equal(runtime.status().activeTasks, 0);
+    assert.equal(runtime.status().activeThreads, 0);
   } finally {
     release();
     await runtime.dispose();
@@ -1496,7 +1495,7 @@ test('the sole provider opens its fresh sign-in flow without a choice-only Vault
                   },
                 ],
               },
-        selectLoginMethod: async (_taskId, origin, methodId) => {
+        selectLoginMethod: async (_threadId, origin, methodId) => {
           assert.equal(origin, 'https://example.com');
           assert.equal(methodId, 'oauth-google');
           selected = true;
@@ -1574,7 +1573,7 @@ test('a sole supported provider bypasses ambiguous credential fields and opens V
                   },
                 ],
               },
-        selectLoginMethod: async (_taskId, origin, methodId) => {
+        selectLoginMethod: async (_threadId, origin, methodId) => {
           assert.equal(origin, 'https://example.com');
           assert.equal(methodId, 'oauth-google');
           selected++;
@@ -1726,7 +1725,7 @@ test('explicit provider selection inspects the resulting origin before secure en
     {
       computer: fakeComputer({
         inspectLogin: async () => (selected ? provider : loginChoices),
-        selectLoginMethod: async (_taskId, origin, methodId) => {
+        selectLoginMethod: async (_threadId, origin, methodId) => {
           assert.equal(origin, loginChoices.origin);
           assert.equal(methodId, 'oauth-google');
           selected = true;
@@ -2317,7 +2316,7 @@ test('screenshot publishing waits for visible cookie consent to clear', async ()
     },
     {
       computer: fakeComputer({
-        act: async (_taskId, input) => {
+        act: async (_threadId, input) => {
           if (input.action === 'click') covered = false;
           return {
             text: covered
@@ -2598,132 +2597,9 @@ test('an image read interrupted by cancellation never starts the model prompt', 
   assert.equal(prompted, false);
 });
 
-test('browser writes, shell commands and sign-in steps mark an outside action before dispatch', async () => {
-  const order: string[] = [];
-  await fixture(
-    async (tools) => {
-      await call(tools, 'browser', { action: 'snapshot' });
-      await call(tools, 'browser', { action: 'scroll', direction: 'down' }).catch(() => {});
-      await call(tools, 'browser', { action: 'click', ref: 'e1' });
-      await call(tools, 'shell', { command: 'curl -X POST https://example.com' });
-      order.push('select');
-      await call(tools, 'select_login_method', {
-        origin: 'https://example.com',
-        methodId: 'credentials',
-      }).catch(() => {});
-      order.push('credentials');
-      await call(tools, 'request_credentials', {
-        origin: 'https://example.com',
-        label: 'Fixture',
-        kind: 'password',
-        passwordSelector: '#password',
-      }).catch(() => {});
-    },
-    {
-      startExternalAction: async () => {
-        order.push('marked');
-      },
-    },
-    {
-      computer: fakeComputer({
-        act: async (_taskId, action) => {
-          order.push(action.action);
-          return { text: 'Fixture page', url: 'https://example.com', candidates: [] };
-        },
-      }),
-      workspace: fakeWorkspace({
-        open: () => ({
-          path: '/fixture/workspace',
-          instructions: 'Fixture workspace only.',
-          execute: async () => {
-            order.push('shell');
-            return 'Fixture output';
-          },
-          readFile: async () => 'Fixture content',
-          writeFile: async () => 'File saved',
-        }),
-      }),
-    },
-  );
-  assert.deepEqual(order.slice(0, 6), ['snapshot', 'scroll', 'marked', 'click', 'marked', 'shell']);
-  assert.equal(order[order.indexOf('select') + 1], 'marked');
-  assert.equal(order[order.indexOf('credentials') + 1], 'marked');
-});
-
-test('an outcome check exposes only read tools, refuses writes and reports once', async () => {
-  const dispatched: string[] = [];
-  const reports: Array<[string, string]> = [];
-  const result = await fixture(
-    async (tools) => {
-      assert.deepEqual(
-        [...tools.keys()].sort(),
-        ['apps', 'browser', 'browser_screenshot', 'read_file', 'report_outcome'].sort(),
-      );
-      await call(tools, 'browser', { action: 'open', url: 'https://example.com/sent' });
-      await call(tools, 'browser', { action: 'snapshot' });
-      for (const action of [
-        { action: 'click', selector: '#send' },
-        { action: 'fill', selector: '#note', text: 'Fixture' },
-        { action: 'press', key: 'Enter' },
-      ])
-        await assert.rejects(call(tools, 'browser', action));
-      await call(tools, 'report_outcome', {
-        outcome: 'completed',
-        message: 'The fixture email went through.',
-      });
-    },
-    {
-      checkOutcome: true,
-      freshSession: true,
-      startExternalAction: async () => {
-        throw new Error('The server must not be asked to mark a check step.');
-      },
-      reportOutcome: async (outcome, message) => {
-        reports.push([outcome, message]);
-      },
-    },
-    {
-      computer: fakeComputer({
-        act: async (_taskId, action) => {
-          dispatched.push(action.action);
-          return { text: 'Fixture page', url: 'https://example.com', candidates: [] };
-        },
-      }),
-    },
-  );
-  assert.equal(result.supplied.fresh, true);
-  assert.deepEqual(dispatched, ['open', 'snapshot']);
-  assert.deepEqual(reports, [['completed', 'The fixture email went through.']]);
-  assert.equal(result.aborted, true);
-  assert.equal(
-    result.catalog.some((tool) => tool.name === 'report_outcome'),
-    false,
-  );
-});
-
-test('an outcome check that cannot verify asks one plain question', async () => {
-  const questions: string[] = [];
-  const result = await fixture(
-    async (tools) => {
-      await call(tools, 'report_outcome', {
-        outcome: 'unknown',
-        message: 'Did the fixture email reach Sam?',
-      });
-    },
-    {
-      checkOutcome: true,
-      waitForUser: async (question) => {
-        questions.push(question);
-      },
-    },
-  );
-  assert.equal(result.result.status, 'waiting_user');
-  assert.deepEqual(questions, ['Did the fixture email reach Sam?']);
-});
-
 test('read-only replies cannot request credentials or select a login method', async () => {
   for (const method of ['credentials', 'oauth'] as const) {
-    for (const mode of ['tool', 'final', 'outcome'] as const) {
+    for (const mode of ['tool', 'final'] as const) {
       let inspections = 0;
       let credentials = 0;
       let selections = 0;
@@ -2732,12 +2608,11 @@ test('read-only replies cannot request credentials or select a login method', as
         async (tools, emit) => {
           const text = 'Enter your password to continue.';
           if (mode === 'tool')
-            await assert.rejects(call(tools, 'send_message', { text }), /This task can only read/);
+            await assert.rejects(call(tools, 'send_message', { text }), /This turn can only read/);
           else emit({ type: 'final', text });
         },
         {
-          readOnly: mode !== 'outcome',
-          checkOutcome: mode === 'outcome',
+          readOnly: true,
           background: mode === 'tool',
           requestCredential: async () => {
             credentials++;
@@ -2781,8 +2656,8 @@ test('read-only replies cannot request credentials or select a login method', as
         assert.equal(result.result.status, 'succeeded');
         const end = observations.find((event) => event.type === 'tool_end');
         assert.equal(end?.type === 'tool_end' && end.status, 'failed');
-        assert.match(end?.type === 'tool_end' ? (end.error ?? '') : '', /This task can only read/);
-      } else await assert.rejects(running, /This task can only read/);
+        assert.match(end?.type === 'tool_end' ? (end.error ?? '') : '', /This turn can only read/);
+      } else await assert.rejects(running, /This turn can only read/);
       assert.equal(inspections, 0, `${method} ${mode} inspection`);
       assert.equal(credentials, 0, `${method} ${mode} credentials`);
       assert.equal(selections, 0, `${method} ${mode} selection`);
@@ -2871,23 +2746,4 @@ test('read-only app downloads keep the owned callback and ordinary findings repl
   assert.deepEqual(downloads, ['GMAIL_GET_ATTACHMENT', 'GMAIL_GET_ATTACHMENT']);
   assert.deepEqual(result.replies, ['I found the invoice.']);
   assert.deepEqual(result.result, { status: 'succeeded' });
-});
-
-test('outcome reports reject whitespace before recording a reply or resuming work', async () => {
-  const reports: unknown[] = [];
-  const result = await fixture(
-    async (tools) => {
-      for (const outcome of ['completed', 'not_completed', 'unknown'])
-        for (const message of ['   ', '\n\t'])
-          await assert.rejects(call(tools, 'report_outcome', { outcome, message }), /schema/);
-    },
-    {
-      checkOutcome: true,
-      reportOutcome: async (...args) => {
-        reports.push(args);
-      },
-    },
-  );
-  assert.deepEqual(reports, []);
-  assert.deepEqual(result.replies, []);
 });

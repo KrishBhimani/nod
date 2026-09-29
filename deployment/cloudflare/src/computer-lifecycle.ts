@@ -35,7 +35,7 @@ export function createComputerLifecycle(options: {
     assertCurrent: () => Promise<void>,
   ): Promise<void>;
   quiesce(state: ComputerState, stopping: boolean): Promise<boolean>;
-  launch(state: ComputerState, taskId?: string): Promise<ExecProcess>;
+  launch(state: ComputerState, threadId?: string): Promise<ExecProcess>;
 }) {
   const environment = environmentName(options.environment);
   const active = new Set<string>();
@@ -183,7 +183,7 @@ export function createComputerLifecycle(options: {
         throw unavailable();
       if (fenced || closing || draining) throw unavailable();
     },
-    launch(owner: string, input: { id: string; generation: string; taskId?: string }) {
+    launch(owner: string, input: { id: string; generation: string; threadId?: string }) {
       return exclusive(async () => {
         if (draining) throw unavailable();
         const expected = identity(owner, input.generation);
@@ -200,7 +200,7 @@ export function createComputerLifecycle(options: {
         active.add(id);
         try {
           await assertCurrent(loaded!);
-          const process = await options.launch(loaded!, input.taskId);
+          const process = await options.launch(loaded!, input.threadId);
           await assertCurrent(loaded!);
           return process;
         } catch {

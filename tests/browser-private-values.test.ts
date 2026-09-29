@@ -55,7 +55,7 @@ test('split-code observations hide each private input value and retain unrelated
     const otp = inspection.fields.find((field) => field.kind === 'otp')!;
     assert.ok(otp);
     await computer.injectCredentials({
-      taskId: 'fixture',
+      threadId: 'fixture',
       origin: dom.window.location.origin,
       kind: 'otp',
       code: '483729',

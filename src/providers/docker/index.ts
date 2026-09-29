@@ -2,7 +2,7 @@ import { relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Workspace } from '../../ports/computer.ts';
 import { WorkspaceExitError } from '../../ports/computer.ts';
-import { taskId } from '../../ports/task-identity.ts';
+import { threadIdentity } from '../../ports/thread-identity.ts';
 import {
   runWorkspaceCommand,
   WorkspaceCommandError,
@@ -10,7 +10,7 @@ import {
 } from './command.ts';
 
 export function workspaceFile(id: string, path: string): string {
-  const base = `/workspace/${taskId(id)}`;
+  const base = `/workspace/${threadIdentity(id)}`;
   if (!path || path.includes('\0') || path.includes('\\'))
     throw new Error('A workspace file path is required.');
   const full = resolve(base, path);
@@ -106,7 +106,7 @@ export function createDockerWorkspace(options: {
     runCommand: (id, args, input) =>
       runWorkspaceCommand({
         container: options.container,
-        taskId: id,
+        threadId: id,
         args,
         ...input,
         spawn: options.spawn,
@@ -114,7 +114,7 @@ export function createDockerWorkspace(options: {
     runConnectedCommand: (id, args, input) =>
       runWorkspaceCommand({
         container: options.container,
-        taskId: id,
+        threadId: id,
         args,
         ...input,
         connected: true,
@@ -245,7 +245,7 @@ export function createCommandWorkspace(options: {
       await Promise.allSettled([...pending]);
     },
     async writeArtifact(id, path, bytes, signal) {
-      taskId(id);
+      threadIdentity(id);
       if (!bytes.byteLength || bytes.byteLength > 15 * 1024 * 1024)
         throw new Error('Files must be between 1 byte and 15 MB.');
       const base = `/workspace/${id}`;
@@ -276,7 +276,7 @@ export function createCommandWorkspace(options: {
       }
     },
     async readArtifact(id, path, maxBytes) {
-      taskId(id);
+      threadIdentity(id);
       if (!Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > 15 * 1024 * 1024)
         throw new Error('The artifact size limit is invalid.');
       const base = `/workspace/${id}`;
@@ -287,7 +287,7 @@ export function createCommandWorkspace(options: {
       return result.stdout;
     },
     open(input) {
-      const id = taskId(input.taskId);
+      const id = threadIdentity(input.threadId);
       if (resolve(input.workspacePath) !== resolve(options.workspaceRoot, id))
         throw new Error('The task workspace does not match its configured root.');
       const base = `/workspace/${id}`;

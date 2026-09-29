@@ -34,12 +34,12 @@ const frame = () =>
   });
 function detail(id: string): InspectorDetail {
   return {
-    tasks: [],
+    turns: [],
     events: [],
     runtime: { browser: 'Ready', workspace: 'Ready', database: 'Ready' },
     currentBrowser: {
-      taskId: id,
-      title: 'Private task title',
+      threadId: id,
+      title: 'Private turn title',
       status: 'running',
       lastActivityAt: new Date().toISOString(),
     },
@@ -56,7 +56,7 @@ test('standalone browser follows current sessions, clears mismatched and secure 
   const previousRevoke = URL.revokeObjectURL;
   const calls: URL[] = [];
   const revoked: string[] = [];
-  let taskId = 'task-a';
+  let threadId = 'thread-a';
   let imageId = 0;
   let secure = false;
   let finishNext: ((value: Response) => void) | undefined;
@@ -68,12 +68,12 @@ test('standalone browser follows current sessions, clears mismatched and secure 
     const url = new URL(String(input), 'http://localhost:4310');
     calls.push(url);
     if (url.pathname === '/api/browser')
-      return json({ currentBrowser: detail(taskId).currentBrowser });
-    if (url.pathname.startsWith('/api/browser/control/'))
-      return json({ active: false, paused: false, revision: 0 });
+      return json({ currentBrowser: detail(threadId).currentBrowser });
+    if (url.pathname.startsWith('/api/browser/control'))
+      return json({ active: false, paused: false });
     assert.equal(url.pathname, '/api/browser/screen');
     if (secure) return new Response(null, { status: 423 });
-    if (url.searchParams.get('taskId') === 'task-b' && !finishNext)
+    if (url.searchParams.get('threadId') === 'thread-b' && !finishNext)
       return new Promise<Response>((resolve) => {
         finishNext = resolve;
       });
@@ -93,9 +93,9 @@ test('standalone browser follows current sessions, clears mismatched and secure 
     assert.equal(element.querySelectorAll('[role="tab"],nav,.sidebar').length, 0);
     assert.doesNotMatch(
       element.textContent!,
-      /Private task title|Computer details|Open browser window|Follows the current browser|Live browser/,
+      /Private turn title|Computer details|Open browser window|Follows the current browser|Live browser/,
     );
-    taskId = 'task-b';
+    threadId = 'thread-b';
     await act(async () => t.mock.timers.tick(2500));
     assert.ok(finishNext);
     assert.equal(element.querySelector('.screen-preview img'), null);
@@ -152,8 +152,8 @@ test('browser popout opens only the app route, pauses embedded captures and rest
   URL.revokeObjectURL = () => {};
   globalThis.fetch = async (input) => {
     const url = new URL(String(input), 'http://localhost:4310');
-    if (url.pathname.startsWith('/api/browser/control/'))
-      return json({ active: false, paused: false, revision: 0 });
+    if (url.pathname.startsWith('/api/browser/control'))
+      return json({ active: false, paused: false });
     assert.equal(url.pathname, '/api/inspector/screen');
     captures++;
     return frame();
@@ -165,7 +165,7 @@ test('browser popout opens only the app route, pauses embedded captures and rest
     await act(async () =>
       root.render(
         createElement(InspectorScreen, {
-          data: detail('task-a'),
+          data: detail('thread-a'),
           active: true,
           allowDetach: true,
           onStopped() {},
@@ -234,16 +234,12 @@ test('Take control stays available for idle and finished browsers without resumi
       globalThis.fetch = async (input, init) => {
         const url = new URL(String(input), 'http://localhost:4310');
         if (url.pathname === '/api/inspector/screen') return frame();
-        assert.ok(
-          url.pathname.startsWith(
-            `/api/browser/control/${finished ? 'finished-task' : 'workspace'}`,
-          ),
-        );
+        assert.ok(url.pathname.startsWith('/api/browser/control'));
         if (init?.method === 'POST') {
           writes.push(url.pathname);
           if (url.pathname.endsWith('/start')) {
             active = true;
-            return json({ revision: 1, mode: 'sign_in', resumable: false });
+            return json({ mode: 'sign_in', resumable: false });
           }
           active = false;
           return json({ ok: true });
@@ -252,7 +248,6 @@ test('Take control stays available for idle and finished browsers without resumi
         return json({
           paused: active,
           active,
-          revision: active ? 1 : null,
           mode: active ? 'sign_in' : null,
           signInAvailable: true,
           resumable: false,
@@ -262,7 +257,7 @@ test('Take control stays available for idle and finished browsers without resumi
       document.body.append(element);
       const root = createRoot(element);
       try {
-        const data = finished ? detail('finished-task') : null;
+        const data = finished ? detail('finished-thread') : null;
         if (data?.currentBrowser) data.currentBrowser.status = 'succeeded';
         await act(async () =>
           root.render(
@@ -289,10 +284,7 @@ test('Take control stays available for idle and finished browsers without resumi
         assert.ok(done);
         assert.equal(element.textContent?.includes('Resume agent'), false);
         await act(async () => done.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-        assert.deepEqual(writes, [
-          `/api/browser/control/${finished ? 'finished-task' : 'workspace'}/start`,
-          `/api/browser/control/${finished ? 'finished-task' : 'workspace'}/resume`,
-        ]);
+        assert.deepEqual(writes, ['/api/browser/control/start', '/api/browser/control/resume']);
         assert.equal(takeControl(element).disabled, false);
       } finally {
         await act(async () => root.unmount());
@@ -334,7 +326,6 @@ test('browser metadata changes cannot replace an idle takeover while acquisition
     return json({
       paused: active,
       active,
-      revision: active ? 10 : null,
       mode: active ? 'sign_in' : null,
       signInAvailable: true,
       resumable: false,
@@ -360,25 +351,28 @@ test('browser metadata changes cannot replace an idle takeover while acquisition
     await act(async () =>
       root.render(
         createElement(InspectorScreen, {
-          data: detail('another-task'),
+          data: detail('another-thread'),
           active: true,
           onStopped() {},
           showDetails: false,
         }),
       ),
     );
-    assert.ok(requests.every((request) => request.startsWith('/api/browser/control/workspace')));
+    assert.deepEqual(
+      requests.filter((request) => request.endsWith('/start')),
+      ['/api/browser/control/start'],
+    );
     active = true;
-    await act(async () => finishStart(json({ revision: 10, mode: 'sign_in', resumable: false })));
-    assert.ok(requests.every((request) => request.startsWith('/api/browser/control/workspace')));
+    await act(async () => finishStart(json({ mode: 'sign_in', resumable: false })));
     const done = [...element.querySelectorAll('button')].find(
       (button) => button.textContent === 'Done',
     );
     assert.ok(done);
     await act(async () => done.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-    assert.ok(requests.includes('/api/browser/control/another-task'));
-    assert.ok(requests.includes('/api/browser/control/workspace/resume'));
-    assert.equal(requests.includes('/api/browser/control/another-task/resume'), false);
+    assert.deepEqual(
+      requests.filter((request) => request.endsWith('/start') || request.endsWith('/resume')),
+      ['/api/browser/control/start', '/api/browser/control/resume'],
+    );
   } finally {
     await act(async () => root.unmount());
     element.remove();
@@ -389,7 +383,7 @@ test('browser metadata changes cannot replace an idle takeover while acquisition
   }
 });
 
-test('finishing private control resets a blocked capture and requests a fresh frame for the same task', async (context) => {
+test('finishing private control resets a blocked capture and requests a fresh frame for the same thread', async (context) => {
   const previousFetch = globalThis.fetch;
   const previousCreate = URL.createObjectURL;
   const previousRevoke = URL.revokeObjectURL;
@@ -414,7 +408,7 @@ test('finishing private control resets a blocked capture and requests a fresh fr
     if (init?.method === 'POST') {
       if (url.pathname.endsWith('/start')) {
         active = true;
-        return json({ revision: 11, mode: 'sign_in', resumable: false });
+        return json({ mode: 'sign_in', resumable: false });
       }
       assert.ok(url.pathname.endsWith('/resume'));
       active = false;
@@ -424,7 +418,6 @@ test('finishing private control resets a blocked capture and requests a fresh fr
     return json({
       paused: active,
       active,
-      revision: active ? 11 : null,
       mode: active ? 'sign_in' : null,
       signInAvailable: true,
       resumable: false,
@@ -475,7 +468,7 @@ test('finishing private control resets a blocked capture and requests a fresh fr
   }
 });
 
-test('task adapters without a private desktop keep their live masked frame during manual control', async () => {
+test('computer adapters without a private desktop keep their live masked frame during manual control', async () => {
   const previousFetch = globalThis.fetch;
   const previousCreate = URL.createObjectURL;
   const previousRevoke = URL.revokeObjectURL;
@@ -492,12 +485,11 @@ test('task adapters without a private desktop keep their live masked frame durin
     }
     if (init?.method === 'POST') {
       active = url.pathname.endsWith('/start');
-      return json(active ? { revision: 1, mode: 'manual', resumable: true } : { ok: true });
+      return json(active ? { mode: 'manual', resumable: true } : { ok: true });
     }
     return json({
       paused: active,
       active,
-      revision: active ? 1 : null,
       mode: active ? 'manual' : null,
       signInAvailable: false,
       resumable: true,
@@ -510,7 +502,7 @@ test('task adapters without a private desktop keep their live masked frame durin
     await act(async () =>
       root.render(
         createElement(InspectorScreen, {
-          data: detail('manual-task'),
+          data: detail('manual-thread'),
           active: true,
           onStopped() {},
           showDetails: false,

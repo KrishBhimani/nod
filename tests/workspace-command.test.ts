@@ -24,7 +24,7 @@ async function local() {
     run: (args: string[], options: Partial<Parameters<typeof runWorkspaceCommand>[0]> = {}) =>
       runWorkspaceCommand({
         container: 'otto-workspace-fixture',
-        taskId: 'fixture',
+        threadId: 'fixture',
         args,
         spawn: launch,
         ...options,
@@ -48,11 +48,11 @@ async function ready(path: string) {
   throw new Error('The synthetic process did not start.');
 }
 
-test('invalid workspace task identifiers reject asynchronously without launching a process', async () => {
+test('invalid workspace thread identifiers reject asynchronously without launching a process', async () => {
   let launches = 0;
   const result = runWorkspaceCommand({
     container: 'otto-workspace-fixture',
-    taskId: '../foreign',
+    threadId: '../foreign',
     args: ['printf', 'never'],
     spawn: () => {
       launches++;
@@ -60,7 +60,7 @@ test('invalid workspace task identifiers reject asynchronously without launching
     },
   });
   assert.ok(result instanceof Promise);
-  await assert.rejects(result, /Invalid task identifier/);
+  await assert.rejects(result, /Invalid thread identifier/);
   assert.equal(launches, 0);
 });
 
@@ -219,7 +219,7 @@ test('a lost acknowledgement fences the workspace instead of accepting another c
     spawn: launch,
   });
   const session = workspace.open({
-    taskId: 'fixture',
+    threadId: 'fixture',
     workspacePath: '/synthetic/fixture',
     signal: new AbortController().signal,
   });
@@ -263,7 +263,7 @@ test('an uncertain workspace operation cancels and drains commands already in fl
     spawn: launch,
   });
   const session = workspace.open({
-    taskId: 'fixture',
+    threadId: 'fixture',
     workspacePath: '/synthetic/fixture',
     signal: new AbortController().signal,
   });

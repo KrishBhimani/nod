@@ -76,14 +76,14 @@ test(
     process.env.DATABASE_URL = databaseUrl.href;
     process.env.PGBOSS_SCHEMA = bossSchema;
     const db = await import('../src/server/db.ts');
-    const tasks = await import('../src/server/tasks.ts');
+    const thread = await import('../src/server/thread.ts');
     const { createPersonalService } = await import('../src/server/personal.ts');
     const artifacts = await import('../src/server/artifacts.ts');
     const { createApp } = await import('../src/server/app.ts');
     const { createApprovals } = await import('../src/server/approvals.ts');
     const { dataRoot, ownerId, port, configuration } = await import('../src/server/config.ts');
     assert.equal(dataRoot, join(fixtureRoot, '.local'));
-    let userMessages: ReturnType<typeof tasks.createUserMessageService>;
+    let userMessages: ReturnType<typeof thread.createUserMessageService>;
     const app = await createApp({
       submitMessage: (text, attachments, options) =>
         userMessages.submit(text, attachments, options),
@@ -92,8 +92,8 @@ test(
     const personal = createPersonalService({
       pool: db.pool,
       ownerId,
-      scheduler: tasks.boss,
-      submitTask: tasks.submitTask,
+      scheduler: thread.boss,
+      enqueueTurn: thread.enqueueTurn,
       refresh() {},
     });
     const calls: Array<{
@@ -123,34 +123,36 @@ test(
               headers: { ...headers, 'content-type': 'application/json' },
             }),
       });
-    const newTask = async (status = 'running', owner = ownerId) => {
-      const id = randomUUID();
-      const source = randomUUID();
-      await db.pool.query(
-        'INSERT INTO tasks(id,owner_id,title,prompt,status) VALUES($1,$2,$3,$3,$4)',
-        [id, owner, 'Synthetic boundary fixture', status],
-      );
-      await db.pool.query(
-        "INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,$2,'user','Synthetic boundary fixture',$3)",
-        [source, owner, id],
-      );
-      await db.pool.query('UPDATE tasks SET source_message_id=$2 WHERE id=$1', [id, source]);
-      return id;
+    const newTurn = async (status = 'running', text = 'Synthetic boundary fixture') => {
+      const submitted = await thread.submitUserMessage(text);
+      await db.pool.query('UPDATE turns SET status=$2 WHERE id=$1', [submitted.turnId, status]);
+      return submitted;
     };
+    const turnStatus = async (turnId: string) =>
+      (await db.pool.query('SELECT status FROM turns WHERE id=$1', [turnId])).rows[0].status;
     const stored = async (id: string) =>
       (await db.pool.query('SELECT * FROM approvals WHERE id=$1', [id])).rows[0];
-    async function propose(taskId: string, action: string, args: Record<string, unknown>) {
-      const revision = (await db.pool.query('SELECT revision FROM tasks WHERE id=$1', [taskId]))
-        .rows[0].revision;
-      const result = await approvals.request(taskId, action, args, { revision });
+    const resumeTurns = async (id: string) =>
+      (
+        await db.pool.query(
+          "SELECT id,status,prompt,background FROM turns WHERE source='resume' AND source_id LIKE $1",
+          [`confirmation:${id}:%`],
+        )
+      ).rows;
+    async function propose(
+      turn: { threadId: string; turnId: string },
+      action: string,
+      args: Record<string, unknown>,
+    ) {
+      const result = await approvals.request(turn, action, args);
       assert.ok(result && typeof result === 'object' && 'requiresConfirmation' in result);
       assert.equal(result.requiresConfirmation, true);
       assert.equal('url' in result, false);
       const record = (
-        await db.pool.query('SELECT * FROM approvals WHERE task_id=$1 AND task_revision=$2', [
-          taskId,
-          revision,
-        ])
+        await db.pool.query(
+          'SELECT * FROM approvals WHERE turn_id=$1 AND action=$2 AND args=$3::jsonb',
+          [turn.turnId, action, JSON.parse(JSON.stringify(args))],
+        )
       ).rows[0];
       assert.ok(record.confirmation_message_id);
       return record.id as string;
@@ -161,29 +163,23 @@ test(
         approvals.acceptChat(client, {
           text: approved ? 'Yes' : 'No',
           channel: 'web',
-          conversationRevision: 0,
+          threadId: record.thread_id,
           replyToMessageId: record.confirmation_message_id,
           clientMessageId: randomUUID(),
           ...extra,
         }),
       );
     }
-    async function execute(id: string) {
+    async function execute(id: string, signal = new AbortController().signal) {
       const record = await stored(id);
-      await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1 AND status='queued'", [
-        record.task_id,
+      await db.pool.query("UPDATE turns SET status='running' WHERE id=$1 AND status='queued'", [
+        record.execution_turn_id,
       ]);
-      const task = (await db.pool.query('SELECT revision FROM tasks WHERE id=$1', [record.task_id]))
-        .rows[0];
-      return approvals.executeConfirmed(
-        record.task_id,
-        task.revision,
-        new AbortController().signal,
-      );
+      return approvals.executeConfirmed(record.execution_turn_id, signal);
     }
     try {
       await db.initializeDatabase();
-      await tasks.initializeTasks();
+      await thread.initializeThreads();
       await personal.initialize({ workers: false });
       approvals = await createApprovals(
         async (action, args, context) => {
@@ -199,7 +195,7 @@ test(
             });
         },
       );
-      userMessages = tasks.createUserMessageService({ confirmAction: approvals.acceptChat });
+      userMessages = thread.createUserMessageService({ confirmAction: approvals.acceptChat });
       personal.registerRoutes(app);
       app.get('/api/fixture-error', async () => {
         throw new Error('fixture-private-key');
@@ -208,15 +204,15 @@ test(
       await t.test(
         'artifacts are owned, path bounded, and active documents download with sandbox headers',
         async () => {
-          const id = await newTask('succeeded');
+          const { threadId: id } = await newTurn('succeeded');
           const workspace = join(dataRoot, 'workspaces', id);
           const privateDir = await mkdtemp(join(tmpdir(), 'otto-artifact-test-'));
           directories.push(workspace, privateDir);
           await mkdir(workspace, { recursive: true });
           await writeFile(join(privateDir, 'private.txt'), 'private fixture');
           await symlink(join(privateDir, 'private.txt'), join(workspace, 'escape.txt'));
-          const read = async (taskId: string, path: string, maxBytes: number) => {
-            assert.equal(taskId, id);
+          const read = async (threadId: string, path: string, maxBytes: number) => {
+            assert.equal(threadId, id);
             const handle = await open(
               join(workspace, path),
               constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -334,7 +330,7 @@ test(
       );
 
       await t.test('removed approval HTTP routes cannot read or authorize an action', async () => {
-        const id = await propose(await newTask(), 'GMAIL_SEND_EMAIL', {});
+        const id = await propose(await newTurn(), 'GMAIL_SEND_EMAIL', {});
         assert.equal((await request('GET', `/api/approvals/${id}`)).statusCode, 404);
         assert.equal(
           (await request('POST', `/api/approvals/${id}`, { approved: true })).statusCode,
@@ -346,16 +342,13 @@ test(
       await t.test(
         'chat confirmation executes the stored snapshot once and queues only one continuation',
         async () => {
-          const taskId = await newTask();
-          const source = (
-            await db.pool.query('SELECT source_message_id FROM tasks WHERE id=$1', [taskId])
-          ).rows[0].source_message_id;
+          const turn = await newTurn();
           const original = {
             recipient: 'fixture@example.test',
             subject: 'Confirmed snapshot',
             nested: { text: 'original' },
           };
-          const id = await propose(taskId, 'GMAIL_SEND_EMAIL', original);
+          const id = await propose(turn, 'GMAIL_SEND_EMAIL', original);
           original.nested.text = 'changed after request';
           assert.equal((await stored(id)).args.nested.text, 'original');
           assert.equal(
@@ -376,7 +369,11 @@ test(
           for (const result of decisions)
             if (result.status === 'rejected') assert.equal(result.reason.statusCode, 409);
           assert.equal(calls.length, before);
-          await Promise.all(Array.from({ length: 4 }, () => execute(id)));
+          const resumed = await resumeTurns(id);
+          assert.equal(resumed.length, 1);
+          assert.equal(resumed[0].background, false);
+          assert.equal((await stored(id)).execution_turn_id, resumed[0].id);
+          const results = await Promise.all(Array.from({ length: 4 }, () => execute(id)));
           assert.equal(calls.length, before + 1);
           assert.deepEqual(calls.at(-1), {
             action: 'GMAIL_SEND_EMAIL',
@@ -385,166 +382,130 @@ test(
               subject: 'Confirmed snapshot',
               nested: { text: 'original' },
             },
-            context: { taskId, sourceMessageId: source },
+            context: {
+              threadId: turn.threadId,
+              turnId: resumed[0].id,
+              sourceMessageId: turn.messageId,
+            },
           });
-          const task = (
-            await db.pool.query('SELECT status,revision,prompt FROM tasks WHERE id=$1', [taskId])
-          ).rows[0];
-          assert.equal(task.status, 'running');
-          assert.equal(task.revision, 1);
-          assert.match(task.prompt, /Do not repeat it/);
+          const continued = results.filter(Boolean);
+          assert.equal(continued.length, 1);
+          assert.match(continued[0]!.prompt, /Do not repeat it/);
           assert.equal((await stored(id)).status, 'completed');
-          assert.equal(
-            (
-              await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [
-                taskId,
-              ])
-            ).rowCount,
-            1,
-          );
+          assert.equal((await resumeTurns(id)).length, 1);
         },
       );
 
       await t.test(
-        'confirmation provenance stays within its task and rejects a foreign or missing user source',
+        'confirmation provenance stays with its own user message and rejects turns without one',
         async () => {
-          const [firstTask, secondTask, unownedTask] = await Promise.all([
-            newTask(),
-            newTask(),
-            newTask(),
-          ]);
-          async function message(taskId: string, role: string, owner: string, offset: number) {
-            const id = randomUUID();
-            await db.pool.query(
-              "INSERT INTO messages(id,owner_id,role,text,task_id,created_at) VALUES($1,$2,$3,'Provenance fixture',$4,now()+$5*interval '1 second')",
-              [id, owner, role, taskId, offset],
-            );
-            return id;
-          }
-          const firstSource = await message(firstTask, 'user', ownerId, -30);
-          const secondSource = await message(secondTask, 'user', ownerId, -20);
-          const foreignSource = await message(unownedTask, 'user', 'another-owner', 0);
-          for (const [taskId, source] of [
-            [firstTask, firstSource],
-            [secondTask, secondSource],
-            [unownedTask, foreignSource],
-          ])
-            await db.pool.query(
-              "UPDATE tasks SET source_message_id=$2,prompt='Provenance fixture' WHERE id=$1",
-              [taskId, source],
-            );
-          await message(firstTask, 'user', 'another-owner', -10);
-          await message(firstTask, 'assistant', ownerId, -5);
-          const [first, second] = await Promise.all([
-            propose(firstTask, 'OTTO_memory_propose', {
-              text: 'First task fact',
-              sourceMessageId: secondSource,
+          const first = await newTurn('running', 'Provenance fixture');
+          const second = await newTurn('running', 'Provenance fixture');
+          const [firstId, secondId] = await Promise.all([
+            propose(first, 'OTTO_memory_propose', {
+              text: 'First turn fact',
+              sourceMessageId: second.messageId,
             }),
-            propose(secondTask, 'OTTO_memory_propose', { text: 'Second task fact' }),
+            propose(second, 'OTTO_memory_propose', { text: 'Second turn fact' }),
           ]);
+          const eventTurn = await thread.enqueueTurn('Provenance fixture', { source: 'event' });
+          await db.pool.query("UPDATE turns SET status='running' WHERE id=$1", [eventTurn]);
           await assert.rejects(
             approvals.request(
-              unownedTask,
+              { threadId: first.threadId, turnId: eventTurn },
               'OTTO_memory_propose',
               { text: 'No owned source' },
-              { revision: 0 },
             ),
             /direct request/,
           );
-          await db.pool.query('UPDATE tasks SET source_message_id=NULL WHERE id=$1', [unownedTask]);
-          await assert.rejects(
-            approvals.request(unownedTask, 'OTTO_memory_propose', {}, { revision: 0 }),
-            /direct request/,
+          const foreignThread = await thread.activeThread(db.pool, 'another-owner');
+          const foreignTurn = randomUUID();
+          await db.pool.query(
+            "INSERT INTO turns(id,owner_id,thread_id,source,prompt,status) VALUES($1,'another-owner',$2,'user','Provenance fixture','running')",
+            [foreignTurn, foreignThread.id],
           );
-          await message(firstTask, 'user', ownerId, 2);
-          await message(secondTask, 'user', ownerId, 3);
-          await Promise.all([confirm(first, true), confirm(second, true)]);
-          await Promise.all([execute(first), execute(second)]);
-          assert.deepEqual(calls.find((call) => call.context.taskId === firstTask)?.context, {
-            taskId: firstTask,
-            sourceMessageId: firstSource,
-          });
-          assert.deepEqual(calls.find((call) => call.context.taskId === secondTask)?.context, {
-            taskId: secondTask,
-            sourceMessageId: secondSource,
-          });
-          assert.equal((await stored(first)).source_message_id, firstSource);
+          await assert.rejects(
+            approvals.request(
+              { threadId: foreignThread.id, turnId: foreignTurn },
+              'OTTO_memory_propose',
+              { text: 'Foreign fact' },
+            ),
+            { statusCode: 409 },
+          );
+          await Promise.all([confirm(firstId, true), confirm(secondId, true)]);
+          await Promise.all([execute(firstId), execute(secondId)]);
+          const executionTurn = async (id: string) => (await stored(id)).execution_turn_id;
+          const firstExecution = await executionTurn(firstId);
+          const secondExecution = await executionTurn(secondId);
           assert.equal(
-            calls.some((call) => call.context.taskId === unownedTask),
+            calls.find((call) => call.context.turnId === firstExecution)?.context.sourceMessageId,
+            first.messageId,
+          );
+          assert.equal(
+            calls.find((call) => call.context.turnId === secondExecution)?.context.sourceMessageId,
+            second.messageId,
+          );
+          assert.equal((await stored(firstId)).source_message_id, first.messageId);
+          assert.equal(
+            calls.some((call) => call.context.turnId === eventTurn),
             false,
           );
         },
       );
 
       await t.test(
-        'a confirmation preserves its original source while later input stays queued',
+        'a confirmation preserves its original source while a later message stays queued',
         async () => {
-          const taskId = await tasks.submitTask('Review the original synthetic fact');
-          await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1", [taskId]);
-          const source = (
-            await db.pool.query("SELECT id FROM messages WHERE task_id=$1 AND role='user'", [
-              taskId,
-            ])
-          ).rows[0].id;
-          await tasks.submitUserMessage(
+          const turn = await newTurn('running', 'Review the original synthetic fact');
+          const later = await thread.submitUserMessage(
             'This later instruction must not become the earlier confirmation source',
             [],
-            { replyToMessageId: source },
+            { replyToMessageId: turn.messageId },
           );
-          const pending = (
-            await db.pool.query(
-              "SELECT message_id FROM pending_task_inputs WHERE task_id=$1 AND state='pending'",
-              [taskId],
-            )
-          ).rows[0];
-          assert.ok(pending);
-          const id = await propose(taskId, 'OTTO_memory_propose', {
+          assert.equal(await turnStatus(later.turnId), 'queued');
+          const id = await propose(turn, 'OTTO_memory_propose', {
             text: 'The original synthetic fact',
           });
           await confirm(id, true);
           await execute(id);
+          const executionTurn = (await stored(id)).execution_turn_id;
           assert.equal(
-            calls.find((call) => call.context.taskId === taskId)?.context.sourceMessageId,
-            source,
+            calls.find((call) => call.context.turnId === executionTurn)?.context.sourceMessageId,
+            turn.messageId,
           );
-          assert.equal((await stored(id)).source_message_id, source);
-          assert.equal(
-            (
-              await db.pool.query('SELECT state FROM pending_task_inputs WHERE message_id=$1', [
-                pending.message_id,
-              ])
-            ).rows[0].state,
-            'pending',
-          );
-          const revision = (await db.pool.query('SELECT revision FROM tasks WHERE id=$1', [taskId]))
-            .rows[0].revision;
+          assert.equal((await stored(id)).source_message_id, turn.messageId);
+          assert.equal(await turnStatus(later.turnId), 'queued');
           await assert.rejects(
-            approvals.request(taskId, 'FIXTURE_SECOND_ACTION', {}, { revision }),
+            approvals.request(
+              { threadId: turn.threadId, turnId: executionTurn },
+              'FIXTURE_SECOND_ACTION',
+              {},
+            ),
             /direct request/,
           );
-          await tasks.cancelTask(taskId);
+          await thread.stopThread();
         },
       );
 
       await t.test(
         'preflight rejects invalid proposals and confirmed obsolete actions before any uncertain execution',
         async () => {
-          const taskId = await newTask();
+          const turn = await newTurn();
           const before = calls.length;
           rejectPreflight = true;
           try {
-            await assert.rejects(
-              approvals.request(taskId, 'GMAIL_SEND_EMAIL', {}, { revision: 0 }),
-              { statusCode: 409 },
-            );
+            await assert.rejects(approvals.request(turn, 'GMAIL_SEND_EMAIL', {}), {
+              statusCode: 409,
+            });
             assert.equal(
-              (await db.pool.query('SELECT id FROM approvals WHERE task_id=$1', [taskId])).rowCount,
+              (await db.pool.query('SELECT id FROM approvals WHERE turn_id=$1', [turn.turnId]))
+                .rowCount,
               0,
             );
           } finally {
             rejectPreflight = false;
           }
-          const id = await propose(taskId, 'GMAIL_SEND_EMAIL', {});
+          const id = await propose(turn, 'GMAIL_SEND_EMAIL', {});
           rejectPreflight = true;
           try {
             await assert.rejects(confirm(id, true), { statusCode: 409 });
@@ -561,7 +522,7 @@ test(
           } finally {
             rejectPreflight = false;
           }
-          await tasks.cancelTask(taskId);
+          await thread.stopThread();
         },
       );
 
@@ -569,177 +530,138 @@ test(
         'cancelled, expired, wrong-channel and foreign confirmations cannot execute',
         async () => {
           const before = calls.length;
-          const cancelledTask = await newTask();
-          const cancelled = await propose(cancelledTask, 'GMAIL_SEND_EMAIL', {});
-          await tasks.cancelTask(cancelledTask);
+          const cancelled = await propose(await newTurn(), 'GMAIL_SEND_EMAIL', {});
+          await thread.stopThread();
           await assert.rejects(confirm(cancelled, true), { statusCode: 409 });
-          const expired = await propose(await newTask(), 'GMAIL_SEND_EMAIL', {});
+          const expired = await propose(await newTurn(), 'GMAIL_SEND_EMAIL', {});
           await db.pool.query(
             "UPDATE approvals SET expires_at=now()-interval '1 minute' WHERE id=$1",
             [expired],
           );
           await assert.rejects(confirm(expired, true), { statusCode: 409 });
-          const foreign = await propose(await newTask(), 'GMAIL_SEND_EMAIL', {});
+          const foreign = await propose(await newTurn(), 'GMAIL_SEND_EMAIL', {});
           await db.pool.query('UPDATE approvals SET owner_id=$2 WHERE id=$1', [
             foreign,
             'another-owner',
           ]);
           assert.equal(await confirm(foreign, true), undefined);
-          const otherChannel = await propose(await newTask(), 'GMAIL_SEND_EMAIL', {});
+          const otherChannel = await propose(await newTurn(), 'GMAIL_SEND_EMAIL', {});
           assert.equal(await confirm(otherChannel, true, { channel: 'telegram' }), undefined);
           assert.equal((await stored(otherChannel)).status, 'pending');
           assert.equal(calls.length, before);
+          await thread.stopThread();
         },
       );
 
       await t.test(
-        'stale revision, generation and changed consent cannot authorize a snapshot',
+        'a finished turn, changed consent and a stale thread cannot authorize a snapshot',
         async () => {
-          const taskId = await newTask();
-          const id = await propose(taskId, 'GMAIL_SEND_EMAIL', { subject: 'obsolete' });
+          const turn = await newTurn();
+          const id = await propose(turn, 'GMAIL_SEND_EMAIL', { subject: 'obsolete' });
           assert.equal(
             await confirm(id, true, { text: 'Yes, but send it to somebody else' }),
             undefined,
           );
-          await assert.rejects(confirm(id, true, { conversationRevision: 1 }), { statusCode: 409 });
-          await assert.rejects(confirm(id, true, { taskId: randomUUID() }), { statusCode: 409 });
-          await db.pool.query(
-            "UPDATE tasks SET revision=revision+1,status='waiting_user' WHERE id=$1",
-            [taskId],
+          assert.equal(await confirm(id, true, { threadId: randomUUID() }), undefined);
+          assert.equal(
+            (
+              await request('POST', '/api/messages', {
+                text: 'Yes',
+                replyToMessageId: (await stored(id)).confirmation_message_id,
+                threadId: randomUUID(),
+              })
+            ).statusCode,
+            409,
           );
+          assert.equal((await stored(id)).status, 'pending');
+          await db.pool.query("UPDATE turns SET status='failed' WHERE id=$1", [turn.turnId]);
           const before = calls.length;
           await assert.rejects(confirm(id, true), { statusCode: 409 });
           assert.equal(calls.length, before);
-          await assert.rejects(
-            approvals.request(await newTask(), 'GMAIL_SEND_EMAIL', {}, { revision: 99 }),
-            { statusCode: 409 },
-          );
+          await assert.rejects(approvals.request(turn, 'GMAIL_SEND_EMAIL', {}), {
+            statusCode: 409,
+          });
         },
       );
 
       await t.test(
         'an unbound yes cannot consume an older question after another assistant message',
         async () => {
-          const taskId = await newTask();
-          const id = await propose(taskId, 'GMAIL_SEND_EMAIL', {});
+          const turn = await newTurn();
+          const id = await propose(turn, 'GMAIL_SEND_EMAIL', {});
+          const other = await newTurn('succeeded');
           await db.pool.query(
-            "INSERT INTO messages(id,owner_id,task_id,role,text,created_at) VALUES($1,$2,$3,'assistant','An unrelated question',now()+interval '1 second')",
-            [randomUUID(), ownerId, await newTask()],
+            "INSERT INTO messages(id,owner_id,thread_id,turn_id,role,text,created_at) VALUES($1,$2,$3,$4,'assistant','An unrelated question',now()+interval '1 second')",
+            [randomUUID(), ownerId, other.threadId, other.turnId],
           );
           assert.equal(await confirm(id, true, { replyToMessageId: undefined }), undefined);
           assert.equal((await stored(id)).status, 'pending');
           assert.ok(await confirm(id, false));
+          await thread.stopThread();
         },
       );
 
-      await t.test(
-        'a connection callback resumes only its current waiting task revision',
-        async () => {
-          const taskId = await newTask();
-          await db.pool.query(
-            "UPDATE tasks SET status='waiting_user',waiting_reason='question' WHERE id=$1",
-            [taskId],
-          );
-          assert.equal(await tasks.resumeConnectedTask(taskId, 1, 'linear'), false);
-          let task = (await db.pool.query('SELECT * FROM tasks WHERE id=$1', [taskId])).rows[0];
-          assert.equal(task.status, 'waiting_user');
-          assert.equal(await tasks.resumeConnectedTask(taskId, 0, 'linear'), true);
-          task = (await db.pool.query('SELECT * FROM tasks WHERE id=$1', [taskId])).rows[0];
-          assert.equal(task.status, 'queued');
-          assert.equal(task.revision, 1);
-          assert.equal(task.action_resume_kind, 'connection');
-          assert.equal(task.action_resume_revision, 1);
-          assert.match(task.prompt, /linear connection completed/);
-          assert.equal(await tasks.resumeConnectedTask(taskId, 0, 'linear'), false);
-          assert.equal(
-            (
-              await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [
-                taskId,
-              ])
-            ).rowCount,
-            1,
-          );
-        },
-      );
+      await t.test('a connection callback queues one resume turn for a known turn', async () => {
+        const turn = await newTurn('waiting');
+        await db.pool.query("UPDATE turns SET waiting_reason='question' WHERE id=$1", [
+          turn.turnId,
+        ]);
+        assert.equal(await thread.resumeAfterConnection(randomUUID(), 'linear'), false);
+        assert.equal(await thread.resumeAfterConnection(turn.turnId, 'linear'), true);
+        assert.equal(await thread.resumeAfterConnection(turn.turnId, 'linear'), true);
+        const resumed = (
+          await db.pool.query('SELECT * FROM turns WHERE source_id=$1', [
+            `connection:${turn.turnId}`,
+          ])
+        ).rows;
+        assert.equal(resumed.length, 1);
+        assert.equal(resumed[0].source, 'resume');
+        assert.equal(resumed[0].status, 'queued');
+        assert.equal(resumed[0].background, false);
+        assert.equal(resumed[0].thread_id, turn.threadId);
+        assert.match(resumed[0].prompt, /linear connection completed/);
+        assert.equal(await turnStatus(turn.turnId), 'waiting');
+        await thread.stopThread();
+      });
 
-      await t.test(
-        'an old secure-entry callback cannot resume a newer credential wait',
-        async () => {
-          const taskId = await newTask();
-          await db.pool.query(
-            "UPDATE tasks SET status='waiting_user',waiting_reason='browser' WHERE id=$1",
-            [taskId],
-          );
-          const paused = await tasks.pauseOwnedTaskForControl(taskId);
-          await tasks.resumeOwnedTaskFromControl(taskId, paused.revision);
-          await db.pool.query(
-            "UPDATE tasks SET status='waiting_credentials',waiting_reason='credentials' WHERE id=$1",
-            [taskId],
-          );
-          const before = (
-            await db.pool.query(
-              'SELECT status,revision,action_resume_kind,action_resume_revision FROM tasks WHERE id=$1',
-              [taskId],
-            )
-          ).rows[0];
-          const jobsBefore = (
-            await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [
-              taskId,
+      await t.test('a secure-entry callback and a fresh-link retry each resume once', async () => {
+        const turn = await newTurn('waiting');
+        await thread.resumeAfterCredentials(turn.turnId);
+        await thread.resumeAfterCredentials(turn.turnId);
+        const resumed = await db.pool.query('SELECT * FROM turns WHERE source_id=$1', [
+          `credentials:${turn.turnId}`,
+        ]);
+        assert.equal(resumed.rowCount, 1);
+        assert.equal(resumed.rows[0].status, 'queued');
+        assert.equal(resumed.rows[0].background, false);
+        await thread.retryCredentials(turn.turnId);
+        await thread.retryCredentials(turn.turnId);
+        assert.equal(
+          (
+            await db.pool.query('SELECT id FROM turns WHERE source_id=$1', [
+              `credentials-retry:${turn.turnId}`,
             ])
-          ).rowCount;
-          await tasks.resumeTask(taskId, 0);
-          assert.deepEqual(
-            (
-              await db.pool.query(
-                'SELECT status,revision,action_resume_kind,action_resume_revision FROM tasks WHERE id=$1',
-                [taskId],
-              )
-            ).rows[0],
-            before,
-          );
-          assert.equal(
-            (
-              await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [
-                taskId,
-              ])
-            ).rowCount,
-            jobsBefore,
-          );
-          await tasks.resumeTask(taskId, before.revision);
-          const resumed = (await db.pool.query('SELECT * FROM tasks WHERE id=$1', [taskId]))
-            .rows[0];
-          assert.equal(resumed.status, 'queued');
-          assert.equal(resumed.revision, before.revision + 1);
-          assert.equal(resumed.action_resume_kind, 'credentials');
-          assert.equal(resumed.action_resume_revision, resumed.revision);
-          assert.equal(
-            (
-              await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [
-                taskId,
-              ])
-            ).rowCount,
-            jobsBefore! + 1,
-          );
-        },
-      );
+          ).rowCount,
+          1,
+        );
+        await thread.stopThread();
+      });
 
       await t.test(
         'declining resumes once without executing and uncertain actions cannot replay',
         async () => {
-          const taskId = await newTask();
-          const id = await propose(taskId, 'GMAIL_SEND_EMAIL', {});
+          const id = await propose(await newTurn(), 'GMAIL_SEND_EMAIL', {});
           const before = calls.length;
           assert.ok(await confirm(id, false));
           assert.equal(calls.length, before);
-          const task = (
-            await db.pool.query('SELECT status,prompt FROM tasks WHERE id=$1', [taskId])
-          ).rows[0];
-          assert.equal(task.status, 'queued');
-          assert.match(task.prompt, /user declined/);
+          const resumed = await resumeTurns(id);
+          assert.equal(resumed.length, 1);
+          assert.equal(resumed[0].status, 'queued');
+          assert.match(resumed[0].prompt, /user declined/);
           assert.equal((await stored(id)).status, 'declined');
           await assert.rejects(confirm(id, true), { statusCode: 409 });
           assert.equal(await execute(id), undefined);
-          const failed = await propose(await newTask(), 'GMAIL_SEND_EMAIL', {});
+          const failed = await propose(await newTurn(), 'GMAIL_SEND_EMAIL', {});
           await confirm(failed, true);
           failExecution = true;
           try {
@@ -755,16 +677,18 @@ test(
           assert.equal(await execute(failed), undefined);
           await assert.rejects(confirm(failed, true), { statusCode: 409 });
           assert.equal(calls.length, before + 1);
+          await thread.stopThread();
         },
       );
 
       await t.test('a failed decline enqueue rolls back both the decision and reply', async () => {
-        const taskId = await newTask();
-        const id = await propose(taskId, 'GMAIL_SEND_EMAIL', {});
-        const initialMessages = (
-          await db.pool.query('SELECT id FROM messages WHERE task_id=$1', [taskId])
-        ).rowCount;
-        const send = t.mock.method(tasks.boss, 'send', async () => {
+        const turn = await newTurn();
+        const id = await propose(turn, 'GMAIL_SEND_EMAIL', {});
+        const countMessages = async () =>
+          (await db.pool.query('SELECT id FROM messages WHERE thread_id=$1', [turn.threadId]))
+            .rowCount;
+        const initialMessages = await countMessages();
+        const send = t.mock.method(thread.boss, 'send', async () => {
           throw new Error('Injected queue failure');
         });
         try {
@@ -773,82 +697,74 @@ test(
           send.mock.restore();
         }
         assert.equal((await stored(id)).status, 'pending');
-        assert.equal(
-          (await db.pool.query('SELECT id FROM messages WHERE task_id=$1', [taskId])).rowCount,
-          initialMessages,
-        );
+        assert.equal(await countMessages(), initialMessages);
+        assert.equal((await resumeTurns(id)).length, 0);
         assert.ok(await confirm(id, false));
-        assert.equal(
-          (
-            await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [
-              taskId,
-            ])
-          ).rowCount,
-          1,
-        );
+        assert.equal((await resumeTurns(id)).length, 1);
+        await thread.stopThread();
       });
 
       await t.test(
-        'cancellation after chat acceptance prevents the worker from executing',
+        'stopping after chat acceptance prevents the worker from executing',
         async () => {
-          const taskId = await newTask();
-          const id = await propose(taskId, 'GMAIL_SEND_EMAIL', {});
+          const id = await propose(await newTurn(), 'GMAIL_SEND_EMAIL', {});
           await confirm(id, true);
           const before = calls.length;
-          await tasks.cancelTask(taskId);
-          assert.equal(await execute(id), undefined);
+          await thread.stopThread();
+          assert.equal(await turnStatus((await stored(id)).execution_turn_id), 'cancelled');
+          await assert.rejects(execute(id), { statusCode: 409 });
           assert.equal(calls.length, before);
           assert.equal((await stored(id)).status, 'confirmed');
         },
       );
 
       await t.test(
-        'cancellation during confirmed execution records its result without waking the task',
+        'stopping during confirmed execution records its result without queuing more work',
         async () => {
-          const taskId = await newTask();
-          const id = await propose(taskId, 'GMAIL_SEND_EMAIL', {});
+          const turn = await newTurn();
+          const id = await propose(turn, 'GMAIL_SEND_EMAIL', {});
           await confirm(id, true);
           let release = () => {};
           executionGate = new Promise<void>((resolve) => {
             release = resolve;
           });
-          const pending = execute(id);
-          const completed = assert.rejects(pending, { statusCode: 409 });
+          const controller = new AbortController();
+          const pending = execute(id, controller.signal);
+          const completed = assert.rejects(pending);
           try {
             for (let attempt = 0; attempt < 100; attempt++) {
               if ((await stored(id)).status === 'executing') break;
               await delay(5);
             }
             assert.equal((await stored(id)).status, 'executing');
-            await tasks.cancelTask(taskId);
+            await thread.stopThread();
+            controller.abort();
             release();
             await completed;
             assert.equal((await stored(id)).status, 'completed');
-            assert.equal(
-              (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [taskId])).rows[0]
-                .status,
-              'cancelled',
-            );
+            assert.equal(await turnStatus((await stored(id)).execution_turn_id), 'cancelled');
             assert.equal(
               (
-                await db.pool.query(`SELECT id FROM ${bossSchema}.job WHERE data->>'taskId'=$1`, [
-                  taskId,
-                ])
+                await db.pool.query(
+                  "SELECT id FROM turns WHERE thread_id=$1 AND status IN ('queued','running')",
+                  [turn.threadId],
+                )
               ).rowCount,
-              1,
+              0,
             );
           } finally {
             release();
             executionGate = undefined;
             await completed;
           }
-          const interrupted = await propose(await newTask(), 'GMAIL_SEND_EMAIL', {});
+          const interrupted = await propose(await newTurn(), 'GMAIL_SEND_EMAIL', {});
           await db.pool.query("UPDATE approvals SET status='executing' WHERE id=$1", [interrupted]);
           await createApprovals(async () => {
             throw new Error('Must not automatically retry');
           });
           assert.equal((await stored(interrupted)).status, 'uncertain');
           await assert.rejects(confirm(interrupted, true), { statusCode: 409 });
+          await thread.stopThread();
         },
       );
 
@@ -913,14 +829,14 @@ test(
             (await request('PATCH', `/api/goals/${id}`, { progress: 100 })).statusCode,
             404,
           );
-          const foreignTask = await newTask('succeeded', 'another-owner');
+          const foreignThread = await thread.activeThread(db.pool, 'another-owner');
           await db.pool.query(
-            'INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,$2,$3,$4,$5)',
-            [randomUUID(), 'another-owner', 'user', 'BoundarySecretKeyword', foreignTask],
+            'INSERT INTO messages(id,owner_id,role,text,thread_id) VALUES($1,$2,$3,$4,$5)',
+            [randomUUID(), 'another-owner', 'user', 'BoundarySecretKeyword', foreignThread.id],
           );
           assert.deepEqual(
             await personal.manage('history_search', { query: 'BoundarySecretKeyword' }),
-            { tasks: [], messages: [] },
+            { turns: [], messages: [] },
           );
         },
       );
@@ -994,7 +910,7 @@ test(
       );
     } finally {
       await app.close();
-      await tasks.stopTasks();
+      await thread.stopThreadWorkers();
       const files = (await db.pool.query('SELECT storage_path FROM artifacts')).rows.map((row) =>
         String(row.storage_path),
       );

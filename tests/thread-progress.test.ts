@@ -8,7 +8,7 @@ import pg from 'pg';
 import type { RuntimeContext, RuntimeResult } from '../src/ports/agent.ts';
 
 test(
-  'task progress contains useful agent replies without timed filler',
+  'turn progress contains useful agent replies without timed filler',
   { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
   async (t) => {
     const suffix = randomUUID().replaceAll('-', '').slice(0, 16);
@@ -21,15 +21,15 @@ test(
     process.env.DATABASE_URL = url.href;
     process.env.PGBOSS_SCHEMA = bossSchema;
     const db = await import('../src/server/db.ts');
-    const tasks = await import('../src/server/tasks.ts');
+    const thread = await import('../src/server/thread.ts');
     const { createPersonalService } = await import('../src/server/personal.ts');
     const { createPreferencesStore } = await import('../src/server/preferences.ts');
     const { dataRoot } = await import('../src/server/config.ts');
     const personal = createPersonalService({
       pool: db.pool,
       ownerId: 'local-development',
-      scheduler: tasks.boss,
-      submitTask: tasks.submitTask,
+      scheduler: thread.boss,
+      enqueueTurn: thread.enqueueTurn,
       refresh() {},
     });
     const contexts = new Map<string, RuntimeContext>();
@@ -61,18 +61,21 @@ test(
       }
       throw new Error('Fixture condition did not complete.');
     };
-    const messages = async (taskId: string) =>
+    const messages = async (turnId: string) =>
       (
         await db.pool.query(
-          "SELECT * FROM messages WHERE task_id=$1 AND role='assistant' ORDER BY created_at",
-          [taskId],
+          "SELECT * FROM messages WHERE turn_id=$1 AND role='assistant' ORDER BY created_at",
+          [turnId],
         )
       ).rows;
     const begin = async (
       prompt: string,
       options: { channel?: string; source?: 'user' | 'event' } = {},
     ) => {
-      const id = await tasks.submitTask(prompt, [], undefined, false, options);
+      const id =
+        options.source === 'event'
+          ? await thread.enqueueTurn(prompt, { source: 'event', channel: options.channel })
+          : (await thread.submitUserMessage(prompt, [], { channel: options.channel })).turnId;
       await waitFor(() => contexts.has(id));
       return { id, context: contexts.get(id)! };
     };
@@ -80,18 +83,18 @@ test(
       releases.get(id)?.({ status });
       await waitFor(
         async () =>
-          (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [id])).rows[0]?.status ===
+          (await db.pool.query('SELECT status FROM turns WHERE id=$1', [id])).rows[0]?.status ===
           status,
       );
     };
     try {
       await db.initializeDatabase();
-      await tasks.initializeTasks();
+      await thread.initializeThreads();
       await personal.initialize({ workers: false });
-      await tasks.startTaskWorkers({
-        async runTask(context) {
-          contexts.set(context.taskId, context);
-          return new Promise<RuntimeResult>((resolve) => releases.set(context.taskId, resolve));
+      await thread.startThreadWorkers({
+        async runTurn(context) {
+          contexts.set(context.turnId, context);
+          return new Promise<RuntimeResult>((resolve) => releases.set(context.turnId, resolve));
         },
         speech: {
           async synthesize() {
@@ -145,16 +148,12 @@ test(
         },
       );
       await t.test(
-        'a cancelled or replaced segment cannot publish a late progress reply',
+        'a stopped or superseded turn cannot publish a late progress reply',
         async () => {
           for (const mode of ['cancelled', 'replaced']) {
             const { id, context } = await begin(mode);
-            if (mode === 'cancelled') await tasks.cancelTask(id);
-            else
-              await db.pool.query(
-                "UPDATE tasks SET revision=revision+1,status='cancelled' WHERE id=$1",
-                [id],
-              );
+            if (mode === 'cancelled') await thread.stopThread();
+            else await db.pool.query("UPDATE turns SET status='cancelled' WHERE id=$1", [id]);
             await assert.rejects(context.reply('Late progress'));
             releases.get(id)!({ status: 'succeeded' });
             await passQuietWindow();
@@ -169,12 +168,13 @@ test(
           const artifact = await first.context.downloadIntegrationFile!('GMAIL_GET_ATTACHMENT', {});
           assert.equal(artifact.content, 'invoice,total\nNS-1042,240\n');
           const stored = (
-            await db.pool.query('SELECT owner_id,task_id,storage_path FROM artifacts WHERE id=$1', [
-              artifact.id,
-            ])
+            await db.pool.query(
+              'SELECT owner_id,thread_id,storage_path FROM artifacts WHERE id=$1',
+              [artifact.id],
+            )
           ).rows[0];
           assert.equal(stored.owner_id, 'local-development');
-          assert.equal(stored.task_id, first.id);
+          assert.equal(stored.thread_id, first.context.threadId);
           assert.equal(JSON.stringify(artifact).includes('storage_path'), false);
           const { content: _content, ...savedArtifact } = artifact;
           assert.deepEqual((await messages(first.id))[0].attachments, [savedArtifact]);
@@ -194,20 +194,18 @@ test(
             delayed: true,
           });
           await waitFor(() => Boolean(releaseDownload));
-          await tasks.cancelTask(late.id);
+          const artifactsBefore = (await db.pool.query('SELECT id FROM artifacts')).rowCount;
+          await thread.stopThread();
           const rejected = assert.rejects(pending);
           releaseDownload!();
           await rejected;
           assert.equal((await messages(late.id)).length, 0);
-          assert.equal(
-            (await db.pool.query('SELECT id FROM artifacts WHERE task_id=$1', [late.id])).rowCount,
-            0,
-          );
+          assert.equal((await db.pool.query('SELECT id FROM artifacts')).rowCount, artifactsBefore);
           releases.get(late.id)!({ status: 'succeeded' });
         },
       );
       await t.test(
-        'persisted browser IANA preferences enter task context and retain schedule wall-clock time',
+        'persisted browser IANA preferences enter turn context and retain schedule wall-clock time',
         async () => {
           const preferences = createPreferencesStore(db.pool, 'local-development');
           await preferences.update({ timeZone: 'America/New_York' });
@@ -226,8 +224,10 @@ test(
       );
     } finally {
       for (const release of releases.values()) release({ status: 'succeeded' });
-      await tasks.stopTasks();
-      const ids = (await db.pool.query('SELECT id FROM tasks')).rows.map((row) => row.id as string);
+      await thread.stopThreadWorkers();
+      const ids = (await db.pool.query('SELECT id FROM threads')).rows.map(
+        (row) => row.id as string,
+      );
       const artifacts = (await db.pool.query('SELECT storage_path FROM artifacts')).rows;
       await db.pool.end();
       for (const artifact of artifacts) await rm(artifact.storage_path, { force: true });

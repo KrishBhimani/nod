@@ -7,7 +7,6 @@ import type {
   Message,
   MessageHistoryPage,
   SubmitMessageResponse,
-  TaskReviewRequired,
 } from '../../shared/contracts';
 import {
   integrationServiceIds,
@@ -91,7 +90,7 @@ export function Chat({
   state: AppState;
   streams: Record<string, string>;
   refresh(): Promise<void>;
-  resetConversation(): Promise<number>;
+  resetConversation(): Promise<string>;
   initialFocusMessageId?: string;
 }) {
   const dateFormat = useDateFormat();
@@ -104,25 +103,26 @@ export function Chat({
   const [focusTarget, setFocusTarget] = useState<{ id: string; pages: number } | null>(() =>
     initialFocusMessageId ? { id: initialFocusMessageId, pages: 0 } : null,
   );
-  const [optimistic, setOptimistic] = useState<Array<{ revision: number; message: Message }>>([]);
+  const [optimistic, setOptimistic] = useState<Array<{ threadId: string; message: Message }>>([]);
+  const [stopping, setStopping] = useState(false);
   const composer = useRef<ComposerHandle>(null);
-  const sendLock = useRef<{ id: string; revision: number } | null>(null);
-  const retry = useRef<{ id: string; revision: number; signature: string } | null>(null);
+  const sendLock = useRef<{ id: string; threadId: string } | null>(null);
+  const retry = useRef<{ id: string; threadId: string; signature: string } | null>(null);
   const historyVersion = useRef(0);
-  const revision = state.conversationRevision ?? 0;
-  const revisionRef = useRef(revision);
-  revisionRef.current = revision;
+  const threadId = state.threadId;
+  const threadRef = useRef(threadId);
+  threadRef.current = threadId;
   const [historyPage, setHistoryPage] = useState<{
-    revision: number;
+    threadId: string;
     messages: Message[];
     hasMore?: boolean;
   }>({
-    revision,
+    threadId,
     messages: [],
   });
-  const older = historyPage.revision === revision ? historyPage.messages : [];
+  const older = historyPage.threadId === threadId ? historyPage.messages : [];
   const hasEarlier =
-    (historyPage.revision === revision ? historyPage.hasMore : undefined) ??
+    (historyPage.threadId === threadId ? historyPage.hasMore : undefined) ??
     state.hasEarlierMessages === true;
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [activeTurn, setActiveTurn] = useState<string | null>(null);
@@ -145,10 +145,10 @@ export function Chat({
   const allMessages = [
     ...persistedMessages,
     ...optimistic
-      .filter((item) => item.revision === revision && !persistedIds.has(item.message.id))
+      .filter((item) => item.threadId === threadId && !persistedIds.has(item.message.id))
       .map((item) => item.message),
   ];
-  const working = hasVisibleChatActivity(state.tasks);
+  const working = hasVisibleChatActivity(state.turns);
   const [welcoming, setWelcoming] = useState(
     () => allMessages.length === 0 && !working && state.configuration.llmReady,
   );
@@ -179,7 +179,7 @@ export function Chat({
         streamId: id,
         role: 'assistant',
         text: value,
-        taskId: null,
+        turnId: null,
         attachments: [],
         createdAt: streamTimes.current.get(id)!,
       };
@@ -188,10 +188,10 @@ export function Chat({
   const finalAssistantMessages = new Map<string, string>();
   const latestUserMessageAt = new Map<string, string>();
   for (const message of visibleMessages) {
-    if (message.role === 'assistant' && message.taskId)
-      finalAssistantMessages.set(message.taskId, message.id);
-    if (message.role === 'user' && message.taskId)
-      latestUserMessageAt.set(message.taskId, message.createdAt);
+    if (message.role === 'assistant' && message.turnId)
+      finalAssistantMessages.set(message.turnId, message.id);
+    if (message.role === 'user' && message.turnId)
+      latestUserMessageAt.set(message.turnId, message.createdAt);
   }
   const unseen = away
     ? persistedMessages.filter(
@@ -207,14 +207,14 @@ export function Chat({
     const ids = new Set(state.messages.map((message) => message.id));
     setOptimistic((current) => {
       const next = current.filter(
-        (item) => item.revision === revision && !ids.has(item.message.id),
+        (item) => item.threadId === threadId && !ids.has(item.message.id),
       );
       return next.length === current.length ? current : next;
     });
-  }, [state.messages, revision]);
+  }, [state.messages, threadId]);
   useEffect(() => {
     historyVersion.current++;
-    setHistoryPage({ revision, messages: [] });
+    setHistoryPage({ threadId, messages: [] });
     setLoadingHistory(false);
     setActiveTurn(null);
     setVisibleTurns([]);
@@ -226,8 +226,9 @@ export function Chat({
     setText('');
     setSending(false);
     setError('');
+    setStopping(false);
     stickToBottom.current = true;
-  }, [revision]);
+  }, [threadId]);
   useEffect(() => {
     const restart = () => setupAction.current();
     window.addEventListener('otto:restart-setup', restart);
@@ -292,11 +293,11 @@ export function Chat({
   async function send(value: string, attachments: Artifact[]): Promise<ComposerSendResult> {
     if (sendLock.current || resetLock.current || welcoming)
       return { sent: false, restoreText: true };
-    const sentRevision = revision;
+    const sentThread = threadId;
     const reply = replyTo;
     const verificationRequests = (state.verificationRequests ?? []).filter(
       (request) =>
-        Date.parse(request.expiresAt) > Date.now() && (!reply || request.taskId === reply.taskId),
+        Date.parse(request.expiresAt) > Date.now() && (!reply || request.turnId === reply.turnId),
     );
     let privateVerification = /^\d{4,8}$/.test(value.trim()) && verificationRequests.length > 0;
     const verificationRequestId =
@@ -310,17 +311,17 @@ export function Chat({
     if (privateVerification) retry.current = null;
     const id =
       signature !== null &&
-      retry.current?.revision === sentRevision &&
+      retry.current?.threadId === sentThread &&
       retry.current.signature === signature
         ? retry.current.id
         : crypto.randomUUID();
-    sendLock.current = { id, revision: sentRevision };
+    sendLock.current = { id, threadId: sentThread };
     const message: Message = {
       id,
       role: 'user',
       text: privateVerification ? 'Verification code sent securely.' : value,
       attachments,
-      taskId: null,
+      turnId: null,
       createdAt: new Date().toISOString(),
       ...(reply
         ? {
@@ -331,7 +332,7 @@ export function Chat({
     };
     setOptimistic((current) => [
       ...current.filter((item) => item.message.id !== id),
-      { revision: sentRevision, message },
+      { threadId: sentThread, message },
     ]);
     historyVersion.current++;
     setLoadingHistory(false);
@@ -345,7 +346,7 @@ export function Chat({
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          conversationRevision: sentRevision,
+          threadId: sentThread,
           clientMessageId: id,
           text: value,
           attachmentIds: attachments.map((item) => item.id),
@@ -353,35 +354,19 @@ export function Chat({
           ...(verificationRequestId ? { verificationRequestId } : {}),
         }),
       });
-      const result = (await response.json()) as Partial<SubmitMessageResponse> &
-        Partial<TaskReviewRequired>;
+      const result = (await response.json()) as Partial<SubmitMessageResponse> & {
+        error?: string;
+      };
       verificationStatus = result.verificationStatus;
       privateVerification ||= verificationStatus !== undefined;
-      if (response.status === 409 && result.code === 'task_review_required') {
-        if (revisionRef.current !== sentRevision) return { sent: true };
-        retry.current = null;
-        const reviewReply: Message = {
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          text: `I stopped earlier and may have already done part of “${result.summary || 'that'}”. Please check it, then tell me what you see.`,
-          taskId: null,
-          attachments: [],
-          createdAt: new Date().toISOString(),
-        };
-        setOptimistic((current) => [
-          ...current.filter((item) => item.message.id !== id),
-          { revision: sentRevision, message: reviewReply },
-        ]);
-        setReplyTo((current) => (current?.id === replyId ? null : current));
-        return { sent: true };
-      }
       if (!response.ok) {
+        if (response.status === 409 && verificationStatus === undefined) void refresh();
         throw new Error(result.error || 'The message could not be sent.');
       }
-      if (revisionRef.current !== sentRevision) return { sent: true };
-      if (result.messageId !== id || typeof result.taskId !== 'string')
+      if (threadRef.current !== sentThread) return { sent: true };
+      if (result.messageId !== id || typeof result.turnId !== 'string')
         throw new Error('The message could not be confirmed. Try sending it again.');
-      const taskId = result.taskId;
+      const turnId = result.turnId;
       const messageText =
         typeof result.messageText === 'string'
           ? result.messageText
@@ -396,7 +381,7 @@ export function Chat({
                 ...item,
                 message: {
                   ...item.message,
-                  taskId,
+                  turnId,
                   text: messageText,
                 },
               }
@@ -407,16 +392,14 @@ export function Chat({
       void refresh().catch(() => {});
       return { sent: true };
     } catch (cause) {
-      if (revisionRef.current !== sentRevision) return { sent: true };
+      if (threadRef.current !== sentThread) return { sent: true };
       if (acknowledgedIds.current.has(id)) {
         retry.current = null;
         setReplyTo((current) => (current?.id === replyId ? null : current));
         return { sent: true };
       }
       retry.current =
-        !privateVerification && signature !== null
-          ? { id, revision: sentRevision, signature }
-          : null;
+        !privateVerification && signature !== null ? { id, threadId: sentThread, signature } : null;
       setOptimistic((current) => current.filter((item) => item.message.id !== id));
       setError(
         privateVerification
@@ -427,9 +410,9 @@ export function Chat({
       );
       return { sent: false, restoreText: !privateVerification };
     } finally {
-      if (sendLock.current?.id === id && sendLock.current.revision === sentRevision) {
+      if (sendLock.current?.id === id && sendLock.current.threadId === sentThread) {
         sendLock.current = null;
-        if (revisionRef.current === sentRevision) setSending(false);
+        if (threadRef.current === sentThread) setSending(false);
       }
     }
   }
@@ -442,22 +425,22 @@ export function Chat({
     try {
       const before = first?.createdAt;
       const query = new URLSearchParams({
-        conversationRevision: String(revision),
+        threadId,
         ...(before ? { before } : {}),
         ...(first ? { beforeId: first.id } : {}),
       });
       const result = await api<MessageHistoryPage>(`/api/messages?${query}`);
-      if (version !== historyVersion.current || revisionRef.current !== revision) return;
+      if (version !== historyVersion.current || threadRef.current !== threadId) return;
       setHistoryPage((current) => ({
-        revision,
-        messages: [...result.messages, ...(current.revision === revision ? current.messages : [])],
+        threadId,
+        messages: [...result.messages, ...(current.threadId === threadId ? current.messages : [])],
         hasMore: result.hasMore,
       }));
       requestAnimationFrame(() => {
         if (scroll.current) scroll.current.scrollTop += scroll.current.scrollHeight - height;
       });
     } catch (cause) {
-      if (version === historyVersion.current && revisionRef.current === revision)
+      if (version === historyVersion.current && threadRef.current === threadId)
         setError(errorMessage(cause));
     } finally {
       if (version === historyVersion.current) setLoadingHistory(false);
@@ -519,16 +502,16 @@ export function Chat({
     setResetting(true);
     setError('');
     try {
-      const conversationRevision = await resetConversation();
-      revisionRef.current = conversationRevision;
+      const nextThread = await resetConversation();
+      threadRef.current = nextThread;
       historyVersion.current++;
-      setHistoryPage({ revision: conversationRevision, messages: [] });
+      setHistoryPage({ threadId: nextThread, messages: [] });
       setLoadingHistory(false);
       setReplyTo(null);
       setText('');
       await post('/api/onboarding', {
         timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        conversationRevision,
+        threadId: nextThread,
       });
       await refresh();
     } catch (cause) {
@@ -539,6 +522,20 @@ export function Chat({
     }
   }
   setupAction.current = () => void startOnboarding();
+  async function stop() {
+    if (stopping) return;
+    const stoppedThread = threadId;
+    setStopping(true);
+    setError('');
+    try {
+      await post('/api/thread/stop');
+      await refresh();
+    } catch (cause) {
+      if (threadRef.current === stoppedThread) setError(errorMessage(cause));
+    } finally {
+      if (threadRef.current === stoppedThread) setStopping(false);
+    }
+  }
   return (
     <div className="chat-page">
       <ChatTurnRail
@@ -618,13 +615,13 @@ export function Chat({
                 )}
                 <MessageBubble
                   message={message}
-                  task={
-                    message.taskId && finalAssistantMessages.get(message.taskId) === message.id
-                      ? (state.tasks.find((task) => task.id === message.taskId) ?? message.task)
+                  turn={
+                    message.turnId && finalAssistantMessages.get(message.turnId) === message.id
+                      ? (state.turns.find((turn) => turn.id === message.turnId) ?? message.turn)
                       : undefined
                   }
-                  taskStartedAt={
-                    message.taskId ? latestUserMessageAt.get(message.taskId) : undefined
+                  turnStartedAt={
+                    message.turnId ? latestUserMessageAt.get(message.turnId) : undefined
                   }
                   streaming={streamIds.has(message.streamId ?? '')}
                   inspectorEnabled={state.configuration.inspectorEnabled}
@@ -634,7 +631,7 @@ export function Chat({
                     !messagesAreGrouped(message, visibleMessages[index + 1], dateFormat)
                   }
                   onReply={
-                    message.taskId || persistedIds.has(message.id)
+                    message.turnId || persistedIds.has(message.id)
                       ? () => {
                           setReplyTo(message);
                           composer.current?.focus();
@@ -699,7 +696,7 @@ export function Chat({
           </Notice>
         )}
         <Composer
-          key={revision}
+          key={threadId}
           ref={composer}
           ready={state.configuration.llmReady && !resetting && !welcoming}
           sending={sending || resetting}
@@ -708,6 +705,8 @@ export function Chat({
           replyTo={replyTo}
           clearReply={() => setReplyTo(null)}
           onSend={send}
+          onStop={state.threadStatus === 'running' ? () => void stop() : undefined}
+          stopping={stopping}
         />
       </div>
     </div>

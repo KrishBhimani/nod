@@ -88,14 +88,15 @@ const message: Message = {
   id: 'old-message',
   role: 'assistant',
   text: 'Which draft should I review?',
-  taskId: 'old-task',
+  turnId: 'old-turn',
   attachments: [],
   createdAt: '2026-09-25T12:00:00Z',
 };
 const base: AppState = {
-  conversationRevision: 0,
+  threadId: 'thread-0',
+  threadStatus: 'idle',
   messages: [message],
-  tasks: [],
+  turns: [],
   configuration: {
     provider: 'fixture',
     model: 'fixture',
@@ -158,7 +159,7 @@ async function mount(onCommit: () => void = () => {}) {
 
 type Submission = {
   clientMessageId: string;
-  conversationRevision: number;
+  threadId: string;
   text: string;
   attachmentIds: string[];
   replyToMessageId?: string;
@@ -232,11 +233,12 @@ test('a real runtime reply stays visible while persistence is pending and retain
     workspace: fakeWorkspace(),
   });
   const fixture = await mount();
-  let running: ReturnType<typeof runtime.runTask> | undefined;
+  let running: ReturnType<typeof runtime.runTurn> | undefined;
   try {
     await act(async () => {
-      running = runtime.runTask({
-        taskId: 'stream-fixture',
+      running = runtime.runTurn({
+        threadId: 'thread-0',
+        turnId: 'stream-fixture',
         ownerId: 'fixture-owner',
         prompt: 'Show the result.',
         history: [],
@@ -257,11 +259,11 @@ test('a real runtime reply stays visible while persistence is pending and retain
         delta: (value, streamId, done) =>
           Events.current.emit({
             type: 'delta',
-            taskId: 'stream-fixture',
+            threadId: 'thread-0',
+            turnId: 'stream-fixture',
             text: value,
             streamId,
             done,
-            conversationRevision: 0,
           }),
         reply: async (value, streamId) => {
           saving();
@@ -272,7 +274,7 @@ test('a real runtime reply stays visible while persistence is pending and retain
               ...base.messages,
               {
                 id: 'persisted-reply',
-                taskId: 'stream-fixture',
+                turnId: 'stream-fixture',
                 role: 'assistant',
                 text: value,
                 streamId,
@@ -370,9 +372,8 @@ test('sending keeps the existing conversation mounted and scrolls the new bubble
     await act(async () => {
       finish(
         Response.json({
-          taskId: 'accepted-task',
+          turnId: 'accepted-turn',
           messageId: sent.clientMessageId,
-          continued: false,
         }),
       );
       await tick();
@@ -384,17 +385,16 @@ test('sending keeps the existing conversation mounted and scrolls the new bubble
   }
 });
 
-test('a cancelled task discards its unfinished stream even when cancellation fences the final delta', async () => {
+test('a cancelled turn discards its unfinished stream even when cancellation fences the final delta', async () => {
   const previousFetch = globalThis.fetch;
   let current: AppState = {
     ...base,
-    tasks: [
+    turns: [
       {
-        id: 'cancelled-task',
-        title: 'Fixture',
+        id: 'cancelled-turn',
+        source: 'user',
         status: 'running',
         createdAt: message.createdAt,
-        updatedAt: message.createdAt,
       },
     ],
   };
@@ -404,16 +404,16 @@ test('a cancelled task discards its unfinished stream even when cancellation fen
     await act(async () => {
       Events.current.emit({
         type: 'delta',
-        taskId: 'cancelled-task',
+        threadId: 'thread-0',
+        turnId: 'cancelled-turn',
         streamId: 'unfinished',
         text: 'An unfinished response.',
-        conversationRevision: 0,
       });
     });
     assert.match(fixture.element.textContent ?? '', /An unfinished response/);
     current = {
       ...current,
-      tasks: current.tasks.map((task) => ({ ...task, status: 'cancelled' })),
+      turns: current.turns.map((turn) => ({ ...turn, status: 'cancelled' })),
     };
     await act(async () => {
       Events.current.emit({ type: 'refresh' });
@@ -423,10 +423,10 @@ test('a cancelled task discards its unfinished stream even when cancellation fen
     await act(async () =>
       Events.current.emit({
         type: 'delta',
-        taskId: 'cancelled-task',
+        threadId: 'thread-0',
+        turnId: 'cancelled-turn',
         streamId: 'unfinished',
         text: 'Late.',
-        conversationRevision: 0,
       }),
     );
     assert.equal(fixture.element.querySelector('.streaming-message'), null);
@@ -462,7 +462,7 @@ test('a user bubble appears before routing completes and reconciles SSE then res
     assert.equal(submissions.length, 1);
     const sent = submissions[0];
     assert.match(sent.clientMessageId, /^[a-f0-9-]{36}$/);
-    assert.equal(sent.conversationRevision, 0);
+    assert.equal(sent.threadId, 'thread-0');
     const bubble = fixture.element.querySelector(`[data-message-id="${sent.clientMessageId}"]`)!;
     assert.match(bubble.textContent ?? '', /Research a small weekend trip/);
     assert.equal(bubble.querySelector('[aria-label="Reply to message"]'), null);
@@ -479,7 +479,7 @@ test('a user bubble appears before routing completes and reconciles SSE then res
       role: 'user',
       text: sent.text,
       attachments: [],
-      taskId: 'accepted-task',
+      turnId: 'accepted-turn',
       createdAt: new Date().toISOString(),
     };
     current = { ...base, messages: [message, accepted] };
@@ -489,7 +489,7 @@ test('a user bubble appears before routing completes and reconciles SSE then res
     });
     assert.equal(fixture.element.querySelectorAll('.message-user').length, 1);
     await act(async () => {
-      finish(Response.json({ taskId: accepted.taskId, messageId: accepted.id, continued: false }));
+      finish(Response.json({ turnId: accepted.turnId, messageId: accepted.id }));
       await tick();
     });
     assert.equal(fixture.element.querySelectorAll('.message-user').length, 1);
@@ -570,13 +570,13 @@ test('failed sends restore reply and attachment drafts and retry the same messag
       role: 'user',
       text: submissions[1].text,
       attachments: [image],
-      taskId: 'accepted-task',
+      turnId: 'accepted-turn',
       createdAt: new Date().toISOString(),
       replyToMessageId: message.id,
       replyTo: { id: message.id, role: message.role, text: message.text },
     };
     await act(async () => {
-      finish(Response.json({ taskId: accepted.taskId, messageId: accepted.id, continued: true }));
+      finish(Response.json({ turnId: accepted.turnId, messageId: accepted.id }));
       await tick();
     });
     assert.equal(fixture.element.querySelectorAll('.message-user').length, 1);
@@ -608,8 +608,8 @@ test('reset fences an optimistic send and its late failure cannot restore the ol
       });
     }
     if (path === '/api/conversation/reset') {
-      current = { ...base, conversationRevision: 1, messages: [] };
-      return Response.json({ ok: true, conversationRevision: 1 });
+      current = { ...base, threadId: 'thread-1', messages: [] };
+      return Response.json({ ok: true, threadId: 'thread-1' });
     }
     if (path === '/api/onboarding') return Response.json({});
     throw new Error('Unexpected fixture request');
@@ -673,7 +673,7 @@ test('persisted acceptance prevents restoring a duplicate draft when the HTTP re
         message,
         {
           id: submitted.clientMessageId,
-          taskId: 'accepted-task',
+          turnId: 'accepted-turn',
           role: 'user',
           text: submitted.text,
           attachments: [],
@@ -701,7 +701,7 @@ test('persisted acceptance prevents restoring a duplicate draft when the HTTP re
 
 const verificationRequest = {
   id: '5c301e08-cf53-4b53-94e4-56fcba13eec7',
-  taskId: message.taskId!,
+  turnId: message.turnId!,
   expiresAt: '2099-01-01T00:00:00Z',
 };
 const verificationState: AppState = { ...base, verificationRequests: [verificationRequest] };
@@ -745,9 +745,8 @@ for (const verificationStatus of ['pending', 'submitted'] as const)
       await act(async () => {
         finish(
           Response.json({
-            taskId: verificationRequest.taskId,
+            turnId: verificationRequest.turnId,
             messageId: submitted.clientMessageId,
-            continued: true,
             messageText: 'Verification code received securely.',
             verificationStatus,
           }),
@@ -797,7 +796,7 @@ test('a persisted masked verification reply survives a lost HTTP response withou
         message,
         {
           id: submitted.clientMessageId,
-          taskId: verificationRequest.taskId,
+          turnId: verificationRequest.turnId,
           role: 'user',
           text: 'Verification code sent securely.',
           attachments: [],
@@ -859,7 +858,7 @@ test('an explicit reply selects its verification request while ambiguous codes s
   const otherRequest = {
     ...verificationRequest,
     id: 'cd2e9b95-1e0d-484a-8202-ff16e0154ad9',
-    taskId: 'other-task',
+    turnId: 'other-turn',
   };
   const submissions: Submission[] = [];
   globalThis.fetch = async (path, init) => {
@@ -870,9 +869,8 @@ test('an explicit reply selects its verification request while ambiguous codes s
       submissions.push(sent);
       return sent.verificationRequestId
         ? Response.json({
-            taskId: message.taskId,
+            turnId: message.turnId!,
             messageId: sent.clientMessageId,
-            continued: true,
             messageText: 'Verification code sent securely.',
             verificationStatus: 'submitted',
           })
@@ -927,7 +925,7 @@ test('ordinary numeric messages preserve normal drafts when no matching unexpire
       },
     },
     {
-      state: { ...base, verificationRequests: [{ ...verificationRequest, taskId: 'other-task' }] },
+      state: { ...base, verificationRequests: [{ ...verificationRequest, turnId: 'other-turn' }] },
       reply: true,
     },
   ];
@@ -1044,7 +1042,7 @@ test('a late verification rejection preserves new draft text and combines both a
         return new Promise((resolve) => {
           finish = resolve;
         });
-      return Response.json({ taskId: 'accepted-task', messageId: submission.clientMessageId });
+      return Response.json({ turnId: 'accepted-turn', messageId: submission.clientMessageId });
     }
     throw new Error('Unexpected fixture request');
   };

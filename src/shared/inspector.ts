@@ -13,8 +13,7 @@ export interface InspectorToolsResponse {
 
 export interface ToolCall {
   id: string;
-  taskId: string;
-  revision: number;
+  turnId: string;
   name: string;
   input: unknown;
   output: unknown | null;
@@ -31,8 +30,7 @@ export interface ToolCall {
 
 export interface ModelUsage {
   id: string;
-  taskId: string;
-  revision: number;
+  turnId: string;
   provider: string;
   model: string;
   inputTokens: number;
@@ -66,15 +64,14 @@ export interface ToolUsage {
 
 export interface InspectorFailure {
   id: string;
-  taskId: string;
-  revision: number;
+  turnId: string;
   occurredAt: string;
   diagnostic: unknown;
 }
 
 export interface InspectorObservationsResponse {
-  scope?: 'task' | 'owner';
-  taskId?: string;
+  scope?: 'turn' | 'owner';
+  turnId?: string;
   calls: ToolCall[];
   usage: ModelUsage[];
   failures?: InspectorFailure[];

@@ -22,14 +22,14 @@ test(
     });
     try {
       await database.query(
-        `CREATE TABLE tasks(id uuid PRIMARY KEY,owner_id text NOT NULL); CREATE TABLE artifacts(id uuid PRIMARY KEY,owner_id text NOT NULL,task_id uuid REFERENCES tasks(id),name text NOT NULL CHECK(name <> 'reject'),mime_type text NOT NULL,size integer NOT NULL,storage_path text NOT NULL)`,
+        `CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL); CREATE TABLE artifacts(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid REFERENCES threads(id),name text NOT NULL CHECK(name <> 'reject'),mime_type text NOT NULL,size integer NOT NULL,storage_path text NOT NULL)`,
       );
-      const task = randomUUID();
-      const foreignTask = randomUUID();
-      await database.query('INSERT INTO tasks VALUES($1,$2),($3,$4)', [
-        task,
+      const thread = randomUUID();
+      const foreignThread = randomUUID();
+      await database.query('INSERT INTO threads VALUES($1,$2),($3,$4)', [
+        thread,
         'owner-one',
-        foreignTask,
+        foreignThread,
         'owner-two',
       ]);
       const create = (ownerId: string) =>
@@ -43,23 +43,23 @@ test(
         Buffer.from('synthetic file'),
         'private.txt',
         'text/plain',
-        task,
+        thread,
       );
       assert.deepEqual(Object.keys(saved).sort(), ['id', 'mimeType', 'name', 'size', 'url']);
       const restored = create('owner-one');
       assert.equal((await restored.readArtifact(saved.id)).toString(), 'synthetic file');
       assert.equal(
-        (await restored.readTaskArtifacts(task, [saved.id]))[0].bytes.toString(),
+        (await restored.readThreadArtifacts(thread, [saved.id]))[0].bytes.toString(),
         'synthetic file',
       );
       await assert.rejects(create('owner-two').readArtifact(saved.id), /unavailable/);
       await assert.rejects(
-        create('owner-two').readTaskArtifacts(foreignTask, [saved.id]),
+        create('owner-two').readThreadArtifacts(foreignThread, [saved.id]),
         /unavailable/,
       );
       await assert.rejects(
-        restored.storeArtifact(Buffer.from('x'), 'file', 'text/plain', foreignTask),
-        /task is unavailable/,
+        restored.storeArtifact(Buffer.from('x'), 'file', 'text/plain', foreignThread),
+        /conversation is unavailable/,
       );
       const before = await readdir(join(root, 'owner-one', 'artifacts'));
       await assert.rejects(restored.storeArtifact(Buffer.from('cleanup'), 'reject', 'text/plain'));

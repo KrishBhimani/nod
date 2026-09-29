@@ -51,7 +51,7 @@ test('prompt polling waits for the current request and discards results from the
       prompts: [
         {
           id: title,
-          taskId: title,
+          turnId: title,
           title,
           revision: 1,
           system: 'Fixture system',
@@ -70,17 +70,17 @@ test('prompt polling waits for the current request and discards results from the
       hasOlder: false,
     });
   try {
-    await act(async () => root.render(createElement(InspectorPrompts, { taskId: 'old' })));
+    await act(async () => root.render(createElement(InspectorPrompts, { turnId: 'old' })));
     await act(async () => {
       polls[0]();
       polls[0]();
     });
     assert.equal(requests.length, 1);
-    await act(async () => root.render(createElement(InspectorPrompts, { taskId: 'new' })));
+    await act(async () => root.render(createElement(InspectorPrompts, { turnId: 'new' })));
     assert.equal(requests.length, 2);
-    await act(async () => requests[1].resolve(response('New task')));
-    await act(async () => requests[0].resolve(response('Old task')));
-    assert.match(container.textContent!, /New task/);
+    await act(async () => requests[1].resolve(response('New turn')));
+    await act(async () => requests[0].resolve(response('Old turn')));
+    assert.match(container.textContent!, /New turn/);
     assert.equal(container.querySelector('.inspector-prompt')?.tagName, 'SECTION');
     assert.equal(
       container.querySelector('.inspector-prompt-text')?.parentElement?.closest('details'),
@@ -88,11 +88,11 @@ test('prompt polling waits for the current request and discards results from the
     );
     assert.equal(container.querySelectorAll('.inspector-prompt-text').length, 2);
     assert.equal(container.querySelectorAll('.inspector-prompt-text[open]').length, 0);
-    assert.doesNotMatch(container.textContent!, /Old task/);
+    assert.doesNotMatch(container.textContent!, /Old turn/);
     await act(async () => polls[1]());
     assert.equal(requests.length, 3);
-    await act(async () => requests[2].resolve(response('Latest task')));
-    assert.match(container.textContent!, /Latest task/);
+    await act(async () => requests[2].resolve(response('Latest turn')));
+    assert.match(container.textContent!, /Latest turn/);
   } finally {
     await act(async () => root.unmount());
     globalThis.fetch = priorFetch;

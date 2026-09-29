@@ -52,9 +52,10 @@ const account: SessionResponse = {
   capabilities: { developer: false },
 };
 const state: AppState = {
-  conversationRevision: 0,
+  threadId: 'thread-a',
+  threadStatus: 'idle',
   messages: [],
-  tasks: [],
+  turns: [],
   configuration: {
     provider: 'fixture',
     model: 'fixture',
@@ -146,7 +147,13 @@ test('terminal event failure reconnects the accepted account without losing stre
   const epoch = sessionStore.getSnapshot().epoch;
   await act(async () => {
     first.open();
-    first.emit({ type: 'delta', taskId: 'task', streamId: 'reply', text: 'First ' });
+    first.emit({
+      type: 'delta',
+      threadId: 'thread-a',
+      turnId: 'turn',
+      streamId: 'reply',
+      text: 'First ',
+    });
     first.fail();
   });
   assert.equal(f.element.textContent, 'Reconnecting');
@@ -159,7 +166,13 @@ test('terminal event failure reconnects the accepted account without losing stre
   assert.equal(next.url, '/api/events?account=account-a');
   await act(async () => {
     next.open();
-    next.emit({ type: 'delta', taskId: 'task', streamId: 'reply', text: 'second' });
+    next.emit({
+      type: 'delta',
+      threadId: 'thread-a',
+      turnId: 'turn',
+      streamId: 'reply',
+      text: 'second',
+    });
   });
   assert.equal(f.element.textContent, 'Connected');
   assert.equal(f.app().streams.reply, 'First second');
@@ -167,19 +180,31 @@ test('terminal event failure reconnects the accepted account without losing stre
   await act(async () => {
     first.onopen?.();
     first.onerror?.();
-    first.emit({ type: 'delta', taskId: 'old', streamId: 'stale', text: 'Stale reply' });
+    first.emit({
+      type: 'delta',
+      threadId: 'thread-a',
+      turnId: 'old',
+      streamId: 'stale',
+      text: 'Stale reply',
+    });
   });
   await f.tick(60_000);
   assert.deepEqual(f.reads(), reads);
   assert.equal(Events.all.length, 2);
   assert.equal(f.element.textContent, 'Connected');
   assert.equal(f.app().streams.stale, undefined);
-  f.state({ ...state, conversationRevision: 1 });
+  f.state({ ...state, threadId: 'thread-b' });
   await act(async () => next.emit({ type: 'refresh' }));
   await act(async () =>
-    next.emit({ type: 'delta', taskId: 'task', streamId: 'old-revision', text: 'Old revision' }),
+    next.emit({
+      type: 'delta',
+      threadId: 'thread-a',
+      turnId: 'turn',
+      streamId: 'old-thread',
+      text: 'Old thread',
+    }),
   );
-  assert.equal(f.app().state?.conversationRevision, 1);
+  assert.equal(f.app().state?.threadId, 'thread-b');
   assert.deepEqual(f.app().streams, {});
 });
 
@@ -283,7 +308,13 @@ test('account replacement fences a pending retry and old events before remount',
   await act(async () => sessionStore.refresh());
   await act(async () => {
     first.onopen?.();
-    first.emit({ type: 'delta', taskId: 'old', streamId: 'stale', text: 'Old account' });
+    first.emit({
+      type: 'delta',
+      threadId: 'thread-a',
+      turnId: 'old',
+      streamId: 'stale',
+      text: 'Old account',
+    });
   });
   assert.equal(f.app().streams.stale, undefined);
   await f.render(secondAccount.user.id);
@@ -406,7 +437,13 @@ for (const change of ['owner', 'epoch', 'signout'] as const)
     await act(async () => {
       first.onopen?.();
       first.onerror?.();
-      first.emit({ type: 'delta', taskId: 'old', streamId: 'stale', text: 'Old session' });
+      first.emit({
+        type: 'delta',
+        threadId: 'thread-a',
+        turnId: 'old',
+        streamId: 'stale',
+        text: 'Old session',
+      });
     });
     await f.tick(60_000);
     assert.equal(Events.all.length, 1);
@@ -432,9 +469,9 @@ test('opening the stream keeps an in-flight state read and queues one follow-up 
   });
   assert.equal(reads.length, 1);
   assert.equal(reads[0].signal.aborted, false);
-  await act(async () => reads[0].finish(Response.json({ ...state, conversationRevision: 1 })));
-  assert.equal(f.app().state?.conversationRevision, 1);
+  await act(async () => reads[0].finish(Response.json({ ...state, threadId: 'thread-b' })));
+  assert.equal(f.app().state?.threadId, 'thread-b');
   assert.equal(reads.length, 2);
-  await act(async () => reads[1].finish(Response.json({ ...state, conversationRevision: 1 })));
+  await act(async () => reads[1].finish(Response.json({ ...state, threadId: 'thread-b' })));
   assert.equal(reads.length, 2);
 });

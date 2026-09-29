@@ -64,7 +64,7 @@ test('computer observations retain body text, normalize controls, protect creden
       [{ action: 'snapshot', compact: true }],
     );
     await computer.injectCredentials({
-      taskId: 'fixture',
+      threadId: 'fixture',
       origin: 'https://1.1.1.1',
       password: 'fixture-secret',
       passwordSelector: '#password',
@@ -150,18 +150,18 @@ test('current browser changes when an accepted navigation starts and late comple
     await computer.act('earlier', { action: 'open', url: 'https://1.1.1.1/' });
     navigation = computer.act('current', { action: 'open', url: 'https://1.1.1.1/slow' });
     await entered;
-    assert.equal(computer.currentSession?.()?.taskId, 'current');
+    assert.equal(computer.currentSession?.()?.threadId, 'current');
     await computer.act('earlier', { action: 'scroll', direction: 'down' });
-    assert.equal(computer.currentSession?.()?.taskId, 'earlier');
+    assert.equal(computer.currentSession?.()?.threadId, 'earlier');
     release();
     await navigation;
-    assert.equal(computer.currentSession?.()?.taskId, 'earlier');
+    assert.equal(computer.currentSession?.()?.threadId, 'earlier');
     await assert.rejects(computer.act('blocked', { action: 'open', url: 'file:///private' }));
-    assert.equal(computer.currentSession?.()?.taskId, 'earlier');
+    assert.equal(computer.currentSession?.()?.threadId, 'earlier');
     await assert.rejects(
       computer.act('cancelled', { action: 'open', url: 'https://1.1.1.1/' }, AbortSignal.abort()),
     );
-    assert.equal(computer.currentSession?.()?.taskId, 'earlier');
+    assert.equal(computer.currentSession?.()?.threadId, 'earlier');
   } finally {
     release();
     await navigation?.catch(() => {});
@@ -195,7 +195,7 @@ test('a failed browser close blocks observations until the daemon can be closed'
   try {
     await computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/' });
     await computer.injectCredentials({
-      taskId: 'fixture',
+      threadId: 'fixture',
       origin: 'https://1.1.1.1',
       password: 'fixture-secret',
       passwordSelector: '#password',
@@ -222,7 +222,8 @@ test('a failed browser close blocks observations until the daemon can be closed'
 
 function context(directory: string): RuntimeContext {
   return {
-    taskId: 'fixture',
+    threadId: 'fixture',
+    turnId: 'fixture',
     ownerId: 'fixture',
     workspacePath: directory,
     prompt: 'Use the replacement tools',
@@ -294,7 +295,7 @@ test('shared runtime composes replacement agent, computer, workspace and chooser
     },
   });
   try {
-    assert.equal((await runtime.runTask(context(directory))).status, 'succeeded');
+    assert.equal((await runtime.runTurn(context(directory))).status, 'succeeded');
     assert.deepEqual(actions, ['snapshot', 'snapshot', 'click']);
     await runtime.dispose();
     assert.deepEqual(actions.slice(-3), [
@@ -302,7 +303,7 @@ test('shared runtime composes replacement agent, computer, workspace and chooser
       'computer disposed',
       'workspace disposed',
     ]);
-    await assert.rejects(runtime.runTask(context(directory)), /stopped/);
+    await assert.rejects(runtime.runTurn(context(directory)), /stopped/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -349,7 +350,7 @@ test('runtime preserves incomplete app evidence and read-only narrowing guidance
     workspace: fakeWorkspace(),
   });
   try {
-    const result = await runtime.runTask({
+    const result = await runtime.runTurn({
       ...context(directory),
       integration: async () => {
         calls += 1;
@@ -405,12 +406,12 @@ test('runtime disposal aborts an active task before releasing computer and works
     workspace: fakeWorkspace(),
   });
   try {
-    const running = assert.rejects(runtime.runTask(context(directory)), /abort/i);
+    const running = assert.rejects(runtime.runTurn(context(directory)), /abort/i);
     await started;
-    await assert.rejects(runtime.runTask(context(directory)), /active worker/);
+    await assert.rejects(runtime.runTurn(context(directory)), /active turn/);
     await runtime.dispose();
     await running;
-    assert.equal(runtime.status().activeTasks, 0);
+    assert.equal(runtime.status().activeThreads, 0);
     assert.ok(events.indexOf('session disposed') < events.indexOf('computer disposed'));
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -450,7 +451,7 @@ test('stalled observations release active tasks on cancellation and disposal', a
         workspace: fakeWorkspace(),
       });
       const running = runtime
-        .runTask({
+        .runTurn({
           ...context(directory),
           signal: controller.signal,
           observe: async () => {
@@ -476,7 +477,7 @@ test('stalled observations release active tasks on cancellation and disposal', a
         ]);
         assert.ok(completed, 'A stalled optional observer blocked cancellation');
         assert.match(String(completed[0]), /cancelled/);
-        assert.equal(runtime.status().activeTasks, 0);
+        assert.equal(runtime.status().activeThreads, 0);
         assert.equal(executed, false);
         rejectObservation(new Error('Late private observer failure'));
         await setTimeout(0);
@@ -536,18 +537,18 @@ test('runtime shutdown drains tasks and releases every capability after adapter 
       },
     }),
   });
-  const running = assert.rejects(runtime.runTask(context(directory)), /abort/i);
+  const running = assert.rejects(runtime.runTurn(context(directory)), /abort/i);
   await started;
   const disposal = runtime.dispose();
   assert.equal(runtime.dispose(), disposal);
   await assert.rejects(disposal, /Some runtime resources could not close/);
   await running;
-  assert.equal(runtime.status().activeTasks, 0);
+  assert.equal(runtime.status().activeThreads, 0);
   assert.equal(events.filter((value) => value === 'computer').length, 1);
   assert.equal(events.filter((value) => value === 'workspace').length, 1);
   assert.ok(events.indexOf('session') < events.indexOf('computer'));
   assert.ok(events.indexOf('computer') < events.indexOf('workspace'));
-  await assert.rejects(runtime.runTask(context(directory)), /stopped/);
+  await assert.rejects(runtime.runTurn(context(directory)), /stopped/);
 });
 
 test('runtime retries only failed cleanup stages and coalesces each shutdown attempt', async (t) => {
@@ -573,14 +574,14 @@ test('runtime retries only failed cleanup stages and coalesces each shutdown att
       assert.equal(runtime.dispose(), first);
       await assert.rejects(first, /Some runtime resources could not close/);
       assert.deepEqual(attempts, { agent: 1, computer: 1, workspace: 1 });
-      await assert.rejects(runtime.runTask(context('/unused')), /stopped/);
+      await assert.rejects(runtime.runTurn(context('/unused')), /stopped/);
       const second = runtime.dispose();
       assert.notEqual(second, first);
       assert.equal(runtime.dispose(), second);
       await second;
       assert.deepEqual(attempts, { agent: 1, computer: 1, workspace: 1, [failedStage]: 2 });
       assert.equal(runtime.dispose(), second);
-      await assert.rejects(runtime.runTask(context('/unused')), /stopped/);
+      await assert.rejects(runtime.runTurn(context('/unused')), /stopped/);
     });
   }
 });

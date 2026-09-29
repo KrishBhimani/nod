@@ -62,14 +62,18 @@ test(
       enabled: () => enabled,
       coverage: [],
     });
-    const taskId = randomUUID();
+    const turnId = randomUUID();
+    const threadId = randomUUID();
     try {
       await admin.query(`CREATE SCHEMA ${schema}`);
+      await migrations.query('CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text)');
       await migrations.query(
-        'CREATE TABLE tasks(id uuid PRIMARY KEY,owner_id text,title text,revision integer,status text)',
+        'CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text,thread_id uuid REFERENCES threads(id),prompt text,message_id uuid,status text)',
       );
-      await migrations.query("INSERT INTO tasks VALUES($1,'owner','Synthetic',1,'running')", [
-        taskId,
+      await migrations.query("INSERT INTO threads VALUES($1,'owner')", [threadId]);
+      await migrations.query("INSERT INTO turns VALUES($1,'owner',$2,'Synthetic',NULL,'running')", [
+        turnId,
+        threadId,
       ]);
       await t.test(
         'migration and disabled startup retention do not use the recording pool',
@@ -79,9 +83,9 @@ test(
           assert.equal(runtimeQueries, 0);
           for (const owner of ['owner', 'other']) {
             await migrations.query(
-              `INSERT INTO inspector_prompts(id,owner_id,task_id,revision,payload,provider,model,created_at)
-            VALUES($1,$2,$3,1,'{}','fixture','fixture',now()-interval '8 days')`,
-              [randomUUID(), owner, taskId],
+              `INSERT INTO inspector_prompts(id,owner_id,thread_id,turn_id,payload,provider,model,created_at)
+            VALUES($1,$2,$3,$4,'{}','fixture','fixture',now()-interval '8 days')`,
+              [randomUUID(), owner, threadId, turnId],
             );
             await migrations.query(
               `INSERT INTO provider_usage(id,owner_id,provider,category,operation,status,duration_ms,metrics,pricing,recorded_at)
@@ -131,7 +135,7 @@ test(
         'runtime prompt and usage writes continue on the bounded recording pool',
         async () => {
           enabled = true;
-          await prompts.record(taskId, 1, {
+          await prompts.record(turnId, {
             id: randomUUID(),
             system: 'Synthetic system',
             instruction: 'Synthetic instruction',
