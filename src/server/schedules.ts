@@ -94,8 +94,8 @@ function invalid(message: string) {
 }
 
 function preview(text: string) {
-  const value = text.replace(/\s+/g, ' ').trim();
-  return value.length > 160 ? `${value.slice(0, 159).trimEnd()}…` : value;
+  const value = Array.from(text.replace(/\s+/g, ' ').trim());
+  return value.length > 160 ? `${value.slice(0, 159).join('').trimEnd()}…` : value.join('');
 }
 
 function runValue(row: RunRow): ScheduleRun {

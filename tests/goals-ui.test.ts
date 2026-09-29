@@ -263,6 +263,14 @@ test('Ask Otto sends a named request through the conversation and shows the repl
     )!;
     await act(async () => click(open));
     assert.deepEqual(focused, [{ messageId: posts[0].clientMessageId }]);
+    await act(async () =>
+      root.render(
+        createElement(Goals, {
+          conversation: conversation([{ ...task, status: 'waiting_credentials' }], []),
+        }),
+      ),
+    );
+    assert.match(container.querySelector('.ask-otto-reply')?.textContent ?? '', /needs your input/);
   } finally {
     window.removeEventListener('otto:focus-message', onFocus);
     await act(async () => root.unmount());
@@ -386,5 +394,57 @@ test('each view has a specific empty state and accepted cache changes preserve t
     assert.equal(f.reads(), 1);
   } finally {
     await f.close();
+  }
+});
+
+test('Ask Otto retries a failed request with the same message ID', async () => {
+  const previousFetch = globalThis.fetch;
+  const posts: Array<{ text: string; clientMessageId: string }> = [];
+  globalThis.fetch = async (path, options) => {
+    if (path === '/api/messages' && options?.method === 'POST') {
+      posts.push(JSON.parse(String(options.body)));
+      return posts.length === 1
+        ? Response.json({ error: 'Otto is unavailable.' }, { status: 503 })
+        : Response.json({ taskId: 'retry-task', messageId: posts[0].clientMessageId });
+    }
+    return Response.json([goal]);
+  };
+  pageDataCache.update('/api/goals', () => [goal]);
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  const chip = () =>
+    [
+      ...container.querySelectorAll<HTMLButtonElement>('.ask-otto-chips button, .ask-otto button'),
+    ].find((button) => button.textContent === 'Mark it 50% done');
+  try {
+    await act(async () => root.render(createElement(Goals)));
+    await act(async () =>
+      click(container.querySelector('[aria-label="Ask Otto about Complete Northstar review"]')!),
+    );
+    await act(async () => click(chip()!));
+    assert.match(container.textContent ?? '', /Otto is unavailable\./);
+    const input = container.querySelector<HTMLInputElement>('.ask-otto-field input')!;
+    const setValue = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      'value',
+    )!.set!;
+    await act(async () => {
+      setValue.call(input, 'Mark it 50% done');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () =>
+      container
+        .querySelector('.ask-otto-field')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+    );
+    assert.equal(posts.length, 2);
+    assert.equal(posts[1].clientMessageId, posts[0].clientMessageId);
+    assert.equal(posts[1].text, posts[0].text);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    pageDataCache.update('/api/goals', () => null);
+    globalThis.fetch = previousFetch;
   }
 });

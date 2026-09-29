@@ -182,6 +182,10 @@ export function Chat({
   }, []);
   useEffect(() => {
     if (!focusTarget || loadingHistory) return;
+    if (focusTarget.pages && error) {
+      setFocusTarget(null);
+      return;
+    }
     const target = Array.from(
       scroll.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? [],
     ).find((element) => element.dataset.messageId === focusTarget.id);
@@ -209,7 +213,7 @@ export function Chat({
     }
     setFocusTarget(null);
     setError('Could not find that message in this chat.');
-  }, [focusTarget, loadingHistory, historyPage, hasEarlier]);
+  }, [focusTarget, loadingHistory, historyPage, hasEarlier, error]);
   async function send(value: string, attachments: Artifact[]): Promise<ComposerSendResult> {
     if (sendLock.current || resetLock.current) return { sent: false, restoreText: true };
     const sentRevision = revision;

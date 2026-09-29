@@ -130,7 +130,7 @@ Separate actual local checks have exercised Wrangler, R2 emulation and Linux amd
 
 The separate `scripts/hosted-ui-fixture.ts` runs the actual web app against synthetic account and integration adapters on port 4346, with no database or real provider access. Use `node --import tsx scripts/hosted-ui-fixture.ts` for repeatable login, onboarding, settings and responsive UI review. Its simulated consent route exists only in that script and is never imported by the application. Real provider acceptance instead uses `start-hosted.mjs`, development accounts and actual callbacks; production verification remains a separate step.
 
-Set `OTTO_UI_FIXTURE_DATA=plans` to sign in with onboarding complete and serve synthetic goals, schedules, run history and chat messages. In that mode the fixture accepts goal and schedule PATCH requests and answers chat requests with a fixed synthetic reply after a short delay. `GET /fixture/plans/reset` restores the synthetic data. It never runs a model.
+Set `OTTO_UI_FIXTURE_DATA=plans` to sign in with onboarding complete and serve synthetic goals, schedules, run history and chat messages. In that mode each account has its own synthetic data. The fixture accepts goal and schedule PATCH requests. It answers chat requests with scripted replies after a short delay: a request that names a goal or schedule can change its time, days, progress or status, and New goal or New schedule requests add one. `GET /fixture/plans/reset` restores the synthetic data. It never runs a model.
 
 ## Code and local state
 

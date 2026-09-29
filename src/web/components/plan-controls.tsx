@@ -25,15 +25,18 @@ function useAskOtto(conversation: AppState | null) {
         .at(-1)
     : undefined;
   const task = conversation?.tasks.find((item) => item.id === ask?.taskId);
-  const status: 'idle' | 'working' | 'done' | 'failed' = !ask
+  const status: 'idle' | 'working' | 'waiting' | 'done' | 'failed' = !ask
     ? 'idle'
     : ask.error || task?.status === 'failed' || task?.status === 'cancelled'
       ? 'failed'
       : !task || task.status === 'queued' || task.status === 'running'
         ? 'working'
-        : 'done';
+        : task.status === 'waiting_user' || task.status === 'waiting_credentials'
+          ? 'waiting'
+          : 'done';
   async function send(text: string) {
-    const messageId = crypto.randomUUID();
+    const messageId =
+      ask?.error && ask.text === text && !ask.taskId ? ask.messageId : crypto.randomUUID();
     setAsk({ text, messageId });
     try {
       const result = await api<{ taskId: string }>('/api/messages', {
@@ -123,7 +126,14 @@ function AskOtto({
                 {otto.ask.error || 'Otto could not finish this. Try again.'}
               </span>
             ) : (
-              <MessageText text={otto.answer?.text || 'Otto finished this request.'} />
+              <MessageText
+                text={
+                  otto.answer?.text ||
+                  (otto.status === 'waiting'
+                    ? 'Otto needs your input. Open the conversation to continue.'
+                    : 'Otto finished this request.')
+                }
+              />
             )}
           </div>
           {otto.status !== 'working' && (

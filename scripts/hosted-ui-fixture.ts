@@ -256,15 +256,15 @@ function createPlansFixture() {
     if (schedule) {
       const [minute, hour, , , day] = (schedule.cron ?? '0 9 * * *').split(' ');
       const nextDay = Object.entries(days).find(([word]) => lower.includes(word))?.[1] ?? day;
-      const nextHour = time
-        ? String(
-            (Number(time[1]) % 12) + (time[3]?.toLowerCase() === 'pm' ? 12 : 0) || Number(time[1]),
-          )
-        : hour;
+      const suffix = time?.[3]?.toLowerCase();
+      const nextHour = !time
+        ? hour
+        : String(suffix ? (Number(time[1]) % 12) + (suffix === 'pm' ? 12 : 0) : Number(time[1]));
       const nextMinute = time ? String(Number(time[2] ?? 0)) : minute;
-      if (lower.includes('pause')) schedule.enabled = false;
-      else if (lower.includes('resume')) schedule.enabled = true;
-      else if (schedule.kind === 'recurring')
+      if (lower.includes('pause') || lower.includes('resume')) {
+        schedule.enabled = lower.includes('resume');
+        schedule.nextRun = schedule.enabled ? new Date(Date.now() + 20 * hour).toISOString() : null;
+      } else if (schedule.kind === 'recurring')
         schedule.cron = `${nextMinute} ${nextHour} * * ${nextDay}`;
       schedule.revision += 1;
       return schedule.enabled
@@ -352,6 +352,8 @@ function createPlansFixture() {
       });
       changed();
       setTimeout(() => {
+        const index = tasks.findIndex((task) => task.id === taskId);
+        if (index < 0) return;
         const answer = reply(body.text);
         const done = new Date().toISOString();
         messages.push({
@@ -362,7 +364,7 @@ function createPlansFixture() {
           createdAt: done,
           attachments: [],
         });
-        Object.assign(tasks[tasks.findIndex((task) => task.id === taskId)], {
+        Object.assign(tasks[index], {
           status: 'succeeded',
           updatedAt: done,
           showTyping: false,
@@ -396,7 +398,14 @@ const fixturePort = Number(process.env.OTTO_UI_PORT || 4346);
 if (!Number.isInteger(fixturePort) || fixturePort < 1024 || fixturePort > 65535)
   throw new Error('Use a valid local fixture port.');
 const origin = `http://localhost:${fixturePort}`;
-const plans = process.env.OTTO_UI_FIXTURE_DATA === 'plans' ? createPlansFixture() : null;
+const plansEnabled = process.env.OTTO_UI_FIXTURE_DATA === 'plans';
+const plans = new Map<string, ReturnType<typeof createPlansFixture>>();
+function plansFor(owner: string) {
+  if (!plansEnabled) return null;
+  const current = plans.get(owner) ?? createPlansFixture();
+  plans.set(owner, current);
+  return current;
+}
 const cookieName = 'otto-ui-fixture';
 const users = [
   { id: randomUUID(), name: 'Alex Morgan', email: 'alex@example.test', avatarUrl: null },
@@ -417,7 +426,7 @@ const avatar = new Uint8Array(
 const account = (owner: string) =>
   accounts.get(owner) ?? {
     theme: 'system' as const,
-    onboardingCompleted: Boolean(plans),
+    onboardingCompleted: plansEnabled,
     displayName: null,
   };
 function session(headers: Headers) {
@@ -489,8 +498,8 @@ const app = await createGateway({
       if (url.pathname === '/api/state')
         return Response.json({
           conversationRevision: 0,
-          messages: plans?.state().messages ?? [],
-          tasks: plans?.state().tasks ?? [],
+          messages: plansFor(owner)?.state().messages ?? [],
+          tasks: plansFor(owner)?.state().tasks ?? [],
           configuration: {
             provider: 'fixture',
             model: 'Synthetic UI fixture',
@@ -511,7 +520,7 @@ const app = await createGateway({
               const refresh = () =>
                 controller.enqueue(new TextEncoder().encode('data: {"type":"refresh"}\n\n'));
               refresh();
-              stop = plans?.listen(refresh);
+              stop = plansFor(owner)?.listen(refresh);
               timer = setInterval(
                 () => controller.enqueue(new TextEncoder().encode(': fixture\n\n')),
                 30_000,
@@ -564,7 +573,7 @@ const app = await createGateway({
           });
         return Response.json(preferences.get(owner) ?? previous);
       }
-      const planned = await plans?.handle(request, url);
+      const planned = await plansFor(owner)?.handle(request, url);
       if (planned) return planned;
       if (url.pathname === '/api/messages/history')
         return Response.json({ messages: [], hasMore: false });
@@ -617,8 +626,8 @@ app.get('/fixture/sign-in/:index', async (request, reply) => {
     .redirect('/');
 });
 app.get('/fixture/plans/reset', async (_request, reply) => {
-  plans?.reset();
-  return reply.send({ ok: Boolean(plans) });
+  for (const fixture of plans.values()) fixture.reset();
+  return reply.send({ ok: plansEnabled });
 });
 app.get('/fixture/connect', async (request, reply) => {
   const token = new URL(request.url, origin).searchParams.get('token') ?? '';

@@ -80,7 +80,7 @@ export function ScheduleRunRow({ run }: { run: ScheduleRun }) {
             type="button"
             className="schedule-run-preview"
             aria-expanded={open}
-            aria-controls={bodyId}
+            aria-controls={open ? bodyId : undefined}
             aria-label={`${open ? 'Hide' : 'Read'} the message from ${run.title}`}
             onClick={() => setOpen(!open)}
           >

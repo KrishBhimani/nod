@@ -1182,6 +1182,30 @@ test('focus-message scrolls to a loaded message, pages back a bounded number of 
   } finally {
     await bounded.dispose();
     globalThis.fetch = previousFetch;
+  }
+  historyRequests.length = 0;
+  globalThis.fetch = async (path) => {
+    if (path === '/api/state') return Response.json(base);
+    if (String(path).startsWith('/api/messages?')) {
+      historyRequests.push(String(path));
+      return Response.json({ error: 'History is unavailable.' }, { status: 503 });
+    }
+    throw new Error('Unexpected fixture request');
+  };
+  const failing = await mount();
+  try {
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('otto:focus-message', { detail: { messageId: 'never-loaded' } }),
+      );
+      for (let index = 0; index < 8; index++) await tick();
+    });
+    assert.equal(historyRequests.length, 1);
+    assert.match(failing.element.textContent ?? '', /History is unavailable\./);
+    assert.doesNotMatch(failing.element.textContent ?? '', /Could not find that message/);
+  } finally {
+    await failing.dispose();
+    globalThis.fetch = previousFetch;
     dom.window.HTMLElement.prototype.scrollIntoView = previousScroll;
     if (previousMedia) Object.defineProperty(dom.window, 'matchMedia', previousMedia);
     else Reflect.deleteProperty(dom.window, 'matchMedia');
