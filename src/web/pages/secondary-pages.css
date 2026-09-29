@@ -142,7 +142,7 @@
   padding: 5px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--surface);
+  background: var(--surface-overlay);
   box-shadow: 0 8px 24px rgb(27 25 36 / 10%);
 }
 .connection-menu > .button:focus-visible {

@@ -765,7 +765,7 @@ a svg {
   padding: 5px;
   border: 1px solid var(--border);
   border-radius: 9px;
-  background: var(--surface);
+  background: var(--surface-overlay);
   box-shadow: 0 6px 25px #1b192412;
   z-index: 20;
 }
@@ -1091,7 +1091,7 @@ a svg {
   max-height: 380px;
   overflow: auto;
   padding: 16px;
-  background: var(--surface);
+  background: var(--surface-overlay);
   border: 1px solid var(--border);
   border-radius: 13px;
   box-shadow: 0 10px 50px #2d1b3820;
@@ -1809,7 +1809,7 @@ a svg {
   width: min(490px, calc(100vw - 32px));
   max-height: 90dvh;
   overflow: auto;
-  background: var(--surface);
+  background: var(--surface-overlay);
   border: 1px solid var(--border);
   box-shadow: 0 20px 80px #32133925;
   border-radius: 16px;

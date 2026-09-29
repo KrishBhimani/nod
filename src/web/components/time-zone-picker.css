@@ -47,7 +47,7 @@
   padding: 6px;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: var(--surface);
+  background: var(--surface-overlay);
   color: var(--foreground);
   box-shadow: 0 10px 36px rgb(27 25 36 / 15%);
   outline: none;
