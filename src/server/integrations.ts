@@ -28,7 +28,6 @@ import {
   verificationSenderDomain,
   type EmailCodeRequest,
 } from './email-code.ts';
-export { integrationActions } from './integration-policy.ts';
 
 const slugSchema = z.enum(integrationServiceIds);
 type Slug = z.infer<typeof slugSchema>;
