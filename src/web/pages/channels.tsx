@@ -13,6 +13,7 @@ import {
 } from '../lib/secondary-pages';
 import {
   Button,
+  Checkbox,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -151,8 +152,7 @@ export function ChannelSetupStep({
           supported.
         </p>
         <label className="channel-policy">
-          <input
-            type="checkbox"
+          <Checkbox
             checked={policy}
             required
             onChange={(event) => onPolicy(event.target.checked)}

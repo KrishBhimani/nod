@@ -504,6 +504,17 @@ test('preference drafts survive refresh, save only edited fields and remain retr
       ),
     );
     const toggle = document.querySelector<HTMLButtonElement>('[role="switch"]')!;
+    const dialog = document.querySelector('[role="dialog"]')!;
+    assert.equal(document.activeElement, dialog);
+    assert.ok(toggle.classList.contains('switch'));
+    assert.ok(
+      document
+        .querySelector('.time-zone-picker-trigger')
+        ?.matches('.input.select-trigger[aria-labelledby]'),
+    );
+    for (const input of document.querySelectorAll('input[type="time"]'))
+      assert.ok(input.classList.contains('input'));
+    assert.ok(dialog.querySelector('[aria-label="Close"]')?.matches('.button.button-ghost'));
     await act(async () => toggle.click());
     assert.equal(toggle.getAttribute('aria-checked'), 'false');
     assert.equal(document.querySelector('input[type="time"]'), null);

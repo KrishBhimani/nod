@@ -92,17 +92,17 @@ a svg {
   justify-content: center;
   gap: 7px;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--control-radius);
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
 }
 .button-default {
-  min-height: 36px;
+  min-height: var(--control-height);
   padding: 8px 13px;
 }
 .button-sm {
-  min-height: 30px;
+  min-height: var(--control-height-sm);
   padding: 5px 9px;
   font-size: 12px;
 }
@@ -136,8 +136,12 @@ a svg {
   color: var(--muted-foreground);
 }
 .button-ghost:hover:not(:disabled) {
-  background: var(--surface-subtle);
+  background: var(--hover);
   color: var(--foreground);
+}
+.button-outline:active:not(:disabled),
+.button-ghost:active:not(:disabled) {
+  background: var(--control-active);
 }
 .button-destructive {
   background: var(--destructive);
@@ -149,16 +153,151 @@ a svg {
 .input {
   min-width: 0;
   width: 100%;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  min-height: var(--input-height);
   padding: 10px 12px;
-  min-height: 40px;
+  border: 1px solid var(--input);
+  border-radius: var(--control-radius);
+  background: var(--input-background);
   color: var(--foreground);
-  background: var(--surface);
   font-size: 14px;
+  transition: border-color 140ms;
 }
 .input::placeholder {
   color: var(--placeholder);
+}
+.input:hover:not(:disabled) {
+  border-color: var(--input-hover);
+}
+.input[aria-invalid='true'] {
+  border-color: var(--error);
+}
+.input:disabled {
+  opacity: 0.55;
+}
+.select-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+.select-trigger > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.select-trigger > svg {
+  flex: none;
+  color: var(--muted-foreground);
+}
+.search-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.search-field > svg {
+  position: absolute;
+  left: 12px;
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+.search-field > .input {
+  padding-right: 40px;
+  padding-left: 36px;
+}
+.search-field > .button {
+  position: absolute;
+  right: 4px;
+}
+.menu {
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--menu-radius);
+  background: var(--surface-overlay);
+  color: var(--foreground);
+  box-shadow: 0 8px 28px var(--shadow-overlay);
+}
+.menu > [role^='menuitem'],
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--menu-item-radius);
+  background: transparent;
+  color: var(--foreground);
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.menu > [role^='menuitem']:hover:not(:disabled),
+.menu > [role^='menuitem']:focus-visible,
+.menu-item:hover:not(:disabled),
+.menu-item:focus-visible,
+.menu-item[data-active='true'] {
+  background: var(--hover);
+  outline: none;
+}
+.menu-item[aria-selected='true'],
+.menu > [aria-current='page'] {
+  background: var(--accent-soft);
+}
+.menu > [role^='menuitem']:disabled,
+.menu-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.switch {
+  display: flex;
+  flex-shrink: 0;
+  width: 34px;
+  height: 21px;
+  padding: 3px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--switch-off);
+}
+.switch > span {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--on-solid);
+  transition: transform 160ms ease;
+}
+.switch[aria-checked='true'] {
+  background: var(--accent);
+}
+.switch[aria-checked='true'] > span {
+  transform: translateX(13px);
+}
+.switch:disabled {
+  opacity: 0.45;
+}
+.checkbox {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+@media (max-width: 640px) {
+  .input {
+    font-size: 16px;
+  }
+  .menu > [role^='menuitem'],
+  .menu-item {
+    min-height: 44px;
+  }
+}
+.input[data-state='open'] {
+  border-color: var(--ring);
 }
 .input:focus-visible {
   border-color: var(--ring);
@@ -187,20 +326,6 @@ a svg {
 .form-stack {
   display: grid;
   gap: 18px;
-}
-.checkbox-field {
-  display: block;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--muted-foreground);
-}
-.checkbox-field input {
-  margin-right: 8px;
-  accent-color: var(--accent);
-}
-.checkbox-field a {
-  text-decoration: underline;
-  text-underline-offset: 2px;
 }
 .form-pair {
   display: grid;
@@ -517,20 +642,6 @@ a svg {
   display: flex;
   gap: 12px;
   align-items: center;
-}
-.date-jump {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--muted-foreground);
-  font-size: 11px;
-}
-.date-jump input {
-  border: 0;
-  padding: 4px 0;
-  background: transparent;
-  color: var(--muted-foreground);
-  width: 110px;
 }
 .conversation-scroll {
   flex: 1;
@@ -873,22 +984,6 @@ a svg {
 .composer:focus-within {
   border-color: var(--ring);
   box-shadow: 0 0 0 3px var(--focus-shadow);
-}
-.composer textarea {
-  width: 100%;
-  min-height: 34px;
-  max-height: 220px;
-  border: 0;
-  resize: none;
-  padding: 0 4px;
-  background: transparent;
-  font-size: 14px;
-  line-height: 1.7;
-  outline: none;
-  color: var(--foreground);
-}
-.composer textarea::placeholder {
-  color: var(--muted-foreground);
 }
 .composer-tools {
   display: flex;
@@ -1513,17 +1608,6 @@ a svg {
   min-height: 0;
   scrollbar-width: thin;
 }
-.inspector-follow {
-  display: flex;
-  gap: 7px;
-  align-items: center;
-  font-size: 11px;
-  color: var(--muted-foreground);
-  margin-bottom: 16px;
-}
-.inspector-follow input {
-  accent-color: var(--accent);
-}
 .inspector-task-select {
   display: grid;
   gap: 7px;
@@ -1764,6 +1848,9 @@ a svg {
   border-radius: 16px;
   padding: 28px;
 }
+.dialog-content:focus-visible {
+  outline: none;
+}
 .dialog-content > h2 {
   font-size: 21px;
   font-weight: 550;
@@ -1798,10 +1885,6 @@ a svg {
   position: absolute;
   right: 14px;
   top: 14px;
-  background: none;
-  border: 0;
-  padding: 5px;
-  color: var(--muted-foreground);
 }
 .dialog-heading {
   margin-bottom: 23px;
@@ -2165,10 +2248,6 @@ a svg {
   .conversation-column {
     padding-inline: 20px;
   }
-  .date-jump input {
-    width: 92px;
-    font-size: 10px;
-  }
   .content-page {
     padding: 28px 24px;
   }
@@ -2201,9 +2280,6 @@ a svg {
   }
   .onboarding-card p {
     font-size: 11px;
-  }
-  .with-inspector .date-jump {
-    display: none;
   }
   .with-inspector .chat-toolbar {
     padding: 10px;
@@ -2335,9 +2411,6 @@ a svg {
   .credential-card {
     padding: 22px;
   }
-  .credential-card .input {
-    font-size: 16px;
-  }
   .plan-row {
     gap: 8px;
   }
@@ -2389,24 +2462,6 @@ a svg {
   display: grid;
   gap: 9px;
   margin-bottom: 16px;
-}
-.inspector-search {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-.inspector-search > svg {
-  position: absolute;
-  left: 10px;
-  color: var(--muted-foreground);
-  pointer-events: none;
-}
-.inspector-search .input {
-  width: 100%;
-  min-width: 0;
-  font-size: 11px;
-  padding-left: 31px;
-  background: var(--surface);
 }
 .inspector-status-filter {
   display: flex;
@@ -2730,32 +2785,14 @@ a svg {
     overscroll-behavior: contain;
   }
   .mobile-navigation .connection-menu-options > [role='menuitem'] {
-    display: flex;
-    align-items: center;
     gap: 12px;
-    width: 100%;
-    min-height: 44px;
     padding: 10px 12px;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--foreground);
     font-size: 14px;
-    line-height: 1.4;
-    text-align: left;
-    text-decoration: none;
   }
   .mobile-navigation .connection-menu-options > [role='menuitem'] > svg {
     flex: none;
     color: var(--text-secondary);
   }
-  .mobile-navigation .connection-menu-options > [role='menuitem']:hover,
-  .mobile-navigation .connection-menu-options > [role='menuitem']:focus-visible {
-    outline: none;
-    background: var(--secondary);
-    box-shadow: inset 0 0 0 1px var(--border);
-  }
-  .mobile-navigation .connection-menu-options > [aria-current='page'],
   .mobile-navigation .connection-menu-options > [aria-expanded='true'] {
     background: var(--accent-soft);
   }

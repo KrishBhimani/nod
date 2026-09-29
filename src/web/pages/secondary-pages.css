@@ -139,19 +139,6 @@
   right: 0;
   width: 268px;
   max-width: calc(100vw - 48px);
-  padding: 5px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface-overlay);
-  box-shadow: 0 8px 24px var(--shadow-overlay);
-}
-.connection-menu > .button:focus-visible {
-  outline: 1px solid var(--text-secondary);
-  outline-offset: 3px;
-}
-.connection-menu-options > button:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 1px var(--border);
 }
 .delete-plan-dialog {
   max-width: 440px;
@@ -172,29 +159,6 @@
 }
 .connection-account-menu .connection-menu-options {
   width: 194px;
-}
-.connection-menu-options > button {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 10px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--foreground);
-  text-align: left;
-  font-size: 12px;
-  line-height: 1.4;
-  cursor: pointer;
-}
-.connection-menu-options > button:hover,
-.connection-menu-options > button:focus-visible {
-  background: var(--secondary);
-}
-.connection-menu-options > button:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 .connection-menu-options > button > img,
 .connection-menu-options > button > svg {
@@ -401,11 +365,6 @@
   color: var(--muted-foreground);
   font-size: 12px;
   line-height: 1.6;
-}
-.channel-policy > input {
-  flex-shrink: 0;
-  margin-top: 3px;
-  accent-color: var(--primary);
 }
 .channel-wizard-actions {
   display: flex;

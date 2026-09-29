@@ -17,7 +17,7 @@ import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
 import type { Artifact, Message } from '../../shared/contracts';
 import { reactionEmoji } from '../../shared/emoji';
-import { Button, Loading, Notice } from './ui';
+import { Button, Checkbox, Loading, Notice } from './ui';
 import { BrandMark } from './brand';
 import { errorMessage, post } from '../lib/api';
 import { credentialLinkLabel, safeMessageLink } from '../lib/message-links';
@@ -75,9 +75,7 @@ export const MessageText = memo(function MessageText({
               ) : (
                 <span>{alt || 'Image'}</span>
               ),
-            input: ({ checked }) => (
-              <input type="checkbox" checked={checked ?? false} readOnly disabled />
-            ),
+            input: ({ checked }) => <Checkbox checked={checked ?? false} readOnly disabled />,
           }}
         >
           {text}
@@ -469,7 +467,7 @@ export function MessageBubble({
       {menu &&
         createPortal(
           <div
-            className="chat-message-menu"
+            className="chat-message-menu menu"
             ref={menuElement}
             role="menu"
             aria-label="Message actions"

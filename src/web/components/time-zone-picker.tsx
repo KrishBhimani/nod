@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
-import { Check, ChevronDown, Search, X } from 'lucide-react';
+import { Check, ChevronDown } from 'lucide-react';
+import { SearchField } from './ui';
 
 function searchText(value: string) {
   return value
@@ -86,7 +87,7 @@ export function TimeZonePicker({
       <Popover.Trigger
         ref={trigger}
         type="button"
-        className="time-zone-picker-trigger"
+        className="time-zone-picker-trigger input select-trigger"
         disabled={disabled}
         aria-labelledby={`${labelledBy} ${id}-value`}
         title={value.replaceAll('_', ' ')}
@@ -102,7 +103,7 @@ export function TimeZonePicker({
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content
-          className="time-zone-picker-panel"
+          className="time-zone-picker-panel menu"
           aria-label="Choose time zone"
           align="end"
           sideOffset={7}
@@ -137,63 +138,54 @@ export function TimeZonePicker({
             setOpen(false);
           }}
         >
-          <div className="time-zone-picker-search">
-            <Search size={16} aria-hidden="true" />
-            <input
-              ref={search}
-              type="text"
-              role="combobox"
-              aria-label="Search time zones"
-              aria-autocomplete="list"
-              aria-expanded="true"
-              aria-controls={`${id}-options`}
-              aria-activedescendant={activeZone ? `${id}-option-${activeIndex}` : undefined}
-              autoComplete="off"
-              spellCheck={false}
-              placeholder="Search city or time zone"
-              value={query}
-              onChange={(event) => {
-                setQuery(event.target.value);
-                setActive('');
-              }}
-              onKeyDown={(event) => {
-                if (event.nativeEvent.isComposing || event.altKey || event.metaKey || event.ctrlKey)
-                  return;
-                if (event.key === 'Enter') {
-                  event.preventDefault();
-                  if (activeZone) select(activeZone);
-                  return;
-                }
-                const next =
-                  event.key === 'ArrowDown'
-                    ? (activeIndex + 1) % matches.length
-                    : event.key === 'ArrowUp'
-                      ? (activeIndex - 1 + matches.length) % matches.length
-                      : event.key === 'Home'
-                        ? 0
-                        : event.key === 'End'
-                          ? matches.length - 1
-                          : null;
-                if (next !== null) {
-                  event.preventDefault();
-                  if (matches[next]) setActive(matches[next]);
-                }
-              }}
-            />
-            {query && (
-              <button
-                type="button"
-                aria-label="Clear time zone search"
-                onClick={() => {
-                  setQuery('');
-                  setActive(value);
-                  search.current?.focus();
-                }}
-              >
-                <X size={15} aria-hidden="true" />
-              </button>
-            )}
-          </div>
+          <SearchField
+            className="time-zone-picker-search"
+            inputRef={search}
+            type="text"
+            role="combobox"
+            aria-label="Search time zones"
+            aria-autocomplete="list"
+            aria-expanded="true"
+            aria-controls={`${id}-options`}
+            aria-activedescendant={activeZone ? `${id}-option-${activeIndex}` : undefined}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="Search city or time zone"
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setActive('');
+            }}
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing || event.altKey || event.metaKey || event.ctrlKey)
+                return;
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                if (activeZone) select(activeZone);
+                return;
+              }
+              const next =
+                event.key === 'ArrowDown'
+                  ? (activeIndex + 1) % matches.length
+                  : event.key === 'ArrowUp'
+                    ? (activeIndex - 1 + matches.length) % matches.length
+                    : event.key === 'Home'
+                      ? 0
+                      : event.key === 'End'
+                        ? matches.length - 1
+                        : null;
+              if (next !== null) {
+                event.preventDefault();
+                if (matches[next]) setActive(matches[next]);
+              }
+            }}
+            clearLabel="Clear time zone search"
+            onClear={() => {
+              setQuery('');
+              setActive(value);
+              search.current?.focus();
+            }}
+          />
           <div
             ref={observeOptions}
             id={`${id}-options`}
@@ -207,6 +199,7 @@ export function TimeZonePicker({
                 id={`${id}-option-${index}`}
                 type="button"
                 role="option"
+                className="menu-item"
                 aria-selected={zone === value}
                 data-active={zone === activeZone}
                 tabIndex={-1}
