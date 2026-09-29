@@ -824,6 +824,7 @@ export async function createApplication(
           if (!channels) throw new Error('Messaging is not ready.');
           await channels.replaceTransport(meterMessaging(setup.create(environment), providerUsage));
         },
+        paired: async (candidate) => channels?.announcePairing(candidate),
       });
       channelSettings.registerRoutes(app);
     }
@@ -835,6 +836,7 @@ export async function createApplication(
       ownerId,
       appOrigin: runtimeMode === 'tenant' ? publicOrigin : undefined,
       resolveAttachments: artifacts.readTaskArtifacts,
+      ...(channelSettings ? { pair: channelSettings.pair } : {}),
       transport: meterMessaging(messaging, providerUsage),
       acceptVerification: (text, input) => chatVerification.accept(text, input),
       subscribe(listener) {

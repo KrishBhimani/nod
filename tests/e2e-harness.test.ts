@@ -36,7 +36,7 @@ test('channel setup fixture accepts only fixed synthetic accounts and never enab
   const whatsapp = await setup.verifier.verify('whatsapp', fixtureChannelCredentials.whatsapp);
   assert.match(telegram.summary.accountName!, /Synthetic.*UI only/);
   assert.equal(telegram.summary.mode, 'polling');
-  assert.equal(telegram.summary.accountHandle, undefined);
+  assert.equal(telegram.summary.accountHandle, '@otto_synthetic_fixture_bot');
   assert.match(whatsapp.summary.accountName!, /Synthetic.*UI only/);
   assert.equal(whatsapp.summary.webhookStatus, 'manual_setup');
   for (const secret of [

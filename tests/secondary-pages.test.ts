@@ -176,7 +176,6 @@ test('saved goals and schedules render readable state with chat actions rather t
 test('channel steps reveal only the current credentials and never repeat secrets in the review', () => {
   const fields = {
     botToken: 'fixture-private-bot-token',
-    allowedUserId: '123456',
     accessToken: 'fixture-private-access-token',
     appSecret: 'fixture-private-app-secret',
   };
@@ -184,14 +183,9 @@ test('channel steps reveal only the current credentials and never repeat secrets
   const token = renderToStaticMarkup(
     createElement(ChannelSetupStep, { ...base, provider: 'telegram', step: 0 }),
   );
-  assert.equal((token.match(/<input/g) ?? []).length, 1);
-  assert.match(token, /type="password"/);
-  assert.doesNotMatch(token, /Telegram user ID/);
-  const review = renderToStaticMarkup(
-    createElement(ChannelSetupStep, { ...base, provider: 'telegram', step: 2 }),
-  );
-  assert.match(review, /123456/);
-  assert.doesNotMatch(review, /fixture-private|type="password"/);
+  assert.equal((token.match(/type="password"/g) ?? []).length, 1);
+  assert.match(token, /Advanced: use a webhook/);
+  assert.doesNotMatch(token, /user ID|inputMode="numeric"/);
   const intro = renderToStaticMarkup(
     createElement(ChannelSetupStep, { ...base, provider: 'whatsapp', step: 0 }),
   );
@@ -207,24 +201,18 @@ test('channel steps reveal only the current credentials and never repeat secrets
 
 test('hosted channel setup keeps identity restrictions and omits operator callback controls', () => {
   const base = {
-    fields: { allowedUserId: '123456' },
+    fields: {},
     hosted: true,
     policy: false,
     onField() {},
     onPolicy() {},
   };
-  const identity = renderToStaticMarkup(
-    createElement(ChannelSetupStep, { ...base, provider: 'telegram', step: 1 }),
-  );
-  assert.match(identity, /Your Telegram user ID/);
-  assert.match(identity, /inputMode="numeric"/);
-  assert.match(identity, /required/);
   const telegram = renderToStaticMarkup(
-    createElement(ChannelSetupStep, { ...base, provider: 'telegram', step: 2 }),
+    createElement(ChannelSetupStep, { ...base, provider: 'telegram', step: 0 }),
   );
-  assert.match(telegram, /123456/);
-  assert.match(telegram, /press Start/);
-  assert.doesNotMatch(telegram, /Mac|running|locally|webhook|type="url"/);
+  assert.match(telegram, /Bot token/);
+  assert.match(telegram, /required/);
+  assert.doesNotMatch(telegram, /user ID|Mac|running|locally|webhook|type="url"/);
   const whatsapp = renderToStaticMarkup(
     createElement(ChannelSetupStep, { ...base, provider: 'whatsapp', step: 3 }),
   );
@@ -236,7 +224,6 @@ test('hosted channel setup keeps identity restrictions and omits operator callba
 test('channel setup payloads include only the selected provider fields', () => {
   const fields = {
     botToken: ' bot-token ',
-    allowedUserId: ' 123 ',
     accessToken: 'access-token',
     appSecret: 'app-secret',
     phoneNumberId: '456',
@@ -246,12 +233,10 @@ test('channel setup payloads include only the selected provider fields', () => {
   };
   assert.deepEqual(channelSetupBody('telegram', fields, false), {
     botToken: 'bot-token',
-    allowedUserId: '123',
     webhookUrl: undefined,
   });
   const whatsapp = channelSetupBody('whatsapp', fields, true);
   assert.equal('botToken' in whatsapp, false);
-  assert.equal('allowedUserId' in whatsapp, false);
   assert.equal('policyConfirmed' in whatsapp && whatsapp.policyConfirmed, true);
 });
 
@@ -276,6 +261,58 @@ test('channel status separates saved configuration from delivery and limits bot 
       true,
     ),
     'Finish delivery setup',
+  );
+  assert.equal(
+    channelLabel(
+      {
+        provider: 'telegram',
+        enabled: true,
+        mode: 'polling',
+        pairingExpiresAt: new Date(Date.now() + 600000).toISOString(),
+      },
+      true,
+    ),
+    'Waiting for Start in Telegram',
+  );
+  assert.equal(
+    channelLabel(
+      {
+        provider: 'telegram',
+        enabled: true,
+        mode: 'webhook',
+        webhookStatus: 'registered',
+        pairedUser: '@fixture_owner',
+        allowedUserId: '123456789',
+      },
+      true,
+    ),
+    'Only @fixture_owner, ID 123456789 can message Otto',
+  );
+  assert.equal(
+    channelLabel(
+      {
+        provider: 'telegram',
+        enabled: true,
+        mode: 'polling',
+        pairingExpiresAt: new Date(Date.now() + 600000).toISOString(),
+        pairingCandidate: { id: '123456789', name: '@fixture_owner' },
+      },
+      true,
+    ),
+    'Confirm your Telegram account',
+  );
+  assert.equal(
+    channelLabel(
+      {
+        provider: 'telegram',
+        enabled: true,
+        mode: 'polling',
+        pairingExpiresAt: new Date(Date.now() - 1000).toISOString(),
+        pairingCandidate: { id: '123456789', name: '@fixture_owner' },
+      },
+      true,
+    ),
+    'Start link expired',
   );
   assert.equal(telegramBotUrl('@fixture_bot'), 'https://t.me/fixture_bot');
   assert.equal(telegramBotUrl('@fixture/../private'), null);
