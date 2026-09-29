@@ -198,8 +198,8 @@
   padding: 5px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--surface);
-  box-shadow: 0 8px 32px #2a14351c;
+  background: var(--surface-overlay);
+  box-shadow: 0 8px 32px var(--shadow-overlay);
   z-index: 90;
 }
 .chat-message-menu > button {
@@ -252,8 +252,8 @@
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: var(--surface);
-  box-shadow: 0 8px 32px #1b19241f;
+  background: var(--surface-overlay);
+  box-shadow: 0 8px 32px var(--shadow-overlay);
   outline: none;
 }
 .chat-emoji-heading {
@@ -267,10 +267,10 @@
   font-weight: 550;
 }
 .chat-emoji-popover .EmojiPickerReact {
-  --epr-bg-color: var(--surface);
+  --epr-bg-color: var(--surface-overlay);
   --epr-text-color: var(--foreground);
   --epr-picker-border-color: transparent;
-  --epr-category-label-bg-color: var(--surface);
+  --epr-category-label-bg-color: var(--surface-overlay);
   --epr-search-input-bg-color: var(--secondary);
   --epr-search-input-text-color: var(--foreground);
   --epr-hover-bg-color: var(--accent-soft);
@@ -507,8 +507,8 @@
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 9px;
-  background: var(--surface);
-  box-shadow: 0 6px 24px #34194414;
+  background: var(--surface-overlay);
+  box-shadow: 0 6px 24px var(--shadow-overlay);
   pointer-events: none;
   color: var(--text-secondary);
   font-size: 12px;
