@@ -42,6 +42,8 @@ async function fixture(options: { manualTimeoutMs?: number; idleTimeoutMs?: numb
         const page = browser.pages.get('fixture')!;
         let data: Record<string, unknown> = {};
         if (command.action === 'url') data = { url: page.location.href };
+        if (command.action === 'tab_list')
+          data = { tabs: [{ tabId: 't1', active: true, url: page.location.href }] };
         if (command.action === 'evaluate') data = { result: await page.evaluate(command.script) };
         if (command.action === 'snapshot') data = { snapshot: page.text() };
         if (command.action === 'screenshot') await writeFile(command.path, page.screen());

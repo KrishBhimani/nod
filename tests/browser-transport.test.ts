@@ -19,6 +19,8 @@ function deferred() {
   return { promise, resolve };
 }
 
+type BrowserTab = { tabId: string; active: boolean; url: string };
+
 async function fixture() {
   const directory = await mkdtemp('/tmp/sk-transport-');
   const pages = stagedLoginBrowser();
@@ -28,6 +30,8 @@ async function fixture() {
   let before = async (_action: string, _command: Record<string, unknown>) => {};
   let failedAction: string | undefined;
   let failedMessage = 'Navigation failed: net::ERR_HTTP_RESPONSE_CODE_FAILURE PRIVATE-UPSTREAM';
+  const switches: string[] = [];
+  let tabs = (url: string): BrowserTab[] => [{ tabId: 't1', active: true, url }];
   const server = createServer((socket) => {
     sockets.add(socket);
     socket.on('error', () => {});
@@ -52,6 +56,8 @@ async function fixture() {
       const page = pages.pages.get('fixture')!;
       let data: Record<string, unknown> = {};
       if (command.action === 'url') data = { url: page.location.href };
+      if (command.action === 'tab_list') data = { tabs: tabs(page.location.href) };
+      if (command.action === 'tab_switch') switches.push(command.tabId);
       if (command.action === 'evaluate') data = { result: await page.evaluate(command.script) };
       if (command.action === 'snapshot') data = { snapshot: page.text() };
       if (command.action === 'navigate') page.location.href = command.url;
@@ -93,6 +99,10 @@ async function fixture() {
     actions,
     launches,
     page: () => pages.pages.get('fixture')!,
+    switches,
+    tabs(value: typeof tabs) {
+      tabs = value;
+    },
     fail(action?: string, message?: string) {
       failedAction = action;
       if (message !== undefined) failedMessage = message;
@@ -179,7 +189,7 @@ test('only exact matching native click interception is classified as a safe refu
   }
 });
 
-test('a click that opens a blank tab reports that tab without failing the action', async () => {
+test('a blank page after a click is reported without failing the action', async () => {
   const f = await fixture();
   try {
     await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
@@ -196,6 +206,139 @@ test('a click that opens a blank tab reports that tab without failing the action
     f.page().location.href = 'chrome-error://chromewebdata/';
     await assert.rejects(f.computer.act('fixture', { action: 'snapshot' }), /HTTP or HTTPS/);
     assert.equal(f.actions.filter((action) => action === 'click').length, 1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('a new tab that closes before it loads leaves the opener active', async () => {
+  const f = await fixture();
+  try {
+    await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    let lists = 0;
+    f.tabs((url) =>
+      ++lists === 1
+        ? [{ tabId: 't1', active: true, url }]
+        : lists === 2
+          ? [
+              { tabId: 't1', active: false, url },
+              { tabId: 't2', active: true, url: '' },
+            ]
+          : [{ tabId: 't1', active: false, url }],
+    );
+    const observed = await f.computer.act('fixture', { action: 'click', selector: '@e1' });
+    assert.equal(observed.url, 'https://1.1.1.1/login');
+    assert.deepEqual(f.switches, ['t1']);
+    assert.equal(lists, 3);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('a new tab is followed only after its address is stable', async () => {
+  const f = await fixture();
+  try {
+    await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    let lists = 0;
+    f.tabs((url) =>
+      ++lists === 1
+        ? [{ tabId: 't1', active: true, url }]
+        : [
+            { tabId: 't1', active: true, url: 'https://1.1.1.1/login' },
+            {
+              tabId: 't2',
+              active: false,
+              url:
+                lists === 2
+                  ? ''
+                  : lists === 3
+                    ? 'https://1.1.1.1/redirect'
+                    : 'https://1.1.1.1/other',
+            },
+          ],
+    );
+    f.before(async (action, command) => {
+      if (action === 'tab_switch' && command.tabId === 't2')
+        f.page().location.href = 'https://1.1.1.1/other';
+    });
+    const observed = await f.computer.act('fixture', { action: 'click', selector: '@e1' });
+    assert.equal(observed.url, 'https://1.1.1.1/other');
+    assert.deepEqual(f.switches, ['t2']);
+    assert.equal(lists, 5);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('a new tab that closes during the switch returns to the opener', async () => {
+  const f = await fixture();
+  try {
+    await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    let lists = 0;
+    let closed = false;
+    f.tabs((url) =>
+      ++lists === 1 || closed
+        ? [{ tabId: 't1', active: !closed, url }]
+        : [
+            { tabId: 't1', active: true, url },
+            { tabId: 't2', active: false, url: 'https://1.1.1.1/other' },
+          ],
+    );
+    f.before(async (action, command) => {
+      if (action === 'tab_switch' && command.tabId === 't2') {
+        closed = true;
+        f.fail('tab_switch', 'Tab closed');
+      } else if (action === 'tab_switch') f.fail();
+    });
+    const observed = await f.computer.act('fixture', { action: 'click', selector: '@e1' });
+    assert.equal(observed.url, 'https://1.1.1.1/login');
+    assert.deepEqual(f.switches, ['t1']);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('a new tab that stays blank is ignored after the bounded wait', async (t) => {
+  const f = await fixture();
+  try {
+    await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+    let lists = 0;
+    f.tabs((url) => {
+      if (++lists === 1) return [{ tabId: 't1', active: true, url }];
+      t.mock.timers.tick(2000);
+      return [
+        { tabId: 't1', active: false, url },
+        { tabId: 't2', active: true, url: 'about:blank' },
+      ];
+    });
+    const observed = await f.computer.act('fixture', { action: 'press', key: 'Enter' });
+    assert.equal(observed.url, 'https://1.1.1.1/login');
+    assert.deepEqual(f.switches, ['t1']);
+    assert.equal(lists, 4);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('a new tab whose address keeps changing is ignored after the bounded wait', async (t) => {
+  const f = await fixture();
+  try {
+    await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+    let lists = 0;
+    f.tabs((url) => {
+      if (++lists === 1) return [{ tabId: 't1', active: true, url }];
+      t.mock.timers.tick(2000);
+      return [
+        { tabId: 't1', active: false, url },
+        { tabId: 't2', active: true, url: `https://1.1.1.1/redirect/${lists}` },
+      ];
+    });
+    const observed = await f.computer.act('fixture', { action: 'click', selector: '@e1' });
+    assert.equal(observed.url, 'https://1.1.1.1/login');
+    assert.deepEqual(f.switches, ['t1']);
+    assert.equal(lists, 4);
   } finally {
     await f.cleanup();
   }
