@@ -566,6 +566,16 @@ export async function createApplication(
     hold: computer.hold,
     selectMethod: computer.selectLoginMethod,
     emailCode: (input, signal) => integrations.emailCode(ownerId, input, signal),
+    ...(adapters.linkPreviews?.icon
+      ? {
+          icon: (origin: string) =>
+            providerUsage.track(
+              { provider: 'public-web', category: 'browser', operation: 'site_icon' },
+              () => adapters.linkPreviews!.icon!(origin),
+              (icon) => ({ bytes: icon?.bytes.byteLength ?? 0 }),
+            ),
+        }
+      : {}),
   });
   browserConnections = await createBrowserConnections(pool, {
     ownerId,

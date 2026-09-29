@@ -276,6 +276,90 @@ function session(headers: Headers) {
   sessions.delete(token);
   return null;
 }
+function icon(background: number[], foreground: number[], round: boolean, dot: boolean) {
+  const size = 32;
+  const rows = Buffer.alloc(size * (size * 4 + 1));
+  for (let y = 0; y < size; y++)
+    for (let x = 0; x < size; x++) {
+      const dx = Math.abs(x - 15.5);
+      const dy = Math.abs(y - 15.5);
+      const outside = round
+        ? Math.hypot(dx, dy) > 15.5
+        : Math.hypot(Math.max(0, dx - 9), Math.max(0, dy - 9)) > 6.5;
+      const inner = dot ? Math.hypot(dx, dy) < 6.5 : dx < 7 && dy < 2.5;
+      rows.set(
+        [...(inner ? foreground : background), outside ? 0 : 255],
+        y * (size * 4 + 1) + 1 + x * 4,
+      );
+    }
+  const chunk = (kind: string, body: Buffer) => {
+    const head = Buffer.alloc(8);
+    head.writeUInt32BE(body.length);
+    head.write(kind, 4, 'latin1');
+    const tail = Buffer.alloc(4);
+    tail.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), body])));
+    return Buffer.concat([head, body, tail]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(size);
+  header.writeUInt32BE(size, 4);
+  header.set([8, 6, 0, 0, 0], 8);
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', header),
+    chunk('IDAT', deflateSync(rows)),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+const vaultIcons = new Map([
+  ['https://mail.example.com', icon([234, 88, 12], [255, 255, 255], true, true)],
+  ['https://work.example.com', icon([79, 70, 229], [224, 231, 255], false, false)],
+  ['https://shop.example.net:8443', icon([22, 163, 74], [240, 253, 244], true, false)],
+]);
+const seedVault: Array<Record<string, unknown>> = [
+  ['Personal email', 'https://mail.example.com', 'alex@example.test'],
+  ['Work account', 'https://work.example.com', 'alex.morgan@work.example.com'],
+  ['Admin account', 'https://work.example.com', 'admin@work.example.com'],
+  ['Grocery orders', 'https://shop.example.net:8443', 'alex@example.test'],
+  ['Library card', 'https://library.example.org', 'member-40219'],
+]
+  .map(([label, entryOrigin, username]) => ({
+    kind: 'login',
+    id: randomUUID(),
+    label,
+    origin: entryOrigin,
+    username,
+    usernameHint: `${username.slice(0, 2)}…`,
+    updatedAt: '2026-09-20T10:00:00.000Z',
+  }))
+  .concat([
+    {
+      kind: 'card',
+      id: randomUUID(),
+      label: 'Everyday card',
+      brand: 'Visa',
+      last4: '4242',
+      expiryMonth: 4,
+      expiryYear: 2031,
+      cardholder: 'Alex Morgan',
+      hasSecurityCode: true,
+      updatedAt: '2026-09-20T10:00:00.000Z',
+    } as never,
+  ]);
+const vaults = new Map<string, Map<string, Record<string, unknown>>>();
+function vaultFor(owner: string) {
+  if (!vaults.has(owner))
+    vaults.set(
+      owner,
+      new Map(
+        seedVault.map((entry) => {
+          const id = randomUUID();
+          return [id, { ...entry, id }];
+        }),
+      ),
+    );
+  return vaults.get(owner)!;
+}
 const authentication: AuthenticationProvider = {
   configured: true,
   async initialize() {},
@@ -349,6 +433,67 @@ const app = await createGateway({
         ? welcomeMessages(owner, welcome.startedAt).filter((message) => message.at <= Date.now())
         : [];
       const replied = welcome && (!welcomeApps(owner).length || messages.length > 1);
+      const vault = vaultFor(owner);
+      if (url.pathname === '/api/vault') {
+        if (request.method === 'POST') {
+          const input = (await request.json()) as Record<string, unknown>;
+          const id = randomUUID();
+          const entry =
+            input.kind === 'card'
+              ? {
+                  kind: 'card',
+                  id,
+                  label: input.label,
+                  brand: 'Visa',
+                  last4: String(input.cardNumber).slice(-4),
+                  expiryMonth: input.expiryMonth,
+                  expiryYear: input.expiryYear,
+                  cardholder: input.cardholder,
+                  hasSecurityCode: Boolean(input.securityCode),
+                  updatedAt: new Date().toISOString(),
+                }
+              : {
+                  kind: 'login',
+                  id,
+                  label: input.label,
+                  origin: /^https?:\/\//.test(String(input.origin))
+                    ? String(input.origin)
+                    : `https://${String(input.origin)}`,
+                  username: input.username,
+                  usernameHint: `${String(input.username).slice(0, 2)}…`,
+                  updatedAt: new Date().toISOString(),
+                };
+          vault.set(id, entry);
+          return Response.json(entry);
+        }
+        return Response.json(
+          [...vault.values()].map(({ cardholder: _c, hasSecurityCode: _h, ...entry }) => entry),
+        );
+      }
+      const item = /^\/api\/vault\/([^/]+)(?:\/([a-z-]+))?$/.exec(url.pathname);
+      if (item && vault.has(item[1])) {
+        const entry = vault.get(item[1])!;
+        if (item[2] === 'icon') {
+          const bytes = vaultIcons.get(String(entry.origin));
+          return bytes
+            ? new Response(bytes, { headers: { 'content-type': 'image/png' } })
+            : Response.json({ error: 'The website icon is unavailable.' }, { status: 404 });
+        }
+        if (item[2] === 'details') return Response.json(entry);
+        if (item[2] === 'password') return Response.json({ password: 'synthetic-password' });
+        if (item[2] === 'card-number') return Response.json({ cardNumber: '4242424242424242' });
+        if (item[2] === 'security-code') return Response.json({ securityCode: '123' });
+        if (request.method === 'DELETE') {
+          vault.delete(item[1]);
+          return Response.json({ ok: true });
+        }
+        if (request.method === 'PATCH') {
+          const input = (await request.json()) as Record<string, unknown>;
+          const { password: _p, cardNumber: _n, securityCode: _s, ...change } = input;
+          Object.assign(entry, change);
+          return Response.json(entry);
+        }
+      }
       if (url.pathname === '/api/state')
         return Response.json({
           conversationRevision: 0,
