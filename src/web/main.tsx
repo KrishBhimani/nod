@@ -9,6 +9,7 @@ import './pages/secondary-pages.css';
 import './pages/apps.css';
 import './pages/channels.css';
 import './pages/goals.css';
+import './pages/plan-controls.css';
 import './components/emoji-picker.css';
 import './components/attachment-images.css';
 import './components/attachment-card.css';

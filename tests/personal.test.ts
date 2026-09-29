@@ -76,7 +76,9 @@ test(
     try {
       await scheduler.start();
       await personal.initialize({ workers: false });
-      await pool.query(`CREATE TABLE tasks(id uuid PRIMARY KEY,owner_id text NOT NULL,status text NOT NULL DEFAULT 'queued',error text);
+      await pool.query(`CREATE TABLE tasks(id uuid PRIMARY KEY,owner_id text NOT NULL,status text NOT NULL DEFAULT 'queued',error text,
+          channel text NOT NULL DEFAULT 'web',conversation_revision integer NOT NULL DEFAULT 0);
+        CREATE TABLE conversations(owner_id text NOT NULL,channel text NOT NULL,revision integer NOT NULL DEFAULT 0,PRIMARY KEY(owner_id,channel));
         CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text NOT NULL,role text NOT NULL,text text NOT NULL DEFAULT '',task_id uuid,created_at timestamptz NOT NULL DEFAULT now());
         CREATE TABLE memory_facts(id uuid PRIMARY KEY,owner_id text NOT NULL,text text NOT NULL,
           source_message_id uuid REFERENCES messages(id),UNIQUE(owner_id,text))`);

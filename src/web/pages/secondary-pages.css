@@ -489,6 +489,59 @@
   color: var(--foreground);
   overflow-wrap: anywhere;
 }
+.schedule-run-preview {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  margin-top: 10px;
+  padding: 6px 0 6px 10px;
+  border: 0;
+  border-left: 2px solid var(--border);
+  background: transparent;
+  color: var(--foreground);
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-align: left;
+}
+.schedule-run-preview > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.schedule-run-preview > svg {
+  flex: none;
+  margin: 3px 0 0 auto;
+  color: var(--muted-foreground);
+}
+.schedule-run-open .schedule-run-preview {
+  padding-bottom: 0;
+}
+.schedule-run-open .schedule-run-preview > svg {
+  transform: rotate(180deg);
+}
+.schedule-run-body {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  padding: 0 0 8px 10px;
+  border-left: 2px solid var(--border);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+.schedule-run-body .message-text {
+  width: 100%;
+  overflow-wrap: anywhere;
+}
+.schedule-run-body > .button {
+  justify-self: end;
+}
+.schedule-run > .schedule-run-empty {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
 .schedule-history-more {
   margin-top: 14px;
 }

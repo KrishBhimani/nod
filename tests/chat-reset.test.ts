@@ -3,6 +3,7 @@ import test, { after } from 'node:test';
 import { registerHooks } from 'node:module';
 import { JSDOM } from 'jsdom';
 import { act, createElement } from 'react';
+import type { Editor } from '@tiptap/core';
 import type { AppState, Message } from '../src/shared/contracts.ts';
 
 const css = registerHooks({
@@ -419,7 +420,9 @@ test('landing on an empty chat asks Otto to reach out once and shows the greetin
   const fixture = await mount();
   try {
     await act(async () => {
-      window.dispatchEvent(new CustomEvent('otto:compose', { detail: { text: 'Early message' } }));
+      fixture.element
+        .querySelector<HTMLElement & { editor: Editor }>('.ProseMirror')!
+        .editor.commands.setContent('Early message');
       await tick();
     });
     const sendButton = () =>

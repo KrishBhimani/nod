@@ -1,21 +1,28 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { PageTitle } from '../components/page-title';
-import { ArrowUpRight, CalendarClock, Pause, Play, Plus } from 'lucide-react';
-import type { Schedule, ScheduleHistory, ScheduleRun } from '../../shared/contracts';
+import { CalendarClock, ChevronDown, MessageCircle } from 'lucide-react';
+import type { AppState, Schedule, ScheduleHistory, ScheduleRun } from '../../shared/contracts';
 import { Button, Loading, Notice } from '../components/ui';
 import { activeStatuses, StatusIcon, statusLabels } from '../components/task-list';
 import { usePageData } from '../hooks/use-page-data';
 import { api } from '../lib/api';
 import { scheduleDate, scheduleLabel } from '../lib/schedules';
-import { draftInChat, scheduleDraft } from '../lib/secondary-pages';
+import { focusChatMessage } from '../lib/secondary-pages';
 import { DeletePlan } from '../components/delete-plan';
+import { MessageText } from '../components/message';
+import { NewPlan, PlanFooter, PlanToast } from '../components/plan-controls';
 
 const historyPath = '/api/schedule-runs?limit=20';
 
-export function ScheduleRow({ schedule }: { schedule: Schedule }) {
+export function ScheduleRow({
+  schedule,
+  conversation = null,
+}: {
+  schedule: Schedule;
+  conversation?: AppState | null;
+}) {
   const canResume =
     schedule.kind !== 'once' || Boolean(schedule.runAt && Date.parse(schedule.runAt) > Date.now());
-  const changeLabel = !schedule.enabled && !canResume ? 'Reschedule' : 'Change';
   return (
     <article className="saved-plan saved-schedule">
       <div className="saved-plan-title">
@@ -40,43 +47,27 @@ export function ScheduleRow({ schedule }: { schedule: Schedule }) {
           {scheduleDate(schedule.baselineObservation.checkedAt, schedule.timeZone)}
         </p>
       )}
-      <div className="saved-plan-footer">
-        <span>
-          {schedule.kind === 'recurring' && schedule.nextRun
+      <PlanFooter
+        kind="schedule"
+        item={schedule}
+        canPause={schedule.enabled || canResume}
+        meta={
+          schedule.kind === 'recurring' && schedule.nextRun
             ? `Next ${scheduleDate(schedule.nextRun, schedule.timeZone)}`
-            : ''}
-        </span>
-        <div className="saved-plan-actions">
-          {(schedule.enabled || canResume) && (
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-label={`${schedule.enabled ? 'Pause' : 'Resume'} ${schedule.title}`}
-              onClick={() => draftInChat(scheduleDraft(schedule, 'status'))}
-            >
-              {schedule.enabled ? <Pause size={13} /> : <Play size={13} />}
-              {schedule.enabled ? 'Pause' : 'Resume'}
-            </Button>
-          )}
-          <Button
-            variant="ghost"
-            size="sm"
-            aria-label={`${changeLabel} ${schedule.title}`}
-            onClick={() => draftInChat(scheduleDraft(schedule, 'discuss'))}
-          >
-            {changeLabel}
-            <ArrowUpRight size={14} />
-          </Button>
-          <DeletePlan kind="schedule" id={schedule.id} title={schedule.title} />
-        </div>
-      </div>
+            : ''
+        }
+        remove={<DeletePlan kind="schedule" id={schedule.id} title={schedule.title} />}
+        conversation={conversation}
+      />
     </article>
   );
 }
 
 export function ScheduleRunRow({ run }: { run: ScheduleRun }) {
+  const [open, setOpen] = useState(false);
+  const bodyId = useId();
   return (
-    <article className="schedule-run">
+    <article className={`schedule-run${open ? ' schedule-run-open' : ''}`}>
       <div className="schedule-run-heading">
         <h2>{run.title}</h2>
         <span className={`schedule-run-status schedule-run-${run.status}`}>
@@ -102,11 +93,42 @@ export function ScheduleRunRow({ run }: { run: ScheduleRun }) {
           </a>
         </p>
       )}
+      {run.messageId ? (
+        <>
+          <button
+            type="button"
+            className="schedule-run-preview"
+            aria-expanded={open}
+            aria-controls={open ? bodyId : undefined}
+            aria-label={`${open ? 'Hide' : 'Read'} the message from ${run.title}`}
+            onClick={() => setOpen(!open)}
+          >
+            {!open && <span>{run.messagePreview}</span>}
+            <ChevronDown size={14} aria-hidden="true" />
+          </button>
+          {open && (
+            <div className="schedule-run-body" id={bodyId}>
+              <MessageText text={run.messageText ?? run.messagePreview ?? ''} />
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label={`Open the message from ${run.title} in the conversation`}
+                onClick={() => focusChatMessage(run.messageId!)}
+              >
+                <MessageCircle size={13} aria-hidden="true" />
+                Open in conversation
+              </Button>
+            </div>
+          )}
+        </>
+      ) : (
+        !run.observation && <p className="schedule-run-empty">No message</p>
+      )}
     </article>
   );
 }
 
-export function ScheduleHistoryView() {
+function ScheduleHistoryView() {
   const { data, error, loading, refreshing, refresh } = usePageData<ScheduleHistory>(historyPath);
   const [earlier, setEarlier] = useState<ScheduleHistory | null>(null);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
@@ -248,7 +270,7 @@ export function ScheduleHistoryView() {
   );
 }
 
-export function SchedulePage() {
+export function SchedulePage({ conversation = null }: { conversation?: AppState | null }) {
   const {
     data: schedules,
     error,
@@ -265,22 +287,16 @@ export function SchedulePage() {
       !upcoming.includes(schedule) &&
       (schedule.kind !== 'once' || schedule.lastRun?.scheduledFor !== schedule.runAt),
   );
-  const add = () =>
-    draftInChat(
-      "I'd like to schedule a task. Help me choose what it should do, when, and whether it should repeat.",
-    );
   return (
     <div className="content-page secondary-page">
+      <PlanToast />
       <header className="page-heading secondary-heading">
         <div>
           <PageTitle path="/schedule" />
           <p>Your scheduled tasks.</p>
         </div>
         <div className="secondary-heading-actions">
-          <Button size="sm" onClick={add}>
-            <Plus size={14} />
-            Add schedule
-          </Button>
+          <NewPlan kind="schedule" conversation={conversation} />
         </div>
       </header>
       <div
@@ -348,7 +364,11 @@ export function SchedulePage() {
                 {upcoming.length ? (
                   <div className="saved-plan-list">
                     {upcoming.map((schedule) => (
-                      <ScheduleRow key={schedule.id} schedule={schedule} />
+                      <ScheduleRow
+                        key={schedule.id}
+                        schedule={schedule}
+                        conversation={conversation}
+                      />
                     ))}
                   </div>
                 ) : (
@@ -364,7 +384,11 @@ export function SchedulePage() {
                     </summary>
                     <div className="saved-plan-list">
                       {inactive.map((schedule) => (
-                        <ScheduleRow key={schedule.id} schedule={schedule} />
+                        <ScheduleRow
+                          key={schedule.id}
+                          schedule={schedule}
+                          conversation={conversation}
+                        />
                       ))}
                     </div>
                   </details>

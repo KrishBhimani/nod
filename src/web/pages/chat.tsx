@@ -97,13 +97,11 @@ export function Chat({
   streams,
   refresh,
   resetConversation,
-  composerDraft,
 }: {
   state: AppState;
   streams: Record<string, string>;
   refresh(): Promise<void>;
   resetConversation(): Promise<number>;
-  composerDraft?: { text: string; nonce: number };
 }) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -111,6 +109,7 @@ export function Chat({
   const [error, setError] = useState('');
   const [connectionNotice, setConnectionNotice] = useState('');
   const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [focusTarget, setFocusTarget] = useState<{ id: string; pages: number } | null>(null);
   const [optimistic, setOptimistic] = useState<Array<{ revision: number; message: Message }>>([]);
   const composer = useRef<ComposerHandle>(null);
   const sendLock = useRef<{ id: string; revision: number } | null>(null);
@@ -261,20 +260,41 @@ export function Chat({
     window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
   }, []);
   useEffect(() => {
-    if (!composerDraft) return;
-    setText(composerDraft.text);
-    requestAnimationFrame(() => composer.current?.focus());
-  }, [composerDraft]);
-  useEffect(() => {
-    const compose = (event: Event) => {
-      const detail = (event as CustomEvent<{ text?: unknown }>).detail;
-      if (typeof detail?.text !== 'string') return;
-      setText(detail.text);
-      requestAnimationFrame(() => composer.current?.focus());
+    const focusMessage = (event: Event) => {
+      const detail = (event as CustomEvent<{ messageId?: unknown }>).detail;
+      if (typeof detail?.messageId === 'string') setFocusTarget({ id: detail.messageId, pages: 0 });
     };
-    window.addEventListener('otto:compose', compose);
-    return () => window.removeEventListener('otto:compose', compose);
+    window.addEventListener('otto:focus-message', focusMessage);
+    return () => window.removeEventListener('otto:focus-message', focusMessage);
   }, []);
+  useEffect(() => {
+    if (!focusTarget || loadingHistory) return;
+    if (focusTarget.pages && error) {
+      setFocusTarget(null);
+      return;
+    }
+    const target = Array.from(
+      scroll.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? [],
+    ).find((element) => element.dataset.messageId === focusTarget.id);
+    if (target) {
+      setFocusTarget(null);
+      stickToBottom.current = false;
+      requestAnimationFrame(() => {
+        target.scrollIntoView({ block: 'center', behavior: scrollBehavior() });
+        target.focus({ preventScroll: true });
+        target.classList.add('message-focused');
+        setTimeout(() => target.classList.remove('message-focused'), 2400);
+      });
+      return;
+    }
+    if (hasEarlier && persistedMessages.length && focusTarget.pages < 5) {
+      setFocusTarget({ ...focusTarget, pages: focusTarget.pages + 1 });
+      void history();
+      return;
+    }
+    setFocusTarget(null);
+    setError('Could not find that message in this chat.');
+  }, [focusTarget, loadingHistory, historyPage, hasEarlier, error]);
   async function send(value: string, attachments: Artifact[]): Promise<ComposerSendResult> {
     if (sendLock.current || resetLock.current || welcoming)
       return { sent: false, restoreText: true };

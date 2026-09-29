@@ -35,9 +35,9 @@
 | Earlier-message flags, history skeleton and Back to latest             | `chat-history`, `chat-timeline`                                                                               |
 | Sidebar shortcuts, modifier hints and navigation focus                 | `sidebar`                                                                                                     |
 | Public metadata, pinned resolution, image proxy and caching            | `link-preview`                                                                                                |
-| Compact accounts, channel setup steps, and plan chat drafts            | `secondary-pages`, `secondary-page-layout`                                                                    |
+| Compact accounts, channel setup steps, and in-place plan controls      | `secondary-pages`, `secondary-page-layout`                                                                    |
 | Cached navigation, obsolete reads and account action focus             | `page-data-cache`, `connections-ui`                                                                           |
-| One-time timing, schedule tabs and read-only execution history         | `schedule-ui`                                                                                                 |
+| One-time timing, schedule controls and readable execution history      | `schedule-ui`                                                                                                 |
 | Inspector payload masking, ownership, usage and pagination             | `inspector-redaction`, `inspector-store`, `inspector-observations`                                            |
 | Paired activity, retained tool counts and provider coverage            | `inspector-ui`, `provider-usage`, `pi-agent`                                                                  |
 | Browser takeover locks, socket input, expiry and task resume           | `browser-manual`, `browser-control`, `takeover`                                                               |
