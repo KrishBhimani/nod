@@ -91,6 +91,73 @@ test(
         time_zone text NOT NULL DEFAULT 'Europe/Lisbon',quiet_start text NOT NULL DEFAULT '22:00',quiet_end text NOT NULL DEFAULT '08:00',quiet_hours_enabled boolean NOT NULL DEFAULT true,
         locale text,hour_cycle text NOT NULL DEFAULT 'auto')`);
       await t.test(
+        'history search preserves turnless channel provenance and active owner scope',
+        async () => {
+          const archivedThread = randomUUID();
+          const otherThread = randomUUID();
+          const turnId = randomUUID();
+          await pool.query(
+            "INSERT INTO threads(id,owner_id,archived_at) VALUES($1,'fixture-owner',NULL),($2,'fixture-owner',now()),($3,'other-owner',NULL)",
+            [threadId, archivedThread, otherThread],
+          );
+          await pool.query(
+            "INSERT INTO turns(id,owner_id,thread_id,prompt,channel) VALUES($1,'fixture-owner',$2,'Provenance fixture','whatsapp:fixture-route')",
+            [turnId, threadId],
+          );
+          await pool.query(`CREATE TABLE channel_inbox(source_id text PRIMARY KEY,owner_id text NOT NULL,provider text NOT NULL,channel text,message_id uuid,received_at timestamptz NOT NULL DEFAULT now());
+          CREATE TABLE channel_outbox(message_id uuid PRIMARY KEY,source_id text NOT NULL REFERENCES channel_inbox(source_id))`);
+          for (const [label, owner, scope, turn, channel, direction] of [
+            ['turn', 'fixture-owner', threadId, turnId, null, null],
+            ['reply', 'fixture-owner', threadId, null, 'telegram:fixture-route', 'outbound'],
+            ['inbound', 'fixture-owner', threadId, null, 'telegram:fixture-route', 'inbound'],
+            ['web', 'fixture-owner', threadId, null, null, null],
+            ['foreign-route', 'fixture-owner', threadId, null, 'telegram:other-route', 'foreign'],
+            ['archived', 'fixture-owner', archivedThread, null, null, null],
+            ['foreign', 'other-owner', otherThread, null, null, null],
+          ]) {
+            const messageId = randomUUID();
+            await pool.query(
+              "INSERT INTO messages(id,owner_id,thread_id,turn_id,role,text) VALUES($1,$2,$3,$4,'assistant',$5)",
+              [messageId, owner, scope, turn, `Provenance ${label}`],
+            );
+            if (!channel) continue;
+            const sourceId = randomUUID();
+            await pool.query(
+              "INSERT INTO channel_inbox(source_id,owner_id,provider,channel,message_id) VALUES($1,$2,'telegram',$3,$4)",
+              [
+                sourceId,
+                direction === 'foreign' ? 'other-owner' : owner,
+                channel,
+                direction === 'inbound' ? messageId : null,
+              ],
+            );
+            if (direction !== 'inbound')
+              await pool.query('INSERT INTO channel_outbox(message_id,source_id) VALUES($1,$2)', [
+                messageId,
+                sourceId,
+              ]);
+          }
+          const result = (await personal.manage('history_search', { query: 'Provenance' })) as {
+            turns: { id: string; channel: string }[];
+            messages: { text: string; channel: string }[];
+          };
+          assert.deepEqual(
+            result.turns.map(({ id, channel }) => ({ id, channel })),
+            [{ id: turnId, channel: 'whatsapp' }],
+          );
+          assert.deepEqual(
+            Object.fromEntries(result.messages.map(({ text, channel }) => [text, channel])),
+            {
+              'Provenance turn': 'whatsapp',
+              'Provenance reply': 'telegram',
+              'Provenance inbound': 'telegram',
+              'Provenance web': 'web',
+              'Provenance foreign-route': 'web',
+            },
+          );
+        },
+      );
+      await t.test(
         'conversation preferences start useful but preserve an explicit quiet choice and partial changes',
         async () => {
           const initial = (await personal.manage('notification_preferences_get', {})) as {

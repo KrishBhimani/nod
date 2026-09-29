@@ -509,7 +509,7 @@ test(
         },
       );
       await t.test(
-        'failed message insertion rolls back metadata without deleting retained bytes',
+        'failed message insertion rolls back metadata and removes unpublished bytes',
         async () => {
           const { threadId, turnId } = await submitHeld('Held rejected browser publication');
           let artifact: Artifact | undefined;
@@ -541,10 +541,9 @@ test(
               0,
             );
             await assert.rejects(localArtifacts.readArtifact(artifact.id), /unavailable/);
-            assert.deepEqual(
-              await readFile(join(dataRoot, 'artifacts', artifact.id)),
-              browserDownloadPdf,
-            );
+            await assert.rejects(readFile(join(dataRoot, 'artifacts', artifact.id)), {
+              code: 'ENOENT',
+            });
           } finally {
             await db.pool.query('ALTER TABLE messages DROP CONSTRAINT reject_browser_publication');
             publications.delete(threadId);
@@ -608,7 +607,7 @@ test(
               );
               await waitFor(async () => {
                 const blocked = await admin.query(
-                  "SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock' AND query LIKE 'UPDATE turns SET status=''cancelled''%'",
+                  "SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock'",
                   [schema],
                 );
                 return blocked.rowCount === 1;

@@ -750,3 +750,29 @@ test(
     }
   },
 );
+
+for (const signIn of [false, true]) {
+  test(`a reset while ${signIn ? 'sign-in' : 'manual'} input is pending rejects late success`, async () => {
+    const f = await fixture({ signIn });
+    const held = deferred();
+    try {
+      assert.equal((await f.coreRequest('/start', {})).statusCode, 200);
+      f.setInput(held.promise);
+      const pending = f.coreRequest('/input', {
+        input: { action: 'type', text: 'Synthetic input' },
+      });
+      await f.inputEntered;
+      f.reset();
+      held.resolve();
+      const response = await pending;
+      assert.equal(response.statusCode, 409);
+      assert.match(response.json().error, /no longer active/);
+      assert.ok(f.calls.includes('release'));
+      assert.equal(f.resumed(), 0);
+      assert.deepEqual((await f.coreRequest('')).json(), idle(signIn));
+    } finally {
+      held.resolve();
+      await f.app.close();
+    }
+  });
+}

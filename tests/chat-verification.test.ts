@@ -501,6 +501,35 @@ test(
           }
         },
       );
+      await t.test(
+        'failed and superseded waits cannot advertise or consume verification requests',
+        async () => {
+          for (const [status, reason] of [
+            ['running', null],
+            ['failed', null],
+            ['cancelled', null],
+            ['succeeded', null],
+            ['waiting', 'question'],
+          ]) {
+            await reset();
+            const request = await seed();
+            await db.pool.query('UPDATE turns SET status=$2,waiting_reason=$3 WHERE id=$1', [
+              request.turnId,
+              status,
+              reason,
+            ]);
+            assert.deepEqual(await verification.pending(), []);
+            const response = await send('739126', { verificationRequestId: request.requestId });
+            assert.equal(response.statusCode, 409, response.body);
+            assert.deepEqual(injected, []);
+            assert.deepEqual(ordinary, []);
+            assert.equal(
+              (await db.pool.query('SELECT * FROM chat_verification_submissions')).rowCount,
+              0,
+            );
+          }
+        },
+      );
       await t.test('expired code replies cannot fall through after a credential wait', async () => {
         await reset();
         await seed({ expired: true });

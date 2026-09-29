@@ -32,7 +32,9 @@ export function useAppState(accountId?: string) {
             threadId: next,
             threadStatus: 'idle',
             messages: [],
-            turns: current.turns.map((turn) => ({ ...turn, showTyping: false })),
+            turns: [],
+            verificationRequests: [],
+            hasEarlierMessages: false,
           }
         : current,
     );

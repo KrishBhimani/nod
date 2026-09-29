@@ -278,6 +278,51 @@ test('restart setup clears archived messages, history, replies and stale streams
   }
 });
 
+test('a successful reset clears archived turns even when the next state refresh fails', async () => {
+  const priorFetch = globalThis.fetch;
+  let reset = false;
+  globalThis.fetch = async (path) => {
+    if (path === '/api/state')
+      return reset
+        ? Response.json({ error: 'State temporarily unavailable.' }, { status: 503 })
+        : Response.json({
+            ...base,
+            verificationRequests: [
+              { id: 'old-request', turnId: 'old-turn', expiresAt: '2099-01-01T00:00:00Z' },
+            ],
+            turns: [
+              { id: 'old-turn', status: 'running', source: 'user', createdAt: message.createdAt },
+            ],
+          });
+    if (path === '/api/conversation/reset') {
+      reset = true;
+      return Response.json({ ok: true, threadId: 'thread-1' });
+    }
+    throw new Error('Unexpected fixture request');
+  };
+  const fixture = await mount();
+  try {
+    assert.equal(fixture.app().state?.turns[0]?.id, 'old-turn');
+    await act(async () => {
+      await fixture.app().resetConversation();
+    });
+    assert.equal(fixture.app().state?.threadId, 'thread-1');
+    assert.deepEqual(fixture.app().state?.messages, []);
+    assert.deepEqual(fixture.app().state?.turns, []);
+    assert.deepEqual(fixture.app().state?.verificationRequests, []);
+    assert.equal(fixture.app().state?.hasEarlierMessages, false);
+    await act(async () => {
+      await fixture.app().refresh();
+    });
+    assert.match(fixture.app().error, /State temporarily unavailable/);
+    assert.deepEqual(fixture.app().state?.turns, []);
+    assert.equal(fixture.app().state?.configuration.integrationsReady, true);
+  } finally {
+    await fixture.dispose();
+    globalThis.fetch = priorFetch;
+  }
+});
+
 test('the restart setup event resets once and a failed reset preserves the existing conversation', async () => {
   const priorFetch = globalThis.fetch;
   const requests: string[] = [];

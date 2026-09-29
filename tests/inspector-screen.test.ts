@@ -38,6 +38,7 @@ async function mounted(screen: (capture: number) => Promise<Response>) {
   let captures = 0;
   let images = 0;
   let activity = capturedAt;
+  let stopped = false;
   URL.createObjectURL = () => `blob:fixture-${++images}`;
   URL.revokeObjectURL = (url) => {
     revoked.push(url);
@@ -51,7 +52,7 @@ async function mounted(screen: (capture: number) => Promise<Response>) {
           {
             id: 'b6d7c3a0-5f0e-4b8e-9d2a-3f1c2e4a5b6c',
             source: 'user',
-            status: 'running',
+            status: stopped ? 'cancelled' : 'running',
             createdAt: capturedAt,
           },
         ],
@@ -62,7 +63,7 @@ async function mounted(screen: (capture: number) => Promise<Response>) {
           threadId,
           lastActivityAt: activity,
           title: 'Browser fixture',
-          status: 'running',
+          status: stopped ? 'cancelled' : 'running',
         },
       });
     if (url.pathname === '/api/notifications') return json([]);
@@ -77,7 +78,10 @@ async function mounted(screen: (capture: number) => Promise<Response>) {
       });
     if (url.pathname.startsWith('/api/browser/control'))
       return json({ active: false, paused: false });
-    if (url.pathname === '/api/thread/stop') return json({ ok: true });
+    if (url.pathname === '/api/thread/stop') {
+      stopped = true;
+      return json({ ok: true });
+    }
     if (url.pathname === '/api/inspector/screen') {
       assert.equal(url.searchParams.get('threadId'), threadId);
       return screen(++captures);
@@ -220,6 +224,17 @@ test('stopping browser work targets the current screen session and leaves inspec
         .filter((request) => request.method === 'POST')
         .map((request) => request.url.pathname),
       ['/api/thread/stop'],
+    );
+    assert.equal(fixture.element.querySelector('[aria-label="Stop Otto"]'), null);
+    const polls = fixture.requests.filter(
+      (request) => request.url.pathname === '/api/inspector',
+    ).length;
+    await act(async () => {
+      await delay(2600);
+    });
+    assert.ok(
+      fixture.requests.filter((request) => request.url.pathname === '/api/inspector').length >
+        polls,
     );
     assert.equal(fixture.element.querySelector('[aria-label="Stop Otto"]'), null);
     assert.ok(fixture.element.querySelector('.screen-preview img'));

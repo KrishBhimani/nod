@@ -26,6 +26,7 @@ export interface Message {
   turn?: Turn;
 }
 export interface SubmitMessageResponse {
+  threadId: string;
   turnId: string;
   messageId: string;
   messageText?: string;

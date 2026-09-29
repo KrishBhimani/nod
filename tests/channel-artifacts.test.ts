@@ -105,8 +105,12 @@ test(
         const thread = await activeThread(client, ownerId);
         const turnId = randomUUID();
         await client.query(
-          "INSERT INTO turns(id,owner_id,thread_id,source,source_id,message_id,prompt,channel,status) VALUES($1,$2,$3,'user',$4,$5,$6,$7,'succeeded')",
+          "INSERT INTO turns(id,owner_id,thread_id,source,source_id,message_id,prompt,channel) VALUES($1,$2,$3,'user',$4,$5,$6,$7)",
           [turnId, ownerId, thread.id, sourceId, messageId, text, channel],
+        );
+        await client.query(
+          "INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id) VALUES($1,$2,'user',$3,$4,$5)",
+          [messageId, ownerId, text, thread.id, turnId],
         );
         return turnId;
       },

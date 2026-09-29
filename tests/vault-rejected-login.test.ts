@@ -32,7 +32,7 @@ test(
       'CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz)',
     );
     await pool.query(
-      "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running')",
+      "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text)",
     );
     const turns: Record<string, TurnRef> = {};
     const threads: Record<string, string> = {};
@@ -77,7 +77,10 @@ test(
     };
     const request = async (name: string) => {
       const result = await vault.request(turns[name], 'local-development', input);
-      await pool.query("UPDATE turns SET status='waiting' WHERE id=$1", [turns[name].turnId]);
+      await pool.query(
+        "UPDATE turns SET status='waiting',waiting_reason='credentials' WHERE id=$1",
+        [turns[name].turnId],
+      );
       return result.url.replace('/vault/', '/api/credential-requests/');
     };
     const submit = (url: string, payload: Record<string, string>) =>

@@ -525,7 +525,7 @@ for (const mode of ['polling', 'webhook'] as const)
         connectionString: process.env.TEST_DATABASE_URL,
         options: `-c search_path=${schema}`,
       });
-      await createFixtureTables(pool, 'local-development');
+      const threadId = await createFixtureTables(pool, 'local-development');
       const base = `https://api.telegram.org/bot${token}`;
       const updates: { update_id: number }[] = [];
       const sent: Record<string, unknown>[] = [];
@@ -584,9 +584,18 @@ for (const mode of ['polling', 'webhook'] as const)
         subscribe: () => () => {},
         intervalMs: 600000,
         pair: settings.pair,
-        submit: async (text) => {
+        submit: async (text, sourceId, client, channel, messageId) => {
+          const turnId = randomUUID();
+          await client.query(
+            "INSERT INTO turns(id,owner_id,thread_id,source_id,channel) VALUES($1,'local-development',$2,$3,$4)",
+            [turnId, threadId, sourceId, channel],
+          );
+          await client.query(
+            "INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id) VALUES($1,'local-development','user',$2,$3,$4)",
+            [messageId, text, threadId, turnId],
+          );
           submitted.push(text);
-          return randomUUID();
+          return turnId;
         },
       });
       settings.registerRoutes(app);

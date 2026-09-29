@@ -685,7 +685,7 @@ export function createAgentRuntime(dependencies: {
               ? `This website needs you to sign in again. [Continue sign-in](${connection.url}) and I will continue the task.`
               : `I opened the website in Otto’s private browser. [Connect website](${connection.url}) to sign in, then I will continue the task.`;
           status = 'waiting_user';
-          waitingFor = 'question';
+          waitingFor = 'browser';
           stopped = true;
           if (context.waitForUser) await context.waitForUser(question);
           else await deliverReply(question);

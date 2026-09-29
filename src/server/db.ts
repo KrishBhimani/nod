@@ -43,6 +43,7 @@ export async function initializeDatabase() {
       created_at timestamptz NOT NULL DEFAULT now(), started_at timestamptz, finished_at timestamptz
     );
     CREATE UNIQUE INDEX IF NOT EXISTS turns_owner_source ON turns(owner_id,source_id) WHERE source_id IS NOT NULL;
+    ALTER TABLE turns ADD COLUMN IF NOT EXISTS pending_connection_service text;
     CREATE INDEX IF NOT EXISTS turns_thread_queue ON turns(thread_id,status,created_at,id);
     CREATE TABLE IF NOT EXISTS turn_events (
       id uuid PRIMARY KEY, turn_id uuid NOT NULL REFERENCES turns(id), type text NOT NULL,
@@ -110,17 +111,29 @@ export async function initializeDatabase() {
   `);
 }
 
-export async function transaction<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+export async function transaction<T>(
+  fn: (client: pg.PoolClient) => Promise<T>,
+  afterRollback?: () => Promise<void>,
+): Promise<T> {
   const client = await pool.connect();
+  let commitAttempted = false;
+  let rolledBack = false;
   try {
     await client.query('BEGIN');
     const value = await fn(client);
+    commitAttempted = true;
     await client.query('COMMIT');
     return value;
   } catch (error) {
     await client.query('ROLLBACK');
+    rolledBack = !commitAttempted;
     throw error;
   } finally {
     client.release();
+    if (rolledBack && afterRollback) {
+      try {
+        await afterRollback();
+      } catch {}
+    }
   }
 }

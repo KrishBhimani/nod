@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { requestCredentials } from './vault-fixture.ts';
 import test from 'node:test';
 import Fastify from 'fastify';
 import pg from 'pg';
@@ -15,7 +16,7 @@ async function seedTurns(pool: pg.Pool) {
     'CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz)',
   );
   await pool.query(
-    "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running')",
+    "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text)",
   );
   const threads = new Map<string, string>();
   const turn = async (owner = 'local-development') => {
@@ -125,7 +126,7 @@ test(
         kind: 'password' as const,
         passwordSelector: '#password',
       };
-      const hidden = await vault.request(other, 'other-user', input);
+      const hidden = await requestCredentials(vault, pool, other, 'other-user', input);
       assert.equal(
         (
           await app.inject({
@@ -134,7 +135,7 @@ test(
         ).statusCode,
         404,
       );
-      const result = await vault.request(task1, 'local-development', input);
+      const result = await requestCredentials(vault, pool, task1, 'local-development', input);
       const url = result.url.replace('/vault/', '/api/credential-requests/');
       const form = await app.inject({ url });
       assert.equal(form.statusCode, 200);
@@ -195,6 +196,9 @@ test(
         vault.fillSaved(task2, 'local-development', stored.rows[0].id, input),
         /fresh credentials/,
       );
+      await pool.query("UPDATE turns SET status='running',waiting_reason=NULL WHERE id=$1", [
+        task1.turnId,
+      ]);
       await assert.rejects(
         vault.fillSaved(task1, 'local-development', stored.rows[0].id, input),
         /fresh credentials/,
@@ -203,7 +207,13 @@ test(
       const requests = await pool.query('SELECT * FROM credential_requests');
       assert.equal(JSON.stringify(requests.rows).includes('secret-password'), false);
       assert.equal(JSON.stringify(requests.rows).includes(result.url.split('/').at(-1)!), false);
-      const expired = await vault.request(expiredTask, 'local-development', input);
+      const expired = await requestCredentials(
+        vault,
+        pool,
+        expiredTask,
+        'local-development',
+        input,
+      );
       await pool.query(
         "UPDATE credential_requests SET expires_at = now() - interval '1 second' WHERE turn_id = $1",
         [expiredTask.turnId],
@@ -261,7 +271,7 @@ test(
     });
     vault.registerRoutes(app);
     try {
-      const request = await vault.request(otpTask, 'local-development', {
+      const request = await requestCredentials(vault, pool, otpTask, 'local-development', {
         origin: 'https://example.com',
         label: 'Verification',
         kind: 'otp',
@@ -355,7 +365,7 @@ test(
         /fresh credentials/,
       );
       assert.equal(attempts, 1);
-      const retry = await vault.request(taskRetry, 'local-development', input);
+      const retry = await requestCredentials(vault, pool, taskRetry, 'local-development', input);
       const response = await app.inject({
         method: 'POST',
         url: retry.url.replace('/vault/', '/api/credential-requests/'),
@@ -363,7 +373,13 @@ test(
       });
       assert.equal(response.statusCode, 200);
       assert.equal(attempts, 2);
-      const interrupted = await vault.request(taskInterrupted, 'local-development', input);
+      const interrupted = await requestCredentials(
+        vault,
+        pool,
+        taskInterrupted,
+        'local-development',
+        input,
+      );
       await pool.query("UPDATE credential_requests SET status = 'processing' WHERE turn_id = $1", [
         taskInterrupted.turnId,
       ]);
@@ -384,6 +400,9 @@ test(
         200,
       );
       assert.equal(attempts, 3);
+      await pool.query("UPDATE turns SET status='running',waiting_reason=NULL WHERE id=$1", [
+        taskInterrupted.turnId,
+      ]);
       await assert.rejects(
         restarted.fillSaved(taskInterrupted, 'local-development', saved.json().id, input),
         /fresh credentials/,
@@ -443,7 +462,7 @@ test(
         kind: 'password' as const,
         passwordSelector: '#password',
       };
-      const request = await vault.request(task1, 'local-development', input);
+      const request = await requestCredentials(vault, pool, task1, 'local-development', input);
       const url = request.url.replace('/vault/', '/api/credential-requests/');
       assert.equal((await app.inject({ method: 'POST', url: `${url}/retry` })).statusCode, 409);
       await pool.query(
@@ -464,7 +483,10 @@ test(
         ).statusCode,
         409,
       );
-      const fresh = await vault.request(task1, 'local-development', input);
+      await pool.query("UPDATE turns SET status='running',waiting_reason=NULL WHERE id=$1", [
+        task1.turnId,
+      ]);
+      const fresh = await requestCredentials(vault, pool, task1, 'local-development', input);
       const freshUrl = fresh.url.replace('/vault/', '/api/credential-requests/');
       assert.equal(
         (
@@ -492,11 +514,14 @@ test(
         409,
       );
       const entry = (await vault.list())[0];
+      await pool.query("UPDATE turns SET status='running',waiting_reason=NULL WHERE id=$1", [
+        task1.turnId,
+      ]);
       await assert.rejects(
         vault.fillSaved(task1, 'local-development', entry.id, input),
         /fresh credentials/,
       );
-      const archived = await vault.request(task2, 'local-development', input);
+      const archived = await requestCredentials(vault, pool, task2, 'local-development', input);
       await archive();
       const archivedUrl = archived.url.replace('/vault/', '/api/credential-requests/');
       assert.equal((await app.inject({ url: archivedUrl })).json().status, 'expired');
@@ -521,7 +546,7 @@ test(
       assert.equal(injected, 1);
       failInjection = true;
       const taskRetry = await turn();
-      const failed = await vault.request(taskRetry, 'local-development', input);
+      const failed = await requestCredentials(vault, pool, taskRetry, 'local-development', input);
       const failedUrl = failed.url.replace('/vault/', '/api/credential-requests/');
       assert.equal(
         (
@@ -573,7 +598,7 @@ test(
     });
     vault.registerRoutes(app);
     try {
-      const request = await vault.request(task, 'local-development', {
+      const request = await requestCredentials(vault, pool, task, 'local-development', {
         origin: 'https://example.com',
         label: 'Example',
         kind: 'password',

@@ -63,14 +63,18 @@ test(
       const submitted = await thread.submitUserMessage(prompt, [], { channel: options.channel });
       return running(submitted.turnId);
     };
-    const finish = (turnId: string, status = 'waiting') =>
-      db.pool.query('UPDATE turns SET status=$2,finished_at=now() WHERE id=$1', [turnId, status]);
+    const finish = (turnId: string, status = 'waiting', waitingReason = 'question') =>
+      db.pool.query('UPDATE turns SET status=$2,waiting_reason=$3,finished_at=now() WHERE id=$1', [
+        turnId,
+        status,
+        waitingReason,
+      ]);
     const resumed = async (sourceId: string) =>
       running(
         (await db.pool.query('SELECT id FROM turns WHERE source_id=$1', [sourceId])).rows[0].id,
       );
     const afterCredentials = async (turnId: string) => {
-      await finish(turnId);
+      await finish(turnId, 'waiting', 'credentials');
       await thread.resumeAfterCredentials(turnId);
       return resumed(`credentials:${turnId}`);
     };
@@ -490,7 +494,10 @@ test(
             const first = await approvals.request(resumedTurn, 'GMAIL_SEND_EMAIL', args);
             assert.equal(calls.length, before + 1);
             assert.equal(calls.at(-1)?.sourceMessageId, (await row(origin.turnId)).message_id);
-            const again = await afterCredentials(resumedTurn.turnId);
+            const again =
+              mode === 'credentials'
+                ? await afterCredentials(resumedTurn.turnId)
+                : await afterControl(resumedTurn.turnId);
             assert.deepEqual(await approvals.request(again, 'GMAIL_SEND_EMAIL', args), first);
             assert.equal(calls.length, before + 1);
             await assert.rejects(

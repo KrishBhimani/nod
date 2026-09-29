@@ -137,11 +137,12 @@ export function createTakeover(dependencies: {
       if (!send) throw unavailable();
       try {
         await send.call(dependencies.computer, control.threadId, input);
-        return { ok: true };
       } catch {
         await release().catch(() => {});
         throw unavailable();
       }
+      if ((await controlled()) !== control) throw stale();
+      return { ok: true };
     });
   }
   async function screen(reply: FastifyReply) {

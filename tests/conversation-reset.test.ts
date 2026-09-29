@@ -278,6 +278,9 @@ test(
         ).statusCode,
         404,
       );
+      await db.pool.query(`CREATE TABLE IF NOT EXISTS channel_inbox (
+        source_id text PRIMARY KEY,owner_id text,provider text,channel text,message_id uuid,received_at timestamptz);
+        CREATE TABLE IF NOT EXISTS channel_outbox(message_id uuid PRIMARY KEY,source_id text)`);
       const archived = await personal.manage('history_search', { query: 'Archived' });
       assert.deepEqual(archived, { turns: [], messages: [] });
       const triageContexts: unknown[] = [];

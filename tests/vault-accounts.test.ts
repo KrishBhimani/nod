@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { requestCredentials } from './vault-fixture.ts';
 import test from 'node:test';
 import Fastify from 'fastify';
 import pg from 'pg';
@@ -23,7 +24,7 @@ test(
       'CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz)',
     );
     await pool.query(
-      "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running')",
+      "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text)",
     );
     const threads = new Map<string, string>();
     const tasks = new Map<string, TurnRef>();
@@ -75,7 +76,7 @@ test(
         const name = [...tasks].find(([, value]) => value.turnId === turnId)?.[0];
         assert.ok(name);
         const result = await pool.query(
-          "UPDATE turns SET status='waiting' WHERE id=$1 AND status='running'",
+          "UPDATE turns SET status='succeeded',waiting_reason=NULL WHERE id=$1 AND status='waiting' AND waiting_reason='credentials'",
           [turnId],
         );
         assert.equal(result.rowCount, 1);
@@ -96,7 +97,9 @@ test(
       kind,
     });
     const form = async (taskId: string) => {
-      const request = await vault.request(
+      const request = await requestCredentials(
+        vault,
+        pool,
         task(taskId),
         'local-development',
         input(stages.get(task(taskId).threadId)),
@@ -138,7 +141,9 @@ test(
             }),
           ],
         );
-        const missing = await vault.request(
+        const missing = await requestCredentials(
+          vault,
+          pool,
           task('invitation-missing'),
           'local-development',
           input(),
@@ -159,11 +164,23 @@ test(
         'second-password',
       );
       await addTask('invitation-saved');
-      const saved = await vault.request(task('invitation-saved'), 'local-development', input());
+      const saved = await requestCredentials(
+        vault,
+        pool,
+        task('invitation-saved'),
+        'local-development',
+        input(),
+      );
       assert.equal(saved.invitation.savedLoginAvailable, true);
       assert.doesNotMatch(JSON.stringify(saved.invitation), /same-first|same-second|Personal|Work/);
       await addTask('invitation-otp', 'otp');
-      const otp = await vault.request(task('invitation-otp'), 'local-development', input('otp'));
+      const otp = await requestCredentials(
+        vault,
+        pool,
+        task('invitation-otp'),
+        'local-development',
+        input('otp'),
+      );
       assert.equal(otp.invitation.savedLoginAvailable, undefined);
       const subdomain = await save(
         'Subdomain',
@@ -498,7 +515,13 @@ test(
             assert.equal(injections.length, before);
           }
           const foreignTask = await startTurn('foreign-owner');
-          const foreignRequest = await vault.request(foreignTask, 'foreign-owner', input());
+          const foreignRequest = await requestCredentials(
+            vault,
+            pool,
+            foreignTask,
+            'foreign-owner',
+            input(),
+          );
           const foreignUrl = foreignRequest.url.replace('/vault/', '/api/credential-requests/');
           assert.equal((await app.inject({ url: foreignUrl })).statusCode, 404);
           assert.equal((await choose(foreignUrl, foreign.id)).statusCode, 409);

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { requestCredentials } from './vault-fixture.ts';
 import test from 'node:test';
 import Fastify from 'fastify';
 import pg from 'pg';
@@ -24,7 +25,7 @@ test(
         'CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz)',
       );
       await pool.query(
-        "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running')",
+        "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text)",
       );
       const threadId = randomUUID();
       await pool.query("INSERT INTO threads(id,owner_id) VALUES($1,'local-development')", [
@@ -74,7 +75,7 @@ test(
           const name = [...tasks].find(([, value]) => value.turnId === turnId)?.[0];
           assert.ok(name);
           const result = await pool.query(
-            "UPDATE turns SET status='waiting' WHERE id=$1 AND status='running'",
+            "UPDATE turns SET status='succeeded',waiting_reason=NULL WHERE id=$1 AND status='waiting' AND waiting_reason='credentials'",
             [turnId],
           );
           assert.equal(result.rowCount, 1);
@@ -91,7 +92,9 @@ test(
           roots.set(id, turn.turnId);
         }
         stages.set(threadId, 'identifier');
-        const request = await vault.request(
+        const request = await requestCredentials(
+          vault,
+          pool,
           task(id),
           'local-development',
           requestInput('identifier'),
@@ -155,7 +158,9 @@ test(
             (await app.inject({ method: 'POST', url, payload: { username: 'repeat' } })).statusCode,
             409,
           );
-          const otp = await vault.request(
+          const otp = await requestCredentials(
+            vault,
+            pool,
             task('complete'),
             'local-development',
             requestInput('otp'),

@@ -36,7 +36,7 @@ test(
       'CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz)',
     );
     await pool.query(
-      "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running')",
+      "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text)",
     );
     const turns: Record<string, TurnRef> = {};
     const threads: Record<string, string> = {};
@@ -80,7 +80,10 @@ test(
         passwordSelector: '#missing-password',
         submitSelector: '#old-button',
       });
-      await pool.query("UPDATE turns SET status='waiting' WHERE id=$1", [turns[name].turnId]);
+      await pool.query(
+        "UPDATE turns SET status='waiting',waiting_reason='credentials' WHERE id=$1",
+        [turns[name].turnId],
+      );
       return request.url.replace('/vault/', '/api/credential-requests/');
     };
     try {

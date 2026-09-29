@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer';
+import { threadIdentity } from '../../../src/ports/thread-identity.ts';
 import {
   boundedBody,
   failure,
@@ -238,13 +239,13 @@ export function createComputerCommands(options: {
         Array.isArray(input) ||
         Object.keys(input).some((key) => !['id', 'role', 'threadId'].includes(key)) ||
         input.role !== options.role ||
-        (input.threadId !== undefined &&
-          (typeof input.threadId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(input.threadId))) ||
+        (input.threadId !== undefined && typeof input.threadId !== 'string') ||
         (options.role === 'workspace' && !input.threadId) ||
         (options.role === 'browser' && input.threadId !== undefined)
       )
         throw new Error();
       ownerIdentity(input.id);
+      if (input.threadId !== undefined) threadIdentity(input.threadId);
     } catch (error) {
       if (error instanceof RuntimeControlError) throw error;
       throw new RuntimeControlError(400);

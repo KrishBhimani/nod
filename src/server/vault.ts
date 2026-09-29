@@ -140,7 +140,7 @@ type RequestRow = {
   origin: string;
   label: string;
   kind: CredentialKind;
-  status: 'pending' | 'processing' | 'filled';
+  status: 'pending' | 'processing' | 'filled' | 'superseded' | 'retried';
   selectors: CredentialInput;
   inspection: LoginInspection | null;
   expires_at: Date;
@@ -467,10 +467,13 @@ export async function createVault(pool: Pool, options: VaultOptions) {
         await pool.query(`UPDATE credential_account_selections SET ciphertext='',blocked=true,login_label=''
         WHERE login_label<>'' AND expires_at<=now()`);
         await pool.query(`UPDATE credential_requests r SET resume_pending=false WHERE r.resume_pending=true
-        AND NOT EXISTS(SELECT 1 FROM threads th WHERE th.id=r.thread_id AND th.owner_id=r.owner_id AND th.archived_at IS NULL)`);
+        AND NOT EXISTS(SELECT 1 FROM turns u JOIN threads th ON th.id=u.thread_id AND th.owner_id=u.owner_id
+        WHERE u.id=r.turn_id AND u.thread_id=r.thread_id AND u.owner_id=r.owner_id
+        AND u.status='waiting' AND u.waiting_reason='credentials' AND th.archived_at IS NULL)`);
         const { rows } =
-          await pool.query<RequestRow>(`SELECT r.* FROM credential_requests r JOIN threads th ON th.id=r.thread_id AND th.owner_id=r.owner_id
-        WHERE r.resume_pending=true AND th.archived_at IS NULL`);
+          await pool.query<RequestRow>(`SELECT r.* FROM credential_requests r JOIN turns u ON u.id=r.turn_id AND u.thread_id=r.thread_id AND u.owner_id=r.owner_id
+        JOIN threads th ON th.id=r.thread_id AND th.owner_id=r.owner_id
+        WHERE r.resume_pending=true AND u.status='waiting' AND u.waiting_reason='credentials' AND th.archived_at IS NULL`);
         for (const row of rows) {
           if (closed) break;
           try {
@@ -909,15 +912,16 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
-        `thread:${ownerId}`,
-      ]);
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1,0))",
+        [`thread:${ownerId}`],
+      );
       if (!(await currentTurn(client, turn, ownerId, ' FOR NO KEY UPDATE OF u')))
         throw new VaultError('This task can no longer request credentials.', 409);
       const root = await rootTurn(client, turn, ownerId);
       if (!root) throw new VaultError('This task can no longer request credentials.', 409);
       await client.query(
-        "UPDATE credential_requests SET status='superseded' WHERE thread_id=$1 AND owner_id=$2 AND status='pending'",
+        "UPDATE credential_requests SET status='superseded',expires_at=least(expires_at,now()),resume_pending=false WHERE thread_id=$1 AND owner_id=$2 AND status='pending'",
         [turn.threadId, ownerId],
       );
       await client.query(
@@ -974,8 +978,9 @@ export async function createVault(pool: Pool, options: VaultOptions) {
 
   async function describe(token: string): Promise<CredentialRequest> {
     const { rows } = await pool.query<RequestRow & { current_step: boolean; expired: boolean }>(
-      `SELECT r.*,r.expires_at<=now() AS expired,EXISTS(SELECT 1 FROM threads th WHERE th.id=r.thread_id AND th.owner_id=r.owner_id
-        AND th.archived_at IS NULL) AS current_step FROM credential_requests r WHERE token_hash=$1 AND owner_id=$2`,
+      `SELECT r.*,r.expires_at<=now() AS expired,EXISTS(SELECT 1 FROM turns u JOIN threads th ON th.id=u.thread_id AND th.owner_id=u.owner_id
+        WHERE u.id=r.turn_id AND u.thread_id=r.thread_id AND u.owner_id=r.owner_id
+        AND u.status='waiting' AND u.waiting_reason='credentials' AND th.archived_at IS NULL) AS current_step FROM credential_requests r WHERE token_hash=$1 AND owner_id=$2`,
       [tokenHash(token), owner],
     );
     const row = rows[0];
@@ -1022,7 +1027,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       status:
         row.status === 'filled'
           ? 'filled'
-          : !row.current_step || row.expired
+          : row.status !== 'pending' || !row.current_step || row.expired
             ? 'expired'
             : 'pending',
       expiresAt: new Date(row.expires_at).toISOString(),
@@ -1035,9 +1040,15 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1,0))",
+        [`thread:${owner}`],
+      );
       const rows = await client.query<RequestRow>(
         `SELECT r.* FROM credential_requests r JOIN threads th ON th.id=r.thread_id AND th.owner_id=r.owner_id AND th.archived_at IS NULL
-         WHERE r.token_hash=$1 AND r.owner_id=$2 AND r.status='pending' AND r.expires_at>now() FOR UPDATE OF r NOWAIT`,
+         JOIN turns u ON u.id=r.turn_id AND u.thread_id=r.thread_id AND u.owner_id=r.owner_id
+         AND u.status='waiting' AND u.waiting_reason='credentials'
+         WHERE r.token_hash=$1 AND r.owner_id=$2 AND r.status='pending' AND r.expires_at>now() FOR UPDATE OF r,u,th NOWAIT`,
         [tokenHash(token), owner],
       );
       const row = rows.rows[0];
@@ -1084,6 +1095,8 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       await client.query('BEGIN');
       const current = await client.query<{ thread_id: string }>(
         `SELECT r.thread_id FROM credential_requests r JOIN threads th ON th.id=r.thread_id AND th.owner_id=r.owner_id AND th.archived_at IS NULL
+         JOIN turns u ON u.id=r.turn_id AND u.thread_id=r.thread_id AND u.owner_id=r.owner_id
+         AND u.status='waiting' AND u.waiting_reason='credentials'
         WHERE r.token_hash=$1 AND r.owner_id=$2 AND r.status='pending' AND r.expires_at>now()`,
         [hash, owner],
       );
@@ -1093,19 +1106,29 @@ export async function createVault(pool: Pool, options: VaultOptions) {
           409,
         );
       const locked = await client.query<{ locked: boolean }>(
-        'SELECT pg_try_advisory_xact_lock(hashtextextended($1,0)) AS locked',
+        "SELECT pg_try_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1,0)) AS locked",
         [`vault:${current.rows[0].thread_id}`],
       );
       if (!locked.rows[0]?.locked)
         throw new VaultError('This task is already processing another request.', 409);
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1,0))",
+        [`thread:${owner}`],
+      );
       const { rows } = await client.query<RequestRow>(
-        `UPDATE credential_requests SET status='processing'
-        WHERE token_hash=$1 AND owner_id=$2 AND status='pending' AND expires_at>now() RETURNING *`,
+        `SELECT r.* FROM credential_requests r
+         JOIN threads th ON th.id=r.thread_id AND th.owner_id=r.owner_id AND th.archived_at IS NULL
+         JOIN turns u ON u.id=r.turn_id AND u.thread_id=r.thread_id AND u.owner_id=r.owner_id
+         AND u.status='waiting' AND u.waiting_reason='credentials'
+         WHERE r.token_hash=$1 AND r.owner_id=$2 AND r.status='pending' AND r.expires_at>now() FOR UPDATE OF r,u,th NOWAIT`,
         [hash, owner],
       );
       const row = rows[0];
       if (!row) throw new VaultError('This request is already being filled.', 409);
       submittedId = row.id;
+      await client.query("UPDATE credential_requests SET status='processing' WHERE id=$1", [
+        row.id,
+      ]);
       const result = await operation(row, client);
       await client.query(
         "UPDATE credential_requests SET status='filled',resume_pending=$2 WHERE id=$1",
@@ -1387,10 +1410,16 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     let row: RequestRow;
     try {
       await client.query('BEGIN');
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1,0))",
+        [`thread:${owner}`],
+      );
       const result = await client.query<RequestRow>(
         `SELECT r.* FROM credential_requests r JOIN threads th ON th.id=r.thread_id AND th.owner_id=r.owner_id AND th.archived_at IS NULL
+         JOIN turns u ON u.id=r.turn_id AND u.thread_id=r.thread_id AND u.owner_id=r.owner_id
+         AND u.status='waiting' AND u.waiting_reason='credentials'
         WHERE r.token_hash=$1 AND r.owner_id=$2 AND r.status='pending'
-        AND (r.expires_at<=now() OR r.failed_at IS NOT NULL) FOR UPDATE OF r NOWAIT`,
+        AND (r.expires_at<=now() OR r.failed_at IS NOT NULL) FOR UPDATE OF r,u,th NOWAIT`,
         [tokenHash(token), owner],
       );
       row = result.rows[0];
@@ -1789,6 +1818,8 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     try {
       const { rows } = await pool.query<{ token_hash: string }>(
         `SELECT r.token_hash FROM credential_requests r JOIN threads th ON th.id=r.thread_id AND th.owner_id=r.owner_id
+         JOIN turns u ON u.id=r.turn_id AND u.thread_id=r.thread_id AND u.owner_id=r.owner_id
+         AND u.status='waiting' AND u.waiting_reason='credentials'
          WHERE r.id=$1 AND r.turn_id=$2 AND r.owner_id=$3 AND r.kind='otp' AND r.status='pending' AND r.expires_at>now()
          AND th.archived_at IS NULL`,
         [requestId, turnId, ownerId],

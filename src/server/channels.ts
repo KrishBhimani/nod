@@ -418,7 +418,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
       SELECT DISTINCT ON (m.id) m.id,i.source_id FROM messages m
       JOIN turns u ON u.id=m.turn_id AND u.owner_id=m.owner_id
       JOIN channel_inbox i ON i.channel=u.channel AND i.owner_id=m.owner_id AND i.created_at<=m.created_at
-      WHERE m.role='assistant' AND m.owner_id=$1 AND i.state='submitted'
+      WHERE m.role='assistant' AND m.owner_id=$1 AND i.state='submitted' AND to_jsonb(m)->>'task_id' IS NULL
       ORDER BY m.id,(i.turn_id IS NOT DISTINCT FROM m.turn_id) DESC,i.received_at DESC,i.source_id
       ON CONFLICT(message_id) DO NOTHING`,
       [ownerId],

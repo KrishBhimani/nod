@@ -181,6 +181,13 @@ test(
       await db.initializeDatabase();
       await thread.initializeThreads();
       await personal.initialize({ workers: false });
+      await db.pool.query(`CREATE TABLE channel_inbox (
+        source_id text PRIMARY KEY,owner_id text NOT NULL,provider text NOT NULL,
+        channel text,message_id uuid,received_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE channel_outbox (
+        message_id uuid PRIMARY KEY,source_id text NOT NULL REFERENCES channel_inbox(source_id)
+      )`);
       approvals = await createApprovals(
         async (action, args, context) => {
           calls.push({ action, args, context });
@@ -620,12 +627,21 @@ test(
         assert.equal(resumed[0].background, false);
         assert.equal(resumed[0].thread_id, turn.threadId);
         assert.match(resumed[0].prompt, /linear connection completed/);
-        assert.equal(await turnStatus(turn.turnId), 'waiting');
+        assert.equal(await turnStatus(turn.turnId), 'succeeded');
+        assert.equal(
+          (await db.pool.query('SELECT waiting_reason FROM turns WHERE id=$1', [turn.turnId]))
+            .rows[0].waiting_reason,
+          null,
+        );
         await thread.stopThread();
       });
 
       await t.test('a secure-entry callback and a fresh-link retry each resume once', async () => {
         const turn = await newTurn('waiting');
+        await assert.rejects(thread.resumeAfterCredentials(turn.turnId), { statusCode: 409 });
+        await db.pool.query("UPDATE turns SET waiting_reason='credentials' WHERE id=$1", [
+          turn.turnId,
+        ]);
         await thread.resumeAfterCredentials(turn.turnId);
         await thread.resumeAfterCredentials(turn.turnId);
         const resumed = await db.pool.query('SELECT * FROM turns WHERE source_id=$1', [
@@ -634,16 +650,24 @@ test(
         assert.equal(resumed.rowCount, 1);
         assert.equal(resumed.rows[0].status, 'queued');
         assert.equal(resumed.rows[0].background, false);
-        await thread.retryCredentials(turn.turnId);
-        await thread.retryCredentials(turn.turnId);
+        assert.equal(await turnStatus(turn.turnId), 'succeeded');
+        await assert.rejects(thread.retryCredentials(turn.turnId), { statusCode: 409 });
+        const retryParent = resumed.rows[0].id;
+        await db.pool.query(
+          "UPDATE turns SET status='waiting',waiting_reason='credentials' WHERE id=$1",
+          [retryParent],
+        );
+        await thread.retryCredentials(retryParent);
+        await thread.retryCredentials(retryParent);
         assert.equal(
           (
             await db.pool.query('SELECT id FROM turns WHERE source_id=$1', [
-              `credentials-retry:${turn.turnId}`,
+              `credentials-retry:${retryParent}`,
             ])
           ).rowCount,
           1,
         );
+        assert.equal(await turnStatus(retryParent), 'succeeded');
         await thread.stopThread();
       });
 

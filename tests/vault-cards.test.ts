@@ -32,7 +32,7 @@ test(
     };
     await pool.query(`
       CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz);
-      CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running');
+      CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text);
       CREATE TABLE vault_entries(id text PRIMARY KEY,owner_id text NOT NULL,label text NOT NULL,origin text NOT NULL,username_hint text NOT NULL,ciphertext text NOT NULL,updated_at timestamptz NOT NULL DEFAULT now());
     `);
     const login = { id: randomUUID(), owner_id: owner, origin: 'https://login.example.test' };
@@ -238,6 +238,10 @@ test(
           });
           assert.equal(requested.invitation.savedLoginAvailable, false);
           const token = requested.url.split('/').at(-1)!;
+          await pool.query(
+            "UPDATE turns SET status='waiting',waiting_reason='credentials' WHERE id=$1",
+            [turn.turnId],
+          );
           const description = await app.inject({
             url: `/api/credential-requests/${token}`,
             headers,

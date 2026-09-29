@@ -51,7 +51,7 @@ test('the LinkedIn sign-in page shows the checked login origin and private field
           label: 'My LinkedIn',
           origin: 'https://www.linkedin.com',
           state: 'pending',
-          fromTask: true,
+          fromChat: true,
           expiresAt: new Date(Date.now() + 60_000).toISOString(),
           inspection: {
             origin: 'https://api.linkedin.com',
@@ -67,6 +67,10 @@ test('the LinkedIn sign-in page shows the checked login origin and private field
   try {
     await act(async () => root.render(createElement(BrowserConnection, { token: 'a'.repeat(43) })));
     assert.match(container.textContent ?? '', /Connect linkedin\.com/);
+    assert.equal(
+      container.querySelector('.browser-connection-back[href="/"]')?.textContent,
+      'Back to chat',
+    );
     assert.match(container.textContent ?? '', /Enter your sign-in details/);
     assert.match(container.textContent ?? '', /https:\/\/api\.linkedin\.com/);
     assert.match(container.textContent ?? '', /Open private browser/);
@@ -125,7 +129,7 @@ test('the sign-in page reports checks and a later verification step', async () =
       label: 'My LinkedIn',
       origin: 'https://www.linkedin.com',
       state: 'pending',
-      fromTask: true,
+      fromChat: true,
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
       inspection,
     });

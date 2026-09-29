@@ -119,6 +119,9 @@ async function fixture() {
     await pool.query(
       "CREATE TABLE threads (id uuid PRIMARY KEY,owner_id text,status text NOT NULL DEFAULT 'idle',archived_at timestamptz)",
     );
+    await pool.query(
+      'CREATE TABLE turns(id uuid PRIMARY KEY,thread_id uuid REFERENCES threads(id),owner_id text,status text,waiting_reason text)',
+    );
     const service = await createBrowserConnections(pool, {
       ownerId: 'owner-a',
       computer,
@@ -398,6 +401,10 @@ connectionTest(
     await pool.query("INSERT INTO threads(id,owner_id,status) VALUES($1,'owner-a','running')", [
       turn.threadId,
     ]);
+    await pool.query(
+      "INSERT INTO turns(id,thread_id,owner_id,status) VALUES($1,$2,'owner-a','running')",
+      [turn.turnId, turn.threadId],
+    );
     const result = await service.request(
       { action: 'connect', connectionId: pending.connectionId, url: 'https://www.linkedin.com/' },
       turn,
@@ -495,6 +502,10 @@ connectionTest(
       'owner-a',
       'running',
     ]);
+    await pool.query(
+      "INSERT INTO turns(id,thread_id,owner_id,status,waiting_reason) VALUES($1,$2,'owner-a','waiting','browser')",
+      [turn.turnId, turn.threadId],
+    );
     state.signedIn = false;
     const reconnect = await service.use(connectionId, turn, 'https://www.linkedin.com/jobs/');
     assert.equal(reconnect.status, 'needs_sign_in');
@@ -530,6 +541,10 @@ connectionTest('credential entry holds the thread through injection', async (val
     'running',
   ]);
   const started = await service.begin({ url: 'https://www.linkedin.com/messaging/' }, turn);
+  await pool.query(
+    "INSERT INTO turns(id,thread_id,owner_id,status,waiting_reason) VALUES($1,$2,'owner-a','waiting','browser')",
+    [turn.turnId, turn.threadId],
+  );
   await pool.query("UPDATE threads SET status='idle' WHERE id=$1", [turn.threadId]);
   const renewed = await app.inject({
     method: 'POST',
@@ -566,6 +581,10 @@ connectionTest('credential entry holds the thread through injection', async (val
   const probe = await pool.connect();
   try {
     await assert.rejects(
+      probe.query('SELECT id FROM turns WHERE id=$1 FOR UPDATE NOWAIT', [turn.turnId]),
+      { code: '55P03' },
+    );
+    await assert.rejects(
       probe.query('SELECT id FROM threads WHERE id=$1 FOR UPDATE NOWAIT', [turn.threadId]),
       {
         code: '55P03',
@@ -590,3 +609,148 @@ connectionTest('credential entry holds the thread through injection', async (val
   });
   assert.equal(stale.statusCode, 409);
 });
+
+connectionTest(
+  'website links reject non-waiting turns and disconnect retains nonterminal work',
+  async (value) => {
+    const { pool, app, service, state, inputs, removed } = value;
+    const turn = turnRef();
+    await pool.query("INSERT INTO threads(id,owner_id,status) VALUES($1,'owner-a','idle')", [
+      turn.threadId,
+    ]);
+    await pool.query(
+      "INSERT INTO turns(id,thread_id,owner_id,status,waiting_reason) VALUES($1,$2,'owner-a','waiting','browser')",
+      [turn.turnId, turn.threadId],
+    );
+    const started = await service.begin({ url: 'https://www.linkedin.com/messaging/' }, turn);
+    const token = started.url.split('/').at(-1)!;
+    const route = `/api/browser-connections/attempt/${token}`;
+    for (const status of ['queued', 'running', 'waiting']) {
+      await pool.query('UPDATE turns SET status=$2 WHERE id=$1', [turn.turnId, status]);
+      await assert.rejects(service.disconnect(started.connectionId), /Stop the active work/);
+      assert.equal(removed.length, 0);
+    }
+    for (const [status, reason] of [
+      ['failed', 'browser'],
+      ['cancelled', 'browser'],
+      ['succeeded', null],
+      ['waiting', 'question'],
+    ]) {
+      await pool.query('UPDATE turns SET status=$2,waiting_reason=$3 WHERE id=$1', [
+        turn.turnId,
+        status,
+        reason,
+      ]);
+      assert.equal((await app.inject({ url: route })).statusCode, 409);
+      for (const endpoint of ['credentials', 'control/start', 'finish']) {
+        const response = await app.inject({
+          method: 'POST',
+          url: `${route}/${endpoint}`,
+          payload:
+            endpoint === 'credentials'
+              ? {
+                  origin: state.loginOrigin,
+                  username: 'synthetic@example.test',
+                  password: 'synthetic-secret',
+                }
+              : {},
+        });
+        assert.equal(response.statusCode, 409, `${status}/${endpoint}: ${response.body}`);
+      }
+      assert.equal(inputs.length, 0);
+    }
+    await pool.query("UPDATE turns SET status='cancelled' WHERE id=$1", [turn.turnId]);
+    await service.disconnect(started.connectionId);
+    assert.equal(removed.length, 1);
+  },
+);
+
+connectionTest(
+  'website native input rechecks a queued attempt and commits under its owning wait',
+  async (value) => {
+    const { pool, app, service } = value;
+    const turn = turnRef();
+    await pool.query("INSERT INTO threads(id,owner_id,status) VALUES($1,'owner-a','idle')", [
+      turn.threadId,
+    ]);
+    await pool.query(
+      "INSERT INTO turns(id,thread_id,owner_id,status,waiting_reason) VALUES($1,$2,'owner-a','waiting','browser')",
+      [turn.turnId, turn.threadId],
+    );
+    const started = await service.begin({ url: 'https://www.linkedin.com/messaging/' }, turn);
+    const route = `/api/browser-connections/attempt/${started.url.split('/').at(-1)!}`;
+    assert.equal(
+      (await app.inject({ method: 'POST', url: `${route}/control/start`, payload: {} })).statusCode,
+      200,
+    );
+    const input = await app.inject({
+      method: 'POST',
+      url: `${route}/control/input`,
+      payload: { input: { action: 'type', text: 'Synthetic input' } },
+    });
+    assert.equal(input.statusCode, 200, input.body);
+    assert.equal(
+      (
+        await pool.query('SELECT sign_in_started FROM browser_connections WHERE id=$1', [
+          started.connectionId,
+        ])
+      ).rows[0].sign_in_started,
+      true,
+    );
+    await pool.query("UPDATE turns SET status='cancelled' WHERE id=$1", [turn.turnId]);
+    assert.equal(
+      (
+        await app.inject({
+          method: 'POST',
+          url: `${route}/control/input`,
+          payload: { input: { action: 'type', text: 'Stale input' } },
+        })
+      ).statusCode,
+      409,
+    );
+  },
+);
+
+connectionTest(
+  'a later running turn can replace an obsolete pending website sign-in link',
+  async (value) => {
+    const { pool, app, service } = value;
+    const old = turnRef();
+    await pool.query("INSERT INTO threads(id,owner_id,status) VALUES($1,'owner-a','idle')", [
+      old.threadId,
+    ]);
+    await pool.query(
+      "INSERT INTO turns(id,thread_id,owner_id,status,waiting_reason) VALUES($1,$2,'owner-a','waiting','browser')",
+      [old.turnId, old.threadId],
+    );
+    const initial = await service.begin({ url: 'https://www.linkedin.com/messaging/' }, old);
+    await pool.query("UPDATE turns SET status='cancelled',waiting_reason=NULL WHERE id=$1", [
+      old.turnId,
+    ]);
+    const next = { threadId: old.threadId, turnId: randomUUID() };
+    await pool.query(
+      "INSERT INTO turns(id,thread_id,owner_id,status) VALUES($1,$2,'owner-a','running')",
+      [next.turnId, next.threadId],
+    );
+    const renewed = await service.begin(
+      { url: 'https://www.linkedin.com/messaging/', connectionId: initial.connectionId },
+      next,
+    );
+    assert.notEqual(renewed.url, initial.url);
+    const previous = await app.inject({
+      url: `/api/browser-connections/attempt/${initial.url.split('/').at(-1)!}`,
+    });
+    assert.equal(previous.statusCode, 404);
+    await pool.query("UPDATE turns SET status='waiting',waiting_reason='browser' WHERE id=$1", [
+      next.turnId,
+    ]);
+    assert.equal(
+      (
+        await app.inject({
+          url: `/api/browser-connections/attempt/${renewed.url.split('/').at(-1)!}`,
+        })
+      ).statusCode,
+      200,
+    );
+  },
+);

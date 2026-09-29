@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { requestCredentials } from './vault-fixture.ts';
 import test from 'node:test';
 import Fastify from 'fastify';
 import pg from 'pg';
@@ -29,7 +30,7 @@ async function seedTurns(pool: pg.Pool) {
     'CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz)',
   );
   await pool.query(
-    "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running')",
+    "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text)",
   );
   let threadId = '';
   const tasks = new Map<string, TurnRef>();
@@ -56,10 +57,12 @@ async function seedTurns(pool: pg.Pool) {
   };
   const resume = async (turnId: string) => {
     const name = [...tasks].find(([, value]) => value.turnId === turnId)?.[0];
-    if (!name) return;
-    await pool.query("UPDATE turns SET status='waiting' WHERE id=$1 AND status='running'", [
-      turnId,
-    ]);
+    assert.ok(name, 'The resumed turn must belong to this fixture.');
+    const resumed = await pool.query(
+      "UPDATE turns SET status='succeeded',waiting_reason=NULL WHERE id=$1 AND status='waiting' AND waiting_reason='credentials' RETURNING id",
+      [turnId],
+    );
+    assert.equal(resumed.rowCount, 1);
     await start(name, turnId);
   };
   return { task: (name: string) => tasks.get(name)!, start, resume, archive };
@@ -250,7 +253,7 @@ test(
     reject = false;
     const manualTurn = await turns.start('manual-password');
     pages.set(manualTurn.threadId, inspection('password'));
-    const manual = await vault.request(manualTurn, owner, input);
+    const manual = await requestCredentials(vault, pool, manualTurn, owner, input);
     const readsBeforePassword = read;
     assert.equal(await fill('manual-password'), false);
     assert.equal(read, readsBeforePassword);
@@ -264,6 +267,20 @@ test(
       },
     });
     assert.equal(submitted.statusCode, 200);
+    assert.notEqual(task('manual-password').turnId, manualTurn.turnId);
+    assert.equal(
+      (await pool.query('SELECT status FROM turns WHERE id=$1', [manualTurn.turnId])).rows[0]
+        .status,
+      'succeeded',
+    );
+    assert.equal(
+      (
+        await pool.query('SELECT source_id FROM turns WHERE id=$1', [
+          task('manual-password').turnId,
+        ])
+      ).rows[0].source_id,
+      `credentials:${manualTurn.turnId}`,
+    );
     assert.equal(
       (
         await pool.query(
@@ -330,7 +347,7 @@ test(
       retry: async () => {},
     });
     vault.registerRoutes(app);
-    await vault.request(chat, owner, otpInput);
+    await requestCredentials(vault, pool, chat, owner, otpInput);
     const pending = async () =>
       (
         await pool.query(
@@ -367,6 +384,16 @@ test(
     assert.deepEqual(await vault.submitChatCode(owner, chat.turnId, code, retryId), {
       status: 'submitted',
     });
+    assert.notEqual(turns.task('chat').turnId, chat.turnId);
+    assert.equal(
+      (await pool.query('SELECT status FROM turns WHERE id=$1', [chat.turnId])).rows[0].status,
+      'succeeded',
+    );
+    assert.equal(
+      (await pool.query('SELECT source_id FROM turns WHERE id=$1', [turns.task('chat').turnId]))
+        .rows[0].source_id,
+      `credentials:${chat.turnId}`,
+    );
     assert.deepEqual(await vault.submitChatCode(owner, chat.turnId, code, retryId), {
       status: 'unavailable',
     });

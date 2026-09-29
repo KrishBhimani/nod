@@ -21,6 +21,11 @@ test(
     await admin.query(`CREATE SCHEMA ${schema}`);
     const databaseUrl = new URL(process.env.TEST_DATABASE_URL!);
     databaseUrl.searchParams.set('options', `-c search_path=${schema}`);
+    const previousEnvironment = {
+      DATABASE_URL: process.env.DATABASE_URL,
+      PGBOSS_SCHEMA: process.env.PGBOSS_SCHEMA,
+      OTTO_DATA_ROOT: process.env.OTTO_DATA_ROOT,
+    };
     process.env.DATABASE_URL = databaseUrl.href;
     process.env.PGBOSS_SCHEMA = bossSchema;
     process.env.OTTO_DATA_ROOT = root;
@@ -52,10 +57,18 @@ test(
 
     const dependencies: ThreadDependencies = {
       speech: {
-        synthesize: async () => {
-          throw new Error('Unused fixture');
-        },
+        synthesize: async () => ({
+          bytes: Buffer.from('audio'),
+          fileName: 'fixture.mp3',
+          mimeType: 'audio/mpeg',
+        }),
       },
+      readArtifact: async () => Buffer.from('workspace file'),
+      downloadIntegrationFile: async () => ({
+        bytes: Buffer.from('app file'),
+        name: 'app.csv',
+        mimeType: 'text/csv',
+      }),
       requestCredential: async () => {
         throw new Error('Unused fixture');
       },
@@ -83,6 +96,23 @@ test(
         if (context.attachments.length)
           stagedReads.set(context.prompt, await readFile(context.attachments[0].path, 'utf8'));
         workspaceListings.set(context.prompt, await readdir(context.workspacePath));
+        if (context.prompt === 'publish-workspace') await context.publish('fixture.txt');
+        if (context.prompt === 'publish-screenshot')
+          await context.publishScreenshot!(Buffer.from('image'));
+        if (context.prompt === 'publish-browser')
+          await context.publishBrowserFile!({
+            bytes: Buffer.from('browser'),
+            name: 'browser.pdf',
+            mimeType: 'application/pdf',
+          });
+        if (context.prompt === 'publish-audio') await context.createAudio!('fixture');
+        if (context.prompt === 'publish-integration')
+          await context.downloadIntegrationFile!('fixture', {});
+        if (context.prompt === 'wait-credentials') return { status: 'waiting_credentials' };
+        if (context.prompt === 'wait-browser')
+          return { status: 'waiting_user', waitingFor: 'browser' };
+        if (context.prompt === 'wait-connection')
+          return { status: 'waiting_user', waitingFor: 'question' };
         if (context.prompt === 'runtime-failure') throw new Error('Synthetic runtime failure');
         if (context.prompt === 'ask-question') {
           await context.waitForUser!('Which account should I use?');
@@ -121,6 +151,55 @@ test(
       await thread.startThreadWorkers(dependencies);
 
       let firstThreadId = '';
+
+      await t.test('artifact metadata and delivery message roll back together', async () => {
+        await db.pool
+          .query(`CREATE FUNCTION reject_artifact_reply() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN IF jsonb_array_length(NEW.attachments)>0 AND NEW.role='assistant' THEN RAISE EXCEPTION 'Injected message failure'; END IF; RETURN NEW; END $$;
+          CREATE TRIGGER reject_artifact_reply BEFORE INSERT ON messages FOR EACH ROW EXECUTE FUNCTION reject_artifact_reply()`);
+        try {
+          for (const kind of ['workspace', 'screenshot', 'browser', 'audio', 'integration']) {
+            const before = (await db.pool.query('SELECT count(*)::int AS count FROM artifacts'))
+              .rows[0].count;
+            const files = await readdir(join(root, 'artifacts')).catch(() => []);
+            const submitted = await thread.submitUserMessage(`publish-${kind}`);
+            await waitFor(settled(submitted.turnId));
+            assert.equal(await turnStatus(submitted.turnId), 'failed');
+            assert.equal(
+              (await db.pool.query('SELECT count(*)::int AS count FROM artifacts')).rows[0].count,
+              before,
+              kind,
+            );
+            assert.deepEqual(await readdir(join(root, 'artifacts')), files, kind);
+          }
+        } finally {
+          await db.pool.query(
+            'DROP TRIGGER reject_artifact_reply ON messages; DROP FUNCTION reject_artifact_reply()',
+          );
+        }
+      });
+
+      await t.test('a failed drain finalization recovers queued work without replay', async () => {
+        block('finalization-failure');
+        const first = await thread.submitUserMessage('finalization-failure');
+        await waitFor(() => Boolean(ran(first.turnId)));
+        const next = await thread.submitUserMessage('after-finalization-failure');
+        await db.pool.query(`CREATE SEQUENCE finalize_attempt;
+          CREATE FUNCTION fail_first_finalize() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN IF OLD.status='running' AND NEW.status='idle' AND nextval('finalize_attempt')=1 THEN RAISE EXCEPTION 'Injected finalize failure'; END IF; RETURN NEW; END $$;
+          CREATE TRIGGER fail_first_finalize BEFORE UPDATE ON threads FOR EACH ROW EXECUTE FUNCTION fail_first_finalize()`);
+        try {
+          release('finalization-failure');
+          await waitFor(settled(next.turnId));
+          assert.equal(await turnStatus(first.turnId), 'succeeded');
+          assert.equal(await turnStatus(next.turnId), 'succeeded');
+          assert.equal(runs.filter((context) => context.turnId === first.turnId).length, 1);
+        } finally {
+          await db.pool.query(
+            'DROP TRIGGER fail_first_finalize ON threads; DROP FUNCTION fail_first_finalize(); DROP SEQUENCE finalize_attempt',
+          );
+        }
+      });
 
       await t.test('consecutive messages run as turns on the same thread', async () => {
         const first = await thread.submitUserMessage('first message', [], { channel: 'web' });
@@ -268,6 +347,74 @@ test(
         },
       );
 
+      await t.test('secure resumes require their current wait and are idempotent', async () => {
+        const credentials = await thread.submitUserMessage('wait-credentials');
+        await waitFor(settled(credentials.turnId));
+        await thread.resumeAfterCredentials(credentials.turnId);
+        await thread.resumeAfterCredentials(credentials.turnId);
+        const resumed = (
+          await db.pool.query('SELECT id FROM turns WHERE source_id=$1', [
+            `credentials:${credentials.turnId}`,
+          ])
+        ).rows;
+        assert.equal(resumed.length, 1);
+        assert.equal(await turnStatus(credentials.turnId), 'succeeded');
+        await waitFor(settled(resumed[0].id));
+        await assert.rejects(thread.retryCredentials(credentials.turnId), { statusCode: 409 });
+
+        const obsolete = await thread.submitUserMessage('wait-credentials');
+        await waitFor(settled(obsolete.turnId));
+        const later = await thread.submitUserMessage('a different request');
+        await waitFor(settled(later.turnId));
+        assert.equal(await turnStatus(obsolete.turnId), 'cancelled');
+        await assert.rejects(thread.resumeAfterCredentials(obsolete.turnId), { statusCode: 409 });
+        await assert.rejects(thread.retryCredentials(obsolete.turnId), { statusCode: 409 });
+        assert.equal(await thread.resumeAfterConnection(obsolete.turnId, 'fixture'), false);
+
+        const connection = await thread.submitUserMessage('wait-connection');
+        await waitFor(settled(connection.turnId));
+        assert.equal(await thread.resumeAfterConnection(connection.turnId, 'fixture'), true);
+        assert.equal(await thread.resumeAfterConnection(connection.turnId, 'fixture'), true);
+        const connected = (
+          await db.pool.query('SELECT id FROM turns WHERE source_id=$1', [
+            `connection:${connection.turnId}`,
+          ])
+        ).rows;
+        assert.equal(connected.length, 1);
+        await waitFor(settled(connected[0].id));
+
+        const stopped = await thread.submitUserMessage('wait-credentials');
+        await waitFor(settled(stopped.turnId));
+        await thread.stopThread();
+        assert.equal(await turnStatus(stopped.turnId), 'cancelled');
+        await assert.rejects(thread.resumeAfterCredentials(stopped.turnId), { statusCode: 409 });
+      });
+
+      await t.test('manual browser resume keeps the waiting turn and its channel', async () => {
+        const browser = await thread.submitUserMessage('wait-browser', [], {
+          channel: 'telegram:fixture',
+        });
+        await waitFor(settled(browser.turnId));
+        await thread.pauseForControl();
+        assert.equal((await thread.activeThread()).status, 'manual_control');
+        assert.equal(await turnStatus(browser.turnId), 'cancelled');
+        const resumes = (
+          await db.pool.query('SELECT id,channel,status FROM turns WHERE source_id=$1', [
+            `control:${browser.turnId}`,
+          ])
+        ).rows;
+        assert.equal(resumes.length, 1);
+        assert.equal(resumes[0].channel, 'telegram:fixture');
+        assert.equal(resumes[0].status, 'queued');
+        await thread.resumeFromControl();
+        await waitFor(settled(resumes[0].id));
+        assert.equal(
+          (await db.pool.query('SELECT source_id FROM turns WHERE id=$1', [resumes[0].id])).rows[0]
+            .source_id,
+          `control:${browser.turnId}`,
+        );
+      });
+
       await t.test('stop cancels the running turn and every queued turn', async () => {
         block('stop running');
         const runningTurn = await thread.submitUserMessage('stop running', [], { channel: 'web' });
@@ -359,6 +506,10 @@ test(
       await admin.query(`DROP SCHEMA ${schema} CASCADE`);
       await admin.end();
       await rm(root, { recursive: true, force: true });
+      for (const [key, value] of Object.entries(previousEnvironment)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
     }
   },
 );

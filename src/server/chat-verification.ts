@@ -70,6 +70,7 @@ export async function createChatVerification(
       `SELECT r.id,u.id AS "turnId",r.expires_at AS "expiresAt"
        FROM credential_requests r JOIN turns u ON u.id=r.turn_id JOIN threads th ON th.id=r.thread_id
        WHERE r.owner_id=$1 AND u.owner_id=$1 AND th.owner_id=$1 AND u.channel=$2
+         AND u.status='waiting' AND u.waiting_reason='credentials' AND u.thread_id=r.thread_id
          AND r.kind='otp' AND r.status='pending' AND r.expires_at>now()
          AND th.archived_at IS NULL ORDER BY r.expires_at,r.id LIMIT 50`,
       [options.ownerId, channel],
@@ -90,7 +91,7 @@ export async function createChatVerification(
       throw conflict('Send the verification code by itself in the sign-in conversation.');
     const channel = input.channel ?? 'web';
     const client = await pool.connect();
-    let reserved: { turnId: string; requestId: string } | undefined;
+    let reserved: { threadId: string; turnId: string; requestId: string } | undefined;
     try {
       await client.query('BEGIN');
       const thread = await lockThread(client, options.ownerId);
@@ -127,6 +128,7 @@ export async function createChatVerification(
           throw conflict('This message ID is already in use. Send this as a new message.');
         await client.query('COMMIT');
         return {
+          threadId: previous.thread_id,
           turnId: previous.turn_id,
           messageId: input.clientMessageId,
           messageText: previous.status === 'pending' ? pendingMessage : maskedMessage,
@@ -148,7 +150,8 @@ export async function createChatVerification(
       const requests = await client.query<{ id: string; turn_id: string }>(
         `SELECT r.id,r.turn_id FROM credential_requests r JOIN turns u ON u.id=r.turn_id
          WHERE r.owner_id=$1 AND u.owner_id=$1 AND u.channel=$2 AND r.thread_id=$5
-           AND r.kind='otp' AND r.status='pending' AND r.expires_at>now()
+           AND u.status='waiting' AND u.waiting_reason='credentials' AND u.thread_id=r.thread_id
+         AND r.kind='otp' AND r.status='pending' AND r.expires_at>now()
            AND ($3::uuid IS NULL OR r.turn_id=$3) AND ($4::text IS NULL OR r.id=$4)
            ORDER BY r.expires_at,r.id LIMIT 2 FOR UPDATE OF r`,
         [options.ownerId, channel, turnId ?? null, input.verificationRequestId ?? null, thread.id],
@@ -158,7 +161,8 @@ export async function createChatVerification(
         const waiting = await client.query(
           `SELECT 1 FROM credential_requests r JOIN turns u ON u.id=r.turn_id
            WHERE r.owner_id=$1 AND u.owner_id=$1 AND u.channel=$2 AND r.thread_id=$4
-             AND r.kind='otp' AND r.status='pending'
+             AND (u.status='running' OR (u.status='waiting' AND u.waiting_reason='credentials'))
+             AND u.thread_id=r.thread_id AND r.kind='otp' AND r.status='pending'
              AND ($3::uuid IS NULL OR r.turn_id=$3) LIMIT 1`,
           [options.ownerId, channel, turnId ?? null, thread.id],
         );
@@ -192,7 +196,7 @@ export async function createChatVerification(
         [input.clientMessageId, request.id, codeFingerprint],
       );
       await client.query('COMMIT');
-      reserved = { turnId: request.turn_id, requestId: request.id };
+      reserved = { threadId: thread.id, turnId: request.turn_id, requestId: request.id };
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -235,6 +239,7 @@ export async function createChatVerification(
     }
     options.refresh();
     return {
+      threadId: reserved.threadId,
       turnId: reserved.turnId,
       messageId: input.clientMessageId,
       messageText: maskedMessage,

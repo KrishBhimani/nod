@@ -25,7 +25,7 @@ test(
     const pages = new Map<string, { kind: CredentialKind; label: string; origin: string }>();
     await pool.query(`
       CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz);
-      CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running');
+      CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text);
       CREATE TABLE vault_entries(id text PRIMARY KEY,owner_id text NOT NULL,label text NOT NULL,origin text NOT NULL,username_hint text NOT NULL,ciphertext text NOT NULL,updated_at timestamptz NOT NULL DEFAULT now());
     `);
     const legacy = { id: randomUUID(), owner_id: owner, origin };
@@ -76,7 +76,10 @@ test(
         kind,
         label: 'Untrusted model label',
       });
-      await pool.query("UPDATE turns SET status='waiting' WHERE id=$1", [turn.turnId]);
+      await pool.query(
+        "UPDATE turns SET status='waiting',waiting_reason='credentials' WHERE id=$1",
+        [turn.turnId],
+      );
       return request.url.replace('/vault/', '/api/credential-requests/');
     };
     const task = async () => {

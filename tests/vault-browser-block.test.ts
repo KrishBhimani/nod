@@ -12,7 +12,7 @@ async function seedTurns(pool: pg.Pool, names: string[], owner = 'local-developm
     'CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz)',
   );
   await pool.query(
-    "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running')",
+    "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text)",
   );
   const threadId = randomUUID();
   await pool.query('INSERT INTO threads(id,owner_id) VALUES($1,$2)', [threadId, owner]);
@@ -104,7 +104,10 @@ test(
       ] as const) {
         blocked = false;
         const request = await vault.request(turns[id], 'local-development', input);
-        await pool.query("UPDATE turns SET status='waiting' WHERE id=$1", [turns[id].turnId]);
+        await pool.query(
+          "UPDATE turns SET status='waiting',waiting_reason='credentials' WHERE id=$1",
+          [turns[id].turnId],
+        );
         blocked = true;
         const response = await app.inject({
           method: 'POST',

@@ -28,6 +28,7 @@ import { agentModels } from '../src/shared/model-defaults.ts';
 import { createFixtureMessagingSetup } from './e2e-channels.ts';
 import { workspaceNetwork } from './e2e-workspace.ts';
 import { integrationDatabaseUrl } from './local-database.ts';
+import { createChatEvidence } from './e2e-evidence.ts';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const environment = {
@@ -348,67 +349,24 @@ try {
     if (request.method === 'POST' && request.url.split('?')[0] === '/api/messages')
       audit('chat_request_received', { requestId: request.id });
   });
+  const chatEvidence = createChatEvidence(pool, audit);
   app.addHook('onSend', async (request, _reply, payload) => {
     if (
       request.method === 'POST' &&
       request.url.split('?')[0] === '/api/messages' &&
       typeof payload === 'string'
-    ) {
-      try {
-        const result = JSON.parse(payload);
-        if (typeof result.taskId === 'string')
-          audit('chat_request_accepted', { requestId: request.id, taskId: result.taskId });
-      } catch {}
-    }
+    )
+      chatEvidence.accepted(request.id, payload);
     return payload;
   });
-  const streams = new Set<string>();
-  events.on(
-    'event',
-    (event: { type?: string; taskId?: string; streamId?: string; text?: string }) => {
-      if (event.type !== 'delta' || !event.taskId || !event.text) return;
-      const key = `${event.taskId}:${event.streamId || 'default'}`;
-      if (streams.has(key)) return;
-      streams.add(key);
-      audit('first_visible_delta', { taskId: event.taskId, streamId: event.streamId || '' });
-    },
-  );
-  const states = new Map<string, string>();
-  const messageIds = new Set<string>();
+  events.on('event', chatEvidence.delta);
   const jobs = new Set<string>();
   let polling = false;
   const sample = async () => {
     if (polling || stopping) return;
     polling = true;
     try {
-      const tasks = await pool.query(
-        'SELECT id,status,revision,source,created_at,updated_at FROM tasks ORDER BY created_at',
-      );
-      for (const task of tasks.rows) {
-        const state = `${task.revision}:${task.status}`;
-        if (states.get(task.id) === state) continue;
-        states.set(task.id, state);
-        audit('task_state', {
-          taskId: task.id,
-          status: task.status,
-          revision: task.revision,
-          source: task.source,
-          createdAt: task.created_at.toISOString(),
-          updatedAt: task.updated_at.toISOString(),
-        });
-      }
-      const messages = await pool.query(
-        "SELECT id,task_id,created_at,text IN ('I’m on it. I’ll share the result when it’s ready.','I’m working on that. I’ll be back with the result.','I’m on it. This is taking a little longer.') AS acknowledgement FROM messages WHERE role='assistant' ORDER BY created_at",
-      );
-      for (const message of messages.rows) {
-        if (messageIds.has(message.id)) continue;
-        messageIds.add(message.id);
-        audit(message.acknowledgement ? 'acknowledgement_saved' : 'assistant_message_saved', {
-          taskId: message.task_id,
-          messageId: message.id,
-          createdAt: message.created_at.toISOString(),
-        });
-      }
+      await chatEvidence.sample();
       const scheduled = await pool.query(
         `SELECT id,data,start_after,started_on FROM ${bossSchema}.job WHERE name='scheduled-task' AND started_on IS NOT NULL`,
       );
@@ -454,7 +412,7 @@ try {
     timings: logPath,
     model: { provider, name: model },
     evidence:
-      'Real app, Pi model, Chrome, Vault and task workspace; synthetic connected apps, sign-in website and channel setup. Speech and channel delivery disabled.',
+      'Real app, Pi model, Chrome, Vault and thread workspace; synthetic connected apps, sign-in website and channel setup. Speech and channel delivery disabled.',
   };
   await writeFile(join(directory, 'manifest.json'), JSON.stringify(manifest, null, 2), {
     mode: 0o600,

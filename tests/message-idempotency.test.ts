@@ -47,7 +47,7 @@ test(
         )
       ).rows[0].count,
     });
-    let first: SubmitMessageResponse & { threadId: string };
+    let first: SubmitMessageResponse;
     const firstMessageId = randomUUID();
     try {
       await db.initializeDatabase();
@@ -86,7 +86,7 @@ test(
           };
           const responses = await Promise.all([send(payload), send(payload)]);
           for (const response of responses) assert.equal(response.statusCode, 200, response.body);
-          const reply = responses[0]!.json<SubmitMessageResponse & { threadId: string }>();
+          const reply = responses[0]!.json<SubmitMessageResponse>();
           assert.equal(reply.messageId, clientMessageId);
           assert.equal(reply.threadId, first.threadId);
           assert.notEqual(reply.turnId, first.turnId);
@@ -178,7 +178,7 @@ test(
           );
           const accepted = await send({ text: 'New conversation request', threadId: next });
           assert.equal(accepted.statusCode, 200, accepted.body);
-          const body = accepted.json<SubmitMessageResponse & { threadId: string }>();
+          const body = accepted.json<SubmitMessageResponse>();
           assert.match(body.messageId, /^[0-9a-f-]{36}$/);
           assert.notEqual(body.messageId, firstMessageId);
           assert.equal(body.threadId, next);

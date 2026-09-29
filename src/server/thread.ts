@@ -5,6 +5,7 @@ import { basename, join } from 'node:path';
 import { PgBoss } from 'pg-boss';
 import type { Pool, PoolClient } from 'pg';
 import { pool, transaction } from './db.ts';
+import { migrateLegacyThreads } from './thread-migration.ts';
 import { dataRoot, databaseUrl, ownerId, runtimeMode } from './config.ts';
 import { delta, refresh } from './events.ts';
 import { localArtifacts, type ArtifactService } from './artifacts.ts';
@@ -131,26 +132,7 @@ export interface ThreadDependencies {
 }
 
 export async function initializeThreadSchema(database: Pool | PoolClient = pool) {
-  await database.query(`
-    DO $$
-    BEGIN
-      IF to_regclass('tasks') IS NOT NULL AND to_regclass('conversations') IS NOT NULL THEN
-        INSERT INTO threads(id,owner_id)
-          SELECT gen_random_uuid(),o.owner_id FROM (SELECT DISTINCT owner_id FROM messages WHERE thread_id IS NULL) o
-          WHERE NOT EXISTS (SELECT 1 FROM threads t WHERE t.owner_id=o.owner_id AND t.archived_at IS NULL);
-        UPDATE messages m SET thread_id=th.id FROM tasks t, threads th
-          WHERE m.thread_id IS NULL AND t.id=m.task_id AND th.owner_id=m.owner_id AND th.archived_at IS NULL
-          AND t.conversation_revision=COALESCE((SELECT c.revision FROM conversations c WHERE c.owner_id=t.owner_id AND c.channel=t.channel),0);
-        INSERT INTO threads(id,owner_id,archived_at)
-          SELECT gen_random_uuid(),o.owner_id,now() FROM (SELECT DISTINCT owner_id FROM messages WHERE thread_id IS NULL) o;
-        UPDATE messages m SET thread_id=th.id FROM threads th
-          WHERE m.thread_id IS NULL AND th.owner_id=m.owner_id AND th.archived_at IS NOT NULL
-          AND th.id=(SELECT id FROM threads x WHERE x.owner_id=m.owner_id AND x.archived_at IS NOT NULL ORDER BY x.created_at DESC,x.id LIMIT 1);
-        UPDATE artifacts a SET thread_id=m.thread_id FROM messages m
-          WHERE a.thread_id IS NULL AND m.owner_id=a.owner_id AND m.attachments @> jsonb_build_array(jsonb_build_object('id',a.id::text));
-      END IF;
-    END $$;
-  `);
+  await migrateLegacyThreads(database);
 }
 
 export function activeThreadSql(alias = 'm') {
@@ -176,7 +158,10 @@ export async function activeThread(database: Pool | PoolClient = pool, owner = o
 }
 
 export async function lockThread(client: PoolClient, owner = ownerId) {
-  await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`thread:${owner}`]);
+  await client.query(
+    "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1,0))",
+    [`thread:${owner}`],
+  );
   return activeThread(client, owner);
 }
 
@@ -187,8 +172,10 @@ function turnStopped() {
 export async function withTurnLock<T>(
   turnId: string,
   operation: (client: PoolClient) => Promise<T>,
+  afterRollback?: () => Promise<void>,
 ) {
   return transaction(async (client) => {
+    await lockThread(client);
     const { rows } = await client.query(
       `SELECT u.status FROM turns u JOIN threads th ON th.id=u.thread_id
        WHERE u.id=$1 AND u.owner_id=$2 AND th.archived_at IS NULL FOR NO KEY UPDATE OF u`,
@@ -196,7 +183,7 @@ export async function withTurnLock<T>(
     );
     if (rows[0]?.status !== 'running') throw turnStopped();
     return operation(client);
-  });
+  }, afterRollback);
 }
 
 export async function isTurnRunning(database: Pool | PoolClient, turnId: string) {
@@ -216,7 +203,9 @@ async function sendDrain(client: PoolClient | undefined, threadId: string) {
       ...(client
         ? { db: { executeSql: (sql: string, values: unknown[]) => client.query(sql, values) } }
         : {}),
-      retryLimit: 0,
+      retryLimit: 10,
+      retryDelay: 1,
+      retryBackoff: true,
       expireInSeconds: 1800,
     },
   );
@@ -470,7 +459,7 @@ export async function submitUserMessage(
 
 async function cancelQueued(client: PoolClient, threadId: string) {
   const current = await client.query(
-    "UPDATE turns SET status='cancelled',finished_at=now() WHERE thread_id=$1 AND owner_id=$2 AND status IN ('queued','running') RETURNING id",
+    "UPDATE turns SET status='cancelled',pending_connection_service=NULL,finished_at=now() WHERE thread_id=$1 AND owner_id=$2 AND status IN ('queued','running','waiting') RETURNING id",
     [threadId, ownerId],
   );
   return current.rows.map((row) => row.id as string);
@@ -596,68 +585,88 @@ export async function reactToAssistantMessage(
   return result;
 }
 
-async function turnChannel(client: PoolClient, turnId: string) {
-  return ((
-    await client.query('SELECT channel FROM turns WHERE id=$1 AND owner_id=$2', [turnId, ownerId])
-  ).rows[0]?.channel ?? 'web') as string;
-}
-
-export async function resumeAfterCredentials(turnId: string) {
-  await transaction(async (client) => {
-    await lockThread(client);
-    await enqueueTurn(
-      'The secure credential step has completed. Inspect the current browser and continue the request you were working on. Do not repeat completed external actions.',
-      {
-        source: 'resume',
-        sourceId: `credentials:${turnId}`,
-        channel: await turnChannel(client, turnId),
-        background: false,
-        client,
-      },
-    );
-  });
-  refresh();
-}
-
-export async function retryCredentials(turnId: string) {
-  await transaction(async (client) => {
-    await lockThread(client);
-    await enqueueTurn(
-      'The previous secure sign-in link expired. Inspect the current browser and request a fresh secure credential link if sign-in is still required. Do not repeat completed actions.',
-      {
-        source: 'resume',
-        sourceId: `credentials-retry:${turnId}`,
-        channel: await turnChannel(client, turnId),
-        background: false,
-        client,
-      },
-    );
-  });
-  refresh();
-}
-
-export async function resumeAfterConnection(turnId: string, service: string) {
+async function resumeWaitingTurn(
+  turnId: string,
+  kind: string,
+  reasons: string[],
+  prompt: string,
+  pendingConnectionService?: string,
+) {
   const resumed = await transaction(async (client) => {
-    await lockThread(client);
-    const turn = await client.query(
-      'SELECT 1 FROM turns u JOIN threads th ON th.id=u.thread_id WHERE u.id=$1 AND u.owner_id=$2 AND th.archived_at IS NULL',
-      [turnId, ownerId],
+    const thread = await lockThread(client);
+    const sourceId = `${kind}:${turnId}`;
+    const prior = await client.query(
+      'SELECT 1 FROM turns WHERE owner_id=$1 AND thread_id=$2 AND source_id=$3',
+      [ownerId, thread.id, sourceId],
     );
-    if (!turn.rowCount) return false;
-    await enqueueTurn(
-      `The ${service} connection completed. Continue the request you were working on with this account. Check the connected account and its tools before acting. Do not repeat completed external actions.`,
-      {
-        source: 'resume',
-        sourceId: `connection:${turnId}`,
-        channel: await turnChannel(client, turnId),
-        background: false,
-        client,
-      },
+    if (prior.rowCount) return true;
+    if (pendingConnectionService) {
+      const pending = await client.query(
+        "UPDATE turns SET pending_connection_service=COALESCE(pending_connection_service,$4) WHERE id=$1 AND owner_id=$2 AND thread_id=$3 AND status='running' RETURNING id",
+        [turnId, ownerId, thread.id, pendingConnectionService],
+      );
+      if (pending.rowCount) return true;
+    }
+    const turn = (
+      await client.query(
+        "SELECT channel FROM turns WHERE id=$1 AND owner_id=$2 AND thread_id=$3 AND status='waiting' AND waiting_reason=ANY($4::text[]) FOR UPDATE",
+        [turnId, ownerId, thread.id, reasons],
+      )
+    ).rows[0];
+    if (!turn) return false;
+    await enqueueTurn(prompt, {
+      source: 'resume',
+      sourceId,
+      channel: turn.channel,
+      background: false,
+      client,
+    });
+    await client.query(
+      "UPDATE turns SET status='succeeded',waiting_reason=NULL,pending_connection_service=NULL,finished_at=now() WHERE id=$1",
+      [turnId],
     );
     return true;
   });
   if (resumed) refresh();
   return resumed;
+}
+
+export async function resumeAfterCredentials(turnId: string) {
+  if (
+    !(await resumeWaitingTurn(
+      turnId,
+      'credentials',
+      ['credentials'],
+      'The secure credential step has completed. Inspect the current browser and continue the request you were working on. Do not repeat completed external actions.',
+    ))
+  )
+    throw turnStopped();
+}
+
+export async function retryCredentials(turnId: string) {
+  if (
+    !(await resumeWaitingTurn(
+      turnId,
+      'credentials-retry',
+      ['credentials'],
+      'The previous secure sign-in link expired. Inspect the current browser and request a fresh secure credential link if sign-in is still required. Do not repeat completed actions.',
+    ))
+  )
+    throw turnStopped();
+}
+
+function connectionResumePrompt(service: string) {
+  return `The ${service} connection completed. Continue the request you were working on with this account. Check the connected account and its tools before acting. Do not repeat completed external actions.`;
+}
+
+export async function resumeAfterConnection(turnId: string, service: string) {
+  return resumeWaitingTurn(
+    turnId,
+    'connection',
+    ['question', 'browser'],
+    connectionResumePrompt(service),
+    service,
+  );
 }
 
 const controlResumePrompt =
@@ -667,8 +676,12 @@ export async function pauseForControl(): Promise<{ threadId: string }> {
   const result = await transaction(async (client) => {
     const thread = await lockThread(client);
     const current = await client.query(
-      "UPDATE turns SET status='cancelled',finished_at=now(),error='Paused for browser control.' WHERE thread_id=$1 AND status='running' RETURNING id,channel",
-      [thread.id],
+      `UPDATE turns SET status='cancelled',waiting_reason=NULL,pending_connection_service=NULL,finished_at=now(),error='Paused for browser control.'
+       WHERE id=(SELECT id FROM turns WHERE thread_id=$1 AND owner_id=$2
+         AND (status='running' OR (status='waiting' AND waiting_reason='browser'))
+         ORDER BY started_at DESC NULLS LAST,created_at DESC,id DESC LIMIT 1)
+       RETURNING id,channel`,
+      [thread.id, ownerId],
     );
     for (const turn of current.rows)
       await client.query(
@@ -712,7 +725,12 @@ export async function initializeThreads() {
     console.error('The thread queue reported an error. Check database availability.'),
   );
   await boss.start();
-  await boss.createQueue(queue, { retryLimit: 0, expireInSeconds: 1800 });
+  await boss.createQueue(queue, {
+    retryLimit: 10,
+    retryDelay: 1,
+    retryBackoff: true,
+    expireInSeconds: 1800,
+  });
 }
 
 export const interruptedMessage =
@@ -725,7 +743,7 @@ async function finishTurn(
   fields: { waitingReason?: string | null; error?: string | null } = {},
 ) {
   const updated = await client.query(
-    "UPDATE turns SET status=$2,waiting_reason=$3,error=$4,finished_at=now() WHERE id=$1 AND status='running' RETURNING id",
+    "UPDATE turns SET status=$2,waiting_reason=$3,error=$4,finished_at=now() WHERE id=$1 AND status='running' RETURNING id,channel,pending_connection_service",
     [turn.id, status, fields.waitingReason ?? null, fields.error ?? null],
   );
   if (updated.rowCount)
@@ -739,6 +757,20 @@ async function finishTurn(
           ? 'Waiting for your input.'
           : (fields.error ?? status),
     ]);
+  const pending = updated.rows[0]?.pending_connection_service;
+  if (!pending) return;
+  await client.query('UPDATE turns SET pending_connection_service=NULL WHERE id=$1', [turn.id]);
+  if (status !== 'waiting' || !['question', 'browser'].includes(fields.waitingReason ?? '')) return;
+  await enqueueTurn(connectionResumePrompt(pending), {
+    source: 'resume',
+    sourceId: `connection:${turn.id}`,
+    channel: updated.rows[0].channel,
+    background: false,
+    client,
+  });
+  await client.query("UPDATE turns SET status='succeeded',waiting_reason=NULL WHERE id=$1", [
+    turn.id,
+  ]);
 }
 
 async function interruptTurn(client: PoolClient, turnId: string) {
@@ -798,7 +830,17 @@ export async function startThreadWorkers(dependencies: ThreadDependencies) {
 async function claimNextTurn(threadId: string) {
   return transaction(async (client) => {
     const thread = await lockThread(client);
-    if (thread.id !== threadId || thread.status !== 'idle') return undefined;
+    if (thread.id !== threadId || thread.status === 'manual_control') return undefined;
+    if (thread.status === 'running') {
+      const interrupted = await client.query(
+        "SELECT id FROM turns WHERE thread_id=$1 AND owner_id=$2 AND status='running'",
+        [threadId, ownerId],
+      );
+      for (const turn of interrupted.rows) await interruptTurn(client, turn.id);
+      await client.query("UPDATE threads SET status='idle',updated_at=now() WHERE id=$1", [
+        threadId,
+      ]);
+    }
     const next = (
       await client.query(
         `SELECT * FROM turns WHERE thread_id=$1 AND owner_id=$2 AND status='queued'
@@ -807,6 +849,10 @@ async function claimNextTurn(threadId: string) {
       )
     ).rows[0];
     if (!next) return undefined;
+    await client.query(
+      "UPDATE turns SET status='cancelled',waiting_reason=NULL,finished_at=now() WHERE thread_id=$1 AND owner_id=$2 AND status='waiting' AND waiting_reason IN ('credentials','browser')",
+      [threadId, ownerId],
+    );
     await client.query("UPDATE turns SET status='running',started_at=now() WHERE id=$1", [next.id]);
     await client.query("UPDATE threads SET status='running',updated_at=now() WHERE id=$1", [
       threadId,
@@ -822,14 +868,16 @@ async function drainThread(threadId: string, dependencies: ThreadDependencies) {
   try {
     await executeTurn(turn, dependencies);
   } finally {
-    await transaction(async (client) => {
-      await lockThread(client);
-      await client.query(
-        "UPDATE threads SET status='idle',updated_at=now() WHERE id=$1 AND status='running'",
-        [threadId],
-      );
-      await sendDrain(client, threadId);
-    }).catch(() => {});
+    if (!stopping)
+      await transaction(async (client) => {
+        await lockThread(client);
+        await interruptTurn(client, turn.id);
+        await client.query(
+          "UPDATE threads SET status='idle',updated_at=now() WHERE id=$1 AND status='running'",
+          [threadId],
+        );
+        await sendDrain(client, threadId);
+      });
     refresh();
   }
 }
@@ -842,11 +890,34 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
   running.set(threadId, { turnId, controller });
   if (stopping) controller.abort();
   const timeout = setTimeout(() => controller.abort(), 20 * 60 * 1000);
-  const current = async <T>(operation: (client: PoolClient) => Promise<T>) => {
+  const current = async <T>(
+    operation: (client: PoolClient) => Promise<T>,
+    afterRollback?: () => Promise<void>,
+  ) => {
     if (controller.signal.aborted) throw turnStopped();
-    return withTurnLock(turnId, operation);
+    return withTurnLock(turnId, operation, afterRollback);
   };
   const ensureCurrent = () => current(async () => {});
+  const artifacts = dependencies.artifacts ?? localArtifacts;
+  const publish = async (
+    create: (client: PoolClient) => Promise<Artifact>,
+    text: (artifact: Artifact) => string,
+  ) => {
+    let created: Artifact | undefined;
+    const artifact = await current(
+      async (client) => {
+        const artifact = await create(client);
+        created = artifact;
+        await insertAssistantMessage(client, ref, text(artifact), [artifact]);
+        return artifact;
+      },
+      async () => {
+        if (created) await artifacts.discardUnpublished(created);
+      },
+    );
+    refresh();
+    return artifact;
+  };
   try {
     const confirmed = await dependencies.executeConfirmation?.(turnId, controller.signal);
     if (confirmed) turn.prompt = confirmed.prompt;
@@ -1037,57 +1108,44 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
       },
       publish: async (path, name) => {
         if (!dependencies.readArtifact) throw new Error('Workspace file delivery is unavailable.');
-        const artifact = await current(async () =>
-          (dependencies.artifacts ?? localArtifacts).publishArtifact(
-            threadId,
-            path,
-            name,
-            dependencies.readArtifact!,
-          ),
+        return publish(
+          (client) =>
+            artifacts.publishArtifact(threadId, path, name, dependencies.readArtifact!, client),
+          (artifact) => `Created ${artifact.name}.`,
         );
-        await reply(ref, `Created ${artifact.name}.`, [artifact]);
-        return artifact;
       },
-      publishScreenshot: async (bytes, name) => {
-        const artifact = await current(async () =>
-          (dependencies.artifacts ?? localArtifacts).storeArtifact(
-            Buffer.from(bytes),
-            name && /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\.png$/.test(name) ? name : 'screenshot.png',
-            'image/png',
-            threadId,
-          ),
-        );
-        await reply(ref, `Browser screenshot: ${artifact.name}`, [artifact]);
-        return artifact;
-      },
-      publishBrowserFile: async (file) => {
-        const artifact = await current(async (client) => {
-          const artifact = await (dependencies.artifacts ?? localArtifacts).storeArtifact(
-            Buffer.from(file.bytes),
-            file.name,
-            file.mimeType,
-            threadId,
-            client,
-          );
-          await insertAssistantMessage(client, ref, '', [artifact]);
-          return artifact;
-        });
-        refresh();
-        return artifact;
-      },
+      publishScreenshot: (bytes, name) =>
+        publish(
+          (client) =>
+            artifacts.storeArtifact(
+              Buffer.from(bytes),
+              name && /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\.png$/.test(name) ? name : 'screenshot.png',
+              'image/png',
+              threadId,
+              client,
+            ),
+          (artifact) => `Browser screenshot: ${artifact.name}`,
+        ),
+      publishBrowserFile: (file) =>
+        publish(
+          (client) =>
+            artifacts.storeArtifact(
+              Buffer.from(file.bytes),
+              file.name,
+              file.mimeType,
+              threadId,
+              client,
+            ),
+          () => '',
+        ),
       createAudio: async (text) => {
         await ensureCurrent();
         const audio = await dependencies.speech.synthesize(text, controller.signal);
-        const artifact = await current(async () =>
-          (dependencies.artifacts ?? localArtifacts).storeArtifact(
-            audio.bytes,
-            audio.fileName,
-            audio.mimeType,
-            threadId,
-          ),
+        return publish(
+          (client) =>
+            artifacts.storeArtifact(audio.bytes, audio.fileName, audio.mimeType, threadId, client),
+          () => 'Audio generated by AI.',
         );
-        await reply(ref, 'Audio generated by AI.', [artifact]);
-        return artifact;
       },
       requestCredential: async (input) => {
         await ensureCurrent();
@@ -1112,15 +1170,11 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
               controller.signal,
             );
             const bytes = Buffer.from(file.bytes);
-            const artifact = await current(async () =>
-              (dependencies.artifacts ?? localArtifacts).storeArtifact(
-                bytes,
-                file.name,
-                file.mimeType,
-                threadId,
-              ),
+            const artifact = await publish(
+              (client) =>
+                artifacts.storeArtifact(bytes, file.name, file.mimeType, threadId, client),
+              () => '',
             );
-            await reply(ref, '', [artifact]);
             if (file.mimeType.toLowerCase() !== 'text/csv' || bytes.length > 12_000)
               return artifact;
             try {

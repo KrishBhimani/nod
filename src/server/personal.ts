@@ -381,7 +381,15 @@ export function createPersonalService(dependencies: PersonalDependencies) {
         [ownerId, query],
       );
       const messages = await pool.query(
-        `SELECT m.role,m.text,m.turn_id,split_part(COALESCE(u.channel,'web'),':',1) AS channel FROM messages m LEFT JOIN turns u ON u.id=m.turn_id AND u.owner_id=m.owner_id WHERE m.owner_id=$1 AND ${activeThreadSql('m')} AND to_tsvector('simple',m.text) @@ plainto_tsquery('simple',$2) ORDER BY m.created_at DESC LIMIT 15`,
+        `SELECT m.role,m.text,m.turn_id,split_part(COALESCE(u.channel,route.channel,'web'),':',1) AS channel
+        FROM messages m LEFT JOIN turns u ON u.id=m.turn_id AND u.owner_id=m.owner_id
+        LEFT JOIN LATERAL (
+          SELECT COALESCE(i.channel,i.provider) AS channel FROM channel_inbox i
+          WHERE i.owner_id=m.owner_id AND (i.message_id=m.id OR EXISTS (
+            SELECT 1 FROM channel_outbox o WHERE o.message_id=m.id AND o.source_id=i.source_id
+          )) ORDER BY i.received_at DESC,i.source_id LIMIT 1
+        ) route ON u.channel IS NULL
+        WHERE m.owner_id=$1 AND ${activeThreadSql('m')} AND to_tsvector('simple',m.text) @@ plainto_tsquery('simple',$2) ORDER BY m.created_at DESC LIMIT 15`,
         [ownerId, query],
       );
       return { turns: turns.rows, messages: messages.rows };
