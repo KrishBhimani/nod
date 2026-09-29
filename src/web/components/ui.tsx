@@ -38,13 +38,6 @@ export const Input = React.forwardRef<
   <input ref={ref} className={cn('input', className)} {...props} />
 ));
 Input.displayName = 'Input';
-export const Textarea = React.forwardRef<
-  HTMLTextAreaElement,
-  React.TextareaHTMLAttributes<HTMLTextAreaElement>
->(({ className, ...props }, ref) => (
-  <textarea ref={ref} className={cn('input textarea', className)} {...props} />
-));
-Textarea.displayName = 'Textarea';
 export const Dialog = DialogPrimitive.Root;
 export const DialogTrigger = DialogPrimitive.Trigger;
 export const DialogTitle = DialogPrimitive.Title;

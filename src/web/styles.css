@@ -165,11 +165,6 @@ a svg {
   outline: 2px solid var(--focus-shadow);
   outline-offset: 1px;
 }
-.textarea {
-  resize: vertical;
-  min-height: 88px;
-  line-height: 1.6;
-}
 .field {
   min-width: 0;
   display: grid;

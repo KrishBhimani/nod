@@ -435,58 +435,12 @@
   gap: 18px;
   padding: 12px 0 4px;
 }
-.history-skeleton-row {
-  display: flex;
-  gap: 10px;
-}
-.history-skeleton-mark,
-.history-skeleton-lines > span,
-.history-skeleton-bubble {
-  background: var(--surface-inset);
-  animation: history-skeleton 1.4s ease-in-out infinite;
-}
-.history-skeleton-mark {
-  flex: none;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-}
-.history-skeleton-lines {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 8px;
-  padding-top: 3px;
-}
-.history-skeleton-lines > span {
-  height: 9px;
-  width: min(420px, 70%);
-  border-radius: 5px;
-}
-.history-skeleton-lines > span + span {
-  width: min(260px, 45%);
-  animation-delay: 0.12s;
-}
-.history-skeleton-bubble {
+.history-skeleton > .ghost-bubble {
   align-self: flex-end;
-  width: min(240px, 50%);
-  height: 34px;
-  border-radius: 17px 17px 5px 17px;
 }
-.history-skeleton-row + .history-skeleton-bubble {
-  width: min(180px, 36%);
-}
-@keyframes history-skeleton {
-  50% {
-    opacity: 0.45;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .history-skeleton-mark,
-  .history-skeleton-lines > span,
-  .history-skeleton-bubble {
-    animation: none;
-  }
+.history-skeleton-reply {
+  display: flex;
+  gap: 14px;
 }
 .chat-turn-rail {
   position: absolute;

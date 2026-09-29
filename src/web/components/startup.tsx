@@ -93,7 +93,7 @@ export function ChatSkeleton({
   );
 }
 
-export function StartupShell({ children }: { children: ReactNode }) {
+function StartupShell({ children }: { children: ReactNode }) {
   return (
     <div
       className={`app-shell startup-shell ${readUiPreference('otto.sidebar') === 'collapsed' ? 'sidebar-collapsed' : ''}`}
