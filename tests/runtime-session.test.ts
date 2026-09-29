@@ -2310,6 +2310,41 @@ test('screenshot publishing requires a successful consent check and detects visi
   assert.equal(published, 0);
 });
 
+test('unrelated controls do not block screenshot publication', async () => {
+  let published = 0;
+  await fixture(
+    async (tools) => {
+      await call(tools, 'send_screenshot', {});
+    },
+    {
+      publishScreenshot: async () => {
+        published++;
+        return {
+          id: randomUUID(),
+          name: 'page.png',
+          mimeType: 'image/png',
+          size: 5,
+          url: '/api/artifacts/page',
+        };
+      },
+    },
+    {
+      computer: fakeComputer({
+        act: async () => ({
+          text: 'Read our cookie policy in the footer.',
+          url: 'https://example.com',
+          candidates: [
+            { id: '@offer', label: 'Accept offer' },
+            { id: '@guide', label: 'Necessary information' },
+          ],
+        }),
+        screenshot: async () => Buffer.from('image'),
+      }),
+    },
+  );
+  assert.equal(published, 1);
+});
+
 test('screenshot publishing cannot bypass secure-entry locks, unavailable screens or cancellation', async () => {
   for (const outcome of ['locked', 'unavailable', 'cancelled'] as const) {
     const controller = new AbortController();

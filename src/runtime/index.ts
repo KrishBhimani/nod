@@ -662,12 +662,16 @@ export function createAgentRuntime(dependencies: {
               context.signal,
             );
             context.signal.throwIfAborted();
-            const choices = page.candidates.map((candidate) => candidate.label).join(' ');
+            const choices = page.candidates.map((candidate) => candidate.label);
             const dialog = /\b(?:cookies?|consent)\b/i.test(page.text);
             if (
               dialog &&
-              ((/\b(?:reject|decline|essential|necessary)\b/i.test(choices) &&
-                /\b(?:accept|allow|agree)\b/i.test(choices)) ||
+              ((choices.some((label) => /\b(?:accept|allow|agree)\b/i.test(label)) &&
+                choices.some((label) =>
+                  /\b(?:reject|decline|only essential|only necessary|essential only|necessary only|essential cookies?|necessary cookies?)\b/i.test(
+                    label,
+                  ),
+                )) ||
                 (/\bcookie consent dialog\b/i.test(page.text) &&
                   /\b(?:reject|decline|essential|necessary)\b/i.test(page.text) &&
                   /\b(?:accept|allow|agree)\b/i.test(page.text)))
