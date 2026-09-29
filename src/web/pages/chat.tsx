@@ -250,7 +250,8 @@ export function Chat({
     return () => window.removeEventListener('otto:compose', compose);
   }, []);
   async function send(value: string, attachments: Artifact[]): Promise<ComposerSendResult> {
-    if (sendLock.current || resetLock.current) return { sent: false, restoreText: true };
+    if (sendLock.current || resetLock.current || welcoming)
+      return { sent: false, restoreText: true };
     const sentRevision = revision;
     const reply = replyTo;
     const verificationRequests = (state.verificationRequests ?? []).filter(
@@ -599,7 +600,7 @@ export function Chat({
         <Composer
           key={revision}
           ref={composer}
-          ready={state.configuration.llmReady && !resetting}
+          ready={state.configuration.llmReady && !resetting && !welcoming}
           sending={sending || resetting}
           text={text}
           setText={setText}

@@ -272,7 +272,7 @@ test('restart setup clears archived messages, history, replies and stale streams
   }
 });
 
-test('Get started uses the same restart event and failed reset preserves the existing conversation', async () => {
+test('the restart setup event resets once and a failed reset preserves the existing conversation', async () => {
   const priorFetch = globalThis.fetch;
   const requests: string[] = [];
   let failReset = true;
@@ -383,8 +383,13 @@ test('landing on an empty chat asks Otto to reach out once and shows the greetin
     createdAt: '2026-09-28T12:00:00Z',
   };
   let welcomed = 0;
+  let answer!: () => void;
+  const answered = new Promise<void>((resolve) => {
+    answer = resolve;
+  });
   globalThis.fetch = async (path, options) => {
     if (path === '/api/account/welcome' && options?.method === 'POST') {
+      await answered;
       welcomed++;
       return Response.json({ ok: true });
     }
@@ -410,9 +415,19 @@ test('landing on an empty chat asks Otto to reach out once and shows the greetin
   const fixture = await mount();
   try {
     await act(async () => {
+      window.dispatchEvent(new CustomEvent('otto:compose', { detail: { text: 'Early message' } }));
+      await tick();
+    });
+    const sendButton = () =>
+      fixture.element.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!;
+    assert.equal(sendButton().disabled, true);
+    assert.equal(fixture.element.querySelector('.welcome'), null);
+    await act(async () => {
+      answer();
       await tick();
     });
     assert.equal(welcomed, 1);
+    assert.equal(sendButton().disabled, false);
     assert.match(fixture.element.textContent ?? '', /Hi Alex, I’m looking through your Gmail/);
     assert.ok(fixture.element.querySelector('[aria-label="Otto is typing"]'));
     assert.doesNotMatch(fixture.element.textContent ?? '', /What’s on your mind|Make Otto yours/);
