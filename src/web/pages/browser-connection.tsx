@@ -101,24 +101,25 @@ export function BrowserConnection({ token }: { token: string }) {
   const hasCode = Boolean(ownOrigin && inspection?.fields.some((field) => field.kind === 'otp'));
   const canUseForm =
     (hasUsername || hasPassword || hasCode) && !(hasCode && (hasUsername || hasPassword));
+  const inspectionReady = Boolean(inspection);
   const formOrigin = inspection?.origin ?? attempt?.origin;
   const siteName = attempt?.label ?? attempt?.name ?? 'The website';
   useEffect(() => {
-    if (complete || privateActive || canUseForm || browserPhase !== 'closed') {
+    if (complete || privateActive || canUseForm || !inspectionReady || browserPhase !== 'closed') {
       setFallbackReady(false);
       return;
     }
     const timer = window.setTimeout(() => setFallbackReady(true), 10_000);
     return () => window.clearTimeout(timer);
-  }, [complete, privateActive, canUseForm, browserPhase]);
+  }, [complete, privateActive, canUseForm, inspectionReady, browserPhase]);
 
   useEffect(() => {
-    if (!attempt || submitted || complete || privateActive || canUseForm || fallbackReady) return;
+    if (!attempt || submitted || complete || privateActive || canUseForm) return;
     const timer = window.setInterval(() => {
       void refresh().catch((cause) => setError(errorMessage(cause)));
     }, 2000);
     return () => window.clearInterval(timer);
-  }, [attempt, submitted, complete, privateActive, canUseForm, fallbackReady, refresh]);
+  }, [attempt, submitted, complete, privateActive, canUseForm, refresh]);
 
   const checking =
     !attempt ||

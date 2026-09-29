@@ -442,27 +442,26 @@ export async function createBrowserConnections(
   async function openSignInPage(browserId: string, url: string, signal?: AbortSignal) {
     let observation = await browser.act(browserId, { action: 'open', url, waitMs: 1000 }, signal);
     let inspection = await browser.inspectLogin(browserId);
-    for (let step = 0; step < 3; step += 1) {
-      if (
-        !signInPath(url) ||
-        (new URL(observation.url).pathname !== new URL(url).pathname &&
-          observation.text.trim().length >= 20) ||
-        inspection.fields.length ||
-        inspection.methods.length
-      )
+    if (!signInPath(url)) return { observation, inspection, open: true };
+    let stable = 0;
+    for (let step = 0; step < 5; step += 1) {
+      const page = new URL(observation.url);
+      const inspected = new URL(inspection.url);
+      const open =
+        sameSite(observation.url, url) &&
+        sameSite(inspection.url, observation.url) &&
+        page.pathname !== new URL(url).pathname &&
+        inspected.pathname === page.pathname &&
+        observation.text.trim().length >= 20 &&
+        !inspection.fields.length &&
+        !inspection.methods.length;
+      stable = open ? stable + 1 : 0;
+      if (stable === 2 || inspection.fields.length || inspection.methods.length || step === 4)
         break;
       observation = await browser.act(browserId, { action: 'snapshot', waitMs: 1500 }, signal);
       inspection = await browser.inspectLogin(browserId);
     }
-    return {
-      observation,
-      inspection,
-      open:
-        !signInPath(url) ||
-        (sameSite(observation.url, url) &&
-          new URL(observation.url).pathname !== new URL(url).pathname &&
-          observation.text.trim().length >= 20),
-    };
+    return { observation, inspection, open: stable === 2 };
   }
 
   async function request(raw: unknown, turn: TurnRef, signal?: AbortSignal) {

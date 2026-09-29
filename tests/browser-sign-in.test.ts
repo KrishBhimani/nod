@@ -1198,6 +1198,7 @@ async function connectionFixture() {
       verificationRequired: boolean;
       verificationVisible: boolean;
       loginRedirect: boolean;
+      inspectionLag: number;
       loginOrigin: string;
       pageUrl: string;
       waitForInjection?: Promise<void>;
@@ -1210,6 +1211,7 @@ async function connectionFixture() {
       verificationRequired: false,
       verificationVisible: false,
       loginRedirect: false,
+      inspectionLag: 0,
       loginOrigin: 'https://api.linkedin.com',
       pageUrl: 'https://www.linkedin.com/messaging/',
     };
@@ -1248,9 +1250,15 @@ async function connectionFixture() {
       async inspectLogin(): Promise<LoginInspection> {
         const ready =
           !state.pageUrl.startsWith('https://www.technogym.com') || state.technogymLoginOpen;
+        const lagged = state.inspectionLag > 0;
+        if (lagged) state.inspectionLag -= 1;
+        const inspectedUrl =
+          state.signedIn && state.loginRedirect && !lagged
+            ? state.pageUrl
+            : `${state.loginOrigin}/checkpoint/lg/login`;
         return {
-          origin: state.loginOrigin,
-          url: `${state.loginOrigin}/checkpoint/lg/login`,
+          origin: new URL(inspectedUrl).origin,
+          url: inspectedUrl,
           fields:
             state.signedIn || !ready
               ? []
@@ -1425,6 +1433,7 @@ connectionTest(
     assert.equal(early.statusCode, 409);
     assert.match(early.json().error, /Still checking/);
     state.loginRedirect = true;
+    state.inspectionLag = 2;
     const finished = await app.inject({
       method: 'POST',
       url: `/api/browser-connections/attempt/${token}/finish`,
