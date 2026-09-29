@@ -3,10 +3,11 @@ import test from 'node:test';
 import Fastify from 'fastify';
 import { registerLocalAccess } from '../src/server/access.ts';
 
-test('OAuth return permits top-level Apps navigation and keeps cross-site APIs blocked', async () => {
+test('OAuth return permits top-level Apps and onboarding navigation and keeps cross-site APIs blocked', async () => {
   const app = Fastify();
   registerLocalAccess(app, 4310);
   app.get('/apps', async () => 'Application shell');
+  app.get('/onboarding', async () => 'Application shell');
   app.get('/goals', async () => 'Application shell');
   app.get('/schedule', async () => 'Application shell');
   app.get('/browser', async () => 'Application shell');
@@ -15,7 +16,9 @@ test('OAuth return permits top-level Apps navigation and keeps cross-site APIs b
   app.post('/apps', async () => ({ ok: true }));
   app.get('/api/apps', async () => []);
   app.post('/api/apps/gmail/connect', async () => ({ ok: true }));
-  app.get('/api/apps/callback', async (_request, reply) => reply.redirect('/apps'));
+  app.get('/api/apps/callback', async (_request, reply) =>
+    reply.redirect('/onboarding?connection=connected'),
+  );
   const headers = {
     host: 'localhost:4310',
     'sec-fetch-site': 'cross-site',
@@ -36,7 +39,14 @@ test('OAuth return permits top-level Apps navigation and keeps cross-site APIs b
     const callback = await app.inject({ url: '/api/apps/callback', headers });
     assert.equal(callback.statusCode, 302);
     assert.equal((await app.inject({ url: callback.headers.location!, headers })).statusCode, 200);
-    for (const url of ['/goals', '/schedule', '/browser', '/vault/test-link']) {
+    for (const url of [
+      '/onboarding?connection=connected',
+      '/apps?connection=connected',
+      '/goals',
+      '/schedule',
+      '/browser',
+      '/vault/test-link',
+    ]) {
       assert.equal((await app.inject({ url, headers })).statusCode, 200);
       assert.equal((await app.inject({ method: 'POST', url, headers })).statusCode, 403);
       assert.equal(
