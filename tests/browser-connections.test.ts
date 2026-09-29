@@ -384,6 +384,35 @@ connectionTest(
   },
 );
 
+connectionTest(
+  'model connect can renew a pending session created outside a task',
+  async (value) => {
+    const { service, pool, bindings } = value;
+    const pending = await service.begin({ url: 'https://www.linkedin.com/' });
+    const before = (
+      await pool.query('SELECT * FROM browser_connections WHERE id=$1', [pending.connectionId])
+    ).rows[0];
+    assert.equal(before.state, 'pending');
+    assert.equal(before.task_id, null);
+    const taskId = randomUUID();
+    await pool.query("INSERT INTO tasks VALUES($1,'owner-a','running',0)", [taskId]);
+    const result = await service.request(
+      { action: 'connect', connectionId: pending.connectionId, url: 'https://www.linkedin.com/' },
+      { id: taskId, revision: 0 },
+    );
+    assert.ok('url' in result);
+    assert.notEqual(result.url, pending.url);
+    assert.equal(result.connectionId, pending.connectionId);
+    assert.equal(bindings.at(-1)?.taskId, taskId);
+    assert.equal(bindings.at(-1)?.profileId, before.profile_id);
+    const after = (
+      await pool.query('SELECT * FROM browser_connections WHERE id=$1', [pending.connectionId])
+    ).rows[0];
+    assert.equal(after.state, 'pending');
+    assert.equal(after.task_id, taskId);
+  },
+);
+
 connectionTest('site blocks and login ports keep separate connection states', async (value) => {
   const { app, service, state, bindings, removed } = value;
   state.loginOrigin = 'https://www.technogym.com';
