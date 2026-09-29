@@ -227,8 +227,11 @@ test(
             await reset();
             await seed();
             const response = await send('578231', extra);
-            assert.equal(response.statusCode, 409, response.body);
-            assert.match(response.json().error, /code by itself/);
+            assert.equal(response.statusCode, 'forceNew' in extra ? 400 : 409, response.body);
+            assert.match(
+              response.json().error,
+              'forceNew' in extra ? /Check the supplied values/ : /code by itself/,
+            );
             assert.deepEqual(ordinary, []);
             assert.equal(injected.length, 0);
             assert.equal(
@@ -237,7 +240,9 @@ test(
             );
           }
           await reset();
-          assert.equal((await send('2026', { forceNew: true })).statusCode, 200);
+          assert.equal((await send('2026', { forceNew: true })).statusCode, 400);
+          assert.deepEqual(ordinary, []);
+          assert.equal((await send('2026')).statusCode, 200);
           assert.deepEqual(ordinary, ['2026']);
         },
       );
@@ -257,7 +262,7 @@ test(
           const first = send('481925', { clientMessageId });
           await entering;
           assert.equal((await send('591826', { clientMessageId })).statusCode, 409);
-          assert.equal((await send('481925', { clientMessageId, forceNew: true })).statusCode, 409);
+          assert.equal((await send('481925', { clientMessageId, forceNew: true })).statusCode, 400);
           release();
           assert.equal((await first).statusCode, 200);
           const restarted = await createChatVerification(db.pool, {
@@ -353,7 +358,8 @@ test(
               const response = await ordinarySend(text);
               assert.equal(response.statusCode, 200, response.body);
             }
-            assert.equal((await ordinarySend('2027', { forceNew: true })).statusCode, 200);
+            assert.equal((await ordinarySend('2027', { forceNew: true })).statusCode, 400);
+            assert.equal((await ordinarySend('2027')).statusCode, 200);
             await seed();
             const other = await seed({ kind: 'password', status: 'running' });
             assert.equal(
