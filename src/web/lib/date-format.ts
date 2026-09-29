@@ -52,8 +52,10 @@ export const regions = [
   'TW',
 ];
 
+const browserRegions = new Map<string, string | null>();
+
 export function browserRegion() {
-  const region = timeZoneRegion(Intl.DateTimeFormat().resolvedOptions().timeZone);
+  const region = browserRegions.get(Intl.DateTimeFormat().resolvedOptions().timeZone);
   if (region) return region;
   const languages =
     typeof navigator === 'undefined' ? [] : [...navigator.languages, navigator.language];
@@ -83,6 +85,12 @@ let current: DateFormat = {
   timeZone: validTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone) ?? 'UTC',
 };
 const listeners = new Set<() => void>();
+
+export function resolveBrowserRegion() {
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (!browserRegions.has(timeZone)) browserRegions.set(timeZone, timeZoneRegion(timeZone));
+  for (const listener of listeners) listener();
+}
 
 export function dateFormatFrom(
   preferences: Pick<Preferences, 'locale' | 'hourCycle' | 'timeZone'>,
@@ -119,6 +127,10 @@ export function useDateFormat() {
     () => current,
     () => current,
   );
+}
+
+export function useBrowserRegion() {
+  return useSyncExternalStore(subscribe, browserRegion, browserRegion);
 }
 
 export function formatNumber(

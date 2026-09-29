@@ -29,11 +29,11 @@ import { usePageData } from '../hooks/use-page-data';
 import { errorMessage } from '../lib/api';
 import { SearchPicker, TimeZonePicker } from './time-zone-picker';
 import {
-  browserRegion,
   dateFormatFrom,
   formatDateTime,
   regionLocale,
   regions,
+  useBrowserRegion,
 } from '../lib/date-format';
 import { savePreferences } from '../lib/preferences';
 import { localeRegion } from '../../shared/date-locale';
@@ -53,9 +53,8 @@ const clockOptions: Array<{ value: HourCycle; label: string }> = [
   { value: 'h23', label: '24-hour' },
 ];
 
-function regionOptions(current: string) {
+function regionOptions(current: string, detected: string) {
   const names = new Intl.DisplayNames(['en'], { type: 'region' });
-  const detected = browserRegion();
   return [
     {
       value: 'auto',
@@ -80,6 +79,7 @@ function LanguageAndRegion({ saved }: { saved: AccountPreferences }) {
   useEffect(() => () => request.current?.abort(), []);
   const format = dateFormatFrom(saved);
   const region = localeRegion(saved.locale) ?? 'auto';
+  const detected = useBrowserRegion();
   const zones = [
     ...new Set([
       saved.timeZone,
@@ -119,7 +119,7 @@ function LanguageAndRegion({ saved }: { saved: AccountPreferences }) {
         </span>
         <SearchPicker
           value={region}
-          options={regionOptions(region)}
+          options={regionOptions(region, detected)}
           labels={regionLabels}
           labelledBy={regionLabel}
           disabled={saving}

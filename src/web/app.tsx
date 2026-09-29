@@ -25,7 +25,7 @@ import { Onboarding } from './pages/onboarding';
 import { AccountSettings } from './components/account-settings';
 import type { AccountControls, AccountTab } from './components/account-menu';
 import { usePageData } from './hooks/use-page-data';
-import { setDateFormat } from './lib/date-format';
+import { resolveBrowserRegion, setDateFormat } from './lib/date-format';
 
 function navigate(path: string) {
   window.history.pushState(null, '', path);
@@ -35,11 +35,27 @@ function useSavedDateFormat() {
   const { data } = usePageData<AccountPreferences>('/api/preferences');
   useEffect(() => {
     if (!data) return;
-    const update = () => setDateFormat(data);
+    let cancel = () => {};
+    const update = () => {
+      cancel();
+      setDateFormat(data);
+      const resolve = () => {
+        resolveBrowserRegion();
+        setDateFormat(data);
+      };
+      if (typeof window.requestIdleCallback === 'function') {
+        const handle = window.requestIdleCallback(resolve, { timeout: 1000 });
+        cancel = () => window.cancelIdleCallback(handle);
+      } else {
+        const handle = window.setTimeout(resolve, 0);
+        cancel = () => window.clearTimeout(handle);
+      }
+    };
     update();
     window.addEventListener('focus', update);
     window.addEventListener('languagechange', update);
     return () => {
+      cancel();
       window.removeEventListener('focus', update);
       window.removeEventListener('languagechange', update);
     };
