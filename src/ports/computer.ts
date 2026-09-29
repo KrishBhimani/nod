@@ -51,6 +51,8 @@ export interface LoginMethod {
   supported: boolean;
   reason?: string;
   selector?: string;
+  group?: string;
+  selected?: boolean;
 }
 export interface LoginInspection {
   origin: string;
@@ -59,7 +61,7 @@ export interface LoginInspection {
   fields: LoginField[];
   methods: LoginMethod[];
   submitSelector?: string;
-  emailCode?: { recipient: string; length?: number };
+  emailCode?: { recipient?: string; recipientHint?: string; length?: number };
 }
 export interface CredentialInput {
   threadId: string;

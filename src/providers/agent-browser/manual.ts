@@ -30,7 +30,7 @@ export function maskPageScript(selectors: string[], secrets: string[]): string {
         }
         else if(!child) unreadableFrames.push(frame);
       }
-      for(const e of page.querySelectorAll('input[type="password"],input[autocomplete="one-time-code"],input[autocomplete="username"],input[data-otto-login-field^="identifier"]')) nodes.add(e);
+      for(const e of page.querySelectorAll('input[type="password"],input[autocomplete="one-time-code"],input[autocomplete="username"],input[data-otto-login-field]')) nodes.add(e);
       for(const selector of selectors) { try { for(const e of page.querySelectorAll(selector)) nodes.add(e); } catch {} }
       for(const e of page.querySelectorAll('input,textarea')) if(secrets.some(secret=>secret&&String(e.value??e.textContent??'').includes(secret))) nodes.add(e);
     }

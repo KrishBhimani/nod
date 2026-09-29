@@ -31,9 +31,11 @@ import {
   redactBrowserUrl,
 } from '../src/providers/agent-browser/index.ts';
 import {
+  credentialSubmitScript,
   loginInspectionSchema,
   loginInspectionScript,
 } from '../src/providers/agent-browser/login.ts';
+import { credentialFields, credentialScript } from '../src/providers/agent-browser/credentials.ts';
 import { maskPageScript, protectFocusedField } from '../src/providers/agent-browser/manual.ts';
 import { existingDaemonCommand } from '../src/providers/agent-browser/screens.ts';
 import { runBrowserBridge } from '../src/providers/container-browser/bridge.ts';
@@ -1263,6 +1265,394 @@ test('ambiguous dialogs and separate-window OAuth fail closed and inert controls
   assert.equal(inspection.methods.find((method) => method.id === 'credentials')?.supported, true);
 });
 
+test('sign-in inspection preserves tab and nested radio choices and selects only the observed option', async () => {
+  const pages = [
+    '<h1>Autenticação</h1><div role="tablist" aria-label="Forma de autenticação"><button role="tab" aria-selected="true">CC / CMD</button><button role="tab" aria-selected="false">NIF</button><button role="tab" aria-selected="false">EORI</button></div><section role="tabpanel"><p>Faça a sua autenticação com Cartão de Cidadão ou Chave Móvel Digital</p><button><img alt="Logo Autenticação Gov"></button></section><section hidden><input type="email" value="private-hidden-identifier"></section>',
+    '<h1>Autenticação</h1><form><fieldset><legend>Forma de Autenticação</legend><label><input type="radio" name="identity" checked>Cartão de Cidadão</label><label><input type="radio" name="identity">Chave Móvel Digital</label><input type="radio" name="identity" value="private-protocol-token"><fieldset><legend>Forma de Autenticação via Chave Móvel Digital</legend><label><input type="radio" name="mobile" checked>Telemóvel</label><label><input type="radio" name="mobile">Código QR</label></fieldset></fieldset><button type="submit">Continuar</button></form>',
+  ];
+  for (const [index, html] of pages.entries()) {
+    const dom = new JSDOM(html, {
+      url: 'https://identity.example.test/login',
+      runScripts: 'outside-only',
+    });
+    dom.window.HTMLElement.prototype.getClientRects = () =>
+      [{ x: 0, y: 0, width: 200, height: 30 }] as unknown as DOMRectList;
+    Object.defineProperty(dom.window.HTMLElement.prototype, 'innerText', {
+      get() {
+        return this.textContent;
+      },
+    });
+    try {
+      const inspect = () => loginInspectionSchema.parse(dom.window.eval(loginInspectionScript()));
+      const inspection = inspect();
+      assert.equal(inspection.fields.length, 0);
+      assert.equal(JSON.stringify(inspection).includes('private-hidden-identifier'), false);
+      assert.equal(JSON.stringify(inspection).includes('private-protocol-token'), false);
+      if (index === 0) {
+        assert.deepEqual(
+          inspection.methods
+            .filter((method) => method.group === 'Forma de autenticação')
+            .map(({ label, selected, supported }) => ({ label, selected, supported })),
+          [
+            { label: 'CC / CMD', selected: true, supported: true },
+            { label: 'NIF', selected: false, supported: true },
+            { label: 'EORI', selected: false, supported: true },
+          ],
+        );
+        assert.equal(
+          inspection.methods.find((method) => method.label === 'Logo Autenticação Gov')?.supported,
+          true,
+        );
+        const tab = dom.window.document.querySelector('[role="tab"]')!;
+        tab.parentElement!.append(tab);
+        assert.deepEqual(
+          new Set(inspect().methods.map((method) => method.id)),
+          new Set(inspection.methods.map((method) => method.id)),
+        );
+      } else {
+        assert.deepEqual(
+          inspection.methods
+            .filter((method) => method.group)
+            .map(({ label, group, selected }) => ({ label, group, selected })),
+          [
+            { label: 'Cartão de Cidadão', group: 'Forma de Autenticação', selected: true },
+            { label: 'Chave Móvel Digital', group: 'Forma de Autenticação', selected: false },
+            {
+              label: 'Telemóvel',
+              group: 'Forma de Autenticação via Chave Móvel Digital',
+              selected: true,
+            },
+            {
+              label: 'Código QR',
+              group: 'Forma de Autenticação via Chave Móvel Digital',
+              selected: false,
+            },
+          ],
+        );
+        const method = inspection.methods.find((item) => item.label === 'Chave Móvel Digital')!;
+        assert.equal(method.supported, true);
+        const submitted = (await dom.window.eval(
+          credentialSubmitScript(dom.window.location.origin, method.selector!),
+        )) as { ok: boolean };
+        assert.equal(submitted.ok, true);
+        assert.equal(inspect().methods.find((item) => item.id === method.id)?.selected, true);
+        assert.equal(
+          inspect().methods.find((item) => item.label === 'Cartão de Cidadão')?.selected,
+          false,
+        );
+        assert.equal(inspection.methods.find((item) => item.id === 'continue')?.group, undefined);
+        assert.equal(inspection.methods.find((item) => item.id === 'continue')?.supported, true);
+      }
+    } finally {
+      dom.window.close();
+    }
+  }
+});
+
+test('sign-in inspection recognizes semantic identifiers and PIN labels without exposing or weakening secret fields', () => {
+  for (const [label, type] of [
+    ['Número de telemóvel', 'tel'],
+    ['NIF', 'text'],
+    ['EORI', 'text'],
+  ]) {
+    const dom = new JSDOM(
+      `<h1>Autenticação</h1><form><label for="account">${label}</label><input id="account" type="${type}" value="private-identifier"><label for="secret">PIN de autenticação</label><input id="secret" type="password" value="private-secret"><button type="submit">Autenticar</button></form>`,
+      { url: 'https://identity.example.test/login', runScripts: 'outside-only' },
+    );
+    dom.window.HTMLElement.prototype.getClientRects = () =>
+      [{ x: 0, y: 0, width: 200, height: 30 }] as unknown as DOMRectList;
+    Object.defineProperty(dom.window.HTMLElement.prototype, 'innerText', {
+      get() {
+        return this.textContent;
+      },
+    });
+    try {
+      const inspection = loginInspectionSchema.parse(dom.window.eval(loginInspectionScript()));
+      assert.deepEqual(
+        inspection.fields.map(({ kind, label }) => ({ kind, label })),
+        [
+          { kind: 'identifier', label },
+          { kind: 'password', label: 'PIN de autenticação' },
+        ],
+      );
+      assert.ok(inspection.submitSelector);
+      assert.equal(
+        inspection.methods.find((method) => method.id === 'credentials')?.supported,
+        true,
+      );
+      assert.doesNotMatch(JSON.stringify(inspection), /private-identifier|private-secret/);
+      dom.window.document.querySelector<HTMLInputElement>('#secret')!.type = 'text';
+      const unsupported = loginInspectionSchema.parse(dom.window.eval(loginInspectionScript()));
+      assert.equal(
+        unsupported.fields.some((field) => field.kind === 'password'),
+        false,
+      );
+      assert.equal(
+        unsupported.methods.find((method) => method.id === 'credentials')?.supported,
+        false,
+      );
+      assert.match(
+        dom.window.document.querySelector('#secret')!.getAttribute('data-otto-login-field')!,
+        /^password-unsupported-/,
+      );
+      dom.window.eval(maskPageScript([], []));
+      assert.equal(
+        dom.window.document.querySelector<HTMLElement>('#secret')!.style.color,
+        'transparent',
+      );
+    } finally {
+      dom.window.close();
+    }
+  }
+  const mobile = new JSDOM(
+    '<h1>Autenticação</h1><form><div><p>Número de telemóvel</p><div><span>Portugal: +351</span><input id="field1" value="private-phone"><span>private-phone password</span></div></div><div><p>Inserir PIN</p><input id="field2" type="password" value="private-pin"><span>private-pin PIN</span></div><button>Autenticar</button></form>',
+    { url: 'https://identity.example.test/login', runScripts: 'outside-only' },
+  );
+  mobile.window.HTMLElement.prototype.getClientRects = () =>
+    [{ x: 0, y: 0, width: 200, height: 30 }] as unknown as DOMRectList;
+  Object.defineProperty(mobile.window.HTMLElement.prototype, 'innerText', {
+    get() {
+      return this.textContent;
+    },
+  });
+  try {
+    const inspection = loginInspectionSchema.parse(mobile.window.eval(loginInspectionScript()));
+    assert.deepEqual(
+      inspection.fields.map(({ kind, label }) => ({ kind, label })),
+      [
+        { kind: 'identifier', label: 'Número de telemóvel' },
+        { kind: 'password', label: 'Inserir PIN' },
+      ],
+    );
+    assert.ok(inspection.submitSelector);
+    assert.doesNotMatch(JSON.stringify(inspection), /private-phone|private-pin|Portugal/);
+  } finally {
+    mobile.window.close();
+  }
+  for (const kind of ['identifier', 'password', 'otp'] as const) {
+    for (const source of ['label', 'aria-label', 'placeholder']) {
+      const value = kind === 'otp' ? '137924' : `private-${kind}`;
+      const type = kind === 'identifier' ? 'tel' : kind === 'password' ? 'password' : 'text';
+      const label = `${kind === 'password' ? 'PIN' : kind === 'otp' ? 'Verification code' : 'Phone'} for ${value}`;
+      const dom = new JSDOM(
+        `<form>${source === 'label' ? `<label for="field">${label}</label>` : ''}<input id="field" type="${type}" ${source === 'label' ? '' : `${source}="${label}"`} value="${value}"><button type="submit">Continue</button></form>`,
+        { url: 'https://identity.example.test/login', runScripts: 'outside-only' },
+      );
+      dom.window.HTMLElement.prototype.getClientRects = () =>
+        [{ x: 0, y: 0, width: 200, height: 30 }] as unknown as DOMRectList;
+      Object.defineProperty(dom.window.HTMLElement.prototype, 'innerText', {
+        get() {
+          return this.textContent;
+        },
+      });
+      try {
+        const inspect = () => loginInspectionSchema.parse(dom.window.eval(loginInspectionScript()));
+        assert.equal(inspect().fields[0]?.kind, kind);
+        assert.equal(JSON.stringify(inspect()).includes(value), false);
+        dom.window.document.querySelector<HTMLInputElement>('#field')!.value = '';
+        assert.equal(JSON.stringify(inspect()).includes(value), false);
+      } finally {
+        dom.window.close();
+      }
+    }
+  }
+  for (const [label, delivery, expected] of [
+    [
+      'Código de segurança',
+      'Enviámos um código por email para owner@example.test.',
+      { recipient: 'owner@example.test', length: 6 },
+    ],
+    [
+      'Código de confirmação',
+      'Enviámos um código por email para o***@example.test.',
+      { recipientHint: 'o***@example.test', length: 6 },
+    ],
+    ['Código de confirmação', 'Enviámos um código por email.', { length: 6 }],
+    ['Código recebido por SMS', 'Enviámos um código por SMS.', undefined],
+    [
+      'Código de segurança',
+      'Enviámos um código por email para a@example.test e b@example.test.',
+      undefined,
+    ],
+  ] as const) {
+    const dom = new JSDOM(
+      `<form><p>${delivery}</p><label for="code">${label}</label><input id="code" maxlength="6" value="418693"><button type="submit">Confirmar</button></form>`,
+      { url: 'https://identity.example.test/login', runScripts: 'outside-only' },
+    );
+    dom.window.HTMLElement.prototype.getClientRects = () =>
+      [{ x: 0, y: 0, width: 200, height: 30 }] as unknown as DOMRectList;
+    Object.defineProperty(dom.window.HTMLElement.prototype, 'innerText', {
+      get() {
+        return this.textContent;
+      },
+    });
+    try {
+      const inspection = loginInspectionSchema.parse(dom.window.eval(loginInspectionScript()));
+      assert.deepEqual(
+        inspection.fields.map(({ kind, label }) => ({ kind, label })),
+        [{ kind: 'otp', label }],
+      );
+      assert.deepEqual(inspection.emailCode, expected);
+      assert.equal(JSON.stringify(inspection).includes('418693'), false);
+    } finally {
+      dom.window.close();
+    }
+  }
+});
+
+test('sign-in recognizes focus-unlocked mobile fields despite conflicting OTP autocomplete and securely enters them', () => {
+  const dom = new JSDOM(
+    '<h1>Autenticação</h1><form><div class="row"><div class="col-md-12"><span id="MainContent_lblMobile">Número de telemóvel</span><br><div class="wrapperModal"><div class="intl-tel-input pretty inside"><input id="inputMobile" name="inputMobile" type="text" inputmode="numeric" autocomplete="one-time-code" readonly onfocus="this.removeAttribute(\'readonly\');"></div></div></div></div><div class="row"><div class="col-md-12"><span id="MainContent_lblPin" class="lblMobileTxtModal">Inserir PIN</span><br><div class="wrapperModal"><input name="ctl00$MainContent$txtPin" type="password" maxlength="8" id="MainContent_txtPin" inputmode="numeric" size="8" class="wrapperModalInput"><img alt="Show Password"></div></div></div><button type="submit">Autenticar</button></form>',
+    { url: 'https://identity.example.test/login', runScripts: 'outside-only' },
+  );
+  dom.window.HTMLElement.prototype.getClientRects = () =>
+    [{ x: 0, y: 0, width: 200, height: 30 }] as unknown as DOMRectList;
+  Object.defineProperty(dom.window.HTMLElement.prototype, 'innerText', {
+    get() {
+      return this.textContent;
+    },
+  });
+  try {
+    const mobile = dom.window.document.querySelector<HTMLInputElement>('#inputMobile')!;
+    mobile.onfocus = () => mobile.removeAttribute('readonly');
+    const pin = dom.window.document.querySelector<HTMLInputElement>('#MainContent_txtPin')!;
+    const inspection = loginInspectionSchema.parse(dom.window.eval(loginInspectionScript()));
+    assert.equal(
+      inspection.fields.find((field) => field.kind === 'password')?.label,
+      'Inserir PIN',
+    );
+    assert.deepEqual(
+      inspection.fields.map(({ kind, label }) => ({ kind, label })),
+      [
+        { kind: 'identifier', label: 'Número de telemóvel' },
+        { kind: 'password', label: 'Inserir PIN' },
+      ],
+    );
+    assert.equal(mobile.readOnly, true);
+    assert.ok(inspection.submitSelector);
+    let submitted = false;
+    dom.window.document.querySelector('form')!.onsubmit = (event) => {
+      event.preventDefault();
+      submitted = true;
+    };
+    const fields = credentialFields({
+      threadId: 'mobile-fixture',
+      origin: dom.window.location.origin,
+      kind: 'password',
+      username: '900000000',
+      password: '12345678',
+      usernameSelector: inspection.fields.find((field) => field.kind === 'identifier')!.selector,
+      passwordSelector: inspection.fields.find((field) => field.kind === 'password')!.selector,
+    });
+    const result = dom.window.eval(
+      credentialScript(dom.window.location.origin, fields, inspection.submitSelector),
+    ) as { ok: boolean };
+    assert.equal(result.ok, true);
+    assert.equal(mobile.readOnly, false);
+    assert.equal(mobile.value, '900000000');
+    assert.equal(pin.value, '12345678');
+    assert.equal(mobile.style.color, 'transparent');
+    assert.equal(pin.style.color, 'transparent');
+    assert.equal(submitted, true);
+    assert.doesNotMatch(JSON.stringify(result), /900000000|12345678/);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('sign-in preserves a fixed readonly identifier while securely entering a staged password', () => {
+  const dom = new JSDOM(
+    '<h1>Sign in</h1><form><label for="account">Email</label><input id="account" type="email" readonly value="owner@example.test"><label for="password">Password</label><input id="password" type="password"><button type="submit">Continue</button></form>',
+    { url: 'https://identity.example.test/login', runScripts: 'outside-only' },
+  );
+  dom.window.HTMLElement.prototype.getClientRects = () =>
+    [{ x: 0, y: 0, width: 200, height: 30 }] as unknown as DOMRectList;
+  Object.defineProperty(dom.window.HTMLElement.prototype, 'innerText', {
+    get() {
+      return this.textContent;
+    },
+  });
+  try {
+    const inspection = loginInspectionSchema.parse(dom.window.eval(loginInspectionScript()));
+    assert.deepEqual(
+      inspection.fields.map((field) => field.kind),
+      ['password'],
+    );
+    let submitted = false;
+    dom.window.document.querySelector('form')!.onsubmit = (event) => {
+      event.preventDefault();
+      submitted = true;
+    };
+    const result = dom.window.eval(
+      credentialScript(
+        dom.window.location.origin,
+        [{ selector: inspection.fields[0].selector, value: 'synthetic-password', password: true }],
+        inspection.submitSelector,
+      ),
+    ) as { ok: boolean };
+    assert.equal(result.ok, true);
+    assert.equal(submitted, true);
+    assert.equal(
+      dom.window.document.querySelector<HTMLInputElement>('#account')!.value,
+      'owner@example.test',
+    );
+    assert.equal(dom.window.document.querySelector<HTMLInputElement>('#account')!.readOnly, true);
+    assert.equal(
+      dom.window.document.querySelector<HTMLInputElement>('#password')!.value,
+      'synthetic-password',
+    );
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('secure entry rejects persistent readonly fields and focus-time target or origin changes before entering secrets', () => {
+  for (const behavior of ['locked', 'replace', 'hide', 'password-type', 'origin'] as const) {
+    const dom = new JSDOM(
+      '<input id="mobile" readonly><input id="pin" type="password"><button id="submit">Continue</button>',
+      { url: 'https://identity.example.test/login', runScripts: 'outside-only' },
+    );
+    dom.window.HTMLElement.prototype.getClientRects = () =>
+      [{ x: 0, y: 0, width: 200, height: 30 }] as unknown as DOMRectList;
+    try {
+      const mobile = dom.window.document.querySelector<HTMLInputElement>('#mobile')!;
+      const pin = dom.window.document.querySelector<HTMLInputElement>('#pin')!;
+      let focused = false;
+      let submitted = false;
+      dom.window.document.querySelector<HTMLButtonElement>('#submit')!.onclick = () => {
+        submitted = true;
+      };
+      mobile.onfocus = () => {
+        focused = true;
+        if (behavior === 'locked') return;
+        mobile.readOnly = false;
+        if (behavior === 'replace') mobile.replaceWith(mobile.cloneNode());
+        if (behavior === 'hide') pin.hidden = true;
+        if (behavior === 'password-type') pin.type = 'text';
+        if (behavior === 'origin') dom.reconfigure({ url: 'https://other.example.test/login' });
+      };
+      const result = dom.window.eval(
+        credentialScript(
+          dom.window.location.origin,
+          [
+            { selector: '#mobile', value: '900000000', password: false },
+            { selector: '#pin', value: '12345678', password: true },
+          ],
+          '#submit',
+        ),
+      ) as { ok: boolean };
+      assert.equal(focused, true);
+      assert.equal(result.ok, false);
+      assert.equal(mobile.value, '');
+      assert.equal(pin.value, '');
+      assert.equal(dom.window.document.querySelector<HTMLInputElement>('#mobile')?.value, '');
+      assert.equal(submitted, false);
+    } finally {
+      dom.window.close();
+    }
+  }
+});
+
 test('browser observations redact OAuth callback values, API credentials and signed URL query values', () => {
   const url = redactBrowserUrl(
     'https://example.com/callback?code=private-code&email=private-email&state=private-state&view=account#access_token=private-token',
@@ -1438,6 +1828,13 @@ test('split-code observations hide each private input value and retain unrelated
     const inspection = await computer.inspectLogin('fixture');
     const otp = inspection.fields.find((field) => field.kind === 'otp')!;
     assert.ok(otp);
+    for (const [index, digit] of [...'137924'].entries()) inputs[index].value = digit;
+    const beforeEntry = await computer.act('fixture', { action: 'snapshot' });
+    assert.equal(beforeEntry.text.includes('137924'), false);
+    for (let index = 0; index < 6; index++)
+      assert.ok(
+        beforeEntry.text.includes(`textbox "Digit ${index + 1}" [ref=e${index + 1}]: [redacted]`),
+      );
     await computer.injectCredentials({
       threadId: 'fixture',
       origin: dom.window.location.origin,
