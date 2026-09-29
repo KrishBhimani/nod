@@ -16,6 +16,8 @@ type SafeLink =
 const navigationPaths = new Set(['/', '/apps', '/goals', '/schedule', '/channels', '/vault']);
 const connectionPath =
   /^\/apps\?connect=[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+const e2eConsentPath =
+  /^\/e2e\/connect\/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const localPath =
   /^\/(?:api\/artifacts|vault|credentials)\/[A-Za-z0-9_-]+\/?$|^\/browser-connect\/[A-Za-z0-9_-]{43}\/?$/;
 const setupLabels = {
@@ -60,13 +62,24 @@ export function safeMessageLink(value: string, origin: string): SafeLink | null 
     !absolute &&
     !localPath.test(value.split(/[?#]/, 1)[0]) &&
     !navigationPaths.has(value) &&
-    !connectionPath.test(value)
+    !connectionPath.test(value) &&
+    !e2eConsentPath.test(value)
   )
     return null;
   try {
     const base = new URL(origin);
     const url = new URL(value, base);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null;
+    if (
+      base.protocol === 'http:' &&
+      base.hostname === 'localhost' &&
+      base.port === '4320' &&
+      url.origin === base.origin &&
+      e2eConsentPath.test(url.pathname) &&
+      !url.search &&
+      !url.hash
+    )
+      return { href: url.pathname, kind: 'navigation' };
     if (!absolute || url.origin === base.origin) {
       if (
         url.origin === base.origin &&

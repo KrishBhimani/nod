@@ -25,6 +25,55 @@ test('Apps links use the app route without obsolete aliases', () => {
   assert.equal(safeMessageLink(`${connect}#token`, origin), null);
 });
 
+test('isolated E2E consent links require the exact HTTP harness origin and no suffix', () => {
+  const path = '/e2e/connect/7f455e58-c202-4401-bb22-0a4e853a3ef5';
+  const origin = 'http://localhost:4320';
+  for (const value of [path, `${origin}${path}`]) {
+    assert.deepEqual(safeMessageLink(value, origin), { href: path, kind: 'navigation' });
+    for (const suffix of ['#token', '?next=/apps', '?next=https://evil.example', '/extra', '/'])
+      assert.equal(safeMessageLink(`${value}${suffix}`, origin), null, `${value}${suffix}`);
+  }
+  for (const otherOrigin of [
+    'https://localhost:4320',
+    'http://localhost:4310',
+    'http://localhost',
+    'http://127.0.0.1:4320',
+    'http://example.test:4320',
+    'http://localhost.example.test:4320',
+  ]) {
+    assert.equal(safeMessageLink(path, otherOrigin), null, otherOrigin);
+    assert.equal(safeMessageLink(`${otherOrigin}${path}`, otherOrigin), null, otherOrigin);
+  }
+});
+
+test('synthetic consent opens in the current tab while ordinary external links retain theirs', () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const path = '/e2e/connect/7f455e58-c202-4401-bb22-0a4e853a3ef5';
+  try {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { location: { origin: 'http://localhost:4320' } },
+    });
+    for (const href of [path, `http://localhost:4320${path}`]) {
+      const result = render(`[Connect synthetic account](${href})`);
+      const anchor = result.match(/<a [^>]*>/)?.[0];
+      assert.ok(anchor);
+      assert.ok(anchor.includes(`href="${path}"`));
+      assert.doesNotMatch(anchor, /target=/);
+      assert.match(anchor, /rel="noopener noreferrer"/);
+    }
+    assert.match(render('[Docs](https://example.com/docs)'), /target="_blank"/);
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { location: { origin: 'https://localhost:4320' } },
+    });
+    assert.doesNotMatch(render(`[Connect synthetic account](${path})`), /<a /);
+  } finally {
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  }
+});
+
 test('markdown artifact links show the filename without markdown punctuation', () => {
   const path = '/api/artifacts/cf047140-c98b-496b-96e2-365472458734';
   const result = render(`Title: Example Domain. Artifact: [browser-check.txt](${path})`);

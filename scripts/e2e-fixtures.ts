@@ -417,6 +417,35 @@ const toolDefinitions = [
     parameters: { type: 'object', properties: {} },
   },
   {
+    name: 'GOOGLESHEETS_SEARCH_SPREADSHEETS',
+    description: 'Find spreadsheets by title in the selected synthetic Google Sheets account.',
+    parameters: {
+      type: 'object',
+      properties: { query: { type: 'string' }, max_results: { type: 'integer' } },
+    },
+  },
+  {
+    name: 'GOOGLESHEETS_GET_SPREADSHEET_INFO',
+    description: 'Get the title and tab names of a synthetic Google spreadsheet by ID or URL.',
+    parameters: {
+      type: 'object',
+      properties: { spreadsheet_id: { type: 'string' } },
+      required: ['spreadsheet_id'],
+    },
+  },
+  {
+    name: 'GOOGLESHEETS_BATCH_GET',
+    description: 'Read bounded cell ranges from a synthetic Google spreadsheet.',
+    parameters: {
+      type: 'object',
+      properties: {
+        spreadsheet_id: { type: 'string' },
+        ranges: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['spreadsheet_id'],
+    },
+  },
+  {
     name: 'GMAIL_CREATE_EMAIL_DRAFT',
     description: 'Save an unsent synthetic Gmail draft. This does not send email.',
     parameters: {
@@ -758,6 +787,102 @@ export function createIntegrationFixture(baseUrl: string, audit: Audit = () => {
               ],
               fixture: true,
             };
+          if (action === 'GOOGLESHEETS_SEARCH_SPREADSHEETS') {
+            const query = String(args.query ?? '').toLowerCase();
+            return {
+              spreadsheets:
+                !query || 'september spending test'.includes(query)
+                  ? [
+                      {
+                        id: 'otto-e2e-spending-2026-09',
+                        name: 'September spending test',
+                        webViewLink:
+                          'https://docs.google.com/spreadsheets/d/otto-e2e-spending-2026-09/edit',
+                      },
+                    ]
+                  : [],
+              fixture: true,
+            };
+          }
+          if (
+            action === 'GOOGLESHEETS_GET_SPREADSHEET_INFO' ||
+            action === 'GOOGLESHEETS_BATCH_GET'
+          ) {
+            const id = 'otto-e2e-spending-2026-09';
+            let matched = args.spreadsheet_id === id;
+            if (!matched && typeof args.spreadsheet_id === 'string') {
+              try {
+                const url = new URL(args.spreadsheet_id);
+                matched =
+                  url.origin === 'https://docs.google.com' &&
+                  !url.username &&
+                  !url.password &&
+                  [`/spreadsheets/d/${id}`, `/spreadsheets/d/${id}/edit`].includes(
+                    url.pathname.replace(/\/$/, ''),
+                  );
+              } catch {}
+            }
+            if (!matched) throw new Error('The synthetic spreadsheet was not found.');
+            if (action === 'GOOGLESHEETS_GET_SPREADSHEET_INFO')
+              return {
+                spreadsheetId: id,
+                properties: { title: 'September spending test' },
+                sheets: ['Spending', 'Budget'].map((title) => ({ properties: { title } })),
+                fixture: true,
+              };
+            if (args.ranges !== undefined && !Array.isArray(args.ranges))
+              throw new Error('The synthetic cell ranges are invalid.');
+            const valueRanges = (
+              Array.isArray(args.ranges) ? args.ranges : ['Spending!A1:E20']
+            ).map((range) => {
+              const cells =
+                typeof range === 'string'
+                  ? /^(?:'([^']+)'|([^'!]+))!\$?([A-Z]{1,3})\$?([1-9]\d{0,7})(?::\$?([A-Z]{1,3})\$?([1-9]\d{0,7}))?$/i.exec(
+                      range,
+                    )
+                  : null;
+              if (!cells) throw new Error('The synthetic cell range is invalid.');
+              const tab = cells[1] ?? cells[2];
+              const column = (name: string) =>
+                [...name.toUpperCase()].reduce(
+                  (value, letter) => value * 26 + letter.charCodeAt(0) - 64,
+                  0,
+                );
+              const firstColumn = column(cells[3]);
+              const lastColumn = column(cells[5] ?? cells[3]);
+              const firstRow = Number(cells[4]);
+              const lastRow = Number(cells[6] ?? cells[4]);
+              if (lastColumn < firstColumn || lastRow < firstRow)
+                throw new Error('The synthetic cell range is invalid.');
+              const values =
+                tab === 'Spending'
+                  ? [
+                      ['Date', 'Category', 'Merchant', 'Amount EUR', 'Kind'],
+                      ['2026-09-28', 'Food', 'Grocer One', '32.50', 'one-off'],
+                      ['2026-09-28', 'Food', 'Grocer Two', '17.50', 'one-off'],
+                      ['2026-09-28', 'Transport', 'Rail Pass', '125.00', 'one-off'],
+                      ['2026-09-28', 'Software', 'Figma', '20.00', 'subscription'],
+                      ['2026-09-28', 'Software', 'Notion', '20.00', 'subscription'],
+                    ]
+                  : tab === 'Budget'
+                    ? [
+                        ['Category', 'Monthly budget EUR'],
+                        ['Food', '200.00'],
+                        ['Transport', '100.00'],
+                        ['Software', '60.00'],
+                      ]
+                    : undefined;
+              if (!values) throw new Error('The synthetic sheet tab was not found.');
+              return {
+                range,
+                values: values
+                  .slice(firstRow - 1, lastRow)
+                  .map((row) => row.slice(firstColumn - 1, lastColumn))
+                  .filter((row) => row.length > 0),
+              };
+            });
+            return { spreadsheetId: id, valueRanges, fixture: true };
+          }
           if (action === 'GMAIL_SEND_EMAIL') {
             const item = recordWrite(action, accountId!);
             return { id: item.id, fixture: true, deliveredExternally: false };
@@ -871,7 +996,7 @@ consentForm.addEventListener('submit', async (event) => {
     });
     if (!response.ok) throw new Error('Connection failed');
     const destination = new URL(response.url, location.href);
-    if (destination.origin !== location.origin || destination.pathname !== '/apps')
+    if (destination.origin !== location.origin || !['/apps', '/', '/onboarding', '/connected.html'].includes(destination.pathname))
       throw new Error('Unexpected destination');
     location.assign(destination.href);
   } catch {

@@ -423,6 +423,118 @@ test('synthetic app consent preserves callback state, verified account ownership
   }
 });
 
+test('synthetic spending Sheet returns fixed rows and stays read-only', async (t) => {
+  const app = Fastify();
+  const fixture = createIntegrationFixture('http://localhost:4320');
+  fixture.register(app);
+  const session = await fixture.provider.createSession('owner-a', {});
+  const account = await session.authorize(
+    'googlesheets',
+    'http://localhost:4320/api/apps/callback',
+  );
+  try {
+    await app.inject({ method: 'POST', url: `/e2e/connect/${account.accountId}` });
+    const listed = (await session.execute(
+      'GOOGLESHEETS_SEARCH_SPREADSHEETS',
+      { query: 'September spending' },
+      account.accountId,
+    )) as {
+      spreadsheets: Array<{ id: string; name: string; webViewLink: string }>;
+    };
+    assert.equal(listed.spreadsheets[0].name, 'September spending test');
+    assert.match(listed.spreadsheets[0].webViewLink, /otto-e2e-spending-2026-09/);
+    const info = (await session.execute(
+      'GOOGLESHEETS_GET_SPREADSHEET_INFO',
+      { spreadsheet_id: listed.spreadsheets[0].id },
+      account.accountId,
+    )) as {
+      properties: { title: string };
+      sheets: Array<{ properties: { title: string } }>;
+    };
+    assert.equal(info.properties.title, 'September spending test');
+    assert.deepEqual(
+      info.sheets.map((sheet) => sheet.properties.title),
+      ['Spending', 'Budget'],
+    );
+    const read = async (range: string, spreadsheetId = listed.spreadsheets[0].id) =>
+      (await session.execute(
+        'GOOGLESHEETS_BATCH_GET',
+        { spreadsheet_id: spreadsheetId, ranges: [range] },
+        account.accountId,
+      )) as {
+        valueRanges: Array<{ values: string[][] }>;
+      };
+    assert.deepEqual(
+      (await read('Spending!A1:E20')).valueRanges[0].values.slice(1).map((row) => row[3]),
+      ['32.50', '17.50', '125.00', '20.00', '20.00'],
+    );
+    assert.deepEqual(
+      (await read('Budget!A1:B20')).valueRanges[0].values.slice(1).map((row) => row[1]),
+      ['200.00', '100.00', '60.00'],
+    );
+    await assert.rejects(read('Unknown!A1:B20'), /not found/);
+    await t.test('cell ranges return only the requested rows and columns', async () => {
+      assert.deepEqual((await read('Spending!A2')).valueRanges[0].values, [['2026-09-28']]);
+      assert.deepEqual((await read("'Spending'!$C$3:$D$4")).valueRanges[0].values, [
+        ['Grocer Two', '17.50'],
+        ['Rail Pass', '125.00'],
+      ]);
+      assert.deepEqual((await read('Budget!b3:c20')).valueRanges[0].values, [
+        ['100.00'],
+        ['60.00'],
+      ]);
+      for (const range of ['Spending!A100:E100', 'Spending!Z1:ZZ3'])
+        assert.deepEqual((await read(range)).valueRanges[0].values, []);
+      for (const range of ['Spending!invalid', 'Spending!A0:E2', 'Spending!C4:A2', 'Spending!A1:E'])
+        await assert.rejects(read(range), /range/);
+      await assert.rejects(
+        session.execute(
+          'GOOGLESHEETS_BATCH_GET',
+          { spreadsheet_id: listed.spreadsheets[0].id, ranges: 'Spending!A1' },
+          account.accountId,
+        ),
+        /range/,
+      );
+    });
+    await t.test(
+      'only the exact spreadsheet ID or its Google Sheets URL identifies the fixture',
+      async () => {
+        const url = listed.spreadsheets[0].webViewLink;
+        const fromUrl = (await session.execute(
+          'GOOGLESHEETS_GET_SPREADSHEET_INFO',
+          { spreadsheet_id: url },
+          account.accountId,
+        )) as { spreadsheetId: string };
+        assert.equal(fromUrl.spreadsheetId, listed.spreadsheets[0].id);
+        for (const id of [
+          `unrelated-${listed.spreadsheets[0].id}-suffix`,
+          `${listed.spreadsheets[0].id}-suffix`,
+          url.replace('docs.google.com', 'evil.example'),
+          url.replace('https:', 'http:'),
+          url.replace('docs.google.com', 'user:password@docs.google.com'),
+          `${url}/unrelated`,
+        ])
+          for (const action of ['GOOGLESHEETS_GET_SPREADSHEET_INFO', 'GOOGLESHEETS_BATCH_GET'])
+            await assert.rejects(
+              session.execute(
+                action,
+                { spreadsheet_id: id, ranges: ['Budget!A1:B20'] },
+                account.accountId,
+              ),
+              /not found/,
+            );
+        assert.deepEqual(
+          (await read('Budget!B2', `${url}?usp=sharing#gid=1`)).valueRanges[0].values,
+          [['200.00']],
+        );
+      },
+    );
+    assert.equal(fixture.writes.length, 0);
+  } finally {
+    await app.close();
+  }
+});
+
 test('synthetic Gmail drafts remain unsent and destructive operations stay bound to observed account records', async () => {
   const app = Fastify();
   const audit: unknown[] = [];
@@ -690,6 +802,58 @@ test('synthetic consent submits a nonempty form once, follows the verified callb
   } finally {
     release();
     dom.window.close();
+    await app.close();
+  }
+});
+
+test('synthetic consent retains popup completion parameters and rejects unexpected destinations', async () => {
+  const origin = 'http://localhost:4320';
+  const app = Fastify();
+  const fixture = createIntegrationFixture(origin);
+  fixture.register(app);
+  const session = await fixture.provider.createSession('synthetic-owner', {});
+  const nonce = randomBytes(32).toString('base64url');
+  const account = await session.authorize(
+    'googlesheets',
+    `${origin}/api/apps/callback?state=${nonce}`,
+  );
+  const pageUrl = `${origin}/e2e/connect/${account.accountId}`;
+  const page = await app.inject({ method: 'GET', url: new URL(pageUrl).pathname });
+  try {
+    for (const [destination, accepted] of [
+      [`${origin}/apps?connection=connected`, true],
+      [`${origin}/?connection=continued&service=googlesheets`, true],
+      [`${origin}/onboarding?connection=connected`, true],
+      [`${origin}/connected.html?connection=connected&service=googlesheets&attempt=${nonce}`, true],
+      [`https://evil.example/connected.html?attempt=${nonce}`, false],
+      [`${origin}/connected.html/other?attempt=${nonce}`, false],
+      [`${origin}/api/apps/callback?state=${nonce}`, false],
+    ] as const) {
+      const dom = new JSDOM(page.body, { url: pageUrl });
+      const navigations: string[] = [];
+      try {
+        runInNewContext(dom.window.document.querySelector('script')!.textContent!, {
+          document: dom.window.document,
+          fetch: async () => ({ ok: true, url: destination }),
+          URL,
+          URLSearchParams,
+          location: { href: pageUrl, origin, assign: (url: string) => navigations.push(url) },
+        });
+        const button = dom.window.document.querySelector('button')!;
+        button.click();
+        for (let tick = 0; button.disabled && tick < 20; tick++)
+          await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(button.disabled, false);
+        assert.deepEqual(navigations, accepted ? [destination] : [], destination);
+        assert.equal(
+          dom.window.document.querySelector<HTMLElement>('[role="alert"]')!.hidden,
+          accepted,
+        );
+      } finally {
+        dom.window.close();
+      }
+    }
+  } finally {
     await app.close();
   }
 });

@@ -51,7 +51,12 @@ export const MessageText = memo(function MessageText({
               return (
                 <a
                   href={link.href}
-                  target={setup?.href.startsWith('/apps?connect=') ? undefined : '_blank'}
+                  target={
+                    setup?.href.startsWith('/apps?connect=') ||
+                    link.href.startsWith('/e2e/connect/')
+                      ? undefined
+                      : '_blank'
+                  }
                   rel="noopener noreferrer"
                 >
                   {setup ? setup.label : children}

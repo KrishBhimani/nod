@@ -188,6 +188,146 @@ test(
       );
 
       await t.test(
+        'a connected account can finish an owned schedule request after consent',
+        async () => {
+          const args = {
+            title: 'Daily spending check',
+            prompt: 'Check the connected spending Sheet.',
+            kind: 'recurring',
+            cron: '59 11 * * *',
+            timeZone: 'Europe/Madrid',
+          };
+          for (const [instruction, schedule] of [
+            [
+              "Using my spending Google Sheet, tell me what I spent this week by category and how that compares with my monthly budget. Then check it every morning at 11:59 Europe/Madrid and tell me if I'm over.",
+              args,
+            ],
+            [
+              'Amanhã às 09:00, lembra-me de rever as faturas.',
+              {
+                title: 'Rever faturas',
+                prompt: 'Remind the user to review invoices',
+                kind: 'once',
+                runAt: '2099-01-01T09:00:00Z',
+                timeZone: 'Europe/Lisbon',
+              },
+            ],
+          ] as const) {
+            const authorized = await begin(instruction);
+            await db.pool.query(
+              "UPDATE tasks SET prompt='Continue after account consent',revision=1,action_resume_kind='connection',action_resume_revision=1 WHERE id=$1",
+              [authorized],
+            );
+            const before = calls.length;
+            const result = await approvals.request(authorized, 'OTTO_schedule_create', schedule, {
+              revision: 1,
+            });
+            assert.equal(result.requiresConfirmation, undefined);
+            assert.deepEqual(
+              await approvals.request(authorized, 'OTTO_schedule_create', schedule, {
+                revision: 1,
+              }),
+              result,
+            );
+            assert.equal(calls.length, before + 1);
+            assert.deepEqual(calls.at(-1), {
+              action: 'OTTO_schedule_create',
+              args: schedule,
+              sourceMessageId: (await row(authorized)).source_message_id,
+            });
+            assert.equal((await proposal(authorized)).status, 'completed');
+            assert.equal((await proposal(authorized)).confirmation_message_id, null);
+          }
+          const before = calls.length;
+          for (const [instruction, resumeRevision] of [
+            ['Read my spending Sheet and summarize it.', 1],
+            ['Summarize my daily spending Sheet.', 1],
+            ['Check my daily spending Sheet.', 1],
+            ['Review my monthly spending Sheet.', 1],
+            ['Read my spending Sheet, then check it every morning.', 0],
+            ['Read my spending Sheet, but do not schedule a daily check.', 1],
+            ['Do not create a schedule; check my Sheet every day manually.', 1],
+            ['Check my Sheet every day, but do not create a schedule.', 1],
+            ['Não cries uma agenda; verifica a minha folha todos os dias.', 1],
+            ['Check my Sheet every day without creating a schedule.', 1],
+            ['Not a schedule; check my Sheet every day.', 1],
+            ['Tell me how to check my Sheet every day.', 1],
+            ['Read my Sheet, then tell me whether you can check it every day.', 1],
+            ['Draft this plan:\nCheck my Sheet every day.', 1],
+            ['Summarize this note: ‘Standing instructions. Check my Sheet every day.’', 1],
+            [
+              'Summarize this HTML quote: <blockquote>Standing instructions. Check my Sheet every day.</blockquote>',
+              1,
+            ],
+            ['Check my Sheet today.', 1],
+          ] as const) {
+            const blocked = await begin(instruction);
+            await db.pool.query(
+              "UPDATE tasks SET prompt='Continue after account consent',revision=1,action_resume_kind='connection',action_resume_revision=$2 WHERE id=$1",
+              [blocked, resumeRevision],
+            );
+            await assert.rejects(
+              approvals.request(blocked, 'OTTO_schedule_create', args, { revision: 1 }),
+              /direct request/,
+            );
+            assert.equal(await proposal(blocked), undefined);
+          }
+          assert.equal(calls.length, before);
+        },
+      );
+
+      await t.test('connected schedules retain exact source and resume authority', async () => {
+        const instruction = 'Check my spending Sheet every morning.';
+        const args = {
+          title: 'Daily spending check',
+          prompt: 'Check the connected spending Sheet.',
+          kind: 'recurring',
+          cron: '0 9 * * *',
+          timeZone: 'Europe/Lisbon',
+        };
+        const before = calls.length;
+        for (const options of [
+          { source: 'event' as const },
+          { source: 'schedule' as const },
+          { sourceId: `onboarding:${randomUUID()}` },
+        ]) {
+          const id = await begin(instruction, options);
+          await db.pool.query(
+            "UPDATE tasks SET prompt='Continue after account consent',revision=1,action_resume_kind='connection',action_resume_revision=1 WHERE id=$1",
+            [id],
+          );
+          await assert.rejects(
+            approvals.request(id, 'OTTO_schedule_create', args, { revision: 1 }),
+            /direct request|scheduled action needs an explicit instruction/,
+          );
+          assert.equal(await proposal(id), undefined);
+        }
+        for (const mutation of [
+          "UPDATE tasks SET action_resume_kind='credentials' WHERE id=$1",
+          "UPDATE tasks SET action_resume_kind='manual_control' WHERE id=$1",
+          "UPDATE tasks SET action_resume_kind='approval' WHERE id=$1",
+          'UPDATE tasks SET action_resume_revision=0 WHERE id=$1',
+          "UPDATE tasks SET owner_id='foreign' WHERE id=$1",
+          "UPDATE messages SET owner_id='foreign' WHERE task_id=$1 AND role='user'",
+          "UPDATE messages SET role='assistant' WHERE task_id=$1 AND role='user'",
+          "UPDATE tasks SET status='cancelled' WHERE id=$1",
+        ]) {
+          const id = await begin(instruction);
+          await db.pool.query(
+            "UPDATE tasks SET prompt='Continue after account consent',revision=1,action_resume_kind='connection',action_resume_revision=1 WHERE id=$1",
+            [id],
+          );
+          await db.pool.query(mutation, [id]);
+          await assert.rejects(
+            approvals.request(id, 'OTTO_schedule_create', args, { revision: 1 }),
+            /direct request|no longer running/,
+          );
+          assert.equal(await proposal(id), undefined);
+        }
+        assert.equal(calls.length, before);
+      });
+
+      await t.test(
         'local planning cannot inherit background, stale, foreign or synthetic source authority',
         async () => {
           const before = calls.length;
