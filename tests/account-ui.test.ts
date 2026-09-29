@@ -463,6 +463,8 @@ test('preference drafts survive refresh, save only edited fields and remain retr
   let saved = {
     notificationRule: 'Synthetic preferences',
     timeZone: 'Europe/Lisbon',
+    locale: 'en-GB',
+    hourCycle: 'auto',
     quietHoursEnabled: true,
     quietStart: '22:00',
     quietEnd: '08:00',
@@ -510,7 +512,10 @@ test('preference drafts survive refresh, save only edited fields and remain retr
     saved = { ...saved, timeZone: 'UTC' };
     await act(async () => pageDataCache.update('/api/preferences', () => saved));
     assert.equal(toggle.getAttribute('aria-checked'), 'false');
-    assert.equal(document.querySelector('.time-zone-picker-trigger')?.textContent, 'UTC');
+    assert.equal(
+      document.querySelector('.account-time-zone .time-zone-picker-trigger')?.textContent,
+      'UTC',
+    );
     const submit = () =>
       document
         .querySelector('form')!
@@ -526,6 +531,98 @@ test('preference drafts survive refresh, save only edited fields and remain retr
     assert.deepEqual(writes, [{ quietHoursEnabled: false }, { quietHoursEnabled: false }]);
     assert.equal(document.querySelector('.account-settings-actions'), null);
     assert.equal(document.querySelector('[role="alert"]'), null);
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
+    pageDataCache.clear();
+    globalThis.fetch = previous;
+  }
+});
+
+test('language and region choices save instantly and update the live example', async () => {
+  const previous = globalThis.fetch;
+  let saved = {
+    notificationRule: 'Synthetic preferences',
+    timeZone: 'Europe/Lisbon',
+    locale: 'en-GB',
+    hourCycle: 'auto',
+    quietHoursEnabled: true,
+    quietStart: '22:00',
+    quietEnd: '08:00',
+  };
+  const writes: unknown[] = [];
+  globalThis.fetch = async (_path, options) => {
+    if (options?.method !== 'PATCH') return Response.json(saved);
+    const patch = JSON.parse(String(options.body));
+    writes.push(patch);
+    saved = { ...saved, ...patch };
+    return Response.json(saved);
+  };
+  pageDataCache.clear();
+  const element = document.createElement('div');
+  document.body.append(element);
+  const root = createRoot(element);
+  const account: AccountControls = {
+    user,
+    theme: 'system',
+    saving: false,
+    canLogout: true,
+    onSettings() {},
+    onTheme: async () => {},
+    onLogout() {},
+  };
+  const example = () => document.querySelector('.account-region .field-hint')!.textContent!;
+  try {
+    await act(async () =>
+      root.render(
+        createElement(AccountSettings, {
+          account,
+          open: true,
+          initialTab: 'Preferences',
+          onOpenChange() {},
+          onName: async () => {},
+          returnFocus: () => null,
+        }),
+      ),
+    );
+    assert.equal(document.querySelector('.account-region h4')?.textContent, 'Language and region');
+    assert.equal(
+      document.querySelector('.account-region .time-zone-picker-trigger')?.textContent,
+      'English (United Kingdom)',
+    );
+    assert.doesNotMatch(example(), /\b[ap]m\b/i);
+    const twelveHour = [
+      ...document.querySelectorAll<HTMLButtonElement>('.account-clock-options button'),
+    ].find((button) => button.textContent === '12-hour')!;
+    await act(async () => twelveHour.click());
+    assert.equal(twelveHour.getAttribute('aria-pressed'), 'true');
+    assert.match(example(), /\b[ap]m\b/i);
+    await act(async () =>
+      document
+        .querySelector<HTMLButtonElement>('.account-region .time-zone-picker-trigger')!
+        .click(),
+    );
+    const search = document.querySelector<HTMLInputElement>('input[aria-label="Search regions"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(
+        search,
+        'portuguese portugal',
+      );
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const options = [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')];
+    assert.deepEqual(
+      options.map((option) => option.textContent),
+      ['Português (Portugal)'],
+    );
+    await act(async () => options[0].click());
+    assert.deepEqual(writes, [{ hourCycle: 'h12' }, { locale: 'pt-PT' }]);
+    assert.equal(
+      document.querySelector('.account-region .time-zone-picker-trigger')?.textContent,
+      'Português (Portugal)',
+    );
+    assert.match(example(), /\d{2}\/\d{2}/);
+    assert.equal(document.querySelector('.account-settings-actions'), null);
   } finally {
     await act(async () => root.unmount());
     element.remove();

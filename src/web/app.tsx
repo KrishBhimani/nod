@@ -15,18 +15,38 @@ import { navigationItems } from './lib/navigation';
 import { BrowserWindow } from './pages/browser';
 import { BrowserConnection } from './pages/browser-connection';
 import { readUiPreference, writeUiPreference } from './lib/ui-preferences';
-import type { AccountUpdate, SessionResponse } from '../shared/account';
+import type { AccountPreferences, AccountUpdate, SessionResponse } from '../shared/account';
 import { useSession } from './hooks/use-session';
 import { SignIn } from './pages/sign-in';
 import { Privacy } from './pages/privacy';
 import { Onboarding } from './pages/onboarding';
 import { AccountSettings } from './components/account-settings';
 import type { AccountControls, AccountTab } from './components/account-menu';
+import { usePageData } from './hooks/use-page-data';
+import { api } from './lib/api';
+import { browserLocale, setDateFormat } from './lib/date-format';
 
 function navigate(path: string) {
   window.history.pushState(null, '', path);
   window.dispatchEvent(new PopStateEvent('popstate'));
 }
+function useSavedDateFormat() {
+  const { data, update } = usePageData<AccountPreferences>('/api/preferences');
+  const localeSaved = useRef(false);
+  useEffect(() => {
+    if (!data) return;
+    setDateFormat(data);
+    if (data.locale || localeSaved.current) return;
+    localeSaved.current = true;
+    void api<AccountPreferences>('/api/preferences', {
+      method: 'PATCH',
+      body: JSON.stringify({ locale: browserLocale() }),
+    })
+      .then((result) => update(() => result))
+      .catch(() => {});
+  }, [data, update]);
+}
+
 function Workspace({
   path,
   session,
@@ -43,6 +63,7 @@ function Workspace({
   const { state, streams, error, connected, refresh, resetConversation } = useAppState(
     session.user!.id,
   );
+  useSavedDateFormat();
   const [inspector, setInspector] = useState(
     () =>
       path === '/dev' || (window.innerWidth > 720 && readUiPreference('otto.inspector') === 'open'),

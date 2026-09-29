@@ -41,6 +41,12 @@ export type BrowserConnectionRequest =
   | { action: 'connect'; url: string; connectionId?: string; label?: string }
   | { action: 'use'; url: string; connectionId: string };
 
+export interface RuntimeAccount {
+  preferredName: string | null;
+  fullName: string | null;
+  email: string | null;
+}
+
 export interface RuntimeContext {
   taskId: string;
   ownerId: string;
@@ -48,6 +54,9 @@ export interface RuntimeContext {
   background?: boolean;
   channel?: string;
   timeZone?: string;
+  locale?: string;
+  hourCycle?: 'auto' | 'h12' | 'h23';
+  account?: RuntimeAccount;
   currentMessageId?: string;
   replyTo?: { id: string; role: string; text: string };
   history: Array<{

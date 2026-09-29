@@ -6,9 +6,11 @@ import { Button, Loading, Notice } from '../components/ui';
 import { usePageData } from '../hooks/use-page-data';
 import { draftInChat, goalDraft } from '../lib/secondary-pages';
 import { DeletePlan } from '../components/delete-plan';
+import { formatCalendarDate, useDateFormat } from '../lib/date-format';
 
 export function GoalRow({ goal }: { goal: Goal }) {
   const headingId = useId();
+  const dateFormat = useDateFormat();
   return (
     <article className="saved-plan" aria-labelledby={headingId}>
       <div className="saved-plan-title">
@@ -27,7 +29,9 @@ export function GoalRow({ goal }: { goal: Goal }) {
         </p>
       )}
       <div className="saved-plan-footer">
-        <span>{goal.targetDate ? `Target ${goal.targetDate}` : ''}</span>
+        <span>
+          {goal.targetDate ? `Target ${formatCalendarDate(goal.targetDate, dateFormat)}` : ''}
+        </span>
         <div className="saved-plan-actions">
           {goal.status !== 'completed' && (
             <Button

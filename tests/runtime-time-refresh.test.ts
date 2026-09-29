@@ -223,3 +223,77 @@ test('reopening a persisted Pi session sends the current date and owner time zon
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('the signed-in profile, region and clock reach the model but not observations or task events', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'otto-account-context-'));
+  const prompts: string[] = [];
+  const observed: unknown[] = [];
+  const events: string[] = [];
+  const agent: Agent = {
+    open: async (options) => {
+      prompts.push(options.systemPrompt);
+      return {
+        resumed: false,
+        prompt: async () => {
+          options.onEvent({
+            type: 'model_usage',
+            id: randomUUID(),
+            provider: 'fixture',
+            model: 'fixture-model',
+            inputTokens: 1,
+            outputTokens: 1,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            totalTokens: 2,
+            costUsd: null,
+            costSource: 'unavailable',
+            createdAt: new Date().toISOString(),
+          });
+          options.onEvent({ type: 'final', text: 'Hello again.' });
+        },
+        abort() {},
+        dispose() {},
+      };
+    },
+    dispose() {},
+  };
+  const runtime = createAgentRuntime({
+    agent,
+    computer: fakeComputer(),
+    workspace: fakeWorkspace(),
+  });
+  try {
+    const result = await runtime.runTask(
+      context(directory, {
+        locale: 'pt-PT',
+        hourCycle: 'h12',
+        account: {
+          preferredName: 'Sam',
+          fullName: 'Samantha Synthetic',
+          email: 'sam.synthetic@example.test',
+        },
+        observe: async (event) => {
+          observed.push(event);
+        },
+        emit: async (type, summary) => {
+          events.push(`${type}:${summary}`);
+        },
+      }),
+    );
+    assert.equal(result.status, 'succeeded');
+    assert.equal(prompts.length, 1);
+    assert.ok(
+      prompts[0].includes(
+        '"preferredName":"Sam","fullName":"Samantha Synthetic","email":"sam.synthetic@example.test","locale":"pt-PT","clock":"h12","timeZone":"Europe/Lisbon"',
+      ),
+    );
+    assert.match(prompts[0], /Call the user by preferredName naturally/);
+    assert.match(prompts[0], /in the pt-PT format with a 12-hour clock/);
+    assert.ok(observed.length > 0);
+    for (const value of [...observed.map((item) => JSON.stringify(item)), ...events])
+      assert.doesNotMatch(value, /Samantha|sam\.synthetic|Sam\b/);
+  } finally {
+    await runtime.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

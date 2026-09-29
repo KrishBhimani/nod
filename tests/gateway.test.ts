@@ -36,6 +36,9 @@ async function fixture(
     headers: Headers;
     developer: boolean;
   }[] = [];
+  const profiles: { owner: string; body: string; developer: boolean; method: string }[] = [];
+  let displayName: string | null = null;
+  let profileStatus = 200;
   let streamCancelled = 0;
   let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
   let reply: (owner: string, request: Request) => Promise<Response> = async (owner) =>
@@ -68,6 +71,15 @@ async function fixture(
   };
   const runtimes: TenantRuntimeHost = {
     async fetch(owner, request, options) {
+      if (new URL(request.url).pathname === '/api/account/profile') {
+        profiles.push({
+          owner,
+          body: await request.text(),
+          developer: options.developer,
+          method: request.method,
+        });
+        return Response.json({ ok: profileStatus === 200 }, { status: profileStatus });
+      }
       calls.push({
         owner,
         url: request.url,
@@ -89,7 +101,7 @@ async function fixture(
     sessionCheckIntervalMs: 10,
     accounts: {
       async read() {
-        return { theme: 'system', onboardingCompleted: true, displayName: null };
+        return { theme: 'system', onboardingCompleted: true, displayName };
       },
       async update() {
         return { theme: 'system', onboardingCompleted: true, displayName: null };
@@ -102,7 +114,14 @@ async function fixture(
     users,
     cookies,
     calls,
+    profiles,
     sessions,
+    displayName: (value: string | null) => {
+      displayName = value;
+    },
+    profileStatus: (value: number) => {
+      profileStatus = value;
+    },
     headers: (index = 0) => ({ host, cookie: cookies[index], 'x-otto-account': users[index] }),
     reply: (value: typeof reply) => {
       reply = value;
@@ -609,4 +628,73 @@ test('gateway returns the authentication failure when discarded response cancell
   } finally {
     await f.app.close();
   }
+});
+
+test('gateway sends the signed-in profile to the owner runtime once per change and keeps the route private', async (t) => {
+  const f = await fixture();
+  t.after(() => f.app.close());
+  Object.assign(f.sessions.get(f.users[0])!, { givenName: 'Synthetic' });
+  const state = (index = 0) => f.app.inject({ url: '/api/state', headers: f.headers(index) });
+  f.profileStatus(503);
+  assert.equal((await state()).statusCode, 200);
+  assert.equal(f.calls.length, 1);
+  f.profileStatus(200);
+  assert.equal((await state()).statusCode, 200);
+  assert.equal((await state()).statusCode, 200);
+  assert.equal((await state(1)).statusCode, 200);
+  f.displayName('Syn');
+  assert.equal((await state()).statusCode, 200);
+  assert.deepEqual(
+    f.profiles.map(({ owner, body, developer, method }) => ({
+      owner,
+      profile: JSON.parse(body),
+      developer,
+      method,
+    })),
+    [
+      ...[0, 0].map(() => ({
+        owner: f.users[0],
+        profile: {
+          name: 'Synthetic user',
+          givenName: 'Synthetic',
+          email: 'synthetic@example.test',
+          preferredName: null,
+        },
+        developer: false,
+        method: 'PUT',
+      })),
+      {
+        owner: f.users[1],
+        profile: {
+          name: 'Synthetic user',
+          givenName: null,
+          email: 'synthetic@example.test',
+          preferredName: null,
+        },
+        developer: false,
+        method: 'PUT',
+      },
+      {
+        owner: f.users[0],
+        profile: {
+          name: 'Synthetic user',
+          givenName: 'Synthetic',
+          email: 'synthetic@example.test',
+          preferredName: 'Syn',
+        },
+        developer: false,
+        method: 'PUT',
+      },
+    ],
+  );
+  assert.equal(f.calls.length, 5);
+  const direct = await f.app.inject({
+    method: 'PUT',
+    url: '/api/account/profile',
+    headers: { ...f.headers(), origin },
+    payload: { name: 'Forged', givenName: null, email: null, preferredName: null },
+  });
+  assert.equal(direct.statusCode, 404);
+  assert.equal(f.profiles.length, 4);
+  assert.equal(f.calls.length, 5);
 });

@@ -146,6 +146,28 @@ export async function createGateway(options: {
         .parse(await response.json());
     },
   });
+  const syncedProfiles = new Map<string, string>();
+  async function syncProfile(session: AuthenticatedSession) {
+    const account = await options.accounts.read(session.user.id);
+    const body = JSON.stringify({
+      name: session.user.name.trim().slice(0, 200) || null,
+      givenName: session.givenName?.slice(0, 100) || null,
+      email: session.user.email?.slice(0, 320) || null,
+      preferredName: account.displayName?.slice(0, 100) || null,
+    });
+    if (syncedProfiles.get(session.user.id) === body) return;
+    const response = await options.runtimes.fetch(
+      session.user.id,
+      new Request(new URL('/api/account/profile', origin), {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body,
+      }),
+      { developer: false },
+    );
+    await response.body?.cancel();
+    if (response.ok) syncedProfiles.set(session.user.id, body);
+  }
   const deployment = options.deployment
     ? createDeploymentControl({ ...options.deployment, runtimes: options.runtimes })
     : undefined;
@@ -306,7 +328,8 @@ export async function createGateway(options: {
       url.pathname.startsWith('/api/auth/') ||
       url.pathname.startsWith('/api/webhooks/') ||
       url.pathname.startsWith('/api/internal/') ||
-      url.pathname.startsWith('/api/runtime/')
+      url.pathname.startsWith('/api/runtime/') ||
+      url.pathname === '/api/account/profile'
     )
       return reply.code(404).send({ error: 'Route not found.' });
     if (url.pathname === '/api/events' && url.searchParams.get('account') !== session.user.id)
@@ -334,6 +357,7 @@ export async function createGateway(options: {
         ? { body: Buffer.isBuffer(request.body) ? new Uint8Array(request.body) : new Uint8Array() }
         : {}),
     });
+    await syncProfile(session).catch(() => {});
     let result = await options.runtimes.fetch(session.user.id, forwarded, { developer });
     try {
       const current = await options.authentication.session(authenticationHeaders(request));

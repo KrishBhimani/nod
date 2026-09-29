@@ -8,6 +8,9 @@ import { SchedulePage, ScheduleRow, ScheduleRunRow } from '../src/web/pages/sche
 import { pageDataCache } from '../src/web/lib/page-data-cache.ts';
 import { scheduleDate, scheduleExpression, scheduleLabel } from '../src/web/lib/schedules.ts';
 import { scheduleDraft } from '../src/web/lib/secondary-pages.ts';
+import { setDateFormat } from '../src/web/lib/date-format.ts';
+
+setDateFormat({ locale: 'en-GB', hourCycle: 'auto', timeZone: 'Europe/Lisbon' });
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', {
   url: 'http://localhost:4310',
@@ -85,6 +88,12 @@ test('common recurring timings have readable labels without rounding irregular c
     ['  */10   * * * *  ', 'Every 10 minutes'],
   ])
     assert.equal(scheduleLabel(cron), label, cron);
+  const twelveHour = { locale: 'en-GB', hourCycle: 'h12' as const, timeZone: 'UTC' };
+  assert.equal(scheduleLabel('5 21 * * *', twelveHour), 'Every day at 9:05 pm');
+  assert.equal(
+    scheduleLabel('0 9 * * 1-5', { locale: 'en-US', hourCycle: 'auto', timeZone: 'UTC' }),
+    'Every weekday at 9:00 AM',
+  );
   for (const cron of [
     '*/7 * * * *',
     '*/0 * * * *',
@@ -103,6 +112,14 @@ test('common recurring timings have readable labels without rounding irregular c
 
 test('one-time and recurring schedules keep their timezone and draft changes without converting a one-time run to cron', () => {
   assert.equal(scheduleDate(once.runAt!, once.timeZone), '1 Apr 2030, 09:30');
+  assert.equal(
+    scheduleDate(once.runAt!, once.timeZone, {
+      locale: 'en-US',
+      hourCycle: 'auto',
+      timeZone: 'Asia/Tokyo',
+    }),
+    'Apr 1, 2030, 9:30 AM',
+  );
   assert.equal(scheduleDate('invalid', once.timeZone), 'Time unavailable');
   const html = renderToStaticMarkup(createElement(ScheduleRow, { schedule: once }));
   assert.match(html, /One time/);

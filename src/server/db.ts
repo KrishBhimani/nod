@@ -69,6 +69,8 @@ export async function initializeDatabase() {
       quiet_hours_enabled boolean NOT NULL DEFAULT true
     );
     ALTER TABLE preferences ADD COLUMN IF NOT EXISTS quiet_hours_enabled boolean NOT NULL DEFAULT true;
+    ALTER TABLE preferences ADD COLUMN IF NOT EXISTS locale text;
+    ALTER TABLE preferences ADD COLUMN IF NOT EXISTS hour_cycle text NOT NULL DEFAULT 'auto' CHECK (hour_cycle IN ('auto','h12','h23'));
     CREATE TABLE IF NOT EXISTS notifications (
       id uuid PRIMARY KEY, event_id text UNIQUE NOT NULL, owner_id text NOT NULL, summary text NOT NULL,
       decision text NOT NULL, reason text NOT NULL, feedback text, task_id uuid REFERENCES tasks(id),

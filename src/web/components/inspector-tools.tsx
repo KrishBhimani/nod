@@ -10,6 +10,7 @@ import type {
   InspectorTool,
 } from '../../shared/inspector';
 import { api, errorMessage } from '../lib/api';
+import { formatFullDateTime, formatNumber, formatTime } from '../lib/date-format';
 import {
   filterToolCalls,
   completeObservationRefresh,
@@ -27,7 +28,7 @@ const statuses: Array<{ value: ToolStatusFilter; label: string }> = [
   { value: 'failed', label: 'Failed' },
   { value: 'running', label: 'Running' },
 ];
-const counts = new Intl.NumberFormat('en-US');
+const counts = { format: (value: number) => formatNumber(value) };
 
 function RecordedJson({ label, value }: { label: string; value: unknown }) {
   return (
@@ -48,7 +49,7 @@ export function ToolCallRecord({ call }: { call: ToolCall }) {
         <span className="inspector-record-title">
           <strong>{call.name}</strong>
           <small>
-            {new Date(call.startedAt).toLocaleTimeString()} · revision {call.revision}
+            {formatTime(call.startedAt, undefined, { seconds: true })} · revision {call.revision}
           </small>
         </span>
         <span className="inspector-record-state">
@@ -68,9 +69,9 @@ export function ToolCallRecord({ call }: { call: ToolCall }) {
       <div className="inspector-record-body">
         <dl className="inspector-record-facts">
           <dt>Started</dt>
-          <dd>{new Date(call.startedAt).toLocaleString()}</dd>
+          <dd>{formatFullDateTime(call.startedAt)}</dd>
           <dt>Finished</dt>
-          <dd>{call.finishedAt ? new Date(call.finishedAt).toLocaleString() : 'Not recorded'}</dd>
+          <dd>{call.finishedAt ? formatFullDateTime(call.finishedAt) : 'Not recorded'}</dd>
           <dt>Duration</dt>
           <dd>{call.status === 'running' ? 'In progress' : formatToolDuration(call.durationMs)}</dd>
         </dl>
@@ -174,7 +175,7 @@ export function ModelUsageRecord({ usage }: { usage: ModelUsage }) {
           <strong>{usage.model}</strong>
           <small>
             {usage.provider} · revision {usage.revision} ·{' '}
-            {new Date(usage.createdAt).toLocaleTimeString()}
+            {formatTime(usage.createdAt, undefined, { seconds: true })}
           </small>
         </span>
         <span className="inspector-record-state">
@@ -403,7 +404,7 @@ function ToolDrilldown({
   );
 }
 
-export function ToolUsageFacts({ usage }: { usage: ToolUsage }) {
+function ToolUsageFacts({ usage }: { usage: ToolUsage }) {
   return (
     <div className="inspector-tool-facts">
       <span>
@@ -740,7 +741,7 @@ export function InspectorActivity({ taskId, events }: { taskId?: string; events:
                 <p>{item.title}</p>
                 <small>
                   <time dateTime={item.startedAt}>
-                    {new Date(item.startedAt).toLocaleTimeString()}
+                    {formatTime(item.startedAt, undefined, { seconds: true })}
                   </time>
                   {labels[item.status] && ` · ${labels[item.status]}`}
                   {item.durationMs !== null && ` · ${formatToolDuration(item.durationMs)}`}

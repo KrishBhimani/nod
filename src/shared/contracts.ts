@@ -82,7 +82,7 @@ export type VaultListEntry = (VaultLoginEntry & { username: string }) | VaultCar
 export interface VaultLoginDetails extends VaultLoginEntry {
   username: string;
 }
-export interface VaultCardDetails extends VaultCardEntry {
+interface VaultCardDetails extends VaultCardEntry {
   cardholder: string;
   hasSecurityCode: boolean;
 }
@@ -95,21 +95,6 @@ export interface VaultCardNumber {
 }
 export interface VaultCardSecurityCode {
   securityCode: string;
-}
-export interface VaultEntryUpdate {
-  kind?: 'login';
-  label: string;
-  username: string;
-  password?: string;
-}
-export interface VaultCardUpdate {
-  kind: 'card';
-  label: string;
-  cardholder: string;
-  cardNumber?: string;
-  securityCode?: string | null;
-  expiryMonth: number;
-  expiryYear: number;
 }
 export interface CredentialRequest {
   id: string;
@@ -171,18 +156,6 @@ export interface InspectorState {
   runtime: { browser: string; workspace: string; database: string };
   currentBrowser?: { taskId: string; title: string; status: string; lastActivityAt: string };
 }
-export interface MemoryFact {
-  id: string;
-  text: string;
-  sourceMessageId: string | null;
-  createdAt: string;
-}
-export interface Profile {
-  name: string;
-  location: string;
-  phone: string;
-  preferences: string;
-}
 export interface Goal {
   id: string;
   title: string;
@@ -230,9 +203,12 @@ export interface Approval {
   };
   status: 'pending' | 'executing' | 'completed' | 'declined' | 'uncertain' | 'expired';
 }
+export type HourCycle = 'auto' | 'h12' | 'h23';
 export interface Preferences {
   notificationRule: string;
   timeZone: string;
+  locale: string | null;
+  hourCycle: HourCycle;
   quietHoursEnabled: boolean;
   quietStart: string;
   quietEnd: string;

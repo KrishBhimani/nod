@@ -7,12 +7,14 @@ import { activeStatuses, StatusIcon, statusLabels } from '../components/task-lis
 import { usePageData } from '../hooks/use-page-data';
 import { api } from '../lib/api';
 import { scheduleDate, scheduleLabel } from '../lib/schedules';
+import { useDateFormat } from '../lib/date-format';
 import { draftInChat, scheduleDraft } from '../lib/secondary-pages';
 import { DeletePlan } from '../components/delete-plan';
 
 const historyPath = '/api/schedule-runs?limit=20';
 
 export function ScheduleRow({ schedule }: { schedule: Schedule }) {
+  const dateFormat = useDateFormat();
   const canResume =
     schedule.kind !== 'once' || Boolean(schedule.runAt && Date.parse(schedule.runAt) > Date.now());
   const changeLabel = !schedule.enabled && !canResume ? 'Reschedule' : 'Change';
@@ -28,16 +30,16 @@ export function ScheduleRow({ schedule }: { schedule: Schedule }) {
         <CalendarClock size={14} aria-hidden="true" />
         {schedule.kind === 'once'
           ? schedule.runAt
-            ? scheduleDate(schedule.runAt, schedule.timeZone)
+            ? scheduleDate(schedule.runAt, schedule.timeZone, dateFormat)
             : 'Time unavailable'
-          : scheduleLabel(schedule.cron ?? '')}
+          : scheduleLabel(schedule.cron ?? '', dateFormat)}
         <span>{schedule.timeZone}</span>
       </p>
       <p className="saved-plan-description">{schedule.prompt}</p>
       <div className="saved-plan-footer">
         <span>
           {schedule.kind === 'recurring' && schedule.nextRun
-            ? `Next ${scheduleDate(schedule.nextRun, schedule.timeZone)}`
+            ? `Next ${scheduleDate(schedule.nextRun, schedule.timeZone, dateFormat)}`
             : ''}
         </span>
         <div className="saved-plan-actions">
@@ -69,6 +71,7 @@ export function ScheduleRow({ schedule }: { schedule: Schedule }) {
 }
 
 export function ScheduleRunRow({ run }: { run: ScheduleRun }) {
+  const dateFormat = useDateFormat();
   return (
     <article className="schedule-run">
       <div className="schedule-run-heading">
@@ -79,7 +82,9 @@ export function ScheduleRunRow({ run }: { run: ScheduleRun }) {
         </span>
       </div>
       <p>
-        <time dateTime={run.scheduledFor}>{scheduleDate(run.scheduledFor, run.timeZone)}</time>
+        <time dateTime={run.scheduledFor}>
+          {scheduleDate(run.scheduledFor, run.timeZone, dateFormat)}
+        </time>
         <span>{run.timeZone}</span>
       </p>
       {run.error && <p className="schedule-run-error">{run.error}</p>}
@@ -87,7 +92,7 @@ export function ScheduleRunRow({ run }: { run: ScheduleRun }) {
   );
 }
 
-export function ScheduleHistoryView() {
+function ScheduleHistoryView() {
   const { data, error, loading, refreshing, refresh } = usePageData<ScheduleHistory>(historyPath);
   const [earlier, setEarlier] = useState<ScheduleHistory | null>(null);
   const [loadingEarlier, setLoadingEarlier] = useState(false);

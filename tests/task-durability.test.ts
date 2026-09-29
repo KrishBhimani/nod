@@ -66,7 +66,11 @@ test(
         },
       },
     });
+    const { createAccountProfileStore, runtimeAccount } =
+      await import('../src/server/account-profile.ts');
+    const accountProfiles = createAccountProfileStore(db.pool, 'local-development');
     const dependencies: TaskDependencies = {
+      accountProfile: async () => runtimeAccount(await accountProfiles.read()),
       speech: {
         synthesize: async () => {
           throw new Error('Unused fixture');
@@ -76,6 +80,13 @@ test(
         ran.add(context.taskId);
         assert.equal(context.personalContext?.profile.phone, 'PRIVATE-PHONE-FIXTURE');
         assert.equal(context.personalContext?.profile.name, 'Fixture Person');
+        assert.deepEqual(context.account, {
+          preferredName: 'Fixture',
+          fullName: 'Synthetic Fixture Person',
+          email: 'fixture@example.test',
+        });
+        assert.equal(context.locale, 'pt-PT');
+        assert.equal(context.hourCycle, 'h12');
         if (context.prompt === 'cancel-fence-fixture') {
           captured = context;
           await gate;
@@ -142,8 +153,15 @@ test(
         },
       ]);
       await db.pool.query(
-        "INSERT INTO preferences(owner_id,notification_rule,quiet_start,quiet_end) VALUES('local-development','Notify about fixture events','00:00','00:00')",
+        "INSERT INTO preferences(owner_id,notification_rule,quiet_start,quiet_end,locale,hour_cycle) VALUES('local-development','Notify about fixture events','00:00','00:00','pt-PT','h12')",
       );
+      await accountProfiles.initialize();
+      await accountProfiles.save({
+        name: 'Synthetic Fixture Person',
+        givenName: 'Synthetic',
+        email: 'fixture@example.test',
+        preferredName: 'Fixture',
+      });
 
       await t.test('task and job roll back together in the caller transaction', async () => {
         await assert.rejects(
