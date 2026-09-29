@@ -56,7 +56,7 @@ test('live guest probe regressions run offline in the ordinary Node test suite',
     },
   );
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stderr, /Ran 13 tests/);
+  assert.match(result.stderr, /Ran 19 tests/);
   assert.match(result.stderr, /OK/);
 });
 
@@ -165,7 +165,7 @@ async function fixture(t: TestContext) {
     },
     boundary: async () => {
       calls.push('boundary');
-      return { passed: true, cleanupComplete: true };
+      return boundaryReceipt();
     },
     kill: async (id) => {
       calls.push('kill');
@@ -318,6 +318,204 @@ test('acceptance SDK creation and reconnect disable retries and refuse a differe
   await assert.rejects(driver.inspect(fake.sandboxId));
 });
 
+function boundaryReceipt() {
+  const role = (uid: number) => ({
+    uid,
+    networkDenied: 7,
+    privateDenied: 13,
+    firewallDenied: true,
+    x11Denied: true,
+    privilegeDenied: true,
+    internetDnsFiles: true,
+  });
+  return {
+    passed: true,
+    version: 2,
+    readinessChecks: 2,
+    rootNetAdmin: true,
+    browserCdpAndX11: true,
+    loopbackIpv4: 1,
+    loopbackIpv6: 1,
+    ownInterfaceIpv4: 2,
+    ownInterfaceIpv6: 1,
+    envdTcpControls: 2,
+    roles: { workspace: role(1000), connected: role(1002) },
+    workspaceConnectedPrivateDenied: 5,
+    firewallUnchanged: true,
+    cleanupComplete: true,
+  };
+}
+
+async function boundaryDriverFixture(t: TestContext) {
+  const f = await fixture(t);
+  let result = { exitCode: 0, stdout: '', stderr: '' };
+  const writes: { path: string; options: unknown }[] = [];
+  const commands: { command: string; options: unknown }[] = [];
+  const sandboxId = 'disposable-resource';
+  t.mock.method(Sandbox, 'create', () => {
+    throw new Error('Boundary validation must not create a provider resource');
+  });
+  t.mock.method(Sandbox, 'getInfo', async () => ({
+    sandboxId,
+    templateId: f.journal.plan.templateId,
+    metadata: acceptanceMetadata(f.journal.plan),
+    state: 'running',
+  }));
+  t.mock.method(Sandbox, 'connect', async () => ({
+    sandboxId,
+    files: {
+      write: async (path: string, _data: string, options: unknown) => {
+        writes.push({ path, options });
+      },
+    },
+    commands: {
+      run: async (command: string, options: unknown) => {
+        commands.push({ command, options });
+        return result;
+      },
+    },
+  }));
+  const driver = createAcceptanceDriver(configuration.apiKey, f.journal.plan);
+  return {
+    writes,
+    commands,
+    read(receipt: unknown) {
+      result = { exitCode: 0, stdout: JSON.stringify(receipt) + '\n', stderr: '' };
+      return driver.boundary(sandboxId);
+    },
+    readOutput(output: typeof result) {
+      result = output;
+      return driver.boundary(sandboxId);
+    },
+  };
+}
+
+test('live boundary driver accepts complete separate workspace and connected role evidence', async (t) => {
+  const f = await boundaryDriverFixture(t);
+  for (const [ipv4, ipv6] of [
+    [1, 0],
+    [2, 1],
+    [8, 8],
+  ] as const) {
+    const receipt = boundaryReceipt();
+    receipt.ownInterfaceIpv4 = ipv4;
+    receipt.ownInterfaceIpv6 = ipv6;
+    for (const role of Object.values(receipt.roles)) role.networkDenied = 4 + ipv4 + ipv6;
+    assert.deepEqual(await f.read(receipt), receipt);
+  }
+  assert.deepEqual(f.writes[0], {
+    path: '/run/otto/live-boundary.py',
+    options: { user: 'root', requestTimeoutMs: 10_000 },
+  });
+  assert.equal(
+    f.commands[0]?.command,
+    'chmod 600 /run/otto/live-boundary.py && exec python3 /run/otto/live-boundary.py --disposable',
+  );
+  const options = f.commands[0]?.options as Record<string, unknown>;
+  assert.equal(options.user, 'root');
+  assert.deepEqual(options.envs, {});
+  assert.equal(options.timeoutMs, 150_000);
+});
+
+test('live boundary driver rejects legacy, missing, extra and unsuccessful role evidence', async (t) => {
+  const f = await boundaryDriverFixture(t);
+  const receipt = boundaryReceipt();
+  const omit = (value: Record<string, unknown>, key: string) =>
+    Object.fromEntries(Object.entries(value).filter(([name]) => name !== key));
+  const legacy = {
+    ...omit(omit(receipt, 'roles'), 'workspaceConnectedPrivateDenied'),
+    version: 1,
+    workspaceNetworkDenied: 7,
+    workspacePrivateDenied: 13,
+    workspacePrivilegeDenied: true,
+    workspaceInternetDnsFiles: true,
+  };
+  const invalid: { name: string; receipt: unknown }[] = [
+    { name: 'legacy workspace-only receipt', receipt: legacy },
+    { name: 'legacy counters with new version', receipt: { ...legacy, version: 2 } },
+    { name: 'extra top-level field', receipt: { ...receipt, workspaceNetworkDenied: 7 } },
+    { name: 'extra role', receipt: { ...receipt, roles: { ...receipt.roles, browser: {} } } },
+    ...Object.keys(receipt).map((key) => ({ name: `missing ${key}`, receipt: omit(receipt, key) })),
+    ...['passed', 'rootNetAdmin', 'browserCdpAndX11', 'firewallUnchanged', 'cleanupComplete'].map(
+      (key) => ({ name: `failed ${key}`, receipt: { ...receipt, [key]: false } }),
+    ),
+    ...[0, 4, 6, '5'].map((count) => ({
+      name: `invalid cross-role private count ${count}`,
+      receipt: { ...receipt, workspaceConnectedPrivateDenied: count },
+    })),
+  ];
+  for (const name of ['workspace', 'connected'] as const) {
+    invalid.push({
+      name: `missing ${name} role`,
+      receipt: { ...receipt, roles: omit(receipt.roles, name) },
+    });
+    for (const key of Object.keys(receipt.roles[name]))
+      invalid.push({
+        name: `missing ${name} ${key}`,
+        receipt: {
+          ...receipt,
+          roles: { ...receipt.roles, [name]: omit(receipt.roles[name], key) },
+        },
+      });
+    for (const changes of [
+      { uid: 1001 },
+      { uid: name === 'workspace' ? 1002 : 1000 },
+      { privateDenied: 12 },
+      { privateDenied: 14 },
+      { firewallDenied: false },
+      { x11Denied: false },
+      { privilegeDenied: false },
+      { internetDnsFiles: false },
+      { unexpected: true },
+    ])
+      invalid.push({
+        name: `${name} ${JSON.stringify(changes)}`,
+        receipt: {
+          ...receipt,
+          roles: { ...receipt.roles, [name]: { ...receipt.roles[name], ...changes } },
+        },
+      });
+  }
+  for (const entry of invalid) await assert.rejects(f.read(entry.receipt), entry.name);
+});
+
+test('live boundary driver requires each role to deny all reported interface targets', async (t) => {
+  const f = await boundaryDriverFixture(t);
+  for (const name of ['workspace', 'connected'] as const) {
+    for (const networkDenied of [0, 6, 8, 7.5, '7', -1, 101]) {
+      const receipt = boundaryReceipt();
+      await assert.rejects(
+        f.read({
+          ...receipt,
+          roles: { ...receipt.roles, [name]: { ...receipt.roles[name], networkDenied } },
+        }),
+        `${name} networkDenied=${networkDenied}`,
+      );
+    }
+  }
+  const tooMany = boundaryReceipt();
+  tooMany.ownInterfaceIpv4 = 9;
+  tooMany.ownInterfaceIpv6 = 8;
+  for (const role of Object.values(tooMany.roles)) role.networkDenied = 21;
+  await assert.rejects(f.read(tooMany));
+  for (const field of ['ownInterfaceIpv4', 'ownInterfaceIpv6'] as const)
+    for (const value of [-1, 0.5, '1', 101])
+      await assert.rejects(f.read({ ...boundaryReceipt(), [field]: value }));
+});
+
+test('live boundary driver cannot accept complete evidence from a failed or malformed command', async (t) => {
+  const f = await boundaryDriverFixture(t);
+  const valid = { exitCode: 0, stdout: JSON.stringify(boundaryReceipt()) + '\n', stderr: '' };
+  for (const output of [
+    { ...valid, exitCode: 1 },
+    { ...valid, stderr: 'synthetic failure' },
+    { ...valid, stdout: '{' },
+    { ...valid, stdout: valid.stdout + '{}\n' },
+    { ...valid, stdout: ' '.repeat(4096) + valid.stdout },
+  ])
+    await assert.rejects(f.readOutput(output));
+});
+
 test('a known allocation cannot inspect or delete a different returned resource with matching metadata', async (t) => {
   const f = await fixture(t);
   await runAcceptance(f.journal, f.driver, lifecycleJourney);
@@ -365,6 +563,10 @@ test('one journaled owner resource serves both roles and survives pause plus ada
   assert.equal(f.calls.filter((call) => call === 'connect').length, 2);
   assert.ok(f.calls.includes('browser') && f.calls.includes('workspace'));
   const restored = await openAcceptance(f.directory, configuration, f.prepared.hash, source);
+  assert.deepEqual(
+    restored.entries.find((entry) => entry.type === 'boundary')?.result,
+    boundaryReceipt(),
+  );
   const allocation = await restored.store.read(restored.plan.ownerId, 'computer');
   assert.equal(allocation?.resourceId, 'disposable-resource');
   assert.equal(allocation?.leaseId, null);

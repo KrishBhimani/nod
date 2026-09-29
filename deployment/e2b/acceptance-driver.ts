@@ -11,10 +11,22 @@ import {
 
 const failed = () => new Error('The development provider check did not complete safely.');
 const count = z.number().int().min(0).max(100);
+const roleBoundarySchema = (uid: 1000 | 1002) =>
+  z
+    .object({
+      uid: z.literal(uid),
+      networkDenied: count,
+      privateDenied: z.literal(13),
+      firewallDenied: z.literal(true),
+      x11Denied: z.literal(true),
+      privilegeDenied: z.literal(true),
+      internetDnsFiles: z.literal(true),
+    })
+    .strict();
 const boundarySchema = z
   .object({
     passed: z.literal(true),
-    version: z.literal(1),
+    version: z.literal(2),
     readinessChecks: z.literal(2),
     rootNetAdmin: z.literal(true),
     browserCdpAndX11: z.literal(true),
@@ -22,11 +34,14 @@ const boundarySchema = z
     loopbackIpv6: z.literal(1),
     ownInterfaceIpv4: count,
     ownInterfaceIpv6: count,
-    workspaceNetworkDenied: count,
     envdTcpControls: z.literal(2),
-    workspacePrivateDenied: z.literal(13),
-    workspacePrivilegeDenied: z.literal(true),
-    workspaceInternetDnsFiles: z.literal(true),
+    roles: z
+      .object({
+        workspace: roleBoundarySchema(1000),
+        connected: roleBoundarySchema(1002),
+      })
+      .strict(),
+    workspaceConnectedPrivateDenied: z.literal(5),
     firewallUnchanged: z.literal(true),
     cleanupComplete: z.literal(true),
   })
@@ -118,8 +133,10 @@ export function createAcceptanceDriver(apiKey: string, plan: AcceptancePlan): Ac
       if (result.exitCode !== 0 || result.stderr !== '' || Buffer.byteLength(result.stdout) > 4096)
         throw failed();
       const parsed = boundarySchema.parse(JSON.parse(result.stdout));
+      const networkTargets = 4 + parsed.ownInterfaceIpv4 + parsed.ownInterfaceIpv6;
       if (
-        parsed.workspaceNetworkDenied !== 4 + parsed.ownInterfaceIpv4 + parsed.ownInterfaceIpv6 ||
+        parsed.roles.workspace.networkDenied !== networkTargets ||
+        parsed.roles.connected.networkDenied !== networkTargets ||
         parsed.ownInterfaceIpv4 + parsed.ownInterfaceIpv6 > 16
       )
         throw failed();
