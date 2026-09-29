@@ -13,6 +13,7 @@ import {
   integrationServices,
   type IntegrationService,
 } from '../../shared/integrations';
+import { classifyVerificationReply } from '../../shared/verification-code';
 import { Composer, type ComposerHandle, type ComposerSendResult } from '../components/composer';
 import { MessageBubble } from '../components/message';
 import { ChatTurnRail } from '../components/chat-turn-rail';
@@ -288,10 +289,10 @@ export function Chat({
     const sentThread = threadId;
     const reply = replyTo;
     const verificationRequests = (state.verificationRequests ?? []).filter(
-      (request) =>
-        Date.parse(request.expiresAt) > Date.now() && (!reply || request.turnId === reply.turnId),
+      (request) => !reply || request.turnId === reply.turnId,
     );
-    let privateVerification = /^\d{4,8}$/.test(value.trim()) && verificationRequests.length > 0;
+    let privateVerification =
+      classifyVerificationReply(value).kind !== 'ordinary' && verificationRequests.length > 0;
     const verificationRequestId =
       privateVerification && verificationRequests.length === 1
         ? verificationRequests[0].id

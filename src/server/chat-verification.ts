@@ -2,6 +2,7 @@ import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import type { CredentialKeyStore } from '../ports/key-store.ts';
 import type { SubmitMessageResponse, VerificationRequest } from '../shared/contracts.ts';
+import { classifyVerificationReply } from '../shared/verification-code.ts';
 import { lockThread } from './thread.ts';
 import { waitingTurnSql } from './vault.ts';
 
@@ -81,10 +82,11 @@ export async function createChatVerification(
     text: string,
     input: VerificationInput,
   ): Promise<SubmitMessageResponse | undefined> {
-    const code = text.trim();
-    const exactCode = /^\d{4,8}$/.test(code);
-    if (!exactCode && !input.verificationRequestId) return;
-    if (!exactCode) throw conflict('Enter the verification code using 4 to 8 digits.');
+    const reply = classifyVerificationReply(text);
+    const code = reply.kind === 'code' ? reply.code : undefined;
+    if (reply.kind === 'ordinary' && !input.verificationRequestId) return;
+    if (!code && input.verificationRequestId)
+      throw conflict('Send one verification code using 4 to 8 digits.');
     const incompatible = Boolean(input.attachmentIds?.length || input.forceNew);
     if (incompatible && input.verificationRequestId)
       throw conflict('Send the verification code by itself in the sign-in conversation.');
@@ -111,6 +113,7 @@ export async function createChatVerification(
           await client.query('COMMIT');
           return;
         }
+        if (!code) throw conflict('Send one verification code using 4 to 8 digits.');
         const codeFingerprint = await fingerprint(code, input);
         if (
           previous.owner_id !== options.ownerId ||
@@ -172,6 +175,7 @@ export async function createChatVerification(
       }
       if (incompatible)
         throw conflict('Send the verification code by itself in the sign-in conversation.');
+      if (!code) throw conflict('Send one verification code using 4 to 8 digits.');
       if (requests.rowCount !== 1)
         throw conflict(
           'More than one sign-in needs a code. Reply to the verification request you want to complete.',
