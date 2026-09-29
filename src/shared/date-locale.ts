@@ -7,6 +7,33 @@ export function localeRegion(value: string | null | undefined) {
   }
 }
 
+let timeZoneRegions: Map<string, string> | undefined;
+
+export function timeZoneRegion(value: string) {
+  try {
+    value = new Intl.DateTimeFormat('en', { timeZone: value }).resolvedOptions().timeZone;
+  } catch {
+    return null;
+  }
+  if (!timeZoneRegions) {
+    timeZoneRegions = new Map();
+    for (let first = 65; first <= 90; first++) {
+      for (let second = 65; second <= 90; second++) {
+        const locale = new Intl.Locale(
+          `und-${String.fromCharCode(first, second)}`,
+        ) as Intl.Locale & {
+          getTimeZones?: () => string[] | undefined;
+          timeZones?: string[];
+        };
+        if (!locale.getTimeZones && !('timeZones' in locale)) return null;
+        const zones = locale.getTimeZones ? locale.getTimeZones() : locale.timeZones;
+        for (const zone of zones ?? []) timeZoneRegions.set(zone, locale.region!);
+      }
+    }
+  }
+  return timeZoneRegions.get(value) ?? null;
+}
+
 export function formattingLocale(region: string | null) {
   const candidate = `en-${region ?? 'GB'}`;
   try {

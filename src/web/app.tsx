@@ -26,7 +26,6 @@ import { AccountSettings } from './components/account-settings';
 import type { AccountControls, AccountTab } from './components/account-menu';
 import { usePageData } from './hooks/use-page-data';
 import { setDateFormat } from './lib/date-format';
-import { saveBrowserLocale } from './lib/preferences';
 
 function navigate(path: string) {
   window.history.pushState(null, '', path);
@@ -36,22 +35,13 @@ function useSavedDateFormat() {
   const { data } = usePageData<AccountPreferences>('/api/preferences');
   useEffect(() => {
     if (!data) return;
-    setDateFormat(data);
-    if (data.locale) return;
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let delay = 1000;
-    const save = () => {
-      void saveBrowserLocale(controller.signal).catch(() => {
-        if (controller.signal.aborted) return;
-        timer = setTimeout(save, delay);
-        delay = Math.min(delay * 2, 30_000);
-      });
-    };
-    save();
+    const update = () => setDateFormat(data);
+    update();
+    window.addEventListener('focus', update);
+    window.addEventListener('languagechange', update);
     return () => {
-      controller.abort();
-      clearTimeout(timer);
+      window.removeEventListener('focus', update);
+      window.removeEventListener('languagechange', update);
     };
   }, [data]);
 }

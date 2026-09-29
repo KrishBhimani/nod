@@ -1,6 +1,11 @@
 import { useSyncExternalStore } from 'react';
 import type { HourCycle, Preferences } from '../../shared/contracts';
-import { clockOptions, formattingLocale, localeRegion } from '../../shared/date-locale';
+import {
+  clockOptions,
+  formattingLocale,
+  localeRegion,
+  timeZoneRegion,
+} from '../../shared/date-locale';
 
 export interface DateFormat {
   locale: string;
@@ -47,16 +52,16 @@ export const regions = [
   'TW',
 ];
 
-function browserRegion() {
-  return localeRegion(typeof navigator === 'undefined' ? null : navigator.language) ?? 'GB';
+export function browserRegion() {
+  const region = timeZoneRegion(Intl.DateTimeFormat().resolvedOptions().timeZone);
+  if (region) return region;
+  const languages =
+    typeof navigator === 'undefined' ? [] : [...navigator.languages, navigator.language];
+  return languages.map(localeRegion).find(Boolean) ?? 'GB';
 }
 
 export function regionLocale(region: string) {
   return `en-${region}`;
-}
-
-export function browserRegionLocale() {
-  return regionLocale(browserRegion());
 }
 
 function savedFormattingLocale(saved: string | null | undefined) {

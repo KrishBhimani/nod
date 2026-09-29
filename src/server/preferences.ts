@@ -14,7 +14,6 @@ export const preferencesSchema = z
   })
   .strict();
 export type Preferences = z.infer<typeof preferencesSchema>;
-export const defaultLocale = 'en-GB';
 export const defaultPreferences: Preferences = {
   notificationRule:
     'Only interrupt me for a time-sensitive message that needs my reply, a meaningful calendar change affecting me, or a concrete next step for an active goal. Keep newsletters, routine updates, uncertain relevance and repeated reminders quiet.',

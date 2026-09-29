@@ -66,6 +66,7 @@ export function SearchPicker({
   const trigger = useRef<HTMLButtonElement>(null);
   const search = useRef<HTMLInputElement>(null);
   const options = useRef<HTMLDivElement>(null);
+  const revealActive = useRef(true);
   const tabTarget = useRef<HTMLElement | null>(null);
   const id = useId();
   const words = searchText(query).trim().split(/\s+/).filter(Boolean);
@@ -82,13 +83,16 @@ export function SearchPicker({
     choices.find((choice) => choice.value === option)?.label ?? option;
   const activeIndex = Math.max(0, matches.indexOf(active));
   const activeZone = matches[activeIndex];
-  const scrollActiveIntoView = useCallback(
-    () =>
-      options.current
-        ?.querySelector<HTMLElement>('[data-active="true"]')
-        ?.scrollIntoView?.({ block: 'nearest' }),
-    [],
-  );
+  const scrollActiveIntoView = useCallback(() => {
+    const list = options.current;
+    const option = list?.querySelector<HTMLElement>('[data-active="true"]');
+    if (!list || !option || !revealActive.current) return;
+    const listBounds = list.getBoundingClientRect();
+    const optionBounds = option.getBoundingClientRect();
+    if (optionBounds.top < listBounds.top) list.scrollTop -= listBounds.top - optionBounds.top;
+    else if (optionBounds.bottom > listBounds.bottom)
+      list.scrollTop += optionBounds.bottom - listBounds.bottom;
+  }, []);
   const observeOptions = useCallback(
     (node: HTMLDivElement | null) => {
       options.current = node;
@@ -114,6 +118,7 @@ export function SearchPicker({
   const changeOpen = (next: boolean) => {
     setOpen(next);
     if (next) {
+      revealActive.current = true;
       setQuery('');
       setActive(value);
     }
@@ -127,7 +132,7 @@ export function SearchPicker({
   }, [disabled]);
   useEffect(() => {
     if (open) scrollActiveIntoView();
-  }, [open, activeZone, scrollActiveIntoView]);
+  }, [open, activeZone, query, scrollActiveIntoView]);
   return (
     <Popover.Root open={open} onOpenChange={changeOpen} modal>
       <Popover.Trigger
@@ -159,10 +164,10 @@ export function SearchPicker({
             search.current?.focus({ preventScroll: true });
           }}
           onCloseAutoFocus={(event) => {
+            event.preventDefault();
             if (tabTarget.current?.isConnected) {
-              event.preventDefault();
               tabTarget.current.focus();
-            }
+            } else trigger.current?.focus({ preventScroll: true });
             tabTarget.current = null;
           }}
           onKeyDown={(event) => {
@@ -199,6 +204,7 @@ export function SearchPicker({
             placeholder={labels.placeholder}
             value={query}
             onChange={(event) => {
+              revealActive.current = true;
               setQuery(event.target.value);
               setActive('');
             }}
@@ -222,14 +228,19 @@ export function SearchPicker({
                         : null;
               if (next !== null) {
                 event.preventDefault();
-                if (matches[next]) setActive(matches[next]);
+                if (matches[next]) {
+                  revealActive.current = true;
+                  setActive(matches[next]);
+                  if (matches[next] === activeZone) scrollActiveIntoView();
+                }
               }
             }}
             clearLabel={labels.clear}
             onClear={() => {
+              revealActive.current = true;
               setQuery('');
               setActive(value);
-              search.current?.focus();
+              search.current?.focus({ preventScroll: true });
             }}
           />
           <div
@@ -238,6 +249,12 @@ export function SearchPicker({
             role="listbox"
             aria-label={labels.list}
             className="time-zone-picker-options"
+            onWheel={() => {
+              revealActive.current = false;
+            }}
+            onPointerDown={() => {
+              revealActive.current = false;
+            }}
           >
             {matches.map((zone, index) => (
               <button
@@ -250,7 +267,10 @@ export function SearchPicker({
                 data-active={zone === activeZone}
                 tabIndex={-1}
                 onPointerMove={(event) => {
-                  if (event.pointerType === 'mouse') setActive(zone);
+                  if (event.pointerType === 'mouse') {
+                    revealActive.current = false;
+                    setActive(zone);
+                  }
                 }}
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => select(zone)}
