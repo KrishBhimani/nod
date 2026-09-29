@@ -456,7 +456,12 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
   }
 
   async function list(ownerId = configuredOwner): Promise<Connection[]> {
-    const rows = await connectionRows(ownerId);
+    const [rows, browserAccounts, discovered, browserConnections] = await Promise.all([
+      connectionRows(ownerId),
+      options.browserAccounts?.() ?? [],
+      options.discovered?.list() ?? [],
+      options.browserConnections?.() ?? [],
+    ]);
     if (providers.some((item) => item.configured) && !closed && !refreshing) {
       refreshing = background(() => refreshAccounts(rows))
         ?.catch(() => {})
@@ -510,11 +515,10 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         });
       }
     }
-    const browserAccounts = (await options.browserAccounts?.()) ?? [];
     return [
       ...result,
-      ...((await options.discovered?.list()) ?? []),
-      ...((await options.browserConnections?.()) ?? []),
+      ...discovered,
+      ...browserConnections,
       ...browserAccounts.map((entry): Connection => {
         const service = browserService(entry.origin);
         return {
