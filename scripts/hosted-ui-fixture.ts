@@ -6,7 +6,6 @@ import { createGateway } from '../src/server/gateway.ts';
 import type { AuthenticatedSession, AuthenticationProvider } from '../src/ports/authentication.ts';
 import type { StoredAccount } from '../src/server/account-store.ts';
 import { defaultPreferences, preferencesSchema } from '../src/server/preferences.ts';
-import type { Message, Task } from '../src/shared/contracts.ts';
 import {
   integrationServiceIds,
   integrationServices,
@@ -32,67 +31,6 @@ const consent = new Map<
   string,
   { ownerId: string; service: IntegrationService; returnTo: string }
 >();
-const recoveryScenarios = {
-  recovered: [
-    'What’s on my calendar tomorrow?',
-    'Tomorrow you have two meetings: **Design review** at 10:00 and **Lunch with Sam** at 13:00.',
-  ],
-  verified: [
-    'Send the April invoice to Sam at sam@example.test.',
-    'The April invoice email to Sam went through. It is in your Sent folder.',
-  ],
-  unfinished: [
-    'Download last month’s statement from the bank portal.',
-    'I tried a few times and couldn’t finish this. Tell me when you want me to try again, or give me another way to do it.',
-  ],
-  unverified: [
-    'Post the release note in #launch on Slack.',
-    'I couldn’t check whether “Post the release note in #launch” went through. Can you check it and tell me?',
-  ],
-};
-type RecoveryScenario = keyof typeof recoveryScenarios;
-const conversations = new Map<string, { messages: Message[]; tasks: Task[] }>();
-function conversation(owner: string, scenario?: RecoveryScenario) {
-  const existing = conversations.get(owner);
-  if (existing && !scenario) return existing;
-  const value = { messages: [] as Message[], tasks: [] as Task[] };
-  const selected = scenario ? [scenario] : (Object.keys(recoveryScenarios) as RecoveryScenario[]);
-  selected.forEach((name, index) => {
-    const taskId = randomUUID();
-    const started = Date.now() - (selected.length - index) * 5 * 60_000;
-    const [request, reply] = recoveryScenarios[name];
-    value.messages.push(
-      {
-        id: randomUUID(),
-        role: 'user',
-        text: request,
-        taskId,
-        attachments: [],
-        createdAt: new Date(started).toISOString(),
-      },
-      {
-        id: randomUUID(),
-        role: 'assistant',
-        text: reply,
-        taskId,
-        attachments: [],
-        createdAt: new Date(started + 70_000).toISOString(),
-      },
-    );
-    value.tasks.unshift({
-      id: taskId,
-      title: request,
-      status:
-        name === 'unfinished' ? 'failed' : name === 'unverified' ? 'waiting_user' : 'succeeded',
-      error: null,
-      createdAt: new Date(started).toISOString(),
-      updatedAt: new Date(started + 70_000).toISOString(),
-      showTyping: true,
-    });
-  });
-  conversations.set(owner, value);
-  return value;
-}
 const avatar = new Uint8Array(
   await readFile(new URL('../public/apple-touch-icon.png', import.meta.url)),
 );
@@ -171,8 +109,8 @@ const app = await createGateway({
       if (url.pathname === '/api/state')
         return Response.json({
           conversationRevision: 0,
-          messages: conversation(owner).messages,
-          tasks: conversation(owner).tasks,
+          messages: [],
+          tasks: [],
           configuration: {
             provider: 'fixture',
             model: 'Synthetic UI fixture',
@@ -243,33 +181,11 @@ const app = await createGateway({
       }
       if (url.pathname === '/api/messages/history')
         return Response.json({ messages: [], hasMore: false });
-      if (url.pathname === '/api/messages' && request.method === 'GET') return Response.json([]);
-      if (url.pathname === '/api/messages' && request.method === 'POST') {
-        const work = conversation(owner);
-        const input = (await request.json()) as { text: string; clientMessageId?: string };
-        const taskId = randomUUID();
-        const messageId = input.clientMessageId ?? randomUUID();
-        const now = new Date().toISOString();
-        work.messages.push(
-          {
-            id: messageId,
-            role: 'user',
-            text: input.text,
-            taskId,
-            attachments: [],
-            createdAt: now,
-          },
-          {
-            id: randomUUID(),
-            role: 'assistant',
-            text: 'The UI fixture does not run an assistant.',
-            taskId,
-            attachments: [],
-            createdAt: now,
-          },
+      if (url.pathname === '/api/messages')
+        return Response.json(
+          { error: 'The UI fixture does not run an assistant.' },
+          { status: 503 },
         );
-        return Response.json({ taskId, continued: false, messageId });
-      }
       return Response.json(
         { error: 'This capability is unavailable in the UI fixture.' },
         { status: 404 },
@@ -312,16 +228,6 @@ app.get('/fixture/sign-in/:index', async (request, reply) => {
   return reply
     .header('set-cookie', `${cookieName}=${token}; Path=/; HttpOnly; SameSite=Lax`)
     .redirect('/');
-});
-app.get('/fixture/recovery/:scenario', async (request, reply) => {
-  const scenario = (request.params as { scenario: string }).scenario;
-  const owner = session(new Headers({ cookie: request.headers.cookie ?? '' }))?.user.id;
-  if (!owner) return reply.code(401).send('Sign in to use this fixture.');
-  if (scenario !== 'all' && !Object.hasOwn(recoveryScenarios, scenario))
-    return reply.code(404).send('Unknown fixture scenario.');
-  conversations.delete(owner);
-  conversation(owner, scenario === 'all' ? undefined : (scenario as RecoveryScenario));
-  return reply.redirect('/');
 });
 app.get('/fixture/connect', async (request, reply) => {
   const token = new URL(request.url, origin).searchParams.get('token') ?? '';
