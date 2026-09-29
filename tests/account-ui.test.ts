@@ -630,3 +630,45 @@ test('language and region choices save instantly and update the live example', a
     globalThis.fetch = previous;
   }
 });
+
+test('preference writes run in order so a slow response cannot revert a later change', async () => {
+  const previous = globalThis.fetch;
+  const { savePreferences } = await import('../src/web/lib/preferences.ts');
+  let saved = {
+    notificationRule: '',
+    timeZone: 'Europe/Lisbon',
+    locale: 'en-GB',
+    hourCycle: 'auto',
+    quietHoursEnabled: true,
+    quietStart: '22:00',
+    quietEnd: '08:00',
+  };
+  const started: unknown[] = [];
+  let releaseFirst = () => {};
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  globalThis.fetch = async (_path, options) => {
+    const patch = JSON.parse(String(options?.body));
+    started.push(patch);
+    if (started.length === 1) await firstGate;
+    saved = { ...saved, ...patch };
+    return Response.json(saved);
+  };
+  pageDataCache.clear();
+  try {
+    const first = savePreferences({ hourCycle: 'h12' });
+    const second = savePreferences({ quietHoursEnabled: false });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(started.length, 1);
+    releaseFirst();
+    await Promise.all([first, second]);
+    assert.deepEqual(started, [{ hourCycle: 'h12' }, { quietHoursEnabled: false }]);
+    const cached = pageDataCache.getSnapshot<typeof saved>('/api/preferences').data!;
+    assert.equal(cached.hourCycle, 'h12');
+    assert.equal(cached.quietHoursEnabled, false);
+  } finally {
+    pageDataCache.clear();
+    globalThis.fetch = previous;
+  }
+});

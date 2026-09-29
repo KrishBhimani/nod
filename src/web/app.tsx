@@ -23,27 +23,20 @@ import { Onboarding } from './pages/onboarding';
 import { AccountSettings } from './components/account-settings';
 import type { AccountControls, AccountTab } from './components/account-menu';
 import { usePageData } from './hooks/use-page-data';
-import { api } from './lib/api';
-import { saveBrowserLocale, setDateFormat } from './lib/date-format';
+import { setDateFormat } from './lib/date-format';
+import { saveBrowserLocale } from './lib/preferences';
 
 function navigate(path: string) {
   window.history.pushState(null, '', path);
   window.dispatchEvent(new PopStateEvent('popstate'));
 }
 function useSavedDateFormat() {
-  const { data, update } = usePageData<AccountPreferences>('/api/preferences');
+  const { data } = usePageData<AccountPreferences>('/api/preferences');
   useEffect(() => {
     if (!data) return;
     setDateFormat(data);
-    if (!data.locale)
-      void saveBrowserLocale(async (locale) => {
-        const result = await api<AccountPreferences>('/api/preferences', {
-          method: 'PATCH',
-          body: JSON.stringify({ locale }),
-        });
-        update(() => result);
-      });
-  }, [data, update]);
+    if (!data.locale) saveBrowserLocale();
+  }, [data]);
 }
 
 function Workspace({

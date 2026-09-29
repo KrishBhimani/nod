@@ -60,19 +60,7 @@ function supportedLocale(value: string | null | undefined) {
   return null;
 }
 
-let browserLocaleSave: Promise<void> | undefined;
-export function saveBrowserLocale(save: (locale: string) => Promise<void>) {
-  browserLocaleSave ??= save(browserLocale()).catch(() => {
-    browserLocaleSave = undefined;
-  });
-  return browserLocaleSave;
-}
-
-export function browserLocaleSaved() {
-  return browserLocaleSave;
-}
-
-function browserLocale() {
+export function browserLocale() {
   return (
     supportedLocale(typeof navigator === 'undefined' ? null : navigator.language) ?? fallbackLocale
   );
@@ -136,9 +124,16 @@ export function formatNumber(
   options: Intl.NumberFormatOptions = {},
   format = current,
 ) {
-  return new Intl.NumberFormat(format.locale, options).format(value);
+  const key = JSON.stringify([format.locale, options]);
+  let formatter = numberFormatters.get(key);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(format.locale, options);
+    numberFormatters.set(key, formatter);
+  }
+  return formatter.format(value);
 }
 
+const numberFormatters = new Map<string, Intl.NumberFormat>();
 const formatters = new Map<string, Intl.DateTimeFormat>();
 function formatter(format: DateFormat, options: Intl.DateTimeFormatOptions, timeZone?: string) {
   const key = JSON.stringify([format, options, timeZone]);

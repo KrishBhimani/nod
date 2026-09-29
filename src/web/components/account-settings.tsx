@@ -16,15 +16,10 @@ import type { AccountControls, AccountTab } from './account-menu';
 import { AccountAvatar, GoogleMark } from './account-avatar';
 import { Button, Dialog, DialogContent, DialogTitle, Field, Input, Loading, Notice } from './ui';
 import { usePageData } from '../hooks/use-page-data';
-import { api, errorMessage } from '../lib/api';
+import { errorMessage } from '../lib/api';
 import { SearchPicker, TimeZonePicker } from './time-zone-picker';
-import {
-  browserLocaleSaved,
-  dateFormatFrom,
-  formatDateTime,
-  regionLocales,
-  setDateFormat,
-} from '../lib/date-format';
+import { dateFormatFrom, formatDateTime, regionLocales } from '../lib/date-format';
+import { savePreferences } from '../lib/preferences';
 
 const editablePreferences = ['quietHoursEnabled', 'quietStart', 'quietEnd'] as const;
 const regionLabels = {
@@ -61,13 +56,7 @@ function regionOptions(current: string) {
   }));
 }
 
-function LanguageAndRegion({
-  saved,
-  onSaved,
-}: {
-  saved: AccountPreferences;
-  onSaved(preferences: AccountPreferences): void;
-}) {
+function LanguageAndRegion({ saved }: { saved: AccountPreferences }) {
   const heading = useId();
   const regionLabel = useId();
   const clockLabel = useId();
@@ -96,13 +85,7 @@ function LanguageAndRegion({
     setSaving(true);
     setError('');
     try {
-      await browserLocaleSaved();
-      const result = await api<AccountPreferences>('/api/preferences', {
-        method: 'PATCH',
-        signal: controller.signal,
-        body: JSON.stringify(change),
-      });
-      if (!controller.signal.aborted) onSaved(result);
+      await savePreferences(change, controller.signal);
     } catch (cause) {
       if (!controller.signal.aborted) setError(errorMessage(cause));
     } finally {
@@ -180,7 +163,6 @@ function PreferencesForm() {
     data,
     loading,
     error: loadError,
-    update,
     refresh,
   } = usePageData<AccountPreferences>('/api/preferences');
   const [draft, setDraft] = useState<AccountPreferences | null>(null);
@@ -228,21 +210,15 @@ function PreferencesForm() {
     setSaving(true);
     setError('');
     try {
-      const result = await api<AccountPreferences>('/api/preferences', {
-        method: 'PATCH',
-        signal: controller.signal,
-        body: JSON.stringify(
-          Object.fromEntries(
-            editablePreferences
-              .filter((key) => current[key] !== saved[key])
-              .map((key) => [key, current[key]]),
-          ),
+      const result = await savePreferences(
+        Object.fromEntries(
+          editablePreferences
+            .filter((key) => current[key] !== saved[key])
+            .map((key) => [key, current[key]]),
         ),
-      });
-      if (!controller.signal.aborted) {
-        setDraft(result);
-        update(() => result);
-      }
+        controller.signal,
+      );
+      if (!controller.signal.aborted) setDraft(result);
     } catch (cause) {
       if (!controller.signal.aborted) setError(errorMessage(cause));
     } finally {
@@ -254,13 +230,7 @@ function PreferencesForm() {
   }
   return (
     <>
-      <LanguageAndRegion
-        saved={saved}
-        onSaved={(result) => {
-          setDateFormat(result);
-          update(() => result);
-        }}
-      />
+      <LanguageAndRegion saved={saved} />
       <form onSubmit={(event) => void save(event)}>
         <div className="account-preference-row">
           <div className="account-preference-label">
