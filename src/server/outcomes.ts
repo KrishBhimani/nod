@@ -51,8 +51,8 @@ export function taskNeedsReview(
   externalAction: boolean | null | undefined,
 ) {
   return (
-    (status === 'failed' || (status === 'waiting_user' && waitingReason === 'recovery')) &&
-    externalAction !== false
+    (status === 'waiting_user' && waitingReason === 'recovery') ||
+    (status === 'failed' && externalAction !== false)
   );
 }
 

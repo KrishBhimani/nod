@@ -185,7 +185,7 @@ test(
       outcomeId,
     });
     await db.pool.query(
-      "UPDATE tasks SET status='waiting_user',waiting_reason='recovery',external_action=true WHERE id=$1",
+      "UPDATE tasks SET status='waiting_user',waiting_reason='recovery' WHERE id=$1",
       [taskId],
     );
     await db.pool.query(
