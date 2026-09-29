@@ -196,6 +196,17 @@ test('PIN and semantic login identifier requests never reach chat', async () => 
     'Qual é o teu NIF para entrar?',
     'Envía tu contraseña para iniciar sesión.',
     'Indiquez votre mot de passe pour vous connecter.',
+    'Quel est votre mot de passe?',
+    'Quel est votre code de vérification?',
+    '¿Cuál es tu contraseña?',
+    '¿Cuál es el código de verificación?',
+    'Enter the code to continue.',
+    'Introduz o código para continuar.',
+    'What is your phone number for signing in?',
+    'What is your email for logging in?',
+    'Email, please, to continue logging in.',
+    'O teu email, por favor, para iniciar sessão.',
+    'Your phone number, please, to sign in.',
   ]) {
     for (const method of ['ask_user', 'send_message', 'final']) {
       let prompts = 0;
@@ -222,6 +233,8 @@ test('sign-in method questions remain available without requesting credential va
     'Can you send the code snippet?',
     'What is the code that calculates tax?',
     'Can you share the QR code image?',
+    'Sign in with email to continue.',
+    'Continua com email para iniciar sessão.',
   ]) {
     const result = await fixture(async (tools) => {
       await call(tools, 'ask_user', { question });
@@ -544,6 +557,60 @@ test('an OTP step uses the secure chat challenge instead of browser takeover', a
   assert.equal(requests, 1);
   assert.equal(result.result.status, 'waiting_credentials');
   assert.equal(result.replies.length, 1);
+});
+
+test('visible OTP fields cannot bypass unresolved sign-in groups', async () => {
+  let requests = 0;
+  let selected = 'sms';
+  const origin = 'https://example.com';
+  const result = await fixture(
+    async (tools) => {
+      const request = { action: 'request', origin, label: 'Example', kind: 'otp' };
+      const choice = await call(tools, 'sign_in', request);
+      assert.equal(
+        JSON.parse((choice.content[0] as { text: string }).text).outcome,
+        'choose_sign_in_method',
+      );
+      assert.equal(requests, 0);
+      await call(tools, 'sign_in', { action: 'select_method', origin, methodId: 'email' });
+      await call(tools, 'sign_in', request);
+    },
+    {
+      requestCredential: async (input) => {
+        assert.equal(selected, 'email');
+        assert.equal(input.kind, 'otp');
+        requests++;
+        return { invitation: { origin: input.origin, kind: 'otp' } };
+      },
+    },
+    {
+      computer: fakeComputer({
+        inspectLogin: async () => ({
+          origin,
+          url: origin + '/verify',
+          fields: [{ kind: 'otp', selector: '#otp', label: 'Verification code' }],
+          methods: [
+            { id: 'credentials', kind: 'credentials', label: 'Verification code', supported: true },
+            ...['sms', 'email'].map((id) => ({
+              id,
+              kind: 'credentials' as const,
+              group: 'Verification method',
+              label: id,
+              selector: `#${id}`,
+              selected: selected === id,
+              supported: true,
+            })),
+          ],
+        }),
+        selectLoginMethod: async (_thread, selectedOrigin, id) => {
+          assert.equal(selectedOrigin, origin);
+          selected = id;
+        },
+      }),
+    },
+  );
+  assert.equal(requests, 1);
+  assert.equal(result.result.status, 'waiting_credentials');
 });
 
 test('cancellation during method inspection prevents provider selection', async () => {

@@ -127,12 +127,13 @@ export function createSignIn({ context, computer, pause }: Turn) {
         observation,
       };
     }
+    const grouped = login.methods.some((method) => method.group);
     if (
+      !grouped &&
       login.fields.some((field) => field.kind === 'otp') &&
       login.methods.some((method) => method.id === 'credentials' && method.supported)
     )
       return requestCredentials(input, login);
-    const grouped = login.methods.some((method) => method.group);
     const groups = new Map<string, LoginMethod[]>();
     for (const method of login.methods) {
       if (method.id === 'continue' || (grouped && method.id === 'credentials')) continue;
