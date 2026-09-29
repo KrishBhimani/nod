@@ -287,6 +287,23 @@ a svg {
   margin: 2px 0 0;
   accent-color: var(--accent);
 }
+input[type='range'] {
+  min-height: 0;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+input[type='range']:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+input[type='range']:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 @media (max-width: 640px) {
   .input {
     font-size: 16px;
