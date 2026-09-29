@@ -4,10 +4,11 @@ export function registerLocalAccess(app: FastifyInstance, port: number) {
   const hosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`]);
   const pages = new Set([
     '/',
-    '/onboarding',
     '/goals',
     '/schedule',
     '/apps',
+    '/onboarding',
+    '/connected.html',
     '/channels',
     '/vault',
     '/you',

@@ -11,6 +11,7 @@ test('OAuth return permits top-level Apps and onboarding navigation and keeps cr
   app.get('/goals', async () => 'Application shell');
   app.get('/schedule', async () => 'Application shell');
   app.get('/browser', async () => 'Application shell');
+  app.get('/connected.html', async () => 'Window return page');
   app.get('/vault/:id', async () => 'Application shell');
   app.post('/api/credential-requests/:id/refresh', async () => ({ ok: true }));
   app.post('/apps', async () => ({ ok: true }));
@@ -46,6 +47,8 @@ test('OAuth return permits top-level Apps and onboarding navigation and keeps cr
       '/schedule',
       '/browser',
       '/vault/test-link',
+      '/onboarding',
+      '/connected.html',
     ]) {
       assert.equal((await app.inject({ url, headers })).statusCode, 200);
       assert.equal((await app.inject({ method: 'POST', url, headers })).statusCode, 403);
