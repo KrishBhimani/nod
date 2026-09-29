@@ -9,6 +9,7 @@ import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import Fastify from 'fastify';
+import { JSDOM } from 'jsdom';
 import pg, { type Pool } from 'pg';
 import { z } from 'zod';
 import type {
@@ -24,6 +25,138 @@ import { createBrowserConnections } from '../src/server/browser-connections.ts';
 import { createTakeover } from '../src/server/takeover.ts';
 import { createBrowserFixture as createAgentBrowserComputer } from './browser-fixture.ts';
 import { stagedLoginBrowser } from './login-fixture.ts';
+
+test('the secure sign-in form saves the session after credentials and a code without a finish click', async () => {
+  const dom = new JSDOM('<div id="root"></div>', {
+    url: 'http://localhost/browser-connect/synthetic-token',
+  });
+  const oldWindow = globalThis.window;
+  const oldDocument = globalThis.document;
+  const oldNavigator = globalThis.navigator;
+  const oldFetch = globalThis.fetch;
+  const oldEvent = globalThis.Event;
+  const oldActEnvironment = Object.getOwnPropertyDescriptor(globalThis, 'IS_REACT_ACT_ENVIRONMENT');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: dom.window.navigator,
+  });
+  Object.defineProperty(globalThis, 'Event', { configurable: true, value: dom.window.Event });
+  Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
+    configurable: true,
+    value: true,
+  });
+  const calls: Array<{ path: string; body?: unknown }> = [];
+  let submissions = 0;
+  const inspection = {
+    origin: 'https://www.linkedin.com',
+    canSubmit: true,
+    fields: [
+      { kind: 'identifier', label: 'Email' },
+      { kind: 'password', label: 'Password' },
+    ],
+    methods: [],
+    issue: null,
+  };
+  globalThis.fetch = async (input, options) => {
+    const path = String(input);
+    const body = options?.body ? JSON.parse(String(options.body)) : undefined;
+    calls.push({ path, body });
+    const value = path.endsWith('/control')
+      ? { paused: false, active: false, mode: null, signInAvailable: true }
+      : path.endsWith('/credentials')
+        ? {
+            status: 'submitted',
+            inspection: {
+              ...inspection,
+              fields: ++submissions === 1 ? [{ kind: 'otp', label: 'Verification code' }] : [],
+            },
+          }
+        : path.endsWith('/finish')
+          ? { ok: true, connected: true }
+          : {
+              name: 'linkedin.com',
+              label: 'LinkedIn',
+              origin: 'https://www.linkedin.com',
+              state: 'pending',
+              fromChat: true,
+              expiresAt: new Date(Date.now() + 60_000).toISOString(),
+              inspection,
+            };
+    return new Response(JSON.stringify(value), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  let root: import('react-dom/client').Root | undefined;
+  try {
+    const { createElement, act } = await import('react');
+    const { createRoot } = await import('react-dom/client');
+    const { BrowserConnection } = await import('../src/web/pages/browser-connection.tsx');
+    root = createRoot(dom.window.document.getElementById('root')!);
+    await act(async () => {
+      root!.render(createElement(BrowserConnection, { token: 'synthetic-token' }));
+      await delay(10);
+    });
+    const inputs = [...dom.window.document.querySelectorAll('form input')];
+    assert.equal(inputs.length, 2);
+    await act(async () => {
+      for (const [input, value] of inputs.map(
+        (input, index) => [input, index ? 'synthetic-password' : 'synthetic@example.test'] as const,
+      )) {
+        Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(
+          input,
+          value,
+        );
+        input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+      }
+      dom.window.document
+        .querySelector('form')!
+        .dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+      await delay(20);
+    });
+    assert.deepEqual(calls.find((call) => call.path.endsWith('/credentials'))?.body, {
+      origin: 'https://www.linkedin.com',
+      username: 'synthetic@example.test',
+      password: 'synthetic-password',
+    });
+    const codeInput = dom.window.document.querySelector<HTMLInputElement>(
+      'input[autocomplete="one-time-code"]',
+    );
+    assert.ok(codeInput);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(
+        codeInput,
+        '123456',
+      );
+      codeInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+      dom.window.document
+        .querySelector('form')!
+        .dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+      await delay(20);
+    });
+    assert.deepEqual(calls.filter((call) => call.path.endsWith('/credentials'))[1]?.body, {
+      origin: 'https://www.linkedin.com',
+      code: '123456',
+    });
+    assert.equal(calls.filter((call) => call.path.endsWith('/finish')).length, 1);
+  } finally {
+    if (root) {
+      const { act } = await import('react');
+      await act(async () => root!.unmount());
+    }
+    globalThis.fetch = oldFetch;
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: oldWindow });
+    Object.defineProperty(globalThis, 'document', { configurable: true, value: oldDocument });
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: oldNavigator });
+    Object.defineProperty(globalThis, 'Event', { configurable: true, value: oldEvent });
+    if (oldActEnvironment)
+      Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', oldActEnvironment);
+    else Reflect.deleteProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT');
+    dom.window.close();
+  }
+});
 
 // Shared helpers
 
@@ -1064,6 +1197,7 @@ async function connectionFixture() {
       blocked: boolean;
       verificationRequired: boolean;
       verificationVisible: boolean;
+      loginRedirect: boolean;
       loginOrigin: string;
       pageUrl: string;
       waitForInjection?: Promise<void>;
@@ -1075,6 +1209,7 @@ async function connectionFixture() {
       blocked: false,
       verificationRequired: false,
       verificationVisible: false,
+      loginRedirect: false,
       loginOrigin: 'https://api.linkedin.com',
       pageUrl: 'https://www.linkedin.com/messaging/',
     };
@@ -1091,9 +1226,19 @@ async function connectionFixture() {
           state.technogymLoginOpen = true;
           state.pageUrl = 'https://www.technogym.com/login';
         } else state.pageUrl = input.url ?? state.pageUrl;
+        if (
+          state.loginRedirect &&
+          state.signedIn &&
+          state.pageUrl === 'https://www.linkedin.com/login'
+        )
+          state.pageUrl = 'https://www.linkedin.com/feed/';
         return {
           url: state.pageUrl,
-          text: state.blocked ? '403 ERROR Request blocked' : 'Synthetic page',
+          text: state.blocked
+            ? '403 ERROR Request blocked'
+            : state.signedIn && state.pageUrl === 'https://www.linkedin.com/feed/'
+              ? 'Synthetic signed-in account page'
+              : 'Synthetic page',
           candidates:
             state.pageUrl === 'https://www.technogym.com/en-IE/' && !state.technogymLoginOpen
               ? [{ id: '@login', label: 'Log in' }]
@@ -1256,6 +1401,53 @@ async function saveLinkedIn(value: Fixture) {
   assert.equal(finish.statusCode, 200);
   return connectionId;
 }
+
+connectionTest(
+  'a login page must open the signed-in destination before the session is saved or used',
+  async (value) => {
+    const { app, pool, service, state } = value;
+    const started = await app.inject({
+      method: 'POST',
+      url: '/api/browser-connections',
+      payload: { url: 'https://www.linkedin.com/login' },
+    });
+    const { url, connectionId } = started.json<{ url: string; connectionId: string }>();
+    const token = url.split('/').at(-1)!;
+    state.signedIn = true;
+    await pool.query('UPDATE browser_connections SET sign_in_started=true WHERE id=$1', [
+      connectionId,
+    ]);
+    const early = await app.inject({
+      method: 'POST',
+      url: `/api/browser-connections/attempt/${token}/finish`,
+      payload: {},
+    });
+    assert.equal(early.statusCode, 409);
+    assert.match(early.json().error, /Still checking/);
+    state.loginRedirect = true;
+    const finished = await app.inject({
+      method: 'POST',
+      url: `/api/browser-connections/attempt/${token}/finish`,
+      payload: {},
+    });
+    assert.equal(finished.statusCode, 200);
+    state.loginRedirect = false;
+    const pending = await service.use(
+      connectionId,
+      turnRef(),
+      'https://www.linkedin.com/company/jobs/',
+    );
+    assert.equal(pending.status, 'site_unavailable');
+    assert.equal((await service.list())[0].browserState, 'saved');
+    state.loginRedirect = true;
+    const opened = await service.use(
+      connectionId,
+      turnRef(),
+      'https://www.linkedin.com/company/jobs/',
+    );
+    assert.equal(opened.status, 'session_opened');
+  },
+);
 
 connectionTest('LinkedIn sign-in keeps credentials private through a later code', async (value) => {
   const { app, pool, service, state, bindings, inputs, savedLogins } = value;

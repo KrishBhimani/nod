@@ -1752,6 +1752,11 @@ test('staged identifier, password and OTP entry waits for Next and keeps secrets
       passwordSelector: password.fields[0].selector,
       submitSelector: password.submitSelector,
     });
+    const challenge = fixture.pages.get('login')?.input;
+    assert.ok(challenge);
+    challenge.autocomplete = '';
+    challenge.name = '';
+    challenge.setAttribute('aria-label', 'Please enter the code here');
     const otp = await computer.inspectLogin('login');
     assert.deepEqual(
       otp.fields.map((field) => field.kind),
@@ -1775,6 +1780,29 @@ test('staged identifier, password and OTP entry waits for Next and keeps secrets
   } finally {
     await computer.dispose();
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a signed-in job search box is not a sign-in field', () => {
+  const dom = new JSDOM(
+    '<main><h1>Jobs</h1><input aria-label="Search" placeholder="Search jobs"></main><footer>Sign in</footer>',
+    { url: 'https://www.example.com/company/jobs/', runScripts: 'outside-only' },
+  );
+  dom.window.HTMLElement.prototype.getClientRects = function () {
+    const rect = new dom.window.DOMRect(0, 0, 30, 30);
+    return Object.assign([rect], { item: (index: number) => (index === 0 ? rect : null) });
+  };
+  Object.defineProperty(dom.window.HTMLElement.prototype, 'innerText', {
+    get() {
+      return this.textContent;
+    },
+  });
+  try {
+    const inspection = loginInspectionSchema.parse(dom.window.eval(loginInspectionScript()));
+    assert.equal(inspection.fields.length, 0);
+    assert.equal(inspection.methods.length, 0);
+  } finally {
+    dom.window.close();
   }
 });
 

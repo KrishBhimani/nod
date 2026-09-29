@@ -111,6 +111,40 @@ async function call(tools: Map<string, AgentTool>, name: string, args: Record<st
   return tools.get(name)!.execute(args);
 }
 
+test('long foreground source checks send one progress message while background checks stay quiet', async () => {
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  const computer = fakeComputer({
+    act: async (_threadId, input) => ({
+      url: input.url ?? 'https://example.test/jobs',
+      text: 'Synthetic job listings',
+      candidates: [],
+    }),
+  });
+  try {
+    for (const background of [false, true]) {
+      const result = await fixture(
+        async (tools) => {
+          await call(tools, 'browser', { action: 'open', url: 'https://example.test/jobs' });
+          await call(tools, 'browser', { action: 'snapshot' });
+          now += 46_000;
+          await call(tools, 'browser', { action: 'scroll', direction: 'down' });
+          await call(tools, 'browser', { action: 'snapshot' });
+          if (!background)
+            await call(tools, 'send_message', { text: 'Another routine progress update.' });
+        },
+        { background },
+        { computer },
+      );
+      assert.equal(result.result.status, 'succeeded');
+      assert.equal(result.replies.length, background ? 0 : 1);
+    }
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test('chat login solicitations are withheld without inspecting or opening Vault', async () => {
   for (const method of ['ask_user', 'send_message', 'final']) {
     let requests = 0;

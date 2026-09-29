@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { ArrowLeft, Check, Globe2, LockKeyhole } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { ArrowLeft, Check, LockKeyhole } from 'lucide-react';
 import { BrowserControl } from '../components/browser-control';
 import { BrandMark } from '../components/brand';
-import { Button, Checkbox, Field, Input, Loading, Notice } from '../components/ui';
+import { Button, Field, Input, Notice } from '../components/ui';
 import { api, errorMessage } from '../lib/api';
 
 type Inspection = {
@@ -30,8 +30,8 @@ export function BrowserConnection({ token }: { token: string }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
-  const [saveLogin, setSaveLogin] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [fallbackReady, setFallbackReady] = useState(false);
   const [saveWarning, setSaveWarning] = useState(false);
   const [complete, setComplete] = useState(false);
   const [privateActive, setPrivateActive] = useState(false);
@@ -39,7 +39,8 @@ export function BrowserConnection({ token }: { token: string }) {
     'closed',
   );
   const [activity, setActivity] = useState<'credentials' | 'finish' | null>(null);
-  const [workingSeconds, setWorkingSeconds] = useState(0);
+  const lastAutoFinish = useRef(0);
+  const autoFinishFailures = useRef(0);
   const returnTo = attempt?.fromChat ? '/' : '/apps';
   const controlChanged = useCallback(
     (active: boolean, _privateView: boolean, phase: typeof browserPhase) => {
@@ -89,21 +90,6 @@ export function BrowserConnection({ token }: { token: string }) {
     return () => window.clearInterval(timer);
   }, [submitted, complete, privateActive, refresh]);
 
-  const working =
-    !attempt || activity !== null || browserPhase === 'opening' || browserPhase === 'checking';
-  useEffect(() => {
-    if (!working) {
-      setWorkingSeconds(0);
-      return;
-    }
-    const started = Date.now();
-    const timer = window.setInterval(
-      () => setWorkingSeconds(Math.floor((Date.now() - started) / 1000)),
-      1000,
-    );
-    return () => window.clearInterval(timer);
-  }, [working, activity, browserPhase]);
-
   const inspection = attempt?.inspection;
   const ownOrigin = inspection?.canSubmit === true;
   const hasUsername = Boolean(
@@ -116,65 +102,66 @@ export function BrowserConnection({ token }: { token: string }) {
   const canUseForm =
     (hasUsername || hasPassword || hasCode) && !(hasCode && (hasUsername || hasPassword));
   const formOrigin = inspection?.origin ?? attempt?.origin;
-  const progress = !attempt
-    ? error
-      ? {
-          step: 1,
-          title: 'Could not open sign-in',
-          detail: 'Return to Apps or chat and start a new connection.',
-        }
-      : { step: 1, title: 'Opening the website', detail: 'Otto is checking the sign-in page.' }
-    : activity === 'finish' || browserPhase === 'checking'
-      ? {
-          step: 3,
-          title: 'Checking your sign-in',
-          detail:
-            'Otto is checking the account page before it saves this browser session. The site may ask for another step.',
-        }
+  const siteName = attempt?.label ?? attempt?.name ?? 'The website';
+  useEffect(() => {
+    if (complete || privateActive || canUseForm || browserPhase !== 'closed') {
+      setFallbackReady(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setFallbackReady(true), 10_000);
+    return () => window.clearTimeout(timer);
+  }, [complete, privateActive, canUseForm, browserPhase]);
+
+  useEffect(() => {
+    if (!attempt || submitted || complete || privateActive || canUseForm || fallbackReady) return;
+    const timer = window.setInterval(() => {
+      void refresh().catch((cause) => setError(errorMessage(cause)));
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [attempt, submitted, complete, privateActive, canUseForm, fallbackReady, refresh]);
+
+  const checking =
+    !attempt ||
+    activity !== null ||
+    browserPhase === 'opening' ||
+    browserPhase === 'checking' ||
+    (!canUseForm && !fallbackReady && browserPhase !== 'open');
+  const status =
+    !attempt || browserPhase === 'opening'
+      ? 'Opening the sign-in page'
       : activity === 'credentials'
-        ? {
-            step: 2,
-            title: hasCode ? 'Checking your code' : 'Checking your details',
-            detail:
-              'Otto is waiting for the website. It may ask for a verification code or another sign-in step.',
-          }
-        : browserPhase === 'opening'
-          ? {
-              step: 1,
-              title: 'Opening the private browser',
-              detail: 'Otto is preparing the website view. Keep this page open.',
-            }
+        ? hasCode
+          ? 'Sending your code'
+          : 'Sending your sign-in details'
+        : activity === 'finish' ||
+            browserPhase === 'checking' ||
+            (submitted && !canUseForm && !fallbackReady)
+          ? `Checking the ${siteName} account page and saving the session`
           : browserPhase === 'open'
-            ? {
-                step: 2,
-                title: 'Complete sign-in in the browser',
-                detail:
-                  'Use the browser below for any code or account check. Select Finish sign-in when you reach your account.',
-              }
+            ? `Waiting for the ${siteName} sign-in step`
             : hasCode
-              ? {
-                  step: 2,
-                  title: 'Enter your verification code',
-                  detail:
-                    'The website requested a code. Enter it below, then Otto will check the next page.',
-                }
-              : submitted
-                ? {
-                    step: 2,
-                    title: canUseForm
-                      ? 'The site still needs sign-in details'
-                      : 'Check the next website step',
-                    detail: canUseForm
-                      ? 'Check the fields below or open the private browser to see what the site needs.'
-                      : 'Open the private browser if the site asks for another step. You can try to finish once you reach your account.',
-                  }
-                : {
-                    step: 2,
-                    title: canUseForm ? 'Enter your sign-in details' : 'Sign in on the website',
-                    detail: canUseForm
-                      ? 'Use the private fields below. Otto will check what the website needs next.'
-                      : 'Open the private browser to use the website sign-in page.',
-                  };
+              ? `${siteName} asked for a code`
+              : canUseForm
+                ? `${siteName} asked for sign-in details`
+                : fallbackReady
+                  ? `${siteName} needs a website sign-in step`
+                  : `Checking the ${siteName} sign-in options`;
+
+  useEffect(() => {
+    if (
+      !submitted ||
+      complete ||
+      busy ||
+      privateActive ||
+      !inspection ||
+      inspection.fields.length ||
+      inspection.methods.length ||
+      Date.now() - lastAutoFinish.current < 2000
+    )
+      return;
+    lastAutoFinish.current = Date.now();
+    void finish(true);
+  }, [attempt, submitted, complete, busy, privateActive, inspection]);
 
   async function sendCredentials(event: FormEvent) {
     event.preventDefault();
@@ -190,10 +177,9 @@ export function BrowserConnection({ token }: { token: string }) {
         method: 'POST',
         body: JSON.stringify({
           origin: formOrigin,
-          ...(username ? { username } : {}),
+          ...(username && !hasCode ? { username } : {}),
           ...(password ? { password } : {}),
           ...(code ? { code } : {}),
-          ...(saveLogin && hasPassword ? { saveLogin: true } : {}),
         }),
         cache: 'no-store',
       });
@@ -216,7 +202,7 @@ export function BrowserConnection({ token }: { token: string }) {
     }
   }
 
-  async function finish() {
+  async function finish(automatic = false) {
     if (busy) return;
     setBusy(true);
     setActivity('finish');
@@ -230,7 +216,13 @@ export function BrowserConnection({ token }: { token: string }) {
       setSaveWarning(result.loginSaved === false);
       setComplete(true);
     } catch (cause) {
-      setError(errorMessage(cause));
+      const message = errorMessage(cause);
+      if (
+        !automatic ||
+        (!message.includes('Still checking the signed-in page') &&
+          ++autoFinishFailures.current >= 3)
+      )
+        setError(message);
       await refresh().catch(() => {});
     } finally {
       setBusy(false);
@@ -251,79 +243,14 @@ export function BrowserConnection({ token }: { token: string }) {
         </a>
       </header>
       <div className="browser-connection-layout">
-        <section className="browser-connection-intro">
-          <div className="browser-connection-icon">
-            <Globe2 size={28} />
-          </div>
-          <h1>
-            {complete || attempt?.state === 'saved'
-              ? 'Website connected'
-              : `Connect ${attempt?.name ?? 'website'}`}
-          </h1>
-          <p>
-            Sign in on the website. Otto will keep this browser session for later tasks. You can
-            remove it in Apps.
-          </p>
-          <div className="browser-connection-address">
-            <LockKeyhole size={16} aria-hidden="true" />
-            <span>{attempt?.origin ?? 'Checking website…'}</span>
-          </div>
-          <p className="browser-connection-note">
-            Your password stays out of chat and Otto’s model. A saved session does not let Otto send
-            or change things without your task instruction.
-          </p>
-        </section>
         <section className="browser-connection-stage" aria-label="Website sign-in">
-          {!complete && attempt?.state !== 'saved' && (
-            <div className="browser-connection-progress">
-              <ol className="browser-connection-steps" aria-label="Connection steps">
-                {['Open website', 'Sign in', 'Save session'].map((label, index) => (
-                  <li
-                    key={label}
-                    className={
-                      index + 1 < progress.step
-                        ? 'done'
-                        : index + 1 === progress.step
-                          ? 'current'
-                          : ''
-                    }
-                    aria-current={index + 1 === progress.step ? 'step' : undefined}
-                  >
-                    <span className="browser-connection-step-mark" aria-hidden="true">
-                      {index + 1 < progress.step ? <Check size={12} /> : index + 1}
-                    </span>
-                    <span>{label}</span>
-                  </li>
-                ))}
-              </ol>
-              <div className="browser-connection-progress-message" role="status" aria-live="polite">
-                <span
-                  className={
-                    working
-                      ? 'browser-connection-progress-dot working'
-                      : 'browser-connection-progress-dot'
-                  }
-                  aria-hidden="true"
-                />
-                <div>
-                  <strong>{progress.title}</strong>
-                  <p>{progress.detail}</p>
-                </div>
-              </div>
-              {workingSeconds >= 10 && (
-                <p className="browser-connection-working-time">Still working · {workingSeconds}s</p>
-              )}
-            </div>
-          )}
-          {!attempt && !error && <Loading label="Checking the website…" />}
-          {error && <Notice>{error}</Notice>}
           {complete || attempt?.state === 'saved' ? (
             <div className="browser-connection-success">
               <span className="browser-connection-success-mark">
                 <Check size={28} />
               </span>
-              <h2>Session saved</h2>
-              <p>Otto will check the website again when it uses this connection.</p>
+              <h1>Connected</h1>
+              <p>Otto saved the website session.</p>
               {saveWarning && (
                 <Notice kind="info">
                   The browser session is saved, but Vault could not save the login.
@@ -331,23 +258,37 @@ export function BrowserConnection({ token }: { token: string }) {
               )}
               <a href={returnTo}>Return to {attempt?.fromChat ? 'chat' : 'Apps'}</a>
             </div>
-          ) : attempt ? (
+          ) : (
             <>
-              <div className="browser-connection-stage-heading">
-                <div>
-                  <h2>Sign in securely</h2>
-                  <p>
-                    {canUseForm
-                      ? `Sign in at ${inspection?.origin}. Use the fields below or open the website browser.`
-                      : 'Open the website browser to finish sign-in.'}
-                  </p>
-                </div>
+              <div className="browser-connection-status" role="status" aria-live="polite">
+                <span
+                  className={
+                    checking
+                      ? 'browser-connection-status-dot working'
+                      : 'browser-connection-status-dot'
+                  }
+                  aria-hidden="true"
+                />
+                <h1>
+                  {checking
+                    ? 'Working…'
+                    : hasCode
+                      ? 'Enter the code'
+                      : canUseForm
+                        ? 'Sign in'
+                        : 'Website sign-in'}
+                </h1>
+                <p>{status}</p>
               </div>
-              {canUseForm && (
+              {attempt && canUseForm && !checking && (
                 <form
                   className="browser-connection-form"
                   onSubmit={(event) => void sendCredentials(event)}
                 >
+                  <div className="browser-connection-address">
+                    <LockKeyhole size={16} aria-hidden="true" />
+                    <span>{formOrigin}</span>
+                  </div>
                   {(hasUsername || hasPassword) && (
                     <Field
                       label={
@@ -390,39 +331,31 @@ export function BrowserConnection({ token }: { token: string }) {
                       />
                     </Field>
                   )}
-                  {hasPassword && (
-                    <label className="browser-connection-save">
-                      <Checkbox
-                        checked={saveLogin}
-                        onChange={(event) => setSaveLogin(event.target.checked)}
-                        disabled={busy}
-                      />
-                      Save this login in Vault for a later sign-in
-                    </label>
-                  )}
                   <Button type="submit" disabled={busy}>
-                    {busy ? 'Checking…' : hasCode ? 'Send code' : 'Sign in'}
+                    {hasCode ? 'Send code' : 'Sign in'}
                   </Button>
+                  <p className="browser-connection-note">
+                    Your details stay out of chat and Otto’s model.
+                  </p>
                 </form>
               )}
-              {inspection?.methods.some(
-                (method) => method.kind !== 'credentials' && method.supported,
-              ) && (
-                <p className="browser-connection-methods">
-                  Other sign-in options are available on the website. Open the private browser to
-                  use them.
-                </p>
-              )}
-              <div className="browser-connection-browser">
+              {error && <Notice>{error}</Notice>}
+              <div
+                className={
+                  checking || canUseForm
+                    ? 'browser-connection-browser hidden'
+                    : 'browser-connection-browser'
+                }
+              >
                 <BrowserControl
                   screen={null}
-                  emptyMessage="The private browser opens here."
+                  emptyMessage="The website needs a sign-in method Otto cannot show here."
                   live={false}
                   onEnlarge={() => {}}
                   onControlChange={controlChanged}
                   controlPath={`${base}/control`}
-                  startLabel="Open private browser"
-                  finishLabel="Finish sign-in"
+                  startLabel="Open website sign-in"
+                  finishLabel="Done"
                   onCompleted={(result) => {
                     setSaveWarning(result.loginSaved === false);
                     setComplete(true);
@@ -430,15 +363,8 @@ export function BrowserConnection({ token }: { token: string }) {
                   }}
                 />
               </div>
-              <Button
-                variant="outline"
-                onClick={() => void finish()}
-                disabled={busy || privateActive}
-              >
-                {privateActive ? 'Finish in the private browser' : 'I finished signing in'}
-              </Button>
             </>
-          ) : null}
+          )}
         </section>
       </div>
     </main>

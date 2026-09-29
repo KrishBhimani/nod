@@ -125,7 +125,7 @@ export function loginInspectionScript(): string {
     for(const e of inputs) {
       if(digitGroup) break;
       let kind=kindOf(e);
-      if(!kind&&!secretHint(hint(e))&&inputs.length===1&&/log.?in|sign.?in|account|autenticacao|iniciar sessao/.test(normalized(fieldScope.innerText||scope.innerText||document.body?.innerText||''))&&['text','tel'].includes(e.type)) kind='identifier';
+      if(!kind&&!secretHint(hint(e))&&inputs.length===1&&/log.?in|sign.?in|account|autenticacao|iniciar sessao/.test(normalized(fieldScope.innerText||scope.innerText||document.body?.innerText||''))&&['text','tel'].includes(e.type)&&!/search|filter|location|job/.test(hint(e))) kind='identifier';
       if(!kind) continue;
       const marker=kind+'-'+fields.filter(f=>f.kind===kind).length;
       e.setAttribute('data-otto-login-field',marker);

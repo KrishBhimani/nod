@@ -96,6 +96,10 @@ function blockedPage(text: string) {
   return /\b403 ERROR\b|request blocked|access denied/i.test(text);
 }
 
+function signInPath(url: string) {
+  return /\/(?:login|log-in|signin|sign-in)\/?$/i.test(new URL(url).pathname);
+}
+
 function slug(origin: string) {
   return `browser-${name(origin)
     .replace(/[^a-z0-9]/gi, '-')
@@ -369,6 +373,24 @@ export async function createBrowserConnections(
       signal?.throwIfAborted();
       let observation;
       try {
+        if (signInPath(row.start_url)) {
+          const check = await openSignInPage(browserId, row.start_url, signal);
+          if (check.inspection.fields.length || check.inspection.methods.length) {
+            await pool.query(
+              `UPDATE browser_connections SET state='needs_sign_in',updated_at=now() WHERE id=$1 AND owner_id=$2`,
+              [row.id, options.ownerId],
+            );
+            options.refresh?.();
+            return { connectionId: row.id, status: 'needs_sign_in' as const };
+          }
+          if (!check.open) {
+            return {
+              connectionId: row.id,
+              status: 'site_unavailable' as const,
+              message: 'The signed-in page has not opened yet. Try this saved session again.',
+            };
+          }
+        }
         observation = await browser.act(browserId, { action: 'open', url: address.href }, signal);
       } catch (error) {
         if (!(error instanceof BrowserActionError) || error.code !== 'browser_origin_changed')
@@ -415,6 +437,32 @@ export async function createBrowserConnections(
     if (result.status !== 'needs_sign_in') return result;
     const link = await begin({ url: existing.start_url, connectionId: existing.id }, turn, signal);
     return { ...result, ...link, status: 'needs_sign_in' as const };
+  }
+
+  async function openSignInPage(browserId: string, url: string, signal?: AbortSignal) {
+    let observation = await browser.act(browserId, { action: 'open', url, waitMs: 1000 }, signal);
+    let inspection = await browser.inspectLogin(browserId);
+    for (let step = 0; step < 3; step += 1) {
+      if (
+        !signInPath(url) ||
+        (new URL(observation.url).pathname !== new URL(url).pathname &&
+          observation.text.trim().length >= 20) ||
+        inspection.fields.length ||
+        inspection.methods.length
+      )
+        break;
+      observation = await browser.act(browserId, { action: 'snapshot', waitMs: 1500 }, signal);
+      inspection = await browser.inspectLogin(browserId);
+    }
+    return {
+      observation,
+      inspection,
+      open:
+        !signInPath(url) ||
+        (sameSite(observation.url, url) &&
+          new URL(observation.url).pathname !== new URL(url).pathname &&
+          observation.text.trim().length >= 20),
+    };
   }
 
   async function request(raw: unknown, turn: TurnRef, signal?: AbortSignal) {
@@ -719,10 +767,11 @@ export async function createBrowserConnections(
           throw new BrowserConnectionError(
             'Sign-in is still needed. Complete it here or in the private browser.',
           );
-        const observation = await browser.act(browserId, { action: 'open', url: row.start_url });
+        const { observation, inspection, open } = await openSignInPage(browserId, row.start_url);
         if (blockedPage(observation.text))
           throw new BrowserConnectionError('This website blocked Otto’s browser. Try again later.');
-        const inspection = await browser.inspectLogin(browserId);
+        if (!open)
+          throw new BrowserConnectionError('Still checking the signed-in page. Try again shortly.');
         if (
           new URL(observation.url).origin !== row.origin ||
           inspection?.fields.length ||
