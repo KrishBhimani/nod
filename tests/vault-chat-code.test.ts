@@ -134,38 +134,54 @@ test(
     }
     try {
       await t.test(
-        'an exact code bypasses ordinary routing and saves only a masked acknowledgement',
+        'concise code replies bypass ordinary routing and save only a masked acknowledgement',
         async () => {
-          await reset();
-          const request = await seed();
-          const before = (await app.inject({ url: '/api/state', headers })).json();
-          assert.equal(before.verificationRequests[0].id, request.requestId);
-          assert.deepEqual(Object.keys(before.verificationRequests[0]).sort(), [
-            'expiresAt',
-            'id',
-            'turnId',
-          ]);
-          const response = await send(' 739126 ', { verificationRequestId: request.requestId });
-          assert.equal(response.statusCode, 200, response.body);
-          assert.equal(response.json().messageText, 'Verification code sent securely.');
-          assert.equal(response.json().verificationStatus, 'submitted');
-          assert.deepEqual(injected, [
-            {
-              owner: ownerId,
-              turnId: request.turnId,
-              code: '739126',
-              requestId: request.requestId,
-            },
-          ]);
-          assert.deepEqual(ordinary, []);
-          const state = (await app.inject({ url: '/api/state', headers })).json();
-          assert.equal(state.verificationRequests.length, 0);
-          assert.doesNotMatch(JSON.stringify(state), /739126/);
-          const persisted = await db.pool.query(
-            'SELECT row_to_json(m) AS row FROM messages m UNION ALL SELECT row_to_json(v) FROM chat_verification_submissions v',
-          );
-          assert.doesNotMatch(JSON.stringify(persisted.rows), /739126/);
-          assert.equal((await db.pool.query('SELECT * FROM inspector_records')).rowCount, 0);
+          for (const [text, code] of [
+            [' 739126 ', '739126'],
+            ['The code is 739126', '739126'],
+            ['Code: 073912', '073912'],
+            ['OTP: 012345', '012345'],
+            ['2FA code: 012345', '012345'],
+            ['Verification code = 739126', '739126'],
+            ['SMS code: 739126.', '739126'],
+            ['O código é 739 126.', '739126'],
+            ['Código de verificação: 739 126', '739126'],
+            ['739 126', '739126'],
+            ['1 2 3 4 5 6 7 8', '12345678'],
+          ]) {
+            await reset();
+            const request = await seed();
+            const before = (await app.inject({ url: '/api/state', headers })).json();
+            assert.equal(before.verificationRequests[0].id, request.requestId);
+            assert.deepEqual(Object.keys(before.verificationRequests[0]).sort(), [
+              'expiresAt',
+              'id',
+              'turnId',
+            ]);
+            const response = await send(text);
+            assert.equal(response.statusCode, 200, response.body);
+            assert.equal(response.json().messageText, 'Verification code sent securely.');
+            assert.equal(response.json().verificationStatus, 'submitted');
+            assert.deepEqual(injected, [
+              {
+                owner: ownerId,
+                turnId: request.turnId,
+                code,
+                requestId: request.requestId,
+              },
+            ]);
+            assert.deepEqual(ordinary, []);
+            const state = (await app.inject({ url: '/api/state', headers })).json();
+            assert.equal(state.verificationRequests.length, 0);
+            assert.ok(!JSON.stringify(state).includes(code));
+            assert.ok(!JSON.stringify(state).includes(text.trim()));
+            const persisted = await db.pool.query(
+              'SELECT row_to_json(m) AS row FROM messages m UNION ALL SELECT row_to_json(v) FROM chat_verification_submissions v UNION ALL SELECT row_to_json(t) FROM turns t',
+            );
+            assert.ok(!JSON.stringify(persisted.rows).includes(code));
+            assert.ok(!JSON.stringify(persisted.rows).includes(text.trim()));
+            assert.equal((await db.pool.query('SELECT * FROM inspector_records')).rowCount, 0);
+          }
         },
       );
       await t.test(
@@ -181,8 +197,11 @@ test(
           const entering = new Promise<void>((resolve) => {
             started = resolve;
           });
-          const first = send('834725', { clientMessageId });
-          await entering;
+          const first = send('The code is 834 725', { clientMessageId });
+          await Promise.race([
+            entering,
+            first.then(() => assert.fail('Expected private verification injection.')),
+          ]);
           const duplicate = await send('834725', { clientMessageId });
           assert.equal(duplicate.statusCode, 200, duplicate.body);
           assert.equal(duplicate.json().verificationStatus, 'pending');
@@ -194,7 +213,7 @@ test(
           assert.equal(injected.length, 1);
           release();
           assert.equal((await first).statusCode, 200);
-          const after = await send('834725', {
+          const after = await send('Código: 834725', {
             clientMessageId,
             verificationRequestId: request.requestId,
           });
@@ -249,6 +268,64 @@ test(
           assert.deepEqual(ordinary, []);
           assert.equal((await send('2026')).statusCode, 200);
           assert.deepEqual(ordinary, ['2026']);
+        },
+      );
+      await t.test(
+        'ambiguous explicit code replies stay private while a challenge is registered',
+        async () => {
+          await reset();
+          await seed();
+          for (const text of [
+            'Code: 123456 or 654321',
+            'O código é 739126 ou 928361',
+            'Code: 123456 and please continue',
+            'Code: 123',
+            'Code: 123456789',
+            'Code: 2026-09-29',
+            'Code: 12.34',
+          ]) {
+            const response = await send(text);
+            assert.equal(response.statusCode, 409);
+            assert.ok(!response.body.includes(text));
+          }
+          assert.deepEqual(ordinary, []);
+          assert.equal(injected.length, 0);
+          assert.equal(
+            (await db.pool.query("SELECT * FROM messages WHERE role='user'")).rowCount,
+            0,
+          );
+          assert.equal(
+            (await db.pool.query('SELECT * FROM chat_verification_submissions')).rowCount,
+            0,
+          );
+        },
+      );
+      await t.test(
+        'unrelated numeric prose stays ordinary and concise codes need a challenge',
+        async () => {
+          const unrelated = [
+            'The year is 2026',
+            'The code snippet has 123456 lines',
+            'Order 123456 is ready',
+            'Code: +351912345678',
+          ];
+          await reset();
+          await seed();
+          for (const text of unrelated) assert.equal((await send(text)).statusCode, 200);
+          assert.deepEqual(ordinary, unrelated);
+          assert.equal(injected.length, 0);
+          await reset();
+          const noChallenge = [
+            '2026',
+            'The code is 739126',
+            'Código: 739 126',
+            'Code: 123456 or 654321',
+            'Code: 2026-09-29',
+            'Code: 12.34',
+          ];
+          for (const text of noChallenge) assert.equal((await send(text)).statusCode, 200);
+          assert.deepEqual(ordinary, noChallenge);
+          assert.equal(injected.length, 0);
         },
       );
       await t.test(
@@ -351,7 +428,7 @@ test(
           ]) {
             await reset();
             await seed(options);
-            const response = await send('791483');
+            const response = await send('The code is 791 483');
             assert.equal(response.statusCode, 409, JSON.stringify(options));
             assert.deepEqual(ordinary, []);
             assert.equal(injected.length, 0);
@@ -363,11 +440,11 @@ test(
           await reset();
           await seed();
           assert.equal((await send('791483')).statusCode, 200);
-          assert.equal((await send('791483')).statusCode, 409);
+          assert.equal((await send('Código: 791 483')).statusCode, 409);
           await db.pool.query(
             "UPDATE credential_requests SET expires_at=now()-interval '1 minute'",
           );
-          assert.equal((await send('791483')).statusCode, 409);
+          assert.equal((await send('Código: 791 483')).statusCode, 409);
           assert.equal(injected.length, 1);
           assert.deepEqual(ordinary, []);
           const persisted = await db.pool.query('SELECT row_to_json(m) FROM messages m');

@@ -223,7 +223,8 @@ test(
           { id: 'credentials', kind: 'credentials', label: 'Verification code', supported: true },
         ],
       }),
-      inject: async () => {
+      inject: async (input) => {
+        assert.equal(input.code, '481927');
         injections++;
       },
       resume: async () => {},
@@ -321,7 +322,7 @@ test(
         kind: 'otp',
         passwordSelector: '#code',
       });
-      await send('early-code', '481927');
+      await send('early-code', 'The code is 481 927');
       await channels.drain();
       assert.equal(injections, 0);
       assert.deepEqual(submitted, ['2026']);
@@ -330,7 +331,12 @@ test(
         "UPDATE turns SET status='waiting',waiting_reason='credentials',finished_at=now() WHERE id=$1",
         [codeTurnId],
       );
-      assert.equal((await send('code', '481927')).statusCode, 200);
+      assert.equal((await send('ambiguous-code', 'Code: 481927 or 739126')).statusCode, 200);
+      await channels.drain();
+      assert.equal(injections, 0);
+      assert.deepEqual(submitted, ['2026']);
+      assert.doesNotMatch(await stored(), /481927|739126/);
+      assert.equal((await send('code', 'Código: 481 927')).statusCode, 200);
       await channels.drain();
       assert.equal(injections, 1);
       assert.deepEqual(submitted, ['2026']);

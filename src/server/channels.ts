@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
+import { classifyVerificationReply } from '../shared/verification-code.ts';
 import type { WorkAdmission } from './work-admission.ts';
 import type {
   ChannelPairingRequest,
@@ -209,7 +210,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
         if (closed || replacing || !permitted(identity))
           throw new Error('Channel configuration changed.');
       };
-      if (/^\d{4,8}$/.test(text) && options.acceptVerification) {
+      if (classifyVerificationReply(text).kind !== 'ordinary' && options.acceptVerification) {
         try {
           verification = await options.acceptVerification(text, {
             clientMessageId: acceptedMessageId,
