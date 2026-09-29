@@ -35,6 +35,7 @@ interface ChannelOptions {
   subscribe: (listener: () => void) => () => void;
   intervalMs?: number;
   resolveAttachments?: (taskId: string, ids: string[]) => Promise<MessagingAttachment[]>;
+  appOrigin?: string;
 }
 interface ChannelIdentity {
   provider: string;
@@ -82,25 +83,44 @@ function inboundMessageId(ownerId: string, sourceId: string) {
   return `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20)}`;
 }
 
-export function channelReply(text: string, hasAttachments = false, deliversAttachments = false) {
+export function channelReply(
+  text: string,
+  hasAttachments = false,
+  deliversAttachments = false,
+  privateLinks: { name: string; url: string }[] = [],
+) {
   const securePath = '(?:https?:\\/\\/[^\\s)]+)?\\/(?:vault|credentials|approvals)\\/[^\\s)]+';
   const safe = text
     .replace(
       /\[[^\]]*\]\((?:https?:\/\/[^\s)]+)?\/api\/artifacts\/[^\s)]+\)|(?:https?:\/\/[^\s)]+)?\/api\/artifacts\/[^\s)]+/g,
-      deliversAttachments ? 'Attached file.' : 'Open Otto to view this file.',
+      deliversAttachments
+        ? 'Attached file.'
+        : privateLinks.length
+          ? 'See the file link below.'
+          : 'Open Otto to view this file.',
     )
     .replace(
       new RegExp(`\\[[^\\]]*\\]\\(${securePath}\\)|${securePath}`, 'g'),
       'Open Otto to continue securely.',
     );
-  return (
-    `${safe}${hasAttachments ? '\n\nAttachments are available in Otto.' : ''}`.trim() ||
-    'A reply is available in Otto.'
-  );
+  const files = privateLinks.length
+    ? `Files:\n${privateLinks.map(({ name, url }) => `${name.replace(/[\r\n]/g, ' ')}: ${url}`).join('\n')}`
+    : hasAttachments
+      ? 'Attachments are available in Otto.'
+      : '';
+  return `${safe}${files ? `\n\n${files}` : ''}`.trim() || 'A reply is available in Otto.';
 }
 
 export async function createChannels(pool: Pool, options: ChannelOptions) {
   const { ownerId } = options;
+  const appOrigin = (() => {
+    try {
+      const url = new URL(options.appOrigin ?? '');
+      return url.protocol === 'https:' ? url.origin : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
   let transport = options.transport;
   let channels = transport.channels.map((channel) => ({
     ...channel,
@@ -411,24 +431,32 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
         continue;
       }
       let attachments: MessagingAttachment[] | undefined;
+      let privateLinks: { name: string; url: string }[] = [];
       const canDeliverAttachments = channels.find(
         (channel) => channel.id === row.provider,
       )?.supportsAttachments;
-      if (row.attachments?.length && canDeliverAttachments) {
+      if (row.attachments?.length) {
         try {
           const requested = z
             .array(z.object({ id: z.uuid() }))
             .min(1)
             .max(10)
             .parse(row.attachments);
+          const unique = [...new Map(requested.map((item) => [item.id, item])).values()];
           if (!options.resolveAttachments || !row.task_id)
             throw new Error('Attachment delivery is unavailable.');
-          attachments = await options.resolveAttachments(
+          const resolved = await options.resolveAttachments(
             row.task_id,
-            requested.map(({ id }) => id),
+            unique.map(({ id }) => id),
           );
-          if (!attachments.length || attachments.length > 10)
+          if (resolved.length !== unique.length)
             throw new Error('Attachment delivery is unavailable.');
+          if (canDeliverAttachments) attachments = resolved;
+          else if (appOrigin)
+            privateLinks = unique.map(({ id }, index) => ({
+              name: resolved[index].name,
+              url: `${appOrigin}/api/artifacts/${id}`,
+            }));
         } catch {
           await pool.query(
             "UPDATE channel_outbox SET state='blocked',reason='attachment_unavailable',updated_at=now() WHERE message_id=$1",
@@ -453,6 +481,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
             row.text,
             Boolean(row.attachments?.length) && !attachments,
             Boolean(attachments),
+            privateLinks,
           ),
           ...(attachments ? { attachments } : {}),
         });

@@ -147,6 +147,7 @@ export function createAgentBrowserComputer(options: {
   desktop?: (directory: string) => Promise<SignInDesktop>;
   idleTimeoutMs?: number;
   manualTimeoutMs?: number;
+  maxLiveSessions?: number;
   run?: typeof runProcess;
   daemonCommand?: typeof existingDaemonCommand;
   signInLauncher?: ReturnType<typeof createBrowserSignIn>;
@@ -174,6 +175,7 @@ export function createAgentBrowserComputer(options: {
   const createDesktop = options.desktop ?? createSignInDesktop();
   const idleTimeoutMs = options.idleTimeoutMs ?? 30 * 60_000;
   const manualTimeoutMs = Math.min(options.manualTimeoutMs ?? 30 * 60_000, 30 * 60_000);
+  const maxLiveSessions = Math.max(1, Math.min(4, options.maxLiveSessions ?? 4));
   const proxy = createBrowserProxy();
   const signInLauncher =
     options.signInLauncher ?? createBrowserSignIn({ sandbox: options.sandbox });
@@ -256,7 +258,7 @@ export function createAgentBrowserComputer(options: {
           (entry) => entry.started || entry.saved.navigationFailed || entry.saved.signInPending,
         );
       const attempted = new Set<string>();
-      while (occupied().length >= 4) {
+      while (occupied().length >= maxLiveSessions) {
         const candidate = occupied()
           .filter(
             (entry) =>
@@ -426,7 +428,11 @@ export function createAgentBrowserComputer(options: {
         ],
         {
           cwd: runtimeRoot,
-          env: { ...serviceEnvironment(), ...state.desktop?.environment },
+          env: {
+            ...serviceEnvironment(),
+            AGENT_BROWSER_DEFAULT_TIMEOUT: '30000',
+            ...state.desktop?.environment,
+          },
           input: options.input,
           signal: options.signal,
           timeoutMs: 45_000,
@@ -453,6 +459,13 @@ export function createAgentBrowserComputer(options: {
       /^Navigation failed: net::ERR_[A-Z_]+/.test(response.error)
     )
       throw new BrowserActionError('browser_navigation_failed');
+    if (
+      args[0] === 'open' &&
+      response.success === false &&
+      typeof response.error === 'string' &&
+      response.error.startsWith('Operation timed out.')
+    )
+      throw new DaemonCommandError();
     if (result.exitCode || response.success === false)
       throw new Error('Browser action could not complete. Observe the page again before retrying.');
     if (args[0] === 'close') await closeDisplay(state);
@@ -979,7 +992,7 @@ export function createAgentBrowserComputer(options: {
       };
     if (state.saved.allowedOrigin && new URL(url).origin !== state.saved.allowedOrigin)
       throw new BrowserActionError('browser_origin_changed');
-    const inputValues = await maskFields(state, signal);
+    let inputValues = await maskFields(state, signal);
     const scope =
       input?.action === 'snapshot' && input.selector ? selector(input.selector) : undefined;
     const offset = input?.action === 'snapshot' ? (input.offset ?? 0) : 0;
@@ -988,7 +1001,7 @@ export function createAgentBrowserComputer(options: {
       throw new Error('Choose a page offset of at most 100000 characters.');
     if (!Number.isInteger(controlOffset) || controlOffset < 0 || controlOffset > 100_000)
       throw new Error('Choose a control offset of at most 100000.');
-    const visible = (await evaluate(
+    let visible = (await evaluate(
       state,
       browserViewScript(scope, offset, controlOffset),
       signal,
@@ -1001,6 +1014,19 @@ export function createAgentBrowserComputer(options: {
       scrollAreas?: Array<{ selector: string; height: number; viewport: number }>;
       scrollAreasTotal?: number;
     };
+    for (
+      let attempt = 0;
+      attempt < 4 && !visible?.missing && !String(visible?.text ?? '').trim();
+      attempt++
+    ) {
+      await delay(750, undefined, { signal });
+      inputValues = await maskFields(state, signal);
+      visible = (await evaluate(
+        state,
+        browserViewScript(scope, offset, controlOffset),
+        signal,
+      )) as typeof visible;
+    }
     if (visible?.missing)
       return {
         text: 'The selected page area is no longer available. Take a full snapshot.',
@@ -1088,7 +1114,27 @@ export function createAgentBrowserComputer(options: {
           await command(state, ['open', url.href], { signal });
           state.saved.navigationFailed = false;
         } catch (error) {
-          if (error instanceof BrowserActionError && !signal?.aborted) {
+          if (error instanceof DaemonCommandError && !signal?.aborted) {
+            try {
+              const loaded = new URL(await currentUrl(state, signal));
+              if (
+                loaded.origin === url.origin &&
+                loaded.pathname.replace(/\/+$/, '') === url.pathname.replace(/\/+$/, '') &&
+                loaded.search === url.search
+              ) {
+                const observation = await observe(state, signal);
+                const pageText = observation.text
+                  .split('\n\nPage structure (', 1)[0]
+                  .replace(/^Page text [^\n]*\n/, '')
+                  .trim();
+                if (pageText) {
+                  state.saved.navigationFailed = false;
+                  return observation;
+                }
+              }
+            } catch {}
+          }
+          if (!signal?.aborted && !state.closing) {
             state.started = false;
             state.saved.navigationFailed = true;
             const destination = new URL(url);

@@ -24,6 +24,7 @@
     "@chat-adapter/telegram": "^4.41.0",
     "@chat-adapter/whatsapp": "^4.41.0",
     "@composio/core": "0.21.0",
+    "@e965/xlsx": "^0.20.3",
     "@earendil-works/pi-ai": "0.87.1",
     "@earendil-works/pi-coding-agent": "0.87.1",
     "@fastify/busboy": "3.2.2",
