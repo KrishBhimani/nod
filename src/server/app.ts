@@ -26,7 +26,6 @@ import {
 import { isMessageReaction } from '../shared/emoji.ts';
 import { registerLocalAccess } from './access.ts';
 import { inspectorPayloadLimit, inspectorRetentionDays, type InspectorStore } from './inspector.ts';
-import type { ProviderUsageStore } from './provider-usage.ts';
 import type { AgentToolMetadata } from '../ports/agent.ts';
 import { registerRuntimeAccess } from './runtime-auth.ts';
 import { createMultipartReader } from './multipart.ts';
@@ -71,7 +70,6 @@ export interface AppDependencies {
     inspectTools?(): AgentToolMetadata[];
   };
   inspector?: Pick<InspectorStore, 'read'>;
-  providerUsage?: Pick<ProviderUsageStore, 'turnCosts'>;
   configuration?: () => Configuration;
   onboard?: (timeZone?: string, threadId?: string) => Promise<unknown>;
   startOnboarding?: (name?: string) => Promise<unknown>;
@@ -140,10 +138,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
       `SELECT ${turnFields} FROM turns u WHERE u.owner_id=$1 AND u.thread_id=$3 AND u.id=ANY($4::uuid[])`,
       [ownerId, welcomeSourceId, threadId, [...new Set(ids)]],
     );
-    const costs = await dependencies.providerUsage
-      ?.turnCosts(result.rows.map((turn) => turn.id))
-      .catch(() => undefined);
-    return result.rows.map((turn) => ({ ...turn, costUsd: costs?.[turn.id] ?? null }));
+    return result.rows;
   }
   app.get('/api/state', async () => {
     const thread = await activeThread(pool);
@@ -160,9 +155,6 @@ export async function createApp(dependencies: AppDependencies = {}) {
       dependencies.verification?.pending() ?? [],
     ]);
     const hasEarlierMessages = messages.rows.length > 150;
-    const costs = await dependencies.providerUsage
-      ?.turnCosts(turns.rows.map((turn) => turn.id))
-      .catch(() => undefined);
     const visibleMessages = messages.rows.slice(hasEarlierMessages ? 1 : 0);
     const recentIds = new Set(turns.rows.map((turn) => turn.id));
     const olderTurns = await messageTurns(
@@ -174,10 +166,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
       threadStatus: thread.status,
       hasEarlierMessages,
       messages: visibleMessages.map(messageView),
-      turns: [
-        ...turns.rows.map((turn) => ({ ...turn, costUsd: costs?.[turn.id] ?? null })),
-        ...olderTurns,
-      ],
+      turns: [...turns.rows, ...olderTurns],
       verificationRequests,
       configuration: publicConfiguration(),
     };
@@ -204,16 +193,8 @@ export async function createApp(dependencies: AppDependencies = {}) {
       [ownerId, query.before ?? null, query.beforeId ?? null, thread.id],
     );
     const page = rows.rows.slice(0, 60);
-    const turns = await messageTurns(
-      thread.id,
-      page.map((message) => message.turnId).filter(Boolean),
-    );
-    const byId = new Map(turns.map((turn) => [turn.id, turn]));
     return {
-      messages: page.reverse().map((row) => ({
-        ...messageView(row),
-        turn: byId.get(row.turnId),
-      })),
+      messages: page.reverse().map(messageView),
       hasMore: rows.rows.length > 60,
     } satisfies MessageHistoryPage;
   });

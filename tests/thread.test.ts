@@ -1117,19 +1117,55 @@ test(
               [randomUUID(), ownerId, `Fixture ${i}`, freshThread, turn],
             );
           const foreignThread = randomUUID(),
-            foreign = randomUUID();
+            foreign = randomUUID(),
+            foreignTurn = randomUUID();
           await db.pool.query("INSERT INTO threads(id,owner_id) VALUES($1,'other-owner')", [
             foreignThread,
           ]);
           await db.pool.query(
-            "INSERT INTO messages(id,owner_id,role,text,thread_id) VALUES($1,'other-owner','assistant','private content',$2)",
-            [foreign, foreignThread],
+            "INSERT INTO turns(id,owner_id,thread_id,source,prompt,status) VALUES($1,'other-owner',$2,'user','Foreign fixture','succeeded')",
+            [foreignTurn, foreignThread],
+          );
+          await db.pool.query(
+            "INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id) VALUES($1,'other-owner','assistant','private content',$2,$3)",
+            [foreign, foreignThread, foreignTurn],
           );
           const archived = (
-            await db.pool.query('SELECT id FROM messages WHERE thread_id=$1 LIMIT 1', [
-              firstThreadId,
-            ])
-          ).rows[0].id as string;
+            await db.pool.query(
+              'SELECT id,turn_id FROM messages WHERE thread_id=$1 AND turn_id IS NOT NULL LIMIT 1',
+              [firstThreadId],
+            )
+          ).rows[0] as { id: string; turn_id: string };
+          const backgroundTurns: string[] = Array.from({ length: 51 }, () => randomUUID());
+          await db.pool.query(
+            "INSERT INTO turns(id,owner_id,thread_id,source,prompt,status,background) SELECT id,$2,$3,'schedule','Background fixture','succeeded',true FROM unnest($1::uuid[]) AS id",
+            [backgroundTurns, ownerId, freshThread],
+          );
+          const state = (await request('GET', '/api/state')).json<{
+            messages: Array<{ id: string; turnId: string | null }>;
+            turns: Array<{ id: string; status: string }>;
+          }>();
+          assert.ok(state.messages.some((message) => message.turnId === turn));
+          assert.deepEqual(
+            state.turns
+              .filter((entry) => entry.id === turn)
+              .map(({ id, status }) => ({ id, status })),
+            [{ id: turn, status: 'succeeded' }],
+          );
+          assert.equal(
+            state.turns.filter((entry) => backgroundTurns.includes(entry.id)).length,
+            50,
+          );
+          for (const id of [foreign, archived.id])
+            assert.equal(
+              state.messages.some((message) => message.id === id),
+              false,
+            );
+          for (const id of [foreignTurn, archived.turn_id])
+            assert.equal(
+              state.turns.some((entry) => entry.id === id),
+              false,
+            );
           const expected = new Set(
             (
               await db.pool.query('SELECT id FROM messages WHERE thread_id=$1', [freshThread])
@@ -1156,7 +1192,7 @@ test(
           const react = (id: string, reaction: string) =>
             request('POST', `/api/messages/${id}/reaction`, { reaction });
           assert.equal((await react(message, 'heart')).statusCode, 200);
-          for (const id of [foreign, archived])
+          for (const id of [foreign, archived.id])
             assert.equal((await react(id, 'heart')).statusCode, 404);
           assert.equal(
             (

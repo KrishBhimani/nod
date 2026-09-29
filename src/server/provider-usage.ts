@@ -231,17 +231,6 @@ export function createProviderUsageStore(
       coverage: options.coverage,
     };
   }
-  async function turnCosts(turnIds: string[]): Promise<Record<string, number | null>> {
-    if (!turnIds.length) return {};
-    await Promise.all([...pending]);
-    const result = await pool.query(
-      `SELECT turn_id AS id,sum(cost_usd)::float8 AS cost
-       FROM provider_usage WHERE owner_id=$1 AND turn_id=ANY($2::uuid[])
-       GROUP BY turn_id`,
-      [options.ownerId, turnIds.map((id) => z.uuid().parse(id))],
-    );
-    return Object.fromEntries(result.rows.map((row) => [row.id, row.cost]));
-  }
   function registerRoutes(app: FastifyInstance) {
     app.get('/api/inspector/providers', async (request, reply) => {
       if (!options.enabled()) return reply.code(404).send({ error: 'Inspector is disabled.' });
@@ -254,7 +243,6 @@ export function createProviderUsageStore(
     record,
     track,
     read,
-    turnCosts,
     registerRoutes,
     withTurn: <T>(turnId: string, action: () => T) =>
       context.run({ turnId: z.uuid().parse(turnId) }, action),

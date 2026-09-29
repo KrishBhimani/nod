@@ -23,7 +23,6 @@ export interface Message {
   reactions?: Array<{ actor: 'user' | 'assistant'; reaction: MessageReaction }>;
   replyToMessageId?: string | null;
   replyTo?: { id: string; role: 'user' | 'assistant'; text: string } | null;
-  turn?: Turn;
 }
 export interface SubmitMessageResponse {
   threadId: string;
@@ -43,7 +42,6 @@ export interface Turn {
   source: 'user' | 'schedule' | 'event' | 'resume';
   createdAt: string;
   finishedAt?: string | null;
-  costUsd?: number | null;
   error?: string | null;
   showTyping?: boolean;
 }

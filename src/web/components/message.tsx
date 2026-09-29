@@ -5,7 +5,7 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
-import type { Message, Turn } from '../../shared/contracts';
+import type { Message } from '../../shared/contracts';
 import { reactionEmoji } from '../../shared/emoji';
 import { Button, Checkbox, Loading, Notice } from './ui';
 import { BrandMark } from './brand';
@@ -81,22 +81,6 @@ export const MessageText = memo(function MessageText({
   );
 });
 
-function turnRunLabel(turn: Turn, startedAt?: string) {
-  if (!['succeeded', 'waiting', 'failed', 'cancelled'].includes(turn.status) || !turn.finishedAt)
-    return null;
-  const seconds = Math.round(
-    (Date.parse(turn.finishedAt) - Date.parse(startedAt ?? turn.createdAt)) / 1000,
-  );
-  if (!Number.isFinite(seconds) || seconds < 0) return null;
-  const minutes = Math.floor(seconds / 60);
-  const elapsed = minutes ? `${minutes} min ${seconds % 60} sec` : `${seconds} sec`;
-  const cost =
-    typeof turn.costUsd === 'number'
-      ? `Recorded cost $${turn.costUsd.toFixed(turn.costUsd < 0.01 ? 4 : 2)}`
-      : 'Cost unavailable';
-  return `Elapsed ${elapsed} · ${cost}`;
-}
-
 function ReactionGlyph({ value }: { value: string }) {
   return (
     <span className="reaction-emoji" aria-hidden="true">
@@ -107,8 +91,6 @@ function ReactionGlyph({ value }: { value: string }) {
 
 export function MessageBubble({
   message,
-  turn,
-  turnStartedAt,
   inspectorEnabled = false,
   grouped = false,
   showTimestamp = true,
@@ -116,8 +98,6 @@ export function MessageBubble({
   onReply,
 }: {
   message: Message;
-  turn?: Turn;
-  turnStartedAt?: string;
   inspectorEnabled?: boolean;
   grouped?: boolean;
   showTimestamp?: boolean;
@@ -317,7 +297,6 @@ export function MessageBubble({
       y: Math.max(8, Math.min(y, window.innerHeight - 230)),
     });
   }
-  const runResult = turn ? turnRunLabel(turn, turnStartedAt) : null;
   const timestamp = showTimestamp && !streaming && (
     <time dateTime={message.createdAt} title={formatFullDateTime(message.createdAt, dateFormat)}>
       {formatTime(message.createdAt, dateFormat)}
@@ -369,13 +348,9 @@ export function MessageBubble({
           )}
         </div>
         <div className="message-footer">
-          {((message.role === 'assistant' && timestamp) ||
-            runResult ||
-            reaction ||
-            agentReaction) && (
+          {((message.role === 'assistant' && timestamp) || reaction || agentReaction) && (
             <div className="message-meta">
               {message.role === 'assistant' && timestamp}
-              {runResult && <span className="message-run-meta">{runResult}</span>}
               {reaction && (
                 <button
                   className="selected-reaction"

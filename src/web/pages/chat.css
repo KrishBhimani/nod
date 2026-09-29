@@ -130,10 +130,6 @@
   color: var(--muted-foreground);
   font-size: 10px;
 }
-.chat-page .message-run-meta {
-  color: var(--muted-foreground);
-  font-size: 10px;
-}
 .chat-page .message-assistant .message-footer .message-meta {
   order: 0;
   margin: 0;
