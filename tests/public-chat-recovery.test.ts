@@ -16,10 +16,26 @@ test(
     const schema = `test_public_recovery_${suffix}`;
     const bossSchema = `sk_jobs_${suffix}`;
     const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    const cleanup: Array<() => Promise<unknown> | void> = [() => admin.end()];
+    t.after(async () => {
+      const errors: unknown[] = [];
+      for (const release of cleanup.reverse()) {
+        try {
+          await release();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (errors.length) throw new AggregateError(errors, 'Fixture cleanup failed.');
+    });
+    cleanup.push(() => admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`));
     await admin.query(`CREATE SCHEMA ${schema}`);
+    cleanup.push(() => admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`));
     await admin.query(`CREATE SCHEMA ${bossSchema}`);
     const directory = await mkdtemp(join(tmpdir(), 'otto-public-recovery-'));
+    cleanup.push(() => rm(directory, { recursive: true, force: true }));
     const previousDirectory = process.cwd();
+    cleanup.push(() => process.chdir(previousDirectory));
     process.chdir(directory);
     const databaseUrl = new URL(process.env.TEST_DATABASE_URL!);
     databaseUrl.searchParams.set('options', `-c search_path=${schema}`);
@@ -33,7 +49,9 @@ test(
     process.env.OTTO_ENVIRONMENT = 'test';
     process.env.OTTO_RUNTIME_GENERATION = '1';
     const db = await import('../src/server/db.ts');
+    cleanup.push(() => db.pool.end());
     const tasks = await import('../src/server/tasks.ts');
+    cleanup.push(() => tasks.stopTasks());
     const { createApp } = await import('../src/server/app.ts');
     const { createGateway } = await import('../src/server/gateway.ts');
     const { createApprovals } = await import('../src/server/approvals.ts');
@@ -64,6 +82,7 @@ test(
       },
       onboard: (_timeZone, revision) => tasks.restartOnboarding(revision),
     });
+    cleanup.push(() => tenant.close());
     const origin = 'https://otto.example.test';
     const cookie = `fixture=${randomBytes(32).toString('base64url')}`;
     const session: AuthenticatedSession = {
@@ -132,6 +151,7 @@ test(
         async close() {},
       },
     });
+    cleanup.push(() => gateway.close());
     const send = (payload: Record<string, unknown>, path = '/api/messages') =>
       gateway.inject({
         method: 'POST',
@@ -155,138 +175,120 @@ test(
         )
       ).rows,
     });
-    try {
-      const outcomeId = randomUUID();
-      await db.pool.query(
-        `INSERT INTO outcomes(id,owner_id,channel,conversation_revision,title,objective)
+    const outcomeId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO outcomes(id,owner_id,channel,conversation_revision,title,objective)
          VALUES($1,$2,'web',0,'Synthetic uncertain action','Check the earlier action before continuing.')`,
-        [outcomeId, ownerId],
-      );
-      const taskId = await tasks.submitTask('Synthetic earlier action', [], undefined, false, {
-        outcomeId,
-      });
-      await db.pool.query(
-        "UPDATE tasks SET status='waiting_user',waiting_reason='recovery' WHERE id=$1",
-        [taskId],
-      );
-      await db.pool.query(
-        `INSERT INTO approvals(id,owner_id,task_id,action,args,status)
+      [outcomeId, ownerId],
+    );
+    const taskId = await tasks.submitTask('Synthetic earlier action', [], undefined, false, {
+      outcomeId,
+    });
+    await db.pool.query(
+      "UPDATE tasks SET status='waiting_user',waiting_reason='recovery' WHERE id=$1",
+      [taskId],
+    );
+    await db.pool.query(
+      `INSERT INTO approvals(id,owner_id,task_id,action,args,status)
          VALUES($1,$2,$3,'SYNTHETIC_SEND','{}','uncertain')`,
-        [randomUUID(), ownerId, taskId],
-      );
-      decide = { kind: 'continue', outcomeId };
-      await t.test('public forceNew rejects before persistence, routing or dispatch', async () => {
-        const before = await snapshot();
-        for (const forceNew of [true, false]) {
-          const response = await send({
-            text: 'Repeat the earlier synthetic action',
-            forceNew,
-            clientMessageId: randomUUID(),
-          });
-          assert.equal(response.statusCode, 400, response.body);
-          assert.deepEqual(response.json(), { error: 'Check the supplied values.' });
-        }
-        assert.equal(submissions, 0);
-        assert.equal(routes, 0);
-        assert.equal(providerCalls, 0);
-        assert.deepEqual(await snapshot(), before);
-      });
-      await t.test('ordinary retries retain the recovery fence', async () => {
-        const before = await snapshot();
-        const response = await send({ text: 'Repeat the earlier synthetic action' });
-        assert.equal(response.statusCode, 409, response.body);
-        assert.deepEqual(response.json(), {
-          error: 'I can’t safely repeat the earlier action because its outcome is unknown.',
+      [randomUUID(), ownerId, taskId],
+    );
+    decide = { kind: 'continue', outcomeId };
+    await t.test('public forceNew rejects before persistence, routing or dispatch', async () => {
+      const before = await snapshot();
+      for (const forceNew of [true, false]) {
+        const response = await send({
+          text: 'Repeat the earlier synthetic action',
+          forceNew,
+          clientMessageId: randomUUID(),
         });
-        assert.equal(submissions, 1);
-        assert.equal(routes, 1);
-        assert.equal(providerCalls, 0);
-        assert.deepEqual(await snapshot(), before);
+        assert.equal(response.statusCode, 400, response.body);
+        assert.deepEqual(response.json(), { error: 'Check the supplied values.' });
+      }
+      assert.equal(submissions, 0);
+      assert.equal(routes, 0);
+      assert.equal(providerCalls, 0);
+      assert.deepEqual(await snapshot(), before);
+    });
+    await t.test('ordinary retries retain the recovery fence', async () => {
+      const before = await snapshot();
+      const response = await send({ text: 'Repeat the earlier synthetic action' });
+      assert.equal(response.statusCode, 409, response.body);
+      assert.deepEqual(response.json(), {
+        error: 'I can’t safely repeat the earlier action because its outcome is unknown.',
       });
-      await t.test('independent requests still create normally routed work', async () => {
-        decide = {
-          kind: 'new_outcome',
-          title: 'Synthetic weather',
-          objective: 'Read the weather.',
-        };
+      assert.equal(submissions, 1);
+      assert.equal(routes, 1);
+      assert.equal(providerCalls, 0);
+      assert.deepEqual(await snapshot(), before);
+    });
+    await t.test('independent requests still create normally routed work', async () => {
+      decide = {
+        kind: 'new_outcome',
+        title: 'Synthetic weather',
+        objective: 'Read the weather.',
+      };
+      const before = await snapshot();
+      const response = await send({ text: 'Read the current synthetic weather' });
+      assert.equal(response.statusCode, 200, response.body);
+      assert.equal(response.json().continued, false);
+      assert.notEqual(response.json().taskId, taskId);
+      assert.equal(routes, 2);
+      const after = await snapshot();
+      assert.equal(after.tasks.length, before.tasks.length + 1);
+      assert.equal(after.messages.length, before.messages.length + 1);
+      assert.equal(after.jobs.length, before.jobs.length + 1);
+      assert.deepEqual(after.approvals, before.approvals);
+      assert.deepEqual(
+        after.tasks.find((task) => task.id === taskId),
+        before.tasks.find((task) => task.id === taskId),
+      );
+      assert.equal(providerCalls, 0);
+    });
+    await t.test('onboarding cannot accept arbitrary instructions or routing options', async () => {
+      const before = await snapshot();
+      for (const extra of [
+        { text: 'Repeat the earlier synthetic action' },
+        { forceNew: true },
+        { taskId },
+      ]) {
+        const response = await send({ conversationRevision: 0, ...extra }, '/api/onboarding');
+        assert.equal(response.statusCode, 400, response.body);
+      }
+      assert.deepEqual(await snapshot(), before);
+      assert.equal(submissions, 2);
+      assert.equal(routes, 2);
+      assert.equal(providerCalls, 0);
+    });
+    await t.test(
+      'trusted onboarding creates its fixed request without replaying uncertain work',
+      async () => {
         const before = await snapshot();
-        const response = await send({ text: 'Read the current synthetic weather' });
+        const response = await send({ conversationRevision: 0 }, '/api/onboarding');
         assert.equal(response.statusCode, 200, response.body);
         assert.equal(response.json().continued, false);
-        assert.notEqual(response.json().taskId, taskId);
-        assert.equal(routes, 2);
         const after = await snapshot();
+        const onboarding = after.tasks.find((task) => task.id === response.json().taskId);
+        assert.ok(onboarding);
+        assert.match(onboarding.source_id, /^onboarding:/);
+        assert.equal(onboarding.owner_id, ownerId);
+        assert.equal(onboarding.channel, 'web');
+        assert.match(onboarding.prompt, /^Help me get started\. First check my app connections\./);
+        assert.match(
+          onboarding.prompt,
+          /Do not ask profile questions or make changes to connected accounts\./,
+        );
         assert.equal(after.tasks.length, before.tasks.length + 1);
-        assert.equal(after.messages.length, before.messages.length + 1);
         assert.equal(after.jobs.length, before.jobs.length + 1);
         assert.deepEqual(after.approvals, before.approvals);
         assert.deepEqual(
           after.tasks.find((task) => task.id === taskId),
           before.tasks.find((task) => task.id === taskId),
         );
+        assert.equal(submissions, 2);
+        assert.equal(routes, 2);
         assert.equal(providerCalls, 0);
-      });
-      await t.test(
-        'onboarding cannot accept arbitrary instructions or routing options',
-        async () => {
-          const before = await snapshot();
-          for (const extra of [
-            { text: 'Repeat the earlier synthetic action' },
-            { forceNew: true },
-            { taskId },
-          ]) {
-            const response = await send({ conversationRevision: 0, ...extra }, '/api/onboarding');
-            assert.equal(response.statusCode, 400, response.body);
-          }
-          assert.deepEqual(await snapshot(), before);
-          assert.equal(submissions, 2);
-          assert.equal(routes, 2);
-          assert.equal(providerCalls, 0);
-        },
-      );
-      await t.test(
-        'trusted onboarding creates its fixed request without replaying uncertain work',
-        async () => {
-          const before = await snapshot();
-          const response = await send({ conversationRevision: 0 }, '/api/onboarding');
-          assert.equal(response.statusCode, 200, response.body);
-          assert.equal(response.json().continued, false);
-          const after = await snapshot();
-          const onboarding = after.tasks.find((task) => task.id === response.json().taskId);
-          assert.ok(onboarding);
-          assert.match(onboarding.source_id, /^onboarding:/);
-          assert.equal(onboarding.owner_id, ownerId);
-          assert.equal(onboarding.channel, 'web');
-          assert.match(
-            onboarding.prompt,
-            /^Help me get started\. First check my app connections\./,
-          );
-          assert.match(
-            onboarding.prompt,
-            /Do not ask profile questions or make changes to connected accounts\./,
-          );
-          assert.equal(after.tasks.length, before.tasks.length + 1);
-          assert.equal(after.jobs.length, before.jobs.length + 1);
-          assert.deepEqual(after.approvals, before.approvals);
-          assert.deepEqual(
-            after.tasks.find((task) => task.id === taskId),
-            before.tasks.find((task) => task.id === taskId),
-          );
-          assert.equal(submissions, 2);
-          assert.equal(routes, 2);
-          assert.equal(providerCalls, 0);
-        },
-      );
-    } finally {
-      await gateway.close();
-      await tenant.close();
-      await tasks.stopTasks();
-      await db.pool.end();
-      await admin.query(`DROP SCHEMA ${bossSchema} CASCADE`);
-      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
-      await admin.end();
-      process.chdir(previousDirectory);
-      await rm(directory, { recursive: true, force: true });
-    }
+      },
+    );
   },
 );
