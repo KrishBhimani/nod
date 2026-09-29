@@ -18,14 +18,9 @@ import { Button, Dialog, DialogContent, DialogTitle, Field, Input, Loading, Noti
 import { usePageData } from '../hooks/use-page-data';
 import { errorMessage } from '../lib/api';
 import { SearchPicker, TimeZonePicker } from './time-zone-picker';
-import {
-  dateFormatFrom,
-  formatDateTime,
-  localeRegion,
-  regionLocale,
-  regions,
-} from '../lib/date-format';
+import { dateFormatFrom, formatDateTime, regionLocale, regions } from '../lib/date-format';
 import { savePreferences } from '../lib/preferences';
+import { localeRegion } from '../../shared/date-locale';
 
 const editablePreferences = ['quietHoursEnabled', 'quietStart', 'quietEnd'] as const;
 const regionLabels = {

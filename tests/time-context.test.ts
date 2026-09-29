@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { currentUserTime } from '../src/runtime/time-context.ts';
+import { currentUserTime, userFormat } from '../src/runtime/time-context.ts';
+import { dateFormatFrom, formatDateTime } from '../src/web/lib/date-format.ts';
 import { runtimeAccount } from '../src/server/account-profile.ts';
 
 test('Lisbon local time keeps the correct date and UTC offset across both DST transitions', () => {
@@ -55,4 +56,23 @@ test('the preferred name override wins over the Google first name and full name'
     undefined,
   );
   assert.equal(runtimeAccount(null), undefined);
+});
+
+test('the model gets the same date format the app shows for each region and clock', () => {
+  const now = new Date('2025-03-04T08:05:00Z');
+  for (const [locale, hourCycle] of [
+    ['pt-PT', 'auto'],
+    ['en-US', 'auto'],
+    ['ko-KR', 'auto'],
+    ['en-GB', 'h12'],
+  ] as const) {
+    const format = dateFormatFrom({ locale, hourCycle, timeZone: 'Europe/Lisbon' });
+    const shown = formatDateTime(now, format, { weekday: true, now: new Date('2026-01-01') });
+    assert.ok(
+      userFormat({ locale, hourCycle, timeZone: 'Europe/Lisbon' }, now).includes(
+        `for example ${shown}.`,
+      ),
+      `${locale} ${hourCycle}: ${shown}`,
+    );
+  }
 });

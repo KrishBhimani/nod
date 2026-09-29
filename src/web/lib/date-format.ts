@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import type { HourCycle, Preferences } from '../../shared/contracts';
+import { clockOptions, formattingLocale, localeRegion } from '../../shared/date-locale';
 
 export interface DateFormat {
   locale: string;
@@ -7,7 +8,6 @@ export interface DateFormat {
   timeZone: string;
 }
 
-const fallbackLocale = 'en-GB';
 export const regions = [
   'GB',
   'US',
@@ -47,15 +47,6 @@ export const regions = [
   'TW',
 ];
 
-export function localeRegion(value: string | null | undefined) {
-  if (!value) return null;
-  try {
-    return new Intl.Locale(value).maximize().region ?? null;
-  } catch {
-    return null;
-  }
-}
-
 function browserRegion() {
   return localeRegion(typeof navigator === 'undefined' ? null : navigator.language) ?? 'GB';
 }
@@ -68,12 +59,8 @@ export function browserRegionLocale() {
   return regionLocale(browserRegion());
 }
 
-function formattingLocale(saved: string | null | undefined) {
-  const candidate = regionLocale(localeRegion(saved) ?? browserRegion());
-  try {
-    if (new Intl.DateTimeFormat(candidate).resolvedOptions().locale === candidate) return candidate;
-  } catch {}
-  return fallbackLocale;
+function savedFormattingLocale(saved: string | null | undefined) {
+  return formattingLocale(localeRegion(saved) ?? browserRegion());
 }
 
 function validTimeZone(value: string | undefined) {
@@ -86,7 +73,7 @@ function validTimeZone(value: string | undefined) {
 }
 
 let current: DateFormat = {
-  locale: formattingLocale(null),
+  locale: savedFormattingLocale(null),
   hourCycle: 'auto',
   timeZone: validTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone) ?? 'UTC',
 };
@@ -96,7 +83,7 @@ export function dateFormatFrom(
   preferences: Pick<Preferences, 'locale' | 'hourCycle' | 'timeZone'>,
 ): DateFormat {
   return {
-    locale: formattingLocale(preferences.locale),
+    locale: savedFormattingLocale(preferences.locale),
     hourCycle: preferences.hourCycle ?? 'auto',
     timeZone: validTimeZone(preferences.timeZone) ?? current.timeZone,
   };
@@ -184,15 +171,8 @@ function sameYear(value: string | number | Date, format: DateFormat, now: Date) 
   return dayKey(value, format).slice(0, 4) === dayKey(now, format).slice(0, 4);
 }
 
-function usesTwelveHourClock(format = current) {
-  if (format.hourCycle !== 'auto') return format.hourCycle === 'h12';
-  const cycle = new Intl.DateTimeFormat(format.locale, { hour: 'numeric' }).resolvedOptions()
-    .hourCycle;
-  return cycle === 'h11' || cycle === 'h12';
-}
-
-function clock(format: DateFormat): Intl.DateTimeFormatOptions {
-  return { hour: usesTwelveHourClock(format) ? 'numeric' : '2-digit', minute: '2-digit' };
+function clock(format: DateFormat) {
+  return clockOptions(format.locale, format.hourCycle);
 }
 
 export function formatTime(

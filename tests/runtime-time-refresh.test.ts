@@ -293,7 +293,7 @@ test('the signed-in profile, region and clock reach the model but not observatio
     assert.match(prompts[0], /Call the user by preferredName naturally/);
     assert.match(
       prompts[0],
-      /Write dates and times in English with the date order and number format of Portugal and a 12-hour clock\. If the user writes in another language, use that language for dates too\./,
+      /Write dates and times in English in the same format as the app, for example [A-Z][a-z]{2}, \d{1,2} [A-Z][a-z]{2,3} \d{4}, \d{1,2}:\d{2} [ap]m\. If the user writes in another language, use that language for dates too\./,
     );
     assert.deepEqual(
       observed.map((item) => (item as { type: string }).type),
