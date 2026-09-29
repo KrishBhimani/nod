@@ -57,7 +57,13 @@ export const MessageText = memo(function MessageText({
                       ? undefined
                       : '_blank'
                   }
-                  rel="noopener noreferrer"
+                  rel={
+                    setup?.setup === 'vault' &&
+                    /^\/(?:vault|credentials)\/[A-Za-z0-9_-]+\/?$/.test(link.href)
+                      ? 'opener'
+                      : 'noopener noreferrer'
+                  }
+                  referrerPolicy="no-referrer"
                 >
                   {setup ? setup.label : children}
                 </a>

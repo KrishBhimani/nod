@@ -19,7 +19,12 @@ export function SetupActions({
             data-setup={setup}
             href={href}
             target={href.startsWith('/apps?connect=') ? undefined : '_blank'}
-            rel="noopener noreferrer"
+            rel={
+              setup === 'vault' && /^\/(?:vault|credentials)\/[A-Za-z0-9_-]+\/?$/.test(href)
+                ? 'opener'
+                : 'noopener noreferrer'
+            }
+            referrerPolicy="no-referrer"
             title={href.startsWith('https://') ? new URL(href).host : undefined}
           >
             <Icon size={14} aria-hidden="true" />
