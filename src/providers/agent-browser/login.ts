@@ -70,6 +70,11 @@ export function loginInspectionScript(): string {
     const candidates=[...document.querySelectorAll('input')].filter(e=>inside(scope,e)&&visible(e)&&enabled(e)&&(!e.readOnly||e.getAttribute('onfocus')?.trim())&&['text','email','tel','password','number'].includes(e.type));
     const labelText=e=>e?.innerText||e?.textContent||'';
     const normalized=text=>text.normalize('NFD').replace(/\\p{M}/gu,'').toLowerCase();
+    const inputValues=[...document.querySelectorAll('input,textarea')].filter(e=>!['button','submit','reset','radio','checkbox','hidden'].includes(e.type)).map(e=>normalized(e.value||'')).filter(Boolean);
+    const safeLabel=text=>{
+      const label=(text||'').replace(/\\s+/g,' ').trim();
+      return label&&!inputValues.some(value=>normalized(label).includes(value))?label:undefined;
+    };
     const nearbyLabel=e=>{
       if(e.tagName!=='INPUT') return undefined;
       let container=e.parentElement;
@@ -90,9 +95,13 @@ export function loginInspectionScript(): string {
       }
       return undefined;
     };
-    const observedLabel=e=>[...[...(e.labels||[])].filter(visible).map(labelText),...(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById?.(id)).filter(visible).map(labelText),e.getAttribute('aria-label'),e.getAttribute('placeholder'),nearbyLabel(e)].map(text=>(text||'').replace(/\\s+/g,' ').trim()).find(Boolean);
-    const hint=e=>normalized([e.id,e.name,e.autocomplete,e.getAttribute('inputmode'),observedLabel(e)].join(' '));
-    const identifierLabel=e=>(observedLabel(e)||(e.type==='email'||/email/.test(hint(e))?'Email':e.type==='tel'||/phone/.test(hint(e))?'Phone':'Username')).slice(0,80);
+    const rawObservedLabel=e=>[...[...(e.labels||[])].filter(visible).map(labelText),...(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById?.(id)).filter(visible).map(labelText),e.getAttribute('aria-label'),e.getAttribute('placeholder'),nearbyLabel(e)].map(text=>(text||'').replace(/\\s+/g,' ').trim()).find(Boolean);
+    const observedLabel=e=>safeLabel(rawObservedLabel(e));
+    const hint=e=>normalized([e.id,e.name,e.autocomplete,e.getAttribute('inputmode'),rawObservedLabel(e)].join(' '));
+    const identifierLabel=e=>{
+      const label=observedLabel(e);
+      return label&&identifierLabelHint(normalized(label))?label.slice(0,80):e.type==='email'||/email/.test(hint(e))?'Email':e.type==='tel'||/phone/.test(hint(e))?'Phone':'Username';
+    };
     const otpHint=text=>/one-time-code|verification.?code|authentication.?code|security.?code|authenticator|(?:^|[^a-z])(?:otp|totp)(?:[^a-z]|$)|codigo.{0,20}(?:verificacao|seguranca|confirmacao|autenticacao|sms|temporario)|(?:pin|codigo).{0,20}(?:uso unico|utilizacao unica|temporario)/.test(text);
     const secretHint=text=>/password|passphrase|passcode|palavra.passe|senha|(?:^|[^a-z])pin(?:[^a-z]|$)/.test(text);
     const identifierLabelHint=text=>/^(?:(?:o seu|seu|your|inserir|introduza|enter(?: your)?) )?(?:(?:numero (?:de )?)?(?:telemovel|telefone)|(?:mobile )?phone(?: number)?|e.?mail(?: address)?|username|nome de utilizador|nif|eori)(?: *[:*])?$/.test(text);
@@ -104,6 +113,10 @@ export function loginInspectionScript(): string {
     const inputs=candidates.filter(e=>inside(fieldScope,e));
     const fields=[];
     const labels={identifier:'Email, phone number or username',password:'Password',otp:'Verification code'};
+    const secretLabel=e=>{
+      const label=observedLabel(e);
+      return label&&/^(?:(?:o seu|seu|your|inserir|introduza|enter(?: your| the)?) )?(?:password|passphrase|passcode|palavra.passe|senha|pin(?: de autenticacao)?|(?:verification|authentication|security|one.time|sms|email) code|otp|totp|codigo (?:de (?:seguranca|confirmacao|verificacao|autenticacao)|recebido (?:por|via) (?:sms|e.?mail)))(?: *[:*])?$/.test(normalized(label))?label:undefined;
+    };
     const digitGroup=inputs.length>=4&&inputs.length<=8&&inputs.every(e=>e.maxLength===1&&['text','tel','number'].includes(e.type)&&e.parentElement===inputs[0].parentElement)&&inputs.some(e=>/one-time-code|otp|totp|verification|verifica|authenticat|autentica|security.?code/.test([hint(e),e.className,e.parentElement?.id,e.parentElement?.className].join(' ').toLowerCase()));
     if(digitGroup) {
       for(const e of inputs) e.setAttribute('data-otto-login-field','otp-0');
@@ -116,7 +129,7 @@ export function loginInspectionScript(): string {
       if(!kind) continue;
       const marker=kind+'-'+fields.filter(f=>f.kind===kind).length;
       e.setAttribute('data-otto-login-field',marker);
-      fields.push({kind,selector:'[data-otto-login-field="'+marker+'"]',label:kind==='identifier'?identifierLabel(e):(observedLabel(e)||labels[kind]).slice(0,80)});
+      fields.push({kind,selector:'[data-otto-login-field="'+marker+'"]',label:kind==='identifier'?identifierLabel(e):(secretLabel(e)||labels[kind]).slice(0,80)});
     }
     const unsupportedSecrets=inputs.filter(e=>e.type!=='password'&&secretHint(hint(e))&&!otpHint(hint(e)));
     for(const [index,e] of unsupportedSecrets.entries()) e.setAttribute('data-otto-login-field','password-unsupported-'+index);
@@ -125,12 +138,12 @@ export function loginInspectionScript(): string {
     let submit;
     const currentContext=${currentContextScript};
     const authentication=text=>/log.?in|sign.?in|authentication|autenticacao|iniciar sessao|identidade/.test(normalized(text));
-    const controlLabel=e=>(observedLabel(e)||e.innerText||(e.tagName==='INPUT'&&['submit','button'].includes(e.type)?e.getAttribute('value'):'')||[...(e.querySelectorAll?.('img[alt]')||[])].filter(visible).map(image=>image.getAttribute('alt')).join(' ')||'').replace(/\\s+/g,' ').trim().slice(0,100);
+    const controlLabel=e=>(safeLabel(observedLabel(e)||e.innerText||(e.tagName==='INPUT'&&['submit','button'].includes(e.type)?e.getAttribute('value'):'')||[...(e.querySelectorAll?.('img[alt]')||[])].filter(visible).map(image=>image.getAttribute('alt')).join(' '))||'').slice(0,100);
     const groupOf=e=>{
       const container=e.closest('fieldset,[role="radiogroup"],[role="tablist"]');
       if(!container) return undefined;
       const legend=[...container.children].find(child=>child.tagName==='LEGEND');
-      return (observedLabel(container)||labelText(legend)||'').replace(/\\s+/g,' ').trim().slice(0,100)||undefined;
+      return safeLabel(observedLabel(container)||labelText(legend))?.slice(0,100);
     };
     const methodId=(label,group)=>{
       let hash=2166136261;
@@ -188,7 +201,7 @@ export function loginInspectionScript(): string {
       submitSelector='[data-otto-login-submit="current"]';
     }
     if(fields.length) methods.unshift({id:'credentials',label:(fields.find(field=>field.kind==='identifier')||fields.find(field=>field.kind==='otp')||fields[0]).label,kind:'credentials',supported:unambiguous,reason:unambiguous?undefined:'More than one credential field or active form matches this step. Choose another method or take over the browser.'});
-    if(unsupportedSecrets.length) methods.push({id:'private-entry',label:(observedLabel(unsupportedSecrets[0])||'Private sign-in').slice(0,100),kind:'manual',supported:false,reason:'This secret field is not a password input. Finish privately in the browser.'});
+    if(unsupportedSecrets.length) methods.push({id:'private-entry',label:secretLabel(unsupportedSecrets[0])||'Private sign-in',kind:'manual',supported:false,reason:'This secret field is not a password input. Finish privately in the browser.'});
     let emailCode;
     if(unambiguous&&fields.length===1&&fields[0].kind==='otp') {
       const root=fieldScope===document?document.body:fieldScope;

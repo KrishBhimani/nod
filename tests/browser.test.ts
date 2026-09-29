@@ -1429,6 +1429,33 @@ test('sign-in inspection recognizes semantic identifiers and PIN labels without 
   } finally {
     mobile.window.close();
   }
+  for (const kind of ['identifier', 'password', 'otp'] as const) {
+    for (const source of ['label', 'aria-label', 'placeholder']) {
+      const value = kind === 'otp' ? '137924' : `private-${kind}`;
+      const type = kind === 'identifier' ? 'tel' : kind === 'password' ? 'password' : 'text';
+      const label = `${kind === 'password' ? 'PIN' : kind === 'otp' ? 'Verification code' : 'Phone'} for ${value}`;
+      const dom = new JSDOM(
+        `<form>${source === 'label' ? `<label for="field">${label}</label>` : ''}<input id="field" type="${type}" ${source === 'label' ? '' : `${source}="${label}"`} value="${value}"><button type="submit">Continue</button></form>`,
+        { url: 'https://identity.example.test/login', runScripts: 'outside-only' },
+      );
+      dom.window.HTMLElement.prototype.getClientRects = () =>
+        [{ x: 0, y: 0, width: 200, height: 30 }] as unknown as DOMRectList;
+      Object.defineProperty(dom.window.HTMLElement.prototype, 'innerText', {
+        get() {
+          return this.textContent;
+        },
+      });
+      try {
+        const inspect = () => loginInspectionSchema.parse(dom.window.eval(loginInspectionScript()));
+        assert.equal(inspect().fields[0]?.kind, kind);
+        assert.equal(JSON.stringify(inspect()).includes(value), false);
+        dom.window.document.querySelector<HTMLInputElement>('#field')!.value = '';
+        assert.equal(JSON.stringify(inspect()).includes(value), false);
+      } finally {
+        dom.window.close();
+      }
+    }
+  }
   for (const [label, delivery, expected] of [
     [
       'Código de segurança',
