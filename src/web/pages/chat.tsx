@@ -550,7 +550,7 @@ export function Chat({
                 />
               </Fragment>
             ))}
-            {(sending || resetting || working) && streamEntries.length === 0 && (
+            {(sending || resetting || working || welcoming) && streamEntries.length === 0 && (
               <div
                 className="thinking"
                 role="status"

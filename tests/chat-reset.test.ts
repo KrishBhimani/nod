@@ -422,6 +422,7 @@ test('landing on an empty chat asks Otto to reach out once and shows the greetin
       fixture.element.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!;
     assert.equal(sendButton().disabled, true);
     assert.equal(fixture.element.querySelector('.welcome'), null);
+    assert.ok(fixture.element.querySelector('[aria-label="Otto is typing"]'));
     await act(async () => {
       answer();
       await tick();
