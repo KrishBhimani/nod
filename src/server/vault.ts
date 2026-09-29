@@ -1671,7 +1671,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
           {
             recipient: username,
             origin,
-            after: selected ? enteredAt - 30_000 : Date.now() - 5 * 60_000,
+            after: enteredAt - 30_000,
             before: Date.now(),
             length: email.length,
           },

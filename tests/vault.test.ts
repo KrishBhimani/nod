@@ -2308,6 +2308,8 @@ test(
     let reject = false;
     let injectionFailure = false;
     let resultCode: string | undefined = code;
+    let emails: VerificationEmail[] | undefined;
+    const currentCode = '492615';
     const vault = await createVault(pool, {
       keyStore: { id: 'fixture', configured: true, getKey: async () => randomKey },
       inspect: async (id) => pages.get(id)!,
@@ -2324,11 +2326,12 @@ test(
         assert.equal(request.recipient, username);
         assert.equal(request.origin, origin);
         assert.equal(request.length, 6);
-        assert.ok(request.after > Date.now() - 5 * 60_000 - 1000);
+        assert.ok(request.after > Date.now() - 35_000);
         assert.ok(request.before <= Date.now());
         assert.equal(signal.aborted, false);
         await lookup?.();
-        return resultCode ? { code: resultCode, current: async () => available } : undefined;
+        const found = emails ? verificationCode(emails, request) : resultCode;
+        return found ? { code: found, current: async () => available } : undefined;
       },
     });
     const randomKey = randomBytes(32);
@@ -2381,6 +2384,12 @@ test(
         },
       ],
       [
+        'mismatched-masked-tld',
+        async (id: string) => {
+          page(id).emailCode = { recipientHint: 'o***@example.n**', length: 6 };
+        },
+      ],
+      [
         'wrong-origin',
         async (id: string) => {
           page(id).origin = 'https://evil.com';
@@ -2422,6 +2431,8 @@ test(
     for (const [id, delivery] of [
       ['masked', { recipientHint: 'o***@example.com', length: 6 }],
       ['masked-bullets', { recipientHint: 'ow•••@example.com', length: 6 }],
+      ['masked-tld', { recipientHint: 'o***@example.***', length: 6 }],
+      ['masked-tld-bullets', { recipientHint: 'ow•••@example.•••', length: 6 }],
       ['selected-without-recipient', { length: 6 }],
     ] as const) {
       await start(id);
@@ -2433,6 +2444,23 @@ test(
     pages.set(direct.threadId, inspection('otp'));
     assert.equal(await fill('direct-email'), true);
     assert.equal(await fill('direct-email'), false);
+    const priorChallenge = await turns.start('prior-challenge-email');
+    pages.set(priorChallenge.threadId, inspection('otp'));
+    emails = [{ ...message, receivedAt: Date.now() - 2 * 60_000 }];
+    const attemptsBeforePriorChallenge = injected.length;
+    assert.equal(await fill('prior-challenge-email'), false);
+    assert.equal(injected.length, attemptsBeforePriorChallenge);
+    const currentChallenge = await turns.start('current-challenge-email');
+    pages.set(currentChallenge.threadId, inspection('otp'));
+    emails.push({
+      ...message,
+      id: 'current-challenge-code',
+      receivedAt: Date.now() - 1000,
+      text: `Your verification code is ${currentCode}.`,
+    });
+    assert.equal(await fill('current-challenge-email'), true);
+    assert.equal(injected.at(-1)?.code, currentCode);
+    emails = undefined;
     const nonEmailLogin = (
       await app.inject({
         method: 'POST',
@@ -2611,7 +2639,13 @@ test(
       (await pool.query('SELECT * FROM credential_account_selections')).rows,
       (await pool.query('SELECT * FROM credential_autofill_attempts')).rows,
     ]);
-    for (const secret of [code, username, 'fixture-private-password', 'provider-private-mail'])
+    for (const secret of [
+      code,
+      currentCode,
+      username,
+      'fixture-private-password',
+      'provider-private-mail',
+    ])
       assert.equal(persisted.includes(secret), false);
   },
 );

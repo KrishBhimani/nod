@@ -29,7 +29,11 @@ export function verificationRecipient(
   if (delivery.recipient && (!recipient || (selected && recipient !== selected))) return;
   if (delivery.recipientHint) {
     const hint = delivery.recipientHint.trim().toLowerCase();
-    if (!selected || hint.length > 320 || !/^[a-z0-9._%+*•-]+@[a-z0-9.*•-]+\.[a-z]{2,}$/.test(hint))
+    if (
+      !selected ||
+      hint.length > 320 ||
+      !/^[a-z0-9._%+*•-]+@[a-z0-9.*•-]+\.[a-z*•]{2,}$/.test(hint)
+    )
       return;
     const pattern = hint
       .split(/[*•]+/)
