@@ -12,21 +12,19 @@ test('a browser observation waits for a page that first renders with no text', a
   const browser = stagedLoginBrowser();
   const page = new LoginPage();
   const text = page.text.bind(page);
-  const readyAt = Date.now() + 1_000;
-  let emptyReads = 0;
-  page.text = () => {
-    if (Date.now() < readyAt) {
-      emptyReads++;
-      return '';
-    }
-    return text();
-  };
+  let viewEvaluations = 0;
+  page.text = () => (viewEvaluations < 2 ? '' : text());
   browser.pages.set('fixture', page);
-  const computer = createAgentBrowserComputer({ dataRoot: directory, run: browser.run });
+  const run: typeof runProcess = async (executable, args, options) => {
+    if (args.includes('eval') && options?.input?.includes('const text = String(root.innerText'))
+      viewEvaluations++;
+    return browser.run(executable, args, options);
+  };
+  const computer = createAgentBrowserComputer({ dataRoot: directory, run });
   try {
     const result = await computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
-    assert.match(result.text, /Sign in/);
-    assert.ok(emptyReads > 0);
+    assert.match(result.text, /Page text [^\n]*:\nSign in/);
+    assert.ok(viewEvaluations >= 2);
   } finally {
     await computer.dispose();
     await rm(directory, { recursive: true, force: true });
