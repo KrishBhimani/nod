@@ -70,6 +70,8 @@ export function createSignIn({ context, computer, pause }: Turn) {
     if (!manual && method.id !== 'credentials' && !method.selected) {
       await computer.selectLoginMethod(threadId, origin, methodId);
       signal.throwIfAborted();
+      const next = login.methods.find((item) => item.id === 'continue');
+      if (next && method.id !== 'continue') selections.delete(selectionKey(login, next));
     }
     selections.set(selectionKey(login, method), selectionValue(login, method));
     if (manual) return manualSignIn(login, method);
@@ -157,6 +159,7 @@ export function createSignIn({ context, computer, pause }: Turn) {
       const method = selected ?? methods[0];
       if (!method.supported && ['manual', 'passkey'].includes(method.kind))
         return manualSignIn(login, method);
+      if (selected && method.selected === false) return selectMethod(login.origin, method.id);
       if (methods.length === 1 && !selected && method.id !== 'credentials' && method.supported)
         return selectMethod(login.origin, method.id);
     }

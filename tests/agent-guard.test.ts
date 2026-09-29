@@ -430,6 +430,13 @@ test('nested sign-in groups preserve the chosen method and ask about the next gr
       await call(tools, 'sign_in', { action: 'select_method', origin, methodId: 'phone' });
       assert.equal((await choice()).outcome, 'login_method_selected');
       await call(tools, 'sign_in', request);
+      assert.equal(requests.length, 1);
+      login = { ...login, fields: [], methods: [...outer, ...inner, next] };
+      assert.equal((await choice()).outcome, 'login_method_selected');
+      assert.equal(login.methods.find((item) => item.id === 'cmd')?.selected, true);
+      assert.equal(requests.length, 1);
+      assert.equal((await choice()).outcome, 'login_method_selected');
+      await call(tools, 'sign_in', request);
     },
     {
       prompt: 'Use Chave Móvel Digital.',
@@ -473,8 +480,8 @@ test('nested sign-in groups preserve the chosen method and ask about the next gr
       }),
     },
   );
-  assert.deepEqual(selections, ['cmd', 'continue']);
-  assert.equal(requests.length, 1);
+  assert.deepEqual(selections, ['cmd', 'continue', 'cmd', 'continue']);
+  assert.equal(requests.length, 2);
   assert.equal((requests[0] as { origin: string }).origin, origin);
 });
 
