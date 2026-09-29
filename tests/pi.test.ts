@@ -797,7 +797,9 @@ async function hostSandbox(t: test.TestContext) {
           options.onData?.(Buffer.from(chunk.toString('utf8').replaceAll(root, prefix)));
         child.stdout.on('data', deliver);
         child.stderr.on('data', deliver);
+        child.stdin.on('error', () => {});
         child.stdin.end(options.input ?? '');
+        child.on('error', () => resolve({ exitCode: 127 }));
         child.on('close', (code) => resolve({ exitCode: code ?? 1 }));
       });
     },
