@@ -1233,6 +1233,7 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
       ownerId,
       prompt: task.prompt,
       background: task.source !== 'user',
+      readOnly: task.source_id === welcomeSourceId,
       channel: task.channel.split(':')[0],
       timeZone: preferences.rows[0]?.time_zone || defaultPreferences.timeZone,
       currentMessageId: sourceMessageId ?? undefined,

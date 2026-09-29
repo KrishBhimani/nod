@@ -42,6 +42,53 @@ function publicLoginInspection(inspection: LoginInspection) {
   return result;
 }
 
+const outsideActionTools = [
+  'browser_fast_step',
+  'shell',
+  'request_credentials',
+  'select_login_method',
+];
+
+function changesExternalState(name: string, params: unknown) {
+  return (
+    outsideActionTools.includes(name) ||
+    (name === 'browser' &&
+      !['open', 'snapshot', 'scroll'].includes(String((params as { action?: unknown }).action)))
+  );
+}
+
+const readOnlyTools = [
+  'send_message',
+  'web_search',
+  'read_file',
+  'browser',
+  'browser_screenshot',
+  'apps',
+  'download_app_file',
+];
+
+const readOnlyActions: Record<string, string[]> = {
+  manage_apps: ['list'],
+  manage_personal_context: [
+    'profile_get',
+    'notification_preferences_get',
+    'history_search',
+    'schedule_list',
+    'goal_list',
+  ],
+};
+
+const readOnlyRefusal =
+  'This task can only read. Use app reads, and browser open, snapshot or scroll.';
+
+function allowedReadOnly(name: string, params: unknown) {
+  const action = String((params as { action?: unknown }).action);
+  return (
+    !changesExternalState(name, params) &&
+    (readOnlyTools.includes(name) || readOnlyActions[name]?.includes(action) === true)
+  );
+}
+
 export function createAgentRuntime(dependencies: {
   agent: Agent;
   computer: Computer;
@@ -376,6 +423,7 @@ export function createAgentRuntime(dependencies: {
             abort();
             throw new Error('Task tool budget reached.');
           }
+          if (context.readOnly && !allowedReadOnly(name, params)) throw new Error(readOnlyRefusal);
           const id = randomUUID();
           const started = performance.now();
           await observe({

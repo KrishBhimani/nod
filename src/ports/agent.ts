@@ -46,6 +46,7 @@ export interface RuntimeContext {
   ownerId: string;
   prompt: string;
   background?: boolean;
+  readOnly?: boolean;
   channel?: string;
   timeZone?: string;
   currentMessageId?: string;
