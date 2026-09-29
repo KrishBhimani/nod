@@ -36,15 +36,12 @@ const providers = [
     description: 'Chat with Otto in WhatsApp.',
   },
 ];
-const steps = {
-  telegram: ['Connect Telegram'],
-  whatsapp: [
-    'Before you begin',
-    'Choose the numbers',
-    'Verify your business app',
-    'Set up message delivery',
-  ],
-};
+const whatsappSteps = [
+  'Before you begin',
+  'Choose the numbers',
+  'Verify your business app',
+  'Set up message delivery',
+];
 
 function ExternalLinkText({ href, children }: { href: string; children: React.ReactNode }) {
   return (
@@ -698,7 +695,7 @@ export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (!editing || actionRequest.current || busy) return;
-    if (step < steps[editing].length - 1) {
+    if (editing === 'whatsapp' && step < whatsappSteps.length - 1) {
       setStep((value) => value + 1);
       return;
     }
@@ -962,10 +959,10 @@ export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
                 <img src="/logos/whatsapp.svg" alt="" width={25} height={25} />
                 <span>WhatsApp</span>
                 <small>
-                  Step {step + 1} of {steps.whatsapp.length}
+                  Step {step + 1} of {whatsappSteps.length}
                 </small>
               </div>
-              <DialogTitle>{steps.whatsapp[step]}</DialogTitle>
+              <DialogTitle>{whatsappSteps[step]}</DialogTitle>
               <DialogDescription className="channel-wizard-description">
                 {step === 0
                   ? 'Connect in a few small steps. Otto checks your credentials before saving.'
@@ -1000,10 +997,10 @@ export function Channels({ hosted = false }: { hosted?: boolean } = {}) {
                   <Button type="submit" disabled={busy}>
                     {busy
                       ? 'Verifying…'
-                      : step === steps.whatsapp.length - 1
+                      : step === whatsappSteps.length - 1
                         ? 'Verify and save'
                         : 'Continue'}
-                    {!busy && step < steps.whatsapp.length - 1 && <ArrowRight size={14} />}
+                    {!busy && step < whatsappSteps.length - 1 && <ArrowRight size={14} />}
                   </Button>
                 </div>
               </form>

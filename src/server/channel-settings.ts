@@ -49,7 +49,7 @@ const candidateSchema = z.object({
   threadId: z.string().min(1).max(1024),
   sentAt: z.iso.datetime(),
 });
-export type TelegramPairingCandidate = z.infer<typeof candidateSchema>;
+type TelegramPairingCandidate = z.infer<typeof candidateSchema>;
 const pairingLifetimeMs = 15 * 60 * 1000;
 const fields: Record<ChannelProvider, Set<string>> = {
   telegram: new Set([

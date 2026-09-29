@@ -18,7 +18,7 @@ import type {
 import { runProcess } from '../src/providers/process.ts';
 import { fixtureChannelCredentials } from './e2e-channels.ts';
 
-export const fixtureOrigin = 'https://example.com';
+const fixtureOrigin = 'https://example.com';
 export const fixturePrefix = '/__otto_e2e__/';
 export const fixtureLogin = fixtureOrigin + fixturePrefix + 'login';
 export const fixtureCredentials = {

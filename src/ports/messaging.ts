@@ -35,7 +35,7 @@ export interface ChannelPairingRequest {
   sentAt: Date;
 }
 
-export interface MessagingWebhook {
+interface MessagingWebhook {
   channelId: string;
   method: string;
   headers: Record<string, string | string[] | undefined>;
