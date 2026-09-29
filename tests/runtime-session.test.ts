@@ -2332,3 +2332,126 @@ test('an image read interrupted by cancellation never starts the model prompt', 
   );
   assert.equal(prompted, false);
 });
+
+test('browser writes, shell commands and sign-in steps mark an outside action before dispatch', async () => {
+  const order: string[] = [];
+  await fixture(
+    async (tools) => {
+      await call(tools, 'browser', { action: 'snapshot' });
+      await call(tools, 'browser', { action: 'scroll', direction: 'down' }).catch(() => {});
+      await call(tools, 'browser', { action: 'click', ref: 'e1' });
+      await call(tools, 'shell', { command: 'curl -X POST https://example.com' });
+      order.push('select');
+      await call(tools, 'select_login_method', {
+        origin: 'https://example.com',
+        methodId: 'credentials',
+      }).catch(() => {});
+      order.push('credentials');
+      await call(tools, 'request_credentials', {
+        origin: 'https://example.com',
+        label: 'Fixture',
+        kind: 'password',
+        passwordSelector: '#password',
+      }).catch(() => {});
+    },
+    {
+      startExternalAction: async () => {
+        order.push('marked');
+      },
+    },
+    {
+      computer: fakeComputer({
+        act: async (_taskId, action) => {
+          order.push(action.action);
+          return { text: 'Fixture page', url: 'https://example.com', candidates: [] };
+        },
+      }),
+      workspace: fakeWorkspace({
+        open: () => ({
+          path: '/fixture/workspace',
+          instructions: 'Fixture workspace only.',
+          execute: async () => {
+            order.push('shell');
+            return 'Fixture output';
+          },
+          readFile: async () => 'Fixture content',
+          writeFile: async () => 'File saved',
+        }),
+      }),
+    },
+  );
+  assert.deepEqual(order.slice(0, 6), ['snapshot', 'scroll', 'marked', 'click', 'marked', 'shell']);
+  assert.equal(order[order.indexOf('select') + 1], 'marked');
+  assert.equal(order[order.indexOf('credentials') + 1], 'marked');
+});
+
+test('an outcome check exposes only read tools, refuses writes and reports once', async () => {
+  const dispatched: string[] = [];
+  const reports: Array<[string, string]> = [];
+  const result = await fixture(
+    async (tools) => {
+      assert.deepEqual(
+        [...tools.keys()].sort(),
+        ['apps', 'browser', 'browser_screenshot', 'read_file', 'report_outcome'].sort(),
+      );
+      await call(tools, 'browser', { action: 'open', url: 'https://example.com/sent' });
+      await call(tools, 'browser', { action: 'snapshot' });
+      for (const action of [
+        { action: 'click', selector: '#send' },
+        { action: 'fill', selector: '#note', text: 'Fixture' },
+        { action: 'press', key: 'Enter' },
+      ])
+        await assert.rejects(call(tools, 'browser', action));
+      await call(tools, 'report_outcome', {
+        outcome: 'completed',
+        message: 'The fixture email went through.',
+      });
+    },
+    {
+      checkOutcome: true,
+      freshSession: true,
+      startExternalAction: async () => {
+        throw new Error('The server must not be asked to mark a check step.');
+      },
+      reportOutcome: async (outcome, message) => {
+        reports.push([outcome, message]);
+      },
+    },
+    {
+      computer: fakeComputer({
+        act: async (_taskId, action) => {
+          dispatched.push(action.action);
+          return { text: 'Fixture page', url: 'https://example.com', candidates: [] };
+        },
+      }),
+    },
+  );
+  assert.equal(result.supplied.fresh, true);
+  assert.deepEqual(dispatched, ['open', 'snapshot']);
+  assert.deepEqual(reports, [['completed', 'The fixture email went through.']]);
+  assert.equal(result.aborted, true);
+  assert.equal(
+    result.catalog.some((tool) => tool.name === 'report_outcome'),
+    false,
+  );
+});
+
+test('an outcome check that cannot verify asks one plain question', async () => {
+  const questions: string[] = [];
+  const result = await fixture(
+    async (tools) => {
+      await call(tools, 'report_outcome', {
+        outcome: 'unknown',
+        message: 'Did the fixture email reach Sam?',
+      });
+    },
+    {
+      checkOutcome: true,
+      waitForUser: async (question) => {
+        questions.push(question);
+      },
+    },
+  );
+  assert.equal(result.result.status, 'waiting_user');
+  assert.deepEqual(questions, ['Did the fixture email reach Sam?']);
+});

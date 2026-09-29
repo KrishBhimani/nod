@@ -37,6 +37,12 @@ export interface SubmitMessageResponse {
   messageText?: string;
   verificationStatus?: 'pending' | 'submitted' | 'rejected' | 'unavailable';
 }
+export interface TaskReviewRequired {
+  error: string;
+  code: 'task_review_required';
+  taskId: string;
+  summary: string;
+}
 export interface VerificationRequest {
   id: string;
   taskId: string;
@@ -82,7 +88,7 @@ export type VaultListEntry = (VaultLoginEntry & { username: string }) | VaultCar
 export interface VaultLoginDetails extends VaultLoginEntry {
   username: string;
 }
-export interface VaultCardDetails extends VaultCardEntry {
+interface VaultCardDetails extends VaultCardEntry {
   cardholder: string;
   hasSecurityCode: boolean;
 }
@@ -95,21 +101,6 @@ export interface VaultCardNumber {
 }
 export interface VaultCardSecurityCode {
   securityCode: string;
-}
-export interface VaultEntryUpdate {
-  kind?: 'login';
-  label: string;
-  username: string;
-  password?: string;
-}
-export interface VaultCardUpdate {
-  kind: 'card';
-  label: string;
-  cardholder: string;
-  cardNumber?: string;
-  securityCode?: string | null;
-  expiryMonth: number;
-  expiryYear: number;
 }
 export interface CredentialRequest {
   id: string;
@@ -170,18 +161,6 @@ export interface InspectorState {
   events: TaskEvent[];
   runtime: { browser: string; workspace: string; database: string };
   currentBrowser?: { taskId: string; title: string; status: string; lastActivityAt: string };
-}
-export interface MemoryFact {
-  id: string;
-  text: string;
-  sourceMessageId: string | null;
-  createdAt: string;
-}
-export interface Profile {
-  name: string;
-  location: string;
-  phone: string;
-  preferences: string;
 }
 export interface Goal {
   id: string;

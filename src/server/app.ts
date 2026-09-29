@@ -23,6 +23,7 @@ import {
   welcomeSourceId,
 } from './tasks.ts';
 import { conversationRevision, currentConversationSql } from './conversations.ts';
+import { TaskReviewRequiredError } from './outcomes.ts';
 import { isMessageReaction } from '../shared/emoji.ts';
 import { registerLocalAccess } from './access.ts';
 import { registerRuntimeAccess } from './runtime-auth.ts';
@@ -108,6 +109,13 @@ export async function createApp(dependencies: AppDependencies = {}) {
     verifiedBody: runtimeAccess?.takeBody,
   });
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof TaskReviewRequiredError)
+      return reply.code(409).send({
+        error: error.message,
+        code: error.code,
+        taskId: error.taskId,
+        summary: error.summary,
+      });
     const known = error instanceof Error ? (error as Error & { statusCode?: number }) : undefined;
     const status = error instanceof z.ZodError ? 400 : known?.statusCode || 500;
     reply.code(status).send({
