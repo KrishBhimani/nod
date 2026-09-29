@@ -552,9 +552,6 @@ export async function createApplication(
   browserConnections = await createBrowserConnections(pool, {
     ownerId,
     computer,
-    resume: resumeAfterConnection,
-    saveLogin: async (origin, label, username, password) =>
-      (await vault.saveLogin({ origin, label, username, password })).id,
     refresh,
   });
   const chatVerification = await createChatVerification(pool, {
@@ -761,7 +758,6 @@ export async function createApplication(
     }).registerRoutes(app);
   }
   vault.registerRoutes(app);
-  browserConnections.registerRoutes(app);
   integrations.registerRoutes(app);
   personal.registerRoutes(app);
   triage.registerRoutes(app);

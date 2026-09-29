@@ -829,7 +829,6 @@ export async function createVault(pool: Pool, options: VaultOptions) {
               supported: true,
             },
           ],
-          submitSelector: input.submitSelector,
         },
       };
     }
@@ -858,7 +857,6 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       usernameSelector: username.length === 1 ? username[0].selector : undefined,
       passwordSelector:
         kind !== 'identifier' && target.length === 1 ? target[0].selector : undefined,
-      submitSelector: inspection.submitSelector,
     };
     return {
       input: resolved,

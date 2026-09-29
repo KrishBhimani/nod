@@ -1653,6 +1653,20 @@ test('secure entry rejects persistent readonly fields and focus-time target or o
   }
 });
 
+test('a localized code field remains actionable without a form', () => {
+  const challenge = new LoginDom();
+  challenge.body.append(
+    element('input', { type: 'tel', name: 'pin', 'aria-label': 'Introduce el código aquí' }),
+    element('button', { type: 'submit' }, 'Enviar'),
+  );
+  const second = loginInspectionSchema.parse(challenge.evaluate(loginInspectionScript()));
+  assert.deepEqual(
+    second.fields.map((field) => field.kind),
+    ['otp'],
+  );
+  assert.ok(second.submitSelector);
+});
+
 test('browser observations redact OAuth callback values, API credentials and signed URL query values', () => {
   const url = redactBrowserUrl(
     'https://example.com/callback?code=private-code&email=private-email&state=private-state&view=account#access_token=private-token',

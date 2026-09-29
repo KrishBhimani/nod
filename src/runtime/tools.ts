@@ -5,8 +5,7 @@ import type { BrowserAction } from '../ports/computer.ts';
 import { browserDownloadBytes } from '../ports/computer.ts';
 import { isMessageReaction } from '../shared/emoji.ts';
 import { integrationDownloadActions } from '../shared/integrations.ts';
-import { requestsPrivateInput } from './communication.ts';
-import { createSignIn } from './sign-in.ts';
+import { requestsPrivateInput, vaultInvitation } from './communication.ts';
 import { privateInputNotice, type Turn } from './turn.ts';
 
 export const personalActions = [
@@ -115,30 +114,26 @@ export const toolDefinitions = {
   ),
   sign_in: defineTool(
     'sign_in',
-    'Sign in on the current browser page without seeing secrets. inspect lists fields and methods; select_method {origin, methodId} picks the method the user chose; request {origin, label, kind, selectors} asks the user privately through Vault and pauses.',
+    'Ask the user for website credentials through a secure form. Provide the current page origin and the field selectors from the browser. The values stay out of the model.',
     Type.Object({
-      action: literals(['inspect', 'select_method', 'request']),
-      origin: Type.Optional(Type.String({ minLength: 1, maxLength: 2048 })),
-      methodId: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
-      label: Type.Optional(Type.String({ maxLength: 100 })),
-      kind: Type.Optional(literals(['identifier', 'password', 'otp'])),
+      origin: Type.String({ minLength: 1, maxLength: 2048 }),
+      label: Type.String({ minLength: 1, maxLength: 100 }),
+      kind: literals(['identifier', 'password', 'otp']),
       usernameSelector: Type.Optional(Type.String()),
       passwordSelector: Type.Optional(Type.String()),
-      submitSelector: Type.Optional(Type.String()),
     }),
   ),
   browser_session: defineTool(
     'browser_session',
-    'Saved website sessions. connect {url, label?, connectionId?} gives the user a private sign-in link and pauses; use {url, connectionId} reuses a saved browser_session on that site.',
+    'Browser profiles for website accounts. connect opens a new private profile; use opens a saved profile; save checks and keeps the current signed-in profile.',
     Type.Union([
       Type.Object({
         action: Type.Literal('connect'),
         url: Type.String({ minLength: 1, maxLength: 2048 }),
-        connectionId: Type.Optional(uuid),
         label: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
       }),
       Type.Object({
-        action: Type.Literal('use'),
+        action: literals(['use', 'save']),
         url: Type.String({ minLength: 1, maxLength: 2048 }),
         connectionId: uuid,
       }),
@@ -242,7 +237,6 @@ function bind<P extends TSchema>(
 export function ottoTools(turn: Turn): OttoTool[] {
   const { context, computer, pause, confirm } = turn;
   const { threadId, signal } = context;
-  const signIn = createSignIn(turn);
   const screenshot = async () => {
     const bytes = await computer.screenshot(threadId, signal);
     signal.throwIfAborted();
@@ -312,29 +306,23 @@ export function ottoTools(turn: Turn): OttoTool[] {
       }
       return computer.act(threadId, { action, ...rest } as BrowserAction, signal);
     }),
-    bind(
-      toolDefinitions.sign_in,
-      async ({ action, origin, methodId, label, kind, ...selectors }) => {
-        if (action === 'inspect') return signIn.inspect();
-        if (action === 'select_method')
-          return origin && methodId
-            ? signIn.selectMethod(origin, methodId)
-            : 'select_method needs origin and methodId from a fresh inspect.';
-        return origin && label !== undefined && kind
-          ? signIn.request({ origin, label, kind, ...selectors })
-          : 'request needs origin, label and kind from a fresh inspect.';
-      },
-    ),
+    bind(toolDefinitions.sign_in, async (input) => {
+      const result = await context.requestCredential(input);
+      if (result.filled) return 'Saved login entered.';
+      if (!result.url && result.invitation?.kind !== 'otp')
+        throw new Error('The secure sign-in request could not be created.');
+      await turn.reply(vaultInvitation(result.invitation ?? input, result.url));
+      await pause('credentials', undefined, { post: false });
+      return 'Waiting for secure input.';
+    }),
     bind(toolDefinitions.browser_session, async (p) => {
       if (!context.browserConnection) throw new Error('Browser connections are unavailable.');
-      const result = (await context.browserConnection(p)) as { status?: unknown; url?: unknown };
-      if (result.status === 'rejected') return result;
-      if (p.action === 'use' && result.status !== 'needs_sign_in') return result;
-      return link(result.url, (url) =>
-        p.action === 'use'
-          ? `This website needs you to sign in again. [Continue sign-in](${url}) and I will continue the task.`
-          : `I opened the website in Otto’s private browser. [Connect website](${url}) to sign in, then I will continue the task.`,
-      );
+      const result = (await context.browserConnection(p)) as Record<string, unknown>;
+      if (p.action === 'connect' || result.status === 'needs_sign_in') {
+        const { url: _url, ...safe } = result;
+        return safe;
+      }
+      return result;
     }),
     bind(toolDefinitions.apps, async (p) => {
       if (!(integrationDownloadActions as readonly string[]).includes(p.action))

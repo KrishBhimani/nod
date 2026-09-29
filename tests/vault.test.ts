@@ -1787,6 +1787,7 @@ test(
         assert.equal(submitted.json().ok, true);
         assert.equal(injections.at(-1)?.kind, 'identifier');
         assert.equal(injections.at(-1)?.password, undefined);
+        assert.equal(injections.at(-1)?.submitSelector, undefined);
         return url;
       };
 

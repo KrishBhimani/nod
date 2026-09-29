@@ -102,7 +102,7 @@ export function loginInspectionScript(): string {
       const label=observedLabel(e);
       return label&&identifierLabelHint(normalized(label))?label.slice(0,80):e.type==='email'||/email/.test(hint(e))?'Email':e.type==='tel'||/phone/.test(hint(e))?'Phone':'Username';
     };
-    const otpHint=text=>/one-time-code|verification.?code|authentication.?code|security.?code|authenticator|(?:^|[^a-z])(?:otp|totp)(?:[^a-z]|$)|codigo.{0,20}(?:verificacao|seguranca|confirmacao|autenticacao|sms|temporario)|(?:pin|codigo).{0,20}(?:uso unico|utilizacao unica|temporario)/.test(text);
+    const otpHint=text=>/one-time-code|verification.?code|authentication.?code|security.?code|authenticator|(?:^|[^a-z])(?:otp|totp)(?:[^a-z]|$)|codigo.{0,20}(?:verificacao|seguranca|confirmacao|autenticacao|sms|temporario|aqui)|introduc[ea].{0,32}codigo|(?:pin|codigo).{0,20}(?:uso unico|utilizacao unica|temporario)/.test(text);
     const secretHint=text=>/password|passphrase|passcode|palavra.passe|senha|(?:^|[^a-z])pin(?:[^a-z]|$)/.test(text);
     const identifierLabelHint=text=>/^(?:(?:o seu|seu|your|inserir|introduza|enter(?: your)?) )?(?:(?:numero (?:de )?)?(?:telemovel|telefone)|(?:mobile )?phone(?: number)?|e.?mail(?: address)?|username|nome de utilizador|nif|eori)(?: *[:*])?$/.test(text);
     const kindOf=e=>e.type!=='password'&&identifierLabelHint(normalized(observedLabel(e)||''))?'identifier':otpHint(hint(e))?'otp':e.type==='password'?'password':secretHint(hint(e))?null:['email','tel'].includes(e.type)||/username|user.?name|identifier|phone|email|telemovel|telefone|utilizador|contribuinte|tax.?id|document.?number|numero.{0,20}(?:fiscal|documento|identificacao)|(?:^|[^a-z])(?:nif|eori|tel)(?:[^a-z]|$)/.test(hint(e))?'identifier':null;

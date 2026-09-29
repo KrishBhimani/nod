@@ -9,7 +9,6 @@ import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import Fastify from 'fastify';
-import { JSDOM } from 'jsdom';
 import pg, { type Pool } from 'pg';
 import { z } from 'zod';
 import type {
@@ -25,160 +24,6 @@ import { createBrowserConnections } from '../src/server/browser-connections.ts';
 import { createTakeover } from '../src/server/takeover.ts';
 import { createBrowserFixture as createAgentBrowserComputer } from './browser-fixture.ts';
 import { stagedLoginBrowser } from './login-fixture.ts';
-
-test('the secure sign-in form saves the session after credentials and a code without a finish click', async () => {
-  const dom = new JSDOM('<div id="root"></div>', {
-    url: 'http://localhost/browser-connect/synthetic-token',
-  });
-  const oldWindow = globalThis.window;
-  const oldDocument = globalThis.document;
-  const oldNavigator = globalThis.navigator;
-  const oldFetch = globalThis.fetch;
-  const oldEvent = globalThis.Event;
-  const oldActEnvironment = Object.getOwnPropertyDescriptor(globalThis, 'IS_REACT_ACT_ENVIRONMENT');
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  Object.defineProperty(globalThis, 'navigator', {
-    configurable: true,
-    value: dom.window.navigator,
-  });
-  Object.defineProperty(globalThis, 'Event', { configurable: true, value: dom.window.Event });
-  Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
-    configurable: true,
-    value: true,
-  });
-  const calls: Array<{ path: string; body?: unknown }> = [];
-  let submissions = 0;
-  const inspection = {
-    origin: 'https://www.linkedin.com',
-    canSubmit: true,
-    fields: [
-      { kind: 'identifier', label: 'Email' },
-      { kind: 'password', label: 'Password' },
-    ],
-    methods: [],
-    issue: null,
-  };
-  globalThis.fetch = async (input, options) => {
-    const path = String(input);
-    const body = options?.body ? JSON.parse(String(options.body)) : undefined;
-    calls.push({ path, body });
-    const value = path.endsWith('/control')
-      ? { paused: false, active: false, mode: null, signInAvailable: true }
-      : path.endsWith('/credentials')
-        ? {
-            status: 'submitted',
-            inspection: {
-              ...inspection,
-              fields:
-                ++submissions === 1
-                  ? inspection.fields
-                  : submissions === 2
-                    ? [{ kind: 'otp', label: 'Verification code' }]
-                    : [],
-            },
-          }
-        : path.endsWith('/finish')
-          ? { ok: true, connected: true }
-          : {
-              name: 'linkedin.com',
-              label: 'LinkedIn',
-              origin: 'https://www.linkedin.com',
-              state: 'pending',
-              fromChat: true,
-              expiresAt: new Date(Date.now() + 60_000).toISOString(),
-              inspection,
-            };
-    return new Response(JSON.stringify(value), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
-  };
-  let root: import('react-dom/client').Root | undefined;
-  try {
-    const { createElement, act } = await import('react');
-    const { createRoot } = await import('react-dom/client');
-    const { BrowserConnection } = await import('../src/web/pages/browser-connection.tsx');
-    root = createRoot(dom.window.document.getElementById('root')!);
-    await act(async () => {
-      root!.render(createElement(BrowserConnection, { token: 'synthetic-token' }));
-      await delay(10);
-    });
-    const inputs = [...dom.window.document.querySelectorAll('form input')];
-    assert.equal(inputs.length, 2);
-    await act(async () => {
-      for (const [input, value] of inputs.map(
-        (input, index) => [input, index ? 'synthetic-password' : 'synthetic@example.test'] as const,
-      )) {
-        Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(
-          input,
-          value,
-        );
-        input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
-      }
-      dom.window.document
-        .querySelector('form')!
-        .dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
-      await delay(20);
-    });
-    assert.deepEqual(calls.find((call) => call.path.endsWith('/credentials'))?.body, {
-      origin: 'https://www.linkedin.com',
-      username: 'synthetic@example.test',
-      password: 'synthetic-password',
-    });
-    assert.equal(calls.filter((call) => call.path.endsWith('/finish')).length, 0);
-    const retryPassword =
-      dom.window.document.querySelector<HTMLInputElement>('input[type="password"]');
-    assert.ok(retryPassword);
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(
-        retryPassword,
-        'synthetic-password',
-      );
-      retryPassword.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
-      dom.window.document
-        .querySelector('form')!
-        .dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
-      await delay(20);
-    });
-    const codeInput = dom.window.document.querySelector<HTMLInputElement>(
-      'input[autocomplete="one-time-code"]',
-    );
-    assert.ok(codeInput);
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(
-        codeInput,
-        '123456',
-      );
-      codeInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
-      dom.window.document
-        .querySelector('form')!
-        .dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
-      await delay(20);
-    });
-    assert.deepEqual(calls.filter((call) => call.path.endsWith('/credentials'))[2]?.body, {
-      origin: 'https://www.linkedin.com',
-      code: '123456',
-    });
-    assert.equal(calls.filter((call) => call.path.endsWith('/finish')).length, 1);
-  } finally {
-    if (root) {
-      const { act } = await import('react');
-      await act(async () => root!.unmount());
-    }
-    globalThis.fetch = oldFetch;
-    Object.defineProperty(globalThis, 'window', { configurable: true, value: oldWindow });
-    Object.defineProperty(globalThis, 'document', { configurable: true, value: oldDocument });
-    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: oldNavigator });
-    Object.defineProperty(globalThis, 'Event', { configurable: true, value: oldEvent });
-    if (oldActEnvironment)
-      Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', oldActEnvironment);
-    else Reflect.deleteProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT');
-    dom.window.close();
-  }
-});
-
-// Shared helpers
 
 function deferred() {
   let resolve!: () => void;
@@ -1189,609 +1034,117 @@ test('private frames are discarded when the thread changes during capture', asyn
   }
 });
 
-// Browser connections: owner scoping and turn-bound sign-in links
-
-async function connectionFixture() {
-  const schema = `browser_connections_${randomUUID().replaceAll('-', '')}`;
-  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
-  const cleanup: Array<() => Promise<unknown>> = [() => admin.end()];
-  try {
+test(
+  'Pi saves and reuses a verified browser profile for one owner',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async () => {
+    const schema = `browser_connections_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
     await admin.query(`CREATE SCHEMA ${schema}`);
-    cleanup.unshift(() => admin.query(`DROP SCHEMA ${schema} CASCADE`));
     const pool = new pg.Pool({
       connectionString: process.env.TEST_DATABASE_URL,
       options: `-c search_path=${schema}`,
     });
-    cleanup.unshift(() => pool.end());
-    const app = Fastify();
-    cleanup.unshift(() => app.close());
-    const bindings: Array<{ threadId: string; profileId: string; origin?: string }> = [];
-    const inputs: CredentialInput[] = [];
-    const closed: string[] = [];
-    const removed: string[] = [];
-    const savedLogins: Array<{ origin: string; username: string; password: string }> = [];
-    const state: {
-      failDelete: boolean;
-      signedIn: boolean;
-      technogymLoginOpen: boolean;
-      blocked: boolean;
-      verificationRequired: boolean;
-      verificationVisible: boolean;
-      loginRedirect: boolean;
-      inspectionLag: number;
-      loginOrigin: string;
-      pageUrl: string;
-      waitForInjection?: Promise<void>;
-      injectionEntered?: () => void;
-    } = {
-      failDelete: false,
-      signedIn: false,
-      technogymLoginOpen: false,
-      blocked: false,
-      verificationRequired: false,
-      verificationVisible: false,
-      loginRedirect: false,
-      inspectionLag: 0,
-      loginOrigin: 'https://api.linkedin.com',
-      pageUrl: 'https://www.linkedin.com/messaging/',
-    };
-    const computer = {
-      async bindProfile(threadId: string, profileId: string, origin?: string) {
-        bindings.push({ threadId, profileId, origin });
-      },
-      async deleteProfile(profileId: string) {
-        if (state.failDelete) throw new Error('Synthetic profile removal failed.');
-        removed.push(profileId);
-      },
-      async act(_threadId: string, input: { action: string; url?: string }) {
-        if (input.action === 'click' && input.url === undefined) {
-          state.technogymLoginOpen = true;
-          state.pageUrl = 'https://www.technogym.com/login';
-        } else state.pageUrl = input.url ?? state.pageUrl;
-        if (
-          state.loginRedirect &&
-          state.signedIn &&
-          state.pageUrl === 'https://www.linkedin.com/login'
-        )
-          state.pageUrl = 'https://www.linkedin.com/feed/';
-        return {
-          url: state.pageUrl,
-          text: state.blocked
-            ? '403 ERROR Request blocked'
-            : state.signedIn && state.pageUrl === 'https://www.linkedin.com/feed/'
-              ? 'Synthetic signed-in account page'
-              : 'Synthetic page',
-          candidates:
-            state.pageUrl === 'https://www.technogym.com/en-IE/' && !state.technogymLoginOpen
-              ? [{ id: '@login', label: 'Log in' }]
-              : [],
-        };
-      },
-      async inspectLogin(): Promise<LoginInspection> {
-        const ready =
-          !state.pageUrl.startsWith('https://www.technogym.com') || state.technogymLoginOpen;
-        const lagged = state.inspectionLag > 0;
-        if (lagged) state.inspectionLag -= 1;
-        const inspectedUrl =
-          state.signedIn && state.loginRedirect && !lagged
-            ? state.pageUrl
-            : `${state.loginOrigin}/checkpoint/lg/login`;
-        return {
-          origin: new URL(inspectedUrl).origin,
-          url: inspectedUrl,
-          fields:
-            state.signedIn || !ready
-              ? []
-              : state.verificationVisible
-                ? [{ kind: 'otp', selector: '#code', label: 'Verification code' }]
-                : [
-                    { kind: 'identifier', selector: '#username', label: 'Email or phone' },
-                    { kind: 'password', selector: '#password', label: 'Password' },
-                  ],
-          methods:
-            state.signedIn || !ready
-              ? []
-              : [{ id: 'credentials', label: 'Email', kind: 'credentials', supported: true }],
-          submitSelector: '#sign-in',
-        };
-      },
-      async injectCredentials(input: CredentialInput) {
-        inputs.push(input);
-        state.injectionEntered?.();
-        if (state.waitForInjection) await state.waitForInjection;
-        if (input.kind === 'otp') {
-          state.verificationRequired = false;
-          state.verificationVisible = false;
-          state.signedIn = true;
-        } else if (state.verificationRequired) {
-          state.verificationVisible = true;
-          state.pageUrl = 'https://api.linkedin.com/checkpoint/challenge';
-        } else state.signedIn = true;
-        return { status: 'submitted' as const };
-      },
-      async hold() {},
-      async close(threadId: string) {
-        closed.push(threadId);
-      },
-      async openSignIn() {},
-      async finishSignIn() {},
-      async signInScreenshot() {
-        return Buffer.from('synthetic-image');
-      },
-      async signInControl() {},
-      async releaseControl() {},
-    } as unknown as Computer;
-    await pool.query(
-      "CREATE TABLE threads (id uuid PRIMARY KEY,owner_id text,status text NOT NULL DEFAULT 'idle',archived_at timestamptz)",
-    );
-    await pool.query(
-      "CREATE TABLE turns (id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),status text NOT NULL DEFAULT 'running',waiting_reason text,started_at timestamptz DEFAULT clock_timestamp())",
-    );
-    const service = await createBrowserConnections(pool, {
-      ownerId: 'owner-a',
-      computer,
-      async saveLogin(origin, _label, username, password) {
-        savedLogins.push({ origin, username, password });
-        return randomUUID();
-      },
-    });
-    service.registerRoutes(app);
-    await app.ready();
-    return {
-      app,
-      pool,
-      service,
-      computer,
-      state,
-      bindings,
-      inputs,
-      closed,
-      removed,
-      savedLogins,
-      async close() {
-        let failure: unknown;
-        for (const dispose of cleanup)
-          try {
-            await dispose();
-          } catch (error) {
-            failure ??= error;
-          }
-        if (failure) throw failure;
-      },
-    };
-  } catch (error) {
-    for (const dispose of cleanup) await dispose().catch(() => {});
-    throw error;
-  }
-}
-
-type Fixture = Awaited<ReturnType<typeof connectionFixture>>;
-
-function turnRef() {
-  return { threadId: randomUUID(), turnId: randomUUID() };
-}
-
-async function startTurn(pool: pg.Pool, threadId: string = randomUUID()) {
-  await pool.query(
-    "INSERT INTO threads(id,owner_id,status) VALUES($1,'owner-a','running') ON CONFLICT DO NOTHING",
-    [threadId],
-  );
-  const turnId = randomUUID();
-  await pool.query("INSERT INTO turns(id,owner_id,thread_id) VALUES($1,'owner-a',$2)", [
-    turnId,
-    threadId,
-  ]);
-  return { threadId, turnId };
-}
-
-async function waitTurn(pool: pg.Pool, turn: { threadId: string; turnId: string }) {
-  await pool.query("UPDATE turns SET status='waiting',waiting_reason='question' WHERE id=$1", [
-    turn.turnId,
-  ]);
-  await pool.query("UPDATE threads SET status='idle' WHERE id=$1", [turn.threadId]);
-}
-
-function connectionTest(name: string, run: (value: Fixture) => Promise<void>) {
-  test(name, { skip: !process.env.TEST_DATABASE_URL }, async () => {
-    const value = await connectionFixture();
     try {
-      await run(value);
-    } finally {
-      await value.close();
-    }
-  });
-}
-
-async function saveLinkedIn(value: Fixture) {
-  const started = await value.app.inject({
-    method: 'POST',
-    url: '/api/browser-connections',
-    payload: { url: 'https://www.linkedin.com/messaging/' },
-  });
-  assert.equal(started.statusCode, 200);
-  const { url, connectionId } = started.json<{ url: string; connectionId: string }>();
-  const token = url.split('/').at(-1)!;
-  const credentials = await value.app.inject({
-    method: 'POST',
-    url: `/api/browser-connections/attempt/${token}/credentials`,
-    payload: {
-      origin: 'https://api.linkedin.com',
-      username: 'synthetic@example.test',
-      password: 'synthetic-secret',
-    },
-  });
-  assert.equal(credentials.statusCode, 200);
-  const finish = await value.app.inject({
-    method: 'POST',
-    url: `/api/browser-connections/attempt/${token}/finish`,
-    payload: {},
-  });
-  assert.equal(finish.statusCode, 200);
-  return connectionId;
-}
-
-connectionTest(
-  'a login page must open the signed-in destination before the session is saved or used',
-  async (value) => {
-    const { app, pool, service, state } = value;
-    const started = await app.inject({
-      method: 'POST',
-      url: '/api/browser-connections',
-      payload: { url: 'https://www.linkedin.com/login' },
-    });
-    const { url, connectionId } = started.json<{ url: string; connectionId: string }>();
-    const token = url.split('/').at(-1)!;
-    state.signedIn = true;
-    await pool.query('UPDATE browser_connections SET sign_in_started=true WHERE id=$1', [
-      connectionId,
-    ]);
-    const early = await app.inject({
-      method: 'POST',
-      url: `/api/browser-connections/attempt/${token}/finish`,
-      payload: {},
-    });
-    assert.equal(early.statusCode, 409);
-    assert.match(early.json().error, /Still checking/);
-    state.loginRedirect = true;
-    state.inspectionLag = 2;
-    const finished = await app.inject({
-      method: 'POST',
-      url: `/api/browser-connections/attempt/${token}/finish`,
-      payload: {},
-    });
-    assert.equal(finished.statusCode, 200);
-    state.loginRedirect = false;
-    const pending = await service.use(
-      connectionId,
-      turnRef(),
-      'https://www.linkedin.com/company/jobs/',
-    );
-    assert.equal(pending.status, 'site_unavailable');
-    assert.equal((await service.list())[0].browserState, 'saved');
-    state.loginRedirect = true;
-    const opened = await service.use(
-      connectionId,
-      turnRef(),
-      'https://www.linkedin.com/company/jobs/',
-    );
-    assert.equal(opened.status, 'session_opened');
-  },
-);
-
-connectionTest('LinkedIn sign-in keeps credentials private through a later code', async (value) => {
-  const { app, pool, service, state, bindings, inputs, savedLogins } = value;
-  const begin = await app.inject({
-    method: 'POST',
-    url: '/api/browser-connections',
-    payload: { url: 'https://www.linkedin.com/messaging/?private=1', label: 'My LinkedIn' },
-  });
-  assert.equal(begin.statusCode, 200);
-  const { url, connectionId } = begin.json<{ url: string; connectionId: string }>();
-  let token = url.split('/').at(-1)!;
-  assert.ok(bindings[0].profileId);
-  const stored = (
-    await pool.query<{ token_hash: string; start_url: string }>(
-      'SELECT token_hash,start_url FROM browser_connections WHERE id=$1',
-      [connectionId],
-    )
-  ).rows[0];
-  assert.notEqual(stored.token_hash, token);
-  assert.equal(stored.start_url, 'https://www.linkedin.com/messaging/?private=1');
-  const attempt = await app.inject({
-    method: 'GET',
-    url: `/api/browser-connections/attempt/${token}`,
-  });
-  assert.equal(attempt.json().inspection.origin, 'https://api.linkedin.com');
-  assert.equal(attempt.json().inspection.canSubmit, true);
-  const renewed = await app.inject({
-    method: 'POST',
-    url: '/api/browser-connections',
-    payload: { url: 'https://www.linkedin.com/messaging/', connectionId },
-  });
-  assert.equal(renewed.statusCode, 200);
-  const oldToken = token;
-  token = renewed.json<{ url: string }>().url.split('/').at(-1)!;
-  assert.notEqual(token, oldToken);
-  assert.equal(
-    (await app.inject({ method: 'GET', url: `/api/browser-connections/attempt/${oldToken}` }))
-      .statusCode,
-    404,
-  );
-  assert.equal((await service.list())[0].accountName, 'My LinkedIn');
-  assert.equal(
-    (
-      await app.inject({
-        method: 'POST',
-        url: `/api/browser-connections/attempt/${token}/finish`,
-        payload: {},
-      })
-    ).statusCode,
-    409,
-  );
-  state.verificationRequired = true;
-  const credentials = await app.inject({
-    method: 'POST',
-    url: `/api/browser-connections/attempt/${token}/credentials`,
-    payload: {
-      origin: 'https://api.linkedin.com',
-      username: 'synthetic@example.test',
-      password: 'synthetic-secret',
-      saveLogin: true,
-    },
-  });
-  assert.equal(credentials.statusCode, 200);
-  assert.equal(credentials.json().inspection.fields[0].kind, 'otp');
-  assert.doesNotMatch(credentials.body, /synthetic-secret|synthetic@example.test/);
-  assert.equal(inputs[0].passwordSelector, '#password');
-  assert.deepEqual(savedLogins, []);
-  const verification = await app.inject({
-    method: 'POST',
-    url: `/api/browser-connections/attempt/${token}/finish`,
-    payload: {},
-  });
-  assert.equal(verification.statusCode, 409);
-  assert.match(verification.json().error, /verification code/);
-  assert.equal(state.pageUrl, 'https://api.linkedin.com/checkpoint/challenge');
-  assert.deepEqual(savedLogins, []);
-  const code = await app.inject({
-    method: 'POST',
-    url: `/api/browser-connections/attempt/${token}/credentials`,
-    payload: { origin: 'https://api.linkedin.com', code: '123456' },
-  });
-  assert.equal(code.statusCode, 200);
-  assert.equal(inputs.at(-1)?.kind, 'otp');
-  const finish = await app.inject({
-    method: 'POST',
-    url: `/api/browser-connections/attempt/${token}/finish`,
-    payload: {},
-  });
-  assert.equal(finish.statusCode, 200);
-  assert.equal(finish.json().loginSaved, true);
-  assert.deepEqual(savedLogins, [
-    {
-      origin: 'https://api.linkedin.com',
-      username: 'synthetic@example.test',
-      password: 'synthetic-secret',
-    },
-  ]);
-  assert.equal(bindings.at(-1)?.origin, 'https://www.linkedin.com');
-  assert.equal(bindings.at(-1)?.profileId, bindings[0].profileId);
-  const replay = await app.inject({
-    method: 'GET',
-    url: `/api/browser-connections/attempt/${token}`,
-  });
-  assert.equal(replay.json().state, 'saved');
-});
-
-connectionTest(
-  'saved profile reuse checks one owner and keeps removal retryable',
-  async (value) => {
-    const { pool, service, computer, state, bindings, closed, removed } = value;
-    const connectionId = await saveLinkedIn(value);
-    const other = await createBrowserConnections(pool, { ownerId: 'owner-b', computer });
-    await assert.rejects(
-      other.use(connectionId, turnRef(), 'https://www.linkedin.com/'),
-      /unavailable/,
-    );
-    const rejected = await other.request(
-      { action: 'use', connectionId, url: 'https://www.linkedin.com/' },
-      turnRef(),
-    );
-    assert.ok('status' in rejected);
-    assert.equal(rejected.status, 'rejected');
-    const before = (
-      await pool.query('SELECT * FROM browser_connections WHERE id=$1', [connectionId])
-    ).rows[0];
-    const bindingCount = bindings.length;
-    const closeCount = closed.length;
-    for (const action of ['connect', 'use'] as const) {
-      for (const url of [
-        'https://www.technogym.com/en-IE/',
-        'https://api.linkedin.com/jobs/',
-        'https://www.linkedin.com:8443/jobs/',
-      ]) {
-        const mismatch = await service.request({ action, connectionId, url }, turnRef());
-        assert.ok('code' in mismatch);
-        assert.equal(mismatch.status, 'rejected');
-        assert.equal(mismatch.code, 'browser_connection_origin_mismatch');
-      }
-    }
-    assert.equal(bindings.length, bindingCount);
-    assert.equal(closed.length, closeCount);
-    assert.deepEqual(
-      (await pool.query('SELECT * FROM browser_connections WHERE id=$1', [connectionId])).rows[0],
-      before,
-    );
-    await pool.query("UPDATE browser_connections SET checked_at='2000-01-01' WHERE id=$1", [
-      connectionId,
-    ]);
-    const nextTurn = turnRef();
-    const used = await service.request(
-      { action: 'use', connectionId, url: 'https://www.linkedin.com/jobs/' },
-      nextTurn,
-    );
-    assert.ok('status' in used);
-    assert.equal(used.status, 'session_opened');
-    assert.ok(new Date((await service.list())[0].checkedAt!).getTime() > Date.UTC(2020, 0, 1));
-    assert.equal(bindings.at(-1)?.profileId, bindings[0].profileId);
-    assert.equal(bindings.at(-1)?.origin, 'https://www.linkedin.com');
-    assert.equal(bindings.at(-1)?.threadId, nextTurn.threadId);
-    assert.equal(
-      (await pool.query('SELECT thread_id FROM browser_connections WHERE id=$1', [connectionId]))
-        .rows[0].thread_id,
-      nextTurn.threadId,
-    );
-    state.blocked = true;
-    const denied = await service.use(connectionId, nextTurn, 'https://www.linkedin.com/messaging/');
-    assert.equal(denied.status, 'site_blocked');
-    state.blocked = false;
-    await assert.rejects(
-      service.use(connectionId, turnRef(), 'https://www.technogym.com/en-IE/'),
-      /another website/,
-    );
-    state.failDelete = true;
-    await assert.rejects(service.disconnect(connectionId), /could not be removed/);
-    assert.equal((await service.list())[0].browserState, 'disconnecting');
-    state.failDelete = false;
-    await service.disconnect(connectionId);
-    assert.deepEqual(removed, [bindings[0].profileId]);
-    assert.equal(closed.at(-1), nextTurn.threadId);
-  },
-);
-
-connectionTest('credential entry holds the thread through injection', async (value) => {
-  const { app, pool, service, state } = value;
-  state.loginOrigin = 'https://www.linkedin.com';
-  const turn = await startTurn(pool);
-  const started = await service.begin({ url: 'https://www.linkedin.com/messaging/' }, turn);
-  await waitTurn(pool, turn);
-  const renewed = await app.inject({
-    method: 'POST',
-    url: '/api/browser-connections',
-    payload: { url: 'https://www.linkedin.com/messaging/', connectionId: started.connectionId },
-  });
-  assert.equal(renewed.statusCode, 200);
-  const token = renewed.json<{ url: string }>().url.split('/').at(-1)!;
-  const description = await app.inject({
-    method: 'GET',
-    url: `/api/browser-connections/attempt/${token}`,
-  });
-  assert.equal(description.json().fromChat, true);
-  let releaseInjection!: () => void;
-  state.waitForInjection = new Promise<void>((resolve) => {
-    releaseInjection = resolve;
-  });
-  const entered = new Promise<void>((resolve) => {
-    state.injectionEntered = resolve;
-  });
-  const submit = app.inject({
-    method: 'POST',
-    url: `/api/browser-connections/attempt/${token}/credentials`,
-    payload: {
-      origin: 'https://www.linkedin.com',
-      username: 'synthetic@example.test',
-      password: 'synthetic-secret',
-    },
-  });
-  await entered;
-  const probe = await pool.connect();
-  try {
-    assert.equal(
-      (
-        await probe.query(
-          "SELECT pg_try_advisory_lock(hashtextextended('thread:owner-a',0)) AS locked",
-        )
-      ).rows[0].locked,
-      false,
-    );
-  } finally {
-    probe.release();
-    releaseInjection();
-  }
-  assert.equal((await submit).statusCode, 200);
-  await pool.query('UPDATE threads SET archived_at=now() WHERE id=$1', [turn.threadId]);
-  state.waitForInjection = undefined;
-  state.injectionEntered = undefined;
-  const stale = await app.inject({
-    method: 'POST',
-    url: `/api/browser-connections/attempt/${token}/credentials`,
-    payload: {
-      origin: 'https://www.linkedin.com',
-      username: 'synthetic@example.test',
-      password: 'synthetic-secret',
-    },
-  });
-  assert.equal(stale.statusCode, 409);
-});
-
-connectionTest(
-  'sign-in links from a turn work only while that turn waits and no later turn started',
-  async (value) => {
-    const { pool, service, state, inputs } = value;
-    state.loginOrigin = 'https://www.linkedin.com';
-    const resumed: string[] = [];
-    const app = Fastify();
-    const resuming = await createBrowserConnections(pool, {
-      ownerId: 'owner-a',
-      computer: value.computer,
-      async resume(turnId) {
-        resumed.push(turnId);
-        return true;
-      },
-    });
-    resuming.registerRoutes(app);
-    await app.ready();
-    try {
-      const turn = await startTurn(pool);
-      const started = await resuming.begin({ url: 'https://www.linkedin.com/messaging/' }, turn);
-      const token = started.url.split('/').at(-1)!;
-      const submit = () =>
-        app.inject({
-          method: 'POST',
-          url: `/api/browser-connections/attempt/${token}/credentials`,
-          payload: {
-            origin: 'https://www.linkedin.com',
-            username: 'synthetic@example.test',
-            password: 'synthetic-secret',
-          },
-        });
-      assert.equal((await submit()).statusCode, 409);
       await pool.query(
-        "UPDATE turns SET status='waiting',waiting_reason='credentials' WHERE id=$1",
-        [turn.turnId],
+        'CREATE TABLE threads (id uuid PRIMARY KEY,owner_id text,status text,archived_at timestamptz)',
       );
-      assert.equal((await submit()).statusCode, 409);
-      await waitTurn(pool, turn);
-      const later = await startTurn(pool, turn.threadId);
-      const stale = await submit();
-      assert.equal(stale.statusCode, 409);
-      assert.match(stale.json().error, /no longer waiting/);
-      assert.equal(inputs.length, 0);
-      await pool.query('UPDATE browser_connections SET sign_in_started=true WHERE id=$1', [
-        started.connectionId,
+      await pool.query(
+        'CREATE TABLE turns (id uuid PRIMARY KEY,owner_id text,thread_id uuid,status text)',
+      );
+      const first = { threadId: randomUUID(), turnId: randomUUID() };
+      const second = { threadId: randomUUID(), turnId: randomUUID() };
+      for (const turn of [first, second]) {
+        await pool.query("INSERT INTO threads(id,owner_id,status) VALUES($1,'owner-a','running')", [
+          turn.threadId,
+        ]);
+        await pool.query(
+          "INSERT INTO turns(id,owner_id,thread_id,status) VALUES($1,'owner-a',$2,'running')",
+          [turn.turnId, turn.threadId],
+        );
+      }
+      let signedIn = false;
+      const bindings: string[] = [];
+      const removed: string[] = [];
+      const computer = {
+        async bindProfile(_threadId: string, profileId: string) {
+          bindings.push(profileId);
+        },
+        async act(_threadId: string, input: { action: string; url?: string }) {
+          return {
+            url: signedIn ? 'https://example.test/account' : 'https://example.test/login',
+            text: 'Synthetic page',
+            candidates: [],
+          };
+        },
+        async inspectLogin() {
+          return {
+            origin: 'https://example.test',
+            url: signedIn ? 'https://example.test/account' : 'https://example.test/login',
+            fields: signedIn
+              ? []
+              : [{ kind: 'password', selector: '#password', label: 'Password' }],
+            methods: [],
+          };
+        },
+        async hold() {},
+        async close() {},
+        async deleteProfile(profileId: string) {
+          removed.push(profileId);
+        },
+      } as unknown as Computer;
+      const service = await createBrowserConnections(pool, { ownerId: 'owner-a', computer });
+      const opened = await service.request(
+        { action: 'connect', url: 'https://example.test/login' },
+        first,
+      );
+      assert.equal(opened.status, 'profile_opened');
+      assert.ok('connectionId' in opened);
+      const connectionId = opened.connectionId;
+      const save = { action: 'save' as const, url: 'https://example.test/login', connectionId };
+      assert.equal((await service.request(save, first)).status, 'needs_sign_in');
+      signedIn = true;
+      assert.equal((await service.request(save, first)).status, 'session_saved');
+      assert.equal((await service.list())[0].browserState, 'saved');
+      assert.equal(
+        (
+          await service.request(
+            { action: 'use', url: 'https://example.test/account', connectionId },
+            second,
+          )
+        ).status,
+        'session_opened',
+      );
+      assert.deepEqual(bindings, [bindings[0], bindings[0]]);
+      assert.equal(
+        (await service.request({ action: 'use', url: 'https://other.test/', connectionId }, second))
+          .status,
+        'rejected',
+      );
+      const other = await createBrowserConnections(pool, { ownerId: 'owner-b', computer });
+      const foreign = { threadId: randomUUID(), turnId: randomUUID() };
+      await pool.query("INSERT INTO threads(id,owner_id,status) VALUES($1,'owner-b','running')", [
+        foreign.threadId,
       ]);
-      state.signedIn = true;
-      const staleFinish = await app.inject({
-        method: 'POST',
-        url: `/api/browser-connections/attempt/${token}/finish`,
-        payload: {},
-      });
-      assert.equal(staleFinish.statusCode, 409);
-      assert.deepEqual(resumed, []);
-      assert.equal((await service.list())[0].browserState, 'pending');
-      await pool.query('DELETE FROM turns WHERE id=$1', [later.turnId]);
-      state.signedIn = false;
-      assert.equal((await submit()).statusCode, 200);
-      assert.equal(inputs.length, 1);
-      const finished = await app.inject({
-        method: 'POST',
-        url: `/api/browser-connections/attempt/${token}/finish`,
-        payload: {},
-      });
-      assert.equal(finished.statusCode, 200);
-      assert.deepEqual(resumed, [turn.turnId]);
+      await pool.query(
+        "INSERT INTO turns(id,owner_id,thread_id,status) VALUES($1,'owner-b',$2,'running')",
+        [foreign.turnId, foreign.threadId],
+      );
+      await assert.rejects(
+        other.request({ action: 'use', url: 'https://example.test/', connectionId }, foreign),
+        /unavailable/,
+      );
+      await pool.query("UPDATE turns SET status='completed' WHERE id=$1", [second.turnId]);
+      await assert.rejects(
+        service.request({ action: 'use', url: 'https://example.test/', connectionId }, second),
+        /no longer active/,
+      );
+      await service.disconnect(connectionId);
+      assert.deepEqual(removed, [bindings[0]]);
     } finally {
-      await app.close();
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
     }
   },
 );
