@@ -29,7 +29,13 @@ import { createMultipartReader } from './multipart.ts';
 import type { SpeechService } from './speech.ts';
 import { BrowserActionError, type Computer } from '../ports/computer.ts';
 import { browserErrorMessage } from '../shared/browser-errors.ts';
-import type { Configuration, Message, MessageReaction, Task } from '../shared/contracts.ts';
+import type {
+  Configuration,
+  Message,
+  MessageHistoryPage,
+  MessageReaction,
+  Task,
+} from '../shared/contracts.ts';
 import type { AgentToolMetadata } from '../ports/agent.ts';
 import { inspectorPayloadLimit, inspectorRetentionDays, type InspectorStore } from './inspector.ts';
 import type { createChatVerification } from './chat-verification.ts';
@@ -140,7 +146,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
     const revision = await conversationRevision(pool, ownerId);
     const [messages, tasks, verificationRequests] = await Promise.all([
       pool.query(
-        `SELECT ${messageFields} FROM (SELECT m.* FROM messages m JOIN tasks t ON t.id=m.task_id WHERE m.owner_id=$1 AND t.owner_id=$1 AND t.channel='web' AND ${currentConversationSql()} ORDER BY date_trunc('milliseconds',m.created_at) DESC,m.id DESC LIMIT 150) m
+        `SELECT ${messageFields} FROM (SELECT m.* FROM messages m JOIN tasks t ON t.id=m.task_id WHERE m.owner_id=$1 AND t.owner_id=$1 AND t.channel='web' AND ${currentConversationSql()} ORDER BY date_trunc('milliseconds',m.created_at) DESC,m.id DESC LIMIT 151) m
          LEFT JOIN messages target ON target.id=m.reply_to_message_id AND target.owner_id=m.owner_id ORDER BY date_trunc('milliseconds',m.created_at),m.id`,
         [ownerId],
       ),
@@ -150,16 +156,19 @@ export async function createApp(dependencies: AppDependencies = {}) {
       ),
       dependencies.verification?.pending() ?? [],
     ]);
+    const hasEarlierMessages = messages.rows.length > 150;
+    const visibleMessages = messages.rows.slice(hasEarlierMessages ? 1 : 0);
     const costs = await dependencies.providerUsage
       ?.taskCosts(tasks.rows.map((task) => task.id))
       .catch(() => undefined);
     const recentIds = new Set(tasks.rows.map((task) => task.id));
     const olderTasks = await messageTasks(
-      messages.rows.map((message) => message.taskId).filter((id) => id && !recentIds.has(id)),
+      visibleMessages.map((message) => message.taskId).filter((id) => id && !recentIds.has(id)),
     );
     return {
       conversationRevision: revision,
-      messages: messages.rows.map(messageView),
+      hasEarlierMessages,
+      messages: visibleMessages.map(messageView),
       tasks: [
         ...tasks.rows.map((task) => ({ ...task, costUsd: costs?.[task.id] ?? null })),
         ...olderTasks,
@@ -193,15 +202,19 @@ export async function createApp(dependencies: AppDependencies = {}) {
       `SELECT ${messageFields} FROM messages m JOIN tasks t ON t.id=m.task_id
       LEFT JOIN messages target ON target.id=m.reply_to_message_id AND target.owner_id=m.owner_id
       WHERE m.owner_id=$1 AND t.owner_id=$1 AND t.channel='web' AND ${currentConversationSql()} AND ($2::timestamptz IS NULL OR date_trunc('milliseconds',m.created_at) < $2 OR (date_trunc('milliseconds',m.created_at) = $2 AND $3::uuid IS NOT NULL AND m.id < $3))
-      ORDER BY date_trunc('milliseconds',m.created_at) DESC,m.id DESC LIMIT 60`,
+      ORDER BY date_trunc('milliseconds',m.created_at) DESC,m.id DESC LIMIT 61`,
       [ownerId, query.before ?? null, query.beforeId ?? null],
     );
-    const tasks = await messageTasks(rows.rows.map((message) => message.taskId).filter(Boolean));
+    const page = rows.rows.slice(0, 60);
+    const tasks = await messageTasks(page.map((message) => message.taskId).filter(Boolean));
     const byId = new Map(tasks.map((task) => [task.id, task]));
-    return rows.rows.reverse().map((row) => ({
-      ...messageView(row),
-      task: byId.get(row.taskId),
-    }));
+    return {
+      messages: page.reverse().map((row) => ({
+        ...messageView(row),
+        task: byId.get(row.taskId),
+      })),
+      hasMore: rows.rows.length > 60,
+    } satisfies MessageHistoryPage;
   });
   app.post<{ Params: { id: string } }>('/api/messages/:id/reaction', async (request, reply) => {
     const { reaction } = z

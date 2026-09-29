@@ -88,6 +88,7 @@ const message: Message = {
 };
 const base: AppState = {
   conversationRevision: 0,
+  hasEarlierMessages: true,
   messages: [message],
   tasks: [],
   configuration: {
@@ -234,7 +235,10 @@ test('restart setup clears archived messages, history, replies and stale streams
     );
     await act(async () => {
       finishHistory(
-        new Response(JSON.stringify([{ ...message, id: 'older-message', text: 'Stale history' }])),
+        Response.json({
+          messages: [{ ...message, id: 'older-message', text: 'Stale history' }],
+          hasMore: false,
+        }),
       );
       finishState(new Response(JSON.stringify(base)));
       await staleRefresh;

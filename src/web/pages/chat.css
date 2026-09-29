@@ -163,7 +163,8 @@
   pointer-events: none;
 }
 .chat-page .message-selected .message-actions,
-.chat-page .message:focus-within .message-actions {
+.chat-page .message:focus-visible .message-actions,
+.chat-page .message:has(:focus-visible) .message-actions {
   opacity: 1;
   pointer-events: auto;
 }
@@ -171,12 +172,6 @@
   .chat-page .message:hover .message-actions {
     opacity: 1;
     pointer-events: auto;
-  }
-}
-@media (hover: none) {
-  .chat-page .message:not(.message-selected):not(:focus-within) .message-actions {
-    opacity: 0;
-    pointer-events: none;
   }
 }
 .chat-page .message-actions .button {
@@ -438,6 +433,65 @@
   padding-left: 32px;
   padding-right: 32px;
 }
+.history-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 12px 0 4px;
+}
+.history-skeleton-row {
+  display: flex;
+  gap: 10px;
+}
+.history-skeleton-mark,
+.history-skeleton-lines > span,
+.history-skeleton-bubble {
+  background: var(--surface-inset);
+  animation: history-skeleton 1.4s ease-in-out infinite;
+}
+.history-skeleton-mark {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+}
+.history-skeleton-lines {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 3px;
+}
+.history-skeleton-lines > span {
+  height: 9px;
+  width: min(420px, 70%);
+  border-radius: 5px;
+}
+.history-skeleton-lines > span + span {
+  width: min(260px, 45%);
+  animation-delay: 0.12s;
+}
+.history-skeleton-bubble {
+  align-self: flex-end;
+  width: min(240px, 50%);
+  height: 34px;
+  border-radius: 17px 17px 5px 17px;
+}
+.history-skeleton-row + .history-skeleton-bubble {
+  width: min(180px, 36%);
+}
+@keyframes history-skeleton {
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .history-skeleton-mark,
+  .history-skeleton-lines > span,
+  .history-skeleton-bubble {
+    animation: none;
+  }
+}
 .chat-turn-rail {
   position: absolute;
   top: 25px;
@@ -529,28 +583,25 @@
     opacity: 0;
     pointer-events: none;
   }
-  .chat-page .message:hover .message-more-action,
   .chat-page .message-selected .message-more-action,
-  .chat-page .message:focus-within .message-more-action {
+  .chat-page .message:focus-visible .message-more-action,
+  .chat-page .message:has(:focus-visible) .message-more-action {
     opacity: 1;
     pointer-events: auto;
   }
-  .chat-page .conversation-scroll > .conversation-column {
-    padding-left: 28px;
-    padding-right: 16px;
+  .chat-turn-rail {
+    display: none;
   }
+  .chat-page .conversation-scroll > .conversation-column,
   .chat-page > .chat-bottom.conversation-column {
     padding-left: 16px;
     padding-right: 16px;
   }
-}
-@media (max-width: 600px) {
-  .chat-turn-rail {
-    left: 0;
-    width: 17px;
-  }
-  .chat-turn-marker {
-    width: 17px;
+  @media (hover: hover) {
+    .chat-page .message:hover .message-more-action {
+      opacity: 1;
+      pointer-events: auto;
+    }
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -567,11 +618,6 @@
 }
 
 @media (pointer: coarse) {
-  .chat-page .message-more-action {
-    display: inline-flex;
-    opacity: 1;
-    pointer-events: auto;
-  }
   .chat-page .composer-editor {
     font-size: 16px;
   }

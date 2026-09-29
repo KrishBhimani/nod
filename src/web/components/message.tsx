@@ -157,6 +157,7 @@ export function MessageBubble({
   const [selected, setSelected] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const copyTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const articleElement = useRef<HTMLElement>(null);
   const menuElement = useRef<HTMLDivElement>(null);
   const menuTrigger = useRef<HTMLElement | null>(null);
   const pickerTrigger = useRef<HTMLElement | null>(null);
@@ -184,6 +185,14 @@ export function MessageBubble({
     },
     [],
   );
+  useEffect(() => {
+    if (!selected) return;
+    const outside = (event: PointerEvent) => {
+      if (!articleElement.current?.contains(event.target as Node)) setSelected(false);
+    };
+    document.addEventListener('pointerdown', outside);
+    return () => document.removeEventListener('pointerdown', outside);
+  }, [selected]);
   useEffect(() => {
     if (!menu) return;
     const close = (event: PointerEvent) => {
@@ -342,6 +351,7 @@ export function MessageBubble({
   );
   return (
     <article
+      ref={articleElement}
       className={`message message-${message.role}${streaming ? ' streaming-message' : ''}${grouped ? ' message-grouped' : ''}${!showTimestamp ? ' message-continuing' : ''}${selected ? ' message-selected' : ''}`}
       aria-label={streaming ? 'Otto is responding' : message.role === 'user' ? 'You' : 'Otto'}
       data-message-id={streaming ? undefined : message.id}

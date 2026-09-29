@@ -43,8 +43,9 @@ test(
       for (let i = 0; i < 3; i++) {
         const response = await app.inject({ url: `/api/messages${cursor}`, headers });
         assert.equal(response.statusCode, 200);
-        const rows = response.json();
+        const { messages: rows, hasMore } = response.json();
         assert.equal(rows.length, i === 2 ? 15 : 60);
+        assert.equal(hasMore, i !== 2);
         for (const row of rows) {
           assert.ok(!seen.has(row.id));
           assert.notEqual(row.text, 'private content');
