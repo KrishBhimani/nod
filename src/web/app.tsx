@@ -17,18 +17,30 @@ import { navigationItems } from './lib/navigation';
 import { BrowserWindow } from './pages/browser';
 import { BrowserConnection } from './pages/browser-connection';
 import { readUiPreference, writeUiPreference } from './lib/ui-preferences';
-import type { AccountUpdate, SessionResponse } from '../shared/account';
+import type { AccountPreferences, AccountUpdate, SessionResponse } from '../shared/account';
 import { useSession } from './hooks/use-session';
 import { SignIn } from './pages/sign-in';
 import { Privacy } from './pages/privacy';
 import { Onboarding } from './pages/onboarding';
 import { AccountSettings } from './components/account-settings';
 import type { AccountControls, AccountTab } from './components/account-menu';
+import { usePageData } from './hooks/use-page-data';
+import { setDateFormat } from './lib/date-format';
+import { saveBrowserLocale } from './lib/preferences';
 
 function navigate(path: string) {
   window.history.pushState(null, '', path);
   window.dispatchEvent(new PopStateEvent('popstate'));
 }
+function useSavedDateFormat() {
+  const { data } = usePageData<AccountPreferences>('/api/preferences');
+  useEffect(() => {
+    if (!data) return;
+    setDateFormat(data);
+    if (!data.locale) saveBrowserLocale();
+  }, [data]);
+}
+
 function Workspace({
   path,
   session,
@@ -45,6 +57,7 @@ function Workspace({
   const { state, streams, error, connected, refresh, resetConversation } = useAppState(
     session.user!.id,
   );
+  useSavedDateFormat();
   const [inspector, setInspector] = useState(
     () =>
       path === '/dev' || (window.innerWidth > 720 && readUiPreference('otto.inspector') === 'open'),

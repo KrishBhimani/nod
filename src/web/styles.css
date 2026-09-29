@@ -287,6 +287,11 @@ a svg {
 .switch:disabled {
   opacity: 0.45;
 }
+@media (prefers-reduced-motion: reduce) {
+  .switch > span {
+    transition: none;
+  }
+}
 .checkbox {
   flex-shrink: 0;
   width: 16px;

@@ -16,6 +16,7 @@ import { nextReaction, reactionName } from '../lib/reactions';
 import { MessageLinkPreviews } from './link-previews';
 import { SetupActions } from './setup-link';
 import { MessageAttachments } from './attachment-card';
+import { formatFullDateTime, formatTime, useDateFormat } from '../lib/date-format';
 
 const ReactionPicker = lazy(() => import('./emoji-picker'));
 
@@ -117,6 +118,7 @@ export function MessageBubble({
   streaming?: boolean;
   onReply?(): void;
 }) {
+  const dateFormat = useDateFormat();
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
   const [reaction, setReaction] = useState(message.reaction ?? null);
@@ -309,11 +311,10 @@ export function MessageBubble({
       y: Math.max(8, Math.min(y, window.innerHeight - 230)),
     });
   }
-  const sent = new Date(message.createdAt);
   const taskResult = task ? taskRunLabel(task, taskStartedAt) : null;
   const timestamp = showTimestamp && !streaming && (
-    <time dateTime={message.createdAt} title={sent.toLocaleString()}>
-      {sent.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+    <time dateTime={message.createdAt} title={formatFullDateTime(message.createdAt, dateFormat)}>
+      {formatTime(message.createdAt, dateFormat)}
     </time>
   );
   return (

@@ -11,15 +11,51 @@ function searchText(value: string) {
     .toLowerCase();
 }
 
+export interface PickerOption {
+  value: string;
+  label: string;
+  keywords?: string;
+}
+
+const timeZoneLabels = {
+  choose: 'Choose time zone',
+  search: 'Search time zones',
+  placeholder: 'Search city or time zone',
+  clear: 'Clear time zone search',
+  list: 'Time zones',
+  empty: 'No time zones found.',
+};
+
 export function TimeZonePicker({
-  value,
   zones,
+  ...props
+}: {
+  value: string;
+  zones: string[];
+  disabled?: boolean;
+  labelledBy: string;
+  onChange(value: string): void;
+}) {
+  return (
+    <SearchPicker
+      {...props}
+      options={zones.map((zone) => ({ value: zone, label: zone.replaceAll('_', ' ') }))}
+      labels={timeZoneLabels}
+    />
+  );
+}
+
+export function SearchPicker({
+  value,
+  options: choices,
+  labels,
   disabled = false,
   labelledBy,
   onChange,
 }: {
   value: string;
-  zones: string[];
+  options: PickerOption[];
+  labels: typeof timeZoneLabels;
   disabled?: boolean;
   labelledBy: string;
   onChange(value: string): void;
@@ -33,7 +69,17 @@ export function TimeZonePicker({
   const tabTarget = useRef<HTMLElement | null>(null);
   const id = useId();
   const words = searchText(query).trim().split(/\s+/).filter(Boolean);
-  const matches = zones.filter((zone) => words.every((word) => searchText(zone).includes(word)));
+  const selected = choices.find((choice) => choice.value === value);
+  const label = selected?.label ?? value;
+  const matches = choices
+    .filter((choice) =>
+      words.every((word) =>
+        searchText(`${choice.value} ${choice.label} ${choice.keywords ?? ''}`).includes(word),
+      ),
+    )
+    .map((choice) => choice.value);
+  const labelOf = (option: string) =>
+    choices.find((choice) => choice.value === option)?.label ?? option;
   const activeIndex = Math.max(0, matches.indexOf(active));
   const activeZone = matches[activeIndex];
   const scrollActiveIntoView = useCallback(
@@ -90,7 +136,7 @@ export function TimeZonePicker({
         className="time-zone-picker-trigger input select-trigger"
         disabled={disabled}
         aria-labelledby={`${labelledBy} ${id}-value`}
-        title={value.replaceAll('_', ' ')}
+        title={label}
         onKeyDown={(event) => {
           if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
             event.preventDefault();
@@ -98,13 +144,13 @@ export function TimeZonePicker({
           }
         }}
       >
-        <span id={`${id}-value`}>{value.replaceAll('_', ' ')}</span>
+        <span id={`${id}-value`}>{label}</span>
         <ChevronDown size={16} aria-hidden="true" />
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content
           className="time-zone-picker-panel menu"
-          aria-label="Choose time zone"
+          aria-label={labels.choose}
           align="end"
           sideOffset={7}
           collisionPadding={12}
@@ -143,14 +189,14 @@ export function TimeZonePicker({
             inputRef={search}
             type="text"
             role="combobox"
-            aria-label="Search time zones"
+            aria-label={labels.search}
             aria-autocomplete="list"
             aria-expanded="true"
             aria-controls={`${id}-options`}
             aria-activedescendant={activeZone ? `${id}-option-${activeIndex}` : undefined}
             autoComplete="off"
             spellCheck={false}
-            placeholder="Search city or time zone"
+            placeholder={labels.placeholder}
             value={query}
             onChange={(event) => {
               setQuery(event.target.value);
@@ -179,7 +225,7 @@ export function TimeZonePicker({
                 if (matches[next]) setActive(matches[next]);
               }
             }}
-            clearLabel="Clear time zone search"
+            clearLabel={labels.clear}
             onClear={() => {
               setQuery('');
               setActive(value);
@@ -190,7 +236,7 @@ export function TimeZonePicker({
             ref={observeOptions}
             id={`${id}-options`}
             role="listbox"
-            aria-label="Time zones"
+            aria-label={labels.list}
             className="time-zone-picker-options"
           >
             {matches.map((zone, index) => (
@@ -209,14 +255,14 @@ export function TimeZonePicker({
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => select(zone)}
               >
-                <span>{zone.replaceAll('_', ' ')}</span>
+                <span>{labelOf(zone)}</span>
                 {zone === value && <Check size={16} aria-hidden="true" />}
               </button>
             ))}
           </div>
           {!matches.length && (
             <p className="time-zone-picker-empty" role="status">
-              No time zones found.
+              {labels.empty}
             </p>
           )}
         </Popover.Content>

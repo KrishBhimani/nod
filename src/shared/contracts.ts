@@ -226,9 +226,12 @@ export interface Approval {
   };
   status: 'pending' | 'executing' | 'completed' | 'declined' | 'uncertain' | 'expired';
 }
+export type HourCycle = 'auto' | 'h12' | 'h23';
 export interface Preferences {
   notificationRule: string;
   timeZone: string;
+  locale: string | null;
+  hourCycle: HourCycle;
   quietHoursEnabled: boolean;
   quietStart: string;
   quietEnd: string;

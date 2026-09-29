@@ -40,7 +40,7 @@
   text-align: center;
 }
 @container account-settings (max-width: 330px) {
-  .account-time-zone-row {
+  .account-picker-row {
     align-items: stretch;
     flex-direction: column;
     gap: 12px;

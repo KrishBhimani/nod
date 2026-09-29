@@ -2,6 +2,7 @@ import { PageTitle } from '../components/page-title';
 import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, Check, ExternalLink, X } from 'lucide-react';
 import { api, errorMessage } from '../lib/api';
+import { formatTime } from '../lib/date-format';
 import {
   channelLabel,
   channelSetupBody,
@@ -323,9 +324,7 @@ export function ChannelAccount({
 }
 
 function expiryTime(value?: string) {
-  return value
-    ? new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : '';
+  return value ? formatTime(value) : '';
 }
 
 function TelegramSetup({

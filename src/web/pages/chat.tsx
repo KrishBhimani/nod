@@ -27,19 +27,8 @@ import {
   messagesAreGrouped,
   visibleConversationTurns,
 } from '../lib/chat-messages';
+import { formatDayLabel, isSameDay, useDateFormat } from '../lib/date-format';
 
-function dayLabel(date: string) {
-  const value = new Date(date);
-  const today = new Date();
-  if (value.toDateString() === today.toDateString()) return 'Today';
-  today.setDate(today.getDate() - 1);
-  if (value.toDateString() === today.toDateString()) return 'Yesterday';
-  return value.toLocaleDateString([], {
-    day: 'numeric',
-    month: 'long',
-    year: value.getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined,
-  });
-}
 function verificationFailure(
   status: SubmitMessageResponse['verificationStatus'],
   ambiguous: boolean,
@@ -103,6 +92,7 @@ export function Chat({
   refresh(): Promise<void>;
   resetConversation(): Promise<number>;
 }) {
+  const dateFormat = useDateFormat();
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -613,10 +603,13 @@ export function Chat({
             {visibleMessages.map((message, index) => (
               <Fragment key={message.streamId ?? message.id}>
                 {(!index ||
-                  new Date(visibleMessages[index - 1].createdAt).toDateString() !==
-                    new Date(message.createdAt).toDateString()) && (
+                  !isSameDay(
+                    visibleMessages[index - 1].createdAt,
+                    message.createdAt,
+                    dateFormat,
+                  )) && (
                   <div className="day-divider">
-                    <span>{dayLabel(message.createdAt)}</span>
+                    <span>{formatDayLabel(message.createdAt, dateFormat)}</span>
                   </div>
                 )}
                 <MessageBubble
@@ -631,10 +624,10 @@ export function Chat({
                   }
                   streaming={streamIds.has(message.streamId ?? '')}
                   inspectorEnabled={state.configuration.inspectorEnabled}
-                  grouped={messagesAreGrouped(visibleMessages[index - 1], message)}
+                  grouped={messagesAreGrouped(visibleMessages[index - 1], message, dateFormat)}
                   showTimestamp={
                     !streamIds.has(message.streamId ?? '') &&
-                    !messagesAreGrouped(message, visibleMessages[index + 1])
+                    !messagesAreGrouped(message, visibleMessages[index + 1], dateFormat)
                   }
                   onReply={
                     message.taskId || persistedIds.has(message.id)

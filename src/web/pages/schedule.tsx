@@ -8,6 +8,7 @@ import { usePageData } from '../hooks/use-page-data';
 import { api } from '../lib/api';
 import { scheduleDate, scheduleLabel } from '../lib/schedules';
 import { focusChatMessage } from '../lib/secondary-pages';
+import { useDateFormat } from '../lib/date-format';
 import { DeletePlan } from '../components/delete-plan';
 import { MessageText } from '../components/message';
 import { NewPlan, PlanFooter, PlanToast } from '../components/plan-controls';
@@ -21,6 +22,7 @@ export function ScheduleRow({
   schedule: Schedule;
   conversation?: AppState | null;
 }) {
+  const dateFormat = useDateFormat();
   const canResume =
     schedule.kind !== 'once' || Boolean(schedule.runAt && Date.parse(schedule.runAt) > Date.now());
   return (
@@ -35,16 +37,16 @@ export function ScheduleRow({
         <CalendarClock size={14} aria-hidden="true" />
         {schedule.kind === 'once'
           ? schedule.runAt
-            ? scheduleDate(schedule.runAt, schedule.timeZone)
+            ? scheduleDate(schedule.runAt, schedule.timeZone, dateFormat)
             : 'Time unavailable'
-          : scheduleLabel(schedule.cron ?? '')}
+          : scheduleLabel(schedule.cron ?? '', dateFormat)}
         <span>{schedule.timeZone}</span>
       </p>
       <p className="saved-plan-description">{schedule.prompt}</p>
       {schedule.baselineObservation?.status === 'verified' && (
         <p className="saved-schedule-time">
           Baseline: {schedule.baselineObservation.value} ·{' '}
-          {scheduleDate(schedule.baselineObservation.checkedAt, schedule.timeZone)}
+          {scheduleDate(schedule.baselineObservation.checkedAt, schedule.timeZone, dateFormat)}
         </p>
       )}
       <PlanFooter
@@ -53,7 +55,7 @@ export function ScheduleRow({
         canPause={schedule.enabled || canResume}
         meta={
           schedule.kind === 'recurring' && schedule.nextRun
-            ? `Next ${scheduleDate(schedule.nextRun, schedule.timeZone)}`
+            ? `Next ${scheduleDate(schedule.nextRun, schedule.timeZone, dateFormat)}`
             : ''
         }
         remove={<DeletePlan kind="schedule" id={schedule.id} title={schedule.title} />}
@@ -66,6 +68,7 @@ export function ScheduleRow({
 export function ScheduleRunRow({ run }: { run: ScheduleRun }) {
   const [open, setOpen] = useState(false);
   const bodyId = useId();
+  const dateFormat = useDateFormat();
   return (
     <article className={`schedule-run${open ? ' schedule-run-open' : ''}`}>
       <div className="schedule-run-heading">
@@ -76,7 +79,9 @@ export function ScheduleRunRow({ run }: { run: ScheduleRun }) {
         </span>
       </div>
       <p>
-        <time dateTime={run.scheduledFor}>{scheduleDate(run.scheduledFor, run.timeZone)}</time>
+        <time dateTime={run.scheduledFor}>
+          {scheduleDate(run.scheduledFor, run.timeZone, dateFormat)}
+        </time>
         <span>{run.timeZone}</span>
       </p>
       {run.error && <p className="schedule-run-error">{run.error}</p>}
@@ -85,7 +90,7 @@ export function ScheduleRunRow({ run }: { run: ScheduleRun }) {
           {run.observation.status === 'verified' ? run.observation.value : 'Source unavailable'} ·{' '}
           Checked{' '}
           <time dateTime={run.observation.checkedAt}>
-            {scheduleDate(run.observation.checkedAt, run.timeZone)}
+            {scheduleDate(run.observation.checkedAt, run.timeZone, dateFormat)}
           </time>{' '}
           · {run.observation.summary}{' '}
           <a href={run.observation.sourceUrl} target="_blank" rel="noopener noreferrer">

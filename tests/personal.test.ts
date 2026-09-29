@@ -7,6 +7,9 @@ import { PgBoss } from 'pg-boss';
 import { z } from 'zod';
 import { createPersonalService } from '../src/server/personal.ts';
 import { readSchedule, scheduleExpression, scheduleLabel } from '../src/web/lib/schedules.ts';
+import { setDateFormat } from '../src/web/lib/date-format.ts';
+
+setDateFormat({ locale: 'en-GB', hourCycle: 'auto', timeZone: 'Europe/Lisbon' });
 
 test('daily and weekly schedule forms preserve local wall time and existing custom timing', () => {
   assert.equal(scheduleExpression('daily', '09:05', '1'), '5 9 * * *');
@@ -83,7 +86,8 @@ test(
         CREATE TABLE memory_facts(id uuid PRIMARY KEY,owner_id text NOT NULL,text text NOT NULL,
           source_message_id uuid REFERENCES messages(id),UNIQUE(owner_id,text))`);
       await pool.query(`CREATE TABLE preferences(owner_id text PRIMARY KEY,notification_rule text NOT NULL DEFAULT '',
-        time_zone text NOT NULL DEFAULT 'Europe/Lisbon',quiet_start text NOT NULL DEFAULT '22:00',quiet_end text NOT NULL DEFAULT '08:00',quiet_hours_enabled boolean NOT NULL DEFAULT true)`);
+        time_zone text NOT NULL DEFAULT 'Europe/Lisbon',quiet_start text NOT NULL DEFAULT '22:00',quiet_end text NOT NULL DEFAULT '08:00',quiet_hours_enabled boolean NOT NULL DEFAULT true,
+        locale text,hour_cycle text NOT NULL DEFAULT 'auto')`);
       await t.test(
         'conversation preferences start useful but preserve an explicit quiet choice and partial changes',
         async () => {

@@ -65,6 +65,7 @@ import {
   runtimeMode,
 } from './config.ts';
 import { createAccountStore } from './account-store.ts';
+import { createAccountProfileStore, runtimeAccount } from './account-profile.ts';
 import { createAccountSession } from './account.ts';
 import { createComputerAllocationStore } from './computer-allocations.ts';
 import { createPostgresObjectStore } from './object-storage.ts';
@@ -613,6 +614,20 @@ export async function createApplication(
     (action, args) => integrations.describeTarget(ownerId, action, args),
   );
   const reactions = createAgentReactionService({ pool, ownerId, refresh });
+  const localAccounts = runtimeMode === 'local' ? createAccountStore(pool) : null;
+  const accountProfiles = createAccountProfileStore(pool, ownerId);
+  await (localAccounts ?? accountProfiles).initialize();
+  const accountProfile = async () =>
+    runtimeAccount(
+      localAccounts
+        ? {
+            name: null,
+            givenName: null,
+            email: null,
+            preferredName: (await localAccounts.read(ownerId)).displayName,
+          }
+        : await accountProfiles.read(),
+    );
   const userMessages = createUserMessageService({
     routeConversation: adapters.createConversationRouter?.(providerUsage.record),
     confirmAction: approvals.acceptChat,
@@ -634,6 +649,7 @@ export async function createApplication(
       recordFailure: inspector.recordFailure,
       inspectPrompt: promptInspector.record,
       finishObservationSegment: inspector.finishSegment,
+      accountProfile,
       connections: integrations.manageConnections,
       browserConnection: (request, task, signal) =>
         browserConnections.request(request, task, signal),
@@ -738,12 +754,10 @@ export async function createApplication(
         browserAssistReady: Boolean(adapters.chooseBrowserAction),
       }),
   });
-  if (runtimeMode === 'local') {
+  if (localAccounts) {
     registerPrivacyNotice(app, privacyNotice);
-    const accounts = createAccountStore(pool);
-    await accounts.initialize();
     createAccountSession({
-      accounts,
+      accounts: localAccounts,
       origin: publicOrigin,
       localUser: { id: ownerId, name: 'You', email: null, avatarUrl: null },
       developerIds: configuration().inspectorEnabled ? new Set([ownerId]) : new Set(),
@@ -756,6 +770,10 @@ export async function createApplication(
         .strict()
         .parse(request.body ?? {});
       await adapters.prepareComputer?.();
+      return { ok: true };
+    });
+    app.put('/api/account/profile', async (request) => {
+      await accountProfiles.save(request.body);
       return { ok: true };
     });
   }

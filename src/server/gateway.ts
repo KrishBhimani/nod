@@ -152,6 +152,39 @@ export async function createGateway(options: {
     prepare: (ownerId) => setup(ownerId, '/api/account/prepare'),
     start: (ownerId, name) => setup(ownerId, '/api/onboarding/start', { name }),
   });
+  const syncedProfiles = new Map<string, string>();
+  const profileSyncs = new Map<string, Promise<void>>();
+  function syncProfile(session: AuthenticatedSession) {
+    const owner = session.user.id;
+    const next = (profileSyncs.get(owner) ?? Promise.resolve()).then(() => sendProfile(session));
+    const settled = next.catch(() => {});
+    profileSyncs.set(owner, settled);
+    void settled.then(() => {
+      if (profileSyncs.get(owner) === settled) profileSyncs.delete(owner);
+    });
+    return next;
+  }
+  async function sendProfile(session: AuthenticatedSession) {
+    const account = await options.accounts.read(session.user.id);
+    const body = JSON.stringify({
+      name: session.user.name.trim().slice(0, 200) || null,
+      givenName: session.givenName?.slice(0, 100) || null,
+      email: session.user.email?.slice(0, 320) || null,
+      preferredName: account.displayName?.slice(0, 100) || null,
+    });
+    if (syncedProfiles.get(session.user.id) === body) return;
+    const response = await options.runtimes.fetch(
+      session.user.id,
+      new Request(new URL('/api/account/profile', origin), {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body,
+      }),
+      { developer: false },
+    );
+    await response.body?.cancel();
+    if (response.ok) syncedProfiles.set(session.user.id, body);
+  }
   const deployment = options.deployment
     ? createDeploymentControl({ ...options.deployment, runtimes: options.runtimes })
     : undefined;
@@ -317,7 +350,8 @@ export async function createGateway(options: {
       url.pathname.startsWith('/api/webhooks/') ||
       url.pathname.startsWith('/api/internal/') ||
       url.pathname.startsWith('/api/runtime/') ||
-      url.pathname === '/api/onboarding/start'
+      url.pathname === '/api/onboarding/start' ||
+      url.pathname === '/api/account/profile'
     )
       return reply.code(404).send({ error: 'Route not found.' });
     if (url.pathname === '/api/events' && url.searchParams.get('account') !== session.user.id)
@@ -345,6 +379,7 @@ export async function createGateway(options: {
         ? { body: Buffer.isBuffer(request.body) ? new Uint8Array(request.body) : new Uint8Array() }
         : {}),
     });
+    await syncProfile(session).catch(() => {});
     let result = await options.runtimes.fetch(session.user.id, forwarded, { developer });
     try {
       const current = await options.authentication.session(authenticationHeaders(request));

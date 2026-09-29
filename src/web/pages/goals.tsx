@@ -5,6 +5,7 @@ import { Button, Loading, Notice } from '../components/ui';
 import { usePageData } from '../hooks/use-page-data';
 import { DeletePlan } from '../components/delete-plan';
 import { NewPlan, PlanFooter, PlanToast } from '../components/plan-controls';
+import { formatCalendarDate, useDateFormat } from '../lib/date-format';
 
 export function GoalRow({
   goal,
@@ -14,6 +15,7 @@ export function GoalRow({
   conversation?: AppState | null;
 }) {
   const headingId = useId();
+  const dateFormat = useDateFormat();
   return (
     <article className="saved-plan" aria-labelledby={headingId}>
       <div className="saved-plan-title">
@@ -37,7 +39,7 @@ export function GoalRow({
         kind="goal"
         item={goal}
         canPause={goal.status !== 'completed'}
-        meta={goal.targetDate ? `Target ${goal.targetDate}` : ''}
+        meta={goal.targetDate ? `Target ${formatCalendarDate(goal.targetDate, dateFormat)}` : ''}
         remove={<DeletePlan kind="goal" id={goal.id} title={goal.title} />}
         conversation={conversation}
       />

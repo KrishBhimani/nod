@@ -19,7 +19,7 @@ import type {
 import { conversationRevision, currentConversationSql, lockConversation } from './conversations.ts';
 import { welcomeGreeting, welcomePrompt } from './welcome.ts';
 import { isMessageReaction, reactionEmoji } from '../shared/emoji.ts';
-import { defaultPreferences } from './preferences.ts';
+import { defaultLocale, defaultPreferences } from './preferences.ts';
 import type { ConversationRouter } from '../ports/conversation.ts';
 import type { IntegrationFile } from '../ports/integrations.ts';
 import type { AgentReactionInput } from './agent-reactions.ts';
@@ -83,6 +83,7 @@ export interface TaskDependencies {
     snapshot: Parameters<NonNullable<RuntimeContext['inspectPrompt']>>[0],
   ) => Promise<void>;
   finishObservationSegment?: (taskId: string, revision: number) => Promise<void>;
+  accountProfile?: () => Promise<RuntimeContext['account']>;
   runTask: (
     context: RuntimeContext,
   ) => Promise<{ status: string; waitingFor?: RuntimeResult['waitingFor']; question?: string }>;
@@ -1352,13 +1353,16 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
       'SELECT text FROM memory_facts WHERE owner_id=$1 ORDER BY created_at DESC LIMIT 30',
       [ownerId],
     );
-    const [profile, goals, preferences] = await Promise.all([
+    const [profile, goals, preferences, account] = await Promise.all([
       pool.query('SELECT data FROM profiles WHERE owner_id=$1', [ownerId]),
       pool.query(
         'SELECT left(title,180) AS title,left(description,500) AS description,progress,left(next_action,300) AS "nextAction",target_date AS "targetDate" FROM goals WHERE owner_id=$1 AND status=\'active\' ORDER BY updated_at DESC LIMIT 10',
         [ownerId],
       ),
-      pool.query('SELECT time_zone FROM preferences WHERE owner_id=$1', [ownerId]),
+      pool.query('SELECT time_zone,locale,hour_cycle FROM preferences WHERE owner_id=$1', [
+        ownerId,
+      ]),
+      dependencies.accountProfile?.().catch(() => undefined),
     ]);
     const storedProfile = profile.rows[0]?.data ?? {};
     const profileData = {
@@ -1419,6 +1423,9 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
       background: task.source !== 'user',
       channel: task.channel.split(':')[0],
       timeZone: preferences.rows[0]?.time_zone || defaultPreferences.timeZone,
+      locale: preferences.rows[0]?.locale || defaultLocale,
+      hourCycle: preferences.rows[0]?.hour_cycle || defaultPreferences.hourCycle,
+      ...(account ? { account } : {}),
       currentMessageId: sourceMessageId ?? undefined,
       replyTo: target?.rows[0] && withAttachments(target.rows[0]),
       history: history.rows.map(withAttachments),

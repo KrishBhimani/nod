@@ -297,10 +297,6 @@
   padding: 18px 0;
   font-size: 13px;
 }
-.account-preference-row:first-child {
-  padding-top: 0;
-  border-bottom: 1px solid var(--border);
-}
 .account-preference-row > span,
 .account-preference-label {
   display: flex;
@@ -576,8 +572,25 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .account-toggle > span {
-    transition: none;
-  }
+.account-region {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.account-region h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.account-region .account-preference-row {
+  padding: 12px 0;
+  border-bottom: 0;
+}
+.account-region .field-hint {
+  margin: 4px 0 0;
+}
+.account-clock-options {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
 }
