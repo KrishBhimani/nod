@@ -34,6 +34,7 @@ import type {
   Message,
   MessageHistoryPage,
   MessageReaction,
+  Task,
 } from '../shared/contracts.ts';
 import type { AgentToolMetadata } from '../ports/agent.ts';
 import { inspectorPayloadLimit, inspectorRetentionDays, type InspectorStore } from './inspector.ts';
@@ -41,6 +42,7 @@ import type { createChatVerification } from './chat-verification.ts';
 import { registerTenantDrain } from './tenant-drain.ts';
 import type { WorkAdmission } from './work-admission.ts';
 import type { TenantDrain } from '../ports/deployment.ts';
+import type { ProviderUsageStore } from './provider-usage.ts';
 
 const messageFields = `m.id,m.role,m.text,m.task_id AS "taskId",m.created_at AS "createdAt",m.attachments,m.stream_id AS "streamId",m.reaction,m.assistant_reaction AS "assistantReaction",m.reply_to_message_id AS "replyToMessageId",
  CASE WHEN target.id IS NULL THEN NULL ELSE json_build_object('id',target.id,'role',target.role,'text',left(target.text,1000)) END AS "replyTo"`;
@@ -68,6 +70,7 @@ export interface AppDependencies {
     inspectTools?(): AgentToolMetadata[];
   };
   inspector?: Pick<InspectorStore, 'read'>;
+  providerUsage?: Pick<ProviderUsageStore, 'taskCosts'>;
   configuration?: () => Configuration;
   onboard?: (timeZone?: string, conversationRevision?: number) => Promise<unknown>;
 }
@@ -128,6 +131,17 @@ export async function createApp(dependencies: AppDependencies = {}) {
     const release = process.env.OTTO_IMAGE_RELEASE || process.env.OTTO_RELEASE;
     return { ok: true, ...(release ? { release } : {}) };
   });
+  async function messageTasks(ids: string[]): Promise<Task[]> {
+    if (!ids.length) return [];
+    const result = await pool.query(
+      `SELECT id,title,status,error,created_at AS "createdAt",updated_at AS "updatedAt",(source='user') AS "showTyping" FROM tasks t WHERE owner_id=$1 AND channel='web' AND ${currentConversationSql()} AND id=ANY($2::uuid[])`,
+      [ownerId, [...new Set(ids)]],
+    );
+    const costs = await dependencies.providerUsage
+      ?.taskCosts(result.rows.map((task) => task.id))
+      .catch(() => undefined);
+    return result.rows.map((task) => ({ ...task, costUsd: costs?.[task.id] ?? null }));
+  }
   app.get('/api/state', async () => {
     const revision = await conversationRevision(pool, ownerId);
     const [messages, tasks, verificationRequests] = await Promise.all([
@@ -143,11 +157,22 @@ export async function createApp(dependencies: AppDependencies = {}) {
       dependencies.verification?.pending() ?? [],
     ]);
     const hasEarlierMessages = messages.rows.length > 150;
+    const visibleMessages = messages.rows.slice(hasEarlierMessages ? 1 : 0);
+    const costs = await dependencies.providerUsage
+      ?.taskCosts(tasks.rows.map((task) => task.id))
+      .catch(() => undefined);
+    const recentIds = new Set(tasks.rows.map((task) => task.id));
+    const olderTasks = await messageTasks(
+      visibleMessages.map((message) => message.taskId).filter((id) => id && !recentIds.has(id)),
+    );
     return {
       conversationRevision: revision,
       hasEarlierMessages,
-      messages: messages.rows.slice(hasEarlierMessages ? 1 : 0).map(messageView),
-      tasks: tasks.rows,
+      messages: visibleMessages.map(messageView),
+      tasks: [
+        ...tasks.rows.map((task) => ({ ...task, costUsd: costs?.[task.id] ?? null })),
+        ...olderTasks,
+      ],
       verificationRequests,
       configuration: publicConfiguration(),
     };
@@ -180,8 +205,14 @@ export async function createApp(dependencies: AppDependencies = {}) {
       ORDER BY date_trunc('milliseconds',m.created_at) DESC,m.id DESC LIMIT 61`,
       [ownerId, query.before ?? null, query.beforeId ?? null],
     );
+    const page = rows.rows.slice(0, 60);
+    const tasks = await messageTasks(page.map((message) => message.taskId).filter(Boolean));
+    const byId = new Map(tasks.map((task) => [task.id, task]));
     return {
-      messages: rows.rows.slice(0, 60).reverse().map(messageView),
+      messages: page.reverse().map((row) => ({
+        ...messageView(row),
+        task: byId.get(row.taskId),
+      })),
       hasMore: rows.rows.length > 60,
     } satisfies MessageHistoryPage;
   });

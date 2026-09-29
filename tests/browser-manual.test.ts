@@ -18,6 +18,20 @@ function deferred() {
   return { promise, resolve };
 }
 
+async function withinDeadline<T>(pending: Promise<T>): Promise<T> {
+  const timer = new AbortController();
+  try {
+    return await Promise.race([
+      pending,
+      delay(5_000, undefined, { signal: timer.signal }).then(() => {
+        throw new Error('Browser fixture operation timed out.');
+      }),
+    ]);
+  } finally {
+    timer.abort();
+  }
+}
+
 async function fixture(options: { manualTimeoutMs?: number; idleTimeoutMs?: number } = {}) {
   const directory = await mkdtemp('/tmp/sk-manual-');
   const browser = stagedLoginBrowser();
@@ -42,6 +56,8 @@ async function fixture(options: { manualTimeoutMs?: number; idleTimeoutMs?: numb
         const page = browser.pages.get('fixture')!;
         let data: Record<string, unknown> = {};
         if (command.action === 'url') data = { url: page.location.href };
+        if (command.action === 'tab_list')
+          data = { tabs: [{ tabId: 't1', active: true, url: page.location.href }] };
         if (command.action === 'evaluate') data = { result: await page.evaluate(command.script) };
         if (command.action === 'snapshot') data = { snapshot: page.text() };
         if (command.action === 'screenshot') await writeFile(command.path, page.screen());
@@ -97,10 +113,16 @@ async function fixture(options: { manualTimeoutMs?: number; idleTimeoutMs?: numb
     },
     async cleanup() {
       before = async () => {};
-      await computer.dispose();
-      for (const socket of sockets) socket.destroy();
-      await new Promise<void>((resolve) => daemon.close(() => resolve()));
-      await rm(directory, { recursive: true, force: true });
+      try {
+        await withinDeadline(computer.dispose());
+      } finally {
+        for (const socket of sockets) socket.destroy();
+        try {
+          await withinDeadline(new Promise<void>((resolve) => daemon.close(() => resolve())));
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+      }
     },
   };
 }
@@ -375,16 +397,17 @@ test('queued browser closes cannot persist a retired session after disposal', as
       }
     });
     closing.push(f.computer.close('fixture'));
-    await closeStarted.promise;
+    await withinDeadline(closeStarted.promise);
     closing.push(f.computer.close('fixture'));
     closeAllowed.resolve();
-    await closing[0];
-    const outcome = await Promise.race([
-      closing[1].then(() => 'closed'),
-      detachedWrite.promise.then(() => 'detached write'),
-    ]);
-    writeAllowed.resolve();
-    await f.computer.dispose();
+    await withinDeadline(closing[0]);
+    const outcome = await withinDeadline(
+      Promise.race([
+        closing[1].then(() => 'closed'),
+        detachedWrite.promise.then(() => 'detached write'),
+      ]),
+    );
+    await withinDeadline(f.computer.dispose());
     assert.equal(outcome, 'closed');
     assert.equal(closedWrites, 1);
     assert.equal(
@@ -394,10 +417,13 @@ test('queued browser closes cannot persist a retired session after disposal', as
   } finally {
     closeAllowed.resolve();
     writeAllowed.resolve();
-    await Promise.allSettled(closing);
-    write.mock.restore();
-    syncBuiltinESMExports();
-    await f.cleanup();
+    try {
+      await withinDeadline(Promise.allSettled(closing));
+    } finally {
+      write.mock.restore();
+      syncBuiltinESMExports();
+      await f.cleanup();
+    }
   }
 });
 

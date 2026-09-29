@@ -281,6 +281,125 @@ test(
         },
       );
 
+      await t.test(
+        'scheduled observations retain a baseline and return the previous verified value',
+        async () => {
+          clock = new Date('2035-11-02T12:00:00.000Z');
+          const sourceUrl = 'https://example.com/offer';
+          const rejectedBaseline = await request('POST', '/api/schedules', {
+            title: 'Rejected baseline',
+            prompt: 'Check a source.',
+            timeZone: 'Europe/Lisbon',
+            baselineObservation: {
+              status: 'unavailable',
+              sourceUrl,
+              value: null,
+              summary: 'Source did not load.',
+            },
+          });
+          assert.equal(rejectedBaseline.statusCode, 400);
+          const schedule = await create({
+            cron: '* * * * *',
+            baselineObservation: {
+              status: 'verified',
+              sourceUrl,
+              value: 'EUR 240',
+              summary: 'Synthetic return fare with taxes.',
+            },
+          });
+          assert.equal(schedule.baselineObservation?.value, 'EUR 240');
+          for (const [value, previous] of [
+            ['EUR 240', 'EUR 240'],
+            ['EUR 215', 'EUR 240'],
+            ['EUR 215', 'EUR 215'],
+          ] as const) {
+            clock = new Date((await saved(schedule.id)).nextRun!);
+            await deliver([await jobFor(schedule.id)]);
+            const run = (await runs(schedule.id))[0]!;
+            await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1", [run.taskId]);
+            const revision = value === 'EUR 240' ? 1 : 0;
+            if (revision) {
+              await db.pool.query('UPDATE tasks SET revision=1 WHERE id=$1', [run.taskId]);
+              await assert.rejects(
+                personal.manage(
+                  'schedule_record_observation',
+                  { status: 'verified', sourceUrl, value, summary: 'Stale task.' },
+                  { taskId: run.taskId, sourceMessageId: null, revision: 0 },
+                ),
+                /no active scheduled run/,
+              );
+              assert.equal((await runs(schedule.id))[0]!.observation, null);
+            }
+            const result = await personal.manage(
+              'schedule_record_observation',
+              { status: 'verified', sourceUrl, value, summary: 'Same synthetic fare terms.' },
+              { taskId: run.taskId, sourceMessageId: null, revision },
+            );
+            assert.equal(result.previous?.value, previous);
+            assert.equal((await runs(schedule.id))[0]!.observation?.value, value);
+            await assert.rejects(
+              personal.manage(
+                'schedule_record_observation',
+                { status: 'verified', sourceUrl, value, summary: 'Duplicate.' },
+                { taskId: run.taskId, sourceMessageId: null, revision },
+              ),
+              /already has a saved observation/,
+            );
+            await db.pool.query("UPDATE tasks SET status='succeeded' WHERE id=$1", [run.taskId]);
+          }
+          clock = new Date((await saved(schedule.id)).nextRun!);
+          await deliver([await jobFor(schedule.id)]);
+          const unavailableRun = (await runs(schedule.id))[0]!;
+          await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1", [
+            unavailableRun.taskId,
+          ]);
+          const unavailable = await personal.manage(
+            'schedule_record_observation',
+            { status: 'unavailable', sourceUrl, value: null, summary: 'Source did not load.' },
+            { taskId: unavailableRun.taskId, sourceMessageId: null, revision: 0 },
+          );
+          assert.equal(unavailable.previous?.value, 'EUR 215');
+          assert.deepEqual(
+            (await runs(schedule.id)).map((run) => run.observation?.value),
+            [null, 'EUR 215', 'EUR 215', 'EUR 240'],
+          );
+          const deleted = await create({
+            cron: '* * * * *',
+            baselineObservation: {
+              status: 'verified',
+              sourceUrl,
+              value: 'EUR 240',
+              summary: 'Synthetic return fare with taxes.',
+            },
+          });
+          clock = new Date((await saved(deleted.id)).nextRun!);
+          await deliver([await jobFor(deleted.id)]);
+          const deletedRun = (await runs(deleted.id))[0]!;
+          await db.pool.query("UPDATE tasks SET status='running' WHERE id=$1", [deletedRun.taskId]);
+          assert.equal((await request('DELETE', `/api/schedules/${deleted.id}`)).statusCode, 200);
+          const afterDelete = await personal.manage(
+            'schedule_record_observation',
+            {
+              status: 'verified',
+              sourceUrl,
+              value: 'EUR 215',
+              summary: 'Same synthetic fare terms.',
+            },
+            { taskId: deletedRun.taskId, sourceMessageId: null, revision: 0 },
+          );
+          assert.equal(afterDelete.previous?.value, 'EUR 240');
+          assert.equal((await runs(deleted.id))[0]!.observation?.value, 'EUR 215');
+          await assert.rejects(
+            personal.manage('schedule_record_observation', {
+              status: 'verified',
+              sourceUrl,
+              value: 'EUR 100',
+              summary: 'No matching task.',
+            }),
+          );
+        },
+      );
+
       await t.test('edits, pauses and deletions fence already claimed jobs', async () => {
         const schedule = await create({ kind: 'once', runAt: '2035-11-03T14:30:00Z' });
         const stale = await jobFor(schedule.id);

@@ -15,6 +15,7 @@ import { BrandMark } from '../components/brand';
 import { Button, Notice } from '../components/ui';
 import { api, apiResponse, errorMessage, post } from '../lib/api';
 import {
+  collapseScreenshotMessages,
   hasVisibleChatActivity,
   messagesAreGrouped,
   visibleConversationTurns,
@@ -118,7 +119,7 @@ export function Chat({
   const streamIds = new Set(streamEntries.map(([id]) => id));
   for (const id of streamTimes.current.keys())
     if (!streamIds.has(id)) streamTimes.current.delete(id);
-  const visibleMessages: Message[] = [
+  const visibleMessages: Message[] = collapseScreenshotMessages([
     ...allMessages,
     ...streamEntries.map(([id, value]): Message => {
       if (!streamTimes.current.has(id)) streamTimes.current.set(id, new Date().toISOString());
@@ -132,7 +133,15 @@ export function Chat({
         createdAt: streamTimes.current.get(id)!,
       };
     }),
-  ];
+  ]);
+  const finalAssistantMessages = new Map<string, string>();
+  const latestUserMessageAt = new Map<string, string>();
+  for (const message of visibleMessages) {
+    if (message.role === 'assistant' && message.taskId)
+      finalAssistantMessages.set(message.taskId, message.id);
+    if (message.role === 'user' && message.taskId)
+      latestUserMessageAt.set(message.taskId, message.createdAt);
+  }
   const onboardingVisible = allMessages.length === 0 && !working && !resetting;
   const unseen = away
     ? persistedMessages.filter(
@@ -530,6 +539,14 @@ export function Chat({
                 )}
                 <MessageBubble
                   message={message}
+                  task={
+                    message.taskId && finalAssistantMessages.get(message.taskId) === message.id
+                      ? (state.tasks.find((task) => task.id === message.taskId) ?? message.task)
+                      : undefined
+                  }
+                  taskStartedAt={
+                    message.taskId ? latestUserMessageAt.get(message.taskId) : undefined
+                  }
                   streaming={streamIds.has(message.streamId ?? '')}
                   inspectorEnabled={state.configuration.inspectorEnabled}
                   grouped={messagesAreGrouped(visibleMessages[index - 1], message)}

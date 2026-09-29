@@ -49,6 +49,8 @@ test(
         for (const row of rows) {
           assert.ok(!seen.has(row.id));
           assert.notEqual(row.text, 'private content');
+          assert.equal(row.task?.title, 'Mine');
+          assert.equal(row.task?.costUsd, null);
           seen.add(row.id);
         }
         cursor = `?before=${encodeURIComponent(rows[0].createdAt)}&beforeId=${rows[0].id}`;

@@ -25,7 +25,7 @@ export async function prepareE2BTemplate(role: E2BTemplateRole) {
           ? template
               .setUser('root')
               .runCmd(
-                'test -x /usr/bin/chromium && test -x /usr/bin/Xvfb && test -x /usr/sbin/nft && test -x /usr/sbin/ip && test -x /usr/bin/setpriv && test -r /app/src/providers/container-browser/bridge.ts && test -r /opt/otto/workspace-command.py',
+                'test -x /usr/bin/chromium && test -x /usr/bin/Xvfb && test -x /usr/sbin/nft && test -x /usr/sbin/ip && test -x /usr/bin/setpriv && test -r /app/src/providers/container-browser/bridge.ts && test -r /opt/otto/workspace-command.py && test -x /usr/bin/pdftotext',
               )
               .setStartCmd(
                 'exec python3 /opt/otto/computer-guard.py start',
@@ -33,7 +33,7 @@ export async function prepareE2BTemplate(role: E2BTemplateRole) {
               )
           : template
               .runCmd(
-                'python3 -c "import ast; ast.parse(open(\'/opt/otto/workspace-command.py\').read())" && test -w /workspace && test -x /usr/local/bin/node && test -x /usr/bin/python3 && test -x /usr/bin/pipx && test -x /usr/bin/ffmpeg',
+                'python3 -c "import ast; ast.parse(open(\'/opt/otto/workspace-command.py\').read())" && test -w /workspace && test -x /usr/local/bin/node && test -x /usr/bin/python3 && test -x /usr/bin/pipx && test -x /usr/bin/ffmpeg && test -x /usr/bin/pdftotext',
               )
               .setReadyCmd('test -r /opt/otto/workspace-command.py && test -w /workspace');
     const description = await Template.toJSON(final);
@@ -67,6 +67,7 @@ export async function buildE2BTemplate(options: {
       cpuCount: 2,
       memoryMB: options.role === 'computer' ? 3072 : options.role === 'browser' ? 2048 : 1024,
       requestTimeoutMs: 30_000,
+      retries: 0,
       signal: AbortSignal.timeout(30 * 60_000),
     });
     return {

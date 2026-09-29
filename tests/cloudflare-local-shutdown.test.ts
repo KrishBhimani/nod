@@ -148,6 +148,7 @@ async function fixture(t: TestContext) {
   const hooks = {
     prepare: async () => [{ ownerId: randomUUID(), generation: '2' }],
     abort: async () => {},
+    now: () => Date.now(),
     losePrepare: false,
     healthRelease: undefined as string | undefined,
     reply: undefined as ((action: string, result: unknown) => unknown) | undefined,
@@ -221,6 +222,7 @@ async function fixture(t: TestContext) {
       currentRelease: release,
       prepare: () => hooks.prepare(),
       resume: () => hooks.abort(),
+      now: () => hooks.now(),
     });
     return control;
   };
@@ -520,7 +522,9 @@ test('a bounded failed request preserves its journal without retrying preparatio
     await finish.promise;
     return [];
   };
-  const control = await f.open(false, { drainMs: 15 });
+  const started = Date.now();
+  f.hooks.now = () => started;
+  const control = await f.open(false, { drainMs: 15, now: () => started });
   const result = control.prepare();
   await entered.promise;
   await assert.rejects(result, failure);

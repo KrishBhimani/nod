@@ -249,6 +249,31 @@ test('historical role markers and attachment names stay quoted while the current
   }
 });
 
+test('message attachment metadata names the staged workspace copy', async () => {
+  const history = [
+    { name: 'statement.pdf', mimeType: 'application/pdf', workspaceFile: 'fixture-statement.pdf' },
+  ];
+  const replied = [
+    { name: 'invoice.pdf', mimeType: 'application/pdf', workspaceFile: 'fixture-invoice.pdf' },
+  ];
+  const result = await fixture(async () => {}, {
+    history: [{ id: 'fixture-message', role: 'assistant', text: '', attachments: history }],
+    replyTo: { id: 'fixture-reply', role: 'assistant', text: '', attachments: replied },
+  });
+  const instruction = JSON.parse(result.userPrompt.split('Request data (JSON):\n')[1]);
+  assert.deepEqual(instruction.recentConversation[0].attachments, history);
+  const system = result.supplied.systemPrompt;
+  const replyTarget = JSON.parse(
+    system.split('Reply target data: ')[1].split('.\nCurrent conversation context')[0],
+  );
+  assert.deepEqual(replyTarget.attachments, replied);
+  const conversation = JSON.parse(
+    system.split('(refreshes even when continuing earlier work):\n')[1].split('\n')[0],
+  );
+  assert.deepEqual(conversation[0].attachments, history);
+  assert.match(result.userPrompt, /for a PDF, extract the text with pdftotext/);
+});
+
 test('new and resumed sessions receive the current local time and owner time zone', async () => {
   for (const [timeZone, resumed] of [
     [undefined, false],
@@ -820,6 +845,99 @@ test('background runs deliver explicit useful messages without also delivering f
   assert.deepEqual(result.deltas, []);
 });
 
+test('background page reports reject no-change claims for failed browser pages', async () => {
+  let attempts = 0;
+  const result = await fixture(
+    async (tools) => {
+      await assert.rejects(
+        call(tools, 'browser', { action: 'open', url: 'https://example.com/pricing' }),
+      );
+      const blocked = await call(tools, 'send_message', {
+        text: 'Example: no change on https://example.com/pricing.',
+      });
+      assert.match(
+        blocked.content[0].type === 'text' ? blocked.content[0].text : '',
+        /needs_revision/,
+      );
+      const synonym = await call(tools, 'send_message', {
+        text: 'Example: https://example.com/pricing is unchanged.',
+      });
+      assert.match(
+        synonym.content[0].type === 'text' ? synonym.content[0].text : '',
+        /needs_revision/,
+      );
+      const baseline = await call(tools, 'send_message', {
+        text: 'Example: same as the baseline.\nhttps://example.com/pricing',
+      });
+      assert.match(
+        baseline.content[0].type === 'text' ? baseline.content[0].text : '',
+        /needs_revision/,
+      );
+      const multiline = await call(tools, 'send_message', {
+        text: 'Example: no change.\nhttps://example.com/pricing',
+      });
+      assert.match(
+        multiline.content[0].type === 'text' ? multiline.content[0].text : '',
+        /needs_revision/,
+      );
+      await call(tools, 'send_message', {
+        text: 'Example: https://example.com/pricing is unverified. Its current price is unknown.',
+      });
+      await call(tools, 'browser', { action: 'open', url: 'https://example.com/pricing' });
+      await call(tools, 'send_message', {
+        text: 'Example: no change on https://example.com/pricing after a fresh page check.',
+      });
+    },
+    { background: true },
+    {
+      computer: fakeComputer({
+        act: async () => {
+          attempts += 1;
+          if (attempts === 1) throw new Error('Page load failed.');
+          return {
+            url: 'https://example.com/pricing',
+            text: 'Current pricing details',
+            candidates: [],
+          };
+        },
+      }),
+    },
+  );
+  assert.deepEqual(result.replies, [
+    'Example: https://example.com/pricing is unverified. Its current price is unknown.',
+    'Example: no change on https://example.com/pricing after a fresh page check.',
+  ]);
+});
+
+test('failed page checks keep query variants separate', async () => {
+  const result = await fixture(
+    async (tools) => {
+      await assert.rejects(
+        call(tools, 'browser', { action: 'open', url: 'https://example.com/pricing?plan=one' }),
+      );
+      await call(tools, 'send_message', {
+        text: 'No change on https://example.com/pricing?plan=two',
+      });
+      const blocked = await call(tools, 'send_message', {
+        text: 'No change on https://example.com/pricing?plan=one',
+      });
+      assert.match(
+        blocked.content[0].type === 'text' ? blocked.content[0].text : '',
+        /needs_revision/,
+      );
+    },
+    { background: true },
+    {
+      computer: fakeComputer({
+        act: async () => {
+          throw new Error('Page load failed.');
+        },
+      }),
+    },
+  );
+  assert.deepEqual(result.replies, ['No change on https://example.com/pricing?plan=two']);
+});
+
 test('normal user tasks still stream and deliver automatic final replies', async () => {
   const result = await fixture(async (_tools, emit) => {
     emit({ type: 'text_delta', text: 'Here is your answer.' });
@@ -1002,6 +1120,39 @@ test('shared tool validation rejects malformed arguments before provider callbac
     },
   );
   assert.equal(writes, 1);
+});
+
+test('scheduled observation tool accepts a source URL and binds the active task', async () => {
+  const observation = {
+    status: 'verified',
+    sourceUrl: 'https://example.com/flight',
+    value: 'EUR 240',
+    summary: 'Exact return fare for one adult.',
+  };
+  await fixture(
+    async (tools) => {
+      await assert.rejects(
+        call(tools, 'record_schedule_observation', { ...observation, runId: randomUUID() }),
+        /schema/,
+      );
+      await assert.rejects(
+        call(tools, 'record_schedule_observation', { ...observation, value: null }),
+        /schema/,
+      );
+      await assert.rejects(
+        call(tools, 'record_schedule_observation', { ...observation, status: 'unavailable' }),
+        /schema/,
+      );
+      await call(tools, 'record_schedule_observation', observation);
+    },
+    {
+      manage: async (action, args) => {
+        assert.equal(action, 'schedule_record_observation');
+        assert.deepEqual(args, observation);
+        return { previous: null };
+      },
+    },
+  );
 });
 
 test('a successful model retry clears the earlier failure result', async () => {
@@ -2110,7 +2261,7 @@ test('screenshot publishing uses protected browser bytes and returns only owned 
   const bytes = Buffer.from('masked browser image');
   const artifact = {
     id: randomUUID(),
-    name: 'screenshot.png',
+    name: 'sample-home.png',
     mimeType: 'image/png',
     size: bytes.length,
     url: '/api/artifacts/fixture',
@@ -2119,13 +2270,14 @@ test('screenshot publishing uses protected browser bytes and returns only owned 
   let published = 0;
   await fixture(
     async (tools) => {
-      const result = await call(tools, 'send_screenshot', {});
+      const result = await call(tools, 'send_screenshot', { name: 'sample-home.png' });
       assert.deepEqual(result.content, [{ type: 'text', text: JSON.stringify(artifact) }]);
     },
     {
-      publishScreenshot: async (value) => {
+      publishScreenshot: async (value, name) => {
         published++;
         assert.deepEqual(value, bytes);
+        assert.equal(name, 'sample-home.png');
         return artifact;
       },
       observe: async (event) => {
@@ -2137,6 +2289,118 @@ test('screenshot publishing uses protected browser bytes and returns only owned 
   assert.equal(published, 1);
   assert.equal(JSON.stringify(observations).includes(bytes.toString()), false);
   assert.equal(JSON.stringify(observations).includes(bytes.toString('base64')), false);
+});
+
+test('screenshot publishing waits for visible cookie consent to clear', async () => {
+  let covered = true;
+  let published = 0;
+  await fixture(
+    async (tools) => {
+      await assert.rejects(call(tools, 'send_screenshot', {}), /cookie consent dialog/);
+      assert.equal(published, 0);
+      await call(tools, 'send_screenshot', { allowCookieDialog: true });
+      await call(tools, 'browser', { action: 'click', selector: '@reject' });
+      await call(tools, 'send_screenshot', {});
+    },
+    {
+      publishScreenshot: async () => {
+        published++;
+        return {
+          id: randomUUID(),
+          name: 'screenshot.png',
+          mimeType: 'image/png',
+          size: 5,
+          url: '/api/artifacts/fixture',
+        };
+      },
+    },
+    {
+      computer: fakeComputer({
+        act: async (_taskId, input) => {
+          if (input.action === 'click') covered = false;
+          return {
+            text: covered
+              ? 'Cookie consent dialog. Accept Only Necessary. Accept All Cookies.'
+              : 'Research page',
+            url: 'https://example.com',
+            candidates: [],
+          };
+        },
+        screenshot: async () => Buffer.from('image'),
+      }),
+    },
+  );
+  assert.equal(published, 2);
+});
+
+test('screenshot publishing requires a successful consent check and detects visible choices', async () => {
+  let published = 0;
+  let snapshots = 0;
+  await fixture(
+    async (tools) => {
+      await assert.rejects(call(tools, 'send_screenshot', {}), /cookie consent dialog/);
+      await assert.rejects(call(tools, 'send_screenshot', {}), /could not be completed/);
+    },
+    {
+      publishScreenshot: async () => {
+        published++;
+        throw new Error('Unexpected publication.');
+      },
+    },
+    {
+      computer: fakeComputer({
+        act: async () => {
+          snapshots++;
+          if (snapshots === 2) throw new Error('Consent check failed.');
+          return {
+            text: 'We use cookies to improve this site.',
+            url: 'https://example.com',
+            candidates: [
+              { id: '@accept', label: 'Accept all cookies' },
+              { id: '@reject', label: 'Reject optional cookies' },
+            ],
+          };
+        },
+        screenshot: async () => Buffer.from('image'),
+      }),
+    },
+  );
+  assert.equal(published, 0);
+});
+
+test('unrelated controls do not block screenshot publication', async () => {
+  let published = 0;
+  await fixture(
+    async (tools) => {
+      await call(tools, 'send_screenshot', {});
+    },
+    {
+      publishScreenshot: async () => {
+        published++;
+        return {
+          id: randomUUID(),
+          name: 'page.png',
+          mimeType: 'image/png',
+          size: 5,
+          url: '/api/artifacts/page',
+        };
+      },
+    },
+    {
+      computer: fakeComputer({
+        act: async () => ({
+          text: 'Read our cookie policy in the footer.',
+          url: 'https://example.com',
+          candidates: [
+            { id: '@offer', label: 'Accept offer' },
+            { id: '@guide', label: 'Necessary information' },
+          ],
+        }),
+        screenshot: async () => Buffer.from('image'),
+      }),
+    },
+  );
+  assert.equal(published, 1);
 });
 
 test('screenshot publishing cannot bypass secure-entry locks, unavailable screens or cancellation', async () => {

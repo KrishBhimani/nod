@@ -18,6 +18,7 @@ function deferred() {
 test('container launches the package native CLI directly for both supported image architectures', () => {
   for (const architecture of ['arm64', 'x64'] as const) {
     const options = containerBrowserOptions('/data/synthetic-task', architecture);
+    assert.equal(options.maxLiveSessions, 2);
     assert.equal(
       options.executable,
       `/app/node_modules/agent-browser/bin/agent-browser-linux-${architecture}`,

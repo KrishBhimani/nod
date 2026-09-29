@@ -44,6 +44,7 @@ test(
     let copiedAttachmentRead = false;
     let remoteAttachmentRead = false;
     const remoteUploads = new Map<string, Uint8Array>();
+    const fileContexts = new Map<string, RuntimeContext>();
     const classifications: Array<{
       kind: string;
       now: string;
@@ -99,6 +100,13 @@ test(
           );
           copiedAttachmentRead = true;
         }
+        if (context.prompt === 'pdf-source-fixture')
+          await context.publishBrowserFile!({
+            bytes: Buffer.from('%PDF-1.4 synthetic statement'),
+            name: 'statement.pdf',
+            mimeType: 'application/pdf',
+          });
+        if (context.prompt.endsWith('-file-fixture')) fileContexts.set(context.prompt, context);
         if (context.prompt === 'remote-attachment-fixture') {
           assert.equal(context.attachments.length, 1);
           assert.equal(
@@ -576,6 +584,114 @@ test(
           await waitFor(async () => remoteAttachmentRead);
         },
       );
+      await t.test(
+        'replies and continuations stage owned downloaded files but never foreign artifacts',
+        async () => {
+          dependencies.writeArtifact = undefined;
+          const sourceTask = await tasks.submitTask('pdf-source-fixture');
+          await waitFor(
+            async () =>
+              (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [sourceTask])).rows[0]
+                ?.status === 'succeeded',
+          );
+          const download = (
+            await db.pool.query(
+              "SELECT id,attachments FROM messages WHERE task_id=$1 AND role='assistant' AND jsonb_array_length(attachments)=1",
+              [sourceTask],
+            )
+          ).rows[0];
+          const pdf = download.attachments[0];
+          artifactIds.push(pdf.id);
+          const stagedName = `${pdf.id}-statement.pdf`;
+          const foreignTask = randomUUID();
+          const foreignArtifact = randomUUID();
+          const foreignMessage = randomUUID();
+          const foreignAttachments = JSON.stringify([
+            {
+              id: foreignArtifact,
+              name: 'foreign.pdf',
+              mimeType: 'application/pdf',
+              size: 12,
+              url: '',
+            },
+          ]);
+          await db.pool.query(
+            "INSERT INTO tasks(id,owner_id,title,prompt,status) VALUES($1,'foreign-owner','Foreign','Foreign','succeeded')",
+            [foreignTask],
+          );
+          await db.pool.query(
+            "INSERT INTO artifacts(id,owner_id,task_id,name,mime_type,size,storage_path) VALUES($1,'foreign-owner',$2,'foreign.pdf','application/pdf',12,'/nonexistent/foreign.pdf')",
+            [foreignArtifact, foreignTask],
+          );
+          await db.pool.query(
+            "INSERT INTO messages(id,owner_id,role,text,task_id,attachments) VALUES($1,'foreign-owner','assistant','',$2,$3)",
+            [foreignMessage, foreignTask, foreignAttachments],
+          );
+          await db.pool.query(
+            "INSERT INTO messages(id,owner_id,role,text,task_id,attachments) VALUES($1,'local-development','assistant','',$2,$3)",
+            [randomUUID(), sourceTask, foreignAttachments],
+          );
+          const staged = (context: RuntimeContext) =>
+            context.attachments.map((item) => item.path.slice(context.workspacePath.length + 1));
+
+          await tasks.submitTask('pdf-reply-file-fixture', [], undefined, false, {
+            replyToMessageId: download.id,
+          });
+          await waitFor(async () => fileContexts.has('pdf-reply-file-fixture'));
+          const reply = fileContexts.get('pdf-reply-file-fixture')!;
+          assert.deepEqual(staged(reply), [stagedName]);
+          assert.equal(
+            await readFile(reply.attachments[0].path, 'utf8'),
+            '%PDF-1.4 synthetic statement',
+          );
+          const described = [
+            { name: 'statement.pdf', mimeType: 'application/pdf', workspaceFile: stagedName },
+          ];
+          assert.deepEqual(reply.replyTo?.attachments, described);
+          assert.deepEqual(
+            reply.history.find((item) => item.id === download.id)?.attachments,
+            described,
+          );
+          assert.deepEqual(
+            reply.history.find((item) => item.attachments?.[0]?.name === 'foreign.pdf')
+              ?.attachments,
+            [{ name: 'foreign.pdf', mimeType: 'application/pdf' }],
+          );
+
+          await tasks.submitTask('foreign-reply-file-fixture', [], undefined, false, {
+            replyToMessageId: foreignMessage,
+          });
+          await waitFor(async () => fileContexts.has('foreign-reply-file-fixture'));
+          const foreign = fileContexts.get('foreign-reply-file-fixture')!;
+          assert.equal(foreign.replyTo, undefined);
+          assert.deepEqual(foreign.attachments, []);
+
+          await tasks.submitTask('pdf-continue-file-fixture', [], sourceTask);
+          await waitFor(async () => fileContexts.has('pdf-continue-file-fixture'));
+          assert.deepEqual(staged(fileContexts.get('pdf-continue-file-fixture')!), [stagedName]);
+          assert.equal(JSON.stringify([...fileContexts.values()]).includes(foreignArtifact), false);
+        },
+      );
+      await t.test('staging stops at the total size budget without failing the task', async () => {
+        const large = [];
+        for (const index of [1, 2, 3, 4]) {
+          const artifact = await storeArtifact(
+            Buffer.alloc(13 * 1024 * 1024, index),
+            `large-${index}.bin`,
+            'application/octet-stream',
+          );
+          artifactIds.push(artifact.id);
+          large.push(artifact);
+        }
+        const task = await tasks.submitTask('budget-file-fixture', large);
+        await waitFor(async () => fileContexts.has('budget-file-fixture'));
+        assert.equal(fileContexts.get('budget-file-fixture')!.attachments.length, 3);
+        await waitFor(
+          async () =>
+            (await db.pool.query('SELECT status FROM tasks WHERE id=$1', [task])).rows[0]
+              ?.status === 'succeeded',
+        );
+      });
     } finally {
       release();
       await tasks.stopTasks();

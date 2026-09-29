@@ -42,11 +42,12 @@ export type ResourceInfo = {
   metadata: Record<string, string>;
   state: 'running' | 'paused';
 };
+type BoundaryResult = { [key: string]: boolean | number | BoundaryResult };
 export interface AcceptanceDriver {
   client: E2BClient;
   inspect(id: string): Promise<ResourceInfo | null>;
   find(metadata: Record<string, string>): Promise<ResourceInfo[]>;
-  boundary(id: string): Promise<Record<string, boolean | number>>;
+  boundary(id: string): Promise<BoundaryResult>;
   kill(id: string): Promise<void>;
 }
 export interface AcceptanceJournal {

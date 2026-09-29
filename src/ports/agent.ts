@@ -41,6 +41,12 @@ export type BrowserConnectionRequest =
   | { action: 'connect'; url: string; connectionId?: string; label?: string }
   | { action: 'use'; url: string; connectionId: string };
 
+interface MessageAttachment {
+  name: string;
+  mimeType: string;
+  workspaceFile?: string;
+}
+
 export interface RuntimeContext {
   taskId: string;
   ownerId: string;
@@ -49,7 +55,7 @@ export interface RuntimeContext {
   channel?: string;
   timeZone?: string;
   currentMessageId?: string;
-  replyTo?: { id: string; role: string; text: string };
+  replyTo?: { id: string; role: string; text: string; attachments?: MessageAttachment[] };
   history: Array<{
     id?: string;
     role: string;
@@ -57,6 +63,7 @@ export interface RuntimeContext {
     createdAt?: string | Date;
     reaction?: string | null;
     assistantReaction?: MessageReaction | null;
+    attachments?: MessageAttachment[];
   }>;
   sharedHistory?: Array<{ role: string; text: string; createdAt: string | Date; channel: string }>;
   memories: string[];
@@ -91,7 +98,7 @@ export interface RuntimeContext {
   delta(text: string, streamId?: string, done?: boolean): void;
   remember(text: string): Promise<void>;
   publish(path: string, name?: string): Promise<Artifact>;
-  publishScreenshot?(bytes: Uint8Array): Promise<Artifact>;
+  publishScreenshot?(bytes: Uint8Array, name?: string): Promise<Artifact>;
   publishBrowserFile?(file: {
     bytes: Uint8Array;
     name: string;
