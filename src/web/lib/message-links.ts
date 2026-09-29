@@ -107,10 +107,14 @@ const setupParser = unified()
   .use(rehypeLocalLinks)
   .use(rehypeSanitize);
 
-function linkText(children: RootContent[]): string {
+export function messageLinkText(children: RootContent[]): string {
   return children
     .map((child) =>
-      child.type === 'text' ? child.value : 'children' in child ? linkText(child.children) : '',
+      child.type === 'text'
+        ? child.value
+        : 'children' in child
+          ? messageLinkText(child.children)
+          : '',
     )
     .join('');
 }
@@ -122,7 +126,7 @@ export function messageSetupLinks(text: string, origin: string) {
     if (node.tagName === 'code' || node.tagName === 'pre') return SKIP;
     if (node.tagName !== 'a' || typeof node.properties.href !== 'string') return;
     const link = safeMessageLink(node.properties.href, origin);
-    const setup = link && setupLink(link, linkText(node.children));
+    const setup = link && setupLink(link, messageLinkText(node.children));
     if (setup && !actions.has(setup.href)) actions.set(setup.href, setup);
   });
   return [...actions.values()];

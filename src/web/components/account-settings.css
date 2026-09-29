@@ -130,7 +130,8 @@
   color: var(--muted-foreground);
   background: transparent;
 }
-.account-menu-themes button[aria-checked='true'] {
+.account-menu-themes button[aria-checked='true'],
+.account-menu-themes button[aria-pressed='true'] {
   background: var(--hover);
   color: var(--foreground);
 }

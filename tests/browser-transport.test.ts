@@ -614,6 +614,7 @@ test('a stalled tab poll uses only the remaining settle budget and honors caller
       });
       await assert.rejects(
         f.computer.act('fixture', { action: 'click', selector: '@e1' }, controller.signal),
+        cancelled ? /Browser observation cancelled/ : /previous browser is unavailable/,
       );
       const poll = f.timeouts.filter((entry) => entry.action === 'tab_list').at(-1)!;
       assert.ok(poll.timeoutMs! > 0 && poll.timeoutMs! <= 200);

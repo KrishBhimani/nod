@@ -444,6 +444,7 @@ test('Open conversation before app state arrives keeps the target and loads its 
     globalThis.fetch = previousFetch;
     window.history.replaceState(null, '', previousUrl);
     window.matchMedia = previousMedia;
+    window.localStorage.removeItem('otto.chat-layout');
     if (previousScroll)
       Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', previousScroll);
     else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;

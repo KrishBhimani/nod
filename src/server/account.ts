@@ -46,6 +46,7 @@ export function createAccountSession(options: {
     session: AuthenticatedSession,
     name: string | undefined,
     operation: () => Promise<void>,
+    current: () => Promise<boolean>,
   ): Promise<void>;
 }) {
   const origin = new URL(options.origin).origin;
@@ -154,7 +155,9 @@ export function createAccountSession(options: {
       completed = true;
     };
     try {
-      if (options.withProfile) await options.withProfile(session, name, operation);
+      const current = () => currentPrincipal(request, reply, session);
+      if (!(await current())) return false;
+      if (options.withProfile) await options.withProfile(session, name, operation, current);
       else await operation();
       return completed;
     } catch {

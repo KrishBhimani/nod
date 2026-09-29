@@ -1,4 +1,4 @@
-import { Children, lazy, memo, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Copy, Check, CornerUpLeft, SmilePlus, ScanSearch, MoreHorizontal, X } from 'lucide-react';
 import Markdown from 'react-markdown';
@@ -10,7 +10,12 @@ import { reactionEmoji } from '../../shared/emoji';
 import { Button, Checkbox, Loading, Notice } from './ui';
 import { BrandMark } from './brand';
 import { errorMessage, post } from '../lib/api';
-import { messageSetupLinks, safeMessageLink, setupLink } from '../lib/message-links';
+import {
+  messageLinkText,
+  messageSetupLinks,
+  safeMessageLink,
+  setupLink,
+} from '../lib/message-links';
 import { rehypeLocalLinks } from '../lib/markdown';
 import { nextReaction, reactionName } from '../lib/reactions';
 import { MessageLinkPreviews } from './link-previews';
@@ -37,15 +42,10 @@ export const MessageText = memo(function MessageText({
           remarkPlugins={[remarkGfm]}
           rehypePlugins={[rehypeRaw, rehypeLocalLinks, rehypeSanitize]}
           components={{
-            a: ({ href, children }) => {
+            a: ({ href, children, node }) => {
               const link = safeMessageLink(href ?? '', origin);
               if (!link) return <span>{children}</span>;
-              const setup = setupLink(
-                link,
-                Children.toArray(children)
-                  .filter((child) => typeof child === 'string')
-                  .join(''),
-              );
+              const setup = setupLink(link, messageLinkText(node?.children ?? []));
               if (setup && actions.some((action) => action.href === setup.href))
                 return <strong className="setup-phrase">{setup.label}</strong>;
               return (

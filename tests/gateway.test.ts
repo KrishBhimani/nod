@@ -42,6 +42,7 @@ async function fixture(
   let streamCancelled = 0;
   let lookups = 0;
   let accountReads = 0;
+  let beforeAccountRead: () => void | Promise<void> = () => {};
   let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
   let reply: (owner: string, request: Request) => Promise<Response> = async (owner) =>
     Response.json({ owner, record: `Synthetic data for ${owner}` });
@@ -105,6 +106,7 @@ async function fixture(
     accounts: {
       async read() {
         accountReads++;
+        await beforeAccountRead();
         return { theme: 'system', onboardingCompleted: true, displayName };
       },
       async update(_owner, input) {
@@ -150,6 +152,9 @@ async function fixture(
     streamCancelled: () => streamCancelled,
     lookups: () => lookups,
     accountReads: () => accountReads,
+    beforeAccountRead: (value: typeof beforeAccountRead) => {
+      beforeAccountRead = value;
+    },
   };
 }
 
@@ -942,5 +947,38 @@ test('overlapping welcome starts retain their own name and recheck the queued se
       assert.equal((await first).statusCode, 200);
       assert.equal((await second).statusCode, revoked ? 401 : 200);
       assert.deepEqual(names, revoked ? ['First fixture'] : ['First fixture', 'Second fixture']);
+      assert.equal(
+        f.profiles.some((profile) => JSON.parse(profile.body).preferredName === 'Second fixture'),
+        !revoked,
+      );
+    });
+});
+
+test('welcome rechecks its principal before profile writes and after synchronization', async (t) => {
+  for (const phase of ['account read', 'profile synchronization'])
+    await t.test(phase, async (t) => {
+      const f = await fixture();
+      t.after(() => f.app.close());
+      if (phase === 'account read')
+        f.beforeAccountRead(() => {
+          f.sessions.delete(f.users[0]);
+        });
+      else {
+        const fetch = f.runtimes.fetch;
+        f.runtimes.fetch = async (owner, request, options) => {
+          const response = await fetch(owner, request, options);
+          if (new URL(request.url).pathname === '/api/account/profile') f.sessions.delete(owner);
+          return response;
+        };
+      }
+      const response = await f.app.inject({
+        method: 'POST',
+        url: '/api/account/welcome',
+        headers: { ...f.headers(), origin },
+        payload: {},
+      });
+      assert.equal(response.statusCode, 401);
+      assert.equal(f.profiles.length, phase === 'account read' ? 0 : 1);
+      assert.equal(f.calls.length, 0);
     });
 });

@@ -186,9 +186,11 @@ export async function createGateway(options: {
     session: AuthenticatedSession,
     name: string | undefined,
     operation: () => Promise<void>,
+    current: () => Promise<boolean>,
   ) {
     const owner = session.user.id;
     const next = (welcomeSyncs.get(owner) ?? Promise.resolve()).then(async () => {
+      if (!(await current())) return;
       if (name !== undefined) welcomeProfiles.set(owner, name);
       try {
         await syncProfile(session);

@@ -535,3 +535,39 @@ test('saved website icons use the pinned public fetcher and accept only ICO or r
   assert.equal(await privateSite.icon!('http://localhost:3000'), null);
   assert.equal(requested, false);
 });
+
+test('saved website icons try at most eight unique eligible fallback links', async () => {
+  for (const validCandidate of [8, 9]) {
+    const resolved: string[] = [];
+    const requested: string[] = [];
+    const links = Array.from({ length: 20 }, (_, index) =>
+      `<link rel="icon" href="/icon-${index + 1}.png">`.repeat(2),
+    ).join('');
+    const provider = createPublicLinkPreviewProvider({
+      resolver: async (host) => {
+        resolved.push(host);
+        return addresses();
+      },
+      request: async ({ url, address }) => {
+        assert.equal(address, '93.184.216.34');
+        requested.push(url.pathname);
+        if (url.pathname === '/') return html(`<link rel="icon" href="/icon.svg">${links}`);
+        if (url.pathname === `/icon-${validCandidate}.png`)
+          return { status: 200, headers: { 'content-type': 'image/png' }, body: png };
+        return { status: 404, headers: {}, body: Buffer.alloc(0) };
+      },
+    });
+
+    const icon = await provider.icon!('https://example.com');
+    assert.equal(icon?.mimeType ?? null, validCandidate === 8 ? 'image/png' : null);
+    assert.deepEqual(requested, [
+      '/favicon.ico',
+      '/',
+      ...Array.from({ length: 8 }, (_, index) => `/icon-${index + 1}.png`),
+    ]);
+    assert.deepEqual(
+      resolved,
+      Array.from({ length: 10 }, () => 'example.com'),
+    );
+  }
+});

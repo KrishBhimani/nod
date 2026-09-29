@@ -174,7 +174,7 @@ function icoImage(bytes: Uint8Array) {
 }
 
 function iconLinks(html: string) {
-  const links: string[] = [];
+  const links = new Set<string>();
   const document = parse(html);
   const root = document.childNodes.find((node) => node.nodeName === 'html');
   const head =
@@ -192,10 +192,12 @@ function iconLinks(html: string) {
       !/svg/i.test(attrs.get('type') ?? '') &&
       !/\.svgz?(?:[?#]|$)/i.test(href) &&
       !/^data:/i.test(href)
-    )
-      links.push(href);
+    ) {
+      links.add(href);
+      if (links.size === 8) break;
+    }
   }
-  return [...new Set(links)];
+  return [...links];
 }
 
 export function createPublicLinkPreviewProvider(

@@ -590,10 +590,15 @@ test('failed schedule and history reads offer a retry and keep saved rows visibl
 test('every saved weekday is selected and remains unchanged when editing its time', async () => {
   const previousFetch = globalThis.fetch;
   const patches: Array<{ path: string; body: unknown }> = [];
+  const reads: string[] = [];
   globalThis.fetch = async (path, options) => {
-    const body = JSON.parse(String(options?.body));
-    patches.push({ path: String(path), body });
-    return Response.json({ ...recurring, ...body });
+    if (options?.method === 'PATCH') {
+      const body = JSON.parse(String(options.body));
+      patches.push({ path: String(path), body });
+      return Response.json({ ...recurring, ...body });
+    }
+    reads.push(String(path));
+    return Response.json([recurring]);
   };
   const element = document.createElement('div');
   document.body.append(element);
@@ -615,9 +620,16 @@ test('every saved weekday is selected and remains unchanged when editing its tim
       });
     }
     assert.equal(patches.length, 7);
+    assert.deepEqual(
+      reads,
+      Array.from({ length: 7 }, () => '/api/schedules'),
+    );
+    assert.equal(pageDataCache.getSnapshot('/api/schedules').error, '');
+    assert.deepEqual(pageDataCache.getSnapshot('/api/schedules').data, [recurring]);
   } finally {
     await act(async () => root.unmount());
     element.remove();
+    pageDataCache.update('/api/schedules', () => null);
     globalThis.fetch = previousFetch;
   }
 });

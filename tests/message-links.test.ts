@@ -261,3 +261,40 @@ test('sanitized HTML setup links use the same action group as rendered Markdown'
     assert.doesNotMatch(render(unsafe), /setup-group/, unsafe);
   }
 });
+
+test('formatted setup labels agree between inline phrases and grouped actions', () => {
+  const external = 'https://accounts.example.com/auth';
+  const website = `/browser-connect/${'f'.repeat(43)}`;
+  const variants = [
+    { text: `[Connect **Gmail**](${external})`, href: external, label: 'Connect Gmail' },
+    { text: `[**Connect *Gmail***](${external})`, href: external, label: 'Connect Gmail' },
+    { text: `[Connect \`Gmail\`](${external})`, href: external, label: 'Connect Gmail' },
+    {
+      text: `<a href="${external}"><strong>Connect <em>Gmail</em></strong></a>`,
+      href: external,
+      label: 'Connect Gmail',
+    },
+    {
+      text: `<a href="${external}"><span>Connect&nbsp;G&#109;ail</span></a>`,
+      href: external,
+      label: 'Connect Gmail',
+    },
+    { text: '[**Add *login***](/vault/formatted)', href: '/vault/formatted', label: 'Add login' },
+    { text: '[**Arbitrary label**](/vault/formatted)', href: '/vault/formatted', label: 'Vault' },
+    { text: `[Continue **sign-in**](${website})`, href: website, label: 'Continue sign-in' },
+  ];
+  for (const { text, href, label } of variants) {
+    const actions = messageSetupLinks(text, origin);
+    assert.equal(actions.length, 1, text);
+    assert.equal(actions[0].href, href, text);
+    assert.equal(actions[0].label, label, text);
+    const [body, group] = render(text).split('<div class="setup-group">');
+    assert.ok(body.includes(`<strong class="setup-phrase">${label}</strong>`), text);
+    assert.doesNotMatch(body, /<a /, text);
+    assert.equal((group.match(/<a /g) ?? []).length, 1, text);
+    assert.ok(group.includes(`${label}</a>`), text);
+  }
+  const ordinary = render(`[Read **Gmail docs**](${external})`);
+  assert.doesNotMatch(ordinary, /setup-group|setup-phrase/);
+  assert.match(ordinary, /Read <strong>Gmail docs<\/strong>/);
+});

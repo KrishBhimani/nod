@@ -22,6 +22,7 @@ test(
       () => admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`),
       () => admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`),
     ];
+    const errors: unknown[] = [];
     try {
       await admin.query(`CREATE SCHEMA ${schema}`);
       const databaseUrl = new URL(process.env.TEST_DATABASE_URL!);
@@ -86,8 +87,9 @@ test(
       const longer = await get<MessageHistoryPage>(`/api/messages?${query}`);
       assert.equal(longer.messages.length, 60);
       assert.equal(longer.hasMore, true);
+    } catch (error) {
+      errors.push(error);
     } finally {
-      const errors: unknown[] = [];
       for (const cleanup of cleanups.reverse()) {
         try {
           await cleanup();
@@ -95,7 +97,9 @@ test(
           errors.push(error);
         }
       }
-      if (errors.length) throw new AggregateError(errors, 'History fixture cleanup failed.');
     }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length)
+      throw new AggregateError(errors, 'History fixture or cleanup failed.', { cause: errors[0] });
   },
 );

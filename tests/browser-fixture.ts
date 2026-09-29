@@ -35,6 +35,8 @@ export function createBrowserFixture(options: Options, preferRealSocket = false)
           } catch {
             throw new DaemonCommandError();
           }
+          if (!response || typeof response !== 'object' || Array.isArray(response))
+            throw new DaemonCommandError();
           const info = response.data;
           if (
             info?.active &&
