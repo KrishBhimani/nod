@@ -2281,7 +2281,7 @@ async function seedCodeTurns(pool: pg.Pool) {
 }
 
 test(
-  'automatic email codes use a recent selected account once and recheck task, page and mailbox before fill',
+  'automatic email codes bind page delivery to a recent account and recheck task, page and mailbox before filling once',
   { skip: !process.env.TEST_DATABASE_URL },
   async (t) => {
     const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
@@ -2306,12 +2306,14 @@ test(
     let lookup: (() => Promise<void>) | undefined;
     let available = true;
     let reject = false;
+    let injectionFailure = false;
     let resultCode: string | undefined = code;
     const vault = await createVault(pool, {
       keyStore: { id: 'fixture', configured: true, getKey: async () => randomKey },
       inspect: async (id) => pages.get(id)!,
       inject: async (value) => {
         injected.push({ threadId: value.threadId, code: value.code });
+        if (injectionFailure && value.kind === 'otp') throw new Error('Uncertain code submission.');
         if (value.kind === 'password') pages.set(value.threadId, inspection('otp'));
         return { status: reject && value.kind === 'otp' ? 'rejected' : 'submitted' };
       },
@@ -2322,7 +2324,7 @@ test(
         assert.equal(request.recipient, username);
         assert.equal(request.origin, origin);
         assert.equal(request.length, 6);
-        assert.ok(request.after > Date.now() - 35_000);
+        assert.ok(request.after > Date.now() - 5 * 60_000 - 1000);
         assert.ok(request.before <= Date.now());
         assert.equal(signal.aborted, false);
         await lookup?.();
@@ -2340,10 +2342,10 @@ test(
     ).json();
     assert.ok(saved.id);
     const page = (id: string) => pages.get(task(id).threadId)!;
-    const start = async (id: string) => {
+    const start = async (id: string, entryId = saved.id) => {
       const turn = await turns.start(id);
       pages.set(turn.threadId, inspection('password'));
-      await vault.fillSaved(turn, owner, saved.id, input);
+      await vault.fillSaved(turn, owner, entryId, input);
       assert.equal(page(id).fields[0]?.kind, 'otp');
     };
     const fill = (id: string) => vault.fillEmailCode(task(id), owner, otpInput);
@@ -2370,6 +2372,12 @@ test(
         'no-metadata',
         async (id: string) => {
           delete page(id).emailCode;
+        },
+      ],
+      [
+        'mismatched-masked-recipient',
+        async (id: string) => {
+          page(id).emailCode = { recipientHint: 'someone***@example.com', length: 6 };
         },
       ],
       [
@@ -2411,6 +2419,100 @@ test(
     await start('wrong-owner');
     assert.equal(await vault.fillEmailCode(task('wrong-owner'), 'other', otpInput), false);
     assert.equal(read, 2);
+    for (const [id, delivery] of [
+      ['masked', { recipientHint: 'o***@example.com', length: 6 }],
+      ['masked-bullets', { recipientHint: 'ow•••@example.com', length: 6 }],
+      ['selected-without-recipient', { length: 6 }],
+    ] as const) {
+      await start(id);
+      page(id).emailCode = delivery;
+      assert.equal(await fill(id), true, id);
+      assert.equal(await fill(id), false, id);
+    }
+    const direct = await turns.start('direct-email');
+    pages.set(direct.threadId, inspection('otp'));
+    assert.equal(await fill('direct-email'), true);
+    assert.equal(await fill('direct-email'), false);
+    const nonEmailLogin = (
+      await app.inject({
+        method: 'POST',
+        url: '/api/vault',
+        payload: {
+          ...input,
+          kind: 'login',
+          username: 'synthetic-tax-identifier',
+          password: 'fixture-private-password',
+        },
+      })
+    ).json();
+    assert.ok(nonEmailLogin.id);
+    await start('non-email-login', nonEmailLogin.id);
+    assert.equal(await fill('non-email-login'), true);
+    for (const [id, delivery] of [
+      ['non-email-login-mask', { recipientHint: 'o***@example.com', length: 6 }],
+      ['non-email-login-missing', { length: 6 }],
+    ] as const) {
+      await start(id, nonEmailLogin.id);
+      page(id).emailCode = delivery;
+      const before: number = read;
+      assert.equal(await fill(id), false, id);
+      assert.equal(read, before, id);
+    }
+    for (const [id, delivery] of [
+      ['unbound-mask', { recipientHint: 'o***@example.com', length: 6 }],
+      ['unbound-recipient', { length: 6 }],
+    ] as const) {
+      const turn = await turns.start(id);
+      pages.set(turn.threadId, { ...inspection('otp'), emailCode: delivery });
+      const before: number = read;
+      assert.equal(await fill(id), false, id);
+      assert.equal(read, before, id);
+    }
+    const stale = await turns.start('stale-direct-email');
+    pages.set(stale.threadId, inspection('otp'));
+    await pool.query("UPDATE turns SET started_at=now()-interval '6 minutes' WHERE id=$1", [
+      stale.turnId,
+    ]);
+    const readsBeforeStale = read;
+    assert.equal(await fill('stale-direct-email'), false);
+    assert.equal(read, readsBeforeStale);
+    for (const [id, change] of [
+      [
+        'cancelled-direct-email',
+        async (turn: TurnRef) => {
+          await pool.query("UPDATE turns SET status='cancelled' WHERE id=$1", [turn.turnId]);
+        },
+      ],
+      [
+        'expired-direct-email',
+        async (turn: TurnRef) => {
+          await pool.query("UPDATE turns SET started_at=now()-interval '6 minutes' WHERE id=$1", [
+            turn.turnId,
+          ]);
+        },
+      ],
+      [
+        'changed-direct-email',
+        async (turn: TurnRef) => {
+          pages.get(turn.threadId)!.emailCode!.recipient = 'different@example.com';
+        },
+      ],
+    ] as const) {
+      const turn = await turns.start(id);
+      pages.set(turn.threadId, inspection('otp'));
+      lookup = () => change(turn);
+      const before = injected.length;
+      assert.equal(await fill(id), false, id);
+      assert.equal(injected.length, before, id);
+    }
+    lookup = undefined;
+    await start('uncertain-submission');
+    injectionFailure = true;
+    const attemptsBeforeUncertain = injected.length;
+    assert.equal(await fill('uncertain-submission'), false);
+    assert.equal(await fill('uncertain-submission'), false);
+    assert.equal(injected.length, attemptsBeforeUncertain + 1);
+    injectionFailure = false;
     for (const [id, change] of [
       [
         'late-cancel',

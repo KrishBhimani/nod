@@ -21,6 +21,25 @@ export function normalizedEmail(value: string) {
   return result.success ? result.data : undefined;
 }
 
+export function verificationRecipient(
+  delivery: { recipient?: string; recipientHint?: string },
+  selected?: string,
+) {
+  const recipient = normalizedEmail(delivery.recipient ?? '');
+  if (delivery.recipient && (!recipient || (selected && recipient !== selected))) return;
+  if (delivery.recipientHint) {
+    const hint = delivery.recipientHint.trim().toLowerCase();
+    if (!selected || hint.length > 320 || !/^[a-z0-9._%+*•-]+@[a-z0-9.*•-]+\.[a-z]{2,}$/.test(hint))
+      return;
+    const pattern = hint
+      .split(/[*•]+/)
+      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('.+');
+    if (!new RegExp(`^${pattern}$`).test(selected)) return;
+  }
+  return recipient ?? selected;
+}
+
 export function verificationSenderDomain(origin: string) {
   try {
     const url = new URL(origin);

@@ -159,7 +159,9 @@ export async function createChatVerification(
         const waiting = await client.query(
           `SELECT 1 FROM credential_requests r JOIN turns u ON u.id=r.turn_id
            WHERE r.owner_id=$1 AND u.owner_id=$1 AND u.channel=$2 AND r.thread_id=$4
-             AND r.kind='otp' AND r.status='pending' AND r.expires_at>now()
+             AND r.kind='otp' AND (r.expires_at>now() OR $3::uuid IS NOT NULL OR
+               NOT EXISTS(SELECT 1 FROM turns newer WHERE newer.owner_id=$1 AND newer.thread_id=$4
+                 AND newer.source='user' AND newer.id<>u.id AND newer.started_at>u.started_at))
              AND ($3::uuid IS NULL OR r.turn_id=$3) LIMIT 1`,
           [options.ownerId, channel, turnId ?? null, thread.id],
         );

@@ -17,7 +17,12 @@ import type { CredentialKind, CredentialSubmission, LoginInspection } from '../p
 import type { CredentialKeyStore } from '../ports/key-store.ts';
 import type { SiteIcon } from '../ports/link-preview.ts';
 import type { CredentialInvitation } from '../ports/agent.ts';
-import { normalizedEmail, type EmailCodeRequest, type PrivateEmailCode } from './email-code.ts';
+import {
+  normalizedEmail,
+  verificationRecipient,
+  type EmailCodeRequest,
+  type PrivateEmailCode,
+} from './email-code.ts';
 import { ownerId as owner } from './config.ts';
 import type { WorkAdmission } from './work-admission.ts';
 import type { TurnRef } from './thread.ts';
@@ -711,12 +716,12 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     ownerId: string,
     lock = '',
   ) {
-    const { rows } = await database.query(
-      `SELECT u.id FROM turns u JOIN threads th ON th.id=u.thread_id
+    const { rows } = await database.query<{ id: string; started_at: Date | null }>(
+      `SELECT u.id,u.started_at FROM turns u JOIN threads th ON th.id=u.thread_id
        WHERE u.id=$1 AND u.owner_id=$2 AND u.thread_id=$3 AND u.status='running' AND th.archived_at IS NULL${lock}`,
       [turn.turnId, ownerId, turn.threadId],
     );
-    return rows.length === 1;
+    return rows.length === 1 ? rows[0] : undefined;
   }
 
   async function rootTurn(database: Pick<PoolClient, 'query'>, turn: TurnRef, ownerId: string) {
@@ -1621,27 +1626,29 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     let client: PoolClient | undefined;
     try {
       const origin = credentialOrigin(raw.origin);
-      const root = (await currentTurn(pool, turn, ownerId))
-        ? await rootTurn(pool, turn, ownerId)
-        : undefined;
-      const selected = root ? await selection(root, ownerId, origin) : undefined;
-      const enteredAt = selected?.credential_entered_at?.getTime();
+      const started = await currentTurn(pool, turn, ownerId);
+      const root = started ? await rootTurn(pool, turn, ownerId) : undefined;
+      if (!root) return false;
+      const selected = await selection(root, ownerId, origin);
+      const enteredAt = selected
+        ? selected.credential_entered_at?.getTime()
+        : started?.started_at?.getTime();
       if (
-        !root ||
-        !selected ||
         !enteredAt ||
         enteredAt < Date.now() - 5 * 60_000 ||
         enteredAt > Date.now() ||
-        selected.expires_at.getTime() <= Date.now()
+        (selected && selected.expires_at.getTime() <= Date.now())
       )
         return false;
-      const username = normalizedEmail(openCredential(await key(), selected).username);
+      const selectedUsername = selected
+        ? normalizedEmail(openCredential(await key(), selected).username)
+        : undefined;
       const fresh = await inspectRequest(turn.threadId, raw);
       const email = fresh.inspection.emailCode;
+      const username = email ? verificationRecipient(email, selectedUsername) : undefined;
       if (
         !username ||
         !email ||
-        normalizedEmail(email.recipient ?? '') !== username ||
         fresh.input.kind !== 'otp' ||
         fresh.inspection.origin !== origin ||
         !fresh.inspection.fields.some((field) => field.kind === 'otp') ||
@@ -1654,7 +1661,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
          AND status='running') ON CONFLICT(root_turn_id,owner_id,origin,kind)
          DO UPDATE SET entry_id=excluded.entry_id,attempted_at=now()
          WHERE credential_autofill_attempts.entry_id<>excluded.entry_id RETURNING root_turn_id`,
-        [root, ownerId, origin, selected.id, turn.turnId],
+        [root, ownerId, origin, selected?.id ?? root, turn.turnId],
       );
       if (!attempt.rowCount) return false;
       const signal = AbortSignal.timeout(8000);
@@ -1664,7 +1671,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
           {
             recipient: username,
             origin,
-            after: enteredAt - 30_000,
+            after: selected ? enteredAt - 30_000 : Date.now() - 5 * 60_000,
             before: Date.now(),
             length: email.length,
           },
@@ -1689,14 +1696,17 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       const retained = await selection(root, ownerId, origin, client);
       if (
         !current ||
-        !retained ||
-        retained.id !== selected.id ||
-        retained.expires_at.getTime() <= Date.now() ||
-        retained.credential_entered_at?.getTime() !== enteredAt
+        enteredAt < Date.now() - 5 * 60_000 ||
+        (selected
+          ? !retained ||
+            retained.id !== selected.id ||
+            retained.expires_at.getTime() <= Date.now() ||
+            retained.credential_entered_at?.getTime() !== enteredAt
+          : retained || current.started_at?.getTime() !== enteredAt)
       )
         throw new VaultError('This sign-in step changed.', 409);
       if (
-        retained.entry_id &&
+        retained?.entry_id &&
         !(
           await client.query(
             'SELECT id FROM vault_entries WHERE id=$1 AND owner_id=$2 AND origin=$3 FOR SHARE',
@@ -1709,7 +1719,10 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       if (
         verified.input.kind !== 'otp' ||
         verified.inspection.origin !== origin ||
-        normalizedEmail(verified.inspection.emailCode?.recipient ?? '') !== username ||
+        !verified.inspection.emailCode ||
+        verificationRecipient(verified.inspection.emailCode, selectedUsername) !== username ||
+        verified.inspection.emailCode.recipient !== email.recipient ||
+        verified.inspection.emailCode.recipientHint !== email.recipientHint ||
         verified.inspection.emailCode?.length !== email.length ||
         !verified.inspection.fields.some((field) => field.kind === 'otp') ||
         !verified.inspection.methods.some(
