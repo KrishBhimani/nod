@@ -298,7 +298,6 @@ test(
       let firstThreadId = '';
       const firstClientMessageId = randomUUID();
 
-      // Queue-level guarantees, checked before any worker consumes jobs.
       await t.test('turn and drain job roll back together in the caller transaction', async () => {
         const jobsBefore = await drainJobs(threadId);
         let rolledBackTurn = '';

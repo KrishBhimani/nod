@@ -270,90 +270,82 @@ test(
   },
 );
 
-for (const operation of ['execute'] as const)
-  test(
-    `disconnect during session creation prevents ${operation} on the removed account`,
-    { skip: !process.env.TEST_DATABASE_URL },
-    async () => {
-      const schema = `test_composio_${randomUUID().replaceAll('-', '')}`;
-      const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
-      await admin.query(`CREATE SCHEMA ${schema}`);
-      const pool = new pg.Pool({
-        connectionString: process.env.TEST_DATABASE_URL,
-        options: `-c search_path=${schema}`,
+test(
+  'disconnect during session creation prevents execute on the removed account',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async () => {
+    const schema = `test_composio_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+    });
+    const app = Fastify();
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let executed = 0;
+    const session: IntegrationSession = {
+      id: 'delayed-session',
+      authorize: async () => ({
+        accountId: 'ca-fixture',
+        url: 'https://fixture.example/connect',
+      }),
+      execute: async () => {
+        executed++;
+        return { successful: true };
+      },
+      search: async () => ({ tools: {}, suggestions: [] }),
+    };
+    const provider = fakeProvider(session);
+    provider.createSession = async () => {
+      entered();
+      await blocked;
+      return session;
+    };
+    const integrations = await createIntegrations(pool, {
+      ownerId: 'local-development',
+      provider,
+      baseUrl: 'http://localhost:4310',
+      wake: async () => {},
+    });
+    integrations.registerRoutes(app);
+    let action: Promise<unknown> | undefined;
+    try {
+      const { rows } = await pool.query<{ id: string }>(
+        "INSERT INTO app_connections(owner_id,slug,account_id,provider_id) VALUES ('local-development','gmail','ca-fixture','fixture') RETURNING id",
+      );
+      const args = { connectionId: rows[0]!.id, recipient_email: 'fixture@example.test' };
+      action = integrations.executeApproved('local-development', 'GMAIL_SEND_EMAIL', args);
+      const outcome = action.then(
+        () => 'executed',
+        () => 'rejected',
+      );
+      await started;
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/apps/gmail/accounts/${rows[0]!.id}/disconnect`,
       });
-      const app = Fastify();
-      let entered!: () => void;
-      let release!: () => void;
-      const started = new Promise<void>((resolve) => {
-        entered = resolve;
-      });
-      const blocked = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      let executed = 0;
-      const session: IntegrationSession = {
-        id: 'delayed-session',
-        authorize: async () => ({
-          accountId: 'ca-fixture',
-          url: 'https://fixture.example/connect',
-        }),
-        execute: async () => {
-          executed++;
-          return { successful: true };
-        },
-        search: async () => ({ tools: {}, suggestions: [] }),
-        download: async () => {
-          executed++;
-          return { name: 'fixture.csv', mimeType: 'text/csv', bytes: new Uint8Array([65]) };
-        },
-      };
-      const provider = fakeProvider(session);
-      provider.createSession = async () => {
-        entered();
-        await blocked;
-        return session;
-      };
-      const integrations = await createIntegrations(pool, {
-        ownerId: 'local-development',
-        provider,
-        baseUrl: 'http://localhost:4310',
-        wake: async () => {},
-      });
-      integrations.registerRoutes(app);
-      let action: Promise<unknown> | undefined;
-      try {
-        const { rows } = await pool.query<{ id: string }>(
-          "INSERT INTO app_connections(owner_id,slug,account_id,provider_id) VALUES ('local-development','gmail','ca-fixture','fixture') RETURNING id",
-        );
-        const args = { connectionId: rows[0]!.id, recipient_email: 'fixture@example.test' };
-        action =
-          operation === 'execute'
-            ? integrations.executeApproved('local-development', 'GMAIL_SEND_EMAIL', args)
-            : integrations.download('local-development', 'GMAIL_GET_ATTACHMENT', args);
-        const outcome = action.then(
-          () => 'executed',
-          () => 'rejected',
-        );
-        await started;
-        const response = await app.inject({
-          method: 'POST',
-          url: `/api/apps/gmail/accounts/${rows[0]!.id}/disconnect`,
-        });
-        assert.equal(response.statusCode, 200);
-        release();
-        assert.equal(await outcome, 'rejected');
-        assert.equal(executed, 0);
-      } finally {
-        release();
-        await action?.catch(() => {});
-        await app.close();
-        await pool.end();
-        await admin.query(`DROP SCHEMA ${schema} CASCADE`);
-        await admin.end();
-      }
-    },
-  );
+      assert.equal(response.statusCode, 200);
+      release();
+      assert.equal(await outcome, 'rejected');
+      assert.equal(executed, 0);
+    } finally {
+      release();
+      await action?.catch(() => {});
+      await app.close();
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);
 
 test(
   'connection callback requires its saved attempt and a provider-verified active account',

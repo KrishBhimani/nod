@@ -251,6 +251,7 @@ export function createSchedules(dependencies: ScheduleDependencies) {
           sourceId: `schedule:${row.id}:${row.revision}:${job.data.scheduledFor}`,
           source: 'schedule',
           channel: row.deliveryChannel,
+          channelSourceId: row.channelSourceId,
           background: true,
           client,
         },

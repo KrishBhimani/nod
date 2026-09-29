@@ -400,6 +400,20 @@ test('explicit hosted providers remain supported in both deployment environments
   }
 });
 
+test('unsupported container classes fail before publishing without echoing configuration', async () => {
+  for (const className of ['UnknownContainer', '__proto__', undefined]) {
+    const config = configuration(false);
+    config.env.production.containers.push({ class_name: className });
+    await assert.rejects(
+      deploy('production', variables, {
+        config,
+        command: () => assert.fail('Invalid classes must not publish.'),
+      }),
+      { message: 'The deployment has an unsupported container class.' },
+    );
+  }
+});
+
 test('deployment publishes all images before uploading code and secrets, cleans private files', async () => {
   const commands = [];
   const events = [];

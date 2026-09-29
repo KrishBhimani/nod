@@ -1159,6 +1159,16 @@ test(
             turn.turnId,
           ]);
           assert.equal(await thread.resumeAfterConnection(randomUUID(), 'linear'), false);
+          const cancelled = await newTurn('cancelled');
+          assert.equal(await thread.resumeAfterConnection(cancelled.turnId, 'linear'), false);
+          assert.equal(
+            (
+              await db.pool.query('SELECT 1 FROM turns WHERE source_id=$1', [
+                `connection:${cancelled.turnId}`,
+              ])
+            ).rowCount,
+            0,
+          );
           assert.equal(await thread.resumeAfterConnection(turn.turnId, 'linear'), true);
           assert.equal(await thread.resumeAfterConnection(turn.turnId, 'linear'), true);
           const connection = (

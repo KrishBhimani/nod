@@ -29,7 +29,7 @@ async function seedTurns(pool: pg.Pool) {
     'CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz)',
   );
   await pool.query(
-    "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text,started_at timestamptz)",
+    "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text,started_at timestamptz);CREATE TABLE approvals(owner_id text,turn_id uuid,execution_turn_id uuid)",
   );
   const threads = new Map<string, string>();
   const turn = async (owner = 'local-development') => {
@@ -844,7 +844,7 @@ test(
       'CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz)',
     );
     await pool.query(
-      "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text,started_at timestamptz)",
+      "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text,started_at timestamptz);CREATE TABLE approvals(owner_id text,turn_id uuid,execution_turn_id uuid)",
     );
     const threads = new Map<string, string>();
     const tasks = new Map<string, TurnRef>();
@@ -1196,7 +1196,7 @@ async function seedNamedTurns(pool: pg.Pool, names: string[], owner = 'local-dev
     'CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz)',
   );
   await pool.query(
-    "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text,started_at timestamptz,finished_at timestamptz)",
+    "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text,started_at timestamptz,finished_at timestamptz);CREATE TABLE approvals(owner_id text,turn_id uuid,execution_turn_id uuid)",
   );
   const threadId = randomUUID();
   await pool.query('INSERT INTO threads(id,owner_id) VALUES($1,$2)', [threadId, owner]);
@@ -1349,6 +1349,7 @@ test(
     await pool.query(`
       CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz);
       CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text,started_at timestamptz,finished_at timestamptz);
+      CREATE TABLE approvals(owner_id text,turn_id uuid,execution_turn_id uuid);
       CREATE TABLE vault_entries(id text PRIMARY KEY,owner_id text NOT NULL,label text NOT NULL,origin text NOT NULL,username_hint text NOT NULL,ciphertext text NOT NULL,updated_at timestamptz NOT NULL DEFAULT now(),identifier_label text NOT NULL DEFAULT '');
     `);
     const login = { id: randomUUID(), owner_id: owner, origin: 'https://login.example.test' };
@@ -1485,7 +1486,7 @@ test(
       'CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz)',
     );
     await pool.query(
-      "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running')",
+      "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running');CREATE TABLE approvals(owner_id text,turn_id uuid,execution_turn_id uuid)",
     );
     const key = randomBytes(32);
     const headers = { host: 'localhost:4310', origin: 'http://localhost:4310' };
@@ -1695,7 +1696,7 @@ test(
         'CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz)',
       );
       await pool.query(
-        "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text,started_at timestamptz)",
+        "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text,started_at timestamptz);CREATE TABLE approvals(owner_id text,turn_id uuid,execution_turn_id uuid)",
       );
       const threadId = randomUUID();
       await pool.query("INSERT INTO threads(id,owner_id) VALUES($1,'local-development')", [
@@ -2222,7 +2223,7 @@ async function seedCodeTurns(pool: pg.Pool) {
     'CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz)',
   );
   await pool.query(
-    "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text,started_at timestamptz)",
+    "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text,started_at timestamptz);CREATE TABLE approvals(owner_id text,turn_id uuid,execution_turn_id uuid)",
   );
   let threadId = '';
   const tasks = new Map<string, TurnRef>();

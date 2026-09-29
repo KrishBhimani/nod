@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import test from 'node:test';
+import { crc32 } from 'node:zlib';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
@@ -182,6 +183,7 @@ test('pinned HTTP transport sends no cookies or authorization and stops after bo
 test('image proxy provider accepts bounded raster data and rejects SVG, spoofed types and oversized dimensions', async () => {
   const oversized = Buffer.from(png);
   oversized.writeUInt32BE(100000, 16);
+  oversized.writeUInt32BE(crc32(oversized.subarray(12, 29)), 29);
   for (const [body, mime, expected] of [
     [png, 'image/png', true],
     [png, 'image/jpeg', false],

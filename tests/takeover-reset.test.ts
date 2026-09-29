@@ -26,42 +26,46 @@ test(
     const { createTakeover } = await import('../src/server/takeover.ts');
     const thread = await import('../src/server/thread.ts');
     const { ownerId } = await import('../src/server/config.ts');
-    const app = Fastify({ logger: false });
     const newerBrowser = randomUUID();
     let manualBrowser: string | undefined;
     let resumes = 0;
-    let restorations = 0;
+    const restorations: string[] = [];
     const currentSession = () => manualBrowser ?? newerBrowser;
-    createTakeover({
-      pool: db.pool,
-      ownerId,
-      enabled: () => true,
-      pause: thread.pauseForControl,
-      resume: async () => {
-        resumes++;
-        return { ok: true };
-      },
-      waitForThread: async () => {},
-      computer: {
-        async openSignIn(id) {
-          manualBrowser = id;
+    const mount = () => {
+      const app = Fastify({ logger: false });
+      createTakeover({
+        pool: db.pool,
+        ownerId,
+        enabled: () => true,
+        pause: thread.pauseForControl,
+        resume: async () => {
+          resumes++;
+          return { ok: true };
         },
-        async signInScreenshot() {
-          return Buffer.from('synthetic-frame');
+        waitForThread: async () => {},
+        computer: {
+          async openSignIn(id) {
+            manualBrowser = id;
+          },
+          async signInScreenshot() {
+            return Buffer.from('synthetic-frame');
+          },
+          async signInControl() {},
+          async finishSignIn(id) {
+            restorations.push(id);
+          },
+          async takeControl(id) {
+            manualBrowser = id;
+          },
+          async control() {},
+          async releaseControl(id) {
+            if (manualBrowser === id) manualBrowser = undefined;
+          },
         },
-        async signInControl() {},
-        async finishSignIn() {
-          restorations++;
-        },
-        async takeControl(id) {
-          manualBrowser = id;
-        },
-        async control() {},
-        async releaseControl(id) {
-          if (manualBrowser === id) manualBrowser = undefined;
-        },
-      },
-    }).registerRoutes(app);
+      }).registerRoutes(app);
+      return app;
+    };
+    const app = mount();
     try {
       await db.initializeDatabase();
       for (const route of ['start', 'sign-in']) {
@@ -98,7 +102,24 @@ test(
         );
       }
       assert.equal(resumes, 0);
-      assert.equal(restorations, 0);
+      assert.deepEqual(restorations, []);
+      const active = await thread.activeThread(db.pool);
+      const signIn = await app.inject({
+        method: 'POST',
+        url: '/api/inspector/control/sign-in',
+        payload: {},
+      });
+      assert.equal(signIn.statusCode, 200);
+      const restarted = mount();
+      const resumed = await restarted.inject({
+        method: 'POST',
+        url: '/api/inspector/control/resume',
+        payload: {},
+      });
+      await restarted.close();
+      assert.equal(resumed.statusCode, 200);
+      assert.deepEqual(restorations, [active.id]);
+      assert.equal(resumes, 1);
     } finally {
       await app.close();
       await db.pool.end();

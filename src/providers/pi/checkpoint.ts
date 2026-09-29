@@ -97,6 +97,7 @@ export async function createPiCheckpoint(options: {
   );
   if ((saved?.bytes.byteLength ?? 0) > rebaseAt)
     manager = rebaseSession(manager, SessionManager.inMemory(options.directory));
+  closeInterruptedCalls(manager);
   let version = saved?.version ?? null;
   let failed = false;
   let tail = Promise.resolve();

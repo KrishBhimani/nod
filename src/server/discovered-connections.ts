@@ -13,7 +13,7 @@ import type {
 import type { Connection } from '../shared/contracts.ts';
 import { integrationResultSnapshot } from './integration-result.ts';
 import type { createAppGrantVault } from './vault-app-grants.ts';
-import type { TurnRef } from './thread.ts';
+import { activeThread, type TurnRef } from './thread.ts';
 
 const pathSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -400,7 +400,7 @@ export async function createDiscoveredConnections(
           if (response.status < 200 || response.status >= 300) throw new Error();
         } else {
           const result = await options.runCli?.(
-            pending.thread_id ?? pending.id,
+            (await activeThread(pool, owner)).id,
             path.command,
             path.testArgs,
             path.envName,

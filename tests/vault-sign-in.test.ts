@@ -57,7 +57,7 @@ test(
       'CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz)',
     );
     await pool.query(
-      "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text,started_at timestamptz,finished_at timestamptz)",
+      "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text,started_at timestamptz,finished_at timestamptz);CREATE TABLE approvals(owner_id text,turn_id uuid,execution_turn_id uuid)",
     );
     const turns: Record<string, TurnRef> = {};
     const threads: Record<string, string> = {};
@@ -349,7 +349,7 @@ test(
       'CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,archived_at timestamptz)',
     );
     await pool.query(
-      "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text,started_at timestamptz,finished_at timestamptz)",
+      "CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text,status text NOT NULL DEFAULT 'running',waiting_reason text,started_at timestamptz,finished_at timestamptz);CREATE TABLE approvals(owner_id text,turn_id uuid,execution_turn_id uuid)",
     );
     const turns: Record<string, TurnRef> = {};
     const threads: Record<string, string> = {};

@@ -170,7 +170,7 @@ test('browser file validation bounds encoded bytes and rejects unsafe metadata',
 });
 
 test('no-target capture refuses replaced directories and unsafe native files', async (t) => {
-  const root = await mkdtemp('/tmp/sk-download-unsafe-');
+  const root = await mkdtemp(join(tmpdir(), 'sk-download-unsafe-'));
   try {
     for (const kind of ['symlink', 'hardlink', 'oversized', 'entries', 'directory'] as const) {
       await t.test(kind, async () => {
@@ -210,7 +210,7 @@ test('no-target capture refuses replaced directories and unsafe native files', a
 });
 
 test('browser captures refuse symlinks, partial files, multiple links and excessive file size', async () => {
-  const root = await mkdtemp('/tmp/sk-download-files-');
+  const root = await mkdtemp(join(tmpdir(), 'sk-download-files-'));
   try {
     const directory = join(root, 'downloads');
     await mkdir(directory);
@@ -238,107 +238,116 @@ test(
     timeout: 180_000,
   },
   async (t) => {
-    const root = await mkdtemp('/tmp/sk-download-bridge-');
-    const fixture = await createBrowserDownloadFixture();
-    const bridge = await createDownloadBrowser(root);
-    const computer = bridge.computer;
+    const root = await mkdtemp(join(tmpdir(), 'sk-download-bridge-'));
     try {
-      assert.equal((await fetch(`${fixture.origin}/invoice.pdf`)).status, 403);
-      for (const [id, input] of [
-        ['attachment', { selector: '#download', name: 'invoice.pdf' }],
-        ['inline-url', { url: `${fixture.origin}/inline.pdf`, name: 'invoice.pdf' }],
-        ['blob', { selector: '#blob', name: 'invoice.pdf' }],
-        ['blob-anchor', { selector: '#blob-anchor', name: 'invoice.pdf' }],
-      ] as const) {
-        await computer.act(id, { action: 'open', url: `${fixture.origin}/session` });
-        const before = fixture.authenticatedDownloads();
-        const file = await computer.download!(id, input);
-        assert.equal(fixture.authenticatedDownloads(), before + 1);
-        assert.deepEqual(file, {
-          bytes: browserDownloadPdf,
-          name: 'invoice.pdf',
-          mimeType: 'application/pdf',
-        });
-      }
-      await computer.act('cross-inline', { action: 'open', url: `${fixture.origin}/session` });
-      const redirected = fixture.authenticatedDownloads();
-      await assert.rejects(
-        computer.download!('cross-inline', { url: `${fixture.origin}/redirect.pdf` }),
-      );
-      assert.equal(fixture.authenticatedDownloads(), redirected + 1);
-      await computer.act('cross-inline', {
-        action: 'open',
-        url: `${fixture.crossOrigin}/inline.pdf`,
-      });
-      assert.deepEqual((await computer.download!('cross-inline', {})).bytes, browserDownloadPdf);
-      await computer.act('blob-anchor', { action: 'click', selector: '#download' });
-      assert.deepEqual((await computer.download!('blob-anchor', {})).bytes, browserDownloadPdf);
-      await computer.act('current-inline', { action: 'open', url: `${fixture.origin}/session` });
-      await computer.act('current-inline', { action: 'click', selector: '#download' });
-      await computer.act('current-inline', {
-        action: 'open',
-        url: `${fixture.origin}/inline.pdf?version=current`,
-      });
-      assert.deepEqual(
-        (await computer.download!('current-inline', {})).bytes,
-        Buffer.concat([browserDownloadPdf, Buffer.from('% current document\n')]),
-      );
-      await computer.close('attachment');
-      await computer.act('popup', { action: 'open', url: `${fixture.origin}/session` });
-      await computer.act('popup', { action: 'click', selector: '#popup' });
-      assert.deepEqual(
-        (await computer.download!('popup', { name: 'popup.pdf' })).bytes,
-        browserDownloadPdf,
-      );
-      await assert.rejects(computer.download!('unrelated-task', {}));
-      await assert.rejects(computer.download!('popup', { url: 'file:///etc/passwd' }));
-      assert.equal(fixture.unauthenticatedDownloads(), 1);
-      for (const [id, input] of [
-        ['cross-selector', { selector: '#cross-origin', name: 'hosted.pdf' }],
-        ['cross-url', { url: `${fixture.crossOrigin}/invoice.pdf`, name: 'hosted.pdf' }],
-      ] as const) {
-        await t.test(id, async () => {
-          await computer.act(id, { action: 'open', url: `${fixture.origin}/session` });
-          const before = fixture.authenticatedDownloads();
-          assert.deepEqual((await computer.download!(id, input)).bytes, browserDownloadPdf);
-          assert.equal(fixture.authenticatedDownloads(), before + 1);
-        });
-      }
-      await computer.act('large', { action: 'open', url: `${fixture.origin}/session` });
-      const downloads = join(bridge.browserRoot(), 'runtime', 'downloads', 'large');
-      await mkdir(downloads, { recursive: true });
-      await writeFile(join(downloads, 'previous.pdf'), browserDownloadPdf);
-      await writeFile(join(downloads, 'previous.crdownload'), 'preexisting partial');
-      await assert.rejects(computer.download!('large', { selector: '#large' }));
-      assert.deepEqual((await readdir(downloads)).sort(), ['previous.crdownload', 'previous.pdf']);
-      assert.deepEqual(await readFile(join(downloads, 'previous.pdf')), browserDownloadPdf);
-      assert.equal(
-        await readFile(join(downloads, 'previous.crdownload'), 'utf8'),
-        'preexisting partial',
-      );
-      await computer.act('slow', { action: 'open', url: `${fixture.origin}/session` });
-      const slowDirectory = join(bridge.browserRoot(), 'runtime', 'downloads', 'slow');
-      await mkdir(slowDirectory, { recursive: true });
-      await writeFile(join(slowDirectory, 'previous.pdf'), browserDownloadPdf);
-      const abort = new AbortController();
-      const failed = assert.rejects(
-        computer.download!('slow', { selector: '#slow' }, abort.signal),
-      );
-      await fixture.slowDownloadStarted();
-      abort.abort();
-      await failed;
-      assert.deepEqual(await readdir(slowDirectory), ['previous.pdf']);
-      assert.deepEqual(await readFile(join(slowDirectory, 'previous.pdf')), browserDownloadPdf);
-    } finally {
+      const fixture = await createBrowserDownloadFixture();
       try {
-        await bridge.close();
-      } finally {
+        const bridge = await createDownloadBrowser(root);
+        const computer = bridge.computer;
         try {
-          await fixture.close();
+          assert.equal((await fetch(`${fixture.origin}/invoice.pdf`)).status, 403);
+          for (const [id, input] of [
+            ['attachment', { selector: '#download', name: 'invoice.pdf' }],
+            ['inline-url', { url: `${fixture.origin}/inline.pdf`, name: 'invoice.pdf' }],
+            ['blob', { selector: '#blob', name: 'invoice.pdf' }],
+            ['blob-anchor', { selector: '#blob-anchor', name: 'invoice.pdf' }],
+          ] as const) {
+            await computer.act(id, { action: 'open', url: `${fixture.origin}/session` });
+            const before = fixture.authenticatedDownloads();
+            const file = await computer.download!(id, input);
+            assert.equal(fixture.authenticatedDownloads(), before + 1);
+            assert.deepEqual(file, {
+              bytes: browserDownloadPdf,
+              name: 'invoice.pdf',
+              mimeType: 'application/pdf',
+            });
+          }
+          await computer.act('cross-inline', { action: 'open', url: `${fixture.origin}/session` });
+          const redirected = fixture.authenticatedDownloads();
+          await assert.rejects(
+            computer.download!('cross-inline', { url: `${fixture.origin}/redirect.pdf` }),
+          );
+          assert.equal(fixture.authenticatedDownloads(), redirected + 1);
+          await computer.act('cross-inline', {
+            action: 'open',
+            url: `${fixture.crossOrigin}/inline.pdf`,
+          });
+          assert.deepEqual(
+            (await computer.download!('cross-inline', {})).bytes,
+            browserDownloadPdf,
+          );
+          await computer.act('blob-anchor', { action: 'click', selector: '#download' });
+          assert.deepEqual((await computer.download!('blob-anchor', {})).bytes, browserDownloadPdf);
+          await computer.act('current-inline', {
+            action: 'open',
+            url: `${fixture.origin}/session`,
+          });
+          await computer.act('current-inline', { action: 'click', selector: '#download' });
+          await computer.act('current-inline', {
+            action: 'open',
+            url: `${fixture.origin}/inline.pdf?version=current`,
+          });
+          assert.deepEqual(
+            (await computer.download!('current-inline', {})).bytes,
+            Buffer.concat([browserDownloadPdf, Buffer.from('% current document\n')]),
+          );
+          await computer.close('attachment');
+          await computer.act('popup', { action: 'open', url: `${fixture.origin}/session` });
+          await computer.act('popup', { action: 'click', selector: '#popup' });
+          assert.deepEqual(
+            (await computer.download!('popup', { name: 'popup.pdf' })).bytes,
+            browserDownloadPdf,
+          );
+          await assert.rejects(computer.download!('unrelated-task', {}));
+          await assert.rejects(computer.download!('popup', { url: 'file:///etc/passwd' }));
+          assert.equal(fixture.unauthenticatedDownloads(), 1);
+          for (const [id, input] of [
+            ['cross-selector', { selector: '#cross-origin', name: 'hosted.pdf' }],
+            ['cross-url', { url: `${fixture.crossOrigin}/invoice.pdf`, name: 'hosted.pdf' }],
+          ] as const) {
+            await t.test(id, async () => {
+              await computer.act(id, { action: 'open', url: `${fixture.origin}/session` });
+              const before = fixture.authenticatedDownloads();
+              assert.deepEqual((await computer.download!(id, input)).bytes, browserDownloadPdf);
+              assert.equal(fixture.authenticatedDownloads(), before + 1);
+            });
+          }
+          await computer.act('large', { action: 'open', url: `${fixture.origin}/session` });
+          const downloads = join(bridge.browserRoot(), 'runtime', 'downloads', 'large');
+          await mkdir(downloads, { recursive: true });
+          await writeFile(join(downloads, 'previous.pdf'), browserDownloadPdf);
+          await writeFile(join(downloads, 'previous.crdownload'), 'preexisting partial');
+          await assert.rejects(computer.download!('large', { selector: '#large' }));
+          assert.deepEqual((await readdir(downloads)).sort(), [
+            'previous.crdownload',
+            'previous.pdf',
+          ]);
+          assert.deepEqual(await readFile(join(downloads, 'previous.pdf')), browserDownloadPdf);
+          assert.equal(
+            await readFile(join(downloads, 'previous.crdownload'), 'utf8'),
+            'preexisting partial',
+          );
+          await computer.act('slow', { action: 'open', url: `${fixture.origin}/session` });
+          const slowDirectory = join(bridge.browserRoot(), 'runtime', 'downloads', 'slow');
+          await mkdir(slowDirectory, { recursive: true });
+          await writeFile(join(slowDirectory, 'previous.pdf'), browserDownloadPdf);
+          const abort = new AbortController();
+          const failed = assert.rejects(
+            computer.download!('slow', { selector: '#slow' }, abort.signal),
+          );
+          await fixture.slowDownloadStarted();
+          abort.abort();
+          await failed;
+          assert.deepEqual(await readdir(slowDirectory), ['previous.pdf']);
+          assert.deepEqual(await readFile(join(slowDirectory, 'previous.pdf')), browserDownloadPdf);
         } finally {
-          await rm(root, { recursive: true, force: true });
+          await bridge.close();
         }
+      } finally {
+        await fixture.close();
       }
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   },
 );

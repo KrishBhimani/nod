@@ -702,6 +702,9 @@ test('a restored durable session closes dangling tool calls before the next prom
   });
   dangling(saved.manager, ['call-one']);
   await saved.checkpoint();
+  await createPiCheckpoint({ ...f, directory: join(f.directory, 'reload') });
+  const persisted = await f.store.read(`sessions/${f.threadId}.jsonl`, 16 * 1024 * 1024);
+  assert.match(Buffer.from(persisted!.bytes).toString('utf8'), /outcome is unknown/);
   const agent = createPiAgent({
     provider: 'openai',
     apiKey: 'fixture',
@@ -861,8 +864,28 @@ test('bash output larger than Pi limits stays in the sandbox and never creates h
     run('bash', { command: 'sleep 5', timeout: 1 }),
     /timed out after 1 seconds/,
   );
+  await assert.rejects(run('bash', { command: 'exit 124' }), /Command exited with code 124/);
   const after = (await readdir(tmpdir())).filter((name) => name.startsWith('pi-bash-'));
   assert.deepEqual(after, before);
+});
+
+test('find honors exclusions and a failed chunked write leaves the existing file intact', async (t) => {
+  const { root, workspace, run } = await hostSandbox(t);
+  await mkdir(join(root, 'workspace/node_modules/pkg'), { recursive: true });
+  await mkdir(join(root, 'workspace/.git'), { recursive: true });
+  await writeFile(join(root, 'workspace/node_modules/pkg/hidden.txt'), 'x');
+  await writeFile(join(root, 'workspace/.git/hidden.txt'), 'x');
+  await writeFile(join(root, 'workspace/kept.txt'), 'original');
+  assert.equal(await run('find', { pattern: '*.txt' }), 'kept.txt');
+  const exec = workspace.exec;
+  workspace.exec = (command, options) =>
+    command.includes('>>') ? Promise.resolve({ exitCode: 1 }) : exec(command, options);
+  await assert.rejects(run('write', { path: 'kept.txt', content: 'y'.repeat(600 * 1024) }));
+  assert.equal(await readFile(join(root, 'workspace/kept.txt'), 'utf8'), 'original');
+  assert.deepEqual(
+    (await readdir(join(root, 'workspace'))).filter((name) => name.endsWith('.tmp')),
+    [],
+  );
 });
 
 test('bash receives no host environment and small outputs leave no saved file', async (t) => {

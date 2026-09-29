@@ -78,7 +78,7 @@ export function createSignIn({ context, computer, pause }: Turn) {
         message:
           'Several sign-in methods are available. Ask the user which one unless they already chose, then call sign_in select_method.',
       };
-    if (methods.length === 1 && methods[0].id !== 'credentials')
+    if (methods.length === 1 && !chosen && methods[0].id !== 'credentials')
       return selectMethod(login.origin, methods[0].id);
     if (login.fields.length === 0)
       return {

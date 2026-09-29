@@ -147,33 +147,36 @@ describe('account routes', () => {
     assert.deepEqual(f.calls.writes, []);
   });
 
-  test('a revoked session cannot finish onboarding after a late successful preparation', async (t) => {
-    let finish!: () => void;
-    let started!: () => void;
-    const pending = new Promise<void>((resolve) => {
-      finish = resolve;
-    });
-    const entered = new Promise<void>((resolve) => {
-      started = resolve;
-    });
-    const f = await fixture(async () => {
-      started();
-      await pending;
-    });
-    t.after(() => f.app.close());
-    const response = f.app.inject({
-      method: 'PATCH',
-      url: '/api/account',
-      headers: { origin: 'https://otto.example.test', cookie: 'fixture=alex' },
-      payload: { onboardingCompleted: true },
-    });
-    void response.then(() => {});
-    await entered;
-    f.revoke();
-    finish();
-    assert.equal((await response).statusCode, 401);
-    assert.deepEqual(f.calls.writes, []);
-  });
+  test(
+    'a revoked session cannot finish onboarding after a late successful preparation',
+    { timeout: 10_000 },
+    async (t) => {
+      let finish!: () => void;
+      let started!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      const entered = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const f = await fixture(async () => {
+        started();
+        await pending;
+      });
+      t.after(() => f.app.close());
+      const response = f.app.inject({
+        method: 'PATCH',
+        url: '/api/account',
+        headers: { origin: 'https://otto.example.test', cookie: 'fixture=alex' },
+        payload: { onboardingCompleted: true },
+      });
+      await entered;
+      f.revoke();
+      finish();
+      assert.equal((await response).statusCode, 401);
+      assert.deepEqual(f.calls.writes, []);
+    },
+  );
 
   test('account changes require same origin and matching principal and reject identity overrides', async () => {
     const { app, calls, records } = await fixture();

@@ -37,7 +37,7 @@ export async function initializeDatabase() {
     CREATE TABLE IF NOT EXISTS turns (
       id uuid PRIMARY KEY, owner_id text NOT NULL, thread_id uuid NOT NULL REFERENCES threads(id),
       source text NOT NULL, source_id text, message_id uuid, prompt text NOT NULL,
-      channel text NOT NULL DEFAULT 'web', status text NOT NULL DEFAULT 'queued', waiting_reason text,
+      channel text NOT NULL DEFAULT 'web', channel_source_id text, status text NOT NULL DEFAULT 'queued', waiting_reason text,
       background boolean NOT NULL DEFAULT false, read_only boolean NOT NULL DEFAULT false,
       error text,
       created_at timestamptz NOT NULL DEFAULT now(), started_at timestamptz, finished_at timestamptz

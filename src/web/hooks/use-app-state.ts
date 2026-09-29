@@ -21,6 +21,8 @@ export function useAppState(accountId?: string) {
     if (next === threadId.current) return;
     if (threadId.current) {
       retiredThreads.current.add(threadId.current);
+      const [oldest] = retiredThreads.current;
+      if (retiredThreads.current.size > 20 && oldest) retiredThreads.current.delete(oldest);
       requestVersion.current++;
     }
     threadId.current = next;

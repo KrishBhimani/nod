@@ -23,7 +23,7 @@ export function createTakeover(dependencies: {
   waitForThread(threadId: string): Promise<void>;
 }) {
   let queue: Promise<unknown> = Promise.resolve();
-  let session: { threadId: string; mode: 'manual' | 'sign_in' } | undefined;
+  let session: { threadId: string; mode: 'manual' | 'sign_in'; expiresAt: number } | undefined;
   const signInAvailable = () =>
     Boolean(
       dependencies.computer.openSignIn &&
@@ -61,15 +61,20 @@ export function createTakeover(dependencies: {
     }
     if (session === current) session = undefined;
   }
-  async function state() {
+  async function pausedThread() {
     const thread = (
       await dependencies.pool.query(
         'SELECT id,status FROM threads WHERE owner_id=$1 AND archived_at IS NULL',
         [dependencies.ownerId],
       )
     ).rows[0] as { id: string; status: string } | undefined;
-    const paused = thread?.status === 'manual_control';
-    if (session && (!paused || session.threadId !== thread?.id)) await release();
+    return thread?.status === 'manual_control' ? thread.id : undefined;
+  }
+  async function state() {
+    const threadId = await pausedThread();
+    const paused = Boolean(threadId);
+    if (session && (session.threadId !== threadId || session.expiresAt <= Date.now()))
+      await release();
     return {
       paused,
       active: Boolean(session),
@@ -121,7 +126,7 @@ export function createTakeover(dependencies: {
         await dependencies.computer.releaseControl(threadId).catch(() => {});
         throw unavailable();
       }
-      session = { threadId, mode };
+      session = { threadId, mode, expiresAt: Date.now() + 30 * 60_000 };
       await controlled();
       return { mode, resumable: true };
     });
@@ -178,16 +183,14 @@ export function createTakeover(dependencies: {
       .strict()
       .parse(body ?? {});
     return serialize(async () => {
-      if (!(await state()).paused) throw stale();
-      const control = session;
-      if (control) {
-        try {
-          await dependencies.computer.finishSignIn?.(control.threadId);
-        } catch {
-          throw unavailable();
-        }
-        await release();
+      const threadId = await pausedThread();
+      if (!threadId) throw stale();
+      try {
+        await dependencies.computer.finishSignIn?.(threadId);
+      } catch {
+        throw unavailable();
       }
+      await release();
       return dependencies.resume();
     });
   }

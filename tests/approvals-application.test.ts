@@ -17,6 +17,12 @@ test(
     const bossSchema = `test_personal_review_boss_${suffix}`;
     const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
     await admin.query(`CREATE SCHEMA ${schema}`);
+    t.after(async () => {
+      await admin.query(
+        `DROP SCHEMA IF EXISTS ${bossSchema} CASCADE; DROP SCHEMA ${schema} CASCADE`,
+      );
+      await admin.end();
+    });
     const url = new URL(process.env.TEST_DATABASE_URL!);
     url.searchParams.set('options', `-c search_path=${schema}`);
     process.env.DATABASE_URL = url.href;
@@ -270,10 +276,6 @@ test(
       await pool.end();
       for (const id of ids)
         await rm(join(dataRoot, 'workspaces', id), { recursive: true, force: true });
-      await admin.query(
-        `DROP SCHEMA IF EXISTS ${bossSchema} CASCADE; DROP SCHEMA ${schema} CASCADE`,
-      );
-      await admin.end();
     }
   },
 );

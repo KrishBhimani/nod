@@ -12,14 +12,14 @@ npm run dev
 
 The first run installs dependencies, creates `.env`, and starts PostgreSQL plus the workspace and browser containers. Open [http://localhost:4310](http://localhost:4310). Local mode serves one owner on `127.0.0.1` with no login.
 
-Configuration lives in the ignored `.env` (all settings are listed in `.env.example`; shell variables take priority; restart after edits):
+Configuration lives in the ignored `.env` (all local settings are listed in `.env.example`; shell variables take priority; restart after edits):
 
 | Setting                                  | Needed for                                                |
 | ---------------------------------------- | --------------------------------------------------------- |
 | `LLM_PROVIDER=openai` + `OPENAI_API_KEY` | Chat (required; or `anthropic` + `ANTHROPIC_API_KEY`)     |
 | `COMPOSIO_API_KEY`                       | Gmail, Calendar, Drive, Sheets, Docs, Slack               |
 | `OTTO_VAULT_KEY`                         | Vault encryption on non-macOS hosts (macOS uses Keychain) |
-| `DEV_INSPECTOR`                          | Inspector view and diagnostic capture                     |
+| `DEV_INSPECTOR=false`                    | Disables the Inspector view (on by default locally)       |
 
 Notion and Linear connect through their hosted MCP servers without extra keys. Telegram and WhatsApp are configured from the **Channels** page.
 

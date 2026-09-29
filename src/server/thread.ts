@@ -44,6 +44,7 @@ export interface EnqueueTurnOptions {
   source: Exclude<TurnSource, 'user'>;
   sourceId?: string;
   channel?: string;
+  channelSourceId?: string | null;
   background?: boolean;
   readOnly?: boolean;
   client?: PoolClient;
@@ -255,8 +256,8 @@ export async function enqueueTurn(prompt: string, options: EnqueueTurnOptions) {
     const thread = await lockThread(client);
     const id = randomUUID();
     const inserted = await client.query(
-      `INSERT INTO turns(id,owner_id,thread_id,source,source_id,prompt,channel,background,read_only)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      `INSERT INTO turns(id,owner_id,thread_id,source,source_id,prompt,channel,background,read_only,channel_source_id)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        ON CONFLICT (owner_id,source_id) WHERE source_id IS NOT NULL DO NOTHING RETURNING id`,
       [
         id,
@@ -268,6 +269,7 @@ export async function enqueueTurn(prompt: string, options: EnqueueTurnOptions) {
         options.channel ?? 'web',
         options.background ?? options.source !== 'resume',
         options.readOnly ?? false,
+        options.channelSourceId ?? null,
       ],
     );
     if (!inserted.rowCount)
@@ -512,17 +514,18 @@ export async function reactToAssistantMessage(
   return result;
 }
 
-async function resumeTurn(turnId: string, sourceId: string, prompt: string, activeOnly = false) {
+async function resumeTurn(turnId: string, sourceId: string, prompt: string, pendingOnly = false) {
   const resumed = await transaction(async (client) => {
     await lockThread(client);
     const turn = (
       await client.query(
-        `SELECT u.channel,th.archived_at IS NULL AS active FROM turns u JOIN threads th ON th.id=u.thread_id
+        `SELECT u.channel,u.status,th.archived_at IS NULL AS active FROM turns u JOIN threads th ON th.id=u.thread_id
          WHERE u.id=$1 AND u.owner_id=$2`,
         [turnId, ownerId],
       )
     ).rows[0];
-    if (activeOnly && !turn?.active) return false;
+    if (pendingOnly && (!turn?.active || !['running', 'waiting'].includes(turn.status)))
+      return false;
     await enqueueTurn(prompt, {
       source: 'resume',
       sourceId,

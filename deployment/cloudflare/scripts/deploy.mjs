@@ -9,28 +9,6 @@ import { createDeploymentClient, inspectImageDigest, pinDeploymentImages } from 
 
 const packageDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-export function renameGatewayEnvironment(source, publicUrl) {
-  let values;
-  try {
-    values = JSON.parse(source);
-  } catch {
-    return source;
-  }
-  if (!values || Array.isArray(values) || typeof values !== 'object') return source;
-  const oldKeys = Object.keys(values).filter((key) => key.startsWith('SIDEKICK_'));
-  if (oldKeys.length === 0) return source;
-  for (const key of oldKeys) {
-    const replacement = `OTTO_${key.slice('SIDEKICK_'.length)}`;
-    if (replacement in values) throw new Error('The gateway environment mixes old and new names.');
-    values[replacement] = values[key];
-    delete values[key];
-  }
-  values.OTTO_PUBLIC_URL = publicUrl;
-  if (values.OBJECT_STORAGE_ENDPOINT === 'http://sidekick.storage/v1/objects/')
-    values.OBJECT_STORAGE_ENDPOINT = 'http://otto.storage/v1/objects/';
-  return JSON.stringify(values);
-}
-
 function storageTarget(config, environment) {
   const selected = config.env?.[environment];
   const bindings = selected?.r2_buckets;
@@ -284,21 +262,16 @@ export async function deploy(environment, variables = process.env, dependencies 
   }
   if (!variables.CLOUDFLARE_API_TOKEN)
     throw new Error('Configure the Cloudflare deployment token.');
-  const renamedVariables = {
-    ...variables,
-    GATEWAY_ENV: renameGatewayEnvironment(variables.GATEWAY_ENV, variables.OTTO_PUBLIC_URL),
-  };
   const plan = deploymentPlan({
     environment,
-    release: renamedVariables.OTTO_RELEASE,
-    accountId: renamedVariables.CLOUDFLARE_ACCOUNT_ID,
-    publicUrl: renamedVariables.OTTO_PUBLIC_URL,
-    gatewayEnv: renamedVariables.GATEWAY_ENV,
+    release: variables.OTTO_RELEASE,
+    accountId: variables.CLOUDFLARE_ACCOUNT_ID,
+    publicUrl: variables.OTTO_PUBLIC_URL,
+    gatewayEnv: variables.GATEWAY_ENV,
     config: configuration,
   });
   const lifecycle =
-    dependencies.deploymentControl ??
-    createDeploymentClient({ environment, plan, variables: renamedVariables });
+    dependencies.deploymentControl ?? createDeploymentClient({ environment, plan, variables });
   const digest = dependencies.imageDigest ?? inspectImageDigest;
   const privateDirectory = await mkdtemp(join(tmpdir(), 'otto-deploy-'));
   await chmod(privateDirectory, 0o700);

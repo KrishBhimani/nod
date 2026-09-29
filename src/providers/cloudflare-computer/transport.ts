@@ -310,7 +310,7 @@ export function launchCloudflareCommand(options: {
     );
   });
   void ready
-    .then(() => request(`/v1/commands/${id}/output`, { method: 'GET' }, readOutput, 480_000))
+    .then(() => request(`/v1/commands/${id}/output`, { method: 'GET' }, readOutput, 3_720_000))
     .catch(fail);
   return Object.assign(events, {
     stdin,

@@ -469,6 +469,7 @@ test(
         'one-off replay sends one reminder to the original verified thread',
         async () => {
           const schedule = await createRouted(origin);
+          await receive('A later unrelated fixture message.', 'later-thread');
           const job = await jobFor(schedule.id);
           clock = new Date(job.data.scheduledFor);
           await Promise.all([deliver([job]), deliver([job])]);

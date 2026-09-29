@@ -492,7 +492,7 @@ async function withinDeadline<T>(pending: Promise<T>): Promise<T> {
 }
 
 async function manualFixture(options: { manualTimeoutMs?: number; idleTimeoutMs?: number } = {}) {
-  const directory = await mkdtemp('/tmp/sk-manual-');
+  const directory = await mkdtemp(join(tmpdir(), 'sk-manual-'));
   const browser = stagedLoginBrowser();
   const actions: Record<string, unknown>[] = [];
   const launches: string[][] = [];

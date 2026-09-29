@@ -453,7 +453,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
        FROM turns u LEFT JOIN messages m ON m.id=u.message_id
        LEFT JOIN LATERAL (SELECT created_at FROM turn_events WHERE turn_id=u.id AND type IN ('tool_start','tool_complete') AND summary IN ('browser','browser step','inspect login','request credentials') ORDER BY created_at DESC LIMIT 1) e ON true
        WHERE u.owner_id=$1 AND u.thread_id=$2 ${activeBrowser ? '' : 'AND e.created_at IS NOT NULL'}
-       ORDER BY COALESCE(e.created_at,u.created_at) DESC LIMIT 1`,
+       ORDER BY e.created_at IS NULL,COALESCE(e.created_at,u.created_at) DESC LIMIT 1`,
       [ownerId, thread.id],
     );
     const row = latest.rows[0];

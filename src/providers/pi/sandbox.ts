@@ -51,11 +51,23 @@ export function createSandbox(workspace: WorkspaceSession) {
   }
   async function writeBytes(path: string, bytes: Buffer) {
     const step = 512 * 1024;
-    for (let offset = 0; offset === 0 || offset < bytes.length; offset += step) {
-      const { exitCode } = await run(`base64 -d ${offset ? '>>' : '>'} ${quote(path)}`, {
-        input: bytes.subarray(offset, offset + step).toString('base64'),
-      });
-      if (exitCode) throw new Error(`Could not write ${path}.`);
+    const temporary = posix.join(
+      posix.dirname(path),
+      `.${posix.basename(path)}.${randomUUID()}.tmp`,
+    );
+    try {
+      for (let offset = 0; offset === 0 || offset < bytes.length; offset += step) {
+        const { exitCode } = await run(`base64 -d ${offset ? '>>' : '>'} ${quote(temporary)}`, {
+          input: bytes.subarray(offset, offset + step).toString('base64'),
+        });
+        if (exitCode) throw new Error(`Could not write ${path}.`);
+      }
+      const mode = `[ ! -e ${quote(path)} ] || chmod --reference=${quote(path)} ${quote(temporary)} 2>/dev/null`;
+      if (!(await check(`${mode}; mv -f -- ${quote(temporary)} ${quote(path)}`)))
+        throw new Error(`Could not write ${path}.`);
+    } catch (error) {
+      await run(`rm -f -- ${quote(temporary)}`).catch(() => {});
+      throw error;
     }
   }
   const directories = new Map<string, boolean>();
@@ -66,9 +78,11 @@ export function createSandbox(workspace: WorkspaceSession) {
   ) {
     const seconds = Math.max(1, Math.min(Math.ceil(options.timeout ?? 600), 3600));
     const file = `${workspace.path}/.otto/outputs/bash-${randomUUID()}.log`;
+    const marker = `\notto-timeout-${randomUUID()}`;
     const script = [
       `cd -- ${quote(cwd)} || exit 1`,
       `mkdir -p ${quote(posix.dirname(file))}`,
+      'start=$(date +%s)',
       `timeout -k 5 ${seconds} bash -c ${quote(command)} > ${quote(file)} 2>&1 < /dev/null`,
       'code=$?',
       `size=$(wc -c < ${quote(file)}); lines=$(wc -l < ${quote(file)})`,
@@ -76,6 +90,7 @@ export function createSandbox(workspace: WorkspaceSession) {
       `  tail -n ${outputLines} ${quote(file)} | tail -c ${outputBytes}`,
       `  printf '\\n\\n[Output truncated: %s bytes, %s lines in total. Full output: %s]\\n' "$size" "$lines" ${quote(file)}`,
       `else cat -- ${quote(file)}; rm -f -- ${quote(file)}; fi`,
+      `if [ "$code" -eq 124 ] && [ $(($(date +%s) - start)) -ge ${seconds} ]; then printf %s ${quote(marker)}; fi`,
       'exit $code',
     ].join('\n');
     const chunks: Buffer[] = [];
@@ -84,12 +99,14 @@ export function createSandbox(workspace: WorkspaceSession) {
       timeoutMs: (seconds + 30) * 1000,
       onData: (chunk) => chunks.push(chunk),
     });
-    const text = truncateTail(Buffer.concat(chunks).toString('utf8'), {
+    const output = Buffer.concat(chunks).toString('utf8');
+    const timedOut = output.endsWith(marker);
+    const text = truncateTail(timedOut ? output.slice(0, -marker.length) : output, {
       maxBytes: outputBytes + 5_000,
       maxLines: outputLines + 100,
     }).content;
     if (text) options.onData(Buffer.from(text));
-    if (exitCode === 124) throw new Error(`timeout:${seconds}`);
+    if (timedOut) throw new Error(`timeout:${seconds}`);
     return { exitCode };
   }
   const glob = async (
@@ -98,21 +115,25 @@ export function createSandbox(workspace: WorkspaceSession) {
     options: { ignore: string[]; limit: number },
   ) => {
     const program = [
-      'import os,sys,fnmatch',
+      'import os,sys,fnmatch,json',
       'root,pattern,limit=sys.argv[1],sys.argv[2],int(sys.argv[3])',
       "patterns=[pattern] if '/' in pattern else ['**/'+pattern]",
       "patterns+=[p.replace('**/','') for p in patterns]",
+      'ignore=json.loads(sys.argv[4])',
+      "ignore+=[p.replace('**/','') for p in ignore]",
+      'at=lambda base,name: os.path.relpath(os.path.join(base,name),root)',
+      'skip=lambda path: any(fnmatch.fnmatchcase(path,p) for p in ignore)',
       'found=0',
       'for base,dirs,files in os.walk(root):',
-      " dirs[:]=[d for d in dirs if d not in ('node_modules','.git')]",
-      ' for name in dirs+files:',
-      '  rel=os.path.relpath(os.path.join(base,name),root)',
+      " dirs[:]=[d for d in dirs if not skip(at(base,d)+'/')]",
+      ' for name in dirs+[f for f in files if not skip(at(base,f))]:',
+      '  rel=at(base,name)',
       '  if any(fnmatch.fnmatchcase(rel,p) for p in patterns):',
       "   sys.stdout.write(rel+('/' if name in dirs else '')+'\\0'); found+=1",
       '   if found>=limit: sys.exit(0)',
     ].join('\n');
     const { exitCode, output } = await run(
-      `python3 -c ${quote(program)} ${quote(root)} ${quote(pattern)} ${options.limit}`,
+      `python3 -c ${quote(program)} ${quote(root)} ${quote(pattern)} ${options.limit} ${quote(JSON.stringify(options.ignore))}`,
     );
     if (exitCode) throw new Error(`Could not search ${root}.`);
     return output.toString('utf8').split('\0').filter(Boolean);

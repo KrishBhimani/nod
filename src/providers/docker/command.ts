@@ -103,12 +103,6 @@ if home: shutil.rmtree(home,ignore_errors=True)
 if connected: send({'type':'exit','code':code,'reason':reason})
 `;
 
-function deliver(onData: (chunk: Buffer) => void, bytes: Buffer) {
-  try {
-    onData(bytes);
-  } catch {}
-}
-
 export class WorkspaceCommandError extends Error {
   constructor(
     readonly uncertain: boolean,
@@ -275,7 +269,7 @@ export function runSupervisedCommand(options: {
             const bytes = Buffer.from(frame.data, 'base64');
             size += bytes.length;
             if (size > maxBytes) cancel();
-            else if (options.onData) deliver(options.onData, bytes);
+            else if (options.onData) options.onData(bytes);
             else (frame.type === 'stdout' ? output : errors).push(bytes);
           } else throw new Error();
         } catch {

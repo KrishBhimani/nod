@@ -720,14 +720,15 @@ export async function createVault(pool: Pool, options: VaultOptions) {
   }
 
   async function rootTurn(database: Pick<PoolClient, 'query'>, turn: TurnRef, ownerId: string) {
-    const link = `CASE WHEN u.source='resume' THEN substring(u.source_id from '^(?:credentials|credentials-retry|connection|control):([0-9a-f-]{36})(?::|$)')::uuid END`;
+    const link = `COALESCE(CASE WHEN u.source='resume' THEN substring(u.source_id from '^(?:credentials|credentials-retry|connection|control):([0-9a-f-]{36})(?::|$)')::uuid END,
+      (SELECT a.turn_id FROM approvals a WHERE a.execution_turn_id=u.id AND a.owner_id=u.owner_id AND a.turn_id<>u.id LIMIT 1))`;
     const { rows } = await database.query<{ id: string }>(
-      `WITH RECURSIVE chain(id,next,thread_id,depth) AS (
-         SELECT u.id,${link},u.thread_id,0 FROM turns u WHERE u.id=$1 AND u.owner_id=$2 AND u.thread_id=$3
-         UNION ALL
-         SELECT u.id,${link},u.thread_id,c.depth+1 FROM chain c
-         JOIN turns u ON u.id=c.next AND u.owner_id=$2 AND u.thread_id=c.thread_id WHERE c.depth<20
-       ) SELECT id FROM chain ORDER BY depth DESC LIMIT 1`,
+      `WITH RECURSIVE chain(id,next,thread_id) AS (
+         SELECT u.id,${link},u.thread_id FROM turns u WHERE u.id=$1 AND u.owner_id=$2 AND u.thread_id=$3
+         UNION
+         SELECT u.id,${link},u.thread_id FROM chain c
+         JOIN turns u ON u.id=c.next AND u.owner_id=$2 AND u.thread_id=c.thread_id
+       ) SELECT c.id FROM chain c WHERE NOT EXISTS (SELECT 1 FROM chain p WHERE p.id=c.next) LIMIT 1`,
       [turn.turnId, ownerId, turn.threadId],
     );
     return rows[0]?.id;
