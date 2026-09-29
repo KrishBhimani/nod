@@ -124,27 +124,33 @@ export async function createGateway(options: {
     trustProxy: false,
     forceCloseConnections: true,
   });
+  async function setup(
+    ownerId: string,
+    path: string,
+    body: Record<string, string | undefined> = {},
+  ) {
+    const response = await options.runtimes.fetch(
+      ownerId,
+      new Request(new URL(path, origin), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+      { developer: false },
+    );
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error('Account setup failed.');
+    }
+    z.object({ ok: z.literal(true) })
+      .strict()
+      .parse(await response.json());
+  }
   const accounts = createAccountSession({
     ...options,
     origin: origin.origin,
-    async prepare(ownerId) {
-      const response = await options.runtimes.fetch(
-        ownerId,
-        new Request(new URL('/api/account/prepare', origin), {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: '{}',
-        }),
-        { developer: false },
-      );
-      if (!response.ok) {
-        await response.body?.cancel();
-        throw new Error('Account preparation failed.');
-      }
-      z.object({ ok: z.literal(true) })
-        .strict()
-        .parse(await response.json());
-    },
+    prepare: (ownerId) => setup(ownerId, '/api/account/prepare'),
+    start: (ownerId, name) => setup(ownerId, '/api/onboarding/start', { name }),
   });
   const deployment = options.deployment
     ? createDeploymentControl({ ...options.deployment, runtimes: options.runtimes })
@@ -192,9 +198,13 @@ export async function createGateway(options: {
   });
   app.addHook('preValidation', async (request) => {
     if (
-      ['/api/login', '/api/logout', '/api/account', '/api/account/prepare'].includes(
-        request.url.split('?')[0],
-      ) &&
+      [
+        '/api/login',
+        '/api/logout',
+        '/api/account',
+        '/api/account/prepare',
+        '/api/account/welcome',
+      ].includes(request.url.split('?')[0]) &&
       Buffer.isBuffer(request.body)
     ) {
       try {
@@ -306,7 +316,8 @@ export async function createGateway(options: {
       url.pathname.startsWith('/api/auth/') ||
       url.pathname.startsWith('/api/webhooks/') ||
       url.pathname.startsWith('/api/internal/') ||
-      url.pathname.startsWith('/api/runtime/')
+      url.pathname.startsWith('/api/runtime/') ||
+      url.pathname === '/api/onboarding/start'
     )
       return reply.code(404).send({ error: 'Route not found.' });
     if (url.pathname === '/api/events' && url.searchParams.get('account') !== session.user.id)

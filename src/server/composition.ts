@@ -92,6 +92,7 @@ import {
   resumeTask,
   resumeConnectedTask,
   restartOnboarding,
+  startOnboarding,
   retryTaskCredentials,
   startTaskWorkers,
   stopTasks,
@@ -694,6 +695,13 @@ export async function createApplication(
       },
     });
   }
+  const welcome = async (name?: string) => {
+    if (!adapters.model.configured) return;
+    const connected = (await integrations.list()).filter(
+      (connection) => connection.status === 'connected',
+    );
+    await startOnboarding(name, [...new Set(connected.map((connection) => connection.name))]);
+  };
   const app = await createApp({
     admission,
     deploymentDrain,
@@ -704,6 +712,7 @@ export async function createApplication(
       if (timeZone) await triage.updatePreferences({ timeZone });
       return restartOnboarding(conversationRevision);
     },
+    startOnboarding: welcome,
     speech,
     computer,
     runtime,
@@ -729,6 +738,7 @@ export async function createApplication(
       localUser: { id: ownerId, name: 'You', email: null, avatarUrl: null },
       developerIds: configuration().inspectorEnabled ? new Set([ownerId]) : new Set(),
       prepare: async () => adapters.prepareComputer?.(),
+      start: (_owner, name) => welcome(name),
     }).register(app);
   } else {
     app.post('/api/account/prepare', async (request) => {

@@ -6,6 +6,7 @@ import { createGateway } from '../src/server/gateway.ts';
 import type { AuthenticatedSession, AuthenticationProvider } from '../src/ports/authentication.ts';
 import type { StoredAccount } from '../src/server/account-store.ts';
 import { defaultPreferences, preferencesSchema } from '../src/server/preferences.ts';
+import { welcomeGreeting } from '../src/server/welcome.ts';
 import {
   integrationServiceIds,
   integrationServices,
@@ -26,7 +27,57 @@ const sessions = new Map<string, AuthenticatedSession>();
 const pending = new Set<string>();
 const accounts = new Map<string, StoredAccount>();
 const preferences = new Map<string, typeof defaultPreferences>();
-const connections = new Map<string, Set<IntegrationService>>();
+const connections = new Map<string, Set<IntegrationService>>([
+  [users[0].id, new Set<IntegrationService>(['gmail', 'googlecalendar', 'slack'])],
+]);
+const welcomes = new Map<
+  string,
+  { startedAt: number; taskId: string; messageId: string; archived?: boolean }
+>();
+const welcomeFindings: Partial<Record<IntegrationService, { text: string; start: string }>> = {
+  gmail: {
+    text: '**The Q4 vendor contract from Maria Lopez.** It has waited four days for your reply, and she asked again this morning. I can read the 12-page draft, list what changed and write a reply for you to approve.',
+    start: 'the contract',
+  },
+  googlecalendar: {
+    text: '**Tomorrow at 09:30, budget review with Finance.** You have no notes yet. I can pull the numbers from your thread with Tom and prepare a one-page brief.',
+    start: 'the budget brief',
+  },
+  slack: {
+    text: '**Six mentions in #launch since Friday.** Two ask you to decide the release date. I can summarize both threads and draft your answer.',
+    start: 'the release date',
+  },
+};
+function welcomeApps(owner: string) {
+  return integrationServiceIds.filter((slug) => connections.get(owner)?.has(slug));
+}
+function welcomeMessages(owner: string, startedAt: number) {
+  const apps = welcomeApps(owner);
+  const greeting = welcomeGreeting(
+    users.find((user) => user.id === owner)?.name,
+    apps.map((slug) => integrationServices[slug].name),
+  );
+  const findings = apps.slice(0, 3).map(
+    (slug) =>
+      welcomeFindings[slug] ?? {
+        text: `**New activity in ${integrationServices[slug].name}.** Four items changed this week. I can check which ones need you and list the next step for each.`,
+        start: integrationServices[slug].name,
+      },
+  );
+  return [
+    { text: greeting, at: startedAt },
+    ...(findings.length
+      ? [
+          {
+            text: `${['One thing stands', 'Two things stand', 'Three things stand'][findings.length - 1]} out, and I can handle ${findings.length > 1 ? 'each one' : 'it'} for you:\n\n${findings
+              .map((finding, index) => `${index + 1}. ${finding.text}`)
+              .join('\n')}\n\nShould I start with ${findings[0].start}?`,
+            at: startedAt + 6_000,
+          },
+        ]
+      : []),
+  ];
+}
 const consent = new Map<
   string,
   { ownerId: string; service: IntegrationService; returnTo: string }
@@ -106,11 +157,44 @@ const app = await createGateway({
     async fetch(owner, request) {
       const url = new URL(request.url);
       if (url.pathname === '/api/account/prepare') return Response.json({ ok: true });
+      if (url.pathname === '/api/onboarding/start') {
+        if (!welcomes.has(owner))
+          welcomes.set(owner, {
+            startedAt: Date.now(),
+            taskId: randomUUID(),
+            messageId: randomUUID(),
+          });
+        return Response.json({ ok: true });
+      }
+      const stored = welcomes.get(owner);
+      const welcome = stored?.archived ? undefined : stored;
+      const messages = welcome
+        ? welcomeMessages(owner, welcome.startedAt).filter((message) => message.at <= Date.now())
+        : [];
+      const replied = welcome && (!welcomeApps(owner).length || messages.length > 1);
       if (url.pathname === '/api/state')
         return Response.json({
           conversationRevision: 0,
-          messages: [],
-          tasks: [],
+          messages: messages.map((message, index) => ({
+            id: `${welcome!.messageId}-${index}`,
+            role: 'assistant',
+            text: message.text,
+            taskId: welcome!.taskId,
+            attachments: [],
+            createdAt: new Date(message.at).toISOString(),
+          })),
+          tasks: welcome
+            ? [
+                {
+                  id: welcome.taskId,
+                  title: 'Welcome',
+                  status: replied ? 'succeeded' : 'queued',
+                  showTyping: true,
+                  createdAt: new Date(welcome.startedAt).toISOString(),
+                  updatedAt: new Date(welcome.startedAt).toISOString(),
+                },
+              ]
+            : [],
           configuration: {
             provider: 'fixture',
             model: 'Synthetic UI fixture',
@@ -129,8 +213,8 @@ const app = await createGateway({
             start(controller) {
               controller.enqueue(new TextEncoder().encode('data: {"type":"refresh"}\n\n'));
               timer = setInterval(
-                () => controller.enqueue(new TextEncoder().encode(': fixture\n\n')),
-                30_000,
+                () => controller.enqueue(new TextEncoder().encode('data: {"type":"refresh"}\n\n')),
+                2_000,
               );
             },
             cancel() {
@@ -233,6 +317,20 @@ app.get('/fixture/sign-in/:index', async (request, reply) => {
   return reply
     .header('set-cookie', `${cookieName}=${token}; Path=/; HttpOnly; SameSite=Lax`)
     .redirect('/');
+});
+app.get('/fixture/chat', async (request, reply) => {
+  const current = session(new Headers({ cookie: request.headers.cookie ?? '' }));
+  if (!current) return reply.code(401).send('Sign in to use this fixture.');
+  const search = new URL(request.url, origin).searchParams;
+  welcomes.delete(current.user.id);
+  if (search.get('state') === 'empty')
+    welcomes.set(current.user.id, {
+      startedAt: Date.now(),
+      taskId: randomUUID(),
+      messageId: randomUUID(),
+      archived: true,
+    });
+  return reply.redirect('/');
 });
 app.get('/fixture/connect', async (request, reply) => {
   const token = new URL(request.url, origin).searchParams.get('token') ?? '';

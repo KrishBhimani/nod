@@ -3,16 +3,22 @@ import { ArrowDown, ArrowUpRight } from 'lucide-react';
 import type {
   AppState,
   Artifact,
+  Connection,
   Message,
   MessageHistoryPage,
   SubmitMessageResponse,
 } from '../../shared/contracts';
-import { integrationServices } from '../../shared/integrations';
+import {
+  integrationServiceIds,
+  integrationServices,
+  type IntegrationService,
+} from '../../shared/integrations';
 import { Composer, type ComposerHandle, type ComposerSendResult } from '../components/composer';
 import { MessageBubble } from '../components/message';
 import { ChatTurnRail } from '../components/chat-turn-rail';
 import { BrandMark } from '../components/brand';
 import { Button, Notice } from '../components/ui';
+import { usePageData } from '../hooks/use-page-data';
 import { api, apiResponse, errorMessage, post } from '../lib/api';
 import {
   collapseScreenshotMessages,
@@ -47,6 +53,43 @@ function verificationFailure(
 }
 function scrollBehavior(): ScrollBehavior {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth';
+}
+const appSuggestions: Record<IntegrationService, string> = {
+  gmail: 'Find the email I still need to answer',
+  googlecalendar: 'Prepare me for my next meeting',
+  googledrive: 'Find a file in Google Drive',
+  googlesheets: 'Review a spreadsheet',
+  googledocs: 'Summarize a document',
+  slack: 'Catch me up on my Slack mentions',
+  notion: 'Summarize my recent Notion pages',
+  linear: 'Review my open Linear issues',
+};
+const starterSuggestions = ['Plan my day', 'Help me research something', 'Start a goal'];
+function Welcome({ onPick }: { onPick(label: string): void }) {
+  const { data, loading } = usePageData<Connection[]>('/api/apps');
+  const connected = integrationServiceIds.filter((slug) =>
+    data?.some((connection) => connection.slug === slug && connection.status === 'connected'),
+  );
+  const labels = [...connected.map((slug) => appSuggestions[slug]), ...starterSuggestions].slice(
+    0,
+    3,
+  );
+  return (
+    <div className="welcome">
+      <BrandMark />
+      <h1>What’s on your mind?</h1>
+      {!loading && (
+        <div className="starter-actions">
+          {labels.map((label) => (
+            <button key={label} onClick={() => onPick(label)}>
+              {label}
+              <ArrowUpRight size={15} />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 export function Chat({
   state,
@@ -112,6 +155,20 @@ export function Chat({
       .map((item) => item.message),
   ];
   const working = hasVisibleChatActivity(state.tasks);
+  const [welcoming, setWelcoming] = useState(
+    () => allMessages.length === 0 && !working && state.configuration.llmReady,
+  );
+  useEffect(() => {
+    if (!welcoming) return;
+    void post('/api/account/welcome', {})
+      .then(() => refresh())
+      .catch(() => {})
+      .finally(() => setWelcoming(false));
+  }, []);
+  const pick = (label: string) => {
+    setText(label);
+    composer.current?.focus();
+  };
   const persistedStreams = new Set(allMessages.map((message) => message.streamId).filter(Boolean));
   const streamEntries = Object.entries(streams).filter(
     ([id, value]) => value && !persistedStreams.has(id),
@@ -142,7 +199,6 @@ export function Chat({
     if (message.role === 'user' && message.taskId)
       latestUserMessageAt.set(message.taskId, message.createdAt);
   }
-  const onboardingVisible = allMessages.length === 0 && !working && !resetting;
   const unseen = away
     ? persistedMessages.filter(
         (message) => message.role === 'assistant' && Date.parse(message.createdAt) > away.since,
@@ -219,7 +275,8 @@ export function Chat({
     return () => window.removeEventListener('otto:compose', compose);
   }, []);
   async function send(value: string, attachments: Artifact[]): Promise<ComposerSendResult> {
-    if (sendLock.current || resetLock.current) return { sent: false, restoreText: true };
+    if (sendLock.current || resetLock.current || welcoming)
+      return { sent: false, restoreText: true };
     const sentRevision = revision;
     const reply = replyTo;
     const verificationRequests = (state.verificationRequests ?? []).filter(
@@ -501,25 +558,8 @@ export function Chat({
               </div>
             )
           )}
-          {visibleMessages.length === 0 && (
-            <div className="welcome">
-              <BrandMark />
-              <h1>What’s on your mind?</h1>
-              <div className="starter-actions">
-                {['Plan my day', 'Help me research something', 'Start a goal'].map((label) => (
-                  <button
-                    key={label}
-                    onClick={() => {
-                      setText(label);
-                      composer.current?.focus();
-                    }}
-                  >
-                    {label}
-                    <ArrowUpRight size={15} />
-                  </button>
-                ))}
-              </div>
-            </div>
+          {visibleMessages.length === 0 && !welcoming && !resetting && !working && !sending && (
+            <Welcome onPick={pick} />
           )}
           <div
             className="messages"
@@ -565,7 +605,7 @@ export function Chat({
                 />
               </Fragment>
             ))}
-            {(sending || resetting || working) && streamEntries.length === 0 && (
+            {(sending || resetting || working || welcoming) && streamEntries.length === 0 && (
               <div
                 className="thinking"
                 role="status"
@@ -584,22 +624,6 @@ export function Chat({
               </div>
             )}
           </div>
-          {onboardingVisible && (
-            <section className="onboarding-card">
-              <div>
-                <h2>Make Otto yours.</h2>
-                <p>Connect your tools and pick something to work on.</p>
-              </div>
-              <Button
-                variant="outline"
-                disabled={sending || resetting || !state.configuration.llmReady}
-                onClick={() => window.dispatchEvent(new CustomEvent('otto:restart-setup'))}
-              >
-                Get started
-                <ArrowUpRight size={15} />
-              </Button>
-            </section>
-          )}
           <div ref={bottom} />
         </div>
       </div>
@@ -638,7 +662,7 @@ export function Chat({
         <Composer
           key={revision}
           ref={composer}
-          ready={state.configuration.llmReady && !resetting}
+          ready={state.configuration.llmReady && !resetting && !welcoming}
           sending={sending || resetting}
           text={text}
           setText={setText}

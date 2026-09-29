@@ -17,6 +17,7 @@ import type {
   RuntimeResult,
 } from '../ports/agent.ts';
 import { conversationRevision, currentConversationSql, lockConversation } from './conversations.ts';
+import { welcomeGreeting, welcomePrompt } from './welcome.ts';
 import { isMessageReaction, reactionEmoji } from '../shared/emoji.ts';
 import { defaultPreferences } from './preferences.ts';
 import type { ConversationRouter } from '../ports/conversation.ts';
@@ -858,6 +859,31 @@ export async function restartOnboarding(expectedConversationRevision?: number) {
   for (const id of result.superseded) running.get(id)?.abort();
   refresh();
   return { taskId: result.taskId, continued: result.continued };
+}
+export const welcomeSourceId = 'onboarding:welcome';
+export async function startOnboarding(name?: string, apps: string[] = []) {
+  const greeting = welcomeGreeting(name, apps);
+  const started = await transaction(async (client) => {
+    await lockConversation(client, ownerId);
+    const prior = await client.query('SELECT id FROM tasks WHERE owner_id=$1 AND source_id=$2', [
+      ownerId,
+      welcomeSourceId,
+    ]);
+    if (prior.rowCount) return false;
+    const taskId = await submitTask(welcomePrompt(greeting), [], undefined, true, {
+      source: 'event',
+      sourceId: welcomeSourceId,
+      channel: 'web',
+      client,
+    });
+    await insertReply(client, taskId, greeting, []);
+    if (!apps.length)
+      await client.query("UPDATE tasks SET status='succeeded',updated_at=now() WHERE id=$1", [
+        taskId,
+      ]);
+    return true;
+  });
+  if (started) refresh();
 }
 export async function reactToAssistantMessage(
   messageId: string,
