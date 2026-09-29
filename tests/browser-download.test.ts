@@ -235,7 +235,7 @@ test('no-target capture refuses an older file beside partial or completed downlo
   }
 });
 
-test('no-target capture waits while the browser reserves the final name of a partial file', async (t) => {
+test('no-target capture waits while the browser shows a partial file beside its final name', async (t) => {
   const root = await mkdtemp('/tmp/sk-download-reserved-');
   const probe = downloadWaitProbe(t);
   try {

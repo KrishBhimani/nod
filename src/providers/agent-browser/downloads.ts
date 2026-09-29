@@ -86,9 +86,9 @@ export async function waitForDownload(
         throw new Error('The browser download directory is unavailable.');
       });
       if (names.length > 64) throw new Error('There are too many browser downloads.');
-      const reserved =
+      const finishing =
         names.length === 2 && names.some((name) => names.includes(`${name}.crdownload`));
-      if (names.length > 1 && !reserved)
+      if (names.length > 1 && !finishing)
         throw new Error('Choose the specific download link or URL.');
       if (names.length === 1) {
         const file = await lstat(join(directory, names[0])).catch((error) => {
