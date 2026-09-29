@@ -7,6 +7,7 @@ import type {
   Message,
   MessageHistoryPage,
   SubmitMessageResponse,
+  TaskReviewRequired,
 } from '../../shared/contracts';
 import {
   integrationServiceIds,
@@ -338,9 +339,28 @@ export function Chat({
           ...(verificationRequestId ? { verificationRequestId } : {}),
         }),
       });
-      const result = (await response.json()) as Partial<SubmitMessageResponse> & { error?: string };
+      const result = (await response.json()) as Partial<SubmitMessageResponse> &
+        Partial<TaskReviewRequired>;
       verificationStatus = result.verificationStatus;
       privateVerification ||= verificationStatus !== undefined;
+      if (response.status === 409 && result.code === 'task_review_required') {
+        if (revisionRef.current !== sentRevision) return { sent: true };
+        retry.current = null;
+        const reviewReply: Message = {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          text: `I stopped earlier and may have already done part of “${result.summary || 'that'}”. Please check it, then tell me what you see.`,
+          taskId: null,
+          attachments: [],
+          createdAt: new Date().toISOString(),
+        };
+        setOptimistic((current) => [
+          ...current.filter((item) => item.message.id !== id),
+          { revision: sentRevision, message: reviewReply },
+        ]);
+        setReplyTo((current) => (current?.id === replyId ? null : current));
+        return { sent: true };
+      }
       if (!response.ok) {
         throw new Error(result.error || 'The message could not be sent.');
       }

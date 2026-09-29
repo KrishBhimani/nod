@@ -95,6 +95,10 @@ export interface RuntimeContext {
   ): Promise<unknown>;
   browserConnection?(request: BrowserConnectionRequest): Promise<unknown>;
   waitForUser?(question: string): Promise<void>;
+  startExternalAction?(): Promise<void>;
+  freshSession?: boolean;
+  checkOutcome?: boolean;
+  reportOutcome?(outcome: 'completed' | 'not_completed', message: string): Promise<void>;
   delta(text: string, streamId?: string, done?: boolean): void;
   remember(text: string): Promise<void>;
   publish(path: string, name?: string): Promise<Artifact>;
@@ -163,6 +167,7 @@ export interface AgentSessionOptions {
   tools: AgentTool[];
   onEvent(event: AgentEvent): void;
   shouldStop(): boolean;
+  fresh?: boolean;
 }
 export interface AgentSession {
   resumed: boolean;
