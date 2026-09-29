@@ -28,10 +28,16 @@ import {
   verificationSenderDomain,
   type EmailCodeRequest,
 } from './email-code.ts';
-export { integrationActions } from './integration-policy.ts';
 
 const slugSchema = z.enum(integrationServiceIds);
 type Slug = z.infer<typeof slugSchema>;
+const returnPaths = {
+  apps: '/apps',
+  onboarding: '/onboarding',
+  window: '/connected.html',
+  chat: '/',
+} as const;
+type ReturnTarget = keyof typeof returnPaths;
 const catalogs = integrationServices;
 type ConnectionRow = {
   id: string;
@@ -41,7 +47,7 @@ type ConnectionRow = {
   pending_account_id: string | null;
   callback_hash: string | null;
   callback_expires: Date | null;
-  callback_return_to: 'apps' | 'onboarding' | 'chat';
+  callback_return_to: ReturnTarget;
   trigger_id: string | null;
   triggers_enabled: boolean;
   watch_requested: boolean;
@@ -556,7 +562,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
 
   async function connect(
     slug: Slug,
-    returnTo: 'apps' | 'onboarding' | 'chat' = 'apps',
+    returnTo: ReturnTarget = 'apps',
     task?: { id: string; revision: number },
   ) {
     requireService(slug);
@@ -603,9 +609,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       );
       return { url: attempt.url };
     } finally {
-      try {
-        await selected.deleteSession(session.id);
-      } catch {}
+      selected.deleteSession(session.id).catch(() => {});
     }
   }
 
@@ -1293,7 +1297,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       scope.post<{ Params: { slug: string } }>('/api/apps/:slug/connect', async (request) => {
         const input = z
           .object({
-            returnTo: z.enum(['apps', 'onboarding']).default('apps'),
+            returnTo: z.enum(['apps', 'onboarding', 'window']).default('apps'),
             connectionId: z.uuid().optional(),
           })
           .strict()
@@ -1306,7 +1310,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         return connect(slugSchema.parse(request.params.slug), input.returnTo);
       });
       scope.get('/api/apps/callback', async (request, reply) => {
-        let returnTo: 'apps' | 'onboarding' | 'chat' = 'apps';
+        let returnTo: ReturnTarget = 'apps';
         let outcome: 'connected' | 'continued' | 'cancelled' | 'failed' | 'expired' = 'expired';
         let service: string | undefined;
         const state = z
@@ -1322,7 +1326,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
           ).rows[0];
           if (row) {
             service = row.slug;
-            returnTo = ['apps', 'onboarding', 'chat'].includes(row.callback_return_to)
+            returnTo = Object.hasOwn(returnPaths, row.callback_return_to)
               ? row.callback_return_to
               : 'apps';
             if (row.callback_expires && new Date(row.callback_expires).getTime() > Date.now()) {
@@ -1358,7 +1362,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
           .header('Referrer-Policy', 'no-referrer')
           .redirect(
             new URL(
-              `${returnTo === 'chat' ? '/' : `/${returnTo}`}?connection=${outcome}${returnTo === 'chat' && service ? `&service=${service}` : ''}`,
+              `${returnPaths[returnTo]}?connection=${outcome}${(returnTo === 'chat' || returnTo === 'window') && service ? `&service=${service}` : ''}`,
               options.baseUrl,
             ).href,
           );

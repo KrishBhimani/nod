@@ -137,8 +137,42 @@ async function fixture(t: TestContext) {
     removed,
     sessions,
     wakes,
+    callbacks,
   };
 }
+
+test(
+  'new-window consent returns before session cleanup and closes through a fixed page',
+  { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
+  async (t) => {
+    const f = await fixture(t);
+    let release!: () => void;
+    f.provider.deleteSession = () =>
+      new Promise((resolve) => {
+        release = resolve;
+      });
+    const response = await f.app.inject({
+      method: 'POST',
+      url: '/api/apps/slack/connect',
+      payload: { returnTo: 'window' },
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    release();
+    const url = new URL(f.callbacks.at(-1)!);
+    url.searchParams.set('account', [...f.accounts.keys()].at(-1)!);
+    const callback = await f.app.inject({ url: `${url.pathname}${url.search}` });
+    assert.equal(
+      callback.headers.location,
+      'http://localhost:4310/connected.html?connection=connected&service=slack',
+    );
+    const rejected = await f.app.inject({
+      method: 'POST',
+      url: '/api/apps/slack/connect',
+      payload: { returnTo: 'https://attacker.example.test' },
+    });
+    assert.equal(rejected.statusCode, 400);
+  },
+);
 
 test(
   'owned app reads omit oversized results while discovery preserves complete schemas',

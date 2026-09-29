@@ -166,7 +166,12 @@ const app = await createGateway({
         consent.set(token, {
           ownerId: owner,
           service: connect[1] as IntegrationService,
-          returnTo: input.returnTo === 'onboarding' ? '/onboarding' : '/apps',
+          returnTo:
+            input.returnTo === 'window'
+              ? '/connected.html'
+              : input.returnTo === 'onboarding'
+                ? '/onboarding'
+                : '/apps',
         });
         return Response.json({ url: `${origin}/fixture/connect?token=${token}` });
       }
@@ -262,7 +267,7 @@ app.get('/fixture/connected', async (request, reply) => {
     connections.set(attempt.ownerId, apps);
   }
   return reply.redirect(
-    `${attempt.returnTo}?connection=${result === 'connected' ? 'connected' : 'cancelled'}`,
+    `${attempt.returnTo}?connection=${result === 'connected' ? 'connected' : 'cancelled'}${attempt.returnTo === '/connected.html' ? `&service=${attempt.service}` : ''}`,
   );
 });
 const vite = await createServer({

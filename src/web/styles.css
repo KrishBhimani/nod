@@ -129,7 +129,9 @@ a svg {
   color: var(--control-foreground);
 }
 .button-outline:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--control-foreground) 40%, var(--control-border));
   background: var(--control-hover);
+  color: var(--foreground);
 }
 .button-ghost {
   background: transparent;

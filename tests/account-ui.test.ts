@@ -210,19 +210,30 @@ test('onboarding distinguishes an initial load from unavailable integrations and
         }),
       ),
     );
-    assert.ok(element.querySelector('.loading'));
-    assert.equal(element.querySelector('[aria-label^="Connect "]'), null);
+    assert.equal(element.querySelectorAll('.onboarding-integration').length, 8);
+    assert.ok(element.textContent?.includes(integrationServices.googlecalendar.description));
+    assert.equal(
+      element.querySelector('.onboarding-integrations')?.getAttribute('aria-busy'),
+      'true',
+    );
+    assert.ok(
+      Array.from(element.querySelectorAll<HTMLButtonElement>('[aria-label^="Connect "]')).every(
+        (button) => button.disabled,
+      ),
+    );
     await act(async () =>
       requests[0](Response.json({ error: 'Synthetic app load failure' }, { status: 503 })),
     );
-    assert.equal(element.querySelector('.loading'), null);
     assert.ok(element.querySelector('[role="alert"]'));
     await act(async () =>
       Array.from(element.querySelectorAll('button'))
         .find((button) => button.textContent === 'Try again')!
         .click(),
     );
-    assert.ok(element.querySelector('.loading'));
+    assert.equal(
+      element.querySelector('.onboarding-integrations')?.getAttribute('aria-busy'),
+      'true',
+    );
     await act(async () =>
       requests[1](
         Response.json(
@@ -235,7 +246,10 @@ test('onboarding distinguishes an initial load from unavailable integrations and
         ),
       ),
     );
-    assert.equal(element.querySelector('.loading'), null);
+    assert.equal(
+      element.querySelector('.onboarding-integrations')?.getAttribute('aria-busy'),
+      'false',
+    );
     assert.equal(element.querySelector('[role="alert"]'), null);
     assert.equal(
       element.querySelector<HTMLButtonElement>('[aria-label="Connect Gmail"]')!.disabled,
@@ -253,9 +267,10 @@ test('onboarding distinguishes an initial load from unavailable integrations and
   }
 });
 
-test('onboarding shows eight concise states and starts consent directly with a fixed return destination', async () => {
+test('onboarding opens consent in a new window without blocking other apps and refreshes on return', async () => {
   const previous = globalThis.fetch;
-  const connections: Connection[] = integrationServiceIds.map((slug) => ({
+  const previousOpen = window.open;
+  let connections: Connection[] = integrationServiceIds.map((slug) => ({
     slug,
     name: integrationServices[slug].name,
     status: slug === 'gmail' ? 'connected' : 'disconnected',
@@ -265,23 +280,65 @@ test('onboarding shows eight concise states and starts consent directly with a f
       : {}),
   }));
   const posts: { path: string; body: unknown }[] = [];
-  let resolve!: (response: Response) => void;
-  let signal: AbortSignal | null | undefined;
+  const replies: Array<{ resolve(response: Response): void; signal?: AbortSignal | null }> = [];
+  let loads = 0;
   globalThis.fetch = async (path, options) => {
     if (String(path) === '/api/account/prepare') return Response.json({ ok: true });
     if (options?.method === 'POST') {
       posts.push({ path: String(path), body: JSON.parse(String(options.body)) });
-      signal = options.signal;
-      return new Promise((accept) => {
-        resolve = accept;
-      });
+      return new Promise((resolve) => replies.push({ resolve, signal: options.signal }));
     }
+    loads++;
     return Response.json(connections);
   };
+  const windows: Array<{
+    target: string;
+    popup: { opener: unknown; closed: boolean; location: { href: string }; close(): void };
+  }> = [];
+  const previousChannel = globalThis.BroadcastChannel;
+  const channels = new Set<{
+    name: string;
+    onmessage: ((event: { data: unknown }) => void) | null;
+  }>();
+  class FixtureChannel {
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+    constructor(readonly name: string) {
+      channels.add(this);
+    }
+    postMessage(data: unknown) {
+      for (const channel of channels)
+        if (channel !== this && channel.name === this.name) channel.onmessage?.({ data });
+    }
+    close() {
+      channels.delete(this);
+    }
+  }
+  Object.defineProperty(globalThis, 'BroadcastChannel', {
+    configurable: true,
+    value: FixtureChannel,
+  });
+  let blocked = false;
+  window.open = ((_url: string, target: string) => {
+    if (blocked) return null;
+    const popup = {
+      opener: window,
+      closed: false,
+      location: { href: 'about:blank' },
+      close() {
+        popup.closed = true;
+      },
+    };
+    windows.push({ target, popup });
+    return popup;
+  }) as unknown as typeof window.open;
   pageDataCache.clear();
   const element = document.createElement('div');
   document.body.append(element);
   const root = createRoot(element);
+  const button = (label: string) =>
+    element.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!;
+  const primary = () =>
+    element.querySelector<HTMLButtonElement>('.account-onboarding-actions button')!;
   try {
     await act(async () =>
       root.render(
@@ -297,22 +354,90 @@ test('onboarding shows eight concise states and starts consent directly with a f
     assert.equal(element.querySelectorAll('.onboarding-integration.connected').length, 1);
     assert.equal(element.textContent?.includes('private-mailbox@example.test'), false);
     assert.equal(element.querySelector('[aria-label*="Add"]'), null);
-    await act(async () =>
-      element.querySelector<HTMLButtonElement>('[aria-label="Connect Google Calendar"]')!.click(),
-    );
+    await act(async () => button('Connect Google Calendar').click());
     assert.deepEqual(posts, [
-      { path: '/api/apps/googlecalendar/connect', body: { returnTo: 'onboarding' } },
+      { path: '/api/apps/googlecalendar/connect', body: { returnTo: 'window' } },
     ]);
+    assert.equal(windows[0].target, 'otto-connect-googlecalendar');
+    assert.equal(windows[0].popup.opener, null);
     assert.equal(document.querySelector('[role="dialog"]'), null);
-    assert.ok(element.textContent?.includes('Opening…'));
+    assert.ok(button('Connect Google Calendar').textContent?.includes('Opening…'));
+    assert.equal(button('Connect Google Calendar').disabled, true);
+    assert.equal(button('Connect Google Drive').disabled, false);
+    assert.equal(primary().disabled, false);
+    await act(async () =>
+      replies[0].resolve(Response.json({ url: 'https://accounts.example.test/consent' })),
+    );
+    assert.equal(windows[0].popup.location.href, 'https://accounts.example.test/consent');
+    assert.equal(button('Connect Google Calendar').textContent, 'Connect');
+    assert.ok(element.textContent?.includes('Continue in the new window.'));
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    assert.equal(element.textContent?.includes('Continue in the new window.'), false);
+    const card = (slug: string) =>
+      element.querySelector(`[aria-labelledby="onboarding-${slug}"]`)!.textContent ?? '';
+    await act(async () => button('Connect Google Calendar').click());
+    await act(async () =>
+      replies.at(-1)!.resolve(Response.json({ url: 'https://accounts.example.test/calendar' })),
+    );
+    await act(async () => button('Connect Linear').click());
+    await act(async () =>
+      replies.at(-1)!.resolve(Response.json({ url: 'https://accounts.example.test/linear' })),
+    );
+    assert.ok(card('googlecalendar').includes('Continue in the new window.'));
+    assert.ok(card('linear').includes('Continue in the new window.'));
+    connections = connections.map((connection) =>
+      connection.slug === 'googlecalendar'
+        ? { ...connection, status: 'connected', connectionId: 'fixture-calendar' }
+        : connection,
+    );
+    const before = loads;
+    const channel = new BroadcastChannel('otto.apps');
+    await act(async () =>
+      channel.postMessage({ connection: 'connected', service: 'googlecalendar' }),
+    );
+    channel.close();
+    assert.ok(loads > before);
+    assert.equal(element.querySelectorAll('.onboarding-integration.connected').length, 2);
+    assert.ok(card('linear').includes('Continue in the new window.'));
+    await act(async () => button('Connect Google Drive').click());
+    await act(async () =>
+      replies
+        .at(-1)!
+        .resolve(Response.json({ error: 'Synthetic provider failure' }, { status: 502 })),
+    );
+    assert.equal(windows.at(-1)!.popup.closed, true);
+    assert.ok(element.querySelector('[role="alert"]'));
+    blocked = true;
+    const opened = windows.length;
+    await act(async () => button('Connect Slack').click());
+    assert.deepEqual(posts.at(-1), {
+      path: '/api/apps/slack/connect',
+      body: { returnTo: 'onboarding' },
+    });
+    await act(async () =>
+      replies.at(-1)!.resolve(Response.json({ url: 'https://accounts.example.test/slack' })),
+    );
+    assert.equal(windows.length, opened);
+    assert.ok(button('Connect Slack').textContent?.includes('Opening…'));
+    assert.equal(button('Connect Slack').disabled, true);
+    blocked = false;
+    await act(async () => button('Connect Notion').click());
+    const notion = replies.at(-1)!;
     await act(async () => root.render(null));
-    assert.equal(signal?.aborted, true);
-    await act(async () => resolve(Response.json({ url: 'https://accounts.example.test/consent' })));
+    assert.equal(notion.signal?.aborted, true);
+    await act(async () => notion.resolve(Response.json({ url: 'https://late.example.test' })));
+    assert.equal(windows.at(-1)!.popup.closed, true);
+    assert.equal(windows.at(-1)!.popup.location.href, 'about:blank');
   } finally {
     await act(async () => root.unmount());
     element.remove();
     pageDataCache.clear();
     globalThis.fetch = previous;
+    window.open = previousOpen;
+    Object.defineProperty(globalThis, 'BroadcastChannel', {
+      configurable: true,
+      value: previousChannel,
+    });
   }
 });
 
