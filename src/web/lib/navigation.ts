@@ -45,3 +45,30 @@ export function navigationShortcut(
 export function shortcutLabel(key: string, mac = true) {
   return `${mac ? '⌘' : 'Ctrl+'}${key.toUpperCase()}`;
 }
+
+export function returnToChat(
+  event: Pick<
+    MouseEvent,
+    'button' | 'metaKey' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'preventDefault'
+  >,
+) {
+  if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  try {
+    if (
+      !window.opener ||
+      window.opener.closed ||
+      window.opener.location.origin !== window.location.origin
+    )
+      return;
+    window.opener.focus();
+  } catch {
+    return;
+  }
+  event.preventDefault();
+  try {
+    window.close();
+  } catch {}
+  window.setTimeout(() => {
+    if (!window.closed) window.location.assign('/');
+  }, 0);
+}
