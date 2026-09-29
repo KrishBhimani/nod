@@ -252,6 +252,17 @@ export function createProviderUsageStore(
       coverage: options.coverage,
     };
   }
+  async function taskCosts(taskIds: string[]): Promise<Record<string, number | null>> {
+    if (!taskIds.length) return {};
+    await Promise.all([...pending]);
+    const result = await pool.query(
+      `SELECT task_id AS id,sum(cost_usd)::float8 AS cost
+       FROM provider_usage WHERE owner_id=$1 AND task_id=ANY($2::uuid[])
+       GROUP BY task_id`,
+      [options.ownerId, taskIds.map((id) => z.uuid().parse(id))],
+    );
+    return Object.fromEntries(result.rows.map((row) => [row.id, row.cost]));
+  }
   function registerRoutes(app: FastifyInstance) {
     app.get('/api/inspector/providers', async (request, reply) => {
       if (!options.enabled()) return reply.code(404).send({ error: 'Inspector is disabled.' });
@@ -264,6 +275,7 @@ export function createProviderUsageStore(
     record,
     track,
     read,
+    taskCosts,
     registerRoutes,
     withTask: <T>(taskId: string, action: () => T) =>
       context.run({ taskId: z.uuid().parse(taskId) }, action),

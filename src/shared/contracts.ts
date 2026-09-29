@@ -29,6 +29,7 @@ export interface Message {
   reactions?: Array<{ actor: 'user' | 'assistant'; reaction: MessageReaction }>;
   replyToMessageId?: string | null;
   replyTo?: { id: string; role: 'user' | 'assistant'; text: string } | null;
+  task?: Task;
 }
 export interface SubmitMessageResponse {
   taskId: string;
@@ -48,6 +49,7 @@ export interface Task {
   status: TaskStatus;
   createdAt: string;
   updatedAt: string;
+  costUsd?: number | null;
   error?: string | null;
   showTyping?: boolean;
 }
@@ -205,7 +207,13 @@ export interface Schedule {
   revision: number;
   nextRun: string | null;
   lastRun: ScheduleRun | null;
+  baselineObservation: ScheduleObservation | null;
 }
+export type ScheduleObservation = {
+  sourceUrl: string;
+  summary: string;
+  checkedAt: string;
+} & ({ status: 'verified'; value: string } | { status: 'unavailable'; value: null });
 export interface ScheduleRun {
   id: string;
   scheduleId: string;
@@ -216,6 +224,7 @@ export interface ScheduleRun {
   createdAt: string;
   status: TaskStatus;
   error: string | null;
+  observation: ScheduleObservation | null;
 }
 export interface ScheduleHistory {
   runs: ScheduleRun[];

@@ -13,5 +13,6 @@ export function containerBrowserOptions(
     platform: 'linux',
     headless: false,
     sandbox: false,
+    maxLiveSessions: 2,
   };
 }

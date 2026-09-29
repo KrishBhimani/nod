@@ -51,7 +51,7 @@ export function runBrowserBridge(options: {
         }
       }
     };
-    socket.setTimeout(120_000, () => finish(1));
+    socket.setTimeout(180_000, () => finish(1));
     socket.on('error', () => finish(1));
     socket.on('data', (chunk: Buffer) => {
       outputSize += chunk.length;
