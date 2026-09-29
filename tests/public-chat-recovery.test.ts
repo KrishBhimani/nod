@@ -185,7 +185,7 @@ test(
       outcomeId,
     });
     await db.pool.query(
-      "UPDATE tasks SET status='waiting_user',waiting_reason='recovery' WHERE id=$1",
+      "UPDATE tasks SET status='waiting_user',waiting_reason='recovery',external_action=true WHERE id=$1",
       [taskId],
     );
     await db.pool.query(
@@ -216,6 +216,9 @@ test(
       assert.equal(response.statusCode, 409, response.body);
       assert.deepEqual(response.json(), {
         error: 'I can’t safely repeat the earlier action because its outcome is unknown.',
+        code: 'task_review_required',
+        taskId,
+        summary: 'Synthetic uncertain action',
       });
       assert.equal(submissions, 1);
       assert.equal(routes, 1);
