@@ -58,8 +58,8 @@ Object.defineProperty(globalThis, 'IntersectionObserver', {
 });
 after(() => dom.window.close());
 const { createRoot } = await import('react-dom/client');
-const { MessageBubble, MessageText, Attachment } =
-  await import('../src/web/components/message.tsx');
+const { MessageBubble, MessageText } = await import('../src/web/components/message.tsx');
+const { MessageAttachments } = await import('../src/web/components/attachment-card.tsx');
 const base: Message = {
   id: 'fixture-message',
   role: 'assistant',
@@ -499,14 +499,16 @@ test('secure links, private destinations and streaming fragments do not request 
 test('published screenshot artifacts use the ordinary local image attachment', () => {
   const url = '/api/artifacts/22222222-2222-4222-8222-222222222222';
   const html = renderToStaticMarkup(
-    createElement(Attachment, {
-      artifact: {
-        id: '22222222-2222-4222-8222-222222222222',
-        name: 'screenshot.png',
-        mimeType: 'image/png',
-        size: 1234,
-        url,
-      },
+    createElement(MessageAttachments, {
+      attachments: [
+        {
+          id: '22222222-2222-4222-8222-222222222222',
+          name: 'screenshot.png',
+          mimeType: 'image/png',
+          size: 1234,
+          url,
+        },
+      ],
     }),
   );
   assert.ok(html.includes(`src="${url}"`));

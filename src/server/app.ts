@@ -382,7 +382,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
     const file = result.rows[0];
     if (!file) return reply.code(404).send({ error: 'File not found.' });
     const inline =
-      /^(image\/(png|jpeg|webp|gif|avif|bmp)|audio\/(mpeg|wav|x-wav|webm|ogg|mp4|aac|flac)|video\/(mp4|webm|ogg)|application\/pdf)$/.test(
+      /^(image\/(png|jpeg|webp|gif|avif|bmp|svg\+xml)|audio\/(mpeg|wav|x-wav|webm|ogg|mp4|aac|flac)|video\/(mp4|webm|ogg)|application\/pdf)$/.test(
         file.mime_type,
       );
     reply

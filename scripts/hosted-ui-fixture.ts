@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { crc32, deflateSync } from 'node:zlib';
 import { createServer } from 'vite';
 import { createGateway } from '../src/server/gateway.ts';
 import type { AuthenticatedSession, AuthenticationProvider } from '../src/ports/authentication.ts';
@@ -12,17 +13,175 @@ import {
   integrationServices,
   type IntegrationService,
 } from '../src/shared/integrations.ts';
+import type { Artifact, Message } from '../src/shared/contracts.ts';
 
 const repository = fileURLToPath(new URL('..', import.meta.url));
 const fixturePort = Number(process.env.OTTO_UI_PORT || 4346);
 if (!Number.isInteger(fixturePort) || fixturePort < 1024 || fixturePort > 65535)
   throw new Error('Use a valid local fixture port.');
 const origin = `http://localhost:${fixturePort}`;
+const attachments = process.env.OTTO_UI_ATTACHMENTS === 'true';
 const cookieName = 'otto-ui-fixture';
 const users = [
   { id: randomUUID(), name: 'Alex Morgan', email: 'alex@example.test', avatarUrl: null },
   { id: randomUUID(), name: 'Sam Rivera', email: 'sam@example.test', avatarUrl: null },
 ];
+function png(width: number, height: number) {
+  const rows = Buffer.alloc((width * 3 + 1) * height);
+  for (let y = 0; y < height; y++) {
+    const row = y * (width * 3 + 1);
+    for (let x = 0; x < width; x++) {
+      const sky = y < height * 0.62;
+      const sun = Math.hypot(x - width * 0.7, y - height * 0.42) < height * 0.12;
+      const t = y / height;
+      const [r, g, b] = sun
+        ? [255, 214, 150]
+        : sky
+          ? [250 - t * 120, 170 - t * 60, 150 + t * 40]
+          : [40 + (1 - t) * 60, 70 + (1 - t) * 50, 110 + ((x + y) % 23)];
+      rows.set([r, g, b], row + 1 + x * 3);
+    }
+  }
+  const chunk = (type: string, data: Buffer) => {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type), data]);
+    const checksum = Buffer.alloc(4);
+    checksum.writeUInt32BE(crc32(body));
+    return Buffer.concat([length, body, checksum]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header.set([8, 2, 0, 0, 0], 8);
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', header),
+    chunk('IDAT', deflateSync(rows)),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+function pdf(pages: string[][]) {
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    `<< /Type /Pages /Kids [${pages.map((_, index) => `${4 + index * 2} 0 R`).join(' ')}] /Count ${pages.length} >>`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ];
+  for (const lines of pages) {
+    const text = lines
+      .map((line, index) => {
+        const size = index === 0 ? 22 : 12;
+        const y = index === 0 ? 720 : 680 - index * 22;
+        return `BT /F1 ${size} Tf 72 ${y} Td (${line}) Tj ET`;
+      })
+      .join('\n');
+    const stream = `0.93 0.36 0.52 rg 72 752 60 6 re f\n0.1 0.1 0.14 rg\n${text}`;
+    objects.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${5 + (objects.length - 3)} 0 R >>`,
+      `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`,
+    );
+  }
+  let output = '%PDF-1.4\n';
+  const offsets = objects.map((object, index) => {
+    const offset = Buffer.byteLength(output);
+    output += `${index + 1} 0 obj\n${object}\nendobj\n`;
+    return offset;
+  });
+  const xref = Buffer.byteLength(output);
+  output += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets
+    .map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`)
+    .join('')}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(output);
+}
+
+const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 240" width="480" height="240">
+<style>text { font: 600 15px system-ui, sans-serif; fill: #1b1924 }</style>
+<rect x="20" y="80" width="120" height="64" rx="12" fill="#fceaec" stroke="#bc3666" stroke-width="2"/>
+<rect x="180" y="80" width="120" height="64" rx="12" fill="#f2edf9" stroke="#7554a0" stroke-width="2"/>
+<rect x="340" y="80" width="120" height="64" rx="12" fill="#edf5ef" stroke="#315c49" stroke-width="2"/>
+<path d="M140 112h40M300 112h40" stroke="#6e697a" stroke-width="2"/>
+<text x="80" y="117" text-anchor="middle">Request</text>
+<text x="240" y="117" text-anchor="middle">Review</text>
+<text x="400" y="117" text-anchor="middle">Deliver</text>
+</svg>`;
+
+const files = [
+  {
+    name: 'Harbour visit.png',
+    mimeType: 'image/png',
+    bytes: png(960, 640),
+  },
+  {
+    name: 'Process diagram.svg',
+    mimeType: 'image/svg+xml',
+    bytes: Buffer.from(svg),
+  },
+  {
+    name: 'Site sources.zip',
+    mimeType: 'application/zip',
+    bytes: Buffer.concat([Buffer.from('PK\x05\x06'), Buffer.alloc(18_000)]),
+  },
+  {
+    name: 'Harbour renovation plan.pdf',
+    mimeType: 'application/pdf',
+    bytes: pdf([
+      [
+        'Harbour renovation plan',
+        'Synthetic document for the Otto UI fixture.',
+        '1. Survey the north pier and record damage.',
+        '2. Replace the lighting along the promenade.',
+        '3. Add seating near the ferry entrance.',
+        '4. Review costs with the city team.',
+      ],
+      ['Schedule', 'Phase one starts in March.', 'Phase two starts in June.'],
+      ['Budget', 'All numbers in this fixture are fictional.'],
+    ]),
+  },
+].map((file, index) => ({
+  ...file,
+  id: `00000000-0000-4000-8000-0000000000a${index}`,
+}));
+
+const fixtureArtifacts = new Map(files.map((file) => [file.id, file]));
+
+const artifact = (index: number): Artifact => ({
+  id: files[index].id,
+  name: files[index].name,
+  mimeType: files[index].mimeType,
+  size: files[index].bytes.length,
+  url: `/api/artifacts/${files[index].id}`,
+});
+
+function fixtureMessages(): Message[] {
+  const at = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+  return [
+    {
+      id: 'fixture-attachments-1',
+      role: 'user',
+      text: 'Here is a photo from the harbour visit. Can you make a short plan?',
+      taskId: 'fixture-attachments-task',
+      createdAt: at(12),
+      attachments: [artifact(0)],
+    },
+    {
+      id: 'fixture-attachments-2',
+      role: 'assistant',
+      text: 'I made a process diagram and put the source notes in an archive.',
+      taskId: 'fixture-attachments-task',
+      createdAt: at(10),
+      attachments: [artifact(1), artifact(2)],
+    },
+    {
+      id: 'fixture-attachments-3',
+      role: 'assistant',
+      text: '',
+      taskId: 'fixture-attachments-task',
+      createdAt: at(9),
+      attachments: [artifact(3)],
+    },
+  ];
+}
 const sessions = new Map<string, AuthenticatedSession>();
 const pending = new Set<string>();
 const accounts = new Map<string, StoredAccount>();
@@ -193,14 +352,17 @@ const app = await createGateway({
       if (url.pathname === '/api/state')
         return Response.json({
           conversationRevision: 0,
-          messages: messages.map((message, index) => ({
-            id: `${welcome!.messageId}-${index}`,
-            role: 'assistant',
-            text: message.text,
-            taskId: welcome!.taskId,
-            attachments: [],
-            createdAt: new Date(message.at).toISOString(),
-          })),
+          messages: [
+            ...(attachments ? fixtureMessages() : []),
+            ...messages.map((message, index) => ({
+              id: `${welcome!.messageId}-${index}`,
+              role: 'assistant',
+              text: message.text,
+              taskId: welcome!.taskId,
+              attachments: [],
+              createdAt: new Date(message.at).toISOString(),
+            })),
+          ],
           tasks: welcome
             ? [
                 {
@@ -222,6 +384,16 @@ const app = await createGateway({
             browserAssistReady: false,
             inspectorEnabled: false,
             localOnly: false,
+          },
+        });
+      const file = attachments
+        ? fixtureArtifacts.get(/^\/api\/artifacts\/([a-f0-9-]+)$/.exec(url.pathname)?.[1] ?? '')
+        : undefined;
+      if (file)
+        return new Response(file.bytes, {
+          headers: {
+            'content-type': file.mimeType,
+            'content-disposition': `${file.mimeType === 'application/zip' ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(file.name)}`,
           },
         });
       if (url.pathname === '/api/events') {
