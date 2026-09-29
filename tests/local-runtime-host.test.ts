@@ -33,7 +33,7 @@ test(
     t.after(async () => {
       await host?.close().catch(() => {});
       await admin?.end();
-      if (created) await root.query(`DROP DATABASE "${database}" WITH (FORCE)`);
+      if (created) await root.query(`DROP DATABASE "${database}"`);
       for (const owner of [ownerA, ownerB])
         await root.query(`DROP ROLE IF EXISTS "${tenantIdentifiers(owner, environment).role}"`);
       await root.end();

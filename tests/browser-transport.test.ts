@@ -92,6 +92,7 @@ async function fixture() {
     computer,
     actions,
     launches,
+    page: () => pages.pages.get('fixture')!,
     fail(action?: string, message?: string) {
       failedAction = action;
       if (message !== undefined) failedMessage = message;
@@ -173,6 +174,28 @@ test('only exact matching native click interception is classified as a safe refu
     assert.equal(f.actions.filter((action) => action === 'click').length, 9);
     assert.equal(f.actions.includes('close'), false);
     assert.deepEqual(f.launches, ['open', 'info']);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('a click that opens a blank tab reports that tab without failing the action', async () => {
+  const f = await fixture();
+  try {
+    await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    f.before(async (action) => {
+      if (action === 'click') f.page().location.href = 'about:blank';
+    });
+    const opened = await f.computer.act('fixture', { action: 'click', selector: '@e1' });
+    assert.equal(opened.url, 'about:blank');
+    f.page().location.href = 'https://1.1.1.1/login';
+    assert.equal(
+      (await f.computer.act('fixture', { action: 'snapshot' })).url,
+      'https://1.1.1.1/login',
+    );
+    f.page().location.href = 'chrome-error://chromewebdata/';
+    await assert.rejects(f.computer.act('fixture', { action: 'snapshot' }), /HTTP or HTTPS/);
+    assert.equal(f.actions.filter((action) => action === 'click').length, 1);
   } finally {
     await f.cleanup();
   }
