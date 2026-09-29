@@ -15,7 +15,7 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
-import type { Artifact, Message } from '../../shared/contracts';
+import type { Artifact, Message, Task } from '../../shared/contracts';
 import { reactionEmoji } from '../../shared/emoji';
 import { Button, Loading, Notice } from './ui';
 import { BrandMark } from './brand';
@@ -104,6 +104,21 @@ export function Attachment({ artifact }: { artifact: Artifact }) {
   );
 }
 
+function taskRunLabel(task: Task, startedAt?: string) {
+  if (!['succeeded', 'failed', 'cancelled'].includes(task.status)) return null;
+  const seconds = Math.round(
+    (Date.parse(task.updatedAt) - Date.parse(startedAt ?? task.createdAt)) / 1000,
+  );
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  const minutes = Math.floor(seconds / 60);
+  const elapsed = minutes ? `${minutes} min ${seconds % 60} sec` : `${seconds} sec`;
+  const cost =
+    typeof task.costUsd === 'number'
+      ? `Recorded task cost $${task.costUsd.toFixed(task.costUsd < 0.01 ? 4 : 2)}`
+      : 'Cost unavailable';
+  return `Elapsed ${elapsed} · ${cost}`;
+}
+
 function ReactionGlyph({ value }: { value: string }) {
   return (
     <span className="reaction-emoji" aria-hidden="true">
@@ -114,6 +129,8 @@ function ReactionGlyph({ value }: { value: string }) {
 
 export function MessageBubble({
   message,
+  task,
+  taskStartedAt,
   inspectorEnabled = false,
   grouped = false,
   showTimestamp = true,
@@ -121,6 +138,8 @@ export function MessageBubble({
   onReply,
 }: {
   message: Message;
+  task?: Task;
+  taskStartedAt?: string;
   inspectorEnabled?: boolean;
   grouped?: boolean;
   showTimestamp?: boolean;
@@ -315,6 +334,7 @@ export function MessageBubble({
     });
   }
   const sent = new Date(message.createdAt);
+  const taskResult = task ? taskRunLabel(task, taskStartedAt) : null;
   const timestamp = showTimestamp && !streaming && (
     <time dateTime={message.createdAt} title={sent.toLocaleString()}>
       {sent.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -372,9 +392,13 @@ export function MessageBubble({
           )}
         </div>
         <div className="message-footer">
-          {((message.role === 'assistant' && timestamp) || reaction || agentReaction) && (
+          {((message.role === 'assistant' && timestamp) ||
+            taskResult ||
+            reaction ||
+            agentReaction) && (
             <div className="message-meta">
               {message.role === 'assistant' && timestamp}
+              {taskResult && <span className="message-run-meta">{taskResult}</span>}
               {reaction && (
                 <button
                   className="selected-reaction"

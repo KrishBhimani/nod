@@ -20,6 +20,7 @@ export function createBridgeComputer(options: {
   launch(input: BrowserCall): CommandProcess;
   available?(input: BrowserCall): boolean;
   timeoutMs?: number;
+  openTimeoutMs?: number;
   drainTimeoutMs?: number;
 }): Computer & { quiesce(): Promise<boolean> } {
   let disposed = false;
@@ -98,7 +99,11 @@ export function createBridgeComputer(options: {
       let settled = false;
       let cancelling = false;
       let drainTimer: ReturnType<typeof setTimeout> | undefined;
-      const timer = setTimeout(() => cancel(), options.timeoutMs ?? 60_000);
+      const timeoutMs =
+        input.method === 'act' && input.input.action === 'open'
+          ? (options.openTimeoutMs ?? Math.max(options.timeoutMs ?? 60_000, 150_000))
+          : (options.timeoutMs ?? 60_000);
+      const timer = setTimeout(() => cancel(), timeoutMs);
       const cleanup = () => {
         clearTimeout(timer);
         clearTimeout(drainTimer);

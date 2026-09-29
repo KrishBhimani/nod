@@ -29,6 +29,7 @@ export interface Message {
   reactions?: Array<{ actor: 'user' | 'assistant'; reaction: MessageReaction }>;
   replyToMessageId?: string | null;
   replyTo?: { id: string; role: 'user' | 'assistant'; text: string } | null;
+  task?: Task;
 }
 export interface SubmitMessageResponse {
   taskId: string;
@@ -48,6 +49,7 @@ export interface Task {
   status: TaskStatus;
   createdAt: string;
   updatedAt: string;
+  costUsd?: number | null;
   error?: string | null;
   showTyping?: boolean;
 }

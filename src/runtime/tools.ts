@@ -122,7 +122,7 @@ export const toolDefinitions = {
   ),
   publish_artifact: defineTool(
     'publish_artifact',
-    'Publish a completed workspace file as a conversation attachment and return its protected download link. A successful call already sends the attachment to the user. If this completes the request, finish without another confirmation or repeated link.',
+    'Publish a completed workspace file as a conversation attachment and return its protected download link. First inspect the saved file with read_file or a shell parser. Check its actual item count, requested fields and drafts against the user request; correct mismatches before this call. For a research file, confirm that each cited page states its claimed value; mark a current value unknown when the live page omits it. Link direct sources beside key claims in the chat summary even when the file lists sources. A successful call already sends the attachment to the user. If this completes the request, finish without another confirmation or repeated link.',
     Type.Object({
       path: Type.String(),
       name: Type.Optional(Type.String({ maxLength: 200 })),
@@ -203,8 +203,17 @@ export const toolDefinitions = {
   ),
   send_screenshot: defineTool(
     'send_screenshot',
-    'Capture this task browser through its protected screenshot boundary and publish the masked image as an owned attachment. Use when the user asks to see a screenshot. A successful call already sends the attachment to the user. If this completes the request, finish without another confirmation or repeated link. Secure-entry locks still apply. On channels without file delivery, the attachment is available in the Otto web app.',
-    Type.Object({}),
+    'Capture this task browser through its protected screenshot boundary and publish the masked image as an owned attachment. Use when the user asks to see a screenshot or needs a baseline image for a later comparison. First use browser_screenshot to inspect the visible frame. If the source content is outside the frame, scroll to it and inspect again. Publish only a frame that shows the requested page content. Dismiss a cookie consent dialog that covers the target content with its reject or essential-only option before capture. Do not accept optional cookies. The tool rejects a visible consent dialog; use the browser to dismiss it and retry. Set allowCookieDialog only when the user asked to see the dialog itself. Give each distinct page a clear PNG name. The returned artifact URL can identify the baseline image in a scheduled comparison. A successful call already sends the attachment to the user. If this completes the request, finish without another confirmation or repeated link. Secure-entry locks still apply. On channels without file delivery, the attachment is available in the Otto web app.',
+    Type.Object({
+      name: Type.Optional(
+        Type.String({
+          minLength: 5,
+          maxLength: 84,
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\\.png$',
+        }),
+      ),
+      allowCookieDialog: Type.Optional(Type.Boolean()),
+    }),
   ),
   inspect_login: defineTool(
     'inspect_login',

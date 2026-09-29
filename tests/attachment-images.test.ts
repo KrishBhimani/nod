@@ -29,6 +29,7 @@ Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', { configurable: tr
 after(() => dom.window.close());
 const { createRoot } = await import('react-dom/client');
 const { MessageBubble } = await import('../src/web/components/message.tsx');
+const { default: AttachmentData } = await import('../src/web/components/attachment-data.tsx');
 const { artifactImage, artifactPreview, ImageGallery, ImageViewer } =
   await import('../src/web/components/attachment-images.tsx');
 const click = (element: Element) =>
@@ -270,6 +271,129 @@ test('media previews reject unsafe URLs and active types, including direct viewe
   } finally {
     await act(async () => root.unmount());
     container.remove();
+  }
+});
+
+test('owned Markdown and CSV open readable previews with safe links and exact table cells', async () => {
+  const originalFetch = globalThis.fetch;
+  const markdown: Artifact = {
+    ...pictures[0],
+    name: 'brief.md',
+    mimeType: 'text/markdown',
+    url: '/api/artifacts/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  };
+  const csv: Artifact = {
+    ...pictures[1],
+    name: 'values.csv',
+    mimeType: 'text/csv',
+    url: '/api/artifacts/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+  };
+  globalThis.fetch = async (input) =>
+    new Response(
+      String(input).includes(markdown.url)
+        ? '# Brief\n\n| Tool | Result |\n| --- | --- |\n| One | [Source](https://example.com) |\n<script>window.bad = true</script>'
+        : 'Company,Note,Source\r\nA,"first, second",https://example.com/research?year=2024&country=DEU\r\nB,"two\nlines",javascript:alert(1)\r\nC,official pages,https://one.example/source;https://two.example/source\r\nD,""',
+    );
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  const message: Message = {
+    id: 'document-preview',
+    role: 'assistant',
+    taskId: 'document-preview-task',
+    text: '',
+    createdAt: '2026-09-25T12:00:00Z',
+    attachments: [markdown, csv],
+  };
+  try {
+    await act(async () => root.render(createElement(MessageBubble, { message })));
+    assert.equal(container.querySelectorAll('.attachment-image-tile').length, 2);
+    await act(async () => {
+      click(container.querySelector('[aria-label="View attachment 1 of 2"]')!);
+      await tick();
+    });
+    let viewer = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    assert.match(viewer.textContent ?? '', /Brief/);
+    assert.equal(viewer.querySelector('.attachment-markdown script'), null);
+    assert.equal(
+      viewer.querySelector('.attachment-markdown a')?.getAttribute('href'),
+      'https://example.com/',
+    );
+    assert.equal(viewer.querySelector('a[download]')?.getAttribute('href'), markdown.url);
+    await act(async () => {
+      click(viewer.querySelector('[aria-label="Next attachment"]')!);
+      await tick();
+    });
+    viewer = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    assert.match(viewer.textContent ?? '', /4 rows/);
+    assert.deepEqual(
+      Array.from(viewer.querySelectorAll('tbody tr')).map((row) =>
+        Array.from(row.querySelectorAll('td')).map((cell) => cell.textContent),
+      ),
+      [
+        ['A', 'first, second', 'example.com'],
+        ['B', 'two\nlines', 'javascript:alert(1)'],
+        ['C', 'official pages', 'one.exampletwo.example'],
+        ['D', '', ''],
+      ],
+    );
+    const source = viewer.querySelector<HTMLAnchorElement>('.attachment-table-link')!;
+    assert.equal(source.href, 'https://example.com/research?year=2024&country=DEU');
+    assert.equal(source.title, source.href);
+    assert.equal(source.target, '_blank');
+    assert.equal(source.rel, 'noopener noreferrer');
+    assert.deepEqual(
+      Array.from(viewer.querySelectorAll<HTMLAnchorElement>('.attachment-table-link')).map(
+        (link) => link.href,
+      ),
+      [
+        'https://example.com/research?year=2024&country=DEU',
+        'https://one.example/source',
+        'https://two.example/source',
+      ],
+    );
+    assert.equal(viewer.querySelector('a[download]')?.getAttribute('href'), csv.url);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('large CSV previews keep the visible rows, columns and cells bounded', async () => {
+  const originalFetch = globalThis.fetch;
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  globalThis.fetch = async () =>
+    new Response(
+      [
+        Array.from({ length: 120 }, (_, index) => `Column ${index}`).join(','),
+        ...Array.from({ length: 300 }, (_, index) =>
+          [index === 0 ? 'x'.repeat(20_000) : String(index), ...Array(119).fill('value')].join(','),
+        ),
+      ].join('\n'),
+    );
+  try {
+    await act(async () => {
+      root.render(
+        createElement(AttachmentData, {
+          url: '/api/artifacts/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          name: 'large.csv',
+          kind: 'csv',
+          size: 100_000,
+        }),
+      );
+      await tick();
+    });
+    assert.equal(container.querySelectorAll('tbody tr').length, 200);
+    assert.equal(container.querySelectorAll('thead th').length, 100);
+    assert.equal(container.querySelector('tbody td')?.textContent?.length, 10_000);
+    assert.match(container.textContent ?? '', /Showing the first 200 rows/);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    globalThis.fetch = originalFetch;
   }
 });
 

@@ -44,3 +44,47 @@ test('web search bounds public results and hides provider errors', async () => {
     name: 'AbortError',
   });
 });
+
+test('web search falls back to public results when automatic providers fail', async () => {
+  const signal = new AbortController().signal;
+  const search = createWebSearch(
+    async () => {
+      throw new Error('Auto provider search failed: unavailable');
+    },
+    async (query, options) => {
+      assert.equal(query, 'official source');
+      assert.equal(options?.provider, 'anysearch');
+      assert.equal(options?.signal, signal);
+      return {
+        provider: 'anysearch',
+        answer: '',
+        results: [{ title: 'Official page', url: 'https://example.com/source', snippet: 'A fact' }],
+      };
+    },
+  );
+  assert.deepEqual(await search('official source', signal), {
+    source: 'anysearch',
+    results: [{ title: 'Official page', url: 'https://example.com/source', snippet: 'A fact' }],
+  });
+});
+
+test('web search tries a second public provider after the first fails', async () => {
+  const search = createWebSearch(
+    async () => {
+      throw new Error('Auto provider search failed: unavailable');
+    },
+    async (_query, options) => {
+      if (options?.provider === 'anysearch') throw new Error('Public search is unavailable');
+      assert.equal(options?.provider, 'duckduckgo');
+      return {
+        provider: 'duckduckgo',
+        answer: '',
+        results: [{ title: 'Source', url: 'https://example.com/source', snippet: 'A fact' }],
+      };
+    },
+  );
+  assert.equal(
+    (await search('official source', new AbortController().signal)).source,
+    'duckduckgo',
+  );
+});
