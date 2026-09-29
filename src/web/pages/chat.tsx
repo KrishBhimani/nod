@@ -173,23 +173,6 @@ export function Chat({
     window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
   }, []);
   useEffect(() => {
-    const compose = (event: Event) => {
-      const detail = (event as CustomEvent<{ text?: unknown }>).detail;
-      if (typeof detail?.text !== 'string') return;
-      const draft = detail.text;
-      setText((current) =>
-        !current.trim()
-          ? draft
-          : current.includes(draft)
-            ? current
-            : `${current.trimEnd()}\n\n${draft}`,
-      );
-      requestAnimationFrame(() => composer.current?.focus());
-    };
-    window.addEventListener('otto:compose', compose);
-    return () => window.removeEventListener('otto:compose', compose);
-  }, []);
-  useEffect(() => {
     const focusMessage = (event: Event) => {
       const detail = (event as CustomEvent<{ messageId?: unknown }>).detail;
       if (typeof detail?.messageId === 'string') setFocusTarget({ id: detail.messageId, pages: 0 });

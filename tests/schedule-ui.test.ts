@@ -164,9 +164,6 @@ test('Schedule shows cached upcoming work, lazy read-only history and keyboard t
     runs: [run],
     nextCursor: 'older-cursor',
   }));
-  const drafts: unknown[] = [];
-  const onDraft = (event: Event) => drafts.push((event as CustomEvent).detail);
-  window.addEventListener('otto:compose', onDraft);
   const element = document.createElement('div');
   document.body.append(element);
   const root = createRoot(element);
@@ -186,7 +183,6 @@ test('Schedule shows cached upcoming work, lazy read-only history and keyboard t
     assert.ok(
       element.querySelector('.new-plan-card [aria-label="What should Otto do, and when?"]'),
     );
-    assert.deepEqual(drafts, []);
     assert.deepEqual(requests, ['/api/schedules']);
     await act(async () => click(add));
     const upcoming = element.querySelector<HTMLButtonElement>('#schedule-tab-upcoming')!;
@@ -250,7 +246,6 @@ test('Schedule shows cached upcoming work, lazy read-only history and keyboard t
   } finally {
     await act(async () => root.unmount());
     element.remove();
-    window.removeEventListener('otto:compose', onDraft);
     pageDataCache.update('/api/schedules', () => null);
     pageDataCache.update(historyPath, () => null);
     globalThis.fetch = priorFetch;
@@ -361,9 +356,6 @@ test('schedule controls pause, resume and retime through the owned route with Un
     }
     return Response.json([recurring]);
   };
-  const drafts: unknown[] = [];
-  const onDraft = (event: Event) => drafts.push((event as CustomEvent).detail);
-  window.addEventListener('otto:compose', onDraft);
   const element = document.createElement('div');
   document.body.append(element);
   const root = createRoot(element);
@@ -422,11 +414,9 @@ test('schedule controls pause, resume and retime through the owned route with Un
     await render(overdue);
     assert.equal(element.querySelector('[role="switch"]'), null);
     assert.ok(element.querySelector('[aria-label="Ask Otto about Send a reminder"]'));
-    assert.deepEqual(drafts, []);
   } finally {
     await act(async () => root.unmount());
     element.remove();
-    window.removeEventListener('otto:compose', onDraft);
     globalThis.fetch = priorFetch;
   }
 });

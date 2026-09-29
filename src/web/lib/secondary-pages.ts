@@ -52,7 +52,7 @@ export function removeConnection(connections: Connection[], connectionId: string
 }
 
 export type ChannelProvider = 'telegram' | 'whatsapp';
-export type ChannelStatus = {
+type ChannelStatus = {
   provider: string;
   status: 'disabled' | 'setup_required' | 'configured';
   missing: string[];

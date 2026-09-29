@@ -81,10 +81,6 @@ function Workspace({
     return () => window.removeEventListener('keydown', shortcut);
   }, [settingsOpen]);
   useEffect(() => {
-    const compose = (event: Event) => {
-      const detail = (event as CustomEvent<{ text?: unknown }>).detail;
-      if (typeof detail?.text === 'string' && detail.text) navigate('/');
-    };
     const focusMessage = (event: Event) => {
       const detail = (event as CustomEvent<{ messageId?: unknown }>).detail;
       if (typeof detail?.messageId === 'string') navigate('/');
@@ -96,11 +92,9 @@ function Workspace({
       setInspectionFocus(detail);
       setInspector(true);
     };
-    window.addEventListener('otto:compose', compose);
     window.addEventListener('otto:focus-message', focusMessage);
     window.addEventListener('otto:inspect-message', inspect);
     return () => {
-      window.removeEventListener('otto:compose', compose);
       window.removeEventListener('otto:focus-message', focusMessage);
       window.removeEventListener('otto:inspect-message', inspect);
     };

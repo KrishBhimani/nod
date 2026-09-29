@@ -109,7 +109,7 @@ export function ScheduleRunRow({ run }: { run: ScheduleRun }) {
   );
 }
 
-export function ScheduleHistoryView() {
+function ScheduleHistoryView() {
   const { data, error, loading, refreshing, refresh } = usePageData<ScheduleHistory>(historyPath);
   const [earlier, setEarlier] = useState<ScheduleHistory | null>(null);
   const [loadingEarlier, setLoadingEarlier] = useState(false);

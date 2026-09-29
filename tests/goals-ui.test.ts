@@ -153,9 +153,6 @@ test('goal controls save first-party changes in place with Undo and never open c
     return Response.json(goals);
   };
   pageDataCache.update('/api/goals', () => goals);
-  const drafts: unknown[] = [];
-  const onDraft = (event: Event) => drafts.push((event as CustomEvent).detail);
-  window.addEventListener('otto:compose', onDraft);
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -194,9 +191,7 @@ test('goal controls save first-party changes in place with Undo and never open c
     assert.ok(completed.querySelector('progress'));
     assert.ok(completed.querySelector('[aria-label="Ask Otto about Finished review"]'));
     assert.ok(completed.querySelector('[aria-label="Delete goal Finished review"]'));
-    assert.deepEqual(drafts, []);
   } finally {
-    window.removeEventListener('otto:compose', onDraft);
     await act(async () => root.unmount());
     container.remove();
     pageDataCache.update('/api/goals', () => null);

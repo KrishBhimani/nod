@@ -176,7 +176,8 @@ const sendKey = (element: Element) =>
   );
 async function draft(text: string) {
   await act(async () => {
-    window.dispatchEvent(new CustomEvent('otto:compose', { detail: { text, send: false } }));
+    const input = document.querySelector<HTMLElement>('[role="textbox"]')!;
+    input.innerHTML = `<p>${text}</p>`;
     await tick();
   });
 }
@@ -1091,42 +1092,6 @@ test('a late verification rejection preserves new draft text and combines both a
   } finally {
     await fixture.dispose();
     globalThis.fetch = priorFetch;
-  }
-});
-
-test('page drafts append to an unsent draft once and clear after sending', async () => {
-  const previousFetch = globalThis.fetch;
-  globalThis.fetch = async (path, init) => {
-    if (path === '/api/state') return Response.json(base);
-    if (path === '/api/messages') {
-      const body = JSON.parse(String(init?.body)) as Submission;
-      return Response.json({ taskId: 'draft-task', messageId: body.clientMessageId });
-    }
-    throw new Error('Unexpected fixture request');
-  };
-  const fixture = await mount();
-  const compose = (text: string, source?: string) =>
-    act(async () => {
-      window.dispatchEvent(
-        new CustomEvent('otto:compose', { detail: { text, send: false, source } }),
-      );
-      await tick();
-    });
-  try {
-    await draft('My own note.');
-    const input = fixture.element.querySelector<HTMLElement>('[role="textbox"]')!;
-    await compose('Pause the schedule "Weekly review".', 'Schedule');
-    await compose('Pause the schedule "Weekly review".', 'Schedule');
-    assert.equal(input.textContent, 'My own note.Pause the schedule "Weekly review".');
-    assert.equal(input.querySelectorAll('p').length, 2);
-    await act(async () => {
-      sendKey(input);
-      await tick();
-    });
-    assert.equal(input.textContent, '');
-  } finally {
-    await fixture.dispose();
-    globalThis.fetch = previousFetch;
   }
 });
 

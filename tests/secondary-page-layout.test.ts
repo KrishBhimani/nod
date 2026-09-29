@@ -72,9 +72,6 @@ test('secondary pages share layout, have one add action, and open new plans in p
   const element = document.createElement('div');
   document.body.append(element);
   const root = createRoot(element);
-  const drafts: unknown[] = [];
-  const onDraft = (event: Event) => drafts.push((event as CustomEvent).detail);
-  window.addEventListener('otto:compose', onDraft);
   try {
     await act(async () =>
       root.render(
@@ -111,7 +108,6 @@ test('secondary pages share layout, have one add action, and open new plans in p
       assert.equal(button.getAttribute('aria-expanded'), 'true');
     }
     assert.equal(element.querySelectorAll('.new-plan-card .ask-otto-field').length, 2);
-    assert.equal(drafts.length, 0);
     assert.ok(requests.every((request) => request.method === 'GET'));
     assert.equal(element.querySelector('[aria-label^="Refresh"]'), null);
     savedLogin = true;
@@ -119,7 +115,6 @@ test('secondary pages share layout, have one add action, and open new plans in p
     assert.match(element.textContent!, /Newly saved login/);
     assert.equal(requests.filter(({ path }) => path === '/api/vault').length, 2);
   } finally {
-    window.removeEventListener('otto:compose', onDraft);
     await act(async () => root.unmount());
     element.remove();
     style.remove();
