@@ -282,7 +282,7 @@
 }
 
 @media (max-width: 720px) {
-  .vault-item {
+  .vault-item.button {
     min-height: 60px;
   }
   .vault-inset .button-icon {
