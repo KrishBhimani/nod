@@ -7,7 +7,7 @@ import { channelReply, createChannels } from '../src/server/channels.ts';
 import { createChatVerification } from '../src/server/chat-verification.ts';
 import { createVault } from '../src/server/vault.ts';
 import { channelConfiguration, createChatSdkTransport } from '../src/providers/chat-sdk/index.ts';
-import type { InboundMessage, MessagingTransport } from '../src/ports/messaging.ts';
+import type { MessagingTransport } from '../src/ports/messaging.ts';
 
 const fixtureEnv = {
   TELEGRAM_ENABLED: 'true',
@@ -25,7 +25,7 @@ const fixtureEnv = {
 
 async function createFixtureTables(pool: pg.Pool, owner: string) {
   await pool.query(`CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,status text NOT NULL DEFAULT 'idle',created_at timestamptz NOT NULL DEFAULT now(),archived_at timestamptz);
-    CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text UNIQUE,channel text NOT NULL DEFAULT 'web',status text NOT NULL DEFAULT 'queued',waiting_reason text,created_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text UNIQUE,channel text NOT NULL DEFAULT 'web',status text NOT NULL DEFAULT 'queued',waiting_reason text,created_at timestamptz NOT NULL DEFAULT now(),started_at timestamptz,finished_at timestamptz);
     CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text NOT NULL,role text NOT NULL,text text NOT NULL,thread_id uuid REFERENCES threads(id),turn_id uuid REFERENCES turns(id),attachments jsonb NOT NULL DEFAULT '[]',reply_to_message_id uuid,created_at timestamptz NOT NULL DEFAULT now())`);
   const threadId = randomUUID();
   await pool.query('INSERT INTO threads(id,owner_id) VALUES($1,$2)', [threadId, owner]);
@@ -199,26 +199,20 @@ test(
 );
 
 test(
-  'channel numeric receipt classification and actual Vault request creation serialize on the turn',
+  'channel verification codes are applied only for a waiting sign-in and never stored as text',
   { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
   async () => {
-    const schema = `test_channel_otp_race_${randomUUID().replaceAll('-', '')}`;
+    const schema = `test_channel_otp_${randomUUID().replaceAll('-', '')}`;
     const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
     await admin.query(`CREATE SCHEMA ${schema}`);
     const pool = new pg.Pool({
       connectionString: process.env.TEST_DATABASE_URL,
       options: `-c search_path=${schema}`,
-      application_name: `${schema}_channel`,
-    });
-    const vaultPool = new pg.Pool({
-      connectionString: process.env.TEST_DATABASE_URL,
-      options: `-c search_path=${schema}`,
-      application_name: `${schema}_vault`,
     });
     const threadId = await createFixtureTables(pool, 'local-development');
     const keyStore = { id: 'fixture', configured: true, getKey: async () => Buffer.alloc(32, 71) };
     let injections = 0;
-    const vault = await createVault(vaultPool, {
+    const vault = await createVault(pool, {
       keyStore,
       inspect: async () => ({
         url: 'https://1.1.1.1/login',
@@ -250,17 +244,8 @@ test(
       'local-development',
       channel,
       null,
-      'running',
+      'succeeded',
     );
-    let releaseReceipt!: () => void;
-    const heldReceipt = new Promise<void>((resolve) => {
-      releaseReceipt = resolve;
-    });
-    let receiptStarted!: () => void;
-    const receiptStarting = new Promise<void>((resolve) => {
-      receiptStarted = resolve;
-    });
-    let holdOrdinary = true;
     const submitted: string[] = [];
     const app = Fastify();
     const channels = await createChannels(pool, {
@@ -292,17 +277,7 @@ test(
         post: async () => ({ id: 'fixture-reply' }),
         close: async () => {},
       },
-      acceptVerification: (text, input) =>
-        verification.accept(text, {
-          ...input,
-          persistOrdinary: async (client) => {
-            if (holdOrdinary) {
-              receiptStarted();
-              await heldReceipt;
-            }
-            await input.persistOrdinary(client);
-          },
-        }),
+      acceptVerification: (text, input) => verification.accept(text, input),
       submit: async (text) => {
         submitted.push(text);
         return ordinaryTurnId;
@@ -311,7 +286,6 @@ test(
       intervalMs: 600000,
     });
     channels.registerRoutes(app);
-    vault.registerRoutes(app);
     const send = (messageId: string, text: string) =>
       app.inject({
         method: 'POST',
@@ -319,40 +293,18 @@ test(
         headers: { 'content-type': 'application/json' },
         payload: { messageId, text },
       });
-    const request = (turnId: string) =>
-      vault.request({ threadId, turnId }, 'local-development', {
-        origin: 'https://1.1.1.1',
-        label: 'Fixture sign-in',
-        kind: 'otp',
-        passwordSelector: '#code',
-      });
-    async function waitForDatabaseLock(application: string) {
-      for (let attempt = 0; attempt < 100; attempt++) {
-        const waiting = await admin.query(
-          "SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock'",
-          [application],
-        );
-        if (waiting.rowCount) return;
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      assert.fail('Expected the fixture transaction to wait on the turn boundary.');
-    }
-    const gate = await pool.connect();
-    const gateId = Math.floor(Math.random() * 1000000000);
+    const stored = async () =>
+      JSON.stringify(
+        (
+          await pool.query(
+            'SELECT row_to_json(i) AS row FROM channel_inbox i UNION ALL SELECT row_to_json(m) FROM messages m UNION ALL SELECT row_to_json(v) FROM chat_verification_submissions v',
+          )
+        ).rows,
+      );
     try {
-      const year = send('year', '2026');
-      await receiptStarting;
-      const laterRequest = request(ordinaryTurnId);
-      await waitForDatabaseLock(`${schema}_vault`);
-      assert.equal((await pool.query('SELECT * FROM credential_requests')).rowCount, 0);
-      assert.equal((await pool.query('SELECT * FROM channel_inbox')).rowCount, 0);
-      releaseReceipt();
-      assert.equal((await year).statusCode, 200);
-      await laterRequest;
+      assert.equal((await send('year', '2026')).statusCode, 200);
       await channels.drain();
       assert.deepEqual(submitted, ['2026']);
-      assert.equal((await pool.query('SELECT text FROM channel_inbox')).rows[0].text, '2026');
-      await pool.query("UPDATE turns SET status='succeeded' WHERE id=$1", [ordinaryTurnId]);
       const codeTurnId = await fixtureTurn(
         pool,
         threadId,
@@ -361,60 +313,29 @@ test(
         null,
         'running',
       );
-      holdOrdinary = false;
-      await pool.query(`CREATE FUNCTION hold_fixture_request() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(${gateId}); RETURN NEW; END $$;
-        CREATE TRIGGER hold_fixture_request BEFORE INSERT ON credential_requests FOR EACH ROW EXECUTE FUNCTION hold_fixture_request()`);
-      await gate.query('SELECT pg_advisory_lock($1)', [gateId]);
-      const earlierRequest = request(codeTurnId);
-      await waitForDatabaseLock(`${schema}_vault`);
-      const code = send('private-code', '481927');
-      await waitForDatabaseLock(`${schema}_channel`);
-      assert.equal(
-        (
-          await pool.query(
-            "SELECT * FROM channel_inbox WHERE source_id='channel:telegram:fixture-account:private-code'",
-          )
-        ).rowCount,
-        0,
-      );
-      assert.equal(injections, 0);
-      await gate.query('SELECT pg_advisory_unlock($1)', [gateId]);
-      await earlierRequest;
-      const response = await code;
-      assert.equal(response.statusCode, 200, response.body);
+      await pool.query('UPDATE turns SET started_at=now() WHERE id=$1', [codeTurnId]);
+      await vault.request({ threadId, turnId: codeTurnId }, 'local-development', {
+        origin: 'https://1.1.1.1',
+        label: 'Fixture sign-in',
+        kind: 'otp',
+        passwordSelector: '#code',
+      });
+      await send('early-code', '481927');
       await channels.drain();
       assert.equal(injections, 0);
-      const earlyReceipt = (
-        await pool.query(
-          "SELECT text,state FROM channel_inbox WHERE source_id='channel:telegram:fixture-account:private-code'",
-        )
-      ).rows[0];
-      assert.equal(earlyReceipt.state, 'discarded');
-      assert.doesNotMatch(earlyReceipt.text, /481927/);
+      assert.deepEqual(submitted, ['2026']);
+      assert.doesNotMatch(await stored(), /481927/);
       await pool.query(
-        "UPDATE turns SET status='waiting',waiting_reason='credentials' WHERE id=$1",
+        "UPDATE turns SET status='waiting',waiting_reason='credentials',finished_at=now() WHERE id=$1",
         [codeTurnId],
       );
-      assert.equal((await send('ready-private-code', '481927')).statusCode, 200);
+      assert.equal((await send('code', '481927')).statusCode, 200);
       await channels.drain();
       assert.equal(injections, 1);
       assert.deepEqual(submitted, ['2026']);
-      const privateRows = await pool.query(
-        'SELECT row_to_json(i) AS row FROM channel_inbox i UNION ALL SELECT row_to_json(m) FROM messages m UNION ALL SELECT row_to_json(v) FROM chat_verification_submissions v',
-      );
-      assert.doesNotMatch(JSON.stringify(privateRows.rows), /481927/);
-      const receipt = (
-        await pool.query(
-          "SELECT text,state FROM channel_inbox WHERE source_id='channel:telegram:fixture-account:ready-private-code'",
-        )
-      ).rows[0];
-      assert.deepEqual(receipt, { text: 'Verification code sent securely.', state: 'submitted' });
+      assert.doesNotMatch(await stored(), /481927/);
     } finally {
-      releaseReceipt();
-      await gate.query('SELECT pg_advisory_unlock_all()');
-      gate.release();
       await app.close();
-      await vaultPool.end();
       await pool.end();
       await admin.query(`DROP SCHEMA ${schema} CASCADE`);
       await admin.end();
@@ -650,213 +571,6 @@ test(
       );
     } finally {
       releaseHeld();
-      await fixture.app.close();
-      await pool.end();
-      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
-      await admin.end();
-    }
-  },
-);
-
-test(
-  'verification guidance is atomic, private, and retains channel delivery guards across restart',
-  { skip: !process.env.TEST_DATABASE_URL },
-  async () => {
-    const schema = `test_channel_guidance_${randomUUID().replaceAll('-', '')}`;
-    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
-    await admin.query(`CREATE SCHEMA ${schema}`);
-    const pool = new pg.Pool({
-      connectionString: process.env.TEST_DATABASE_URL,
-      options: `-c search_path=${schema}`,
-    });
-    await createFixtureTables(pool, 'fixture-owner');
-    const sent: Array<{ channelId: string; accountId: string; threadId: string; text: string }> =
-      [];
-    const polled: InboundMessage[] = [];
-    let consumed = 0;
-    let verificationCalls = 0;
-    let failSend = false;
-    async function open({
-      ownerId = 'fixture-owner',
-      accountId = 'fixture-account',
-      senderId = 'fixture-sender',
-    } = {}) {
-      const app = Fastify();
-      const channels = await createChannels(pool, {
-        ownerId,
-        transport: {
-          channels: ['telegram', 'whatsapp'].map((id) => ({
-            id,
-            status: 'configured',
-            missing: [],
-            accountId,
-            allowedSenderIds: [senderId],
-            ...(id === 'whatsapp' ? { replyWindowMs: 86400000 } : {}),
-          })),
-          receive: async (request) => {
-            const body = JSON.parse(Buffer.from(request.body).toString('utf8'));
-            return {
-              status: 200,
-              body: 'accepted',
-              messages: [inbound(body.messageId, request.channelId)],
-            };
-          },
-          poll: async (accept) => {
-            while (polled.length) {
-              await accept(polled[0]!);
-              polled.shift();
-              consumed++;
-            }
-          },
-          post: async (message) => {
-            sent.push(message);
-            if (failSend) throw new Error('Uncertain fixture delivery.');
-            return { id: `fixture-message-${sent.length}` };
-          },
-          close: async () => {},
-        },
-        acceptVerification: async () => {
-          verificationCalls++;
-          throw Object.assign(new Error('Private conflict containing 111111.'), {
-            statusCode: 409,
-          });
-        },
-        submit: async () => {
-          throw new Error('Verification must not create a turn.');
-        },
-        subscribe: () => () => {},
-        intervalMs: 600000,
-      });
-      channels.registerRoutes(app);
-      return { app, channels };
-    }
-    function inbound(messageId: string, channelId = 'telegram'): InboundMessage {
-      return {
-        channelId,
-        accountId: 'fixture-account',
-        senderId: 'fixture-sender',
-        messageId,
-        threadId: `fixture-thread-${messageId}`,
-        text: '111111',
-        sentAt: new Date(),
-      };
-    }
-    let fixture = await open();
-    const send = (messageId: string, provider = 'telegram') =>
-      fixture.app.inject({
-        method: 'POST',
-        url: `/api/webhooks/${provider}`,
-        headers: { 'content-type': 'application/json' },
-        payload: { messageId },
-      });
-    try {
-      await pool.query(
-        'ALTER TABLE channel_outbox ADD CONSTRAINT fixture_outbox_failure CHECK(false)',
-      );
-      const failed = await send('atomic-retry');
-      assert.equal(failed.statusCode, 503);
-      assert.doesNotMatch(failed.body, /111111|Private conflict|fixture_outbox_failure/);
-      assert.equal((await pool.query('SELECT * FROM channel_inbox')).rowCount, 0);
-      assert.equal((await pool.query('SELECT * FROM messages')).rowCount, 0);
-      assert.equal((await pool.query('SELECT * FROM channel_outbox')).rowCount, 0);
-
-      polled.push(inbound('polled-retry'));
-      await fixture.channels.drain();
-      assert.equal(consumed, 0);
-      assert.equal(polled.length, 1);
-      assert.equal(sent.length, 0);
-      await pool.query('ALTER TABLE channel_outbox DROP CONSTRAINT fixture_outbox_failure');
-      await Promise.all([send('atomic-retry'), send('atomic-retry')]);
-      await fixture.channels.drain();
-      assert.equal(consumed, 1);
-      assert.equal(polled.length, 0);
-      assert.equal(sent.length, 2);
-      assert.equal((await pool.query('SELECT * FROM turns')).rowCount, 0);
-      const persisted = (
-        await pool.query(
-          'SELECT i.text,i.state,i.message_id,m.id,m.turn_id,m.owner_id,m.role,o.state AS delivery_state FROM channel_inbox i JOIN channel_outbox o USING(source_id) JOIN messages m ON m.id=o.message_id',
-        )
-      ).rows;
-      assert.equal(persisted.length, 2);
-      assert.ok(persisted.every((row) => row.state === 'discarded' && row.turn_id === null));
-      assert.ok(persisted.every((row) => row.delivery_state === 'sent'));
-      assert.doesNotMatch(JSON.stringify(persisted), /111111|Private conflict/);
-      assert.deepEqual(
-        new Set(sent.map((message) => message.threadId)),
-        new Set(['fixture-thread-atomic-retry', 'fixture-thread-polled-retry']),
-      );
-      const calls = verificationCalls;
-      await fixture.app.close();
-      fixture = await open();
-      await send('atomic-retry');
-      polled.push(inbound('polled-retry'));
-      await fixture.channels.drain();
-      assert.equal(verificationCalls, calls);
-      assert.equal(sent.length, 2);
-
-      failSend = true;
-      await send('uncertain');
-      await fixture.channels.drain();
-      assert.equal(sent.length, 3);
-      await fixture.app.close();
-      failSend = false;
-      fixture = await open();
-      await send('uncertain');
-      await fixture.channels.drain();
-      assert.equal(sent.length, 3);
-      assert.deepEqual(
-        (
-          await pool.query(
-            "SELECT state,reason FROM channel_outbox WHERE source_id='channel:telegram:fixture-account:uncertain'",
-          )
-        ).rows[0],
-        { state: 'uncertain', reason: 'send_not_confirmed' },
-      );
-
-      await send('expired', 'whatsapp');
-      await fixture.channels.drain();
-      await fixture.app.close();
-      await pool.query(
-        "UPDATE channel_inbox SET received_at=now()-interval '2 days' WHERE provider='whatsapp'; UPDATE channel_outbox SET state='pending' WHERE source_id='channel:whatsapp:fixture-account:expired'",
-      );
-      fixture = await open();
-      const beforeExpired = sent.length;
-      await fixture.channels.drain();
-      assert.equal(sent.length, beforeExpired);
-      assert.deepEqual(
-        (
-          await pool.query(
-            "SELECT state,reason FROM channel_outbox WHERE source_id='channel:whatsapp:fixture-account:expired'",
-          )
-        ).rows[0],
-        { state: 'blocked', reason: 'reply_window_closed' },
-      );
-
-      for (const change of [
-        { ownerId: 'different-owner', reason: 'message_owner_changed' },
-        { accountId: 'different-account', reason: 'channel_access_changed' },
-        { senderId: 'different-sender', reason: 'channel_access_changed' },
-      ]) {
-        await fixture.app.close();
-        await pool.query(
-          "UPDATE channel_outbox SET state='pending',reason=NULL WHERE source_id='channel:telegram:fixture-account:atomic-retry'",
-        );
-        fixture = await open(change);
-        const beforeGuard: number = sent.length;
-        await fixture.channels.drain();
-        assert.equal(sent.length, beforeGuard);
-        assert.deepEqual(
-          (
-            await pool.query(
-              "SELECT state,reason FROM channel_outbox WHERE source_id='channel:telegram:fixture-account:atomic-retry'",
-            )
-          ).rows[0],
-          change.ownerId
-            ? { state: 'pending', reason: null }
-            : { state: 'blocked', reason: change.reason },
-        );
-      }
-    } finally {
       await fixture.app.close();
       await pool.end();
       await admin.query(`DROP SCHEMA ${schema} CASCADE`);

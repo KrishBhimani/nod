@@ -1,30 +1,45 @@
 # Otto
 
-A personal assistant with a private single-owner local mode and an implemented hosted multi-user pilot. Do not push, deploy, or publish without authorization. Keep keys out of Git, logs, prompts, and client configuration. Keep private user content out of Git and logs. Do not add code comments or JSDoc.
+Setup and commands are in [README](README.md); how the system works is in [architecture](docs/architecture.md).
 
-Start with [README](README.md) for setup and current limits. Read the area guide before editing:
+## Rules
 
-| Change                                                            | Guide                                                              |
-| ----------------------------------------------------------------- | ------------------------------------------------------------------ |
-| HTTP, persistence, queues, credentials, approvals, personal data  | [src/server/AGENTS.md](src/server/AGENTS.md)                       |
-| Agent tools, turns, context, cancellation                         | [src/runtime/AGENTS.md](src/runtime/AGENTS.md)                     |
-| Model, browser, workspace, integrations, speech, channel adapters | [src/providers/AGENTS.md](src/providers/AGENTS.md)                 |
-| Pages, conversation, inspector, forms, streaming                  | [src/web/AGENTS.md](src/web/AGENTS.md)                             |
-| Fixtures and validation                                           | [tests/AGENTS.md](tests/AGENTS.md)                                 |
-| Cloudflare containers, private RPC, storage broker and CI/CD      | [deployment/cloudflare/README.md](deployment/cloudflare/README.md) |
+- Do not push, deploy or publish without explicit authorization.
+- Keep keys, credentials and private user content out of Git, logs, prompts, test fixtures and client configuration.
+- No code comments or JSDoc.
+- Prefer deleting to patching ceremony. Breaking changes are fine; keep the code small.
+- Use synthetic data and disposable database schemas. Never reset the normal local database, and never call a live model, connected account or real recipient from a test.
 
-[System guide](docs/system-guide.md) is the living product and technical reference. Keep it current whenever behavior, dependencies, model defaults, trust boundaries, or validation status change. Preserve the distinction between implemented code, automated fixtures, live provider checks, and missing features.
+## Architecture
 
-[Architecture](docs/architecture.md) defines ownership and trust boundaries. [API contract](docs/api-contract.md) describes wire behavior. [Replacing modules](docs/replacing-modules.md) maps ports and state migration. [Security](docs/security.md) and [production requirements](docs/production.md) apply before boundary or hosting changes.
+- One thread per owner: a persistent Pi session, a sandbox workspace and a browser computer, all keyed by the thread ID and shared by web, Telegram and WhatsApp.
+- Every user message, schedule fire, event wake and resume is a turn. Turns run one at a time; every write from a turn goes through `withTurnLock`. Nothing is retried automatically.
+- Pi-native tools (read, bash, edit, write, find, ls) run inside the sandbox through `WorkspaceSession.exec`; nothing runs or reads files on the host.
+- Provider keys never enter the sandbox or the browser. Tools that need them (`web_search`, `create_audio`, apps) run server-side.
+- `src/server/composition.ts` is the only place that selects providers and runtime implementations. Capabilities are ports in `src/ports`; vendor SDKs stay in `src/providers`; product policy stays in `src/server`; `src/web` imports only web and shared code.
+- Hosted mode: a gateway authenticates Google sessions and routes to one immutable-owner tenant runtime per user. Never change the owner per request.
 
-Shared HTTP types live in `src/shared/contracts.ts` and `src/shared/account.ts`; capabilities live in `src/ports`. Only `src/server/composition.ts` selects providers and runtime implementations. Keep product policy in features and protocol details in adapters. Prefer narrow factories over mutable globals.
+## Safety invariants
 
-Hosted ownership is process-immutable: `gateway.ts` authenticates Google sessions; `runtime-host.ts` selects one leased tenant process; `tenants.ts` provisions its restricted SQL login and private app/jobs schemas. Never change a global owner per HTTP request or forward control/auth database credentials to a tenant. Internal HMAC envelopes bind owner, environment, generation, method, target, body and capability; preserve replay and expiry checks. Do not bypass confirmed-stop fencing to recover a runtime faster.
+- Approvals: unknown, destructive or ambiguous outside actions need an owned yes/no confirmation bound to the exact action, account and arguments. Confirmed actions run once; interrupted ones become uncertain and are never re-run.
+- Vault and sign-in: credentials go only through secure forms and the trusted browser broker, bound to owner, turn, exact origin and expiry. Values never reach the model, chat, transcripts or logs.
+- Credential guard: the runtime withholds messages that ask the user for passwords, codes or API keys and redirects the model to `sign_in`.
+- The onboarding welcome turn is read-only.
+- Owner and tenant isolation: every query and route is owner-scoped; tenants get their own SQL role and schemas and never receive control or auth credentials.
+- Internal gateway-to-tenant requests use signed HMAC envelopes binding owner, environment, generation, method, target, body, nonce and expiry. Keep replay and expiry checks.
 
-The selected hosted architecture uses Cloudflare Containers for the application and computers. Admission defaults to eight total provisioned users: one shared gateway and up to eight each of tenant runtimes, browser containers and workspace containers. Each owner has a private runtime and separate keyless browser/workspace roles; computer containers start on first use, not during signup. Keep their process, profile and checkpoint boundaries separate. E2B and other provider changes are deferred; retain the optional E2B implementation and its acceptance gates without making it a prerequisite for Cloudflare. Provider/model/integration configuration is operator-selected. Keep all computer APIs developer-only behind the signed capability; ordinary users never choose providers. Hosted Inspector capture requires both an allowlisted developer UUID and explicit `DEV_INSPECTOR=true`. New storage/runtime providers must preserve owner boundaries, conditional writes, cancellation, uncertain-action fences and durable recovery. Keep development and production databases, keys and provider projects separate; start from [hosted environment example](deployment/hosted.env.example).
+## Validation
 
-Keep chat central and quiet. Preserve thread, turn and channel identity, account-bound approvals, and owned-message provenance. The Internet-connected workspace must remain separate from provider keys, host access, and authenticated browser profiles.
+Run focused tests while editing, then `npm run check`, `npm run test:integration` and `npm run build`. For deployment changes also run `npm --prefix deployment/cloudflare run check`, `npm --prefix deployment/cloudflare test` and both Wrangler dry runs (see [Cloudflare](deployment/cloudflare/README.md)). Report fixtures, UI checks and live checks separately.
 
-Run focused checks while editing, then `npm run check`, `npm run test:integration`, and `npm run build`; see [development](docs/development.md). Use synthetic data and disposable schemas. Update the owning guide when an entry point changes. Report automated fixtures, UI flows, and live account checks separately.
+## Tests
 
-For Cloudflare changes, also run that package's type check/tests and development/production Wrangler dry runs. The main CI workflow gates the production deployment workflow; passing either local fixtures or a dry run is not a live-provider or production claim. Read the rollout/rollback runbook before changing images, secret versions, schemas or runtime generations.
+Keep only tests that would catch a real regression in:
+
+- the core harness (one thread and Pi session per owner, sequential turns, stop, interruption, reset, session rebase);
+- sandbox isolation (nothing on the host, no keys in the sandbox, contained paths);
+- safety (approvals, uncertain actions, Vault and sign-in fencing, credential guard, read-only welcome);
+- owner and tenant isolation (gateway, signed envelopes, owner scoping, URL guards, redaction);
+- real integration contracts (channel delivery, schedule firing, downloads, OAuth completion).
+
+No tautological tests, mocks that return what they were told, or tests of UI copy, wording, CSS, constants or configuration. Extend the existing file for an area instead of adding one.

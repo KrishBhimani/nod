@@ -3,6 +3,7 @@ import type { Pool, PoolClient } from 'pg';
 import type { CredentialKeyStore } from '../ports/key-store.ts';
 import type { SubmitMessageResponse, VerificationRequest } from '../shared/contracts.ts';
 import { lockThread } from './thread.ts';
+import { waitingTurnSql } from './vault.ts';
 
 interface VerificationInput {
   clientMessageId: string;
@@ -41,9 +42,8 @@ export async function createChatVerification(
 ) {
   await pool.query(`CREATE TABLE IF NOT EXISTS chat_verification_submissions (
     message_id uuid PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
-    request_id text NOT NULL, status text NOT NULL DEFAULT 'pending'
-  );
-  ALTER TABLE chat_verification_submissions ADD COLUMN IF NOT EXISTS code_fingerprint text`);
+    request_id text NOT NULL, status text NOT NULL DEFAULT 'pending', code_fingerprint text NOT NULL
+  )`);
   let fingerprintKey: Promise<Buffer> | undefined;
   async function fingerprint(code: string, input: VerificationInput) {
     fingerprintKey ??= options.keyStore
@@ -68,11 +68,10 @@ export async function createChatVerification(
   async function pending(channel = 'web'): Promise<VerificationRequest[]> {
     const result = await pool.query<VerificationRequest>(
       `SELECT r.id,u.id AS "turnId",r.expires_at AS "expiresAt"
-       FROM credential_requests r JOIN turns u ON u.id=r.turn_id JOIN threads th ON th.id=r.thread_id
-       WHERE r.owner_id=$1 AND u.owner_id=$1 AND th.owner_id=$1 AND u.channel=$2
-         AND u.status='waiting' AND u.waiting_reason='credentials' AND u.thread_id=r.thread_id
+       FROM credential_requests r JOIN turns u ON u.id=r.turn_id
+       WHERE r.owner_id=$1 AND u.owner_id=$1 AND u.channel=$2
          AND r.kind='otp' AND r.status='pending' AND r.expires_at>now()
-         AND th.archived_at IS NULL ORDER BY r.expires_at,r.id LIMIT 50`,
+         AND ${waitingTurnSql('u', 'credentials')} ORDER BY r.expires_at,r.id LIMIT 50`,
       [options.ownerId, channel],
     );
     return result.rows;
@@ -121,7 +120,6 @@ export async function createChatVerification(
           previous.reply_to_message_id !== (input.replyToMessageId ?? null) ||
           (input.verificationRequestId && previous.request_id !== input.verificationRequestId) ||
           incompatible ||
-          typeof previous.code_fingerprint !== 'string' ||
           previous.code_fingerprint.length !== codeFingerprint.length ||
           !timingSafeEqual(Buffer.from(previous.code_fingerprint), Buffer.from(codeFingerprint))
         )
@@ -150,8 +148,8 @@ export async function createChatVerification(
       const requests = await client.query<{ id: string; turn_id: string }>(
         `SELECT r.id,r.turn_id FROM credential_requests r JOIN turns u ON u.id=r.turn_id
          WHERE r.owner_id=$1 AND u.owner_id=$1 AND u.channel=$2 AND r.thread_id=$5
-           AND u.status='waiting' AND u.waiting_reason='credentials' AND u.thread_id=r.thread_id
-         AND r.kind='otp' AND r.status='pending' AND r.expires_at>now()
+           AND r.kind='otp' AND r.status='pending' AND r.expires_at>now()
+           AND ${waitingTurnSql('u', 'credentials')}
            AND ($3::uuid IS NULL OR r.turn_id=$3) AND ($4::text IS NULL OR r.id=$4)
            ORDER BY r.expires_at,r.id LIMIT 2 FOR UPDATE OF r`,
         [options.ownerId, channel, turnId ?? null, input.verificationRequestId ?? null, thread.id],
@@ -161,8 +159,7 @@ export async function createChatVerification(
         const waiting = await client.query(
           `SELECT 1 FROM credential_requests r JOIN turns u ON u.id=r.turn_id
            WHERE r.owner_id=$1 AND u.owner_id=$1 AND u.channel=$2 AND r.thread_id=$4
-             AND (u.status='running' OR (u.status='waiting' AND u.waiting_reason='credentials'))
-             AND u.thread_id=r.thread_id AND r.kind='otp' AND r.status='pending'
+             AND r.kind='otp' AND r.status='pending' AND r.expires_at>now()
              AND ($3::uuid IS NULL OR r.turn_id=$3) LIMIT 1`,
           [options.ownerId, channel, turnId ?? null, thread.id],
         );

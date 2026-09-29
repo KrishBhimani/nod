@@ -1,0 +1,1443 @@
+import assert from 'node:assert/strict';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { rm, symlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import test, { type TestContext } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
+import Fastify from 'fastify';
+import pg from 'pg';
+import type { ChannelAccountRegistry } from '../src/ports/channel-settings.ts';
+import type { MessagingTransport } from '../src/ports/messaging.ts';
+import { createChatSdkTransport } from '../src/providers/chat-sdk/index.ts';
+import { createChatSdkSetupVerifier } from '../src/providers/chat-sdk/settings.ts';
+import { createChannelAccountRegistry } from '../src/server/channel-account-registry.ts';
+import { createChannelSettings } from '../src/server/channel-settings.ts';
+import { createChannels } from '../src/server/channels.ts';
+import type { TenantLease } from '../src/server/tenants.ts';
+
+const token = '987:fixture-never-live';
+
+async function leaseFixture(t: TestContext) {
+  const schema = `test_channel_lease_${randomUUID().replaceAll('-', '')}`;
+  const applicationName = `channel-lease-${randomUUID()}`;
+  const admin = new pg.Pool({
+    connectionString: process.env.TEST_DATABASE_URL,
+    application_name: applicationName,
+    max: 5,
+  });
+  const blockers: pg.PoolClient[] = [];
+  t.after(async () => {
+    for (const blocker of blockers) {
+      await blocker.query('ROLLBACK');
+      blocker.release();
+    }
+    await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    await admin.end();
+  });
+  await admin.query(`CREATE SCHEMA ${schema}`);
+  await admin.query(`CREATE TABLE ${schema}.tenants (
+    environment text NOT NULL, owner_id uuid NOT NULL,
+    lease_holder uuid, lease_generation bigint NOT NULL, lease_expires timestamptz,
+    PRIMARY KEY (environment,owner_id)
+  )`);
+  const registry = createChannelAccountRegistry({
+    admin,
+    controlSchema: schema,
+    environment: 'development',
+  });
+  await registry.initialize();
+  async function createLease(): Promise<TenantLease> {
+    const lease = {
+      ownerId: randomUUID(),
+      environment: 'development',
+      holderId: randomUUID(),
+      generation: '1',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+    await admin.query(`INSERT INTO ${schema}.tenants VALUES ($1,$2,$3,$4,$5)`, [
+      lease.environment,
+      lease.ownerId,
+      lease.holderId,
+      lease.generation,
+      lease.expiresAt,
+    ]);
+    return lease;
+  }
+  async function waitForLock() {
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const result = await admin.query<{ waiting: boolean }>(
+        `SELECT EXISTS(SELECT 1 FROM pg_stat_activity
+         WHERE application_name=$1 AND wait_event_type='Lock' AND pid<>pg_backend_pid()) AS waiting`,
+        [applicationName],
+      );
+      if (result.rows[0].waiting) return;
+      await sleep(5);
+    }
+    assert.fail('The channel mutation did not wait for the tenant lock.');
+  }
+  async function connectBlocker() {
+    const client = await admin.connect();
+    blockers.push(client);
+    return client;
+  }
+  return { admin, schema, registry, createLease, waitForLock, connectBlocker };
+}
+
+test(
+  'leased channel ownership uses the active SQL lease and preserves another owner',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async (t) => {
+    const { admin, schema, registry, createLease } = await leaseFixture(t);
+    const first = await createLease();
+    const second = await createLease();
+    const account = { provider: 'telegram' as const, accountId: '12345', revision: '1' };
+    const identity = { ...account, ownerId: first.ownerId };
+    assert.equal(
+      await registry.claimWithLease(identity, { ...first, expiresAt: new Date(0).toISOString() }),
+      true,
+    );
+    assert.equal(await registry.claimWithLease(identity, first), true);
+    assert.equal(
+      await registry.claimWithLease({ ...account, ownerId: second.ownerId }, second),
+      false,
+    );
+    await registry.releaseWithLease({ ...account, ownerId: second.ownerId }, second);
+    assert.equal(
+      await registry.claimWithLease({ ...account, ownerId: second.ownerId }, second),
+      false,
+    );
+    for (const change of [
+      { holderId: randomUUID() },
+      { generation: '2' },
+      { ownerId: randomUUID() },
+    ]) {
+      const candidate = { ...first, ...change };
+      await assert.rejects(
+        registry.claimWithLease({ ...identity, ownerId: candidate.ownerId }, candidate),
+        { code: 'invalid_lease' },
+      );
+      await assert.rejects(
+        registry.releaseWithLease({ ...identity, ownerId: candidate.ownerId }, candidate),
+        { code: 'invalid_lease' },
+      );
+    }
+    await admin.query(
+      `UPDATE ${schema}.tenants SET lease_expires=clock_timestamp()-interval '1 second' WHERE owner_id=$1`,
+      [first.ownerId],
+    );
+    await assert.rejects(registry.releaseWithLease(identity, first), { code: 'invalid_lease' });
+    await assert.rejects(registry.claimWithLease({ ...identity, accountId: 'another' }, first), {
+      code: 'invalid_lease',
+    });
+    assert.equal(
+      await registry.claimWithLease({ ...account, ownerId: second.ownerId }, second),
+      false,
+    );
+    await admin.query(
+      `UPDATE ${schema}.tenants SET lease_expires=clock_timestamp()+interval '60 seconds' WHERE owner_id=$1`,
+      [first.ownerId],
+    );
+    await registry.releaseWithLease(identity, first);
+    assert.equal(
+      await registry.claimWithLease({ ...account, ownerId: second.ownerId, revision: '2' }, second),
+      true,
+    );
+  },
+);
+
+test(
+  'channel mutations recheck generation after waiting for the tenant row lock',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async (t) => {
+    const { admin, schema, registry, createLease, waitForLock, connectBlocker } =
+      await leaseFixture(t);
+    const lease = await createLease();
+    const identity = {
+      ownerId: lease.ownerId,
+      provider: 'telegram' as const,
+      accountId: '12345',
+      revision: '1',
+    };
+    await registry.claimWithLease(identity, lease);
+    const blocker = await connectBlocker();
+    await blocker.query('BEGIN');
+    await blocker.query(
+      `UPDATE ${schema}.tenants SET lease_generation=2,lease_holder=$2 WHERE owner_id=$1`,
+      [lease.ownerId, randomUUID()],
+    );
+    const claim = assert.rejects(
+      registry.claimWithLease({ ...identity, accountId: 'stale-claim' }, lease),
+      { code: 'invalid_lease', statusCode: 401 },
+    );
+    const release = assert.rejects(registry.releaseWithLease(identity, lease), {
+      code: 'invalid_lease',
+      statusCode: 401,
+    });
+    await waitForLock();
+    await blocker.query('COMMIT');
+    await Promise.all([claim, release]);
+    const rows = await admin.query<{ account_id: string; owner_id: string }>(
+      `SELECT account_id,owner_id FROM ${schema}.channel_accounts`,
+    );
+    assert.deepEqual(rows.rows, [{ account_id: identity.accountId, owner_id: lease.ownerId }]);
+  },
+);
+
+test(
+  'channel account claims are atomic, persistent and released only by their owner',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async (t) => {
+    const controlSchema = `test_channel_owners_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 4 });
+    t.after(async () => {
+      await admin.query(`DROP SCHEMA IF EXISTS ${controlSchema} CASCADE`);
+      await admin.end();
+    });
+    await admin.query(`CREATE SCHEMA ${controlSchema}`);
+    const options = { admin, controlSchema, environment: 'development' };
+    const registry = createChannelAccountRegistry(options);
+    await Promise.all([registry.initialize(), registry.initialize()]);
+    const ownerA = randomUUID();
+    const ownerB = randomUUID();
+    const account = { provider: 'telegram' as const, accountId: '123456', revision: '1' };
+    const result = await Promise.all([
+      registry.claim({ ...account, ownerId: ownerA }),
+      registry.claim({ ...account, ownerId: ownerB }),
+    ]);
+    assert.equal(result.filter(Boolean).length, 1);
+    const winner = result[0] ? ownerA : ownerB;
+    const loser = result[0] ? ownerB : ownerA;
+    assert.equal(await registry.claim({ ...account, ownerId: winner.toUpperCase() }), true);
+    await registry.release({ ...account, ownerId: loser });
+    assert.equal(await registry.claim({ ...account, ownerId: loser }), false);
+    const restarted = createChannelAccountRegistry(options);
+    assert.equal(await restarted.claim({ ...account, ownerId: winner }), true);
+    assert.equal(await restarted.claim({ ...account, ownerId: loser }), false);
+    assert.equal(await registry.claim({ ...account, ownerId: loser, provider: 'whatsapp' }), true);
+    const production = createChannelAccountRegistry({ ...options, environment: 'production' });
+    assert.equal(await production.claim({ ...account, ownerId: loser }), true);
+    await production.release({ ...account, ownerId: loser });
+    assert.equal(await registry.claim({ ...account, ownerId: loser }), false);
+    await restarted.release({ ...account, ownerId: winner });
+    assert.equal(await registry.claim({ ...account, ownerId: loser, revision: '2' }), true);
+    await restarted.release({ ...account, ownerId: winner });
+    assert.equal(await registry.claim({ ...account, ownerId: winner }), false);
+    const granted = await admin.query<{ count: string }>(
+      `SELECT count(*) FROM information_schema.table_privileges
+       WHERE table_schema=$1 AND table_name='channel_accounts' AND grantee='PUBLIC'`,
+      [controlSchema],
+    );
+    assert.equal(granted.rows[0].count, '0');
+  },
+);
+
+async function hostedDatabase() {
+  const schema = 'test_hosted_integrations_' + randomUUID().replaceAll('-', '');
+  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+  await admin.query(`CREATE SCHEMA ${schema}`);
+  const pool = new pg.Pool({
+    connectionString: process.env.TEST_DATABASE_URL,
+    options: `-c search_path=${schema}`,
+  });
+  return {
+    pool,
+    schema,
+    async close() {
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    },
+  };
+}
+
+test(
+  'hosted Telegram setup reserves one bot owner, uses fixed tenant webhook paths and binds ciphertext to its owner',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async () => {
+    const db = await hostedDatabase();
+    const key = randomBytes(32);
+    const claims = new Map<string, string>();
+    const registrations: string[] = [];
+    const registry: ChannelAccountRegistry = {
+      async claim(input) {
+        const owner = claims.get(input.accountId);
+        if (owner && owner !== input.ownerId) return false;
+        claims.set(input.accountId, input.ownerId);
+        return true;
+      },
+      async release(input) {
+        if (claims.get(input.accountId) === input.ownerId) claims.delete(input.accountId);
+      },
+    };
+    const apps = [Fastify(), Fastify()];
+    const settings = [];
+    try {
+      for (const [index, ownerId] of ['owner-one', 'owner-two'].entries()) {
+        const webhookUrl =
+          'https://otto.example/api/webhooks/telegram/' + String(index + 1).repeat(43);
+        const verifier = createChatSdkSetupVerifier({
+          webhookUrl: () => webhookUrl,
+          fetch: async (url, options) => {
+            const value = String(url);
+            if (value.endsWith('/getMe'))
+              return Response.json({
+                ok: true,
+                result: {
+                  id: Number(value.match(/bot(\d+):/)![1]),
+                  is_bot: true,
+                  first_name: 'Synthetic bot',
+                  username: 'synthetic_bot',
+                },
+              });
+            if (value.endsWith('/getWebhookInfo'))
+              return Response.json({ ok: true, result: { url: '' } });
+            assert.ok(value.endsWith('/setWebhook'));
+            const input = JSON.parse(String(options?.body));
+            assert.equal(input.url, webhookUrl);
+            assert.equal(input.drop_pending_updates, false);
+            registrations.push(input.url);
+            return Response.json({ ok: true, result: true });
+          },
+        });
+        const service = await createChannelSettings(db.pool, {
+          ownerId,
+          accounts: registry,
+          keyStore: { id: 'fixture', configured: true, getKey: async () => key },
+          verifier,
+          apply: async () => {},
+        });
+        service.registerRoutes(apps[index]);
+        settings.push(service);
+      }
+      const save = (index: number, token: string, extra = {}) =>
+        apps[index].inject({
+          method: 'PUT',
+          url: '/api/channel-settings/telegram',
+          payload: { botToken: token, ...extra },
+        });
+      assert.equal(
+        (
+          await save(0, '987:synthetic_token', {
+            webhookUrl: 'https://foreign.example/api/webhooks/telegram',
+          })
+        ).statusCode,
+        400,
+      );
+      assert.equal(registrations.length, 0);
+      assert.equal((await save(0, '987:synthetic_token')).statusCode, 200);
+      assert.equal((await save(1, '987:synthetic_token')).statusCode, 400);
+      assert.equal(registrations.length, 1);
+      assert.equal(claims.get('987'), 'owner-one');
+      assert.equal((await settings[1].status()).channels.length, 0);
+      assert.equal((await save(1, '988:synthetic_token')).statusCode, 200);
+      await db.pool.query(
+        "UPDATE channel_settings SET ciphertext=(SELECT ciphertext FROM channel_settings WHERE owner_id='owner-one' AND provider='telegram') WHERE owner_id='owner-two' AND provider='telegram'",
+      );
+      await assert.rejects(settings[1].environment());
+      await apps[0].inject({ method: 'DELETE', url: '/api/channel-settings/telegram' });
+      assert.equal(claims.has('987'), false);
+    } finally {
+      await Promise.all(apps.map((app) => app.close()));
+      await db.close();
+    }
+  },
+);
+
+test(
+  'durable channel revisions fence registry operations that finish after their client timed out',
+  {
+    skip: !process.env.TEST_DATABASE_URL,
+  },
+  async (t) => {
+    const db = await hostedDatabase();
+    const registry = createChannelAccountRegistry({
+      admin: db.pool,
+      controlSchema: db.schema,
+      environment: 'development',
+    });
+    try {
+      await registry.initialize();
+      for (const [index, scenario] of ['claim', 'release'].entries()) {
+        await t.test(scenario, async () => {
+          const ownerId = randomUUID();
+          const accountId = String(1000 + index);
+          const key = randomBytes(32);
+          let delay = false;
+          let finish: (() => Promise<unknown>) | undefined;
+          const accounts: ChannelAccountRegistry = {
+            async claim(input) {
+              if (delay && scenario === 'claim') {
+                finish = () => registry.claim(input);
+                throw new Error('Synthetic claim response timeout');
+              }
+              return registry.claim(input);
+            },
+            async release(input) {
+              if (delay && scenario === 'release') {
+                finish = () => registry.release(input);
+                throw new Error('Synthetic release response timeout');
+              }
+              return registry.release(input);
+            },
+          };
+          const options = {
+            ownerId,
+            accounts,
+            keyStore: { id: 'fixture', configured: true, getKey: async () => key },
+            verifier: {
+              async verify(provider: 'telegram' | 'whatsapp') {
+                return {
+                  environment: {
+                    TELEGRAM_ENABLED: 'true',
+                    TELEGRAM_BOT_TOKEN: `${accountId}:synthetic-never-live`,
+                    TELEGRAM_MODE: 'polling',
+                  },
+                  summary: {
+                    provider,
+                    enabled: true,
+                    mode: 'polling' as const,
+                    accountHandle: '@synthetic_bot',
+                  },
+                };
+              },
+            },
+            apply: async () => {},
+          };
+          const app = Fastify();
+          const settings = await createChannelSettings(db.pool, options);
+          settings.registerRoutes(app);
+          const save = () =>
+            app.inject({ method: 'PUT', url: '/api/channel-settings/telegram', payload: {} });
+          try {
+            if (scenario === 'claim') {
+              delay = true;
+              assert.equal((await save()).statusCode, 503);
+              assert.equal(await settings.recover(), true);
+              assert.equal(
+                (
+                  await db.pool.query('SELECT 1 FROM channel_accounts WHERE account_id=$1', [
+                    accountId,
+                  ])
+                ).rowCount,
+                0,
+              );
+            } else {
+              assert.equal((await save()).statusCode, 200);
+              delay = true;
+              assert.equal(
+                (await app.inject({ method: 'DELETE', url: '/api/channel-settings/telegram' }))
+                  .statusCode,
+                200,
+              );
+            }
+            assert.ok(finish);
+            delay = false;
+            assert.equal((await save()).statusCode, 200);
+            const before = (
+              await db.pool.query(
+                'SELECT owner_id,revision::text FROM channel_accounts WHERE account_id=$1',
+                [accountId],
+              )
+            ).rows;
+            assert.equal(before[0].owner_id, ownerId);
+            assert.ok(BigInt(before[0].revision) > 1n);
+            const result = await finish();
+            if (scenario === 'claim') assert.equal(result, false);
+            assert.deepEqual(
+              (
+                await db.pool.query(
+                  'SELECT owner_id,revision::text FROM channel_accounts WHERE account_id=$1',
+                  [accountId],
+                )
+              ).rows,
+              before,
+            );
+            const restarted = await createChannelSettings(db.pool, options);
+            assert.equal(await restarted.recover(), true);
+            assert.equal((await restarted.status()).channels[0].enabled, true);
+            assert.equal(
+              await registry.claim({
+                ownerId: randomUUID(),
+                provider: 'telegram',
+                accountId,
+                revision: '1',
+              }),
+              false,
+            );
+          } finally {
+            await app.close();
+          }
+        });
+      }
+    } finally {
+      await db.close();
+    }
+  },
+);
+
+async function createFixtureTables(pool: pg.Pool, owner: string) {
+  await pool.query(`CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text NOT NULL,status text NOT NULL DEFAULT 'idle',created_at timestamptz NOT NULL DEFAULT now(),archived_at timestamptz);
+    CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text NOT NULL,thread_id uuid NOT NULL REFERENCES threads(id),source text NOT NULL DEFAULT 'user',source_id text UNIQUE,channel text NOT NULL DEFAULT 'web',status text NOT NULL DEFAULT 'queued',created_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text NOT NULL,role text NOT NULL,text text NOT NULL,thread_id uuid REFERENCES threads(id),turn_id uuid REFERENCES turns(id),attachments jsonb NOT NULL DEFAULT '[]',created_at timestamptz NOT NULL DEFAULT now())`);
+  const threadId = randomUUID();
+  await pool.query('INSERT INTO threads(id,owner_id) VALUES($1,$2)', [threadId, owner]);
+  return threadId;
+}
+
+test(
+  'webhook activation persists its secret before remote changes and recovers the same configuration after local or uncertain failures',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async () => {
+    const schema = `test_channel_recovery_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+    });
+    const app = Fastify();
+    const key = randomBytes(32);
+    const registrations: string[] = [];
+    let applied: Record<string, string> = {};
+    let failApply = false;
+    let loseRegistrationResponse = false;
+    let settings: Awaited<ReturnType<typeof createChannelSettings>>;
+    const options = {
+      keyStore: { id: 'fixture', configured: true, getKey: async () => key },
+      verifier: createChatSdkSetupVerifier({
+        fetch: async (url, init) => {
+          const path = String(url);
+          if (path.endsWith('/getMe'))
+            return Response.json({
+              ok: true,
+              result: { id: 987, is_bot: true, first_name: 'Fixture bot', username: 'fixture_bot' },
+            });
+          if (path.endsWith('/getWebhookInfo'))
+            return Response.json({ ok: true, result: { url: '' } });
+          assert.equal(path, `https://api.telegram.org/bot${token}/setWebhook`);
+          const body = JSON.parse(String(init?.body));
+          const persisted = await settings.environment();
+          assert.equal(persisted.TELEGRAM_WEBHOOK_SECRET_TOKEN, body.secret_token);
+          assert.equal(applied.TELEGRAM_WEBHOOK_SECRET_TOKEN, body.secret_token);
+          assert.equal(
+            (await settings.status()).channels[0]?.webhookStatus,
+            'registration_pending',
+          );
+          registrations.push(body.secret_token);
+          if (loseRegistrationResponse) throw new Error('fixture response lost after registration');
+          return Response.json({ ok: true, result: true });
+        },
+      }),
+      apply: async (environment: Record<string, string>) => {
+        if (failApply) throw new Error('fixture local replacement failed');
+        applied = environment;
+      },
+    };
+    const save = (webhook = true) =>
+      app.inject({
+        method: 'PUT',
+        url: '/api/channel-settings/telegram',
+        payload: {
+          botToken: token,
+          ...(webhook ? { webhookUrl: 'https://webhook.example.com/api/webhooks/telegram' } : {}),
+        },
+      });
+    try {
+      settings = await createChannelSettings(pool, { ...options, ownerId: 'local-development' });
+      settings.registerRoutes(app);
+      assert.equal((await save(false)).statusCode, 200);
+      const original = await settings.environment();
+      await pool.query(
+        `CREATE FUNCTION reject_channel_write() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'fixture persistence failure'; END$$`,
+      );
+      await pool.query(
+        'CREATE TRIGGER reject_channel_write BEFORE INSERT OR UPDATE ON channel_settings FOR EACH ROW EXECUTE FUNCTION reject_channel_write()',
+      );
+      assert.equal((await save()).statusCode, 503);
+      assert.equal(registrations.length, 0);
+      assert.deepEqual(await settings.environment(), original);
+      await pool.query('DROP TRIGGER reject_channel_write ON channel_settings');
+
+      failApply = true;
+      const applyFailure = await save();
+      assert.equal(applyFailure.statusCode, 503);
+      assert.match(applyFailure.json().error, /setup was saved/);
+      assert.equal(registrations.length, 0);
+      assert.deepEqual(applied, original);
+      const pending = await settings.environment();
+      assert.notEqual(
+        pending.TELEGRAM_WEBHOOK_SECRET_TOKEN,
+        original.TELEGRAM_WEBHOOK_SECRET_TOKEN,
+      );
+      failApply = false;
+      settings = await createChannelSettings(pool, { ...options, ownerId: 'local-development' });
+      assert.equal(await settings.recover(), true);
+      assert.deepEqual(registrations, [pending.TELEGRAM_WEBHOOK_SECRET_TOKEN]);
+      assert.equal((await settings.status()).channels[0]?.webhookStatus, 'registered');
+
+      await pool.query(
+        `CREATE TRIGGER reject_channel_write BEFORE UPDATE ON channel_settings FOR EACH ROW WHEN (NEW.summary->>'webhookStatus'='registered') EXECUTE FUNCTION reject_channel_write()`,
+      );
+      assert.equal((await save()).statusCode, 503);
+      assert.equal(registrations.length, 2);
+      assert.equal((await settings.status()).channels[0]?.webhookStatus, 'registration_pending');
+      assert.equal((await settings.environment()).TELEGRAM_WEBHOOK_SECRET_TOKEN, registrations[1]);
+      await pool.query('DROP TRIGGER reject_channel_write ON channel_settings');
+      settings = await createChannelSettings(pool, { ...options, ownerId: 'local-development' });
+      assert.equal(await settings.recover(), true);
+      assert.equal(registrations.length, 3);
+      assert.equal(registrations[2], registrations[1]);
+
+      loseRegistrationResponse = true;
+      const uncertain = await save();
+      assert.equal(uncertain.statusCode, 503);
+      assert.equal(uncertain.body.includes('fixture response lost'), false);
+      settings = await createChannelSettings(pool, { ...options, ownerId: 'local-development' });
+      assert.equal(await settings.recover(), false);
+      assert.equal(registrations[4], registrations[3]);
+      assert.equal((await settings.status()).channels[0]?.webhookStatus, 'registration_pending');
+      loseRegistrationResponse = false;
+      assert.equal(await settings.recover(), true);
+      assert.equal(registrations[5], registrations[3]);
+      const metadata = JSON.stringify(await settings.status());
+      const raw = JSON.stringify((await pool.query('SELECT * FROM channel_settings')).rows);
+      for (const secret of [token, ...registrations]) {
+        assert.equal(metadata.includes(secret), false);
+        assert.equal(raw.includes(secret), false);
+      }
+
+      loseRegistrationResponse = true;
+      assert.equal((await save()).statusCode, 503);
+      assert.equal(
+        (await app.inject({ method: 'DELETE', url: '/api/channel-settings/telegram' })).statusCode,
+        200,
+      );
+      assert.deepEqual(await settings.environment(), { TELEGRAM_ENABLED: 'false' });
+      const attempts = registrations.length;
+      settings = await createChannelSettings(pool, { ...options, ownerId: 'local-development' });
+      assert.equal(await settings.recover(), true);
+      assert.equal(registrations.length, attempts);
+      assert.equal(
+        (await pool.query('SELECT ciphertext FROM channel_settings')).rows[0].ciphertext,
+        null,
+      );
+    } finally {
+      await app.close();
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);
+
+test(
+  'channel setup encrypts secrets, returns only metadata, preserves previous configuration on verification failure and disables without retaining ciphertext',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async () => {
+    const schema = `test_channel_settings_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+    });
+    const app = Fastify();
+    const key = randomBytes(32);
+    let fails = false;
+    let applied: Record<string, string> = {};
+    let applyCount = 0;
+    const options = {
+      keyStore: { id: 'fixture', configured: true, getKey: async () => key },
+      verifier: {
+        verify: async () => {
+          if (fails) throw new Error('secret-provider-error');
+          return {
+            environment: {
+              TELEGRAM_ENABLED: 'true',
+              TELEGRAM_BOT_TOKEN: token,
+              TELEGRAM_ALLOWED_USER_ID: '123',
+              TELEGRAM_WEBHOOK_SECRET_TOKEN: 'fixture-webhook-secret',
+              TELEGRAM_MODE: 'polling',
+            },
+            summary: { provider: 'telegram' as const, enabled: true, accountName: 'Fixture bot' },
+          };
+        },
+      },
+      apply: async (environment: Record<string, string>) => {
+        applied = environment;
+        applyCount++;
+      },
+    };
+    try {
+      const settings = await createChannelSettings(pool, {
+        ...options,
+        ownerId: 'local-development',
+      });
+      settings.registerRoutes(app);
+      const saved = await app.inject({
+        method: 'PUT',
+        url: '/api/channel-settings/telegram',
+        payload: { botToken: token },
+      });
+      assert.equal(saved.statusCode, 200);
+      assert.equal(saved.body.includes(token), false);
+      assert.equal(applied.TELEGRAM_BOT_TOKEN, token);
+      const raw = (await pool.query('SELECT * FROM channel_settings')).rows[0];
+      assert.equal(JSON.stringify(raw).includes(token), false);
+      assert.equal(JSON.stringify(raw).includes('fixture-webhook-secret'), false);
+      const status = await app.inject('/api/channel-settings');
+      assert.equal(status.body.includes(token), false);
+      assert.equal(status.body.includes('TELEGRAM_BOT_TOKEN'), false);
+      fails = true;
+      const failed = await app.inject({
+        method: 'PUT',
+        url: '/api/channel-settings/telegram',
+        payload: { botToken: 'bad-key' },
+      });
+      assert.equal(failed.statusCode, 503);
+      assert.equal(failed.body.includes('secret-provider-error'), false);
+      assert.equal(applyCount, 1);
+      assert.equal((await settings.environment()).TELEGRAM_BOT_TOKEN, token);
+      const restored = await createChannelSettings(pool, {
+        ...options,
+        ownerId: 'local-development',
+      });
+      assert.equal((await restored.environment()).TELEGRAM_BOT_TOKEN, token);
+      await pool.query("UPDATE channel_settings SET provider='whatsapp'");
+      await assert.rejects(settings.environment());
+      await pool.query("UPDATE channel_settings SET provider='telegram'");
+      assert.equal(
+        (await app.inject({ method: 'DELETE', url: '/api/channel-settings/telegram' })).statusCode,
+        200,
+      );
+      assert.deepEqual(applied, { TELEGRAM_ENABLED: 'false' });
+      assert.equal(
+        (await pool.query('SELECT ciphertext FROM channel_settings')).rows[0].ciphertext,
+        null,
+      );
+      assert.deepEqual(await settings.environment(), { TELEGRAM_ENABLED: 'false' });
+    } finally {
+      await app.close();
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);
+
+test(
+  'Telegram polling advances its durable offset only after accepted inbox persistence',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async () => {
+    const schema = `test_channel_poll_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+    });
+    const offsets: number[] = [];
+    const transport = createChatSdkTransport(
+      pool,
+      {
+        TELEGRAM_ENABLED: 'true',
+        TELEGRAM_BOT_TOKEN: token,
+        TELEGRAM_ALLOWED_USER_ID: '123',
+        TELEGRAM_WEBHOOK_SECRET_TOKEN: 'fixture-secret-long-enough',
+        TELEGRAM_MODE: 'polling',
+      },
+      {
+        fetch: async (url, init) => {
+          assert.equal(String(url), `https://api.telegram.org/bot${token}/getUpdates`);
+          offsets.push(JSON.parse(String(init?.body)).offset);
+          return Response.json({
+            ok: true,
+            result:
+              offsets.at(-1) === 42
+                ? []
+                : [
+                    {
+                      update_id: 41,
+                      message: {
+                        message_id: 8,
+                        date: Math.floor(Date.now() / 1000),
+                        text: 'Fixture polling request',
+                        from: { id: 123, is_bot: false, first_name: 'Fixture' },
+                        chat: { id: 123, type: 'private' },
+                      },
+                    },
+                  ],
+          });
+        },
+      },
+    );
+    try {
+      await assert.rejects(
+        transport.poll!(async () => {
+          throw new Error('database fixture failure');
+        }),
+      );
+      assert.equal((await pool.query('SELECT * FROM channel_poll_offsets')).rowCount, 0);
+      let accepted = 0;
+      await transport.poll!(async (message) => {
+        assert.equal(message.senderId, '123');
+        assert.equal(message.text, 'Fixture polling request');
+        accepted++;
+      });
+      await transport.poll!(async () => {
+        assert.fail('Already persisted update');
+      });
+      assert.deepEqual(offsets, [0, 0, 42]);
+      assert.equal(accepted, 1);
+    } finally {
+      await transport.close();
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);
+
+test(
+  'transport replacement waits for active delivery and applies the new owner binding to later work',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async () => {
+    const schema = `test_channel_replace_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+    });
+    const threadId = await createFixtureTables(pool, 'local-development');
+    let release: () => void = () => {};
+    let started: () => void = () => {};
+    const blocked = new Promise<void>((done) => {
+      release = done;
+    });
+    const sending = new Promise<void>((done) => {
+      started = done;
+    });
+    let closed = false;
+    const transport: MessagingTransport = {
+      channels: [
+        {
+          id: 'telegram',
+          status: 'configured',
+          missing: [],
+          accountId: 'bot',
+          allowedSenderIds: ['123'],
+        },
+      ],
+      receive: async () => ({ status: 200, body: {} }),
+      post: async () => {
+        started();
+        await blocked;
+        return { id: 'provider-message' };
+      },
+      close: async () => {
+        closed = true;
+      },
+    };
+    const app = Fastify();
+    const channels = await createChannels(pool, {
+      ownerId: 'local-development',
+      transport,
+      subscribe: () => () => {},
+      submit: async () => randomUUID(),
+      intervalMs: 600000,
+    });
+    channels.registerRoutes(app);
+    try {
+      const turn = randomUUID();
+      const message = randomUUID();
+      await pool.query(
+        "INSERT INTO turns(id,owner_id,thread_id,channel,status) VALUES($1,'local-development',$2,'telegram:fixture','succeeded')",
+        [turn, threadId],
+      );
+      await pool.query(
+        "INSERT INTO channel_inbox(source_id,provider,account_id,sender_id,thread_id,text,received_at,turn_id,state,owner_id,channel) VALUES('fixture','telegram','bot','123','telegram:123','Fixture',now(),$1,'submitted','local-development','telegram:fixture')",
+        [turn],
+      );
+      await pool.query(
+        "INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id,attachments) VALUES($1,'local-development','assistant','Fixture reply',$2,$3,'[]')",
+        [message, threadId, turn],
+      );
+      const draining = channels.drain();
+      await sending;
+      const next: MessagingTransport = {
+        ...transport,
+        channels: [{ id: 'telegram', status: 'disabled', missing: [], allowedSenderIds: [] }],
+        post: async () => {
+          assert.fail('Disabled transport cannot send');
+        },
+        close: async () => {},
+      };
+      let swapped = false;
+      const replacing = channels.replaceTransport(next).then(() => {
+        swapped = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.equal(swapped, false);
+      assert.equal(closed, false);
+      release();
+      await draining;
+      await replacing;
+      assert.equal(closed, true);
+      assert.equal((await app.inject('/api/channels')).json().channels[0].status, 'disabled');
+    } finally {
+      release();
+      await app.close();
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);
+
+test(
+  'Telegram webhook setup binds only the Start sender that the owner confirms',
+  { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
+  async (t) => {
+    const schema = `test_channel_pairing_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+    });
+    const threadId = await createFixtureTables(pool, 'local-development');
+    const base = `https://api.telegram.org/bot${token}`;
+    const updates: { update_id: number }[] = [];
+    const sent: Record<string, unknown>[] = [];
+    t.mock.method(
+      globalThis,
+      'fetch',
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input);
+        const body =
+          typeof init?.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : {};
+        if (url === `${base}/getMe`)
+          return Response.json({
+            ok: true,
+            result: { id: 987, is_bot: true, first_name: 'Fixture bot', username: 'fixture_bot' },
+          });
+        if (url === `${base}/getWebhookInfo`)
+          return Response.json({ ok: true, result: { url: '' } });
+        if (url === `${base}/setWebhook`) return Response.json({ ok: true, result: true });
+        if (url === `${base}/getUpdates`)
+          return Response.json({
+            ok: true,
+            result: updates.filter((update) => update.update_id >= Number(body.offset)),
+          });
+        if (url.startsWith(`${base}/send`)) {
+          sent.push(body);
+          return Response.json({
+            ok: true,
+            result: {
+              message_id: 500 + sent.length,
+              date: Math.floor(Date.now() / 1000),
+              chat: { id: 123, type: 'private' },
+              text: 'Fixture reply',
+            },
+          });
+        }
+        throw new Error('Unexpected fixture provider call.');
+      },
+    );
+    const submitted: string[] = [];
+    const app = Fastify();
+    const key = randomBytes(32);
+    let channels: Awaited<ReturnType<typeof createChannels>> | undefined;
+    const settings = await createChannelSettings(pool, {
+      ownerId: 'local-development',
+      keyStore: { id: 'fixture', configured: true, getKey: async () => key },
+      verifier: createChatSdkSetupVerifier(),
+      apply: async (environment) =>
+        channels!.replaceTransport(createChatSdkTransport(pool, environment)),
+      paired: async (candidate, client) => channels!.announcePairing(candidate, client),
+    });
+    channels = await createChannels(pool, {
+      ownerId: 'local-development',
+      transport: createChatSdkTransport(pool, await settings.environment()),
+      subscribe: () => () => {},
+      intervalMs: 600000,
+      pair: settings.pair,
+      submit: async (text, sourceId, client, channel) => {
+        submitted.push(text);
+        const turnId = randomUUID();
+        await client.query(
+          "INSERT INTO turns(id,owner_id,thread_id,source_id,channel) VALUES($1,'local-development',$2,$3,$4)",
+          [turnId, threadId, sourceId, channel],
+        );
+        return turnId;
+      },
+    });
+    settings.registerRoutes(app);
+    channels.registerRoutes(app);
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
+    const waitFor = async (check: () => Promise<boolean> | boolean) => {
+      for (let attempt = 0; attempt < 100 && !(await check()); attempt++) await settle();
+      assert.equal(await check(), true);
+    };
+    const telegram = async () => (await settings.status()).channels[0];
+    let updateId = 1;
+    const deliver = async (from: number, text: string, username?: string) => {
+      const update = {
+        update_id: updateId,
+        message: {
+          message_id: updateId++,
+          date: Math.floor(Date.now() / 1000),
+          text,
+          from: { id: from, is_bot: false, first_name: 'Fixture', ...(username && { username }) },
+          chat: { id: from, type: 'private' },
+        },
+      };
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/webhooks/telegram',
+        headers: {
+          'content-type': 'application/json',
+          'x-telegram-bot-api-secret-token': (await settings.environment())
+            .TELEGRAM_WEBHOOK_SECRET_TOKEN,
+        },
+        payload: JSON.stringify(update),
+      });
+      assert.equal(response.statusCode, 200);
+      await settle();
+    };
+    try {
+      const saved = await app.inject({
+        method: 'PUT',
+        url: '/api/channel-settings/telegram',
+        payload: {
+          botToken: token,
+          webhookUrl: 'https://webhook.example.com/api/webhooks/telegram',
+        },
+      });
+      assert.equal(saved.statusCode, 200);
+      assert.match(saved.json().pairingUrl, /^https:\/\/t\.me\/fixture_bot\?start=[\w-]{32}$/);
+      assert.ok(saved.json().channel.pairingExpiresAt);
+      const firstCode = new URL(saved.json().pairingUrl).searchParams.get('start')!;
+      assert.equal(
+        (
+          await app.inject({
+            method: 'PUT',
+            url: '/api/channel-settings/telegram',
+            payload: { botToken: token, allowedUserId: '123' },
+          })
+        ).statusCode,
+        400,
+      );
+      const restarted = await app.inject({
+        method: 'POST',
+        url: '/api/channel-settings/telegram/pairing',
+        payload: {},
+      });
+      assert.equal(restarted.statusCode, 200);
+      const code = new URL(restarted.json().pairingUrl).searchParams.get('start')!;
+      assert.notEqual(code, firstCode);
+      const stored = JSON.stringify((await pool.query('SELECT * FROM channel_settings')).rows);
+      assert.equal(stored.includes(code), false);
+      assert.equal(JSON.stringify(await settings.environment()).includes(code), false);
+
+      await deliver(555, 'Fixture stranger request');
+      await deliver(555, `/start ${'x'.repeat(32)}`);
+      await deliver(555, `/start ${firstCode}`);
+      const now = Date.now;
+      Date.now = () => now() + 16 * 60 * 1000;
+      try {
+        assert.equal(
+          await settings.pair({
+            channelId: 'telegram',
+            accountId: '987',
+            senderId: '555',
+            senderName: 'Fixture',
+            messageId: 'fixture-expired',
+            threadId: 'telegram:555',
+            code,
+            sentAt: new Date(),
+          }),
+          false,
+        );
+      } finally {
+        Date.now = now;
+      }
+      assert.equal((await telegram())?.pairingCandidate, undefined);
+      const confirm = () =>
+        app.inject({
+          method: 'POST',
+          url: '/api/channel-settings/telegram/confirm',
+          payload: {},
+        });
+      assert.equal((await confirm()).statusCode, 400);
+
+      await deliver(555, `/start ${code}`, 'fixture_stranger');
+      await waitFor(async () => (await telegram())?.pairingCandidate?.id === '555');
+      assert.equal((await telegram())?.pairingCandidate?.name, '@fixture_stranger');
+      assert.equal((await settings.environment()).TELEGRAM_ALLOWED_USER_ID, '');
+      await deliver(555, 'Fixture stranger request after Start');
+      const rejected = await app.inject({
+        method: 'POST',
+        url: '/api/channel-settings/telegram/pairing',
+        payload: {},
+      });
+      assert.equal(rejected.statusCode, 200);
+      assert.equal(rejected.json().channel.pairingCandidate, undefined);
+      const secondCode = new URL(rejected.json().pairingUrl).searchParams.get('start')!;
+      assert.equal((await confirm()).statusCode, 400);
+      await deliver(123, `/start ${code}`, 'fixture_owner');
+      assert.equal((await telegram())?.pairingCandidate, undefined);
+
+      await deliver(123, `/start ${secondCode}`, 'fixture_owner');
+      await waitFor(async () => (await telegram())?.pairingCandidate?.id === '123');
+      await deliver(123, 'Fixture request before confirmation');
+      assert.equal((await pool.query('SELECT * FROM channel_inbox')).rowCount, 0);
+      assert.equal(sent.length, 0);
+      assert.equal(submitted.length, 0);
+
+      await pool.query(`CREATE FUNCTION fail_pairing_notice() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN RAISE EXCEPTION 'Synthetic pairing notice failure'; END $$`);
+      await pool.query(`CREATE TRIGGER fail_pairing_notice BEFORE INSERT ON channel_outbox
+          FOR EACH ROW EXECUTE FUNCTION fail_pairing_notice()`);
+      assert.equal((await confirm()).statusCode, 503);
+      assert.equal((await telegram())?.pairingCandidate?.id, '123');
+      assert.equal((await telegram())?.allowedUserId, undefined);
+      assert.equal((await settings.environment()).TELEGRAM_ALLOWED_USER_ID, '');
+      assert.equal((await pool.query('SELECT * FROM channel_inbox')).rowCount, 0);
+      assert.equal((await pool.query('SELECT * FROM messages')).rowCount, 0);
+      assert.equal(sent.length, 0);
+      await pool.query('DROP TRIGGER fail_pairing_notice ON channel_outbox');
+
+      const confirmed = await confirm();
+      assert.equal(confirmed.statusCode, 200);
+      assert.equal(confirmed.json().channel.allowedUserId, '123');
+      assert.equal(confirmed.json().channel.pairedUser, '@fixture_owner');
+      assert.equal(confirmed.json().channel.pairingExpiresAt, undefined);
+      assert.equal(confirmed.json().channel.pairingCandidate, undefined);
+      const bound = await settings.environment();
+      assert.equal(bound.TELEGRAM_ALLOWED_USER_ID, '123');
+      assert.equal(
+        Object.keys(bound).some((key) => key.startsWith('TELEGRAM_PAIRING_')),
+        false,
+      );
+      await waitFor(() => sent.length === 1);
+      assert.equal(String(sent[0].chat_id), '123');
+      assert.match(JSON.stringify(sent[0]), /Otto is connected/);
+      assert.equal((await confirm()).statusCode, 400);
+
+      await deliver(999, `/start ${secondCode}`);
+      await deliver(999, 'Fixture intruder request');
+      await deliver(123, `/start ${secondCode}`);
+      assert.equal((await settings.environment()).TELEGRAM_ALLOWED_USER_ID, '123');
+      await deliver(123, 'Fixture owner request');
+      await waitFor(() => submitted.length === 1);
+      assert.deepEqual(submitted, ['Fixture owner request']);
+      const inbox = JSON.stringify((await pool.query('SELECT * FROM channel_inbox')).rows);
+      assert.equal(inbox.includes(secondCode), false);
+      assert.equal(inbox.includes('Fixture intruder request'), false);
+      assert.equal(inbox.includes('before confirmation'), false);
+      assert.equal(sent.length, 1);
+      assert.equal(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/api/channel-settings/telegram/pairing',
+            payload: {},
+          })
+        ).statusCode,
+        400,
+      );
+    } finally {
+      await app.close();
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);
+
+const telegramEnvironment = {
+  TELEGRAM_ENABLED: 'true',
+  TELEGRAM_BOT_TOKEN: '987:fixture-not-live',
+  TELEGRAM_WEBHOOK_SECRET_TOKEN: 'fixture-webhook-secret-32-characters',
+  TELEGRAM_ALLOWED_USER_ID: '123456',
+};
+
+test(
+  'Telegram sends owned artifact bytes through Chat SDK and does not replay partial delivery or read foreign paths',
+  { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
+  async (t) => {
+    const schema = `test_channel_media_${randomUUID().replaceAll('-', '').slice(0, 16)}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const url = new URL(process.env.TEST_DATABASE_URL!);
+    url.searchParams.set('options', `-c search_path=${schema}`);
+    process.env.DATABASE_URL = url.href;
+    const { initializeDatabase, pool } = await import('../src/server/db.ts');
+    const { storeArtifact, readThreadArtifacts, maxFileSize } =
+      await import('../src/server/artifacts.ts');
+    const { ownerId, dataRoot } = await import('../src/server/config.ts');
+    const { activeThread } = await import('../src/server/thread.ts');
+    await initializeDatabase();
+    const sent: Array<{
+      method: string;
+      file: Uint8Array;
+      name: string;
+      caption: string;
+      chat: string;
+    }> = [];
+    let failDocument = false;
+    t.mock.method(
+      globalThis,
+      'fetch',
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const target = input instanceof Request ? input.url : String(input);
+        if (target.endsWith('/getMe'))
+          return Response.json({
+            ok: true,
+            result: { id: 987, is_bot: true, first_name: 'Fixture', username: 'fixture_bot' },
+          });
+        assert.match(
+          target,
+          /^https:\/\/api\.telegram\.org\/bot987:fixture-not-live\/send(?:Photo|Document)$/,
+        );
+        assert.ok(init?.body instanceof FormData);
+        const body = init.body;
+        const media = body.get('photo') ?? body.get('document');
+        assert.ok(media instanceof File);
+        const method = target.split('/').at(-1)!;
+        sent.push({
+          method,
+          file: new Uint8Array(await media.arrayBuffer()),
+          name: media.name,
+          caption: String(body.get('caption') ?? ''),
+          chat: String(body.get('chat_id')),
+        });
+        if (method === 'sendDocument' && failDocument)
+          throw new Error('Possibly accepted by provider');
+        return Response.json({
+          ok: true,
+          result: {
+            message_id: sent.length + 100,
+            date: Math.floor(Date.now() / 1000),
+            chat: { id: 123456, type: 'private' },
+            text: 'Fixture accepted',
+          },
+        });
+      },
+    );
+    let holdResolve = false;
+    let markResolveStarted = () => {};
+    let releaseResolve = () => {};
+    const resolveStarted = new Promise<void>((resolve) => {
+      markResolveStarted = resolve;
+    });
+    const resolveReleased = new Promise<void>((resolve) => {
+      releaseResolve = resolve;
+    });
+    const app = Fastify();
+    const channels = await createChannels(pool, {
+      ownerId,
+      appOrigin: 'https://otto.example',
+      transport: createChatSdkTransport(pool, telegramEnvironment),
+      resolveAttachments: async (threadId, ids) => {
+        if (holdResolve) {
+          markResolveStarted();
+          await resolveReleased;
+        }
+        return readThreadArtifacts(threadId, ids);
+      },
+      subscribe: () => () => {},
+      intervalMs: 600_000,
+      submit: async (text, sourceId, client, channel, messageId) => {
+        const thread = await activeThread(client, ownerId);
+        const turnId = randomUUID();
+        await client.query(
+          "INSERT INTO turns(id,owner_id,thread_id,source,source_id,message_id,prompt,channel) VALUES($1,$2,$3,'user',$4,$5,$6,$7)",
+          [turnId, ownerId, thread.id, sourceId, messageId, text, channel],
+        );
+        await client.query(
+          "INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id) VALUES($1,$2,'user',$3,$4,$5)",
+          [messageId, ownerId, text, thread.id, turnId],
+        );
+        return turnId;
+      },
+    });
+    channels.registerRoutes(app);
+    const filePaths: string[] = [];
+    const addReply = async (turnId: string, attachments: unknown[], text = 'Here is the file.') => {
+      const id = randomUUID();
+      await pool.query(
+        "INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id,attachments) VALUES($1,$2,'assistant',$3,(SELECT thread_id FROM turns WHERE id=$4),$4,$5)",
+        [id, ownerId, text, turnId, JSON.stringify(attachments)],
+      );
+      return id;
+    };
+    const state = async (id: string) =>
+      (await pool.query('SELECT state,reason FROM channel_outbox WHERE message_id=$1', [id]))
+        .rows[0];
+    try {
+      assert.equal(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/api/webhooks/telegram',
+            headers: {
+              'content-type': 'application/json',
+              'x-telegram-bot-api-secret-token': telegramEnvironment.TELEGRAM_WEBHOOK_SECRET_TOKEN,
+            },
+            payload: {
+              update_id: 1,
+              message: {
+                message_id: 1,
+                date: Math.floor(Date.now() / 1000),
+                text: 'Send a screenshot and file',
+                from: { id: 123456, is_bot: false, first_name: 'Fixture' },
+                chat: { id: 123456, type: 'private' },
+              },
+            },
+          })
+        ).statusCode,
+        200,
+      );
+      await channels.drain();
+      const inbound = (
+        await pool.query(
+          'SELECT i.turn_id,u.thread_id FROM channel_inbox i JOIN turns u ON u.id=i.turn_id',
+        )
+      ).rows[0];
+      const turnId = inbound.turn_id as string;
+      const threadId = inbound.thread_id as string;
+      const imageBytes = Buffer.from('masked image fixture');
+      const fileBytes = Buffer.from('completed document fixture');
+      const image = await storeArtifact(imageBytes, 'screenshot.png', 'image/png', threadId);
+      const document = await storeArtifact(fileBytes, 'result.txt', 'text/plain', threadId);
+      filePaths.push(
+        join(dataRoot, 'artifacts', image.id),
+        join(dataRoot, 'artifacts', document.id),
+      );
+      const reply = await addReply(
+        turnId,
+        [{ ...image, url: 'https://attacker.invalid/ignored', name: 'spoof.png' }, document],
+        `[Screenshot](${image.url})`,
+      );
+      await channels.drain();
+      assert.deepEqual(
+        sent.map(({ method }) => method),
+        ['sendPhoto', 'sendDocument'],
+      );
+      assert.deepEqual(Buffer.from(sent[0].file), imageBytes);
+      assert.deepEqual(Buffer.from(sent[1].file), fileBytes);
+      assert.equal(sent[0].name, 'screenshot.png');
+      assert.equal(sent[1].name, 'result.txt');
+      assert.ok(
+        sent.every(
+          ({ chat, caption }) =>
+            chat === '123456' &&
+            !caption.includes('/api/artifacts') &&
+            !caption.includes('localhost'),
+        ),
+      );
+      assert.equal((await state(reply)).state, 'sent');
+      await channels.drain();
+      assert.equal(sent.length, 2);
+      const repeated = await addReply(turnId, [image, image]);
+      await channels.drain();
+      assert.equal((await state(repeated)).state, 'sent');
+      assert.equal(sent.length, 3);
+      assert.equal(sent[2].name, 'screenshot.png');
+
+      failDocument = true;
+      const uncertain = await addReply(turnId, [image, document]);
+      await channels.drain();
+      assert.equal((await state(uncertain)).state, 'uncertain');
+      const partialCount = sent.length;
+      await channels.drain();
+      assert.equal(sent.length, partialCount);
+      failDocument = false;
+
+      const anotherThread = randomUUID();
+      await pool.query('INSERT INTO threads(id,owner_id,archived_at) VALUES($1,$2,now())', [
+        anotherThread,
+        ownerId,
+      ]);
+      await assert.rejects(readThreadArtifacts(anotherThread, [image.id]), /unavailable/);
+      await pool.query("UPDATE artifacts SET owner_id='foreign-owner' WHERE id=$1", [image.id]);
+      const foreign = await addReply(turnId, [image]);
+      await channels.drain();
+      assert.deepEqual(await state(foreign), {
+        state: 'blocked',
+        reason: 'attachment_unavailable',
+      });
+      assert.equal(sent.length, partialCount);
+      await pool.query('UPDATE artifacts SET owner_id=$2 WHERE id=$1', [image.id, ownerId]);
+
+      const outside = join(dataRoot, `media-fixture-${randomUUID()}`);
+      filePaths.push(outside);
+      await writeFile(outside, 'private host data');
+      await pool.query('UPDATE artifacts SET storage_path=$2 WHERE id=$1', [image.id, outside]);
+      await assert.rejects(readThreadArtifacts(threadId, [image.id]), /unavailable/);
+      const imagePath = join(dataRoot, 'artifacts', image.id);
+      await pool.query('UPDATE artifacts SET storage_path=$2 WHERE id=$1', [image.id, imagePath]);
+      await rm(imagePath);
+      await symlink(outside, imagePath);
+      await assert.rejects(readThreadArtifacts(threadId, [image.id]));
+      await rm(imagePath);
+      await writeFile(imagePath, imageBytes);
+      await pool.query('UPDATE artifacts SET size=$2 WHERE id=$1', [image.id, maxFileSize + 1]);
+      await assert.rejects(readThreadArtifacts(threadId, [image.id]), /limit/);
+      await pool.query('UPDATE artifacts SET size=$2 WHERE id=$1', [image.id, imageBytes.length]);
+      await assert.rejects(readThreadArtifacts(threadId, ['https://attacker.invalid/file']));
+      await assert.rejects(readThreadArtifacts(threadId, Array(11).fill(image.id)));
+      const forged = await addReply(turnId, [{ url: 'http://localhost:4310/private' }]);
+      await channels.drain();
+      assert.equal((await state(forged)).state, 'blocked');
+      assert.equal(sent.length, partialCount);
+      holdResolve = true;
+      const changedAccount = await addReply(turnId, [image]);
+      const pending = channels.drain();
+      await resolveStarted;
+      const fallback: string[] = [];
+      const replacement = channels.replaceTransport({
+        channels: [
+          {
+            id: 'telegram',
+            status: 'configured',
+            missing: [],
+            accountId: '987',
+            allowedSenderIds: ['123456'],
+          },
+        ],
+        receive: async () => ({ status: 200, body: 'Accepted' }),
+        post: async (input) => {
+          assert.equal(input.attachments, undefined);
+          fallback.push(input.text);
+          return { id: 'fallback-fixture' };
+        },
+        close: async () => {},
+      });
+      releaseResolve();
+      await Promise.all([pending, replacement]);
+      assert.deepEqual(await state(changedAccount), {
+        state: 'blocked',
+        reason: 'channel_access_changed',
+      });
+      assert.equal(sent.length, partialCount);
+      const localOnly = await addReply(turnId, [image]);
+      await channels.drain();
+      assert.equal((await state(localOnly)).state, 'sent');
+      assert.match(fallback[0], /https:\/\/otto\.example\/api\/artifacts\//);
+      assert.match(fallback[0], /screenshot\.png/);
+      assert.doesNotMatch(fallback[0], /Attachments are available in Otto/);
+    } finally {
+      releaseResolve();
+      await app.close();
+      await Promise.all(filePaths.map((path) => rm(path, { force: true })));
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);

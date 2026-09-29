@@ -46,18 +46,11 @@ export function createPromptInspector(
   }
   async function initialize(migrationPool: Pool = pool) {
     await migrationPool.query(`CREATE TABLE IF NOT EXISTS inspector_prompts (
-      id uuid PRIMARY KEY, owner_id text NOT NULL, payload jsonb NOT NULL, provider text NOT NULL, model text NOT NULL,
+      id uuid PRIMARY KEY, owner_id text NOT NULL,
+      thread_id uuid REFERENCES threads(id) ON DELETE CASCADE, turn_id uuid REFERENCES turns(id) ON DELETE CASCADE,
+      payload jsonb NOT NULL, provider text NOT NULL, model text NOT NULL,
       created_at timestamptz NOT NULL DEFAULT now()
     );
-    ALTER TABLE inspector_prompts ADD COLUMN IF NOT EXISTS thread_id uuid REFERENCES threads(id) ON DELETE CASCADE;
-    ALTER TABLE inspector_prompts ADD COLUMN IF NOT EXISTS turn_id uuid REFERENCES turns(id) ON DELETE CASCADE;
-    DO $$
-    BEGIN
-      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='inspector_prompts' AND column_name='task_id') THEN
-        ALTER TABLE inspector_prompts ALTER COLUMN task_id DROP NOT NULL;
-        ALTER TABLE inspector_prompts ALTER COLUMN revision DROP NOT NULL;
-      END IF;
-    END $$;
     CREATE INDEX IF NOT EXISTS inspector_prompts_owner ON inspector_prompts(owner_id, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS inspector_prompts_turn ON inspector_prompts(owner_id, turn_id, created_at DESC, id DESC);`);
     await prune(true, migrationPool);

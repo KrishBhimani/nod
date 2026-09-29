@@ -34,20 +34,8 @@ const goalUpdateSchema = goalSchema
   .strict();
 const personalSecret =
   /\b(?:password|passcode|passphrase|otp|pin|2fa|api[ _-]?key|secret|token|bearer|private[ _-]?key|security code|cvv|cvc|verification code|recovery code|palavra-passe|senha|código de verificação)\b|\bsk-[A-Za-z0-9_-]{12,}|\b(?:\d[ -]?){14,19}\b/i;
-const memoryText = z
-  .string()
-  .trim()
-  .min(1)
-  .max(2000)
-  .refine(
-    (text) => !personalSecret.test(text),
-    'Sign-in details and payment secrets cannot be remembered.',
-  );
-const memoryProposalSchema = z.object({ text: memoryText }).strict();
 const declinedPersonalAnswer =
   /^(?:no(?: thanks)?\b|skip\b|pass\b|not now\b|none\b|n\/a\b|(?:i(?:'d| would) rather not|i (?:do not|don't|don’t) want to|prefer not to|let(?:'s| us) not)(?:\b|$)|(?:do not|don't|don’t) (?:save|store|remember|ask)|não\b|prefiro não\b|saltar\b)/i;
-const preferenceStatement =
-  /^(?:(?:correction:|actually,)\s+)?(?:for [\p{L}\p{N}][\p{L}\p{N} '’-]{0,79},\s+)?i (?:prefer|like|dislike|(?:do not|don['’]t|no longer) (?:prefer|like))\b/iu;
 const goalColumns =
   'id,title,description,progress,status,next_action AS "nextAction",target_date AS "targetDate",updated_at AS "updatedAt"';
 type PersonalDependencies = ScheduleDependencies;
@@ -150,31 +138,18 @@ export function createPersonalService(dependencies: PersonalDependencies) {
     return { ok: true };
   }
 
-  async function learnPersonalFact(
-    action: 'memory_remember' | 'profile_learn',
+  async function learnProfileFact(
     args: Record<string, unknown>,
     provenance?: { sourceMessageId: string | null; turnId?: string },
   ) {
-    const input =
-      action === 'memory_remember'
-        ? {
-            kind: 'memory' as const,
-            ...z
-              .object({ quote: z.string().trim().min(1).max(2000) })
-              .strict()
-              .parse(args),
-          }
-        : {
-            kind: 'profile' as const,
-            ...z
-              .object({
-                quote: z.string().trim().min(1).max(2000),
-                field: z.enum(['name', 'location', 'phone']),
-                value: z.string().trim().min(1).max(200),
-              })
-              .strict()
-              .parse(args),
-          };
+    const input = z
+      .object({
+        quote: z.string().trim().min(1).max(2000),
+        field: z.enum(['name', 'location', 'phone']),
+        value: z.string().trim().min(1).max(200),
+      })
+      .strict()
+      .parse(args);
     const sourceMessageId = z.uuid().parse(provenance?.sourceMessageId);
     const client = await pool.connect();
     try {
@@ -203,61 +178,43 @@ export function createPersonalService(dependencies: PersonalDependencies) {
           new Error('Sign-in details and payment secrets cannot be remembered.'),
           { statusCode: 400 },
         );
-      if (input.kind === 'profile') {
-        const statements = {
-          name: /^(?:my name is|call me|o meu nome é|chamo-me)\s+(.+?)\s*[.!]?$/i,
-          location: /^(?:i live in|i am based in|i'm based in|vivo em|moro em)\s+(.+?)\s*[.!]?$/i,
+      const statements = {
+        name: /^(?:my name is|call me|o meu nome é|chamo-me)\s+(.+?)\s*[.!]?$/i,
+        location: /^(?:i live in|i am based in|i'm based in|vivo em|moro em)\s+(.+?)\s*[.!]?$/i,
+        phone:
+          /^(?:my (?:phone|mobile)(?: number)? is|o meu (?:número|numero)(?: de (?:telefone|telemóvel))? é)\s+(.+?)\s*[.!]?$/i,
+      };
+      let value = input.quote.match(statements[input.field])?.[1];
+      if (!value && sourceText === input.quote && source.thread_id) {
+        const previous =
+          (
+            await client.query(
+              "SELECT text FROM messages WHERE owner_id=$1 AND thread_id=$2 AND role='assistant' AND created_at<=$3 ORDER BY created_at DESC,id DESC LIMIT 1",
+              [ownerId, source.thread_id, source.created_at],
+            )
+          ).rows[0]?.text ?? '';
+        const questions = {
+          name: /(?:what (?:should|can) i call you|what(?:'s| is) your name|como te chamas|qual é o teu nome)/i,
+          location: /(?:where do you live|where are you based|onde (?:vives|moras))/i,
           phone:
-            /^(?:my (?:phone|mobile)(?: number)? is|o meu (?:número|numero)(?: de (?:telefone|telemóvel))? é)\s+(.+?)\s*[.!]?$/i,
+            /(?:what(?:'s| is) your (?:phone|mobile)(?: number)?|qual é o teu (?:número|numero)(?: de (?:telefone|telemóvel)))/i,
         };
-        let value = input.quote.match(statements[input.field])?.[1];
-        if (!value && sourceText === input.quote && source.thread_id) {
-          const previous =
-            (
-              await client.query(
-                "SELECT text FROM messages WHERE owner_id=$1 AND thread_id=$2 AND role='assistant' AND created_at<=$3 ORDER BY created_at DESC,id DESC LIMIT 1",
-                [ownerId, source.thread_id, source.created_at],
-              )
-            ).rows[0]?.text ?? '';
-          const questions = {
-            name: /(?:what (?:should|can) i call you|what(?:'s| is) your name|como te chamas|qual é o teu nome)/i,
-            location: /(?:where do you live|where are you based|onde (?:vives|moras))/i,
-            phone:
-              /(?:what(?:'s| is) your (?:phone|mobile)(?: number)?|qual é o teu (?:número|numero)(?: de (?:telefone|telemóvel)))/i,
-          };
-          if (questions[input.field].test(previous) && !declinedPersonalAnswer.test(input.quote))
-            value = input.quote;
-        }
-        const limit = input.field === 'name' ? 100 : input.field === 'phone' ? 40 : 200;
-        if (
-          value !== input.value ||
-          input.value.length > limit ||
-          (input.field === 'phone' && !/^\+?[\d ()-]{5,40}$/.test(input.value))
-        )
-          throw Object.assign(
-            new Error('This profile value needs an explicit matching user statement.'),
-            { statusCode: 400 },
-          );
-        await client.query(
-          'INSERT INTO profiles(owner_id,data) VALUES($1,$2) ON CONFLICT(owner_id) DO UPDATE SET data=profiles.data || EXCLUDED.data',
-          [ownerId, { [input.field]: input.value }],
-        );
-      } else if (
-        !/^(?:i (?:prefer|like|dislike|do not like|don't like|live in|am based in|work|speak|use)|my name is|call me|prefiro|gosto de|não gosto de|o meu nome é|chamo-me|vivo em|moro em|trabalho|falo)\b/i.test(
-          input.quote,
-        ) &&
-        !preferenceStatement.test(input.quote)
-      ) {
+        if (questions[input.field].test(previous) && !declinedPersonalAnswer.test(input.quote))
+          value = input.quote;
+      }
+      const limit = input.field === 'name' ? 100 : input.field === 'phone' ? 40 : 200;
+      if (
+        value !== input.value ||
+        input.value.length > limit ||
+        (input.field === 'phone' && !/^\+?[\d ()-]{5,40}$/.test(input.value))
+      )
         throw Object.assign(
-          new Error(
-            'Only an explicit personal fact or preference can be remembered automatically.',
-          ),
+          new Error('This profile value needs an explicit matching user statement.'),
           { statusCode: 400 },
         );
-      }
       await client.query(
-        'INSERT INTO memory_facts(id,owner_id,text,source_message_id) VALUES($1,$2,$3,$4) ON CONFLICT(owner_id,text) DO NOTHING',
-        [randomUUID(), ownerId, input.quote, sourceMessageId],
+        'INSERT INTO profiles(owner_id,data) VALUES($1,$2) ON CONFLICT(owner_id) DO UPDATE SET data=profiles.data || EXCLUDED.data',
+        [ownerId, { [input.field]: input.value }],
       );
       await client.query('COMMIT');
     } catch (error) {
@@ -304,7 +261,6 @@ export function createPersonalService(dependencies: PersonalDependencies) {
       await schedules.validateUpdate(input.id, { enabled: false });
       return input;
     }
-    if (action === 'memory_propose') return memoryProposalSchema.parse(args);
     throw Object.assign(new Error('This personal-data action is not available for review.'), {
       statusCode: 400,
     });
@@ -315,8 +271,7 @@ export function createPersonalService(dependencies: PersonalDependencies) {
     args: Record<string, unknown>,
     provenance?: { sourceMessageId: string | null; turnId?: string },
   ) {
-    if (action === 'memory_remember' || action === 'profile_learn')
-      return learnPersonalFact(action, args, provenance);
+    if (action === 'profile_learn') return learnProfileFact(args, provenance);
     if (action === 'notification_preferences_get') return preferences.get();
     if (action === 'notification_preferences_update') {
       const result = await preferences.update(args);
@@ -341,39 +296,6 @@ export function createPersonalService(dependencies: PersonalDependencies) {
     }
     if (action === 'schedule_cancel')
       return schedules.update(String(args.id || ''), { enabled: false }, provenance);
-    if (action === 'memory_propose') {
-      const { text } = memoryProposalSchema.parse(args);
-      const sourceMessageId = z
-        .uuid()
-        .nullable()
-        .parse(provenance?.sourceMessageId ?? null);
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        if (sourceMessageId) {
-          const source = await client.query(
-            "SELECT id FROM messages WHERE id=$1 AND owner_id=$2 AND role='user' FOR SHARE",
-            [sourceMessageId, ownerId],
-          );
-          if (!source.rowCount)
-            throw Object.assign(new Error('This memory source is unavailable.'), {
-              statusCode: 400,
-            });
-        }
-        await client.query(
-          'INSERT INTO memory_facts(id,owner_id,text,source_message_id) VALUES($1,$2,$3,$4) ON CONFLICT(owner_id,text) DO NOTHING',
-          [randomUUID(), ownerId, text, sourceMessageId],
-        );
-        await client.query('COMMIT');
-      } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-      } finally {
-        client.release();
-      }
-      refresh();
-      return { ok: true };
-    }
     if (action === 'history_search') {
       const query = z.string().min(1).max(200).parse(args.query);
       const turns = await pool.query(
@@ -381,15 +303,7 @@ export function createPersonalService(dependencies: PersonalDependencies) {
         [ownerId, query],
       );
       const messages = await pool.query(
-        `SELECT m.role,m.text,m.turn_id,split_part(COALESCE(u.channel,route.channel,'web'),':',1) AS channel
-        FROM messages m LEFT JOIN turns u ON u.id=m.turn_id AND u.owner_id=m.owner_id
-        LEFT JOIN LATERAL (
-          SELECT COALESCE(i.channel,i.provider) AS channel FROM channel_inbox i
-          WHERE i.owner_id=m.owner_id AND (i.message_id=m.id OR EXISTS (
-            SELECT 1 FROM channel_outbox o WHERE o.message_id=m.id AND o.source_id=i.source_id
-          )) ORDER BY i.received_at DESC,i.source_id LIMIT 1
-        ) route ON u.channel IS NULL
-        WHERE m.owner_id=$1 AND ${activeThreadSql('m')} AND to_tsvector('simple',m.text) @@ plainto_tsquery('simple',$2) ORDER BY m.created_at DESC LIMIT 15`,
+        `SELECT m.role,m.text,m.turn_id,split_part(COALESCE(u.channel,'web'),':',1) AS channel FROM messages m LEFT JOIN turns u ON u.id=m.turn_id AND u.owner_id=m.owner_id WHERE m.owner_id=$1 AND ${activeThreadSql('m')} AND to_tsvector('simple',m.text) @@ plainto_tsquery('simple',$2) ORDER BY m.created_at DESC LIMIT 15`,
         [ownerId, query],
       );
       return { turns: turns.rows, messages: messages.rows };

@@ -149,10 +149,7 @@ export async function createChannelSettings(
     `CREATE TABLE IF NOT EXISTS channel_settings(owner_id text NOT NULL,provider text NOT NULL,enabled boolean NOT NULL,ciphertext text,summary jsonb NOT NULL,updated_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(owner_id,provider))`,
   );
   await pool.query(
-    `CREATE TABLE IF NOT EXISTS channel_account_claims(owner_id text NOT NULL,provider text NOT NULL,account_id text NOT NULL,PRIMARY KEY(owner_id,provider,account_id))`,
-  );
-  await pool.query(
-    'ALTER TABLE channel_account_claims ADD COLUMN IF NOT EXISTS revision bigint NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS pending boolean NOT NULL DEFAULT true',
+    `CREATE TABLE IF NOT EXISTS channel_account_claims(owner_id text NOT NULL,provider text NOT NULL,account_id text NOT NULL,revision bigint NOT NULL DEFAULT 0,pending boolean NOT NULL DEFAULT true,PRIMARY KEY(owner_id,provider,account_id))`,
   );
   let pending = Promise.resolve();
   let key: Promise<Buffer> | undefined;

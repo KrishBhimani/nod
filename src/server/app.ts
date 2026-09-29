@@ -266,8 +266,8 @@ export async function createApp(dependencies: AppDependencies = {}) {
   app.post('/api/messages', async (request) => {
     const input = z
       .object({
-        text: z.string().trim().max(24000).default(''),
-        attachmentIds: z.array(z.uuid()).max(5).default([]),
+        text: z.string().trim().max(100_000).default(''),
+        attachmentIds: z.array(z.uuid()).max(20).default([]),
         replyToMessageId: z.uuid().optional(),
         clientMessageId: z.uuid().optional(),
         threadId: z.uuid().optional(),
@@ -541,23 +541,6 @@ export async function createApp(dependencies: AppDependencies = {}) {
     if (!publicConfiguration().inspectorEnabled)
       return reply.code(404).send({ error: 'Inspector is disabled.' });
     return readBrowserScreen(request, reply);
-  });
-  app.get(
-    '/api/memory',
-    async () =>
-      (
-        await pool.query(
-          'SELECT id,text,source_message_id AS "sourceMessageId",created_at AS "createdAt" FROM memory_facts WHERE owner_id=$1 ORDER BY created_at DESC',
-          [ownerId],
-        )
-      ).rows,
-  );
-  app.delete<{ Params: { id: string } }>('/api/memory/:id', async (request) => {
-    await pool.query('DELETE FROM memory_facts WHERE id=$1 AND owner_id=$2', [
-      z.uuid().parse(request.params.id),
-      ownerId,
-    ]);
-    return { ok: true };
   });
   return app;
 }

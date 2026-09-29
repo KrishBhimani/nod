@@ -132,7 +132,8 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
   await pool.query(`CREATE TABLE IF NOT EXISTS channel_inbox (
     source_id text PRIMARY KEY, provider text NOT NULL, account_id text NOT NULL, sender_id text NOT NULL,
     thread_id text NOT NULL, text text NOT NULL, received_at timestamptz NOT NULL,
-    turn_id uuid REFERENCES turns(id), state text NOT NULL DEFAULT 'pending', created_at timestamptz NOT NULL DEFAULT now()
+    turn_id uuid REFERENCES turns(id), state text NOT NULL DEFAULT 'pending', created_at timestamptz NOT NULL DEFAULT now(),
+    message_id uuid, owner_id text NOT NULL, channel text
   );
   CREATE TABLE IF NOT EXISTS channel_outbox (
     message_id uuid PRIMARY KEY, source_id text NOT NULL REFERENCES channel_inbox(source_id),
@@ -141,23 +142,8 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
   );
   CREATE INDEX IF NOT EXISTS channel_inbox_pending ON channel_inbox(state,created_at);
   CREATE INDEX IF NOT EXISTS channel_outbox_pending ON channel_outbox(state,created_at);
-  ALTER TABLE channel_inbox ADD COLUMN IF NOT EXISTS message_id uuid;
-  ALTER TABLE channel_inbox ADD COLUMN IF NOT EXISTS owner_id text;
-  ALTER TABLE channel_inbox ADD COLUMN IF NOT EXISTS turn_id uuid REFERENCES turns(id);
-  ALTER TABLE channel_inbox ADD COLUMN IF NOT EXISTS channel text;
   CREATE INDEX IF NOT EXISTS channel_inbox_turn ON channel_inbox(turn_id);
   CREATE INDEX IF NOT EXISTS channel_inbox_channel ON channel_inbox(owner_id,channel,state,received_at DESC)`);
-  await pool.query('UPDATE channel_inbox SET owner_id=$1 WHERE owner_id IS NULL', [ownerId]);
-  await pool.query('ALTER TABLE channel_inbox ALTER COLUMN owner_id SET NOT NULL');
-  const unrouted = await pool.query<ChannelIdentity>(
-    'SELECT DISTINCT provider,account_id,sender_id FROM channel_inbox WHERE owner_id=$1 AND channel IS NULL',
-    [ownerId],
-  );
-  for (const row of unrouted.rows)
-    await pool.query(
-      'UPDATE channel_inbox SET channel=$5 WHERE owner_id=$1 AND provider=$2 AND account_id=$3 AND sender_id=$4 AND channel IS NULL',
-      [ownerId, row.provider, row.account_id, row.sender_id, conversationChannel(row)],
-    );
   await pool.query(
     "UPDATE channel_outbox o SET state='uncertain',reason='interrupted_send',updated_at=now() FROM channel_inbox i WHERE o.source_id=i.source_id AND i.owner_id=$1 AND o.state='sending'",
     [ownerId],
@@ -418,7 +404,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
       SELECT DISTINCT ON (m.id) m.id,i.source_id FROM messages m
       JOIN turns u ON u.id=m.turn_id AND u.owner_id=m.owner_id
       JOIN channel_inbox i ON i.channel=u.channel AND i.owner_id=m.owner_id AND i.created_at<=m.created_at
-      WHERE m.role='assistant' AND m.owner_id=$1 AND i.state='submitted' AND to_jsonb(m)->>'task_id' IS NULL
+      WHERE m.role='assistant' AND m.owner_id=$1 AND i.state='submitted'
       ORDER BY m.id,(i.turn_id IS NOT DISTINCT FROM m.turn_id) DESC,i.received_at DESC,i.source_id
       ON CONFLICT(message_id) DO NOTHING`,
       [ownerId],

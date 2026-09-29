@@ -1,5 +1,4 @@
 import { Buffer } from 'node:buffer';
-import { threadIdentity } from '../../../src/ports/thread-identity.ts';
 import {
   boundedBody,
   failure,
@@ -7,6 +6,7 @@ import {
   ownerIdentity,
   RuntimeControlError,
 } from './protocol.ts';
+import { threadIdentity } from '../../../src/ports/thread-identity.ts';
 
 type Command = {
   id: string;
@@ -48,7 +48,7 @@ export function createComputerCommands(options: {
   const commands = new Map<string, Command>();
   const receipts = new Map<string, number>();
   const encoder = new TextEncoder();
-  const timeout = options.timeoutMs ?? 480_000;
+  const timeout = options.timeoutMs ?? 3_720_000;
   const authorizationInterval = Math.min(options.authorizationIntervalMs ?? 1000, 1000);
   const receiptTimeout = Math.min(options.receiptTimeoutMs ?? 30_000, 30_000);
   if (

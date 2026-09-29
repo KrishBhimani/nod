@@ -33,8 +33,6 @@ export function useAppState(accountId?: string) {
             threadStatus: 'idle',
             messages: [],
             turns: [],
-            verificationRequests: [],
-            hasEarlierMessages: false,
           }
         : current,
     );

@@ -128,8 +128,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   }
   async function upload(files: File[]) {
     if (!files.length) return;
-    if (files.length + attachmentValues.current.length > 5) {
-      setError('Attach up to five files per message.');
+    if (files.length + attachmentValues.current.length > 20) {
+      setError('Attach up to 20 files per message.');
       return;
     }
     if (files.some((file) => file.size > 15 * 1024 * 1024)) {
@@ -368,7 +368,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               aria-label="Attach files"
               title="Attach files or paste an image"
               onClick={() => fileInput.current?.click()}
-              disabled={attachments.length >= 5}
+              disabled={attachments.length >= 20}
             >
               <Paperclip size={18} />
             </Button>

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import pg from 'pg';
 import { z } from 'zod';
 import type { Agent } from '../ports/agent.ts';
-import type { BrowserChooser, Computer, Workspace } from '../ports/computer.ts';
+import type { Computer, Workspace } from '../ports/computer.ts';
 import type { IntegrationProvider, IntegrationService } from '../ports/integrations.ts';
 import type { CredentialKeyStore } from '../ports/key-store.ts';
 import type { RelevanceClassifier } from '../ports/relevance.ts';
@@ -35,7 +35,6 @@ import { createGoogleAuthentication } from '../providers/better-auth/index.ts';
 import { createCloudflareRuntimeTransport } from '../providers/runtime-host/cloudflare.ts';
 import { createLocalRuntimeTransport } from '../providers/runtime-host/local.ts';
 import { createComputerShutdownConfirmation } from '../providers/runtime-host/computer-shutdown.ts';
-import { createJevBrowserChooser } from '../providers/jev/browser.ts';
 import { createJevRelevanceClassifier } from '../providers/jev/relevance.ts';
 import { createKeychainKeyStore } from '../providers/keychain/key-store.ts';
 import { createOpenAIRelevanceClassifier } from '../providers/openai/relevance.ts';
@@ -137,7 +136,6 @@ export interface ApplicationAdapters {
     verifier: ChannelSetupVerifier;
     create(environment: Record<string, string>): MessagingTransport;
   };
-  chooseBrowserAction?: BrowserChooser;
   model: { provider: string; name: string; configured: boolean };
 }
 
@@ -291,9 +289,6 @@ export function createDefaultAdapters(
     relevance: env.TYPESAFE_API_KEY
       ? createJevRelevanceClassifier({ apiKey: env.TYPESAFE_API_KEY, model: env.TYPESAFE_MODEL })
       : createOpenAIRelevanceClassifier({ apiKey: env.OPENAI_API_KEY, model: env.TRIAGE_MODEL }),
-    chooseBrowserAction: env.TYPESAFE_API_KEY
-      ? createJevBrowserChooser({ apiKey: env.TYPESAFE_API_KEY, model: env.TYPESAFE_MODEL })
-      : undefined,
     messagingSetup: {
       verifier: createChatSdkSetupVerifier(
         runtimeMode === 'tenant'
@@ -393,16 +388,6 @@ export async function createApplication(
             },
           ]
         : []),
-      ...(adapters.chooseBrowserAction
-        ? [
-            {
-              provider: 'jev',
-              category: 'browser' as const,
-              status: 'recorded' as const,
-              note: 'Fast-choice operations and duration. Provider price is unavailable.',
-            },
-          ]
-        : []),
       {
         provider: adapters.integrations.id,
         category: 'integration',
@@ -468,13 +453,6 @@ export async function createApplication(
         { provider: 'pi-web-access', category: 'browser', operation: 'search' },
         () => webSearch(query, signal),
       ),
-    chooseBrowserAction: adapters.chooseBrowserAction
-      ? (...args) =>
-          providerUsage.track(
-            { provider: 'jev', category: 'browser', operation: 'choose_action' },
-            () => adapters.chooseBrowserAction!(...args),
-          )
-      : undefined,
   });
   const speech = createSpeech(speechProvider);
   const personal = createPersonalService({
@@ -654,7 +632,6 @@ export async function createApplication(
             'schedule_create',
             'schedule_update',
             'schedule_cancel',
-            'memory_propose',
           ].includes(action)
         )
           return approvals.request(
@@ -741,7 +718,6 @@ export async function createApplication(
         llmReady: adapters.model.configured,
         speechReady: adapters.speech.configured,
         integrationsReady: adapters.integrations.configured,
-        browserAssistReady: Boolean(adapters.chooseBrowserAction),
       }),
   });
   if (localAccounts) {

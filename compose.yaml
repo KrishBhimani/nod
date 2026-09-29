@@ -53,9 +53,9 @@ services:
     init: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    pids_limit: 128
-    mem_limit: 4g
-    cpus: 2
+    pids_limit: 4096
+    mem_limit: 8g
+    cpus: 4
     volumes:
       - ./.local/workspaces:/workspace
       - workspace-tools:/home/node

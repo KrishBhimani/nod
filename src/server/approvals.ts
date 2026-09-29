@@ -107,23 +107,15 @@ export async function createApprovals(
   describeTarget?: (action: string, args: Record<string, unknown>) => Promise<string | undefined>,
 ) {
   await pool.query(`CREATE TABLE IF NOT EXISTS approvals (
-    id uuid PRIMARY KEY, owner_id text NOT NULL,
+    id uuid PRIMARY KEY, owner_id text NOT NULL, thread_id uuid REFERENCES threads(id),
+    turn_id uuid REFERENCES turns(id), execution_turn_id uuid REFERENCES turns(id),
     action text NOT NULL, args jsonb NOT NULL, status text NOT NULL DEFAULT 'pending',
-    expires_at timestamptz NOT NULL DEFAULT now()+interval '30 minutes'
+    expires_at timestamptz NOT NULL DEFAULT now()+interval '30 minutes',
+    source_message_id uuid REFERENCES messages(id) ON DELETE SET NULL,
+    confirmation_message_id uuid REFERENCES messages(id) ON DELETE SET NULL,
+    confirmation_reply_id uuid REFERENCES messages(id) ON DELETE SET NULL,
+    result jsonb
   );
-    ALTER TABLE approvals ADD COLUMN IF NOT EXISTS thread_id uuid REFERENCES threads(id);
-    ALTER TABLE approvals ADD COLUMN IF NOT EXISTS turn_id uuid REFERENCES turns(id);
-    ALTER TABLE approvals ADD COLUMN IF NOT EXISTS execution_turn_id uuid REFERENCES turns(id);
-    ALTER TABLE approvals ADD COLUMN IF NOT EXISTS source_message_id uuid REFERENCES messages(id) ON DELETE SET NULL;
-    ALTER TABLE approvals ADD COLUMN IF NOT EXISTS confirmation_message_id uuid REFERENCES messages(id) ON DELETE SET NULL;
-    ALTER TABLE approvals ADD COLUMN IF NOT EXISTS confirmation_reply_id uuid REFERENCES messages(id) ON DELETE SET NULL;
-    ALTER TABLE approvals ADD COLUMN IF NOT EXISTS result jsonb;
-    DO $$
-    BEGIN
-      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='approvals' AND column_name='task_id') THEN
-        ALTER TABLE approvals ALTER COLUMN task_id DROP NOT NULL;
-      END IF;
-    END $$;
     CREATE INDEX IF NOT EXISTS approvals_turn ON approvals(turn_id);
     CREATE INDEX IF NOT EXISTS approvals_execution_turn ON approvals(execution_turn_id);
     CREATE INDEX IF NOT EXISTS approvals_confirmation_message ON approvals(confirmation_message_id);

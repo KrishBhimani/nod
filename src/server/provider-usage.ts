@@ -80,13 +80,12 @@ export function createProviderUsageStore(
   }
   async function initialize(migrationPool: Pool = pool) {
     await migrationPool.query(`CREATE TABLE IF NOT EXISTS provider_usage (
-      id uuid PRIMARY KEY, owner_id text NOT NULL,
+      id uuid PRIMARY KEY, owner_id text NOT NULL, turn_id uuid REFERENCES turns(id) ON DELETE SET NULL,
       provider text NOT NULL, category text NOT NULL, operation text NOT NULL, model text,
       status text NOT NULL, duration_ms double precision NOT NULL, metrics jsonb NOT NULL,
-      cost_usd double precision, pricing text NOT NULL, recorded_at timestamptz NOT NULL DEFAULT now()
-    ); ALTER TABLE provider_usage ADD COLUMN IF NOT EXISTS tool_call_id uuid;
-    ALTER TABLE provider_usage ADD COLUMN IF NOT EXISTS tool_name text;
-    ALTER TABLE provider_usage ADD COLUMN IF NOT EXISTS turn_id uuid REFERENCES turns(id) ON DELETE SET NULL;
+      cost_usd double precision, pricing text NOT NULL, recorded_at timestamptz NOT NULL DEFAULT now(),
+      tool_call_id uuid, tool_name text
+    );
     CREATE INDEX IF NOT EXISTS provider_usage_owner_time_idx ON provider_usage(owner_id,recorded_at);
     CREATE INDEX IF NOT EXISTS provider_usage_tool_idx ON provider_usage(owner_id,tool_call_id) WHERE tool_call_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS provider_usage_turn_idx ON provider_usage(owner_id,turn_id,recorded_at);`);

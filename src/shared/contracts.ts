@@ -135,7 +135,6 @@ export interface Configuration {
   llmReady: boolean;
   speechReady: boolean;
   integrationsReady: boolean;
-  browserAssistReady: boolean;
   inspectorEnabled: boolean;
   localOnly: boolean;
 }

@@ -42,12 +42,23 @@ export async function runAcceptanceJourney(input: JourneyInput) {
       drainTimeoutMs: 30_000,
     });
   let adapters = create();
-  const workspace = (selected = adapters, selectedSignal = signal) =>
-    selected.workspace.open({
+  const workspace = (selected = adapters, selectedSignal = signal) => {
+    const session = selected.workspace.open({
       threadId: plan.threadId,
       workspacePath: `/workspace/${plan.threadId}`,
       signal: selectedSignal,
     });
+    const execute = async (command: string, timeoutSeconds = 30) => {
+      const chunks: Buffer[] = [];
+      const { exitCode } = await session.exec(command, {
+        timeoutMs: timeoutSeconds * 1000,
+        onData: (chunk) => chunks.push(chunk),
+      });
+      if (exitCode) throw fail();
+      return Buffer.concat(chunks).toString('utf8');
+    };
+    return { execute, readFile: (path: string) => execute(`cat -- '${path}'`) };
+  };
   const marker = `otto-e2b-${plan.nonce}`;
   const expected = Buffer.from(`marker,value\n${marker},144\n`);
   const cookie = `otto_e2b=${marker}`;
@@ -118,7 +129,7 @@ export async function runAcceptanceJourney(input: JourneyInput) {
       .execute(python(program), 120)
       .then(
         () => ({ cancelled: false }),
-        (error) => ({
+        (error: unknown) => ({
           cancelled:
             error instanceof WorkspaceCommandError && !error.uncertain && controller.signal.aborted,
         }),

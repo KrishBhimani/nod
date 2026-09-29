@@ -33,7 +33,6 @@ export function configuration(overrides: Partial<Configuration> = {}): Configura
     llmReady: false,
     speechReady: false,
     integrationsReady: false,
-    browserAssistReady: false,
     inspectorEnabled:
       runtimeMode === 'local'
         ? process.env.DEV_INSPECTOR !== 'false'

@@ -82,7 +82,7 @@ jobs:
           --volume "$PWD/scripts:/app/scripts:ro"
           --volume "$PWD/dist/web:/app/dist/web:ro"
           --entrypoint /usr/bin/tini otto-ci-browser
-          -- node --import tsx --test tests/browser-click-recovery.test.ts tests/browser-credential-transition.test.ts tests/browser-download.test.ts tests/browser-download-delivery.test.ts
+          -- node --import tsx --test tests/browser.test.ts tests/downloads.test.ts tests/download-delivery.test.ts
       - name: Verify the runtime filesystem and user
         run: >-
           docker run --rm --network none --entrypoint node otto-ci

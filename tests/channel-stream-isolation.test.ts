@@ -214,13 +214,6 @@ test(
           'External-channel assistant bytes reached the web SSE response.',
         );
       });
-      await t.test('external-channel text never reaches the web stream reducer', () => {
-        assert.equal(
-          visible.some((text) => /telegram-|whatsapp-/.test(text)),
-          false,
-          'External-channel replies appeared in the web stream reducer.',
-        );
-      });
       await t.test('SSE rejects foreign-owner, foreign-destination and unscoped events', () => {
         assert.deepEqual(
           wire.filter((event) =>

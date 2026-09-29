@@ -125,12 +125,6 @@ export function createComputerAllocationStore(options: {
           CHECK (lease_expires_at IS NULL OR lease_expires_at>=0),
           CHECK (state<>'ready' OR resource_id IS NOT NULL)
         )`);
-          await client.query(
-            'ALTER TABLE computer_allocations DROP CONSTRAINT IF EXISTS computer_allocations_role_check',
-          );
-          await client.query(
-            "ALTER TABLE computer_allocations ADD CONSTRAINT computer_allocations_role_check CHECK (role IN ('browser','workspace','computer'))",
-          );
           await client.query('REVOKE ALL ON TABLE computer_allocations FROM PUBLIC');
           await client.query('COMMIT');
         } catch (error) {

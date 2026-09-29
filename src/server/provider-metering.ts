@@ -132,8 +132,12 @@ export function meterWorkspace(workspace: Workspace, usage: ProviderUsageStore):
       };
       return {
         ...session,
-        execute: (command, timeout) =>
-          usage.track({ ...base, operation: 'execute' }, () => session.execute(command, timeout)),
+        exec: (command, options) =>
+          usage.track(
+            { ...base, operation: 'execute' },
+            () => session.exec(command, options),
+            (result) => ({ status: result.exitCode === 0 ? 'succeeded' : 'failed' }),
+          ),
         ...(session.executeProgram
           ? {
               executeProgram: (
@@ -149,10 +153,6 @@ export function meterWorkspace(workspace: Workspace, usage: ProviderUsageStore):
                 ),
             }
           : {}),
-        readFile: (path) =>
-          usage.track({ ...base, operation: 'read_file' }, () => session.readFile(path)),
-        writeFile: (path, content) =>
-          usage.track({ ...base, operation: 'write_file' }, () => session.writeFile(path, content)),
       };
     },
   };

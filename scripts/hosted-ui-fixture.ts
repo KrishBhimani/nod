@@ -933,7 +933,6 @@ const app = await createGateway({
             llmReady: true,
             speechReady: false,
             integrationsReady: true,
-            browserAssistReady: false,
             inspectorEnabled: false,
             localOnly: false,
           },

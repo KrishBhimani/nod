@@ -17,7 +17,7 @@ try:
  if not isinstance(env,dict) or len(env)>1 or not all(isinstance(k,str) and re.fullmatch(r'[A-Z][A-Z0-9_]{1,63}(?:TOKEN|API_KEY|SECRET|PASSWORD)',k) and isinstance(v,str) and 8<=len(v)<=8192 for k,v in env.items()): raise ValueError()
  limit=int(r['maxBytes'])
  timeout=float(r['timeoutMs'])/1000
- if not 1<=limit<=16777216 or not 0<timeout<=120: raise ValueError()
+ if not 1<=limit<=16777216 or not 0<timeout<=3600: raise ValueError()
  child_env=os.environ.copy()
  child_env.update(env)
  home=tempfile.mkdtemp(prefix='otto-cli-') if env else None
@@ -103,6 +103,12 @@ if home: shutil.rmtree(home,ignore_errors=True)
 if connected: send({'type':'exit','code':code,'reason':reason})
 `;
 
+function deliver(onData: (chunk: Buffer) => void, bytes: Buffer) {
+  try {
+    onData(bytes);
+  } catch {}
+}
+
 export class WorkspaceCommandError extends Error {
   constructor(
     readonly uncertain: boolean,
@@ -128,6 +134,7 @@ export async function runWorkspaceCommand(options: {
   signal?: AbortSignal;
   timeoutMs?: number;
   maxBytes?: number;
+  onData?(chunk: Buffer): void;
   spawn?: WorkspaceCommandLauncher;
   drainTimeoutMs?: number;
 }): Promise<{ stdout: Buffer; stderr: Buffer; exitCode: number }> {
@@ -172,6 +179,7 @@ export function runSupervisedCommand(options: {
   signal?: AbortSignal;
   timeoutMs?: number;
   maxBytes?: number;
+  onData?(chunk: Buffer): void;
   drainTimeoutMs?: number;
   transportGraceMs?: number;
   launch(): CommandProcess;
@@ -180,8 +188,8 @@ export function runSupervisedCommand(options: {
   const transportGraceMs = options.transportGraceMs ?? 0;
   if (!Number.isInteger(transportGraceMs) || transportGraceMs < 0 || transportGraceMs > 300_000)
     throw new Error('The workspace transport grace period is invalid.');
-  const timeoutMs = Math.max(1, Math.min(options.timeoutMs ?? 30_000, 120_000));
-  const maxBytes = Math.max(1, Math.min(options.maxBytes ?? 64 * 1024, 16 * 1024 * 1024));
+  const timeoutMs = Math.max(1, Math.min(options.timeoutMs ?? 30_000, 3_600_000));
+  const maxBytes = Math.max(1, Math.min(options.maxBytes ?? 16 * 1024 * 1024, 16 * 1024 * 1024));
   const request =
     JSON.stringify({
       args: options.args,
@@ -267,6 +275,7 @@ export function runSupervisedCommand(options: {
             const bytes = Buffer.from(frame.data, 'base64');
             size += bytes.length;
             if (size > maxBytes) cancel();
+            else if (options.onData) deliver(options.onData, bytes);
             else (frame.type === 'stdout' ? output : errors).push(bytes);
           } else throw new Error();
         } catch {

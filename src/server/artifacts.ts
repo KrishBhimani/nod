@@ -7,7 +7,7 @@ import { dataRoot, ownerId } from './config.ts';
 import type { Artifact } from '../shared/contracts.ts';
 import type { MessagingAttachment } from '../ports/messaging.ts';
 import { z } from 'zod';
-import { DatabaseError, type Pool, type PoolClient } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import type { PrivateObjectStore } from '../ports/object-storage.ts';
 
 const mimeTypes: Record<string, string> = {
@@ -75,25 +75,6 @@ export function createArtifactService(options: {
     throw new Error('Private file storage is unavailable.');
   const location = (id: string) =>
     options.localRoot ? join(options.localRoot, 'artifacts', id) : `object:artifacts/${id}`;
-  const storedArtifacts = new WeakMap<Artifact, { id: string; version?: string }>();
-  async function removeBytes(id: string, version?: string) {
-    try {
-      if (options.store) {
-        if (version === undefined) return;
-        await options.store.remove(`artifacts/${id}`, { expectedVersion: version });
-      } else await rm(location(id), { force: true });
-    } catch {}
-  }
-  async function discardUnpublished(artifact: Artifact) {
-    const stored = storedArtifacts.get(artifact);
-    if (!stored) return;
-    try {
-      const saved = await options.database.query('SELECT 1 FROM artifacts WHERE id=$1', [
-        stored.id,
-      ]);
-      if (saved.rowCount === 0) await removeBytes(stored.id, stored.version);
-    } catch {}
-  }
   async function readRow(row: Record<string, any>) {
     z.uuid().parse(row.id);
     if (
@@ -161,12 +142,11 @@ export function createArtifactService(options: {
         'INSERT INTO artifacts(id,owner_id,thread_id,name,mime_type,size,storage_path) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',
         [id, options.ownerId, threadId || null, safeName, mimeType, bytes.length, location(id)],
       );
-      const artifact = artifactView(result.rows[0]);
-      storedArtifacts.set(artifact, { id, version });
-      return artifact;
+      return artifactView(result.rows[0]);
     } catch (error) {
-      if (error instanceof DatabaseError && error.code?.startsWith('23'))
-        await removeBytes(id, version);
+      if (options.store)
+        await options.store.remove(key, { expectedVersion: version }).catch(() => {});
+      else await rm(location(id), { force: true }).catch(() => {});
       throw error;
     }
   }
@@ -180,7 +160,6 @@ export function createArtifactService(options: {
       maxBytes: number,
       purpose?: 'attachment' | 'publication',
     ) => Promise<Uint8Array>,
-    database: Pick<PoolClient, 'query'> = options.database,
   ) {
     z.uuid().parse(threadId);
     if (!path || path.length > 4096 || path.includes('\0') || path.includes('\\'))
@@ -194,7 +173,6 @@ export function createArtifactService(options: {
       name || posix.basename(actual),
       mimeTypes[extname(actual).toLowerCase()] || 'application/octet-stream',
       threadId,
-      database,
     );
   }
   async function readThreadArtifacts(
@@ -221,7 +199,7 @@ export function createArtifactService(options: {
     }
     return result;
   }
-  return { storeArtifact, publishArtifact, readArtifact, readThreadArtifacts, discardUnpublished };
+  return { storeArtifact, publishArtifact, readArtifact, readThreadArtifacts };
 }
 
 export type ArtifactService = ReturnType<typeof createArtifactService>;

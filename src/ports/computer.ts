@@ -7,21 +7,6 @@ export class BrowserActionError extends Error {
   }
 }
 
-export class WorkspaceExitError extends Error {
-  readonly output: string;
-
-  constructor(
-    readonly exitCode: number,
-    output: string,
-  ) {
-    super('Workspace command failed.');
-    if (!Number.isSafeInteger(exitCode) || exitCode === 0)
-      throw new Error('The workspace exit code is invalid.');
-    this.name = 'WorkspaceExitError';
-    this.output = output.slice(0, 20_000);
-  }
-}
-
 export interface BrowserAction {
   action: 'open' | 'snapshot' | 'click' | 'fill' | 'press' | 'scroll';
   url?: string;
@@ -121,18 +106,22 @@ export interface Computer {
   dispose(): Promise<void>;
   status(): string;
 }
+export interface WorkspaceExecOptions {
+  input?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  onData?(chunk: Buffer): void;
+}
 export interface WorkspaceSession {
   path: string;
   instructions: string;
-  execute(command: string, timeoutSeconds?: number): Promise<string>;
+  exec(command: string, options?: WorkspaceExecOptions): Promise<{ exitCode: number }>;
   executeProgram?(
     program: string,
     args: string[],
     environment: Record<string, string>,
     timeoutSeconds?: number,
   ): Promise<{ exitCode: number; output: string }>;
-  readFile(path: string): Promise<string>;
-  writeFile(path: string, content: string): Promise<string>;
 }
 export interface Workspace {
   connectedCliAvailable?: boolean;
@@ -152,8 +141,3 @@ export interface Workspace {
   status(): string;
   dispose(): void | Promise<void>;
 }
-export type BrowserChooser = (
-  goal: string,
-  observation: BrowserObservation,
-  signal?: AbortSignal,
-) => Promise<{ action?: BrowserAction; outcome: string; elapsedMs: number }>;

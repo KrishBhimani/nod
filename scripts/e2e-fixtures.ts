@@ -390,7 +390,7 @@ const toolDefinitions = [
   {
     name: 'GMAIL_GET_ATTACHMENT',
     description:
-      'Download an observed synthetic Gmail attachment with download_app_file. This is a read and never sends email.',
+      'Download an observed synthetic Gmail attachment with the apps download action. This is a read and never sends email.',
     parameters: {
       type: 'object',
       properties: {

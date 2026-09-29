@@ -1,4 +1,4 @@
-import { createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
 import { z } from 'zod';
 import type { AppGrantVault } from '../../ports/app-grants.ts';
@@ -22,7 +22,6 @@ type AccountRow = {
   id: string;
   owner_id: string;
   service: Service;
-  ciphertext: string;
   state_hash: string | null;
   expires_at: Date | null;
   connected: boolean;
@@ -38,16 +37,6 @@ const tokenSchema = z.object({
   refresh_token: z.string().optional(),
   expires_in: z.number().optional(),
 });
-
-function open(key: Buffer, row: AccountRow): Secrets {
-  const bytes = Buffer.from(row.ciphertext, 'base64');
-  const decipher = createDecipheriv('aes-256-gcm', key, bytes.subarray(0, 12));
-  decipher.setAAD(Buffer.from(`otto-direct-oauth-v1:${row.id}`));
-  decipher.setAuthTag(bytes.subarray(12, 28));
-  return JSON.parse(
-    Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString(),
-  );
-}
 
 function challenge(verifier: string) {
   return createHash('sha256').update(verifier).digest('base64url');
@@ -68,41 +57,20 @@ export function createDirectOAuth(options: {
   const refreshes = new Map<string, Promise<Secrets>>();
   const ready = (async () => {
     await options.pool.query(`CREATE TABLE IF NOT EXISTS direct_oauth_accounts (
-      id uuid PRIMARY KEY, owner_id text NOT NULL, service text NOT NULL, ciphertext text NOT NULL,
+      id uuid PRIMARY KEY, owner_id text NOT NULL, service text NOT NULL,
       state_hash text UNIQUE, expires_at timestamptz, connected boolean NOT NULL DEFAULT false
     )`);
     await options.pool.query(
       'DELETE FROM direct_oauth_accounts WHERE owner_id=$1 AND connected=false AND (expires_at IS NULL OR expires_at<=now())',
       [options.ownerId],
     );
-    const legacy = await options.pool.query<AccountRow>(
-      "SELECT * FROM direct_oauth_accounts WHERE owner_id=$1 AND ciphertext<>''",
-      [options.ownerId],
-    );
-    for (const row of legacy.rows) {
-      let secrets: Secrets;
-      try {
-        secrets = open(await options.keyStore.getKey(), row);
-      } catch {
-        continue;
-      }
-      await options.grantVault.adoptPlain(
-        row.id,
-        JSON.stringify(secrets),
-        row.connected ? null : row.expires_at,
-      );
-      await options.pool.query(
-        "UPDATE direct_oauth_accounts SET ciphertext='' WHERE id=$1 AND owner_id=$2 AND ciphertext=$3",
-        [row.id, options.ownerId, row.ciphertext],
-      );
-    }
   })();
 
   async function row(id: string, ownerId: string) {
     await ready;
     if (ownerId !== options.ownerId) throw new Error('This connected account is unavailable.');
     const result = await options.pool.query<AccountRow>(
-      `SELECT id,owner_id,service,ciphertext,state_hash,expires_at,connected FROM direct_oauth_accounts
+      `SELECT id,owner_id,service,state_hash,expires_at,connected FROM direct_oauth_accounts
        WHERE id=$1 AND connected=true AND owner_id=$2`,
       [id, ownerId],
     );
@@ -229,8 +197,8 @@ export function createDirectOAuth(options: {
     try {
       await client.query('BEGIN');
       await client.query(
-        `INSERT INTO direct_oauth_accounts(id,owner_id,service,ciphertext,state_hash,expires_at)
-         VALUES($1,$2,$3,'',$4,now() + interval '10 minutes')`,
+        `INSERT INTO direct_oauth_accounts(id,owner_id,service,state_hash,expires_at)
+         VALUES($1,$2,$3,$4,now() + interval '10 minutes')`,
         [id, ownerId, service, createHash('sha256').update(nonce).digest('hex')],
       );
       await options.grantVault.put(
@@ -267,7 +235,7 @@ export function createDirectOAuth(options: {
     await ready;
     const hash = createHash('sha256').update(input.state).digest('hex');
     const result = await options.pool.query<AccountRow>(
-      `SELECT id,owner_id,service,ciphertext,state_hash,expires_at,connected FROM direct_oauth_accounts
+      `SELECT id,owner_id,service,state_hash,expires_at,connected FROM direct_oauth_accounts
        WHERE state_hash=$1 AND owner_id=$2 AND expires_at>now()`,
       [hash, options.ownerId],
     );

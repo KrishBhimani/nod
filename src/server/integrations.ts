@@ -176,55 +176,28 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     return providerFor(row.slug, row.provider_id);
   }
   await pool.query(`
-    DO $$ BEGIN
-      IF to_regclass('integration_sessions') IS NULL AND to_regclass('composio_sessions') IS NOT NULL THEN ALTER TABLE composio_sessions RENAME TO integration_sessions; END IF;
-      IF to_regclass('integration_events') IS NULL AND to_regclass('composio_events') IS NOT NULL THEN ALTER TABLE composio_events RENAME TO integration_events; END IF;
-    END $$;
     CREATE TABLE IF NOT EXISTS app_connections (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
       owner_id text NOT NULL, slug text NOT NULL, account_id text, pending_account_id text,
       callback_hash text, callback_expires timestamptz, trigger_id text,
       triggers_enabled boolean NOT NULL DEFAULT false, revoked boolean NOT NULL DEFAULT false,
-      PRIMARY KEY(owner_id,slug)
+      callback_return_to text NOT NULL DEFAULT 'apps', provider_id text NOT NULL DEFAULT 'composio',
+      turn_id uuid, account_name text, account_email text,
+      account_active boolean NOT NULL DEFAULT true, account_checked_at timestamptz,
+      watch_retry_at timestamptz, watch_attempted_at timestamptz,
+      watch_failures integer NOT NULL DEFAULT 0, watch_requested boolean NOT NULL DEFAULT true,
+      watch_attempted boolean NOT NULL DEFAULT false, watch_revision integer NOT NULL DEFAULT 0
     );
-    CREATE TABLE IF NOT EXISTS integration_sessions (owner_id text PRIMARY KEY, session_id text NOT NULL);
+    CREATE TABLE IF NOT EXISTS integration_sessions (
+      owner_id text PRIMARY KEY, session_id text NOT NULL,
+      provider_id text NOT NULL DEFAULT 'composio', configuration_version integer NOT NULL DEFAULT 1
+    );
     CREATE TABLE IF NOT EXISTS integration_events (
       id text PRIMARY KEY, owner_id text NOT NULL, summary text NOT NULL, state text NOT NULL DEFAULT 'queued',
-      slug text, account_id text, trigger_id text, claimed_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
+      slug text, account_id text, trigger_id text, claimed_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(),
+      provider_id text NOT NULL DEFAULT 'composio'
     );
-    ALTER TABLE integration_events ADD COLUMN IF NOT EXISTS slug text;
-    ALTER TABLE integration_events ADD COLUMN IF NOT EXISTS account_id text;
-    ALTER TABLE integration_events ADD COLUMN IF NOT EXISTS trigger_id text;
-    ALTER TABLE integration_events ADD COLUMN IF NOT EXISTS provider_id text NOT NULL DEFAULT 'composio';
-    ALTER TABLE integration_sessions ADD COLUMN IF NOT EXISTS provider_id text NOT NULL DEFAULT 'composio';
-    ALTER TABLE integration_sessions ADD COLUMN IF NOT EXISTS configuration_version integer NOT NULL DEFAULT 1;
-    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS callback_return_to text NOT NULL DEFAULT 'apps';
-    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS provider_id text NOT NULL DEFAULT 'composio';
-    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS turn_id uuid;
-    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS id uuid NOT NULL DEFAULT gen_random_uuid();
-    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS account_name text;
-    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS account_email text;
-    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS account_active boolean NOT NULL DEFAULT true;
-    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS account_checked_at timestamptz;
-    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS watch_retry_at timestamptz;
-    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS watch_attempted_at timestamptz;
-    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS watch_failures integer NOT NULL DEFAULT 0;
-    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS watch_requested boolean NOT NULL DEFAULT true;
-    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS watch_attempted boolean NOT NULL DEFAULT false;
-    ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS watch_revision integer NOT NULL DEFAULT 0;
-    DO $$ DECLARE old_key text; BEGIN
-      SELECT conname INTO old_key FROM pg_constraint WHERE conrelid='app_connections'::regclass AND contype='p'
-      AND conkey <> ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid='app_connections'::regclass AND attname='id')];
-      IF old_key IS NOT NULL THEN EXECUTE format('ALTER TABLE app_connections DROP CONSTRAINT %I',old_key); END IF;
-      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='app_connections'::regclass AND contype='p') THEN
-        ALTER TABLE app_connections ADD PRIMARY KEY(id);
-      END IF;
-    END $$;
     CREATE UNIQUE INDEX IF NOT EXISTS app_connections_account_key ON app_connections(owner_id,provider_id,account_id) WHERE account_id IS NOT NULL;
-    INSERT INTO app_connections(owner_id,slug,pending_account_id,callback_hash,callback_expires,provider_id)
-    SELECT owner_id,slug,pending_account_id,callback_hash,callback_expires,provider_id FROM app_connections
-    WHERE account_id IS NOT NULL AND pending_account_id IS NOT NULL AND account_id <> pending_account_id;
-    UPDATE app_connections SET pending_account_id=NULL,callback_hash=NULL,callback_expires=NULL
-    WHERE account_id IS NOT NULL AND pending_account_id IS NOT NULL AND account_id <> pending_account_id;
   `);
   const sessions = new Map<string, Promise<IntegrationSession>>();
   const targets = new Map<string, { label: string; expires: number }>();
@@ -235,15 +208,6 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     if (closed) return undefined;
     return options.admission ? options.admission.run(operation) : Promise.resolve().then(operation);
   }
-  await pool.query(
-    `UPDATE app_connections SET watch_requested=true,watch_attempted=false,watch_revision=watch_revision+1
-     WHERE owner_id=$1 AND provider_id=$2 AND slug=ANY($3::text[]) AND NOT revoked AND NOT watch_requested`,
-    [
-      configuredOwner,
-      providerId,
-      (Object.keys(catalogs) as Slug[]).filter((slug) => supportsWatch(slug)),
-    ],
-  );
 
   function requiredProvider() {
     if (!provider.configured)
@@ -902,7 +866,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         downloadRequired: true,
         action,
         args,
-        message: 'Use download_app_file with this action and account to deliver the file here.',
+        message: 'Call apps with this download action and account to deliver the file here.',
       };
     try {
       const { connectionId: _connectionId, ...providerArgs } = args;

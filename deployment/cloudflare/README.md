@@ -1,27 +1,22 @@
-# Cloudflare deployment adapter
+# Cloudflare deployment
 
-For an authorized removal of every account, use the [environment reset runbook](../../docs/environment-reset.md). Preserve this deployment's keys, bindings, images and shared integration configuration; close admission, confirm runtime termination and clear provider/object/SQL user resources before reopening. Dropping auth rows alone is not a complete reset.
+The public Worker serves `dist/web` and sends `/api/*` to one private Node gateway. The gateway authenticates Google sessions, provisions a tenant SQL role and schemas per user, and sends signed requests to that user's tenant container. Each owner also gets separate browser and workspace containers that start on first use and checkpoint to private R2 when idle. Provider keys stay in the Node runtime.
 
-The public Worker serves built web assets and sends `/api/*` to one private Node gateway. The gateway authenticates Google sessions, provisions a tenant SQL role and private schemas, and sends signed requests to that user's Node container. The selected hosted setup uses `COMPUTER_PROVIDER=cloudflare`: each owner has a tenant runtime and separate private browser/workspace containers, rather than one physical VM. Computer roles start lazily on first use; signup does not allocate them. Application code and provider keys stay in the Node runtime, outside both computer roles. E2B remains an optional, deferred provider with separate acceptance requirements.
+| Class                        | Image tag                            | Instance type | Max |
+| ---------------------------- | ------------------------------------ | ------------- | --- |
+| `GatewayContainer`           | `otto-<environment>:<SHA>`           | `basic`       | 1   |
+| `TenantContainer`            | same runtime image                   | `basic`       | 8   |
+| `BrowserComputerContainer`   | `otto-<environment>-browser:<SHA>`   | `standard-1`  | 8   |
+| `WorkspaceComputerContainer` | `otto-<environment>-workspace:<SHA>` | `basic`       | 8   |
 
-The pilot admits eight total provisioned users and keeps the gateway and admitted tenant runtimes available for background work. The checked-in capacity remains one gateway, eight tenants, eight browser containers and eight workspace containers. A minute Cron wakes the gateway after an interruption; gateway recovery rehydrates registered owners, and signed lease heartbeats govern continued work. Used computer roles checkpoint and stop when safely idle, then restore their own files on later use. Increasing admission requires matching all role limits and reviewing database connections and cost; the provisioner has a hard ceiling of 400 roles.
+`OTTO_MAX_USERS` (default 8, maximum 400) must match the container limits; raise them together with database connections and budget.
 
-| Class                        | Image tag                            | Instance type | Maximum per environment |
-| ---------------------------- | ------------------------------------ | ------------- | ----------------------- |
-| `GatewayContainer`           | `otto-<environment>:<SHA>`           | `basic`       | 1                       |
-| `TenantContainer`            | Same runtime image                   | `basic`       | 8                       |
-| `BrowserComputerContainer`   | `otto-<environment>-browser:<SHA>`   | `standard-1`  | 8                       |
-| `WorkspaceComputerContainer` | `otto-<environment>-workspace:<SHA>` | `basic`       | 8                       |
+**This release has no migration path from the task model. Every existing environment must be reset (see [Database reset](#database-reset)) before deploying it.**
 
-The last two classes provide the selected Cloudflare computer roles. Their owner-bound container instances start on first use, independently of the tenant runtime. Existing Durable Object identities and uncertainty records must survive any future provider migration until the old resources are confirmed stopped. E2B tenants cannot dispatch commands to those classes.
-
-## Local checks
-
-Use the repository's supported Node version and an available Docker engine.
+## Checks
 
 ```sh
-npm ci
-npm run build
+npm ci && npm run build
 npm --prefix deployment/cloudflare ci
 npm --prefix deployment/cloudflare run check
 npm --prefix deployment/cloudflare test
@@ -30,178 +25,83 @@ npx wrangler deploy --env development --dry-run --containers-rollout=none
 npx wrangler deploy --env production --dry-run --containers-rollout=none
 ```
 
-Package tests use synthetic identities, lifecycle substitutes and in-memory object storage. Dry runs validate bundling and configuration without starting containers or deploying. Separate actual local checks have exercised native Container.exec, R2 emulation, Linux amd64 images, browser actions, cancellation/drain and restoration after VM destruction. These ran under Docker Desktop on an ARM64 host with synthetic lease authority. They do not establish deployed Cloudflare, live R2 or account acceptance. Track exact evidence in the [acceptance record](../../docs/testing/results/2026-09-26-cloud-hosting.md).
+Dry runs validate bundling and configuration only.
 
-For the selected Cloudflare stack, use `COMPUTER_PROVIDER=cloudflare`, `OBJECT_STORAGE_PROVIDER=http` and `OBJECT_STORAGE_ENDPOINT=http://otto.storage/v1/objects/` in the private hosted development file. These are the hosted launcher's defaults. Run `node scripts/start-hosted.mjs --check`, then `node scripts/start-hosted.mjs` from the repository root. The launcher selects `scripts/start-cloudflare-local.mjs`, generates owner-only local configuration, starts Wrangler on `http://localhost:4330` and uses the private HTTP broker with R2 emulation. It never deploys or supplies cloud deployment credentials to containers. Use a Docker-reachable development database and the development Google callback at `/api/auth/callback/google`. Rebuild `dist/web` after UI edits. [Complete local setup](../../docs/development.md#hosted-mode-on-your-computer).
+## Local hosted development
 
-For the optional E2B/process path, explicitly set `COMPUTER_PROVIDER=e2b` and `OBJECT_STORAGE_PROVIDER=postgres`, remove the HTTP storage endpoint, and configure the separate development E2B key and `E2B_COMPUTER_TEMPLATE`. The same hosted launcher then uses local gateway/owner processes with remote E2B computers. See the [E2B template and boundary checks](../e2b/README.md) before using a template. A local Docker boundary test is not live E2B acceptance, and changing the configuration does not migrate existing files, profiles or recovery state.
+Create a private `.env.hosted.local` (mode 600) with a dedicated development database reachable from Docker, fresh random 32-byte `OTTO_MASTER_KEY` and `BETTER_AUTH_SECRET`, `OTTO_ENVIRONMENT=development`, Google OAuth client ID/secret (redirect `http://localhost:4330/api/auth/callback/google`), and model/Composio keys. See `deployment/hosted.env.example`. Then:
 
-On macOS and Linux, local Ctrl-C/SIGTERM first uses the existing signed prepare protocol while Wrangler remains alive. It waits for natural turn completion, non-forced computer checkpoints and confirmed exact-generation stops, then exits with the barrier still closed. The next launcher verifies its private journal and stable local installation identity before aborting that same prepared operation. This 40-hex identity is supplied to Gateway/Tenant image builds and gateway configuration; it is not a deployed commit claim and does not change production SHA validation. Failed drains retain the stack and fences. `node scripts/start-hosted.mjs --env <file> --resume` explicitly resumes the recorded operation without launching Wrangler. Keep the journal and lock files; after an external kill, verify the exact owner process has ended before reconciling a stale lock. Stop cleanly before watched source edits, since hot rebuilds bypass this handshake. [Shutdown, recovery and limitations](../../docs/development.md#hosted-mode-on-your-computer).
+```sh
+npm run build
+npm --prefix deployment/cloudflare ci
+node scripts/start-hosted.mjs --check
+node scripts/start-hosted.mjs
+```
+
+The app runs at `http://localhost:4330` with local R2 emulation. Ctrl-C drains work and stops safely; if a stop is refused, run `node scripts/start-hosted.mjs --resume`. Run only one Wrangler container stack at a time. Rebuild `dist/web` after UI edits.
 
 ## Environments and secrets
 
-`wrangler.jsonc` has separate `development` and `production` Workers, four Durable Object classes, EU R2 buckets and container applications. Production uses the Worker `otto`; the configured origins are `https://otto-development.n8n-maintenance.workers.dev` and `https://otto.n8n-maintenance.workers.dev`. An operator provisions each exact private EU bucket before deployment; routine CI does not create or inspect bucket administration settings. Keep development and production keys and provider projects separate.
+`wrangler.jsonc` defines separate `development` and `production` Workers, Durable Objects, EU R2 buckets and container applications. Keep development and production databases, keys, Google clients and Composio projects separate. Use a dedicated PostgreSQL database: provisioning changes default grants.
 
-Otto uses separate resource, auth/control-schema and tenant-derivation identities from the legacy Sidekick installation; naming translation did not copy accounts or files. Legacy retirement has drained its tenant, disabled public/preview ingress and Cron, and removed its four container applications and both legacy R2 buckets after verified encrypted backups. The legacy Worker, its four Durable Object namespaces, four SQL schemas and tenant role, and the inventoried legacy-owner Composio connections, triggers and session have also been removed with absence checks. Otto and shared provider/database identities are preserved; provider logs are not erased. Do not restart the retired installation or remove shared resources because their names contain `sidekick`. The [dated Otto cutover record](../../docs/testing/results/2026-09-28-otto-cutover.md) records current release/CI/deployment status, cleanup evidence and remaining live acceptance.
+Each environment has one `GATEWAY_ENV` Worker secret: compact JSON of the gateway's server environment (`DATABASE_URL`, `OTTO_MASTER_KEY`, `BETTER_AUTH_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, model and `COMPOSIO_*` keys, optional `OTTO_MAX_USERS`, `OTTO_DEVELOPER_IDS`, `DEV_INSPECTOR`). It must stay under 5 KiB. Never put secrets in build arguments, Vite variables or Wrangler `vars`. Treat `OTTO_MASTER_KEY` as recovery material: replacing it invalidates tenant credentials and encrypted data. Secret changes take effect only through a new release rollout.
 
-For self-hosting in another account, change the Worker/resource names as needed and replace each `OTTO_PUBLIC_URL` with that deployment's canonical HTTPS origin. Keep the corresponding `GATEWAY_ENV`, Google OAuth callbacks, integration callbacks and GitHub environment variable consistent with it. Set the selected Cloudflare account through the deployment environment, rather than committing account credentials. Keep storage administration on a separate operator credential; the deployment token needs no R2 administration permission.
-
-Store one `GATEWAY_ENV` Worker secret per environment. Its value is the JSON object of server environment variables used by the Node gateway: the control-plane database URL, auth settings, tenant key material and operator-selected provider configuration. The Worker overrides process mode, canonical origin, environment, data directory and port. Never use build arguments, Vite variables or checked-in Wrangler `vars` for secrets.
-
-Keep the compact JSON under 5 KiB including the injected `OTTO_RELEASE`: this is Cloudflare's per-variable limit. Include only the provider keys actually used, rather than copying an entire shell environment. The deployment script rejects an oversized secret before publishing. [Worker limits](https://developers.cloudflare.com/workers/platform/limits/#environment-variables).
-
-Before sharing signup, customize the [privacy notice template](../../docs/privacy-notice-template.md) into `public/privacy-notice.md`. That source file and its raw Markdown are intentionally public; include only reviewed notice text with the actual operator/contact, providers and retention process. `npm run build` copies it to `dist/web/privacy-notice.md` in the image. Set `OTTO_PRIVACY_NOTICE_FILE=dist/web/privacy-notice.md` inside `GATEWAY_ENV`; keep the notice text out of the 5 KiB JSON budget. The gateway reads the UTF-8 file at startup, bounded to 128 KiB and 32,000 characters, and serves anonymous `/api/privacy`. A configured invalid or unreadable file fails startup; omitting the setting permits deployment without a notice. Rebuild and restart for notice changes. Verify the displayed `/privacy` page while signed out on the deployed origin and set its HTTPS URL in Google OAuth before inviting users. The release smoke test does not establish this manual readiness check or Google's branding status. [Google login and rollout requirements](../../docs/production.md#privacy-and-google-sign-in).
-
-The gateway builds each tenant's environment explicitly. Required fields are `OTTO_OWNER_ID`, `OTTO_ENVIRONMENT`, `OTTO_MODE=tenant`, `OTTO_RUNTIME_GENERATION`, `OTTO_RUNTIME_SECRET`, `OTTO_RUNTIME_LEASE_EXPIRES`, `DATABASE_URL` and `PGBOSS_SCHEMA`. The Worker checks that the SQL role and jobs namespace match the opaque hash of the supplied owner/environment. Only derived tenant credentials and the configured runtime provider keys belong in that environment. The control database credentials, Google login secret, tenant derivation master key and privacy-notice configuration stay in the gateway.
-
-Both Node process roles run `node --import tsx src/server/index.ts`; bootstrap forces `OTTO_BIND_HOST=0.0.0.0` and port 4310 inside the private container. They use `/data` as an ephemeral working directory. For the Cloudflare computer adapter, the two computer images run a fixed entrypoint under `tini` as the unprivileged `node` user, expose only internal `/health` on port 4311 and receive an empty service environment. Native computer exec inherits the pinned image's `USER node`; it does not override the user by name or numeric ID, and the entrypoint refuses root startup. The browser waits for an actual private control-socket connection before reporting readiness. The workspace has Python/Node CLI tooling and no browser or application server source. Docker allowlists include build configuration and public assets, while excluding `.env`, `.local`, browser profiles and database files; the root allowlist also covers Wrangler's copied-Dockerfile build context.
+Privacy notice: operators write their own public Markdown notice to `public/privacy-notice.md` (the build copies it to `dist/web/privacy-notice.md`) and set `OTTO_PRIVACY_NOTICE_FILE=dist/web/privacy-notice.md` in `GATEWAY_ENV`. It is served at `/privacy`. Without the setting there is no notice; an unreadable or invalid file fails startup. Verify `/privacy` signed out and set it as the Google OAuth privacy-policy URL before inviting users.
 
 ## Storage bootstrap
 
-Each environment must configure exactly one `r2_buckets` entry: `TENANT_FILES`, an explicit bucket name and jurisdiction `eu`. Provision that bucket before routine deployment. Do not adopt another environment's bucket or treat an API denial as evidence that a bucket is missing.
-
-Supply `CLOUDFLARE_ACCOUNT_ID` and a separate `CLOUDFLARE_R2_OPERATOR_TOKEN` through the operator's private environment, then run:
+Each environment needs exactly one private EU R2 bucket bound as `TENANT_FILES`. Create it once with a separate operator token (`CLOUDFLARE_R2_OPERATOR_TOKEN`, Workers R2 Storage Edit):
 
 ```sh
 npm --prefix deployment/cloudflare run provision:storage -- development
 npm --prefix deployment/cloudflare run provision:storage -- production
 ```
 
-The helper reads only the chosen environment's configured bucket. It creates that exact bucket once only after HTTP 404 with Cloudflare code 10006, then verifies EU jurisdiction, disabled managed public access and no enabled custom domains, and rereads the metadata. Existing buckets receive the same checks. It never changes privacy settings, deletes resources, retries requests or falls back to `CLOUDFLARE_API_TOKEN`. Denied, malformed or unknown responses fail with a fixed error. Each request is bounded to ten seconds and 64 KiB; a run makes at most six requests. Successful output contains only the environment, bucket, jurisdiction, creation flag and public-access result. Dashboard provisioning is also valid when those same settings are verified; the [cutover record](../../docs/testing/results/2026-09-28-otto-cutover.md) distinguishes that live evidence from helper fixtures.
+## CI and rollout
 
-Routine deployment uses `wrangler deploy --experimental-provision=false`. Before signed completion, both deployment and recovery read the published Worker's settings and require exactly the configured `TENANT_FILES` R2 binding, bucket and EU jurisdiction. A missing, duplicate, mismatched or unreadable binding keeps admission closed. This binding check does not replace the operator's privacy checks or prove owned object upload/download.
+`.github/workflows/ci.yml` runs root checks, PostgreSQL tests, the build, this package's checks and tests, both dry runs and the image builds. `.github/workflows/deploy.yml` runs after successful CI on the current `main` commit, in the GitHub `production` environment, which needs:
 
-## Private transport
+| Kind     | Name                    | Value                                                   |
+| -------- | ----------------------- | ------------------------------------------------------- |
+| Secret   | `CLOUDFLARE_API_TOKEN`  | Deployment token (Workers publish/settings, Containers) |
+| Secret   | `CLOUDFLARE_ACCOUNT_ID` | Account ID                                              |
+| Secret   | `GATEWAY_ENV`           | Production gateway JSON                                 |
+| Variable | `OTTO_PUBLIC_URL`       | Canonical HTTPS origin                                  |
 
-Only the fixed gateway Durable Object may call `http://otto.runtime`. The handler verifies the platform-supplied class and container ID. These operations have no public Worker route:
+`scripts/deploy.mjs production` then:
 
-| Request                            | Input                                               | Result                                                                        |
-| ---------------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `POST /runtime/start`              | `{ownerId, env}`                                    | `{ok:true, generation}` after startup                                         |
-| `POST /runtime/status`             | `{ownerId}`                                         | `{generation, stopped, status}`                                               |
-| `POST /runtime/stop`               | `{ownerId, generation}`                             | `{ok:true, generation, stopped:true}` only after confirmed termination        |
-| `POST /runtime/deployment-status`  | `{}`                                                | `{closed}` from the persistent gateway admission barrier                      |
-| `POST /runtime/prepare-deployment` | `{ownerId,generation,nonce,targetRelease,deadline}` | Exact-generation clean checkpoints and confirmed stop, or busy/unsafe refusal |
-| `POST /runtime/deployment-stopped` | `{ownerId,generation}` with nullable generation     | Read-only `{stopped,generation}` proof for journal-loss recovery              |
-| Any method `/<ownerId>/api/...`    | Original body and signed `x-otto-runtime` header    | Tenant HTTP response, including streaming bodies                              |
+1. Pushes all three images and resolves their digests.
+2. Closes a durable admission barrier (authorized by an HMAC derived from `OTTO_MASTER_KEY`).
+3. Drains each tenant naturally, then requires clean browser/workspace checkpoints and confirmed stop of each exact generation. Active holds, uncertain state or an expired deadline block the deploy; nothing is force-cancelled.
+4. Publishes Worker code, image references and `GATEWAY_ENV` together with `wrangler deploy --secrets-file`.
+5. Verifies every container application's image and rollout, the R2 binding, and a public smoke test, then reopens admission.
 
-The handler removes the owner prefix before the actor verifies the signed request target. Startup stores only owner/environment/generation, a configuration digest and stopped state in the Durable Object. It does not persist the bootstrap environment or credentials. A changed generation requires an explicit stop of the exact prior generation and a larger generation number. Stale cleanup cannot stop a replacement. A stopped actor is not automatically started by forwarding an ordinary request. HTTP forwarding uses the platform TCP-port Fetcher inside fixed-error handlers; SDK helpers continue to manage lifecycle/startup monitoring, but the proxy does not return or log their raw HTTP errors.
+Deploying the SHA already in production is refused; configuration changes need a new release. A manual development deploy uses `npm --prefix deployment/cloudflare run deploy:development` with locally built `linux/amd64` images and development configuration.
 
-Tenant replacement must confirm termination of the Node actor and the selected computer provider. A stop acknowledgement for only the Node actor is insufficient. If the optional E2B provider is selected, successful disposal of both capabilities pauses the shared sandbox and releases its allocation lease, then the tenant calls private `POST http://otto.computer/v1/stopped` with its immutable generation. The Worker binds this receipt to the calling tenant, owner, environment and configuration. Successful deployment drain instead requires an explicit `computerPaused:true` acknowledgement before the Node actor is stopped. A stale or missing receipt refuses replacement. A physically stopped E2B tenant cannot restart within the same generation; confirmed cleanup and a newer generation are required.
+## Recovery and rollback
 
-The Cloudflare computer adapter revokes and stops both separate computer roles. Stopping a never-used computer role confirms physical destruction, rechecks authority and records that exact owner/environment/role/generation as ready and stopped before permitting a newer generation. Failed destruction or lost authority cannot publish that marker. Delayed storage and computer requests include the immutable runtime generation and cannot adopt a replacement grant merely because the platform reuses a container identity.
-
-Deployment drain records its exact attempt before forwarding the signed Node pause request and stores successful acknowledgement separately. The computer drain requires that successful receipt plus a witness of the same live process, or independent physical-stop confirmation. Resume removes computer authority before reopening Node admission and retains its identity for retries after lost responses; a delayed drain acknowledgement cannot restore that authority. A known busy prepare retains HTTP 409; unknown failures return a fixed 503. Neither response reopens admission. No deployment drain force-cancels work or forces a held browser to close.
-
-Recovery inspection performs no startup, lease adoption, checkpoint, stop or fence clearing. It requires the persistent gateway barrier to remain closed, the exact tenant generation to be physically stopped, and both roles to be either unused or recorded clean and stopped. Dirty, restoring, uncertain, active, newer-generation or still-starting state refuses a clean receipt. Idle checkpointing alone leaves the persisted stopped marker unset and does not establish this stricter recovery proof. [Local startup and Wrangler constraints](../../docs/development.md#hosted-mode-on-your-computer).
-
-The SDK's SIGTERM acknowledgement does not establish tenant termination. A tenant stop waits up to ten seconds, including the signal request, for both native termination and a terminal SDK state. Timeout leaves revocation in place without a stopped receipt, lease release or forced kill; a later exact-generation retry can confirm the completed shutdown.
-
-Only tenant containers may call `http://otto.control`, and only `POST /api/internal/channels/claim` or `/release`. The handler checks the platform identity, forwards the signed runtime header and body, and fixes the owner and canonical Host. The gateway independently verifies the owner's signature, request body and current SQL lease. Tenant containers cannot call runtime lifecycle operations.
-
-Channel claim requests include a durable account revision. The registry retains released revisions to reject delayed mutations after cleanup or re-enabling. An upgrade from the earlier unversioned protocol must drain and confirm termination of old gateway/tenant processes before activating this version. Existing claims migrate at revision zero; keep tenant counters and control tombstones together during recovery.
-
-When bootstrap or a same-release rollout prepares the already-running gateway, completion resumes its exact signed Node deployment operation before reopening the durable admission barrier. Failed resume leaves the barrier closed; completion retries use the same operation. A different-release rollout uses the newly started gateway process.
-
-## Private files
-
-`http://otto.storage/v1/objects/<encoded-key>` is a tenant-only outbound binding to the private `TENANT_FILES` R2 bucket. The trusted calling container determines the environment/owner prefix, and each request must match its current grant through `x-otto-generation`. Caller-supplied owner headers do not select storage. There is no listing operation, public route, or R2 credential in the Node process.
-
-Accepted keys are `artifacts/<uuid>` and `sessions/<thread-uuid>.jsonl`. GET returns bytes plus `ETag`, or 404. PUT is bounded to 16 MiB and requires `If-None-Match: *` for a new object or the previous quoted `If-Match` ETag; a stale writer receives 412. Successful writes return 204 and the new ETag. Unconditional DELETE removes only that owned key. Conditional DELETE returns 501 without deleting because R2 has no atomic conditional delete API; cleanup must retain the orphan for reconciliation rather than silently ignore a precondition. Objects always use private no-store response metadata. Durable session writers must retain and compare the returned ETag.
-
-## Cloudflare computers and recovery
-
-Each owner's browser and workspace roles start lazily on first use; authenticated signup does not prepare either container. Only a tenant with a current runtime grant may call `http://otto.computer`. Every request includes `x-otto-generation` and `x-otto-computer-role`; the Worker binds the platform caller to one owner, environment and role. There is no public command route or computer-provider selector in the product. The trusted Worker launches fixed bridge/supervisor programs through Container.exec, while operation data travels on stdin with bounded output. Model, integration, database, login, storage and deployment keys stay outside both computers. Authorized website credentials may enter only the trusted browser path; the shell has no browser profile mount or control socket.
-
-The browser uses `/data/<owner-namespace>`; the workspace uses `/home/node/state`, with fixed `/workspace` and `/home/node/.local` symlinks for thread files and installed tools. Distinct owner/role archives live privately in R2. The checkpoint helper preserves modes, executable bits and safe internal relative symlinks, verifies per-file and archive SHA-256, and restores atomically into an absent or empty root. Limits are 256 MiB for the archive, 64 MiB for one file and 20,000 entries including the root. Exceeding a limit fails the operation; it does not silently drop files.
-
-Workspace completion waits for the supervised process group to drain and the file checkpoint to finish before returning its terminal acknowledgement. The Python execution budget stays at 120 seconds; bounded transport grace accommodates startup, restoration and checkpointing. A platform kill acknowledgement alone does not prove descendants have stopped. Browser idle shutdown first asks the worker to quiesce; active holds or native sign-in can decline that request. A normal stop may close browser sessions before checkpointing. Checkpoints restore profile and filesystem data, not a live DOM, process memory or an unfinished action.
-
-Computer activity, ownership and checkpoint state are recorded before side effects. Missing terminal acknowledgements, failed cleanup, dirty recovery or unknown checkpoint outcomes quarantine the role instead of replaying a command or restoring an older snapshot automatically. Keep the prior checkpoint and reconcile the uncertain state before recovery. Never clear a fence merely to make a new generation start.
-
-Deployment can retire a failed startup only when durable records prove it never dispatched a user command: no command claims in any generation, no legacy command identifiers and no checkpoint references. An older generation must already have a confirmed stopped marker. A failure in the current generation may lack that marker, but still requires fresh physical-stop proof before and after retirement. The current tenant must acknowledge natural work drain for the exact closed deployment operation. The computer must have no loaded controller or pending selection, be startup-settled and SDK-stopped, and be physically absent. Retirement atomically archives the unchanged failure record and writes a current-generation empty stopped marker; it does not start a computer, replay a turn or alter action receipts. Execution remains forbidden in that generation, and the normal tenant stop must finish before a later generation can allocate a computer. Any missing proof retains the fence.
-
-## Optional E2B computer lifecycle
-
-E2B is deferred. If explicitly selected, `COMPUTER_PROVIDER=e2b` requires `E2B_API_KEY` and one `E2B_COMPUTER_TEMPLATE`. The gateway forwards those only to trusted owner runtimes. Legacy split-template settings are rejected. The shared allocation is prepared during onboarding; browser and workspace execution use the same owner-bound sandbox with separate OS identities and a root-installed network boundary. Keep model, integration and database keys outside that sandbox. [Template, isolation and recovery requirements](../e2b/README.md).
-
-With E2B selected, normal deployment drain pauses admitted work and consumers, waits for both capabilities to become idle, asks the browser to quiesce without forcing an active hold, and waits for E2B pause acknowledgement. Resume waits for any pending pause and reopens admission under the retained allocation lease. The next command reconnects the same sandbox and checks readiness before execution. Failed readiness, unknown command outcomes and missing pause acknowledgements remain fenced. A new Node process may not manufacture a clean receipt for an active or uncertain prior allocation. R2 continues to hold owned artifacts and transcripts; it does not host the E2B computer.
-
-## Retiring Cloudflare computer applications
-
-Cloudflare computers remain selected; the following procedure applies only to a separately authorized future provider migration. Deferring E2B does not retire any Cloudflare application or binding.
-
-An application with no running instances can still serve the configured computer provider. Inventory the application and its instances separately; retained Durable Object identities are not running computers. Keep the gateway and tenant applications because they run the server under either computer provider.
-
-Switching `COMPUTER_PROVIDER` alone does not retire the old applications. Every registered owner must first have confirmed clean stops for both old Cloudflare computer roles and a newer persisted E2B tenant identity, including inactive owners. Deployment drain and recovery consult the previous generation's recorded provider, so the browser/workspace bindings remain necessary until those transitions complete. Preserve their Durable Object state, command and retirement records, checkpoint manifests and R2 archives.
-
-After live E2B acceptance and all owner transitions, remove only the selected environment's browser/workspace `containers` entries to prevent future deployments from recreating the applications. Keep the Durable Object namespaces and migration history. The current Container subclasses require a container binding during construction; first deploy a storage-only replacement that preserves archived state, rejects execution and supports read-only stopped inspection, including owners whose tenant never started. This retirement adapter is not yet implemented. Never use a `deleted_classes` migration or erase recovery records merely to remove dashboard entries.
-
-Removing configuration entries does not delete existing applications. After the storage-only replacement is deployed, independently verify that the exact applications are stopped with no active rollout, then delete only those application IDs and verify their absence. Retain the preserved namespaces and R2 archives. [Wrangler container application commands](https://developers.cloudflare.com/workers/wrangler/commands/containers/).
-
-## Rollout and verification
-
-`.github/workflows/ci.yml` runs root checks, PostgreSQL fixtures, the web build, this package's checks/tests, both Wrangler dry runs and all three Cloudflare amd64 image builds. A separate CI job builds the combined E2B computer image and exercises its browser/workspace isolation under Docker; it contains no E2B credentials or live provider calls. It checks unprivileged users, computer key/filesystem boundaries, fixed helpers, readiness and graceful shutdown. `.github/workflows/deploy.yml` starts only after successful CI on this repository's current `main` commit. It checks out that exact SHA, rebuilds it without production secrets, and serializes production deployment through the GitHub `production` environment. It does not consume build artifacts from pull-request jobs.
-
-Configure the following GitHub environment values:
-
-| Kind     | Name                    | Value                                                       |
-| -------- | ----------------------- | ----------------------------------------------------------- |
-| Secret   | `CLOUDFLARE_API_TOKEN`  | Scoped deployment token for the selected account            |
-| Secret   | `CLOUDFLARE_ACCOUNT_ID` | The selected account's 32-character ID                      |
-| Secret   | `GATEWAY_ENV`           | Compact JSON of the production gateway's server environment |
-| Variable | `OTTO_PUBLIC_URL`       | Canonical HTTPS application origin                          |
-
-The scoped deployment credential needs the selected Worker publication/settings-read and Containers permissions, without R2 administration. Storage bootstrap uses a separate operator credential with Workers R2 Storage Edit. No zone, DNS or Workers Routes permission is needed for workers.dev. Supplying the account ID avoids account discovery. Verify the actual account policy for the selected Worker before declaring CI operational. [Workers roles](https://developers.cloudflare.com/workers/authorization/workers/), [permission catalog](https://developers.cloudflare.com/fundamentals/api/reference/permissions/), [R2 permissions](https://developers.cloudflare.com/r2/api/tokens/).
-
-After approval and rebuilding, the final CI step rechecks that the validated release is still the current `main` SHA. A superseded revision skips publishing, and a failed lookup stops the job. It then runs `scripts/deploy.mjs production` with the production credentials available only to that publication step. The script validates the origin, environment, release, hosted computer/storage configuration, exactly one explicit EU `TENANT_FILES` bucket and required container classes. Gateway and tenant share the runtime image; the Cloudflare browser and workspace use two additional images. All selected images are pushed and resolved to immutable registry digests before application admission changes.
-
-The active private Otto deployment input and GitHub production `GATEWAY_ENV` use `OTTO_` names. Normalization preserved credentials and database identity and did not restart or deploy the running service. Deployment and recovery retain the compatibility adapter for preserved pre-cutover inputs: it translates `SIDEKICK_` names and the exact old private storage endpoint before validation, rejecting mixed old/new names. Keep the adapter while legacy recovery inputs depend on it. This does not migrate prior auth/control schemas, owner derivation or encrypted grants. Verify Google/app callbacks and any explicit webhook origin for a new installation. Never print the gateway secret.
-
-Ordinary deployment refuses a target SHA that already matches healthy production, including a rerun intended only to change `GATEWAY_ENV`. The check runs before creating a deployment operation or publishing Worker code/secrets; image pushes can already have occurred. Running containers retain their startup environment, so the same image is not a configuration-activation guarantee. Build and validate a new release, then use the normal rollout for configuration changes. Explicit `recover` remains limited to the exact original interrupted operation; it is not a new configuration deployment. First-deployment bootstrap retains its separate absence checks.
-
-To enable the Inspector for an allowlisted developer, add `"DEV_INSPECTOR":"true"` and that developer's account UUID in `OTTO_DEVELOPER_IDS` to the `GATEWAY_ENV` secret of the GitHub `production` environment. Keep the JSON under 5 KiB and never print it. Then deploy a new release through the normal rollout, which restarts the gateway and every tenant with the new environment. Other accounts still do not get the signed developer capability or Inspector access.
-
-An existing deployment follows these steps:
-
-1. A purpose-specific HMAC derived from `OTTO_MASTER_KEY` authorizes the bounded `POST /api/deployment` control request. It binds environment, body, target and a short-lived replay-protected request ID; Google sessions and tenant credentials cannot authorize deployment. No additional long-lived key is needed.
-2. The fixed gateway Durable Object persists a closed admission barrier with an immutable nonce, previous/target release and deadline. Normal API traffic and scheduled tenant wakeups stop. Health and the exact anonymous session/state checks remain available for release verification. The Durable Object reads this barrier for every public `/api/*` request, so a Node request for an already running tenant does not read it again. The Node process still calls `/runtime/deployment-status` before its own restore wakeups and before any tenant start, and `/runtime/start` checks the barrier again.
-3. The gateway pauses each existing tenant's ingress and queue consumers while already accepted work finishes naturally. Lease renewal continues. A tenant acknowledgement is followed by clean browser/workspace checkpoints and confirmed termination of both roles and that exact tenant generation. Active browser holds or native sessions, uncertain state, missing acknowledgements or an expired safety deadline prevent activation. Deployment never force-cancels a turn or clears a computer fence.
-4. Only a fully prepared barrier can enter activation. `wrangler deploy --experimental-provision=false --secrets-file` publishes Worker code, the pinned image references and `GATEWAY_ENV` in the same version operation. There is no earlier `secret put` deployment.
-5. The script checks every selected container application for its exact current image digest and absence of an active rollout. Any present target must also contain that matching image. Cloudflare's application list can retain an older version and a completed rollout ID. In that case, verification requires the exact rollout's completed steps, 100% target-version distribution and no health errors, bound to the listed old version and expected new image. Two exact application reads must agree on its identity, new version and image, with no active rollout or conflicting target. Missing or inconsistent proof keeps admission closed. The barrier reopens only after every application and the published R2 binding verify, public release smoke passes, and signed completion matches the original nonce and target release.
-
-For the first deployment, the script requires Cloudflare's explicit missing-Worker response, no matching container applications and an empty SQL tenant registry. API denial or unknown responses never count as absence. A managed first startup keeps admission closed until images and public smoke pass and an empty drain/completion is recorded. This bootstrap path cannot adopt an existing occupied deployment. Ordinary local Wrangler development remains open when no barrier exists.
-
-Temporary configuration, secrets and Wrangler logs have private permissions and are removed in `finally`. Subprocess output is suppressed because failures can contain provider configuration; phase logs contain no credentials or user data. [Code and secrets together](https://developers.cloudflare.com/workers/configuration/secrets/#upload-secrets-alongside-code), [prebuilt images](https://developers.cloudflare.com/containers/guides/image-management/).
-
-For an authorized manual development deployment, first run the same checks and build all three tags from the table with `--platform linux/amd64` and the corresponding `Dockerfile`, `Dockerfile.browser` and `Dockerfile.workspace`. Pass `--build-arg OTTO_RELEASE=<SHA>` to the runtime build. Supply the values above plus `OTTO_RELEASE=<SHA>` through a private environment file or secret manager, then run `npm --prefix deployment/cloudflare run deploy:development`. The public origin and gateway JSON must identify development and use development database/provider projects. The script expects every selected verified image to exist locally; it never builds with production credentials in scope.
-
-An authorized manual production deployment uses the same image checks and `deploy.mjs production` flow with production configuration and the scoped deployment credential. Merged-main CI gates the automatic production workflow; verify its exact release and a fresh authenticated request after completion. A passing manual deployment or CI run does not establish successful automatic publication. The [dated cutover record](../../docs/testing/results/2026-09-28-otto-cutover.md) preserves release evidence, remaining authenticated website/Telegram/account checks and the earlier same-release configuration incident. The reviewed privacy notice remains required before public sharing.
-
-For the first cloud development deployment, use a separate empty database in the development database project and a separate private configuration with fresh application/authentication keys, the cloud origin and private storage broker. Keep the populated local database and its matching R2 emulator state intact; they cannot be adopted by this first-deployment bootstrap. This creates a fresh cloud installation, not a migration of existing local accounts or files.
-
-Worker activation and container rollout are not atomic. Cloudflare starts the Worker/DO code update before independently replacing container instances, and a successful deploy command means rollout started. The 60-second active rollout grace is based on connection age; it is not a cleanup interval. The admission barrier therefore remains closed throughout this transition. Keep private protocols, checkpoint formats and schema changes compatible with both images. A full development deployment is required to verify the platform behavior; `wrangler versions upload` alone does not publish a container image. [Container rollouts](https://developers.cloudflare.com/containers/configuration/rollouts/) (checked 2026-09-27).
-
-Smoke waits for `/api/health` to report the exact new image commit, then verifies that an anonymous session has no user/settings/developer access, ordinary state returns 401, private control/bootstrap routes return 404, and a foreign-origin login POST returns 403. It never signs in or contacts a user's integrations. These checks and deployment fixtures do not establish live Google, storage or webhook acceptance.
-
-A pre-activation failure attempts the same deployment's explicit abort. Abort resumes only acknowledged, untouched tenants; successfully stopped owners later acquire a new generation. Unknown computer outcomes remain fenced. If the gateway lost its in-memory journal, abort instead requires read-only proof that every registered tenant and both roles are clean and physically stopped, with no unresolved platform startup. Dirty, uncertain, held or unconfirmed state cannot be converted into a stop receipt. Inspection never starts, checkpoints, stops or repairs a computer. A failed or expired deployment never reopens automatically.
-
-Journal-loss abort preserves the previous gateway's SQL lease. An authenticated request may return 503 until that lease's remaining sixty-second term expires and a new generation starts. Reopening the barrier therefore precedes account readiness; verify the authenticated account and restored workspace/browser data afterward. Do not delete or release an old lease to shorten this wait.
-
-Use the existing deployment identity for recovery. Check out the target release, install locked dependencies, and load the same private environment values with `OTTO_RELEASE` set to that interrupted target SHA. The command returns only operation metadata for `status`; it does not print owner receipts or credentials.
+If a deployment is interrupted, check out the same target release, load the same private environment with `OTTO_RELEASE` set to that SHA, and run:
 
 ```sh
 node deployment/cloudflare/scripts/recover.mjs production status
-node deployment/cloudflare/scripts/recover.mjs production abort
-node deployment/cloudflare/scripts/recover.mjs production complete
+node deployment/cloudflare/scripts/recover.mjs production abort     # only before activation
+node deployment/cloudflare/scripts/recover.mjs production complete  # only after activation
 ```
 
-Choose `abort` only before activation. Choose `complete` only after activation: it resolves the same release's image tags to digests, checks all selected application rollouts and the published R2 binding, and reruns public smoke before reopening. Completion needs Docker pull access to the Cloudflare registry; expired credentials must be refreshed through Wrangler before retrying. The tool never republishes images, changes the target release, rolls back or clears a fence. A failed image activation needs operator inspection and a compatible forward repair before completion can pass. Do not delete the barrier or substitute a new nonce to bypass a failure.
+A failed or expired deployment never reopens automatically. Do not delete the barrier, substitute a nonce or clear a fence to get past a failure.
 
-The first production recovery required separately guarded same-configuration tenant and gateway rollouts after proving no work remained. Fresh inspection confirmed the exact tenant and both computers stopped before the original signed abort succeeded at 11:19:58 UTC on 2026-09-27. The subsequent canonical deployment replaced the temporary diagnostics. This proves that incident's guarded recovery; it does not establish automatic recovery, production task durability or cross-account isolation. See the [acceptance record](../../docs/testing/results/2026-09-26-cloud-hosting.md) for the remaining gates.
+Before a rollback, confirm the previous code supports the current SQL schema, Durable Object classes, checkpoint format and keys, and stop the current tenant and computer generations. Worker rollback does not revert PostgreSQL, R2 or completed external actions; prefer a forward fix.
 
-Before rollback, inspect the deployed Worker version, all role image references, gateway health release, tenant leases and computer generations/checkpoints. Confirm that the previous code supports the current SQL schema, object/checkpoint format, Durable Object classes and secret version. Stop the exact current generation of the tenant and both computer roles and confirm termination before replacement; never bypass fencing or run a second actor to recover faster. Preserve prior image tags and encryption/derivation keys. Worker rollback does not revert PostgreSQL, R2, E2B state or completed external actions, and incompatible Durable Object migrations can prevent rollback. Prefer a forward fix when compatibility is uncertain. A secret rotation also needs a controlled container restart/new image rollout because an already-running gateway retains its startup environment. [Worker rollback limits](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
+## Database reset
 
-The checked-in configuration uses EU placement, private buckets, a 60-second active rollout grace period and disabled automatic request/container logs. Use fixed sanitized health/error reporting rather than recording headers, bodies, connection URLs or startup environment values. Record live Google, provider, webhook, streaming, persistence and cross-user checks separately from the automated substitutes.
+A reset removes every account and its data from one environment. It is required when deploying this release over any database created by the task model. It is separate from the in-app Get started action, which only archives the owner's thread.
 
-References: [container bindings](https://developers.cloudflare.com/containers/configuration/workers-connections/), [outbound handlers](https://developers.cloudflare.com/containers/guides/outbound-traffic/), [per-instance secrets](https://developers.cloudflare.com/containers/examples/env-vars-and-secrets/), [deployment behavior](https://developers.cloudflare.com/containers/guides/deploy/), [local containers](https://developers.cloudflare.com/containers/guides/local-dev/).
+1. Confirm the exact origin, database, bucket, provider projects and release. Keep the deployment, OAuth clients, provider keys, Composio auth configs and `OTTO_MASTER_KEY`.
+2. Close admission and stop work with the deployment barrier (as in a rollout) and confirm every tenant and computer generation is physically stopped. Keep the gateway from restarting during the reset.
+3. Remove external resources while their identifiers are still readable: unregister each user's Telegram webhook, delete their Composio triggers, sessions and connected accounts, and revoke direct OAuth grants.
+4. Delete R2 objects under `<environment>/<owner>/` (`artifacts/`, `sessions/`, `computers/`) and abort incomplete multipart uploads.
+5. In PostgreSQL, drop every tenant app/jobs schema and tenant role, delete Better Auth users, accounts, sessions, verification rows and account settings, and clear the tenant registry and channel claim records. Keep the auth and control table definitions.
+6. Verify zero users, sessions, tenant schemas, roles, registry rows and owner objects. Keep a counts-only record; never log user content or credentials.
+7. Reopen admission with the same deployment operation, then check `/api/health`, that anonymous sessions have no access and that old sessions are rejected.
+
+If a provider or database call fails mid-reset, keep admission closed and re-verify before retrying. Provider backups and logs are outside this procedure.

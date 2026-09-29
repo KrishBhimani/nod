@@ -1,11 +1,9 @@
 import { SessionManager, type FileEntry } from '@earendil-works/pi-coding-agent';
 import { randomUUID } from 'node:crypto';
-import type { AgentToolResult } from '../../ports/agent.ts';
 import type { PrivateObjectStore } from '../../ports/object-storage.ts';
 
 const maximum = 15 * 1024 * 1024;
-const pendingType = 'otto_tool_pending';
-const completedType = 'otto_tool_completed';
+export const rebaseAt = 8 * 1024 * 1024;
 const failure = () =>
   new Error(
     'The assistant session could not be saved. Stop and restore storage before continuing.',
@@ -46,6 +44,45 @@ function entries(bytes: Uint8Array): FileEntry[] {
   }
 }
 
+export function rebaseSession(source: SessionManager, next: SessionManager) {
+  for (const entry of source.buildContextEntries()) {
+    if (entry.type === 'compaction')
+      next.appendCompaction(entry.summary, null, entry.tokensBefore, entry.details);
+    else if (entry.type === 'message')
+      next.appendMessage(entry.message as Parameters<typeof next.appendMessage>[0]);
+  }
+  return next;
+}
+
+export function closeInterruptedCalls(manager: SessionManager) {
+  const messages = manager.buildSessionContext().messages;
+  const last = messages.findLastIndex((message) => message.role === 'assistant');
+  const assistant = messages[last];
+  if (assistant?.role !== 'assistant') return;
+  const answered = new Set(
+    messages
+      .slice(last + 1)
+      .flatMap((message) => (message.role === 'toolResult' ? [message.toolCallId] : [])),
+  );
+  for (const call of assistant.content) {
+    if (call.type !== 'toolCall' || answered.has(call.id)) continue;
+    manager.appendMessage({
+      role: 'toolResult',
+      toolCallId: call.id,
+      toolName: call.name,
+      content: [
+        {
+          type: 'text',
+          text: 'This action was interrupted. Its outcome is unknown; check before doing it again.',
+        },
+      ],
+      details: {},
+      isError: true,
+      timestamp: Date.now(),
+    });
+  }
+}
+
 export async function createPiCheckpoint(options: {
   store: PrivateObjectStore;
   threadId: string;
@@ -53,47 +90,16 @@ export async function createPiCheckpoint(options: {
 }) {
   const key = `sessions/${options.threadId}.jsonl`;
   const saved = await options.store.read(key, maximum);
-  const manager = SessionManager.inMemory(
+  let manager = SessionManager.inMemory(
     options.directory,
     undefined,
     saved ? entries(saved.bytes) : undefined,
   );
+  if ((saved?.bytes.byteLength ?? 0) > rebaseAt)
+    manager = rebaseSession(manager, SessionManager.inMemory(options.directory));
   let version = saved?.version ?? null;
   let failed = false;
   let tail = Promise.resolve();
-  const calls = new Map<string, { name: string; result?: AgentToolResult }>();
-  const results = new Set<string>();
-  for (const entry of manager.getEntries()) {
-    if (entry.type === 'message' && entry.message.role === 'toolResult')
-      results.add(entry.message.toolCallId);
-    if (entry.type !== 'custom' || ![pendingType, completedType].includes(entry.customType))
-      continue;
-    const data = entry.data as
-      { callId?: string; name?: string; result?: AgentToolResult } | undefined;
-    if (!data || typeof data.callId !== 'string' || typeof data.name !== 'string') throw failure();
-    if (entry.customType === pendingType) calls.set(data.callId, { name: data.name });
-    else {
-      const call = calls.get(data.callId);
-      if (!call || call.name !== data.name || !Array.isArray(data.result?.content)) throw failure();
-      call.result = data.result;
-    }
-  }
-  for (const [callId, call] of calls) {
-    if (!call.result)
-      throw new Error(
-        'An assistant action was interrupted before its result was saved. Reconcile that action before resuming this task.',
-      );
-    if (!results.has(callId))
-      manager.appendMessage({
-        role: 'toolResult',
-        toolCallId: callId,
-        toolName: call.name,
-        content: call.result.content,
-        details: {},
-        isError: false,
-        timestamp: Date.now(),
-      });
-  }
   function checkpoint() {
     const next = tail.then(async () => {
       if (failed) throw failure();
@@ -114,25 +120,5 @@ export async function createPiCheckpoint(options: {
     return next;
   }
   await checkpoint();
-  return {
-    manager,
-    checkpoint,
-    async execute(callId: string, name: string, action: () => Promise<AgentToolResult>) {
-      if (failed || calls.has(callId)) throw failure();
-      calls.set(callId, { name });
-      manager.appendCustomEntry(pendingType, { callId, name });
-      await checkpoint();
-      let result;
-      try {
-        result = await action();
-      } catch {
-        failed = true;
-        throw new Error('An assistant action failed before its result could be confirmed.');
-      }
-      manager.appendCustomEntry(completedType, { callId, name, result });
-      await checkpoint();
-      calls.set(callId, { name, result });
-      return result;
-    },
-  };
+  return { manager, checkpoint };
 }

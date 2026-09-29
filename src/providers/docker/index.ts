@@ -1,7 +1,6 @@
 import { relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Workspace } from '../../ports/computer.ts';
-import { WorkspaceExitError } from '../../ports/computer.ts';
 import { threadIdentity } from '../../ports/thread-identity.ts';
 import {
   runWorkspaceCommand,
@@ -18,8 +17,6 @@ export function workspaceFile(id: string, path: string): string {
     throw new Error('Files must stay within the task workspace.');
   return full;
 }
-
-const fileProgram = `import os,sys,json\nr=json.load(sys.stdin)\nbase=os.path.realpath(r['base'])\np=os.path.realpath(r['path'])\nif os.path.commonpath([base,p])!=base: raise ValueError('Path outside workspace')\nif r['action']=='read':\n with open(p,'rb') as f: data=f.read(65537)\n if len(data)>65536: raise ValueError('File too large; use bounded shell commands')\n sys.stdout.write(data.decode('utf-8'))\nelse:\n os.makedirs(os.path.dirname(p),exist_ok=True)\n with open(p,'w',encoding='utf-8') as f: f.write(r['content'])\n print('File saved')`;
 
 export const artifactReadProgram = `import os,sys,json,stat
 r=json.load(sys.stdin)
@@ -102,7 +99,7 @@ export function createDockerWorkspace(options: {
     workspaceRoot: options.workspaceRoot,
     status: `${options.container}; Linux · internet enabled`,
     instructions:
-      'This is your own Linux computer, not the user’s personal device. It uses normal Docker networking with no Otto egress firewall. Internet and other reachable destinations follow the host and Docker network configuration. Node, Python, pipx, git, curl, ffmpeg and poppler-utils (pdftotext, pdfinfo) are installed. Install trusted CLI tools with npm install -g <package> or pipx install <package>; /home/node persists across tasks and restarts. You are an unprivileged user and cannot use sudo. There is no graphical desktop or display, so native GUI applications cannot run here; use a supported CLI or the browser web app. Keep task outputs under this task workspace; do not ask the user to install your tools on their device.',
+      'This is your own Linux computer, not the user’s personal device. It uses normal Docker networking with no Otto egress firewall. Internet and other reachable destinations follow the host and Docker network configuration. Node, Python, pipx, git, curl, ripgrep, ffmpeg and poppler-utils (pdftotext, pdfinfo) are installed. Install trusted CLI tools with npm install -g <package> or pipx install <package>; /home/node persists across tasks and restarts. You are an unprivileged user and cannot use sudo. There is no graphical desktop or display, so native GUI applications cannot run here; use a supported CLI or the browser web app. Keep task outputs under this task workspace; do not ask the user to install your tools on their device.',
     runCommand: (id, args, input) =>
       runWorkspaceCommand({
         container: options.container,
@@ -123,118 +120,61 @@ export function createDockerWorkspace(options: {
   });
 }
 
+type CommandInput = {
+  input?: string;
+  environment?: Record<string, string>;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  maxBytes?: number;
+  onData?(chunk: Buffer): void;
+};
+type CommandResult = { stdout: Buffer; stderr: Buffer; exitCode: number };
+
 export function createCommandWorkspace(options: {
   workspaceRoot: string;
   status: string;
   instructions: string;
-  runCommand(
-    id: string,
-    args: string[],
-    input: {
-      input?: string;
-      environment?: Record<string, string>;
-      signal?: AbortSignal;
-      timeoutMs?: number;
-      maxBytes?: number;
-    },
-  ): Promise<{ stdout: Buffer; stderr: Buffer; exitCode: number }>;
+  runCommand(id: string, args: string[], input: CommandInput): Promise<CommandResult>;
   runConnectedCommand?(
     id: string,
     args: string[],
-    input: {
-      environment: Record<string, string>;
-      signal?: AbortSignal;
-      timeoutMs?: number;
-      maxBytes?: number;
-    },
-  ): Promise<{ stdout: Buffer; stderr: Buffer; exitCode: number }>;
+    input: CommandInput & { environment: Record<string, string> },
+  ): Promise<CommandResult>;
 }): Workspace {
   let unavailable = false;
   let disposed = false;
   const lifecycle = new AbortController();
   const pending = new Set<Promise<unknown>>();
-  async function command(
-    id: string,
-    args: string[],
-    input: {
-      input?: string;
-      environment?: Record<string, string>;
-      signal?: AbortSignal;
-      timeoutMs?: number;
-      maxBytes?: number;
-    } = {},
+  async function supervise(
+    run: (signal: AbortSignal) => Promise<CommandResult>,
+    signal?: AbortSignal,
   ) {
     if (unavailable || disposed)
       throw new Error('The workspace is unavailable. Restart Otto before continuing.');
-    const operation = options.runCommand(id, args, {
+    const operation = run(signal ? AbortSignal.any([signal, lifecycle.signal]) : lifecycle.signal);
+    pending.add(operation);
+    try {
+      return await operation;
+    } catch (error) {
+      if (error instanceof WorkspaceCommandError && error.uncertain) {
+        unavailable = true;
+        lifecycle.abort();
+        await Promise.allSettled([...pending]);
+      }
+      throw error;
+    } finally {
+      pending.delete(operation);
+    }
+  }
+  const command = (id: string, args: string[], input: CommandInput = {}) =>
+    supervise((signal) => options.runCommand(id, args, { ...input, signal }), input.signal);
+  async function helper(id: string, program: string, request: unknown, input: CommandInput) {
+    const result = await command(id, ['python3', '-c', program], {
       ...input,
-      signal: input.signal ? AbortSignal.any([input.signal, lifecycle.signal]) : lifecycle.signal,
+      input: JSON.stringify(request),
     });
-    pending.add(operation);
-    try {
-      const result = await operation;
-      if (result.exitCode)
-        throw new WorkspaceExitError(
-          result.exitCode,
-          Buffer.concat([result.stdout, result.stderr]).toString('utf8'),
-        );
-      return result;
-    } catch (error) {
-      if (error instanceof WorkspaceCommandError && error.uncertain) {
-        unavailable = true;
-        lifecycle.abort();
-        await Promise.allSettled([...pending]);
-      }
-      throw error;
-    } finally {
-      pending.delete(operation);
-    }
-  }
-  async function textCommand(
-    id: string,
-    args: string[],
-    input: {
-      input?: string;
-      environment?: Record<string, string>;
-      signal?: AbortSignal;
-      timeoutMs?: number;
-    } = {},
-  ) {
-    const result = await command(id, args, input);
-    return Buffer.concat([result.stdout, result.stderr]).toString('utf8');
-  }
-  async function connectedCommand(
-    id: string,
-    args: string[],
-    environment: Record<string, string>,
-    signal: AbortSignal,
-    timeoutMs: number,
-  ) {
-    if (!options.runConnectedCommand) throw new Error('Connected CLI commands are unavailable.');
-    if (unavailable || disposed)
-      throw new Error('The workspace is unavailable. Restart Otto before continuing.');
-    const operation = options.runConnectedCommand(id, args, {
-      environment,
-      signal: AbortSignal.any([signal, lifecycle.signal]),
-      timeoutMs,
-    });
-    pending.add(operation);
-    try {
-      const result = await operation;
-      return {
-        exitCode: result.exitCode,
-        output: Buffer.concat([result.stdout, result.stderr]).toString('utf8'),
-      };
-    } catch (error) {
-      if (error instanceof WorkspaceCommandError && error.uncertain) {
-        unavailable = true;
-        lifecycle.abort();
-        await Promise.allSettled([...pending]);
-      }
-      throw error;
-    } finally {
-      pending.delete(operation);
-    }
+    if (result.exitCode) throw new Error('The workspace file operation failed.');
+    return result;
   }
   return {
     connectedCliAvailable: Boolean(options.runConnectedCommand),
@@ -254,24 +194,27 @@ export function createCommandWorkspace(options: {
       try {
         for (let offset = 0; offset < bytes.byteLength; offset += 512 * 1024) {
           const chunk = bytes.subarray(offset, offset + 512 * 1024);
-          await command(id, ['python3', '-c', artifactWriteProgram], {
-            input: JSON.stringify({
+          await helper(
+            id,
+            artifactWriteProgram,
+            {
               base,
               path: target,
               temporary,
               offset,
               data: Buffer.from(chunk).toString('base64'),
               done: offset + chunk.byteLength === bytes.byteLength,
-            }),
-            maxBytes: 1024,
-            signal,
-          });
+            },
+            { maxBytes: 1024, signal },
+          );
         }
       } catch (error) {
-        await command(id, ['python3', '-c', artifactWriteProgram], {
-          input: JSON.stringify({ base, path: target, temporary, remove: true }),
-          maxBytes: 1024,
-        }).catch(() => {});
+        await helper(
+          id,
+          artifactWriteProgram,
+          { base, path: target, temporary, remove: true },
+          { maxBytes: 1024 },
+        ).catch(() => {});
         throw error;
       }
     },
@@ -280,31 +223,32 @@ export function createCommandWorkspace(options: {
       if (!Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > 15 * 1024 * 1024)
         throw new Error('The artifact size limit is invalid.');
       const base = `/workspace/${id}`;
-      const result = await command(id, ['python3', '-c', artifactReadProgram], {
-        input: JSON.stringify({ base, path: relative(base, workspaceFile(id, path)), maxBytes }),
-        maxBytes,
-      });
+      const result = await helper(
+        id,
+        artifactReadProgram,
+        { base, path: relative(base, workspaceFile(id, path)), maxBytes },
+        { maxBytes },
+      );
       return result.stdout;
     },
     open(input) {
       const id = threadIdentity(input.threadId);
       if (resolve(input.workspacePath) !== resolve(options.workspaceRoot, id))
         throw new Error('The task workspace does not match its configured root.');
-      const base = `/workspace/${id}`;
-      const file = (action: 'read' | 'write', path: string, content?: string) =>
-        textCommand(id, ['python3', '-c', fileProgram], {
-          input: JSON.stringify({ action, base, path: workspaceFile(id, path), content }),
-          signal: input.signal,
-        });
+      const connected = options.runConnectedCommand;
       return {
-        path: base,
+        path: `/workspace/${id}`,
         instructions: options.instructions,
-        execute: (command, timeoutSeconds = 30) =>
-          textCommand(id, ['sh', '-c', command], {
-            signal: input.signal,
-            timeoutMs: Math.max(1, Math.min(timeoutSeconds, 120)) * 1000,
-          }),
-        ...(options.runConnectedCommand
+        async exec(script, { input: stdin, signal, timeoutMs = 600_000, onData } = {}) {
+          const result = await command(id, ['bash', '-c', script], {
+            input: stdin,
+            signal: signal ? AbortSignal.any([signal, input.signal]) : input.signal,
+            timeoutMs: Math.max(1000, Math.min(timeoutMs, 3_600_000)),
+            onData: onData ?? (() => {}),
+          });
+          return { exitCode: result.exitCode };
+        },
+        ...(connected
           ? {
               executeProgram: async (
                 program: string,
@@ -312,22 +256,22 @@ export function createCommandWorkspace(options: {
                 environment: Record<string, string>,
                 timeoutSeconds = 30,
               ) => {
-                return connectedCommand(
-                  id,
-                  [program, ...args],
-                  environment,
+                const result = await supervise(
+                  (signal) =>
+                    connected(id, [program, ...args], {
+                      environment,
+                      signal,
+                      timeoutMs: Math.max(1, Math.min(timeoutSeconds, 3600)) * 1000,
+                    }),
                   input.signal,
-                  Math.max(1, Math.min(timeoutSeconds, 120)) * 1000,
                 );
+                return {
+                  exitCode: result.exitCode,
+                  output: Buffer.concat([result.stdout, result.stderr]).toString('utf8'),
+                };
               },
             }
           : {}),
-        readFile: (path) => file('read', path),
-        writeFile: async (path, content) => {
-          if (Buffer.byteLength(content) > 256 * 1024)
-            throw new Error('File content exceeds 256 KB.');
-          return file('write', path, content);
-        },
       };
     },
   };

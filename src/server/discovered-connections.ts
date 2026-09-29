@@ -63,7 +63,6 @@ type AccountRow = {
   name: string;
   account_name: string;
   paths: AccessPath[];
-  ciphertext: string;
 };
 type ProposalRow = {
   id: string;
@@ -201,7 +200,7 @@ export async function createDiscoveredConnections(
   await pool.query(`
     CREATE TABLE IF NOT EXISTS discovered_connections (
       id uuid PRIMARY KEY,owner_id text NOT NULL,service text NOT NULL,name text NOT NULL,
-      account_name text NOT NULL,paths jsonb NOT NULL,ciphertext text NOT NULL,
+      account_name text NOT NULL,paths jsonb NOT NULL,
       created_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE TABLE IF NOT EXISTS discovered_connection_proposals (
@@ -211,27 +210,7 @@ export async function createDiscoveredConnections(
       account_name text,oauth_state_hash text,oauth_ciphertext text,
       expires_at timestamptz NOT NULL DEFAULT now()+interval '15 minutes'
     );
-    ALTER TABLE discovered_connection_proposals ADD COLUMN IF NOT EXISTS setup_url text;
-    ALTER TABLE discovered_connection_proposals ADD COLUMN IF NOT EXISTS setup_text text;
-    ALTER TABLE discovered_connection_proposals ADD COLUMN IF NOT EXISTS account_name text;
-    ALTER TABLE discovered_connection_proposals ADD COLUMN IF NOT EXISTS oauth_state_hash text;
-    ALTER TABLE discovered_connection_proposals ADD COLUMN IF NOT EXISTS oauth_ciphertext text;
-    ALTER TABLE discovered_connection_proposals ADD COLUMN IF NOT EXISTS thread_id uuid;
-    ALTER TABLE discovered_connection_proposals ADD COLUMN IF NOT EXISTS turn_id uuid;
   `);
-  const legacy = (
-    await pool.query<{ id: string; ciphertext: string }>(
-      "SELECT id,ciphertext FROM discovered_connections WHERE owner_id=$1 AND ciphertext<>''",
-      [owner],
-    )
-  ).rows;
-  for (const row of legacy) {
-    await options.grantVault.adoptLegacy(row.id, row.ciphertext);
-    await pool.query(
-      "UPDATE discovered_connections SET ciphertext='' WHERE id=$1 AND owner_id=$2 AND ciphertext=$3",
-      [row.id, owner, row.ciphertext],
-    );
-  }
   async function key() {
     if (!options.keyStore.configured) throw error('Secure storage is unavailable.', 503);
     return options.keyStore.getKey();
@@ -370,7 +349,7 @@ export async function createDiscoveredConnections(
       } else {
         await client.query(
           `INSERT INTO discovered_connections
-           (id,owner_id,service,name,account_name,paths,ciphertext) VALUES($1,$2,$3,$4,$5,$6,'')`,
+           (id,owner_id,service,name,account_name,paths) VALUES($1,$2,$3,$4,$5,$6)`,
           [
             idToSave,
             owner,

@@ -28,7 +28,6 @@ import { agentModels } from '../src/shared/model-defaults.ts';
 import { createFixtureMessagingSetup } from './e2e-channels.ts';
 import { workspaceNetwork } from './e2e-workspace.ts';
 import { integrationDatabaseUrl } from './local-database.ts';
-import { createChatEvidence } from './e2e-evidence.ts';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const environment = {
@@ -349,24 +348,95 @@ try {
     if (request.method === 'POST' && request.url.split('?')[0] === '/api/messages')
       audit('chat_request_received', { requestId: request.id });
   });
-  const chatEvidence = createChatEvidence(pool, audit);
   app.addHook('onSend', async (request, _reply, payload) => {
     if (
       request.method === 'POST' &&
       request.url.split('?')[0] === '/api/messages' &&
       typeof payload === 'string'
-    )
-      chatEvidence.accepted(request.id, payload);
+    ) {
+      try {
+        const result = JSON.parse(payload);
+        if (typeof result.turnId === 'string')
+          audit('chat_request_accepted', {
+            requestId: request.id,
+            threadId: result.threadId,
+            turnId: result.turnId,
+          });
+      } catch {}
+    }
     return payload;
   });
-  events.on('event', chatEvidence.delta);
+  const streams = new Set<string>();
+  events.on(
+    'event',
+    (event: {
+      type?: string;
+      threadId?: string;
+      turnId?: string;
+      streamId?: string;
+      text?: string;
+    }) => {
+      if (event.type !== 'delta' || !event.turnId || !event.text) return;
+      const key = `${event.turnId}:${event.streamId || 'default'}`;
+      if (streams.has(key)) return;
+      streams.add(key);
+      audit('first_visible_delta', {
+        threadId: event.threadId ?? '',
+        turnId: event.turnId,
+        streamId: event.streamId || '',
+      });
+    },
+  );
+  const states = new Map<string, string>();
+  const eventIds = new Set<string>();
+  const messageIds = new Set<string>();
   const jobs = new Set<string>();
   let polling = false;
   const sample = async () => {
     if (polling || stopping) return;
     polling = true;
     try {
-      await chatEvidence.sample();
+      const turns = await pool.query(
+        'SELECT id,thread_id,status,source,created_at,started_at,finished_at FROM turns ORDER BY created_at',
+      );
+      for (const turn of turns.rows) {
+        if (states.get(turn.id) === turn.status) continue;
+        states.set(turn.id, turn.status);
+        audit('turn_state', {
+          threadId: turn.thread_id,
+          turnId: turn.id,
+          status: turn.status,
+          source: turn.source,
+          createdAt: turn.created_at.toISOString(),
+          startedAt: turn.started_at?.toISOString() ?? null,
+          finishedAt: turn.finished_at?.toISOString() ?? null,
+        });
+      }
+      const turnEvents = await pool.query(
+        'SELECT id,turn_id,type,created_at FROM turn_events ORDER BY created_at',
+      );
+      for (const event of turnEvents.rows) {
+        if (eventIds.has(event.id)) continue;
+        eventIds.add(event.id);
+        audit('turn_event', {
+          turnId: event.turn_id,
+          type: event.type,
+          createdAt: event.created_at.toISOString(),
+        });
+      }
+      const messages = await pool.query(
+        "SELECT id,thread_id,turn_id,created_at FROM messages WHERE role='assistant' ORDER BY created_at",
+      );
+      for (const message of messages.rows) {
+        if (messageIds.has(message.id)) continue;
+        messageIds.add(message.id);
+        audit('assistant_message_saved', {
+          threadId: message.thread_id,
+          turnId: message.turn_id,
+          messageId: message.id,
+          createdAt: message.created_at.toISOString(),
+        });
+      }
       const scheduled = await pool.query(
         `SELECT id,data,start_after,started_on FROM ${bossSchema}.job WHERE name='scheduled-task' AND started_on IS NOT NULL`,
       );

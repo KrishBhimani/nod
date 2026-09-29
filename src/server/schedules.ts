@@ -62,7 +62,7 @@ export interface ScheduleDependencies {
   ownerId: string;
   scheduler: Pick<
     PgBoss,
-    'createQueue' | 'work' | 'send' | 'cancel' | 'getJobById' | 'unschedule' | 'previewSchedule'
+    'createQueue' | 'work' | 'send' | 'cancel' | 'getJobById' | 'previewSchedule'
   >;
   stopConsumer?: (id: string) => Promise<void>;
   enqueueTurn: typeof enqueueTurn;
@@ -298,39 +298,20 @@ export function createSchedules(dependencies: ScheduleDependencies) {
       CREATE TABLE IF NOT EXISTS schedules (
         id uuid PRIMARY KEY, owner_id text NOT NULL, title text NOT NULL, prompt text NOT NULL,
         cron text, time_zone text NOT NULL, enabled boolean NOT NULL DEFAULT true,
-        created_at timestamptz NOT NULL DEFAULT now()
+        created_at timestamptz NOT NULL DEFAULT now(), kind text NOT NULL DEFAULT 'recurring',
+        run_at timestamptz, revision integer NOT NULL DEFAULT 0, next_run_at timestamptz,
+        job_id uuid, delivery_channel text NOT NULL DEFAULT 'web', channel_source_id text,
+        authority_instruction text, authority_source_message_id uuid, baseline_observation jsonb
       );
-      ALTER TABLE schedules ALTER COLUMN cron DROP NOT NULL;
-      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'recurring';
-      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS run_at timestamptz;
-      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS revision integer NOT NULL DEFAULT 0;
-      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS next_run_at timestamptz;
-      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS job_id uuid;
-      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS delivery_channel text NOT NULL DEFAULT 'web';
-      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS channel_source_id text;
-      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS authority_instruction text;
-      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS authority_source_message_id uuid;
-      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS baseline_observation jsonb;
       CREATE TABLE IF NOT EXISTS schedule_runs (
         id uuid PRIMARY KEY, owner_id text NOT NULL, schedule_id uuid NOT NULL,
         schedule_revision integer NOT NULL, job_id uuid UNIQUE NOT NULL,
         title text NOT NULL, turn_id uuid REFERENCES turns(id), scheduled_for timestamptz NOT NULL,
         time_zone text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
+        authority_instruction text, authority_source_message_id uuid, action_prompt text,
+        baseline_observation jsonb, observation jsonb, observed_at timestamptz,
         UNIQUE(schedule_id,schedule_revision,scheduled_for)
       );
-      ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS turn_id uuid REFERENCES turns(id);
-      DO $$
-      BEGIN
-        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='schedule_runs' AND column_name='task_id') THEN
-          ALTER TABLE schedule_runs ALTER COLUMN task_id DROP NOT NULL;
-        END IF;
-      END $$;
-      ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS authority_instruction text;
-      ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS authority_source_message_id uuid;
-      ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS action_prompt text;
-      ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS baseline_observation jsonb;
-      ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS observation jsonb;
-      ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS observed_at timestamptz;
       CREATE INDEX IF NOT EXISTS schedule_runs_owner_time ON schedule_runs(owner_id,created_at DESC,id DESC);
       CREATE INDEX IF NOT EXISTS schedule_runs_schedule ON schedule_runs(owner_id,schedule_id,created_at DESC,id DESC);
       CREATE INDEX IF NOT EXISTS schedule_runs_turn ON schedule_runs(owner_id,turn_id);
@@ -341,7 +322,6 @@ export function createSchedules(dependencies: ScheduleDependencies) {
       [ownerId],
     );
     for (const { id } of schedules.rows) {
-      await scheduler.unschedule(queue, id);
       await transaction(async (client) => {
         const row = (
           await client.query<ScheduleRow>(
