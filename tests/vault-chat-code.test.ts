@@ -340,6 +340,41 @@ test(
         },
       );
       await t.test(
+        'expired, stopped and consumed code replies never become ordinary chat',
+        async () => {
+          for (const options of [
+            { expired: true },
+            { status: 'cancelled' },
+            { status: 'failed' },
+            { status: 'cancelled', expired: true },
+            { status: 'failed', expired: true },
+          ]) {
+            await reset();
+            await seed(options);
+            const response = await send('791483');
+            assert.equal(response.statusCode, 409, JSON.stringify(options));
+            assert.deepEqual(ordinary, []);
+            assert.equal(injected.length, 0);
+            assert.equal(
+              (await db.pool.query("SELECT * FROM messages WHERE role='user'")).rowCount,
+              0,
+            );
+          }
+          await reset();
+          await seed();
+          assert.equal((await send('791483')).statusCode, 200);
+          assert.equal((await send('791483')).statusCode, 409);
+          await db.pool.query(
+            "UPDATE credential_requests SET expires_at=now()-interval '1 minute'",
+          );
+          assert.equal((await send('791483')).statusCode, 409);
+          assert.equal(injected.length, 1);
+          assert.deepEqual(ordinary, []);
+          const persisted = await db.pool.query('SELECT row_to_json(m) FROM messages m');
+          assert.doesNotMatch(JSON.stringify(persisted.rows), /791483/);
+        },
+      );
+      await t.test(
         'reset fences and invalid explicit code input never persist or route plaintext',
         async () => {
           await reset();
