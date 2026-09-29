@@ -4,10 +4,10 @@ This check used the disposable local Otto harness with the real Pi `gpt-6-sol` m
 
 Source: [AEGEAN Athens to Barcelona](https://flights.aegeanair.com/en/flights-from-athens-to-barcelona). AEGEAN says its displayed fares were collected within the last 48 hours, may no longer be available when booking, and can exclude optional charges.
 
-| Watch | Baseline | Due runs | Result |
-| --- | --- | --- | --- |
-| Bookable fare, ATH to BCN, 14 November 2026, one adult, one-way economy | None | 07:19 and 07:20 UTC | Both runs saved `unavailable`. The first booking search reached an Imperva bot challenge. The second could not complete the booking search. The November `From €80` month minimum was not treated as an exact quote. |
-| Public calendar listing, ATH to BCN, 6 October 2026, one-way economy | Advertised `From €164`, saved at 07:20:53 UTC | 07:21 and 07:22 UTC | Both runs reopened the airline page and saved the exact dated advertised value, source URL, terms and server check time. The second run received the first run as its previous verified observation. The value stayed €164, and no alert was sent. |
+| Watch                                                                   | Baseline                                      | Due runs            | Result                                                                                                                                                                                                                                             |
+| ----------------------------------------------------------------------- | --------------------------------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bookable fare, ATH to BCN, 14 November 2026, one adult, one-way economy | None                                          | 07:19 and 07:20 UTC | Both runs saved `unavailable`. The first booking search reached an Imperva bot challenge. The second could not complete the booking search. The November `From €80` month minimum was not treated as an exact quote.                               |
+| Public calendar listing, ATH to BCN, 6 October 2026, one-way economy    | Advertised `From €164`, saved at 07:20:53 UTC | 07:21 and 07:22 UTC | Both runs reopened the airline page and saved the exact dated advertised value, source URL, terms and server check time. The second run received the first run as its previous verified observation. The value stayed €164, and no alert was sent. |
 
 The scheduled jobs started about 1.1 and 1.2 seconds after the 07:21 and 07:22 UTC due times. The saved checks completed at 07:21:18 and 07:22:09 UTC. No user browser tab was needed. The browser did not stay open between checks as a requirement; each run reopened the source.
 
