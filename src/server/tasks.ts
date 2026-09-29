@@ -1138,13 +1138,13 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
     const target =
       sourceMessageId && source.rows[0].reply_to_message_id
         ? await pool.query(
-            'SELECT id,role,left(text,6000) AS text FROM messages WHERE id=$1 AND owner_id=$2',
+            'SELECT id,role,left(text,6000) AS text,attachments FROM messages WHERE id=$1 AND owner_id=$2',
             [source.rows[0].reply_to_message_id, ownerId],
           )
         : undefined;
     const history = await pool.query(
-      `SELECT id,role,text,created_at AS "createdAt",reaction,assistant_reaction AS "assistantReaction" FROM (
-       SELECT m.id,m.role,left(m.text,6000) AS text,m.created_at,m.reaction,m.assistant_reaction FROM messages m JOIN tasks t ON t.id=m.task_id
+      `SELECT id,role,text,created_at AS "createdAt",reaction,assistant_reaction AS "assistantReaction",attachments FROM (
+       SELECT m.id,m.role,left(m.text,6000) AS text,m.created_at,m.reaction,m.assistant_reaction,m.attachments FROM messages m JOIN tasks t ON t.id=m.task_id
        WHERE m.owner_id=$1 AND t.owner_id=$1 AND t.channel=$3 AND ${currentConversationSql()} AND m.id IS DISTINCT FROM $2::uuid
        AND NOT EXISTS (SELECT 1 FROM pending_task_inputs p WHERE p.message_id=m.id AND p.state='pending')
        ORDER BY m.created_at DESC,m.id DESC LIMIT 30) m ORDER BY created_at,id`,
@@ -1185,12 +1185,25 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
       preferences: String(storedProfile.preferences ?? '').slice(0, 2000),
     };
     const uploads = await pool.query(
-      "SELECT id,name,storage_path,mime_type FROM artifacts WHERE id IN (SELECT (jsonb_array_elements(attachments)->>'id')::uuid FROM messages m WHERE task_id=$1 AND role='user' AND NOT EXISTS (SELECT 1 FROM pending_task_inputs p WHERE p.message_id=m.id AND p.state='pending')) AND owner_id=$2",
-      [taskId, ownerId],
+      `SELECT id,name,mime_type,size FROM (
+       SELECT DISTINCT ON (a.id) a.id,a.name,a.mime_type,a.size,s.rank,s.created_at FROM (
+       SELECT (jsonb_array_elements(m.attachments)->>'id')::uuid AS id,CASE WHEN m.role='user' THEN 0 ELSE 2 END AS rank,m.created_at
+       FROM messages m WHERE m.task_id=$1 AND m.owner_id=$2 AND m.role IN ('user','assistant')
+       AND NOT EXISTS (SELECT 1 FROM pending_task_inputs p WHERE p.message_id=m.id AND p.state='pending')
+       UNION ALL
+       SELECT (jsonb_array_elements(m.attachments)->>'id')::uuid,1,m.created_at FROM messages m WHERE m.id=$3 AND m.owner_id=$2
+       ) s JOIN artifacts a ON a.id=s.id AND a.owner_id=$2 ORDER BY a.id,s.rank
+       ) staged ORDER BY rank,created_at DESC,id LIMIT 20`,
+      [taskId, ownerId, target?.rows[0]?.id ?? null],
     );
     const workspacePath = join(dataRoot, 'workspaces', taskId);
     await mkdir(workspacePath, { recursive: true });
+    const staged: Array<{ id: string; name: string; mime_type: string }> = [];
+    let stagedBytes = 0;
     for (const upload of uploads.rows) {
+      if (stagedBytes + upload.size > 50 * 1024 * 1024) continue;
+      stagedBytes += upload.size;
+      staged.push(upload);
       const name = `${upload.id}-${basename(upload.name)}`;
       const bytes = await (dependencies.artifacts ?? localArtifacts).readArtifact(upload.id);
       if (dependencies.writeArtifact)
@@ -1201,6 +1214,20 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
           flag: constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW,
         });
     }
+    const stagedFiles = new Map(staged.map((row) => [row.id, `${row.id}-${basename(row.name)}`]));
+    const withAttachments = ({ attachments, ...row }: Record<string, any>): any => {
+      const files = Array.isArray(attachments) ? attachments.slice(0, 5) : [];
+      return files.length
+        ? {
+            ...row,
+            attachments: files.map((file) => ({
+              name: String(file?.name ?? '').slice(0, 200),
+              mimeType: String(file?.mimeType ?? '').slice(0, 100),
+              ...(stagedFiles.has(file?.id) ? { workspaceFile: stagedFiles.get(file.id) } : {}),
+            })),
+          }
+        : row;
+    };
     await addEvent(taskId, 'started', 'Task started.', revision);
     const result = await dependencies.runTask({
       taskId,
@@ -1210,8 +1237,8 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
       channel: task.channel.split(':')[0],
       timeZone: preferences.rows[0]?.time_zone || defaultPreferences.timeZone,
       currentMessageId: sourceMessageId ?? undefined,
-      replyTo: target?.rows[0],
-      history: history.rows,
+      replyTo: target?.rows[0] && withAttachments(target.rows[0]),
+      history: history.rows.map(withAttachments),
       sharedHistory: sharedHistory.rows,
       memories: memories.rows.map((row) => String(row.text).slice(0, 2000)),
       personalContext: { profile: profileData, activeGoals: goals.rows },
@@ -1223,7 +1250,7 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
       inspectPrompt: dependencies.inspectPrompt
         ? (snapshot) => dependencies.inspectPrompt!(taskId, revision, snapshot)
         : undefined,
-      attachments: uploads.rows.map((row) => ({
+      attachments: staged.map((row) => ({
         path: join(workspacePath, `${row.id}-${basename(row.name)}`),
         mimeType: row.mime_type,
       })),
