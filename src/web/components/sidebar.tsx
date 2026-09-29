@@ -246,7 +246,7 @@ export function Sidebar({
           })}
         </ul>
       </nav>
-      <div className="mobile-navigation">
+      <div className="mobile-top-bar">
         <a
           href="/"
           className="mobile-chat-link"

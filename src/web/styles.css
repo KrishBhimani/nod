@@ -440,18 +440,10 @@ a svg {
   width: 270px;
   max-width: calc(100vw - 90px);
 }
-.sidebar .connection-menu-options small {
-  display: block;
-  margin-top: 4px;
-  color: var(--muted-foreground);
-  font-size: 12px;
-  line-height: 1.4;
-  white-space: normal;
-}
 .sidebar-collapsed .sidebar-app-menu .connection-menu > .nav-link {
   justify-content: center;
 }
-.mobile-navigation {
+.mobile-top-bar {
   display: none;
 }
 .sidebar-collapsed .sidebar {
@@ -2749,7 +2741,7 @@ a svg {
   .app-shell .sidebar .nav-shortcut {
     display: none;
   }
-  .mobile-navigation {
+  .mobile-top-bar {
     display: flex;
     align-items: center;
     justify-content: space-between;

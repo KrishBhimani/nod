@@ -387,7 +387,7 @@ test('small screens use a chat-first top bar and a section sheet without shortcu
     assert.equal(links[5]!.getAttribute('aria-current'), 'page');
     assert.ok(sheet.querySelector('.account-menu-identity')?.textContent?.includes('Alex Morgan'));
     assert.equal(sheet.querySelector('kbd, [title*="⌘"], [aria-keyshortcuts]'), null);
-    assert.equal(element.querySelector('.mobile-navigation kbd'), null);
+    assert.equal(element.querySelector('.mobile-top-bar kbd'), null);
     for (const modifier of ['metaKey', 'ctrlKey', 'shiftKey', 'altKey']) {
       const event = new MouseEvent('click', { bubbles: true, cancelable: true, [modifier]: true });
       await act(async () => links[0]!.dispatchEvent(event));
