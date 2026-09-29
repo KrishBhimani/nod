@@ -72,7 +72,7 @@ export function browserLocaleSaved() {
   return browserLocaleSave;
 }
 
-export function browserLocale() {
+function browserLocale() {
   return (
     supportedLocale(typeof navigator === 'undefined' ? null : navigator.language) ?? fallbackLocale
   );
