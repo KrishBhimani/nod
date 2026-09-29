@@ -631,10 +631,43 @@ a svg {
   vertical-align: middle;
   margin-left: 5px;
 }
-.message-text .credential-link {
+.message-text .setup-phrase {
+  font-weight: 600;
+}
+.message-text .setup-group {
+  display: flex;
+  flex-wrap: wrap;
+  width: fit-content;
+  max-width: 100%;
+  margin: 8px 0 2px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+}
+.message-text .setup-group a {
   display: inline-flex;
+  flex: 1 0 auto;
   align-items: center;
-  white-space: nowrap;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 12px 6px 10px;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  box-shadow:
+    -1px 0 0 var(--border),
+    0 -1px 0 var(--border);
+  transition: background 140ms;
+}
+.message-text .setup-group a:hover {
+  background: var(--accent-soft);
+}
+.message-text .setup-group a:focus-visible {
+  outline-offset: -2px;
+}
+.message-text .setup-group svg {
+  margin: 0;
 }
 .message-text blockquote {
   border-left: 3px solid var(--border);

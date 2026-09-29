@@ -2,7 +2,6 @@ import { Children, lazy, memo, Suspense, useEffect, useRef, useState } from 'rea
 import { createPortal } from 'react-dom';
 import {
   FileText,
-  ExternalLink,
   Copy,
   Check,
   CornerUpLeft,
@@ -20,10 +19,11 @@ import { reactionEmoji } from '../../shared/emoji';
 import { Button, Loading, Notice } from './ui';
 import { BrandMark } from './brand';
 import { errorMessage, post } from '../lib/api';
-import { credentialLinkLabel, safeMessageLink } from '../lib/message-links';
+import { messageSetupLinks, safeMessageLink, setupLink } from '../lib/message-links';
 import { remarkLocalLinks } from '../lib/markdown';
 import { nextReaction, reactionName } from '../lib/reactions';
 import { MessageLinkPreviews } from './link-previews';
+import { SetupActions } from './setup-link';
 import { artifactPreview, ImageGallery, ownedArtifactUrl } from './attachment-images';
 
 const ReactionPicker = lazy(() => import('./emoji-picker'));
@@ -36,6 +36,8 @@ export const MessageText = memo(function MessageText({
   previews?: boolean;
 }) {
   const content = useRef<HTMLDivElement>(null);
+  const origin = typeof window === 'undefined' ? 'http://localhost:4310' : window.location.origin;
+  const actions = messageSetupLinks(text, origin);
   return (
     <>
       <div className="message-text" ref={content}>
@@ -44,28 +46,23 @@ export const MessageText = memo(function MessageText({
           rehypePlugins={[rehypeRaw, rehypeSanitize]}
           components={{
             a: ({ href, children }) => {
-              const link = safeMessageLink(
-                href ?? '',
-                typeof window === 'undefined' ? 'http://localhost:4310' : window.location.origin,
-              );
+              const link = safeMessageLink(href ?? '', origin);
               if (!link) return <span>{children}</span>;
-              const label =
-                link.kind === 'credential'
-                  ? credentialLinkLabel(
-                      Children.toArray(children)
-                        .filter((child) => typeof child === 'string')
-                        .join(''),
-                    )
-                  : children;
+              const setup = setupLink(
+                link,
+                Children.toArray(children)
+                  .filter((child) => typeof child === 'string')
+                  .join(''),
+              );
+              if (setup && actions.some((action) => action.href === setup.href))
+                return <strong className="setup-phrase">{setup.label}</strong>;
               return (
                 <a
                   href={link.href}
-                  target={link.href.startsWith('/apps?connect=') ? undefined : '_blank'}
+                  target={setup?.href.startsWith('/apps?connect=') ? undefined : '_blank'}
                   rel="noopener noreferrer"
-                  className={link.kind === 'credential' ? 'credential-link' : undefined}
                 >
-                  {label}
-                  {link.kind === 'credential' && <ExternalLink size={12} />}
+                  {setup ? setup.label : children}
                 </a>
               );
             },
@@ -82,6 +79,7 @@ export const MessageText = memo(function MessageText({
         >
           {text}
         </Markdown>
+        <SetupActions actions={actions} />
       </div>
       {previews && <MessageLinkPreviews content={content} text={text} />}
     </>
