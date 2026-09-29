@@ -757,43 +757,6 @@ a svg {
 .message-more summary::-webkit-details-marker {
   display: none;
 }
-.message-menu {
-  position: absolute;
-  bottom: 30px;
-  left: 0;
-  min-width: 185px;
-  padding: 5px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--surface-overlay);
-  box-shadow: 0 6px 25px #1b192412;
-  z-index: 20;
-}
-.message-user .message-menu {
-  left: auto;
-  right: 0;
-}
-.message-menu button {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border: 0;
-  background: none;
-  width: 100%;
-  padding: 8px;
-  text-align: left;
-  font-size: 12px;
-  border-radius: 5px;
-}
-.message-menu button:hover {
-  background: var(--surface-subtle);
-}
-.message-menu > span {
-  display: block;
-  font-size: 10px;
-  color: var(--muted-foreground);
-  padding: 8px;
-}
 .message-attachments {
   display: flex;
   flex-wrap: wrap;
@@ -1082,20 +1045,6 @@ a svg {
 }
 .onboarding-card > .button {
   margin-left: auto;
-}
-.task-drawer {
-  position: absolute;
-  bottom: calc(100% + 4px);
-  left: clamp(22px, 4vw, 72px);
-  right: clamp(22px, 4vw, 72px);
-  max-height: 380px;
-  overflow: auto;
-  padding: 16px;
-  background: var(--surface-overlay);
-  border: 1px solid var(--border);
-  border-radius: 13px;
-  box-shadow: 0 10px 50px #2d1b3820;
-  z-index: 4;
 }
 .section-title {
   display: flex;
@@ -2277,10 +2226,6 @@ a svg {
   .with-inspector .composer {
     padding: 10px 7px 7px;
   }
-  .with-inspector .task-drawer {
-    left: 10px;
-    right: 10px;
-  }
 }
 @media (max-width: 540px) {
   .sidebar {
@@ -2364,10 +2309,6 @@ a svg {
   .message-actions .button {
     height: 24px;
     width: 24px;
-  }
-  .task-drawer {
-    left: 15px;
-    right: 15px;
   }
   .resource-date {
     display: none;
