@@ -69,6 +69,8 @@ Run `npm run check` for type, import-boundary and formatting checks; `npm run bu
 
 `outcomes` checks semantic route timeout/validation, active-session queuing, FIFO source provenance, secure/review waits, cancellation/reset and channel preflight without database row locks. Keep approval-source regression in `server-boundaries`: a later queued user message must not become an earlier segment's approval source. These are synthetic callbacks and provider fixtures, not measured live routing accuracy.
 
+`public-chat-recovery` drives the real gateway and signed tenant API as an authenticated nondeveloper with disposable PostgreSQL. Reject public `forceNew` before routing or persistence, preserve uncertain receipts and normal recovery refusals, and retain independent messages and fixed-prompt onboarding. Reject arbitrary onboarding instructions/options. These provider substitutes do not prove live task recovery.
+
 `message-idempotency` proves concurrent HTTP retries and queued inputs use one accepted message/execution, preserving attachment order, reply target, ownership and reset fences. `task-failures` covers failures before and after runtime entry, fixed public replies, retry dedupe, cancellation/reset/revision fences, quiet background work and normal channel outbox delivery. Neither fixture calls a model or real recipient.
 
 Inspector privacy fixtures verify embedded and nested JSON secrets through actual prompt/failure persistence, plus disabled-startup deletion and periodic retention with a fake clock. Takeover fixtures hold cleanup across reacquisition and exercise real task cancellation/reset in a disposable schema; they do not control a real account.
