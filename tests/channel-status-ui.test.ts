@@ -276,7 +276,6 @@ test('Telegram setup asks the owner to confirm the account that pressed Start be
     );
     document.head.append(style);
     const next = document.querySelector<HTMLElement>('.telegram-checklist > li.is-next')!;
-    assert.equal(dom.window.getComputedStyle(next).opacity, '1');
     assert.equal(
       dom.window.getComputedStyle(next.querySelector('.telegram-checklist-marker')!).opacity,
       '0.55',

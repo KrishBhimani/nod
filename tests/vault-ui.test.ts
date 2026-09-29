@@ -122,6 +122,7 @@ function mockVaultRequests(
   const requests: Array<{ path: string; options: RequestInit }> = [];
   globalThis.fetch = async (url, options = {}) => {
     const path = String(url);
+    if (path.endsWith('/icon')) return new Response(null, { status: 204 });
     requests.push({ path, options });
     if (path === '/api/vault') return respond?.(path, options) ?? Response.json(savedLogins);
     assert.ok(options.method === 'POST' || options.method === 'PATCH');
@@ -259,10 +260,7 @@ test('Vault details preserve exact values, read passwords only on demand and ret
     assert.equal(view.getAttribute('aria-label'), 'Personal account');
     assert.match(view.textContent ?? '', /accounts\.example\.test:8443/);
     assert.doesNotMatch(view.textContent ?? '', /https:\/\//);
-    assert.equal(
-      view.querySelector('img.vault-site-icon')?.getAttribute('src'),
-      '/api/vault/personal%2Flogin/icon',
-    );
+    assert.equal(view.querySelector('img.vault-site-icon'), null);
     assert.equal(
       view.querySelector('a[aria-label="Open accounts.example.test:8443"]')?.getAttribute('rel'),
       'noopener noreferrer',
@@ -781,6 +779,7 @@ function mockCardRequests(
   const requests: Array<{ path: string; options: RequestInit }> = [];
   globalThis.fetch = async (url, options = {}) => {
     const path = String(url);
+    if (path.endsWith('/icon')) return new Response(null, { status: 204 });
     requests.push({ path, options });
     const response = respond?.(path, options);
     if (response) return response;
@@ -1346,7 +1345,7 @@ test('Vault deletion is only available in details and requires an explicit confi
   }
 });
 
-test('Cancelling New payment card aborts a pending save and fences it from a new login form', async () => {
+test('New payment card blocks cancellation while saving and fences responses after unmount', async () => {
   const previousFetch = globalThis.fetch;
   const pending = deferred<Response>();
   const requests = mockCardRequests((path, options) =>
@@ -1366,10 +1365,19 @@ test('Cancelling New payment card aborts a pending save and fences it from a new
     await submit(form);
     const saving = requests.at(-1)!;
     assert.equal(number.value, '');
-    await click('Cancel');
-    await settle();
+    const cancel = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent?.trim() === 'Cancel',
+    )!;
+    assert.equal(cancel.disabled, true);
+    await act(async () => cancel.click());
+    await act(async () =>
+      form.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })),
+    );
+    assert.equal(document.querySelector('.vault-add-form'), form);
+    assert.equal(saving.options.signal?.aborted, false);
+    await act(async () => mounted.root.render(null));
     assert.equal(saving.options.signal?.aborted, true);
-    assert.equal(document.activeElement?.textContent?.trim(), 'New');
+    await act(async () => mounted.root.render(createElement(Vault)));
     form = await startNew('New login');
     assert.equal((form.elements.namedItem('password') as HTMLInputElement).value, '');
     await act(async () => pending.resolve(Response.json({ ...savedCard, label: 'Pending card' })));
@@ -1382,5 +1390,84 @@ test('Cancelling New payment card aborts a pending save and fences it from a new
   } finally {
     await mounted.unmount();
     globalThis.fetch = previousFetch;
+  }
+});
+
+test('deleting the default desktop Vault item closes details and returns focus to New', async () => {
+  const previousFetch = globalThis.fetch;
+  let removed = false;
+  mockCardRequests((path, options) => {
+    if (path === '/api/vault')
+      return Promise.resolve(Response.json(removed ? savedLogins : [savedCard, ...savedLogins]));
+    if (options.method === 'DELETE') {
+      assert.equal(path, '/api/vault/card%2Fprivate');
+      removed = true;
+      return Promise.resolve(Response.json({ ok: true }));
+    }
+  });
+  phone = false;
+  const mounted = await mountVault();
+  try {
+    assert.equal(title().textContent, 'Everyday card');
+    await click('Delete card');
+    await click('Delete card', confirmation());
+    await settle();
+    assert.equal(Boolean(surface()), false);
+    assert.ok(item('Personal account'));
+    assert.equal(document.activeElement?.textContent?.trim(), 'New');
+    await click('View Personal account');
+    assert.equal(title().textContent, 'Personal account');
+  } finally {
+    await mounted.unmount();
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('Vault icons use guarded account requests and discard stale loads and revoke object URLs', async () => {
+  const { VaultEntryIcon } = await import('../src/web/components/vault-surface.tsx');
+  const { setRequestAccount } = await import('../src/web/lib/api.ts');
+  const previousFetch = globalThis.fetch;
+  const createUrl = URL.createObjectURL;
+  const revokeUrl = URL.revokeObjectURL;
+  const created: Blob[] = [];
+  const revoked: string[] = [];
+  const pending = deferred<Response>();
+  const requests: Array<{ path: string; options: RequestInit }> = [];
+  URL.createObjectURL = (blob) => {
+    assert.ok(blob instanceof Blob);
+    created.push(blob);
+    return `blob:fixture-${created.length}`;
+  };
+  URL.revokeObjectURL = (url) => revoked.push(url);
+  globalThis.fetch = async (path, options = {}) => {
+    requests.push({ path: String(path), options });
+    return requests.length === 1 ? pending.promise : new Response('synthetic-icon');
+  };
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    setRequestAccount('first-owner');
+    await act(async () => root.render(createElement(VaultEntryIcon, { entry: savedLogins[0] })));
+    assert.equal(requests[0].path, '/api/vault/personal%2Flogin/icon');
+    assert.equal(new Headers(requests[0].options.headers).get('X-Otto-Account'), 'first-owner');
+    assert.equal(requests[0].options.cache, 'no-store');
+    setRequestAccount('second-owner');
+    assert.equal(requests[0].options.signal?.aborted, true);
+    await act(async () => pending.resolve(new Response('stale-icon')));
+    assert.equal(created.length, 0);
+    assert.equal(container.querySelector('img'), null);
+    await act(async () => root.render(createElement(VaultEntryIcon, { entry: savedLogins[1] })));
+    assert.equal(new Headers(requests[1].options.headers).get('X-Otto-Account'), 'second-owner');
+    assert.equal(container.querySelector('img')?.getAttribute('src'), 'blob:fixture-1');
+    await act(async () => root.render(null));
+    assert.deepEqual(revoked, ['blob:fixture-1']);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    setRequestAccount(null);
+    globalThis.fetch = previousFetch;
+    URL.createObjectURL = createUrl;
+    URL.revokeObjectURL = revokeUrl;
   }
 });

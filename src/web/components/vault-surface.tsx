@@ -2,18 +2,42 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronLeft, CreditCard, Globe } from 'lucide-react';
 import type { VaultEntry } from '../../shared/contracts';
 import { Button } from './ui';
+import { apiResponse } from '../lib/api';
 
 export function VaultEntryIcon({ entry, size = 20 }: { entry: VaultEntry; size?: number }) {
   const [loaded, setLoaded] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    let objectUrl: string | undefined;
+    setLoaded(false);
+    setUrl(null);
+    if (entry.kind === 'login')
+      void apiResponse(`/api/vault/${encodeURIComponent(entry.id)}/icon`, {
+        cache: 'no-store',
+        signal: controller.signal,
+      })
+        .then(async (response) => {
+          if (!response.ok || response.status === 204) return;
+          const blob = await response.blob();
+          if (controller.signal.aborted) return;
+          objectUrl = URL.createObjectURL(blob);
+          setUrl(objectUrl);
+        })
+        .catch(() => {});
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [entry.id, entry.kind]);
   if (entry.kind === 'card') return <CreditCard size={size} aria-hidden="true" />;
   return (
     <>
       {!loaded && <Globe size={size} aria-hidden="true" />}
-      {!failed && (
+      {url && (
         <img
           className="vault-site-icon"
-          src={`/api/vault/${encodeURIComponent(entry.id)}/icon`}
+          src={url}
           alt=""
           width={size}
           height={size}
@@ -21,7 +45,7 @@ export function VaultEntryIcon({ entry, size = 20 }: { entry: VaultEntry; size?:
           referrerPolicy="no-referrer"
           hidden={!loaded}
           onLoad={() => setLoaded(true)}
-          onError={() => setFailed(true)}
+          onError={() => setUrl(null)}
         />
       )}
     </>

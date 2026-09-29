@@ -567,7 +567,7 @@ for (const mode of ['polling', 'webhook'] as const)
         verifier: createChatSdkSetupVerifier(),
         apply: async (environment) =>
           channels!.replaceTransport(createChatSdkTransport(pool, environment)),
-        paired: async (candidate) => channels!.announcePairing(candidate),
+        paired: async (candidate, client) => channels!.announcePairing(candidate, client),
       });
       channels = await createChannels(pool, {
         ownerId: 'local-development',
@@ -709,6 +709,19 @@ for (const mode of ['polling', 'webhook'] as const)
         assert.equal((await pool.query('SELECT * FROM channel_inbox')).rowCount, 0);
         assert.equal(sent.length, 0);
         assert.equal(submitted.length, 0);
+
+        await pool.query(`CREATE FUNCTION fail_pairing_notice() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN RAISE EXCEPTION 'Synthetic pairing notice failure'; END $$`);
+        await pool.query(`CREATE TRIGGER fail_pairing_notice BEFORE INSERT ON channel_outbox
+          FOR EACH ROW EXECUTE FUNCTION fail_pairing_notice()`);
+        assert.equal((await confirm()).statusCode, 503);
+        assert.equal((await telegram())?.pairingCandidate?.id, '123');
+        assert.equal((await telegram())?.allowedUserId, undefined);
+        assert.equal((await settings.environment()).TELEGRAM_ALLOWED_USER_ID, '');
+        assert.equal((await pool.query('SELECT * FROM channel_inbox')).rowCount, 0);
+        assert.equal((await pool.query('SELECT * FROM messages')).rowCount, 0);
+        assert.equal(sent.length, 0);
+        await pool.query('DROP TRIGGER fail_pairing_notice ON channel_outbox');
 
         const confirmed = await confirm();
         assert.equal(confirmed.statusCode, 200);

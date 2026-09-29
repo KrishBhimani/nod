@@ -1,3 +1,4 @@
+import type { Editor } from '@tiptap/core';
 import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import { registerHooks } from 'node:module';
@@ -177,7 +178,10 @@ const sendKey = (element: Element) =>
 async function draft(text: string) {
   await act(async () => {
     const input = document.querySelector<HTMLElement>('[role="textbox"]')!;
-    input.innerHTML = `<p>${text}</p>`;
+    (input as HTMLElement & { editor: Editor }).editor.commands.setContent({
+      type: 'doc',
+      content: [{ type: 'paragraph', content: text ? [{ type: 'text', text }] : [] }],
+    });
     await tick();
   });
 }
@@ -344,7 +348,10 @@ test('sending keeps the existing conversation mounted and scrolls the new bubble
   try {
     const existing = fixture.element.querySelector('.message-assistant');
     const composer = fixture.element.querySelector('[role="textbox"]');
-    await draft('Keep the conversation steady.');
+    const literal = '<label> & **plain**';
+    await draft(literal);
+    assert.equal(composer?.textContent, literal);
+    assert.equal(composer?.querySelector('label, strong'), null);
     await act(async () => {
       sendKey(composer!);
       await tick();
@@ -353,6 +360,10 @@ test('sending keeps the existing conversation mounted and scrolls the new bubble
       unpositionedCommits,
       [],
       'The new message should be positioned before a frame can paint',
+    );
+    assert.equal(
+      fixture.element.querySelector('.message-user .message-text')?.textContent,
+      literal,
     );
     assert.equal(fixture.element.querySelector('.message-assistant'), existing);
     assert.equal(fixture.element.querySelector('[role="textbox"]'), composer);

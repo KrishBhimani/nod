@@ -42,6 +42,11 @@ export function createAccountSession(options: {
   prepare?(ownerId: string): Promise<void>;
   start?(ownerId: string, name?: string): Promise<void>;
   warm?(ownerId: string): void;
+  withProfile?(
+    session: AuthenticatedSession,
+    name: string | undefined,
+    operation: () => Promise<void>,
+  ): Promise<void>;
 }) {
   const origin = new URL(options.origin).origin;
   const mode = options.authentication ? 'google' : 'local';
@@ -106,6 +111,13 @@ export function createAccountSession(options: {
       reply.code(503).send({ error: 'Setup could not be completed. Try again.' });
       return false;
     }
+    return currentPrincipal(request, reply, session);
+  }
+  async function currentPrincipal(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    session: AuthenticatedSession,
+  ) {
     if (options.authentication) {
       const current = await options.authentication.session(authenticationHeaders(request));
       if (
@@ -120,8 +132,16 @@ export function createAccountSession(options: {
     }
     return true;
   }
-  async function start(reply: FastifyReply, session: AuthenticatedSession, name?: string) {
-    try {
+  async function start(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    session: AuthenticatedSession,
+    name?: string,
+    complete?: () => Promise<unknown>,
+  ) {
+    let completed = false;
+    const operation = async () => {
+      if (!(await currentPrincipal(request, reply, session))) return;
       await options.start?.(
         session.user.id,
         (
@@ -130,7 +150,13 @@ export function createAccountSession(options: {
           (options.authentication ? session.user.name : undefined)
         )?.slice(0, 100),
       );
-      return true;
+      await complete?.();
+      completed = true;
+    };
+    try {
+      if (options.withProfile) await options.withProfile(session, name, operation);
+      else await operation();
+      return completed;
     } catch {
       reply.code(503).send({ error: 'Setup could not be completed. Try again.' });
       return false;
@@ -226,9 +252,13 @@ export function createAccountSession(options: {
       const input = accountUpdate.parse(request.body);
       if (input.onboardingCompleted) {
         if (!(await prepare(request, reply, session))) return;
-        if (!(await start(reply, session, input.name))) return;
-      }
-      await options.accounts.update(session.user.id, input);
+        if (
+          !(await start(request, reply, session, input.name, () =>
+            options.accounts.update(session.user.id, input),
+          ))
+        )
+          return;
+      } else await options.accounts.update(session.user.id, input);
       reply.header('cache-control', 'no-store');
       return response(request);
     });
@@ -241,7 +271,7 @@ export function createAccountSession(options: {
         .parse(request.body ?? {});
       if (!(await options.accounts.read(session.user.id)).onboardingCompleted)
         return reply.code(409).send({ error: 'Finish setup first.' });
-      if (!(await start(reply, session))) return;
+      if (!(await start(request, reply, session))) return;
       reply.header('cache-control', 'no-store');
       return { ok: true };
     });

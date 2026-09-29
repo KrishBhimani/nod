@@ -266,13 +266,16 @@ export function VaultItemForm({
   kind,
   onSaved,
   onCancel,
+  onSavingChange,
 }: {
   kind: 'login' | 'card';
   onSaved(entry: VaultListEntry): void;
   onCancel(): void;
+  onSavingChange?(saving: boolean): void;
 }) {
   const formId = useId();
   const [saving, setSaving] = useState(false);
+  useEffect(() => onSavingChange?.(saving), [saving, onSavingChange]);
   const [error, setError] = useState('');
   const form = useRef<HTMLFormElement>(null);
   const active = useRef(false);
@@ -366,7 +369,7 @@ export function VaultItemForm({
   return (
     <>
       <div className="vault-bar">
-        <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+        <Button type="button" variant="ghost" size="sm" disabled={saving} onClick={onCancel}>
           Cancel
         </Button>
         <div className="vault-bar-actions">

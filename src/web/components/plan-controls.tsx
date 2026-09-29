@@ -312,7 +312,11 @@ const frequencies = [
   { value: '1-5', label: 'Weekdays' },
   { value: '0,6', label: 'Weekends' },
   { value: '1', label: 'Mondays' },
+  { value: '2', label: 'Tuesdays' },
+  { value: '3', label: 'Wednesdays' },
+  { value: '4', label: 'Thursdays' },
   { value: '5', label: 'Fridays' },
+  { value: '6', label: 'Saturdays' },
   { value: '0', label: 'Sundays' },
 ];
 

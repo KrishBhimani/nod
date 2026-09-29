@@ -19,10 +19,12 @@ export function AccountMenuItems({
   account,
   close,
   shortcuts = true,
+  menu = true,
 }: {
   account: AccountControls;
   close(): void;
   shortcuts?: boolean;
+  menu?: boolean;
 }) {
   const [error, setError] = useState('');
   const openSettings = (tab: AccountTab, trigger: HTMLElement) => {
@@ -40,7 +42,7 @@ export function AccountMenuItems({
       </div>
       <button
         type="button"
-        role="menuitem"
+        role={menu ? 'menuitem' : undefined}
         onClick={(event) => openSettings('Profile', event.currentTarget)}
       >
         <UserRound size={18} aria-hidden="true" />
@@ -48,7 +50,7 @@ export function AccountMenuItems({
       </button>
       <button
         type="button"
-        role="menuitem"
+        role={menu ? 'menuitem' : undefined}
         aria-keyshortcuts={shortcuts ? 'Meta+, Control+,' : undefined}
         onClick={(event) => openSettings('Preferences', event.currentTarget)}
       >
@@ -70,8 +72,9 @@ export function AccountMenuItems({
               <button
                 key={theme}
                 type="button"
-                role="menuitemradio"
-                aria-checked={account.theme === theme}
+                role={menu ? 'menuitemradio' : undefined}
+                aria-checked={menu ? account.theme === theme : undefined}
+                aria-pressed={menu ? undefined : account.theme === theme}
                 aria-label={label}
                 title={label}
                 disabled={account.saving}
@@ -98,7 +101,7 @@ export function AccountMenuItems({
           <div className="mobile-menu-separator" role="separator" />
           <button
             type="button"
-            role="menuitem"
+            role={menu ? 'menuitem' : undefined}
             onClick={() => {
               close();
               account.onLogout();

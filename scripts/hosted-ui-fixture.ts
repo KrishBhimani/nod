@@ -270,11 +270,11 @@ function createPlansFixture() {
     const goal = goals.find((item) => text.includes(`"${item.title}"`));
     const time = /(\d{1,2})(?:[:.h](\d{2}))?\s*(am|pm)?/i.exec(text);
     if (schedule) {
-      const [minute, hour, , , day] = (schedule.cron ?? '0 9 * * *').split(' ');
+      const [minute, cronHour, , , day] = (schedule.cron ?? '0 9 * * *').split(' ');
       const nextDay = Object.entries(days).find(([word]) => lower.includes(word))?.[1] ?? day;
       const suffix = time?.[3]?.toLowerCase();
       const nextHour = !time
-        ? hour
+        ? cronHour
         : String(suffix ? (Number(time[1]) % 12) + (suffix === 'pm' ? 12 : 0) : Number(time[1]));
       const nextMinute = time ? String(Number(time[2] ?? 0)) : minute;
       if (lower.includes('pause') || lower.includes('resume')) {
@@ -522,7 +522,7 @@ const files = [
   {
     name: 'Site sources.zip',
     mimeType: 'application/zip',
-    bytes: Buffer.concat([Buffer.from('PK\x05\x06'), Buffer.alloc(18_000)]),
+    bytes: Buffer.concat([Buffer.from('PK\x05\x06'), Buffer.alloc(18)]),
   },
   {
     name: 'Harbour renovation plan.pdf',
@@ -993,7 +993,7 @@ const app = await createGateway({
         integrationServiceIds.includes(connect[1] as IntegrationService)
       ) {
         const input = (await request.json()) as { returnTo?: string };
-        const token = randomUUID();
+        const token = randomBytes(32).toString('base64url');
         consent.set(token, {
           ownerId: owner,
           service: connect[1] as IntegrationService,
@@ -1004,7 +1004,10 @@ const app = await createGateway({
                 ? '/onboarding'
                 : '/apps',
         });
-        return Response.json({ url: `${origin}/fixture/connect?token=${token}` });
+        return Response.json({
+          url: `${origin}/fixture/connect?token=${token}`,
+          ...(input.returnTo === 'window' ? { attempt: token } : {}),
+        });
       }
       if (url.pathname === '/api/preferences') {
         const previous = preferences.get(owner) ?? { ...defaultPreferences };
@@ -1222,7 +1225,7 @@ app.get('/fixture/connected', async (request, reply) => {
     connections.set(attempt.ownerId, apps);
   }
   return reply.redirect(
-    `${attempt.returnTo}?connection=${result === 'connected' ? 'connected' : 'cancelled'}${attempt.returnTo === '/connected.html' ? `&service=${attempt.service}` : ''}`,
+    `${attempt.returnTo}?connection=${result === 'connected' ? 'connected' : 'cancelled'}${attempt.returnTo === '/connected.html' ? `&service=${attempt.service}&attempt=${token}` : ''}`,
   );
 });
 const vite = await createServer({

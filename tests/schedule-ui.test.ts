@@ -389,7 +389,12 @@ test('history refresh updates loaded older active runs, keeps existing rows and 
 test('schedule controls pause, resume and retime through the owned route with Undo and no chat draft', async () => {
   const priorFetch = globalThis.fetch;
   const patches: Array<{ path: string; body: Record<string, unknown> }> = [];
+  const chatEvents: string[] = [];
+  const onChat = (event: Event) => chatEvents.push(event.type);
+  window.addEventListener('otto:compose', onChat);
+  window.addEventListener('otto:focus-message', onChat);
   globalThis.fetch = async (path, options) => {
+    assert.notEqual(path, '/api/messages');
     if (options?.method === 'PATCH') {
       const body = JSON.parse(String(options.body)) as Record<string, unknown>;
       patches.push({ path: String(path), body });
@@ -431,11 +436,17 @@ test('schedule controls pause, resume and retime through the owned route with Un
         )!,
       ),
     );
-    assert.deepEqual(patches[1]?.body, { enabled: true });
+    assert.deepEqual(patches[1], {
+      path: `/api/schedules/${recurring.id}`,
+      body: { enabled: true },
+    });
     await render({ ...recurring, enabled: false, nextRun: null });
     assert.doesNotMatch(element.textContent ?? '', /Next /);
     await act(async () => click(element.querySelector('[aria-label="Weekly review on"]')!));
-    assert.deepEqual(patches[2]?.body, { enabled: true });
+    assert.deepEqual(patches[2], {
+      path: `/api/schedules/${recurring.id}`,
+      body: { enabled: true },
+    });
     assert.match(
       element.querySelector('.plan-toast')?.textContent ?? '',
       /Resumed Weekly review\./,
@@ -444,18 +455,27 @@ test('schedule controls pause, resume and retime through the owned route with Un
     assert.equal(days.value, '1');
     days.value = '1-5';
     await act(async () => days.dispatchEvent(new Event('change', { bubbles: true })));
-    assert.deepEqual(patches[3]?.body, { cron: '0 9 * * 1-5' });
+    assert.deepEqual(patches[3], {
+      path: `/api/schedules/${recurring.id}`,
+      body: { cron: '0 9 * * 1-5' },
+    });
     assert.match(element.querySelector('.plan-toast')?.textContent ?? '', /runs on weekdays/);
     const time = element.querySelector<HTMLInputElement>('[aria-label="Weekly review time"]')!;
     assert.equal(time.value, '09:00');
     time.value = '07:45';
     await act(async () => time.dispatchEvent(new window.FocusEvent('focusout', { bubbles: true })));
-    assert.deepEqual(patches[4]?.body, { cron: '45 7 * * 1' });
+    assert.deepEqual(patches[4], {
+      path: `/api/schedules/${recurring.id}`,
+      body: { cron: '45 7 * * 1' },
+    });
     const overdue = { ...once, runAt: '2020-01-01T00:00:00.000Z', enabled: false, nextRun: null };
     await render(overdue);
     assert.equal(element.querySelector('[role="switch"]'), null);
     assert.ok(element.querySelector('[aria-label="Ask Otto about Send a reminder"]'));
+    assert.deepEqual(chatEvents, []);
   } finally {
+    window.removeEventListener('otto:compose', onChat);
+    window.removeEventListener('otto:focus-message', onChat);
     await act(async () => root.unmount());
     element.remove();
     globalThis.fetch = priorFetch;
@@ -564,5 +584,40 @@ test('failed schedule and history reads offer a retry and keep saved rows visibl
     pageDataCache.update('/api/schedules', () => null);
     pageDataCache.update(historyPath, () => null);
     globalThis.fetch = priorFetch;
+  }
+});
+
+test('every saved weekday is selected and remains unchanged when editing its time', async () => {
+  const previousFetch = globalThis.fetch;
+  const patches: Array<{ path: string; body: unknown }> = [];
+  globalThis.fetch = async (path, options) => {
+    const body = JSON.parse(String(options?.body));
+    patches.push({ path: String(path), body });
+    return Response.json({ ...recurring, ...body });
+  };
+  const element = document.createElement('div');
+  document.body.append(element);
+  const root = createRoot(element);
+  try {
+    for (let day = 0; day < 7; day++) {
+      const schedule = { ...recurring, cron: `0 9 * * ${day}` };
+      await act(async () => root.render(createElement(ScheduleRow, { key: day, schedule })));
+      const select = element.querySelector<HTMLSelectElement>('[aria-label="Weekly review days"]')!;
+      assert.equal(select.value, String(day));
+      const time = element.querySelector<HTMLInputElement>('[aria-label="Weekly review time"]')!;
+      time.value = '07:45';
+      await act(async () =>
+        time.dispatchEvent(new window.FocusEvent('focusout', { bubbles: true })),
+      );
+      assert.deepEqual(patches.at(-1), {
+        path: `/api/schedules/${recurring.id}`,
+        body: { cron: `45 7 * * ${day}` },
+      });
+    }
+    assert.equal(patches.length, 7);
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
+    globalThis.fetch = previousFetch;
   }
 });

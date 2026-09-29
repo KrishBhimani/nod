@@ -159,12 +159,17 @@ test(
     assert.equal(response.statusCode, 200, response.body);
     release();
     const url = new URL(f.callbacks.at(-1)!);
+    assert.equal(response.json().attempt, url.searchParams.get('state'));
     url.searchParams.set('account', [...f.accounts.keys()].at(-1)!);
     const callback = await f.app.inject({ url: `${url.pathname}${url.search}` });
     assert.equal(
       callback.headers.location,
-      'http://localhost:4310/connected.html?connection=connected&service=slack',
+      `http://localhost:4310/connected.html?connection=connected&service=slack&attempt=${response.json().attempt}`,
     );
+    const forged = await f.app.inject({
+      url: `/api/apps/callback?state=${'x'.repeat(43)}&returnTo=window&service=slack`,
+    });
+    assert.equal(forged.headers.location, 'http://localhost:4310/apps?connection=expired');
     const rejected = await f.app.inject({
       method: 'POST',
       url: '/api/apps/slack/connect',

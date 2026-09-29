@@ -366,7 +366,9 @@ test('onboarding opens consent in a new window without blocking other apps and r
     assert.equal(button('Connect Google Drive').disabled, false);
     assert.equal(primary().disabled, false);
     await act(async () =>
-      replies[0].resolve(Response.json({ url: 'https://accounts.example.test/consent' })),
+      replies[0].resolve(
+        Response.json({ url: 'https://accounts.example.test/consent', attempt: 'a'.repeat(43) }),
+      ),
     );
     assert.equal(windows[0].popup.location.href, 'https://accounts.example.test/consent');
     assert.equal(button('Connect Google Calendar').textContent, 'Connect');
@@ -377,11 +379,19 @@ test('onboarding opens consent in a new window without blocking other apps and r
       element.querySelector(`[aria-labelledby="onboarding-${slug}"]`)!.textContent ?? '';
     await act(async () => button('Connect Google Calendar').click());
     await act(async () =>
-      replies.at(-1)!.resolve(Response.json({ url: 'https://accounts.example.test/calendar' })),
+      replies
+        .at(-1)!
+        .resolve(
+          Response.json({ url: 'https://accounts.example.test/calendar', attempt: 'b'.repeat(43) }),
+        ),
     );
     await act(async () => button('Connect Linear').click());
     await act(async () =>
-      replies.at(-1)!.resolve(Response.json({ url: 'https://accounts.example.test/linear' })),
+      replies
+        .at(-1)!
+        .resolve(
+          Response.json({ url: 'https://accounts.example.test/linear', attempt: 'c'.repeat(43) }),
+        ),
     );
     assert.ok(card('googlecalendar').includes('Continue in the new window.'));
     assert.ok(card('linear').includes('Continue in the new window.'));
@@ -392,9 +402,33 @@ test('onboarding opens consent in a new window without blocking other apps and r
     );
     const before = loads;
     const channel = new BroadcastChannel('otto.apps');
+    for (const payload of [
+      { connection: 'failed', service: 'googlecalendar' },
+      { connection: 'failed', service: 'googlecalendar', attempt: 'a'.repeat(43) },
+      { connection: 'failed', service: 'linear', attempt: 'b'.repeat(43) },
+    ]) {
+      await act(async () => channel.postMessage(payload));
+      assert.equal(loads, before);
+      assert.ok(card('googlecalendar').includes('Continue in the new window.'));
+      assert.equal(element.querySelector('[role="alert"]'), null);
+    }
     await act(async () =>
-      channel.postMessage({ connection: 'connected', service: 'googlecalendar' }),
+      channel.postMessage({
+        connection: 'connected',
+        service: 'googlecalendar',
+        attempt: 'b'.repeat(43),
+      }),
     );
+    const settledLoads = loads;
+    await act(async () =>
+      channel.postMessage({
+        connection: 'failed',
+        service: 'googlecalendar',
+        attempt: 'b'.repeat(43),
+      }),
+    );
+    assert.equal(loads, settledLoads);
+    assert.equal(element.querySelector('[role="alert"]'), null);
     channel.close();
     assert.ok(loads > before);
     assert.equal(element.querySelectorAll('.onboarding-integration.connected').length, 2);
@@ -809,5 +843,191 @@ test('preference writes run in order so a slow response cannot revert a later ch
   } finally {
     pageDataCache.clear();
     globalThis.fetch = previous;
+  }
+});
+
+test('queued preferences stay with their originating session and do not block the next account', async () => {
+  const { savePreferences, saveBrowserLocale } = await import('../src/web/lib/preferences.ts');
+  const { sessionStore } = await import('../src/web/lib/session.ts');
+  const previousFetch = globalThis.fetch;
+  let release!: (response: Response) => void;
+  const pending = {
+    promise: new Promise<Response>((resolve) => {
+      release = resolve;
+    }),
+    resolve: (response: Response) => release(response),
+  };
+  let owner = 'first-owner';
+  const writes: Array<{ owner: string | null; change: Record<string, unknown> }> = [];
+  const saved = {
+    notificationRule: '',
+    timeZone: 'Europe/Lisbon',
+    locale: 'en-GB',
+    hourCycle: 'auto',
+    quietHoursEnabled: true,
+    quietStart: '22:00',
+    quietEnd: '08:00',
+  };
+  globalThis.fetch = async (path, options) => {
+    if (path === '/api/session')
+      return Response.json({
+        auth: { mode: 'local', googleAvailable: false },
+        user: { id: owner, name: owner, email: null, avatarUrl: null },
+        settings: { theme: 'system', onboardingCompleted: true },
+        capabilities: { developer: false },
+      });
+    assert.equal(path, '/api/preferences');
+    const change = JSON.parse(String(options?.body));
+    writes.push({ owner: new Headers(options?.headers).get('X-Otto-Account'), change });
+    return writes.length === 1 ? pending.promise : Response.json({ ...saved, ...change });
+  };
+  try {
+    await sessionStore.refresh();
+    const first = savePreferences({ hourCycle: 'h12' });
+    const queued = saveBrowserLocale();
+    const stale = Promise.allSettled([first, queued]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(writes.length, 1);
+    owner = 'second-owner';
+    await sessionStore.refresh();
+    await savePreferences({ quietHoursEnabled: false });
+    assert.deepEqual(writes, [
+      { owner: 'first-owner', change: { hourCycle: 'h12' } },
+      { owner: 'second-owner', change: { quietHoursEnabled: false } },
+    ]);
+    pending.resolve(Response.json({ ...saved, hourCycle: 'h12' }));
+    assert.deepEqual(
+      (await stale).map((result) => result.status),
+      ['rejected', 'rejected'],
+    );
+    const cached = pageDataCache.getSnapshot<typeof saved>('/api/preferences').data!;
+    assert.equal(cached.hourCycle, 'auto');
+    assert.equal(cached.quietHoursEnabled, false);
+    assert.equal(writes.length, 2);
+  } finally {
+    pending.resolve(Response.json(saved));
+    sessionStore.invalidate();
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('Switch composes click handlers, respects cancellation and keeps disabled behavior', async () => {
+  const { Switch } = await import('../src/web/components/ui.tsx');
+  const element = document.createElement('div');
+  document.body.append(element);
+  const root = createRoot(element);
+  const calls: Array<string | boolean> = [];
+  const render = (cancel = false, disabled = false) =>
+    act(async () =>
+      root.render(
+        createElement(Switch, {
+          checked: false,
+          disabled,
+          onClick: (event) => {
+            calls.push('click');
+            if (cancel) event.preventDefault();
+          },
+          onCheckedChange: (checked) => calls.push(checked),
+        }),
+      ),
+    );
+  try {
+    await render();
+    await act(async () => element.querySelector('button')!.click());
+    assert.deepEqual(calls, ['click', true]);
+    await render(true);
+    await act(async () => element.querySelector('button')!.click());
+    assert.deepEqual(calls, ['click', true, 'click']);
+    await render(false, true);
+    await act(async () => element.querySelector('button')!.click());
+    assert.deepEqual(calls, ['click', true, 'click']);
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
+  }
+});
+
+test('automatic locale saving retries while the cached preferences stay unchanged', async () => {
+  const { App } = await import('../src/web/app.tsx');
+  const { sessionStore } = await import('../src/web/lib/session.ts');
+  const previousFetch = globalThis.fetch;
+  const previousEvents = globalThis.EventSource;
+  const previousScroll = HTMLElement.prototype.scrollIntoView;
+  HTMLElement.prototype.scrollIntoView = () => {};
+  const previousPath = window.location.pathname;
+  class Events {
+    onopen = null;
+    onerror = null;
+    onmessage = null;
+    close() {}
+  }
+  Object.defineProperty(globalThis, 'EventSource', { configurable: true, value: Events });
+  let reads = 0;
+  let writes = 0;
+  const saved = {
+    notificationRule: '',
+    timeZone: 'Europe/Lisbon',
+    locale: null,
+    hourCycle: 'auto',
+    quietHoursEnabled: true,
+    quietStart: '22:00',
+    quietEnd: '08:00',
+  };
+  globalThis.fetch = async (path, options) => {
+    if (path === '/api/session')
+      return Response.json({
+        auth: { mode: 'local', googleAvailable: false },
+        user: { id: 'locale-owner', name: 'Locale owner', email: null, avatarUrl: null },
+        settings: { theme: 'system', onboardingCompleted: true },
+        capabilities: { developer: false },
+      });
+    if (path === '/api/preferences') {
+      if (options?.method !== 'PATCH') {
+        reads++;
+        return Response.json(saved);
+      }
+      writes++;
+      return writes === 1
+        ? Response.json({ error: 'Synthetic temporary failure' }, { status: 503 })
+        : Response.json({ ...saved, ...JSON.parse(String(options.body)) });
+    }
+    if (path === '/api/state')
+      return Response.json({
+        conversationRevision: 0,
+        messages: [],
+        tasks: [],
+        configuration: {
+          provider: 'fixture',
+          model: 'fixture',
+          llmReady: false,
+          integrationsReady: false,
+          speechReady: false,
+          browserAssistReady: false,
+          inspectorEnabled: false,
+          localOnly: true,
+        },
+      });
+    assert.fail(`Unexpected locale fixture request: ${String(path)}`);
+  };
+  const element = document.createElement('div');
+  document.body.append(element);
+  const root = createRoot(element);
+  try {
+    sessionStore.invalidate();
+    window.history.replaceState(null, '', '/');
+    await act(async () => root.render(createElement(App)));
+    assert.equal(writes, 1);
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 1100)));
+    assert.equal(reads, 1);
+    assert.equal(writes, 2);
+    assert.ok(pageDataCache.getSnapshot<typeof saved>('/api/preferences').data?.locale);
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
+    sessionStore.invalidate();
+    window.history.replaceState(null, '', previousPath);
+    globalThis.fetch = previousFetch;
+    Object.defineProperty(globalThis, 'EventSource', { configurable: true, value: previousEvents });
+    HTMLElement.prototype.scrollIntoView = previousScroll;
   }
 });

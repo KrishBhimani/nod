@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { once } from 'node:events';
+import { getEventListeners, once } from 'node:events';
 import test from 'node:test';
 import Fastify from 'fastify';
 import {
@@ -346,6 +346,41 @@ test('a stalled DNS lookup reaches the overall preview deadline without an HTTP 
   }
 });
 
+test('an expired icon request does not start fallback DNS or retain completed lookup listeners', async () => {
+  let lookups = 0;
+  let requests = 0;
+  let lookupListeners = -1;
+  const provider = createPublicLinkPreviewProvider({
+    timeoutMs: 15,
+    resolver: async () => {
+      lookups++;
+      return lookups === 1 ? addresses() : new Promise(() => {});
+    },
+    request: async ({ signal }) => {
+      requests++;
+      lookupListeners = getEventListeners(signal, 'abort').length;
+      return new Promise((_, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    },
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      provider.icon!('https://example.com'),
+      new Promise<string>((resolve) => {
+        timer = setTimeout(() => resolve('deadline exceeded'), 500);
+      }),
+    ]);
+    assert.equal(result, null);
+    assert.equal(lookups, 1);
+    assert.equal(requests, 1);
+    assert.equal(lookupListeners, 0);
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
 test('image capacity eviction refreshes its paired preview instead of returning a broken cached image', async () => {
   let calls = 0;
   const previews = createLinkPreviews({
@@ -442,6 +477,30 @@ test('saved website icons use the pinned public fetcher and accept only ICO or r
     'https://example.com/favicon.ico',
     'https://example.com/',
     'https://example.com/static/icon.png',
+  ]);
+
+  const alternatives = fetchWith({
+    'https://example.com/': {
+      status: 200,
+      type: 'text/html',
+      body: Buffer.from(
+        '<html><head><link rel="icon" href="/invalid.png"><link rel="icon" href="/missing.png"><link rel="apple-touch-icon-precomposed" href="/valid.png"></head></html>',
+      ),
+    },
+    'https://example.com/invalid.png': {
+      status: 200,
+      type: 'image/png',
+      body: Buffer.from('invalid image'),
+    },
+    'https://example.com/valid.png': { status: 200, type: 'image/png', body: png },
+  });
+  assert.equal((await alternatives.provider.icon!('https://example.com'))?.mimeType, 'image/png');
+  assert.deepEqual(alternatives.calls, [
+    'https://example.com/favicon.ico',
+    'https://example.com/',
+    'https://example.com/invalid.png',
+    'https://example.com/missing.png',
+    'https://example.com/valid.png',
   ]);
 
   const vector = fetchWith({

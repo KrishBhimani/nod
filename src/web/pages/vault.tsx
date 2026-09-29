@@ -42,7 +42,8 @@ export function Vault() {
   const [query, setQuery] = useState('');
   const [menu, setMenu] = useState(false);
   const [adding, setAdding] = useState<'login' | 'card' | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null | undefined>(undefined);
+  const [savingNew, setSavingNew] = useState(false);
   const [chosen, setChosen] = useState(false);
   const returnTo = useRef<string | null>(null);
   const newTrigger = useRef<HTMLButtonElement>(null);
@@ -60,7 +61,7 @@ export function Vault() {
     .sort((a, b) => a.label.localeCompare(b.label));
   const selected =
     entries?.find((entry) => entry.id === selectedId) ??
-    (split && !adding ? visible[0] : undefined);
+    (selectedId === undefined && split && !adding ? visible[0] : undefined);
   const detailOpen = Boolean(adding || selected);
   const pageMode = detailOpen && !split;
 
@@ -89,7 +90,7 @@ export function Vault() {
 
   function closeDetail() {
     if (split) return;
-    returnTo.current = selectedId;
+    returnTo.current = selectedId ?? null;
     setChosen(false);
     setSelectedId(null);
   }
@@ -101,6 +102,7 @@ export function Vault() {
   }
 
   function closeAdd() {
+    if (savingNew) return;
     returnTo.current = 'new';
     setChosen(false);
     setAdding(null);
@@ -141,7 +143,9 @@ export function Vault() {
       <VaultItemForm
         kind={adding}
         onCancel={closeAdd}
+        onSavingChange={setSavingNew}
         onSaved={(entry) => {
+          setSavingNew(false);
           save(entry);
           setAdding(null);
           setSelectedId(entry.id);

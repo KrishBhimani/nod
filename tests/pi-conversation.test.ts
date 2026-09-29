@@ -349,6 +349,7 @@ test('Pi routing marks retryable failures apart from blocked outside actions', a
     );
     assert.match(request.systemPrompt ?? '', /retryable true failed before Otto took any outside/);
     assert.match(request.systemPrompt ?? '', /may have already taken an outside action/);
+    assert.doesNotMatch(JSON.stringify(request), /private-retryable-read|private-blocked-send/);
     return response('{"kind":"continue","outcomeId":"retryable-read"}');
   });
   assert.deepEqual(await value.router(input), { kind: 'continue', outcomeId: 'retryable-read' });

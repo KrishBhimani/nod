@@ -1,3 +1,10 @@
+import type { Definition, PhrasingContent, Root } from 'mdast';
+import { unified } from 'unified';
+import remarkParse from 'remark-parse';
+import remarkGfm from 'remark-gfm';
+import { visit } from 'unist-util-visit';
+import { remarkLocalLinks } from './markdown';
+
 export type SetupKind = 'vault' | 'website' | 'app';
 type SafeLink =
   | { href: string; kind: 'artifact' | 'external' | 'navigation' }
@@ -89,16 +96,30 @@ export function safeMessageLink(value: string, origin: string): SafeLink | null 
   }
 }
 
+const setupParser = unified().use(remarkParse).use(remarkGfm).use(remarkLocalLinks);
+
+function linkText(children: PhrasingContent[]): string {
+  return children
+    .map((child) =>
+      'value' in child ? child.value : 'children' in child ? linkText(child.children) : '',
+    )
+    .join('');
+}
+
 export function messageSetupLinks(text: string, origin: string) {
   const actions = new Map<string, { href: string; setup: SetupKind; label: string }>();
-  for (const match of text
-    .replace(/```[\s\S]*?(?:```|$)|`[^`\n]*`/g, '')
-    .matchAll(
-      /\[([^\]\n]+)\]\(([^()\s]+)\)|(?<![\w/:])\/(?:vault|credentials)\/[A-Za-z0-9_-]+(?:[?#][^\s<>"'\[\]()]+)?/g,
-    )) {
-    const link = safeMessageLink(match[2] ?? match[0].replace(/[.,;:!?]+$/, ''), origin);
-    const setup = link && setupLink(link, match[1] ?? '');
+  const tree = setupParser.runSync(setupParser.parse(text)) as Root;
+  const definitions = new Map<string, Definition>();
+  visit(tree, 'definition', (node) => {
+    if (!definitions.has(node.identifier)) definitions.set(node.identifier, node);
+  });
+  visit(tree, (node) => {
+    if (node.type !== 'link' && node.type !== 'linkReference') return;
+    const destination = node.type === 'link' ? node.url : definitions.get(node.identifier)?.url;
+    if (!destination) return;
+    const link = safeMessageLink(destination, origin);
+    const setup = link && setupLink(link, linkText(node.children));
     if (setup && !actions.has(setup.href)) actions.set(setup.href, setup);
-  }
+  });
   return [...actions.values()];
 }

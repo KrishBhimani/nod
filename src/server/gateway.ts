@@ -2,7 +2,7 @@ import Fastify from 'fastify';
 import { z } from 'zod';
 import type { AuthenticatedSession, AuthenticationProvider } from '../ports/authentication.ts';
 import type { TenantRuntimeHost } from '../ports/tenant-runtime.ts';
-import type { AccountStore } from './account-store.ts';
+import type { AccountStore, StoredAccount } from './account-store.ts';
 import { authenticationHeaders, createAccountSession, sendFetchResponse } from './account.ts';
 import { canonicalRequestPath } from './runtime-auth.ts';
 import { parsePrivacyNotice, registerPrivacyNotice } from './privacy.ts';
@@ -146,8 +146,31 @@ export async function createGateway(options: {
       .strict()
       .parse(await response.json());
   }
+  const profileAccounts = new Map<string, StoredAccount>();
+  const accountVersions = new Map<string, number>();
+  const accountStore: AccountStore = {
+    async read(ownerId) {
+      const version = accountVersions.get(ownerId);
+      const account = await options.accounts.read(ownerId);
+      if (accountVersions.get(ownerId) === version) profileAccounts.set(ownerId, account);
+      return account;
+    },
+    async update(ownerId, input) {
+      const version = (accountVersions.get(ownerId) ?? 0) + 1;
+      accountVersions.set(ownerId, version);
+      profileAccounts.delete(ownerId);
+      const account = await options.accounts.update(ownerId, input);
+      if (accountVersions.get(ownerId) === version) {
+        accountVersions.set(ownerId, version + 1);
+        profileAccounts.set(ownerId, account);
+      }
+      return account;
+    },
+  };
   const accounts = createAccountSession({
     ...options,
+    accounts: accountStore,
+    withProfile,
     origin: origin.origin,
     prepare: (ownerId) => setup(ownerId, '/api/account/prepare'),
     start: (ownerId, name) => setup(ownerId, '/api/onboarding/start', { name }),
@@ -157,6 +180,30 @@ export async function createGateway(options: {
   });
   const syncedProfiles = new Map<string, string>();
   const profileSyncs = new Map<string, Promise<void>>();
+  const welcomeProfiles = new Map<string, string>();
+  const welcomeSyncs = new Map<string, Promise<void>>();
+  function withProfile(
+    session: AuthenticatedSession,
+    name: string | undefined,
+    operation: () => Promise<void>,
+  ) {
+    const owner = session.user.id;
+    const next = (welcomeSyncs.get(owner) ?? Promise.resolve()).then(async () => {
+      if (name !== undefined) welcomeProfiles.set(owner, name);
+      try {
+        await syncProfile(session);
+        await operation();
+      } finally {
+        welcomeProfiles.delete(owner);
+      }
+    });
+    const settled = next.catch(() => {});
+    welcomeSyncs.set(owner, settled);
+    void settled.then(() => {
+      if (welcomeSyncs.get(owner) === settled) welcomeSyncs.delete(owner);
+    });
+    return next;
+  }
   function syncProfile(session: AuthenticatedSession) {
     const owner = session.user.id;
     const next = (profileSyncs.get(owner) ?? Promise.resolve()).then(() => sendProfile(session));
@@ -168,12 +215,14 @@ export async function createGateway(options: {
     return next;
   }
   async function sendProfile(session: AuthenticatedSession) {
-    const account = await options.accounts.read(session.user.id);
+    const account =
+      profileAccounts.get(session.user.id) ?? (await accountStore.read(session.user.id));
     const body = JSON.stringify({
       name: session.user.name.trim().slice(0, 200) || null,
       givenName: session.givenName?.slice(0, 100) || null,
       email: session.user.email?.slice(0, 320) || null,
-      preferredName: account.displayName?.slice(0, 100) || null,
+      preferredName:
+        (welcomeProfiles.get(session.user.id) ?? account.displayName)?.slice(0, 100) || null,
     });
     if (syncedProfiles.get(session.user.id) === body) return;
     const response = await options.runtimes.fetch(
@@ -186,7 +235,8 @@ export async function createGateway(options: {
       { developer: false },
     );
     await response.body?.cancel();
-    if (response.ok) syncedProfiles.set(session.user.id, body);
+    if (!response.ok) throw new Error('Account profile could not be synchronized.');
+    syncedProfiles.set(session.user.id, body);
   }
   const deployment = options.deployment
     ? createDeploymentControl({ ...options.deployment, runtimes: options.runtimes })

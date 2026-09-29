@@ -16,32 +16,45 @@ test(
     const bossSchema = `test_chat_history_boss_${suffix}`;
     const dataRoot = await mkdtemp(join(tmpdir(), 'otto-chat-history-'));
     const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
-    await admin.query(`CREATE SCHEMA ${schema}`);
-    const databaseUrl = new URL(process.env.TEST_DATABASE_URL!);
-    databaseUrl.searchParams.set('options', `-c search_path=${schema}`);
-    process.env.DATABASE_URL = databaseUrl.href;
-    process.env.PGBOSS_SCHEMA = bossSchema;
-    process.env.OTTO_DATA_ROOT = dataRoot;
-    process.env.OTTO_MODE = 'local';
-    const db = await import('../src/server/db.ts');
-    const tasks = await import('../src/server/tasks.ts');
-    const { createApp } = await import('../src/server/app.ts');
-    const { ownerId, port } = await import('../src/server/config.ts');
-    const app = await createApp();
-    const headers = { host: `localhost:${port}` };
-    const get = async <T>(url: string) => {
-      const response = await app.inject({ method: 'GET', url, headers });
-      assert.equal(response.statusCode, 200, `${url} -> ${response.statusCode}: ${response.body}`);
-      return response.json<T>();
-    };
-    const add = async (taskId: string, count: number, start: number) =>
-      db.pool.query(
-        `INSERT INTO messages(id,owner_id,role,text,task_id,created_at)
+    const cleanups: Array<() => Promise<unknown>> = [
+      () => rm(dataRoot, { recursive: true, force: true }),
+      () => admin.end(),
+      () => admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`),
+      () => admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`),
+    ];
+    try {
+      await admin.query(`CREATE SCHEMA ${schema}`);
+      const databaseUrl = new URL(process.env.TEST_DATABASE_URL!);
+      databaseUrl.searchParams.set('options', `-c search_path=${schema}`);
+      process.env.DATABASE_URL = databaseUrl.href;
+      process.env.PGBOSS_SCHEMA = bossSchema;
+      process.env.OTTO_DATA_ROOT = dataRoot;
+      process.env.OTTO_MODE = 'local';
+      const db = await import('../src/server/db.ts');
+      cleanups.push(() => db.pool.end());
+      const tasks = await import('../src/server/tasks.ts');
+      cleanups.push(() => tasks.stopTasks());
+      const { createApp } = await import('../src/server/app.ts');
+      const { ownerId, port } = await import('../src/server/config.ts');
+      const app = await createApp();
+      cleanups.push(() => app.close());
+      const headers = { host: `localhost:${port}` };
+      const get = async <T>(url: string) => {
+        const response = await app.inject({ method: 'GET', url, headers });
+        assert.equal(
+          response.statusCode,
+          200,
+          `${url} -> ${response.statusCode}: ${response.body}`,
+        );
+        return response.json<T>();
+      };
+      const add = async (taskId: string, count: number, start: number) =>
+        db.pool.query(
+          `INSERT INTO messages(id,owner_id,role,text,task_id,created_at)
          SELECT gen_random_uuid(),$1,'assistant','Synthetic '||n,$2,timestamptz '2026-09-01T00:00:00Z'+n*interval '1 second'
          FROM generate_series($3::int,$3::int+$4::int-1) n`,
-        [ownerId, taskId, start, count],
-      );
-    try {
+          [ownerId, taskId, start, count],
+        );
       await db.initializeDatabase();
       await tasks.initializeTasks();
       const taskId = await tasks.submitTask('Synthetic history');
@@ -74,13 +87,15 @@ test(
       assert.equal(longer.messages.length, 60);
       assert.equal(longer.hasMore, true);
     } finally {
-      await app.close();
-      await tasks.stopTasks();
-      await db.pool.end();
-      await admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`);
-      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
-      await admin.end();
-      await rm(dataRoot, { recursive: true, force: true });
+      const errors: unknown[] = [];
+      for (const cleanup of cleanups.reverse()) {
+        try {
+          await cleanup();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (errors.length) throw new AggregateError(errors, 'History fixture cleanup failed.');
     }
   },
 );

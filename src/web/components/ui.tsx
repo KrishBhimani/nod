@@ -121,7 +121,10 @@ export function Switch({
       role="switch"
       aria-checked={checked}
       className={cn('switch', className)}
-      onClick={() => onCheckedChange(!checked)}
+      onClick={(event) => {
+        props.onClick?.(event);
+        if (!event.defaultPrevented) onCheckedChange(!checked);
+      }}
     >
       <span />
     </button>

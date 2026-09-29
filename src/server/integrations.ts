@@ -611,7 +611,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
           task?.revision ?? null,
         ],
       );
-      return { url: attempt.url };
+      return { url: attempt.url, ...(returnTo === 'window' ? { attempt: nonce } : {}) };
     } finally {
       selected.deleteSession(session.id).catch(() => {});
     }
@@ -1317,6 +1317,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         let returnTo: ReturnTarget = 'apps';
         let outcome: 'connected' | 'continued' | 'cancelled' | 'failed' | 'expired' = 'expired';
         let service: string | undefined;
+        let attempt: string | undefined;
         const state = z
           .object({ state: z.string().regex(/^[A-Za-z0-9_-]{43}$/) })
           .safeParse(request.query);
@@ -1329,6 +1330,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
             )
           ).rows[0];
           if (row) {
+            attempt = state.data.state;
             service = row.slug;
             returnTo = Object.hasOwn(returnPaths, row.callback_return_to)
               ? row.callback_return_to
@@ -1366,7 +1368,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
           .header('Referrer-Policy', 'no-referrer')
           .redirect(
             new URL(
-              `${returnPaths[returnTo]}?connection=${outcome}${(returnTo === 'chat' || returnTo === 'window') && service ? `&service=${service}` : ''}`,
+              `${returnPaths[returnTo]}?connection=${outcome}${(returnTo === 'chat' || returnTo === 'window') && service ? `&service=${service}` : ''}${returnTo === 'window' && attempt ? `&attempt=${attempt}` : ''}`,
               options.baseUrl,
             ).href,
           );

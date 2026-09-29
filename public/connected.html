@@ -35,10 +35,13 @@
         const connection = ['connected', 'cancelled', 'failed', 'expired'].includes(result)
           ? result
           : 'failed';
+        const attempt = query.get('attempt');
         try {
-          const channel = new BroadcastChannel('otto.apps');
-          channel.postMessage({ connection, service });
-          channel.close();
+          if (attempt && /^[A-Za-z0-9_-]{43}$/.test(attempt)) {
+            const channel = new BroadcastChannel('otto.apps');
+            channel.postMessage({ connection, service, attempt });
+            channel.close();
+          }
         } catch {}
         window.close();
       })();

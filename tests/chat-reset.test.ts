@@ -422,7 +422,10 @@ test('landing on an empty chat asks Otto to reach out once and shows the greetin
     await act(async () => {
       fixture.element
         .querySelector<HTMLElement & { editor: Editor }>('.ProseMirror')!
-        .editor.commands.setContent('Early message');
+        .editor.commands.setContent({
+          type: 'doc',
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Early message' }] }],
+        });
       await tick();
     });
     const sendButton = () =>
@@ -494,6 +497,46 @@ test('a chat with messages does not ask Otto to reach out', async () => {
     assert.equal(paths.includes('/api/account/welcome'), false);
   } finally {
     await fixture.dispose();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a failed welcome request shows its error and releases the composer', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (path) => {
+    if (path === '/api/account/welcome')
+      return Response.json(
+        { error: 'Otto could not start your welcome. Try again.' },
+        { status: 503 },
+      );
+    if (path === '/api/apps') return Response.json([]);
+    return Response.json({ ...base, messages: [], tasks: [] });
+  };
+  pageDataCache.clear();
+  let fixture: Awaited<ReturnType<typeof mount>> | undefined;
+  try {
+    fixture = await mount();
+    await act(async () => {
+      fixture!.element
+        .querySelector<HTMLElement & { editor: Editor }>('.ProseMirror')!
+        .editor.commands.setContent({
+          type: 'doc',
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Hello Otto' }] }],
+        });
+      await tick();
+    });
+    assert.match(
+      fixture.element.querySelector('[role="alert"]')?.textContent ?? '',
+      /Otto could not start your welcome/,
+    );
+    assert.equal(fixture.element.querySelector('[aria-label="Otto is typing"]'), null);
+    assert.equal(
+      fixture.element.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.disabled,
+      false,
+    );
+  } finally {
+    await fixture?.dispose();
+    pageDataCache.clear();
     globalThis.fetch = originalFetch;
   }
 });

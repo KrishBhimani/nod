@@ -299,7 +299,10 @@ test('the signed-in profile, region and clock reach the model but not observatio
       observed.map((item) => (item as { type: string }).type),
       ['tool_start', 'tool_end', 'model_usage'],
     );
-    assert.ok(events.length >= 2);
+    assert.deepEqual(events, [
+      'tool_start:manage personal context',
+      'tool_complete:manage personal context',
+    ]);
     for (const value of [...observed.map((item) => JSON.stringify(item)), ...events])
       assert.doesNotMatch(value, /Samantha|sam\.synthetic|Sam\b/);
   } finally {

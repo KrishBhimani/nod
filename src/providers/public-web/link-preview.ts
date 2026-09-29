@@ -173,7 +173,8 @@ function icoImage(bytes: Uint8Array) {
   return false;
 }
 
-function iconLink(html: string) {
+function iconLinks(html: string) {
+  const links: string[] = [];
   const document = parse(html);
   const root = document.childNodes.find((node) => node.nodeName === 'html');
   const head =
@@ -185,14 +186,16 @@ function iconLink(html: string) {
     const href = attrs.get('href')?.trim();
     if (
       href &&
-      (rel.includes('icon') || rel.includes('apple-touch-icon')) &&
+      (rel.includes('icon') ||
+        rel.includes('apple-touch-icon') ||
+        rel.includes('apple-touch-icon-precomposed')) &&
       !/svg/i.test(attrs.get('type') ?? '') &&
       !/\.svgz?(?:[?#]|$)/i.test(href) &&
       !/^data:/i.test(href)
     )
-      return href;
+      links.push(href);
   }
-  return null;
+  return [...new Set(links)];
 }
 
 export function createPublicLinkPreviewProvider(
@@ -209,16 +212,25 @@ export function createPublicLinkPreviewProvider(
   ) {
     let current = value;
     for (let redirects = 0; redirects <= 3; redirects++) {
+      signal.throwIfAborted();
       const safe = destination(current);
       if (!safe) throw new Error('Preview destination is not supported.');
-      const resolved = await Promise.race([
-        publicUrl(safe, options.resolver),
-        new Promise<never>((_, reject) =>
-          signal.addEventListener('abort', () => reject(new Error('Preview timed out.')), {
-            once: true,
-          }),
-        ),
-      ]);
+      const resolved = await new Promise<Awaited<ReturnType<typeof publicUrl>>>(
+        (resolve, reject) => {
+          const aborted = () => reject(new Error('Preview timed out.'));
+          signal.addEventListener('abort', aborted, { once: true });
+          void publicUrl(safe, options.resolver).then(
+            (value) => {
+              signal.removeEventListener('abort', aborted);
+              resolve(value);
+            },
+            (error) => {
+              signal.removeEventListener('abort', aborted);
+              reject(error);
+            },
+          );
+        },
+      );
       signal.throwIfAborted();
       const result = await request({
         ...resolved,
@@ -283,8 +295,14 @@ export function createPublicLinkPreviewProvider(
           )
         )
           return null;
-        const href = iconLink(Buffer.from(page.body).toString('utf8'));
-        return href ? await fetchIcon(new URL(href, page.url).href) : null;
+        for (const href of iconLinks(Buffer.from(page.body).toString('utf8'))) {
+          if (signal.aborted) return null;
+          try {
+            const icon = await fetchIcon(new URL(href, page.url).href);
+            if (icon) return icon;
+          } catch {}
+        }
+        return null;
       } catch {
         return null;
       }

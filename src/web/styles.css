@@ -948,7 +948,7 @@ input[type='range']:disabled {
   border: 1px solid var(--border);
   border-radius: 11px;
   background: var(--surface);
-  box-shadow: 0 2px 10px #1b19240d;
+  box-shadow: 0 2px 10px var(--shadow-overlay);
   color: var(--muted-foreground);
   font-size: 11px;
   text-align: center;
@@ -1117,7 +1117,7 @@ input[type='range']:disabled {
   padding: 0 13px 0 11px;
   gap: 6px;
   border-radius: 16px;
-  box-shadow: 0 4px 18px #1b192414;
+  box-shadow: 0 4px 18px var(--shadow-overlay);
   font-variant-numeric: tabular-nums;
   z-index: 3;
   animation: jump-latest-in 160ms ease-out;
@@ -2810,7 +2810,7 @@ input[type='range']:disabled {
     border-radius: 24px 24px 0 0;
     background: var(--surface);
     color: var(--foreground);
-    box-shadow: 0 -16px 48px #0000002e;
+    box-shadow: 0 -16px 48px var(--shadow-overlay);
     overscroll-behavior: contain;
   }
   .mobile-sheet::backdrop {

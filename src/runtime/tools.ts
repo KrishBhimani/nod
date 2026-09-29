@@ -302,7 +302,7 @@ export const toolDefinitions = {
         Type.Literal('not_completed'),
         Type.Literal('unknown'),
       ]),
-      message: Type.String({ minLength: 1, maxLength: 500 }),
+      message: Type.String({ minLength: 1, maxLength: 500, pattern: '\\S' }),
     }),
   ),
   browser_fast_step: defineTool(

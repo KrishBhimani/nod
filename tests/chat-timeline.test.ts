@@ -213,7 +213,9 @@ test('Back to latest uses hysteresis, counts new replies and keeps a history loa
   assert.ok(fixture.button(/Load earlier messages/));
 });
 
-test('user input during a jump to the latest message releases the bottom lock', async () => {
+test('user input during a jump to the latest message releases the bottom lock', async (t) => {
+  const now = Date.now();
+  t.mock.method(Date, 'now', () => now);
   const fixture = await mount(base);
   await fixture.scrollTo(1000);
   await act(async () => fixture.button(/Back to latest/)!.click());

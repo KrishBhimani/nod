@@ -425,3 +425,9 @@
 .channels-page .channel-option.is-coming-soon h3 {
   opacity: 0.6;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .channel-pairing-signal::after {
+    animation: none;
+  }
+}

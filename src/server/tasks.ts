@@ -1530,7 +1530,7 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
                 return;
               }
               await client.query(
-                "UPDATE tasks SET status='queued',revision=$2,prompt=$3,recovery_mode=NULL,external_action=false,fresh_session=$4=1,recovery_attempts=recovery_attempts+$4,waiting_reason=NULL,waiting_question=NULL,updated_at=now() WHERE id=$1",
+                "UPDATE tasks SET status='queued',revision=$2,prompt=$3,recovery_mode=NULL,external_action=false,fresh_session=($4=1),recovery_attempts=recovery_attempts+$4,waiting_reason=NULL,waiting_question=NULL,updated_at=now() WHERE id=$1",
                 [
                   taskId,
                   next,

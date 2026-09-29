@@ -37,7 +37,22 @@ function useSavedDateFormat() {
   useEffect(() => {
     if (!data) return;
     setDateFormat(data);
-    if (!data.locale) saveBrowserLocale();
+    if (data.locale) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let delay = 1000;
+    const save = () => {
+      void saveBrowserLocale(controller.signal).catch(() => {
+        if (controller.signal.aborted) return;
+        timer = setTimeout(save, delay);
+        delay = Math.min(delay * 2, 30_000);
+      });
+    };
+    save();
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
   }, [data]);
 }
 
@@ -65,6 +80,7 @@ function Workspace({
   const [collapsed, setCollapsed] = useState(
     () => readUiPreference('otto.sidebar') === 'collapsed',
   );
+  const [pendingMessageFocus, setPendingMessageFocus] = useState<string>();
   const [inspectionFocus, setInspectionFocus] = useState<{ messageId: string; taskId: string }>();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<AccountTab>('Profile');
@@ -98,7 +114,10 @@ function Workspace({
   useEffect(() => {
     const focusMessage = (event: Event) => {
       const detail = (event as CustomEvent<{ messageId?: unknown }>).detail;
-      if (typeof detail?.messageId === 'string') navigate('/');
+      if (typeof detail?.messageId === 'string') {
+        if (!state) setPendingMessageFocus(detail.messageId);
+        navigate('/');
+      }
     };
     const inspect = (event: Event) => {
       if (!developer) return;
@@ -113,7 +132,7 @@ function Workspace({
       window.removeEventListener('otto:focus-message', focusMessage);
       window.removeEventListener('otto:inspect-message', inspect);
     };
-  }, [developer]);
+  }, [developer, state]);
   const currentPath = path === '/dev' || path === '/you' ? '/' : path;
   const loaded = !!state;
   const hasMessages = state ? state.messages.length > 0 : null;
@@ -201,6 +220,7 @@ function Workspace({
                   streams={streams}
                   refresh={refresh}
                   resetConversation={resetConversation}
+                  initialFocusMessageId={pendingMessageFocus}
                 />
               ) : error ? (
                 <div className="initial-loading">

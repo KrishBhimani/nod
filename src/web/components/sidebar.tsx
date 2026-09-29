@@ -332,6 +332,7 @@ export function Sidebar({
                   }}
                   close={closeMobileMenu}
                   shortcuts={false}
+                  menu={false}
                 />
               ) : (
                 <button type="button" onClick={toggleTheme}>

@@ -144,8 +144,8 @@ export async function createApp(dependencies: AppDependencies = {}) {
   async function messageTasks(ids: string[]): Promise<Task[]> {
     if (!ids.length) return [];
     const result = await pool.query(
-      `SELECT id,title,status,error,created_at AS "createdAt",updated_at AS "updatedAt",(source='user') AS "showTyping" FROM tasks t WHERE owner_id=$1 AND channel='web' AND ${currentConversationSql()} AND id=ANY($2::uuid[])`,
-      [ownerId, [...new Set(ids)]],
+      `SELECT id,title,status,error,created_at AS "createdAt",updated_at AS "updatedAt",(source='user' OR source_id=$3) AS "showTyping" FROM tasks t WHERE owner_id=$1 AND channel='web' AND ${currentConversationSql()} AND id=ANY($2::uuid[])`,
+      [ownerId, [...new Set(ids)], welcomeSourceId],
     );
     const costs = await dependencies.providerUsage
       ?.taskCosts(result.rows.map((task) => task.id))

@@ -143,3 +143,50 @@ test('a prefetched read serves the first page visit without a second loading sta
   });
   visit();
 });
+
+test('unused prefetches expire before the first visit while visited pages retain last-good data', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1_000 });
+  const { cache, requests } = fixture();
+  try {
+    const read = cache.refresh('/api/vault');
+    await Promise.resolve();
+    requests[0].resolve([{ id: 'old-login' }]);
+    await read;
+    assert.deepEqual(cache.getSnapshot('/api/vault').data, [{ id: 'old-login' }]);
+    t.mock.timers.tick(30_000);
+    assert.equal(cache.getSnapshot('/api/vault').data, null);
+    assert.equal(cache.getSnapshot('/api/vault').loading, true);
+    const stop = cache.subscribe('/api/vault', () => {});
+    const fresh = cache.refresh('/api/vault');
+    await Promise.resolve();
+    requests[1].resolve([{ id: 'current-login' }]);
+    await fresh;
+    stop();
+    t.mock.timers.tick(60_000);
+    assert.deepEqual(cache.getSnapshot('/api/vault').data, [{ id: 'current-login' }]);
+  } finally {
+    cache.clear();
+    t.mock.timers.reset();
+  }
+});
+
+test('state events invalidate unused prefetches and fence their late responses', async () => {
+  const { cache, requests } = fixture();
+  try {
+    const read = cache.refresh('/api/apps');
+    await Promise.resolve();
+    cache.revalidateActive();
+    assert.equal(requests[0].signal.aborted, true);
+    requests[0].resolve([{ id: 'removed-account' }]);
+    await read;
+    assert.equal(cache.getSnapshot('/api/apps').data, null);
+    const fresh = cache.refresh('/api/apps');
+    await Promise.resolve();
+    requests[1].resolve([{ id: 'current-account' }]);
+    await fresh;
+    cache.revalidateActive();
+    assert.equal(cache.getSnapshot('/api/apps').data, null);
+  } finally {
+    cache.clear();
+  }
+});

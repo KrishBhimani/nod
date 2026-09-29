@@ -51,6 +51,7 @@ test('sidebar exposes navigation shortcuts, keyboard focus and modifier hints wi
   let toggles = 0;
   let inspections = 0;
   let restarts = 0;
+  const desktopWidth = window.innerWidth;
   try {
     await act(async () =>
       root.render(
@@ -98,7 +99,6 @@ test('sidebar exposes navigation shortcuts, keyboard focus and modifier hints wi
     assert.equal(document.activeElement, links[0]);
     const more = element.querySelector<HTMLButtonElement>('[aria-label="Navigation menu"]')!;
     const sheet = element.querySelector<HTMLDialogElement>('dialog.mobile-sheet')!;
-    const desktopWidth = window.innerWidth;
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
     await act(async () => more.click());
     assert.equal(sheet.open, true);
@@ -232,6 +232,7 @@ test('sidebar exposes navigation shortcuts, keyboard focus and modifier hints wi
       'false',
     );
   } finally {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: desktopWidth });
     await act(async () => root.unmount());
     element.remove();
   }
@@ -405,6 +406,11 @@ test('small screens use a chat-first top bar and a section sheet without shortcu
     assert.equal(trigger.getAttribute('aria-expanded'), 'false');
     assert.equal(document.activeElement, trigger);
     await open();
+    assert.equal(sheet.querySelector('[role^=menuitem]'), null);
+    assert.equal(
+      sheet.querySelector('[aria-label="System theme"]')?.getAttribute('aria-pressed'),
+      'true',
+    );
     await act(async () => sheet.querySelector<HTMLElement>('.mobile-sheet-body')!.click());
     assert.equal(sheet.open, true);
     await act(async () => sheet.dispatchEvent(new MouseEvent('click', { bubbles: true })));

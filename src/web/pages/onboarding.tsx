@@ -40,6 +40,7 @@ export function Onboarding({
   const [preparation, setPreparation] = useState<'pending' | 'ready' | 'failed'>('pending');
   const preparationRequest = useRef<AbortController | null>(null);
   const actions = useRef(new Map<IntegrationService, AbortController>());
+  const attempts = useRef(new Map<IntegrationService, string>());
   const active = useRef(false);
   useEffect(() => {
     active.current = true;
@@ -57,10 +58,24 @@ export function Onboarding({
       typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel('otto.apps');
     if (channel)
       channel.onmessage = (
-        event: MessageEvent<{ connection?: string; service?: string | null } | null>,
+        event: MessageEvent<{
+          connection?: string;
+          service?: string | null;
+          attempt?: string;
+        } | null>,
       ) => {
-        setError(connectionMessage(event.data?.connection ?? null));
-        settle(event.data?.service);
+        const { connection, service, attempt } = event.data ?? {};
+        if (
+          !service ||
+          !integrationServiceIds.includes(service as IntegrationService) ||
+          !attempt ||
+          attempts.current.get(service as IntegrationService) !== attempt ||
+          !['connected', 'cancelled', 'failed', 'expired'].includes(connection ?? '')
+        )
+          return;
+        attempts.current.delete(service as IntegrationService);
+        setError(connectionMessage(connection ?? null));
+        settle(service);
         void refresh();
       };
     const focus = () => settle();
@@ -72,6 +87,7 @@ export function Onboarding({
       window.removeEventListener('focus', focus);
       for (const request of actions.current.values()) request.abort();
       actions.current.clear();
+      attempts.current.clear();
       preparationRequest.current?.abort();
     };
   }, [user.id]);
@@ -110,11 +126,12 @@ export function Onboarding({
     } catch {}
     const request = new AbortController();
     actions.current.set(slug, request);
+    attempts.current.delete(slug);
     track(slug, 'opening');
     setError('');
     let next: Pending | undefined;
     try {
-      const response = await api<{ url: string }>(`/api/apps/${slug}/connect`, {
+      const response = await api<{ url: string; attempt?: string }>(`/api/apps/${slug}/connect`, {
         method: 'POST',
         body: JSON.stringify({ returnTo: popup ? 'window' : 'onboarding' }),
         signal: request.signal,
@@ -125,6 +142,9 @@ export function Onboarding({
         next = 'opening';
         window.location.assign(url);
       } else if (!popup.closed) {
+        if (!response.attempt || !/^[A-Za-z0-9_-]{43}$/.test(response.attempt))
+          throw new Error('The app could not connect. Try again.');
+        attempts.current.set(slug, response.attempt);
         next = 'waiting';
         popup.location.href = url;
       }

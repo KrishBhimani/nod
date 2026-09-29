@@ -158,6 +158,19 @@ test(
       });
       assert.equal(legacyPut.statusCode, 200);
       assert.equal(legacyPut.json().quietHoursEnabled, false);
+      const original = (await app.inject({ url: '/api/preferences' })).json();
+      assert.equal(original.locale, null);
+      const roundTrip = await app.inject({
+        method: 'PUT',
+        url: '/api/preferences',
+        payload: original,
+      });
+      assert.equal(roundTrip.statusCode, 200);
+      assert.deepEqual(roundTrip.json(), original);
+      await updatePreferences({ locale: 'pt-PT' });
+      assert.equal((await updatePreferences({ locale: null })).locale, null);
+      await updatePreferences({ locale: 'en-US' });
+      assert.equal((await updatePreferences({ timeZone: 'UTC' })).locale, 'en-US');
       const foreign = await app.inject({
         method: 'PATCH',
         url: '/api/preferences',

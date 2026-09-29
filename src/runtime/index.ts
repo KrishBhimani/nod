@@ -96,6 +96,12 @@ const readOnlyActions: Record<string, string[]> = {
 const readOnlyRefusal =
   'This task can only read. Use app reads, and browser open, snapshot or scroll.';
 
+class ReadOnlyTaskError extends Error {
+  constructor() {
+    super(readOnlyRefusal);
+  }
+}
+
 function allowedReadOnly(name: string, params: unknown) {
   const action = String((params as { action?: unknown }).action);
   return (
@@ -318,6 +324,8 @@ export function createAgentRuntime(dependencies: {
     };
     const inspectSignInRequest = async (text: string) => {
       if (!needsPrivateInputHandling(text)) return;
+      context.signal.throwIfAborted();
+      if (context.readOnly || context.checkOutcome) throw new ReadOnlyTaskError();
       if (requestsApiKey(text))
         return {
           outcome: 'private_configuration_required',
@@ -450,21 +458,11 @@ export function createAgentRuntime(dependencies: {
             input: params,
             startedAt: new Date().toISOString(),
           });
-          if ((context.readOnly || context.checkOutcome) && !allowedReadOnly(name, params)) {
-            await observe({
-              type: 'tool_end',
-              id,
-              name,
-              status: 'failed',
-              error: readOnlyRefusal,
-              finishedAt: new Date().toISOString(),
-              durationMs: performance.now() - started,
-            });
-            throw new Error(readOnlyRefusal);
-          }
           let result: AgentToolResult;
           try {
             context.signal.throwIfAborted();
+            if ((context.readOnly || context.checkOutcome) && !allowedReadOnly(name, params))
+              throw new ReadOnlyTaskError();
             await pendingReplies;
             context.signal.throwIfAborted();
             if (stopped || status !== 'succeeded')
@@ -520,21 +518,23 @@ export function createAgentRuntime(dependencies: {
               error.code === 'browser_click_intercepted';
             const failure = context.signal.aborted
               ? 'The action was cancelled.'
-              : workspaceFailure
-                ? `The workspace command exited with code ${workspaceFailure.exitCode}.`
-                : browserFailure
-                  ? browserFailure
-                  : screenshotFailure
-                    ? screenshotFailure
-                    : name === 'apps' || name === 'download_app_file'
-                      ? 'The connected-account request could not be completed. Check the selected account and the discovered argument schema before retrying.'
-                      : ['request_credentials', 'inspect_login', 'select_login_method'].includes(
-                            name,
-                          )
-                        ? 'The sign-in step could not be prepared. Inspect the current page and request secure entry again.'
-                        : name === 'create_audio'
-                          ? 'Audio generation is not available right now.'
-                          : 'The action could not be completed. Check the current state before trying again; do not assume it succeeded.';
+              : error instanceof ReadOnlyTaskError
+                ? readOnlyRefusal
+                : workspaceFailure
+                  ? `The workspace command exited with code ${workspaceFailure.exitCode}.`
+                  : browserFailure
+                    ? browserFailure
+                    : screenshotFailure
+                      ? screenshotFailure
+                      : name === 'apps' || name === 'download_app_file'
+                        ? 'The connected-account request could not be completed. Check the selected account and the discovered argument schema before retrying.'
+                        : ['request_credentials', 'inspect_login', 'select_login_method'].includes(
+                              name,
+                            )
+                          ? 'The sign-in step could not be prepared. Inspect the current page and request secure entry again.'
+                          : name === 'create_audio'
+                            ? 'Audio generation is not available right now.'
+                            : 'The action could not be completed. Check the current state before trying again; do not assume it succeeded.';
             await observe({
               type: 'tool_end',
               id,

@@ -419,8 +419,10 @@ for (const change of ['owner', 'epoch', 'signout'] as const)
 test('opening the stream keeps an in-flight state read and queues one follow-up read', async (t) => {
   const f = await fixture(t);
   const reads: Array<{ signal: AbortSignal; finish(response: Response): void }> = [];
-  globalThis.fetch = (_path, options) =>
-    new Promise((resolve) => reads.push({ signal: options!.signal!, finish: resolve }));
+  globalThis.fetch = (path, options) => {
+    assert.equal(path, '/api/state');
+    return new Promise((resolve) => reads.push({ signal: options!.signal!, finish: resolve }));
+  };
   const source = Events.all[0];
   await act(async () => source.emit({ type: 'refresh' }));
   assert.equal(reads.length, 1);

@@ -6,7 +6,7 @@ import {
   timingSafeEqual,
 } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 import {
   ChannelSetupFailure,
@@ -141,7 +141,7 @@ export async function createChannelSettings(
     keyStore: CredentialKeyStore;
     verifier: ChannelSetupVerifier;
     apply(environment: Record<string, string>): Promise<void>;
-    paired?(candidate: TelegramPairingCandidate): Promise<void>;
+    paired?(candidate: TelegramPairingCandidate, client: PoolClient): Promise<() => void>;
   },
 ) {
   const owner = z.string().min(1).max(200).parse(options.ownerId);
@@ -392,6 +392,7 @@ export async function createChannelSettings(
     next: Record<string, string>,
     summary: ChannelSetupSummary,
     apply: boolean,
+    candidate?: TelegramPairingCandidate,
   ) {
     const oldEnvironment = apply ? await environment() : {};
     const client = await pool.connect();
@@ -414,7 +415,9 @@ export async function createChannelSettings(
           ),
           ...next,
         });
+      const notify = candidate ? await options.paired?.(candidate, client) : undefined;
       await client.query('COMMIT');
+      return notify;
     } catch (error) {
       await client.query('ROLLBACK');
       if (apply)
@@ -496,15 +499,16 @@ export async function createChannelSettings(
         allowedUserId: id,
         ...(candidate ? { pairedUser: candidate.senderName } : {}),
       });
-      await replaceTelegram(
+      const notify = await replaceTelegram(
         row,
         { ...withoutPairing(configured), TELEGRAM_ALLOWED_USER_ID: id },
         summary,
         true,
+        candidate,
       );
-      return { summary, candidate };
+      return { summary, notify };
     });
-    if (bound.candidate) await options.paired?.(bound.candidate).catch(() => {});
+    bound.notify?.();
     return { ok: true, channel: bound.summary };
   }
   async function restartPairing() {

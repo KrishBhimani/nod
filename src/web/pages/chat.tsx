@@ -86,11 +86,13 @@ export function Chat({
   streams,
   refresh,
   resetConversation,
+  initialFocusMessageId,
 }: {
   state: AppState;
   streams: Record<string, string>;
   refresh(): Promise<void>;
   resetConversation(): Promise<number>;
+  initialFocusMessageId?: string;
 }) {
   const dateFormat = useDateFormat();
   const [text, setText] = useState('');
@@ -99,7 +101,9 @@ export function Chat({
   const [error, setError] = useState('');
   const [connectionNotice, setConnectionNotice] = useState('');
   const [replyTo, setReplyTo] = useState<Message | null>(null);
-  const [focusTarget, setFocusTarget] = useState<{ id: string; pages: number } | null>(null);
+  const [focusTarget, setFocusTarget] = useState<{ id: string; pages: number } | null>(() =>
+    initialFocusMessageId ? { id: initialFocusMessageId, pages: 0 } : null,
+  );
   const [optimistic, setOptimistic] = useState<Array<{ revision: number; message: Message }>>([]);
   const composer = useRef<ComposerHandle>(null);
   const sendLock = useRef<{ id: string; revision: number } | null>(null);
@@ -152,7 +156,7 @@ export function Chat({
     if (!welcoming) return;
     void post('/api/account/welcome', {})
       .then(() => refresh())
-      .catch(() => {})
+      .catch((cause) => setError(errorMessage(cause)))
       .finally(() => setWelcoming(false));
   }, []);
   const pick = (label: string) => {

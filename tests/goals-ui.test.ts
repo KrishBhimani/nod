@@ -144,7 +144,12 @@ test('goal controls save first-party changes in place with Undo and never open c
     { ...goal, id: 'done-goal', title: 'Finished review', status: 'completed', progress: 100 },
   ];
   const patches: Array<{ path: string; body: Record<string, unknown> }> = [];
+  const chatEvents: string[] = [];
+  const onChat = (event: Event) => chatEvents.push(event.type);
+  window.addEventListener('otto:compose', onChat);
+  window.addEventListener('otto:focus-message', onChat);
   globalThis.fetch = async (path, options) => {
+    assert.notEqual(path, '/api/messages');
     if (options?.method === 'PATCH') {
       const body = JSON.parse(String(options.body)) as Record<string, unknown>;
       patches.push({ path: String(path), body });
@@ -191,7 +196,10 @@ test('goal controls save first-party changes in place with Undo and never open c
     assert.ok(completed.querySelector('progress'));
     assert.ok(completed.querySelector('[aria-label="Ask Otto about Finished review"]'));
     assert.ok(completed.querySelector('[aria-label="Delete goal Finished review"]'));
+    assert.deepEqual(chatEvents, []);
   } finally {
+    window.removeEventListener('otto:compose', onChat);
+    window.removeEventListener('otto:focus-message', onChat);
     await act(async () => root.unmount());
     container.remove();
     pageDataCache.update('/api/goals', () => null);

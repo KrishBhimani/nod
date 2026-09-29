@@ -23,6 +23,7 @@ for (const key of [
   'MouseEvent',
   'KeyboardEvent',
   'CustomEvent',
+  'PopStateEvent',
   'getComputedStyle',
   'requestAnimationFrame',
   'cancelAnimationFrame',
@@ -246,6 +247,7 @@ test('authenticated workspace binds SSE to its account, supports settings shortc
 
 test('the workspace shell shows a chat skeleton and mounts prefetched pages before app state arrives', async () => {
   const previous = globalThis.fetch;
+  const previousUrl = window.location.href;
   window.history.replaceState(null, '', '/');
   const requests: string[] = [];
   let stateSignal: AbortSignal | null | undefined;
@@ -313,6 +315,7 @@ test('the workspace shell shows a chat skeleton and mounts prefetched pages befo
       Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scrollIntoView);
     else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
     window.localStorage.removeItem('otto.chat-layout');
+    window.history.replaceState(null, '', previousUrl);
   }
 });
 
@@ -345,5 +348,104 @@ test('the startup ghost follows the last chat layout and says little until a sta
   } finally {
     window.localStorage.removeItem('otto.chat-layout');
     element.remove();
+  }
+});
+
+test('Open conversation before app state arrives keeps the target and loads its history', async () => {
+  const previousFetch = globalThis.fetch;
+  const previousUrl = window.location.href;
+  const previousScroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+  const previousMedia = window.matchMedia;
+  const scrolled: string[] = [];
+  HTMLElement.prototype.scrollIntoView = function () {
+    if (this.dataset.messageId) scrolled.push(this.dataset.messageId);
+  };
+  window.matchMedia = (() => ({
+    matches: false,
+    addEventListener() {},
+    removeEventListener() {},
+  })) as unknown as typeof window.matchMedia;
+  const target = {
+    id: 'requested-message',
+    role: 'user',
+    text: 'Adjust my plan',
+    taskId: null,
+    attachments: [],
+    createdAt: '2026-09-28T10:00:00Z',
+  };
+  const state = {
+    conversationRevision: 3,
+    hasEarlierMessages: true,
+    messages: [
+      {
+        ...target,
+        id: 'recent-message',
+        text: 'Latest conversation',
+        createdAt: '2026-09-29T10:00:00Z',
+      },
+    ],
+    tasks: [],
+    configuration: {
+      provider: 'fixture',
+      model: 'fixture',
+      llmReady: true,
+      speechReady: false,
+      integrationsReady: false,
+      browserAssistReady: false,
+      inspectorEnabled: false,
+      localOnly: false,
+    },
+  };
+  let finishState!: (response: Response) => void;
+  const history: string[] = [];
+  globalThis.fetch = async (url) => {
+    const path = String(url);
+    if (path === '/api/session') return Response.json(account);
+    if (path === '/api/state')
+      return new Promise((resolve) => {
+        finishState = resolve;
+      });
+    if (path.startsWith('/api/messages?')) {
+      history.push(path);
+      return Response.json({ conversationRevision: 3, messages: [target], hasMore: false });
+    }
+    return Response.json([]);
+  };
+  sessionStore.invalidate();
+  window.history.replaceState(null, '', '/goals');
+  const element = document.createElement('div');
+  document.body.append(element);
+  const root = createRoot(element);
+  try {
+    await act(async () => root.render(createElement(App)));
+    assert.ok(element.querySelector('.chat-skeleton'));
+    await act(async () =>
+      window.dispatchEvent(
+        new CustomEvent('otto:focus-message', { detail: { messageId: target.id } }),
+      ),
+    );
+    assert.equal(window.location.pathname, '/');
+    assert.equal(element.querySelector<HTMLElement>('.chat-route')!.hidden, false);
+    await act(async () => finishState(Response.json(state)));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 30)));
+    assert.equal(history.length, 1);
+    const query = new URL(history[0], window.location.origin).searchParams;
+    assert.equal(query.get('beforeId'), 'recent-message');
+    assert.equal(query.get('conversationRevision'), '3');
+    const message = element.querySelector<HTMLElement>('[data-message-id="requested-message"]');
+    assert.ok(message);
+    assert.equal(document.activeElement, message);
+    assert.ok(message.classList.contains('message-focused'));
+    assert.ok(scrolled.includes(target.id));
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
+    sessionStore.invalidate();
+    globalThis.fetch = previousFetch;
+    window.history.replaceState(null, '', previousUrl);
+    window.matchMedia = previousMedia;
+    if (previousScroll)
+      Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', previousScroll);
+    else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
   }
 });

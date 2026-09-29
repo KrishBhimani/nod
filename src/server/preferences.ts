@@ -6,16 +6,14 @@ export const preferencesSchema = z
   .object({
     notificationRule: z.string().max(4000),
     timeZone: z.string().max(100),
-    locale: z.string().trim().min(2).max(35),
+    locale: z.string().trim().min(2).max(35).nullable(),
     hourCycle: z.enum(hourCycles),
     quietHoursEnabled: z.boolean(),
     quietStart: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
     quietEnd: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
   })
   .strict();
-export type Preferences = Omit<z.infer<typeof preferencesSchema>, 'locale'> & {
-  locale: string | null;
-};
+export type Preferences = z.infer<typeof preferencesSchema>;
 export const defaultLocale = 'en-GB';
 export const defaultPreferences: Preferences = {
   notificationRule:
@@ -46,7 +44,7 @@ export function createPreferencesStore(pool: Pool, ownerId: string) {
         throw Object.assign(new Error('Choose a valid time zone.'), { statusCode: 400 });
       }
     }
-    if (patch.locale !== undefined) {
+    if (patch.locale !== undefined && patch.locale !== null) {
       const locale = canonicalLocale(patch.locale);
       if (!locale) throw Object.assign(new Error('Choose a valid region.'), { statusCode: 400 });
       patch.locale = locale;
@@ -68,7 +66,7 @@ export function createPreferencesStore(pool: Pool, ownerId: string) {
         VALUES($1,COALESCE($2,$7),COALESCE($3,$8),COALESCE($4,$9),COALESCE($5,$10),COALESCE($6::boolean,$11::boolean),$12,COALESCE($13,$14))
         ON CONFLICT(owner_id) DO UPDATE SET notification_rule=COALESCE($2,preferences.notification_rule),
         time_zone=COALESCE($3,preferences.time_zone),quiet_start=COALESCE($4,preferences.quiet_start),quiet_end=COALESCE($5,preferences.quiet_end),
-        quiet_hours_enabled=COALESCE($6,preferences.quiet_hours_enabled),locale=COALESCE($12,preferences.locale),
+        quiet_hours_enabled=COALESCE($6,preferences.quiet_hours_enabled),locale=CASE WHEN $15 THEN $12 ELSE preferences.locale END,
         hour_cycle=COALESCE($13,preferences.hour_cycle)
         RETURNING ${columns}`,
         [
@@ -86,6 +84,7 @@ export function createPreferencesStore(pool: Pool, ownerId: string) {
           patch.locale ?? null,
           patch.hourCycle ?? null,
           defaultPreferences.hourCycle,
+          patch.locale !== undefined,
         ],
       );
       return result.rows[0];

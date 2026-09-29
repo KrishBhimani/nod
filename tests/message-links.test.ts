@@ -177,3 +177,42 @@ test('plain Vault request paths use the canonical label', () => {
   assert.match(result, /href="\/vault\/private-link"/);
   assert.doesNotMatch(result, /token=hidden|#fragment/);
 });
+
+test('Markdown code blocks and spans never create setup actions', () => {
+  const path = '/vault/code-example';
+  for (const text of [
+    `~~~md\n[Add login](${path})\n~~~`,
+    `\`\`\`\`md\n\`\`\`\n[Add login](${path})\n\`\`\`\``,
+    `    [Add login](${path})`,
+    `\t[Add login](${path})`,
+    `\`\`[Add login](${path}) and \`literal\`\``,
+    `~~~\n${path}`,
+  ]) {
+    assert.deepEqual(messageSetupLinks(text, origin), [], text);
+    assert.doesNotMatch(render(text), /setup-group/, text);
+  }
+});
+
+test('reference setup links share Markdown parsing and first-definition semantics', () => {
+  const text =
+    '[Add login][saved] and [Connect Gmail][app].\n\n[saved]: /vault/one\n[saved]: /vault/two\n[app]: https://accounts.example.com/connect';
+  assert.deepEqual(messageSetupLinks(text, origin), [
+    { href: '/vault/one', setup: 'vault', label: 'Add login' },
+    { href: 'https://accounts.example.com/connect', setup: 'app', label: 'Connect Gmail' },
+  ]);
+  assert.equal((render(text).match(/class="setup-phrase"/g) ?? []).length, 2);
+});
+
+test('plain browser connection paths hide their token behind one fixed action', () => {
+  const path = `/browser-connect/${'x'.repeat(43)}`;
+  const text = `Continue at ${path}?token=hidden#fragment. Again ${path}.`;
+  assert.deepEqual(messageSetupLinks(text, origin), [
+    { href: path, setup: 'website', label: 'Connect website' },
+  ]);
+  const [body, actions] = render(text).split('<div class="setup-group">');
+  assert.doesNotMatch(body, /xxxx|token=hidden|fragment/);
+  assert.equal((body.match(/Connect website/g) ?? []).length, 2);
+  assert.equal((actions.match(/data-setup="website"/g) ?? []).length, 1);
+  for (const token of ['x'.repeat(42), 'x'.repeat(44)])
+    assert.deepEqual(messageSetupLinks(`/browser-connect/${token}`, origin), []);
+});

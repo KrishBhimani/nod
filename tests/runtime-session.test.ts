@@ -2719,3 +2719,174 @@ test('an outcome check that cannot verify asks one plain question', async () => 
   assert.equal(result.result.status, 'waiting_user');
   assert.deepEqual(questions, ['Did the fixture email reach Sam?']);
 });
+
+test('read-only replies cannot request credentials or select a login method', async () => {
+  for (const method of ['credentials', 'oauth'] as const) {
+    for (const mode of ['tool', 'final', 'outcome'] as const) {
+      let inspections = 0;
+      let credentials = 0;
+      let selections = 0;
+      const observations: RuntimeObservation[] = [];
+      const running = fixture(
+        async (tools, emit) => {
+          const text = 'Enter your password to continue.';
+          if (mode === 'tool')
+            await assert.rejects(call(tools, 'send_message', { text }), /This task can only read/);
+          else emit({ type: 'final', text });
+        },
+        {
+          readOnly: mode !== 'outcome',
+          checkOutcome: mode === 'outcome',
+          background: mode === 'tool',
+          requestCredential: async () => {
+            credentials++;
+            return { filled: true };
+          },
+          observe: async (event) => {
+            observations.push(event);
+          },
+        },
+        {
+          computer: fakeComputer({
+            inspectLogin: async () => {
+              inspections++;
+              return {
+                origin: 'https://example.com',
+                url: 'https://example.com/login',
+                fields:
+                  method === 'credentials'
+                    ? [{ kind: 'password', selector: '#password', label: 'Password' }]
+                    : [],
+                methods: [
+                  {
+                    id: method === 'credentials' ? 'credentials' : 'google',
+                    kind: method,
+                    label: method === 'credentials' ? 'Password' : 'Google',
+                    supported: true,
+                    ...(method === 'oauth' ? { selector: '#google' } : {}),
+                  },
+                ],
+              };
+            },
+            selectLoginMethod: async () => {
+              selections++;
+            },
+          }),
+        },
+      );
+      if (mode === 'tool') {
+        const result = await running;
+        assert.deepEqual(result.replies, []);
+        assert.equal(result.result.status, 'succeeded');
+        const end = observations.find((event) => event.type === 'tool_end');
+        assert.equal(end?.type === 'tool_end' && end.status, 'failed');
+        assert.match(end?.type === 'tool_end' ? (end.error ?? '') : '', /This task can only read/);
+      } else await assert.rejects(running, /This task can only read/);
+      assert.equal(inspections, 0, `${method} ${mode} inspection`);
+      assert.equal(credentials, 0, `${method} ${mode} credentials`);
+      assert.equal(selections, 0, `${method} ${mode} selection`);
+    }
+  }
+});
+
+test('cancellation while observing a refused read-only tool still records a cancelled end', async () => {
+  const controller = new AbortController();
+  const observations: RuntimeObservation[] = [];
+  let commands = 0;
+  await assert.rejects(
+    fixture(
+      async (tools) => {
+        await assert.rejects(call(tools, 'shell', { command: 'true' }), /cancelled/);
+      },
+      {
+        readOnly: true,
+        signal: controller.signal,
+        observe: async (event) => {
+          observations.push(event);
+          if (event.type === 'tool_start') controller.abort();
+        },
+      },
+      {
+        workspace: fakeWorkspace({
+          open: () => ({
+            path: '/fixture/workspace',
+            instructions: 'Fixture workspace only.',
+            execute: async () => {
+              commands++;
+              return 'Unexpected command';
+            },
+            readFile: async () => 'Fixture content',
+            writeFile: async () => 'File saved',
+          }),
+        }),
+      },
+    ),
+    /abort/i,
+  );
+  assert.equal(commands, 0);
+  assert.deepEqual(
+    observations.map((event) => event.type),
+    ['tool_start', 'tool_end'],
+  );
+  const end = observations.at(-1);
+  assert.equal(end?.type === 'tool_end' && end.status, 'cancelled');
+  assert.equal(end?.type === 'tool_end' && end.error, 'The action was cancelled.');
+});
+
+test('read-only app downloads keep the owned callback and ordinary findings reply', async () => {
+  const downloads: string[] = [];
+  const delivered = {
+    id: randomUUID(),
+    name: 'fixture.txt',
+    mimeType: 'text/plain',
+    size: 7,
+    url: '/api/artifacts/fixture-file',
+  };
+  const result = await fixture(
+    async (tools) => {
+      for (const name of ['download_app_file', 'apps']) {
+        const response = await call(tools, name, {
+          action: 'GMAIL_GET_ATTACHMENT',
+          args: { connectionId: 'fixture-account', message_id: 'mail-1', attachment_id: 'file-1' },
+        });
+        const first = response.content[0];
+        assert.deepEqual(first.type === 'text' && JSON.parse(first.text), delivered);
+      }
+      await assert.rejects(
+        call(tools, 'download_app_file', { action: 'GMAIL_SEND_EMAIL', args: {} }),
+        /schema/,
+      );
+      await call(tools, 'send_message', { text: 'I found the invoice.' });
+    },
+    {
+      readOnly: true,
+      background: true,
+      downloadIntegrationFile: async (action) => {
+        downloads.push(action);
+        return delivered;
+      },
+    },
+  );
+  assert.deepEqual(downloads, ['GMAIL_GET_ATTACHMENT', 'GMAIL_GET_ATTACHMENT']);
+  assert.deepEqual(result.replies, ['I found the invoice.']);
+  assert.deepEqual(result.result, { status: 'succeeded' });
+});
+
+test('outcome reports reject whitespace before recording a reply or resuming work', async () => {
+  const reports: unknown[] = [];
+  const result = await fixture(
+    async (tools) => {
+      for (const outcome of ['completed', 'not_completed', 'unknown'])
+        for (const message of ['   ', '\n\t'])
+          await assert.rejects(call(tools, 'report_outcome', { outcome, message }), /schema/);
+    },
+    {
+      checkOutcome: true,
+      reportOutcome: async (...args) => {
+        reports.push(args);
+      },
+    },
+  );
+  assert.deepEqual(reports, []);
+  assert.deepEqual(result.replies, []);
+});
