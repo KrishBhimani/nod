@@ -1388,19 +1388,39 @@ export function createAgentBrowserComputer(options: {
                 ),
               )
             : undefined;
+          const socket = await manualSocket(state);
           const result = await evaluate(
             state,
-            credentialScript(input.origin, fields, input.submitSelector),
+            credentialScript(input.origin, fields, input.submitSelector, attempt),
           );
-          if (!(result && typeof result === 'object' && 'ok' in result && result.ok))
+          if (
+            !result ||
+            typeof result !== 'object' ||
+            !('ok' in result) ||
+            !result.ok ||
+            !('counts' in result) ||
+            !Array.isArray(result.counts) ||
+            result.counts.length !== fields.length
+          )
             throw new Error('The login fields changed. Request credentials again.');
-          if ('submitPending' in result && result.submitPending && input.submitSelector) {
-            const submitted = await evaluate(
-              state,
-              credentialSubmitScript(input.origin, input.submitSelector),
-            );
-            if (!(submitted && typeof submitted === 'object' && 'ok' in submitted && submitted.ok))
-              throw new Error('The login form could not advance.');
+          for (const [fieldIndex, field] of fields.entries()) {
+            const count = result.counts[fieldIndex];
+            if (count !== 1 && (!field.code || count !== field.value.length))
+              throw new Error('The login fields changed. Request credentials again.');
+            for (let index = 0; index < count; index++) {
+              if (new URL(await currentUrl(state)).origin !== input.origin)
+                throw new Error('The login page origin changed. Request credentials again.');
+              await requestDaemon(socket, {
+                action: 'fill',
+                selector: `[data-otto-entry-target="${attempt}-${fieldIndex}-${index}"]`,
+                value: count === 1 ? field.value : field.value[index],
+              });
+            }
+          }
+          if (input.submitSelector) {
+            if (new URL(await currentUrl(state)).origin !== input.origin)
+              throw new Error('The login page origin changed. Request credentials again.');
+            await requestDaemon(socket, { action: 'click', selector: input.submitSelector });
           }
           if (input.submitSelector && before) {
             const signal = AbortSignal.timeout(2000);

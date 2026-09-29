@@ -923,7 +923,9 @@ function browserFixture() {
               scrollAreas: [],
               scrollAreasTotal: 0,
             }
-          : { ok: true },
+          : options?.input?.includes('data-otto-entry-target')
+            ? { ok: true, counts: [1] }
+            : { ok: true },
       };
     if (command[0] === 'snapshot')
       data = {

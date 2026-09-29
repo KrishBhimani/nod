@@ -271,6 +271,19 @@ export function stagedLoginBrowser() {
             };
     }
     if (command[0] === 'eval') data = { result: await page.evaluate(options?.input ?? '') };
+    if (command[0] === 'click') {
+      const node = page.nodes(command[1])[0];
+      page.focused = node ?? null;
+      node?.click();
+    }
+    if (command[0] === 'fill') {
+      const node = page.nodes(command[1])[0];
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      if (node) {
+        node.value = command[2];
+        node.dispatchEvent();
+      }
+    }
     if (command[0] === 'snapshot') data = { snapshot: page.text() };
     if (command[0] === 'screenshot') await writeFile(command[1], page.screen());
     if (command[0] === 'close') page.closed = true;

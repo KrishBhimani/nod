@@ -70,7 +70,12 @@ test('the secure sign-in form saves the session after credentials and a code wit
             status: 'submitted',
             inspection: {
               ...inspection,
-              fields: ++submissions === 1 ? [{ kind: 'otp', label: 'Verification code' }] : [],
+              fields:
+                ++submissions === 1
+                  ? inspection.fields
+                  : submissions === 2
+                    ? [{ kind: 'otp', label: 'Verification code' }]
+                    : [],
             },
           }
         : path.endsWith('/finish')
@@ -121,6 +126,21 @@ test('the secure sign-in form saves the session after credentials and a code wit
       username: 'synthetic@example.test',
       password: 'synthetic-password',
     });
+    assert.equal(calls.filter((call) => call.path.endsWith('/finish')).length, 0);
+    const retryPassword =
+      dom.window.document.querySelector<HTMLInputElement>('input[type="password"]');
+    assert.ok(retryPassword);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(
+        retryPassword,
+        'synthetic-password',
+      );
+      retryPassword.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+      dom.window.document
+        .querySelector('form')!
+        .dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+      await delay(20);
+    });
     const codeInput = dom.window.document.querySelector<HTMLInputElement>(
       'input[autocomplete="one-time-code"]',
     );
@@ -136,7 +156,7 @@ test('the secure sign-in form saves the session after credentials and a code wit
         .dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
       await delay(20);
     });
-    assert.deepEqual(calls.filter((call) => call.path.endsWith('/credentials'))[1]?.body, {
+    assert.deepEqual(calls.filter((call) => call.path.endsWith('/credentials'))[2]?.body, {
       origin: 'https://www.linkedin.com',
       code: '123456',
     });

@@ -41,6 +41,7 @@ export function BrowserConnection({ token }: { token: string }) {
   const [activity, setActivity] = useState<'credentials' | 'finish' | null>(null);
   const lastAutoFinish = useRef(0);
   const autoFinishFailures = useRef(0);
+  const submittedField = useRef<'identifier' | 'password' | 'otp' | null>(null);
   const returnTo = attempt?.fromChat ? '/' : '/apps';
   const controlChanged = useCallback(
     (active: boolean, _privateView: boolean, phase: typeof browserPhase) => {
@@ -52,6 +53,14 @@ export function BrowserConnection({ token }: { token: string }) {
 
   const refresh = useCallback(async () => {
     const value = await api<Attempt>(base, { cache: 'no-store' });
+    if (
+      submittedField.current &&
+      value.inspection &&
+      !value.inspection.fields.some((field) => field.kind === submittedField.current)
+    ) {
+      submittedField.current = null;
+      setError('');
+    }
     setAttempt(value);
     return value;
   }, [base]);
@@ -103,7 +112,10 @@ export function BrowserConnection({ token }: { token: string }) {
     (hasUsername || hasPassword || hasCode) && !(hasCode && (hasUsername || hasPassword));
   const inspectionReady = Boolean(inspection);
   const formOrigin = inspection?.origin ?? attempt?.origin;
-  const siteName = attempt?.label ?? attempt?.name ?? 'The website';
+  const siteName =
+    attempt?.name === 'linkedin.com'
+      ? 'LinkedIn'
+      : (attempt?.label ?? attempt?.name ?? 'The website');
   useEffect(() => {
     if (complete || privateActive || canUseForm || !inspectionReady || browserPhase !== 'closed') {
       setFallbackReady(false);
@@ -137,7 +149,7 @@ export function BrowserConnection({ token }: { token: string }) {
         : activity === 'finish' ||
             browserPhase === 'checking' ||
             (submitted && !canUseForm && !fallbackReady)
-          ? `Checking the ${siteName} account page and saving the session`
+          ? `Checking the ${siteName} sign-in page`
           : browserPhase === 'open'
             ? `Waiting for the ${siteName} sign-in step`
             : hasCode
@@ -190,6 +202,12 @@ export function BrowserConnection({ token }: { token: string }) {
         setError('The website rejected these details. Check them and try again.');
         return;
       }
+      const field = hasCode ? 'otp' : hasPassword ? 'password' : 'identifier';
+      submittedField.current = field;
+      if (result.inspection?.fields.some((item) => item.kind === field))
+        setError(
+          `${siteName} still shows the same sign-in form. Otto could not confirm this step.`,
+        );
       setSubmitted(true);
       setAttempt((current) => (current ? { ...current, inspection: result.inspection } : current));
       window.setTimeout(() => void refresh().catch(() => {}), 1200);

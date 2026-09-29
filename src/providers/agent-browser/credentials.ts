@@ -91,19 +91,25 @@ export function credentialFields(input: CredentialInput): CredentialField[] {
 export function credentialScript(
   origin: string,
   fields: CredentialField[],
-  submitSelector?: string,
+  submitSelector: string | undefined,
+  marker = '',
 ): string {
+  const safeFields = fields.map(({ value, ...field }) => ({
+    ...field,
+    length: value.length,
+    numeric: /^\d+$/.test(value),
+  }));
   return `(() => {
-    const origin=${JSON.stringify(origin)}, fields=${JSON.stringify(fields)}, submit=${JSON.stringify(submitSelector ?? null)};
+    const origin=${JSON.stringify(origin)}, fields=${JSON.stringify(safeFields)}, submit=${JSON.stringify(submitSelector ?? null)}, marker=${JSON.stringify(marker)};
     if(location.origin!==origin) return {ok:false};
     const visible=e=>e && e.isConnected && e.getClientRects().length>0 && getComputedStyle(e).visibility!=='hidden' && getComputedStyle(e).display!=='none' && !e.closest('[hidden],[aria-hidden="true"],[inert]');
     const available=e=>visible(e) && !e.disabled && !e.closest('[aria-disabled="true"]');
     const usable=e=>available(e) && !e.readOnly;
     const targets=fields.map(field=>({field,nodes:[...document.querySelectorAll(field.selector)]}));
-    const split=({field,nodes},allowReadonly)=>field.code&&nodes.length>=4&&nodes.length<=8&&nodes.length===field.value.length&&/^\\d+$/.test(field.value)&&nodes.every(e=>e.maxLength===1&&['text','tel','number'].includes(e.type)&&e.parentElement===nodes[0].parentElement)&&[...nodes[0].parentElement.querySelectorAll('input')].filter(allowReadonly?available:usable).length===nodes.length;
+    const split=({field,nodes},allowReadonly)=>field.code&&nodes.length>=4&&nodes.length<=8&&nodes.length===field.length&&field.numeric&&nodes.every(e=>e.maxLength===1&&['text','tel','number'].includes(e.type)&&e.parentElement===nodes[0].parentElement)&&[...nodes[0].parentElement.querySelectorAll('input')].filter(allowReadonly?available:usable).length===nodes.length;
     const invalid=(target,allowReadonly=false)=>{
       const {field,nodes}=target;
-      return (nodes.length!==1&&!split(target,allowReadonly))||nodes.some(e=>!e.matches('input')||!(allowReadonly?available(e):usable(e))||(field.password&&e.type!=='password')||(!field.password&&e.type==='password')||(field.code&&nodes.length===1&&e.maxLength>0&&e.maxLength<field.value.length));
+      return (nodes.length!==1&&!split(target,allowReadonly))||nodes.some(e=>!e.matches('input')||!(allowReadonly?available(e):usable(e))||(field.password&&e.type!=='password')||(!field.password&&e.type==='password')||(field.code&&nodes.length===1&&e.maxLength>0&&e.maxLength<field.length));
     };
     const changed=()=>location.origin!==origin||targets.some(({field,nodes})=>{
       const fresh=[...document.querySelectorAll(field.selector)];
@@ -122,9 +128,8 @@ export function credentialScript(
       const fresh=document.querySelectorAll(submit);
       if(fresh.length!==1||fresh[0]!==submits[0]||!visible(fresh[0])) return {ok:false};
     }
-    for(const {field,nodes} of targets) {
+    for(const [fieldIndex,{field,nodes}] of targets.entries()) {
       if(location.origin!==origin) return {ok:false};
-      if(nodes.length>1) for(const e of nodes) Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'');
       for(let index=0;index<nodes.length;index++) {
         const fresh=[...document.querySelectorAll(field.selector)];
         if(location.origin!==origin||fresh.length!==nodes.length||fresh.some((e,index)=>e!==nodes[index])||invalid({field,nodes:fresh})) return {ok:false};
@@ -132,9 +137,7 @@ export function credentialScript(
         e.style.setProperty('color','transparent','important');
         e.style.setProperty('text-shadow','none','important');
         e.style.setProperty('-webkit-text-security','disc','important');
-        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,nodes.length>1?field.value[index]:field.value);
-        e.dispatchEvent(new Event('input',{bubbles:true}));
-        e.dispatchEvent(new Event('change',{bubbles:true}));
+        e.setAttribute('data-otto-entry-target',marker+'-'+fieldIndex+'-'+index);
       }
     }
     if(submit) {
@@ -142,8 +145,7 @@ export function credentialScript(
       const fresh=document.querySelectorAll(submit);
       if(fresh.length!==1) return {ok:false};
       if(!usable(fresh[0]) || fresh[0].getAttribute?.('aria-disabled')==='true') return {ok:true,submitPending:true};
-      fresh[0].click();
     }
-    return {ok:true};
+    return {ok:true,counts:targets.map(target=>target.nodes.length)};
   })()`;
 }

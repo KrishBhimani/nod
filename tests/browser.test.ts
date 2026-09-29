@@ -1836,6 +1836,10 @@ test('split-code observations hide each private input value and retain unrelated
       let data: Record<string, unknown> = {};
       if (command[0] === 'get' && command[1] === 'url') data = { url: dom.window.location.href };
       if (command[0] === 'eval') data = { result: await dom.window.eval(options?.input ?? '') };
+      if (command[0] === 'fill') {
+        const target = dom.window.document.querySelector<HTMLInputElement>(command[1]);
+        if (target) target.value = command[2];
+      }
       if (command[0] === 'snapshot') {
         const snapshot = [
           ...inputs.map(

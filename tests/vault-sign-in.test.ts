@@ -575,7 +575,7 @@ class Input {
   stored = '';
   masks: string[] = [];
   clicked = false;
-  afterEvent = () => {};
+  attributes = new Map<string, string>();
   style = {
     setProperty: (name: string) => {
       this.masks.push(name);
@@ -596,8 +596,8 @@ class Input {
   closest() {
     return null;
   }
-  dispatchEvent() {
-    this.afterEvent();
+  setAttribute(name: string, value: string) {
+    this.attributes.set(name, value);
   }
   click() {
     this.clicked = true;
@@ -610,7 +610,6 @@ function page(
     passwordType?: string;
     hidden?: boolean;
     duplicates?: boolean;
-    moveAfterUsername?: boolean;
   } = {},
 ) {
   const location = { origin: options.origin ?? 'https://example.com' };
@@ -619,10 +618,6 @@ function page(
   password.type = options.passwordType ?? 'password';
   password.visible = !options.hidden;
   const submit = new Input();
-  if (options.moveAfterUsername)
-    username.afterEvent = () => {
-      location.origin = 'https://other.example';
-    };
   const fields = credentialFields({
     threadId: 'fixture',
     origin: 'https://example.com',
@@ -638,14 +633,15 @@ function page(
     ['#pass', options.duplicates ? [password, new Input()] : [password]],
     ['#submit', [submit]],
   ]);
-  const result = runInNewContext(credentialScript('https://example.com', fields, '#submit'), {
+  const script = credentialScript('https://example.com', fields, '#submit', 'fixture');
+  const result = runInNewContext(script, {
     location,
     document: { querySelectorAll: (selector: string) => nodes.get(selector) ?? [] },
     HTMLInputElement: Input,
     getComputedStyle: () => ({ visibility: 'visible', display: 'block' }),
     Event: class {},
   });
-  return { result: JSON.parse(JSON.stringify(result)), username, password, submit };
+  return { result: JSON.parse(JSON.stringify(result)), username, password, submit, script };
 }
 
 test('credential entry verifies origin and every target before filling any values', () => {
@@ -663,16 +659,16 @@ test('credential entry verifies origin and every target before filling any value
   }
 });
 
-test('credential entry masks fields, returns no values and rechecks origin after events', () => {
+test('credential entry masks and marks fields without writing private values', () => {
   const success = page();
-  assert.deepEqual(success.result, { ok: true });
-  assert.equal(success.password.value, 'fixture-secret');
+  assert.deepEqual(success.result, { ok: true, counts: [1, 1] });
+  assert.equal(success.username.value, '');
+  assert.equal(success.password.value, '');
   assert.equal(success.password.masks.includes('-webkit-text-security'), true);
-  assert.equal(success.submit.clicked, true);
-  const changed = page({ moveAfterUsername: true });
-  assert.deepEqual(changed.result, { ok: false });
-  assert.equal(changed.password.value, '');
-  assert.equal(changed.submit.clicked, false);
+  assert.equal(success.username.attributes.get('data-otto-entry-target'), 'fixture-0-0');
+  assert.equal(success.password.attributes.get('data-otto-entry-target'), 'fixture-1-0');
+  assert.equal(success.submit.clicked, false);
+  assert.equal(success.script.includes('fixture-secret'), false);
 });
 
 function domFixture(html: string) {
@@ -735,6 +731,7 @@ test('secure entry and delayed submit reject fields or controls hidden by ancest
           'https://example.com',
           [{ selector: '#password', value: 'must-not-fill', password: true }],
           '#submit',
+          'fixture',
         ),
       ) as { ok: boolean };
       assert.equal(input.ok, false);
