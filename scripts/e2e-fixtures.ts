@@ -6,7 +6,7 @@ import {
   type ServerResponse,
 } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
-import { readFile, mkdir } from 'node:fs/promises';
+import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AddressInfo, Socket } from 'node:net';
 import type { FastifyInstance } from 'fastify';
@@ -21,6 +21,8 @@ import { fixtureChannelCredentials } from './e2e-channels.ts';
 export const fixtureOrigin = 'https://example.com';
 export const fixturePrefix = '/__otto_e2e__/';
 export const fixtureLogin = fixtureOrigin + fixturePrefix + 'login';
+export const fixtureHotel = fixtureOrigin + fixturePrefix + 'hotel';
+export const fixtureFlight = fixtureOrigin + fixturePrefix + 'flight';
 export const fixtureCredentials = {
   username: 'tester@example.test',
   password: 'Synthetic-only-pass-47!',
@@ -46,7 +48,7 @@ async function form(request: IncomingMessage) {
   return new URLSearchParams(Buffer.concat(parts).toString('utf8'));
 }
 
-export function createAuthFixture(audit: Audit = () => {}) {
+export function createAuthFixture(audit: Audit = () => {}, pricesPath?: string) {
   const sessions = new Map<string, { stage: 'password' | 'otp' | 'portal'; expires: number }>();
   const login = (error = '') =>
     html(
@@ -82,7 +84,25 @@ export function createAuthFixture(audit: Audit = () => {}) {
     const session = cookie ? sessions.get(cookie) : undefined;
     const active = session && session.expires > Date.now() ? session : undefined;
     try {
-      if (url.pathname === fixturePrefix + 'manual' && request.method === 'GET') {
+      if (
+        request.method === 'GET' &&
+        [fixturePrefix + 'hotel', fixturePrefix + 'flight'].includes(url.pathname)
+      ) {
+        const saved = pricesPath ? JSON.parse(await readFile(pricesPath, 'utf8')) : {};
+        const hotel = url.pathname.endsWith('hotel');
+        const price = saved[hotel ? 'hotel' : 'flight'] ?? (hotel ? 180 : 240);
+        if (!Number.isInteger(price) || price < 1 || price > 10_000)
+          throw new Error('Fixture price is invalid.');
+        audit('fixture_price_view', { offer: hotel ? 'hotel' : 'flight', price });
+        response.end(
+          html(
+            hotel ? 'Northstar Hotel rate' : 'Northstar Air fare',
+            hotel
+              ? `<p>Northstar Hotel, Lisbon. 14–16 October 2026. Standard double room for two adults. Free cancellation until 13 October 2026. Total stay price: €${price}. Taxes included. Room only.</p>`
+              : `<p>Northstar Air, Athens (ATH) to Barcelona (BCN), 14 November 2026; return Barcelona (BCN) to Athens (ATH), 17 November 2026. Flights NS 204 and NS 205, direct, one adult, economy basic. Total return fare: €${price}. Taxes included. Cabin bag included. No checked bag.</p>`,
+          ),
+        );
+      } else if (url.pathname === fixturePrefix + 'manual' && request.method === 'GET') {
         response.end(
           html(
             'Manual control check',
@@ -188,6 +208,7 @@ export async function createFixtureProxy(
   execute: typeof runProcess = runProcess,
 ) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
+  await writeFile(join(directory, 'prices.json'), '{"hotel":180,"flight":240}', { mode: 0o600 });
   const key = join(directory, 'fixture.key');
   const cert = join(directory, 'fixture.crt');
   const generated = await runProcess('openssl', [
@@ -214,7 +235,7 @@ export async function createFixtureProxy(
     .digest('base64');
   const https = createHttpsServer(
     { key: await readFile(key), cert: certificate },
-    createAuthFixture(audit),
+    createAuthFixture(audit, join(directory, 'prices.json')),
   );
   const sockets = new Set<Socket>();
   const track = (socket: Socket) => {

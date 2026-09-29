@@ -4,6 +4,7 @@ import type { Artifact } from '../../shared/contracts';
 import { Button, Dialog, DialogContent, DialogDescription, DialogTitle } from './ui';
 import { ownedArtifactUrl } from '../lib/attachment-url';
 import PdfPreview from './attachment-pdf';
+import AttachmentData from './attachment-data';
 export { ownedArtifactUrl } from '../lib/attachment-url';
 
 export interface ImagePreview {
@@ -15,12 +16,20 @@ export interface ImagePreview {
   downloadUrl?: string;
 }
 
-export function attachmentKind(mimeType: string) {
+export type AttachmentKind =
+  'image' | 'audio' | 'video' | 'pdf' | 'markdown' | 'csv' | 'spreadsheet';
+
+export function attachmentKind(mimeType: string): AttachmentKind | null {
   const type = mimeType.split(';', 1)[0].trim().toLowerCase();
   if (/^image\/(?:png|jpeg|webp|gif|avif|bmp)$/.test(type)) return 'image';
   if (/^audio\/(?:mpeg|wav|x-wav|webm|ogg|mp4|aac|flac)$/.test(type)) return 'audio';
   if (/^video\/(?:mp4|webm|ogg)$/.test(type)) return 'video';
-  return type === 'application/pdf' ? 'pdf' : null;
+  if (type === 'application/pdf') return 'pdf';
+  if (type === 'text/markdown' || type === 'text/x-markdown') return 'markdown';
+  if (type === 'text/csv' || type === 'application/csv') return 'csv';
+  if (type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    return 'spreadsheet';
+  return null;
 }
 
 export function previewableImage(mimeType: string) {
@@ -57,10 +66,23 @@ export function AttachmentThumbnail({ image }: { image: ImagePreview }) {
         </span>
       </>
     );
+  const label =
+    kind === 'audio'
+      ? 'Audio'
+      : kind === 'pdf'
+        ? 'PDF'
+        : kind === 'markdown'
+          ? 'Markdown'
+          : kind === 'csv'
+            ? 'CSV'
+            : 'Spreadsheet';
   return (
     <span className="attachment-media-thumbnail" aria-hidden="true">
       {kind === 'audio' ? <Music2 size={28} /> : <FileText size={28} />}
-      <span>{kind === 'audio' ? 'Audio' : 'PDF'}</span>
+      <span>{label}</span>
+      {kind !== 'audio' && kind !== 'pdf' && (
+        <span className="attachment-document-name">{image.name}</span>
+      )}
     </span>
   );
 }
@@ -101,7 +123,9 @@ function PreviewContent({ image }: { image: ImagePreview }) {
         onError={() => setFailed(true)}
       />
     );
-  return <PdfPreview url={image.url} name={image.name} />;
+  if (kind === 'pdf') return <PdfPreview url={image.url} name={image.name} />;
+  if (!kind) return null;
+  return <AttachmentData url={image.url} name={image.name} kind={kind} size={image.size} />;
 }
 
 export function ImageViewer({
@@ -154,7 +178,7 @@ export function ImageViewer({
         onKeyDown={(event) => {
           if (
             (event.target as HTMLElement).closest(
-              'audio,video,object,input,textarea,[contenteditable="true"]',
+              'audio,video,object,input,textarea,select,.attachment-data-preview,[contenteditable="true"]',
             )
           )
             return;

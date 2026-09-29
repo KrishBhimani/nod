@@ -61,6 +61,15 @@ export function createBrowserFixture(options: Options, preferRealSocket = false)
       onDaemonCommand?.(structuredClone(command));
       const session = [...sessions].find(([id]) => path === resolve(socketDir, `${id}.sock`))?.[1];
       if (!session) return existingDaemonCommand(path, command, signal, timeoutMs);
+      if (command.action === 'tab_list') {
+        const result = await run(session.executable, [...session.args, 'get', 'url'], {
+          ...session.options,
+          signal,
+        });
+        const response = JSON.parse(result.stdout);
+        if (result.exitCode || response.success === false) throw new DaemonCommandError();
+        return { tabs: [{ tabId: 't1', active: true, url: String(response.data?.url ?? '') }] };
+      }
       const args =
         command.action === 'navigate'
           ? ['open', String(command.url)]

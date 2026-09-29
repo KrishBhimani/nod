@@ -899,6 +899,28 @@ test('channel replies keep secure credential and approval links in the local app
   assert.equal(imageReply, 'Attached file.');
 });
 
+test('text-only channel replies show verified private file links when an app address is available', () => {
+  const reply = channelReply(
+    'Research is ready. [Report](/api/artifacts/00000000-0000-4000-8000-000000000001)',
+    true,
+    false,
+    [
+      {
+        name: 'report.csv',
+        url: 'https://otto.example/api/artifacts/00000000-0000-4000-8000-000000000001',
+      },
+    ],
+  );
+  assert.match(reply, /Research is ready/);
+  assert.match(reply, /report\.csv/);
+  assert.match(
+    reply,
+    /https:\/\/otto\.example\/api\/artifacts\/00000000-0000-4000-8000-000000000001/,
+  );
+  assert.equal((reply.match(/https:\/\/otto\.example\/api\/artifacts\//g) ?? []).length, 1);
+  assert.doesNotMatch(reply, /Attachments are available in Otto/);
+});
+
 test(
   'a webhook received during an outbound send is submitted before the active drain finishes',
   { skip: !process.env.TEST_DATABASE_URL },
@@ -1027,6 +1049,7 @@ test(
     await pool.query(`CREATE TABLE tasks(id uuid PRIMARY KEY,source_id text UNIQUE);
     CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text,role text,text text,task_id uuid,attachments jsonb DEFAULT '[]')`);
     const sent: { provider: string; body: Record<string, unknown> }[] = [];
+    const whatsappFileId = randomUUID();
     let providerCalls = 0;
     let failSend = false;
     let failSubmit = false;
@@ -1066,7 +1089,13 @@ test(
     const app = Fastify();
     const channels = await createChannels(pool, {
       ownerId: 'local-development',
+      appOrigin: 'https://otto.example',
       transport: createChatSdkTransport(pool, fixtureEnv),
+      resolveAttachments: async (_taskId, ids) => {
+        if (ids.length !== 1 || ids[0] !== whatsappFileId)
+          throw new Error('Attachment unavailable.');
+        return [{ name: 'research.csv', mimeType: 'text/csv', bytes: Buffer.from('A,B\n1,2\n') }];
+      },
       subscribe: () => () => {},
       intervalMs: 600000,
       submit: async (_text, sourceId, client) => {
@@ -1138,14 +1167,18 @@ test(
         payload: body,
       });
     };
-    const addReply = async (sourceId: string, text = 'The fixture task is done.') => {
+    const addReply = async (
+      sourceId: string,
+      text = 'The fixture task is done.',
+      attachments: { id: string }[] = [],
+    ) => {
       const row = (
         await pool.query('SELECT task_id FROM channel_inbox WHERE source_id=$1', [sourceId])
       ).rows[0];
       const id = randomUUID();
       await pool.query(
-        "INSERT INTO messages(id,owner_id,role,text,task_id) VALUES($1,'local-development','assistant',$2,$3)",
-        [id, text, row.task_id],
+        "INSERT INTO messages(id,owner_id,role,text,task_id,attachments) VALUES($1,'local-development','assistant',$2,$3,$4)",
+        [id, text, row.task_id, JSON.stringify(attachments)],
       );
       return id;
     };
@@ -1200,6 +1233,37 @@ test(
       );
       await channels.drain();
       assert.equal(sent.length, 2);
+
+      const fileReply = await addReply(
+        'channel:whatsapp:555000:wamid.good',
+        `Research is ready. [File](/api/artifacts/${whatsappFileId})`,
+        [{ id: whatsappFileId }],
+      );
+      await channels.drain();
+      assert.equal(sent.length, 3);
+      const fileText = JSON.stringify(sent[2].body);
+      assert.match(fileText, /https:\/\/otto\.example\/api\/artifacts\//);
+      assert.match(fileText, /research\.csv/);
+      assert.equal((fileText.match(/https:\/\/otto\.example\/api\/artifacts\//g) ?? []).length, 1);
+      assert.equal(
+        (await pool.query('SELECT state FROM channel_outbox WHERE message_id=$1', [fileReply]))
+          .rows[0].state,
+        'sent',
+      );
+
+      const missingReply = await addReply('channel:whatsapp:555000:wamid.good', 'Missing file.', [
+        { id: randomUUID() },
+      ]);
+      await channels.drain();
+      assert.equal(sent.length, 3);
+      assert.deepEqual(
+        (
+          await pool.query('SELECT state,reason FROM channel_outbox WHERE message_id=$1', [
+            missingReply,
+          ])
+        ).rows[0],
+        { state: 'blocked', reason: 'attachment_unavailable' },
+      );
       assert.equal(sent.find((message) => message.provider === 'telegram')?.body.chat_id, '123456');
       assert.equal(
         sent.find((message) => message.provider === 'whatsapp')?.body.to,
@@ -1208,7 +1272,7 @@ test(
       assert.equal(JSON.stringify(sent).includes('private-token'), false);
       assert.equal(JSON.stringify(sent).includes('Unrelated web-only'), false);
       await channels.drain();
-      assert.equal(sent.length, 2);
+      assert.equal(sent.length, 3);
 
       await sendWhatsApp(
         whatsappPayload('wamid.old', undefined, undefined, Math.floor(Date.now() / 1000) - 172800),
@@ -1227,7 +1291,7 @@ test(
         ).rows[0],
         { state: 'blocked', reason: 'reply_window_closed' },
       );
-      assert.equal(sent.length, 2);
+      assert.equal(sent.length, 3);
 
       failSend = true;
       const uncertainId = await addReply('channel:telegram:987:123456:10');
@@ -1252,6 +1316,11 @@ test(
       await app.close();
       const restarted = await createChannels(pool, {
         ownerId: 'local-development',
+        resolveAttachments: async (_taskId, ids) => {
+          if (ids.length !== 1 || ids[0] !== whatsappFileId)
+            throw new Error('Attachment unavailable.');
+          return [{ name: 'research.csv', mimeType: 'text/csv', bytes: Buffer.from('A,B\n1,2\n') }];
+        },
         transport: createChatSdkTransport(pool, {
           ...fixtureEnv,
           TELEGRAM_ALLOWED_USER_ID: '999999',
@@ -1281,6 +1350,17 @@ test(
           { state: 'blocked', reason: 'channel_access_changed' },
         );
         assert.equal(sent.length, attempts);
+        await pool.query(
+          "UPDATE channel_inbox SET received_at=now() WHERE source_id='channel:whatsapp:555000:wamid.good'",
+        );
+        await addReply('channel:whatsapp:555000:wamid.good', 'Research is ready.', [
+          { id: whatsappFileId },
+        ]);
+        await restarted.drain();
+        assert.equal(sent.length, attempts + 1);
+        const fallbackText = JSON.stringify(sent.at(-1)?.body);
+        assert.match(fallbackText, /Attachments are available in Otto/);
+        assert.doesNotMatch(fallbackText, /api\/artifacts/);
       } finally {
         await restarted.close();
       }

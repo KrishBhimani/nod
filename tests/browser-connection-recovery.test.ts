@@ -45,6 +45,8 @@ async function fixture(
     controller?: AbortController;
     observe?: (event: RuntimeObservation) => Promise<void>;
     piCalls?: Array<{ id: string; name: string; input: JsonObject }>;
+    sessionState?: 'pending' | 'saved' | 'disconnecting' | 'unrecognized';
+    claimedState?: 'disconnecting';
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'otto-browser-connection-recovery-'));
@@ -60,9 +62,22 @@ async function fixture(
         return { rows: [], rowCount: 0 };
       queries.push(sql);
       if (options.fail === 'database') throw new Error('Private database fixture detail');
-      if (sql === 'SELECT id,origin FROM browser_connections WHERE id=$1 AND owner_id=$2') {
+      if (sql === 'SELECT id,origin,state FROM browser_connections WHERE id=$1 AND owner_id=$2') {
         assert.equal(params[1], owner);
-        return { rows: [], rowCount: 0 };
+        return {
+          rows: options.sessionState
+            ? [{ id: params[0], origin: 'https://example.test', state: options.sessionState }]
+            : [],
+          rowCount: options.sessionState ? 1 : 0,
+        };
+      }
+      if (sql === 'SELECT * FROM browser_connections WHERE id=$1 AND owner_id=$2') {
+        assert.ok(options.sessionState);
+        assert.equal(params[1], owner);
+        return {
+          rows: [{ id: params[0], origin: 'https://example.test', state: options.sessionState }],
+          rowCount: 1,
+        };
       }
       if (sql === 'SELECT status,revision FROM tasks WHERE id=$1 AND owner_id=$2') {
         assert.deepEqual(params, [taskId, owner]);
@@ -76,7 +91,29 @@ async function fixture(
       return { rows: [], rowCount: 1 };
     },
     connect: async () => {
-      throw new Error('Unexpected fixture transaction');
+      assert.ok(options.sessionState);
+      return {
+        query: async (sql: string, params: unknown[] = []) => {
+          queries.push(sql);
+          if (sql === 'BEGIN' || sql === 'ROLLBACK') return { rows: [], rowCount: 0 };
+          assert.equal(
+            sql,
+            'SELECT * FROM browser_connections WHERE id=$1 AND owner_id=$2 FOR UPDATE',
+          );
+          assert.equal(params[1], owner);
+          return {
+            rows: [
+              {
+                id: params[0],
+                origin: 'https://example.test',
+                state: options.claimedState ?? options.sessionState,
+              },
+            ],
+            rowCount: 1,
+          };
+        },
+        release() {},
+      };
     },
   } as unknown as Pick<Pool, 'query' | 'connect'>;
   const operation = async (name: string) => {
@@ -375,6 +412,64 @@ for (const action of ['connect', 'use']) {
     assert.deepEqual(f.questions, []);
   });
 }
+
+for (const [action, sessionState] of [
+  ['use', 'pending'],
+  ['use', 'disconnecting'],
+  ['connect', 'disconnecting'],
+  ['use', 'unrecognized'],
+  ['connect', 'unrecognized'],
+] as const) {
+  test(`${action} rejects a ${sessionState} session before dispatch and restores its receipt`, async (t) => {
+    const f = await fixture(
+      t,
+      async (execute) => {
+        const rejected = (await execute('unavailable', 'browser_connection', {
+          action,
+          connectionId: randomUUID(),
+          url: 'https://example.test',
+        })) as { status: string; code: string };
+        assert.equal(rejected.status, 'rejected');
+        assert.equal(rejected.code, 'browser_connection_unavailable');
+        assert.deepEqual(f.calls, []);
+        await execute('observe', 'browser', { action: 'snapshot' });
+      },
+      { sessionState },
+    );
+    assert.deepEqual(await f.run(), { status: 'succeeded' });
+    assert.deepEqual(f.calls, ['snapshot']);
+    assert.equal(f.queries.length, 1);
+    assert.deepEqual(f.questions, []);
+    assert.equal(receipts(await f.saved(), 'completed').length, 2);
+    const restored = await f.restore();
+    await assert.rejects(
+      restored.execute('unavailable', 'browser_connection', async () => {
+        assert.fail('A rejected connection request must not replay');
+      }),
+      /could not be saved/,
+    );
+  });
+}
+
+test('a session changing after preflight keeps its delegated failure fenced', async (t) => {
+  const f = await fixture(
+    t,
+    async (execute) => {
+      await execute('changed', 'browser_connection', {
+        action: 'use',
+        connectionId: randomUUID(),
+        url: 'https://example.test',
+      });
+      assert.fail('A delegated connection failure must stop the segment');
+    },
+    { sessionState: 'saved', claimedState: 'disconnecting' },
+  );
+  await assert.rejects(f.run(), /failed before its result could be confirmed/);
+  assert.deepEqual(f.calls, []);
+  assert.equal(receipts(await f.saved(), 'pending').length, 1);
+  assert.equal(receipts(await f.saved(), 'completed').length, 0);
+  await assert.rejects(f.restore(), /interrupted before its result was saved/);
+});
 
 test('real Pi distinguishes schema rejection from completed server preflight receipts', async (t) => {
   const rejectedByPi: Array<{ id: string; input: JsonObject }> = [
