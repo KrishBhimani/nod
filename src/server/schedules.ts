@@ -20,20 +20,26 @@ const timingSchema = z.object({
   runAt: z.iso.datetime({ offset: true }).nullable().optional(),
   timeZone: z.string().trim().min(1).max(100),
 });
-const observationSchema = z
+const observationFields = {
+  sourceUrl: z.url().refine((value) => new URL(value).protocol === 'https:'),
+  summary: z.string().trim().min(1).max(500),
+};
+const verifiedObservationSchema = z
   .object({
-    status: z.enum(['verified', 'unavailable']),
-    sourceUrl: z.url().refine((value) => new URL(value).protocol === 'https:'),
-    value: z.string().trim().min(1).max(300).nullable(),
-    summary: z.string().trim().min(1).max(500),
+    status: z.literal('verified'),
+    ...observationFields,
+    value: z.string().trim().min(1).max(300),
   })
-  .strict()
-  .refine((value) => (value.status === 'verified') === (value.value !== null));
+  .strict();
+const observationSchema = z.discriminatedUnion('status', [
+  verifiedObservationSchema,
+  z.object({ status: z.literal('unavailable'), ...observationFields, value: z.null() }).strict(),
+]);
 const createSchema = timingSchema
   .extend({
     title: z.string().trim().min(1).max(100),
     prompt: z.string().trim().min(1).max(6000),
-    baselineObservation: observationSchema.optional(),
+    baselineObservation: verifiedObservationSchema.optional(),
   })
   .strict();
 const updateSchema = createSchema
@@ -411,8 +417,9 @@ export function createSchedules(dependencies: ScheduleDependencies) {
     };
   }
 
-  async function recordObservation(taskId: string, raw: unknown) {
+  async function recordObservation(taskId: string, revision: number, raw: unknown) {
     z.uuid().parse(taskId);
+    z.number().int().nonnegative().parse(revision);
     const input = observationSchema.parse(raw);
     const result = await transaction(async (client) => {
       const row = (
@@ -425,9 +432,9 @@ export function createSchedules(dependencies: ScheduleDependencies) {
           `SELECT r.id,r.schedule_id AS "scheduleId",r.baseline_observation AS "baselineObservation",
              r.observation
            FROM schedule_runs r JOIN tasks t ON t.id=r.task_id AND t.owner_id=r.owner_id
-           WHERE r.task_id=$1 AND r.owner_id=$2 AND t.status='running'
-           FOR UPDATE OF r`,
-          [taskId, ownerId],
+           WHERE r.task_id=$1 AND r.owner_id=$2 AND t.revision=$3 AND t.status='running'
+           FOR UPDATE OF r,t`,
+          [taskId, ownerId, revision],
         )
       ).rows[0];
       if (!row) throw invalid('This task has no active scheduled run.');

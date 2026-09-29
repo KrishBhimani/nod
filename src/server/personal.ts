@@ -313,7 +313,7 @@ export function createPersonalService(dependencies: PersonalDependencies) {
   async function manage(
     action: string,
     args: Record<string, unknown>,
-    provenance?: { sourceMessageId: string | null; taskId?: string },
+    provenance?: { sourceMessageId: string | null; taskId?: string; revision?: number },
   ) {
     if (action === 'memory_remember' || action === 'profile_learn')
       return learnPersonalFact(action, args, provenance);
@@ -333,7 +333,11 @@ export function createPersonalService(dependencies: PersonalDependencies) {
     }
     if (action === 'schedule_list') return schedules.list();
     if (action === 'schedule_record_observation')
-      return schedules.recordObservation(provenance?.taskId ?? '', args);
+      return schedules.recordObservation(
+        provenance?.taskId ?? '',
+        provenance?.revision ?? -1,
+        args,
+      );
     if (action === 'schedule_create') return schedules.create(args, provenance);
     if (action === 'schedule_update') {
       const { id, ...input } = args;

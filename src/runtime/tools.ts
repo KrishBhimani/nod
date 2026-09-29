@@ -272,15 +272,26 @@ export const toolDefinitions = {
   record_schedule_observation: defineTool(
     'record_schedule_observation',
     'Save one checked value for the current scheduled run. Keep value short and stable; put item terms, labels and check details in summary. Use status verified only when you checked the source and item terms. Use unavailable with value null when you could not verify them. The result gives the previous verified observation. Compare the meaning of both values, then apply the user alert rule before you send a message. The current run is selected by the server; do not supply a schedule or run ID.',
-    Type.Object(
-      {
-        status: Type.Union([Type.Literal('verified'), Type.Literal('unavailable')]),
-        sourceUrl: Type.String(),
-        value: Type.Union([Type.String({ maxLength: 300 }), Type.Null()]),
-        summary: Type.String({ maxLength: 500 }),
-      },
-      { additionalProperties: false },
-    ),
+    Type.Union([
+      Type.Object(
+        {
+          status: Type.Literal('verified'),
+          sourceUrl: Type.String(),
+          value: Type.String({ maxLength: 300 }),
+          summary: Type.String({ maxLength: 500 }),
+        },
+        { additionalProperties: false },
+      ),
+      Type.Object(
+        {
+          status: Type.Literal('unavailable'),
+          sourceUrl: Type.String(),
+          value: Type.Null(),
+          summary: Type.String({ maxLength: 500 }),
+        },
+        { additionalProperties: false },
+      ),
+    ]),
   ),
   browser_fast_step: defineTool(
     'browser_fast_step',

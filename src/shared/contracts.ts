@@ -209,13 +209,11 @@ export interface Schedule {
   lastRun: ScheduleRun | null;
   baselineObservation: ScheduleObservation | null;
 }
-export interface ScheduleObservation {
-  status: 'verified' | 'unavailable';
+export type ScheduleObservation = {
   sourceUrl: string;
-  value: string | null;
   summary: string;
   checkedAt: string;
-}
+} & ({ status: 'verified'; value: string } | { status: 'unavailable'; value: null });
 export interface ScheduleRun {
   id: string;
   scheduleId: string;

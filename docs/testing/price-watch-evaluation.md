@@ -19,11 +19,11 @@ F01: “Watch Northstar Air flights NS 204 and NS 205 from Athens (ATH) to Barce
 
 ## Checks
 
-1. The first task confirms the exact offer and live baseline price from the fixture page.
+1. The first task confirms the exact offer and current synthetic baseline price from the fixture page.
 2. It creates one visible recurring schedule with the requested timing and exact offer in its saved instruction.
 3. Every due run opens the current offer page and saves the verified price, time, offer details, and source URL in a history the owner can read.
 4. A qualifying drop creates one alert. The same price at the next check creates no second alert.
 5. No run books, cancels, or changes an offer.
 6. Record the source page, due times, actual run and reply times, model, commit, costs if available, and failures. Mark any unchecked item **not run**. A successful task status alone does not pass a price check.
 
-Run H01 first for offer and schedule creation. Its twice-daily recurrence needs a later due-time observation. Run F01 through three real due minutes, then pause it. The three F01 runs test the repeated-check and alert behavior without keeping a user browser tab open.
+Run H01 first to create the requested 09:00 and 21:00 schedule with a verified €180 baseline. To test the drop without waiting for two days, create a disposable one-minute H01 watch. Set €180 for its first due run, €159 for its second due run, and keep €159 for its third due run. Check for one alert after the second run and no repeat after the third. Pause the test watch. Run F01 through three real due minutes, then pause it. The minute watches test repeated checks and alerts without keeping a user browser tab open.

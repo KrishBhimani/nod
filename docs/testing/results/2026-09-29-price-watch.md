@@ -4,10 +4,10 @@ This check used the disposable Otto end-to-end harness, a real Pi agent with `gp
 
 | Case                                     | Source checks    | Saved observations                | Alerts                  | Result                          |
 | ---------------------------------------- | ---------------- | --------------------------------- | ----------------------- | ------------------------------- |
-| Hotel, Lisbon, 14–16 October             | €180, €159, €159 | One baseline and three due checks | One at €159, a €21 drop | Pass at one-minute test cadence |
+| Hotel test watch, Lisbon, 14–16 October  | €180, €159, €159 | One baseline and three due checks | One at €159, a €21 drop | Pass at one-minute test cadence |
 | Flight, Athens–Barcelona, 14–17 November | €240, €215, €215 | One baseline and three due checks | One at €215, a €25 drop | Pass at one-minute cadence      |
 
-The hotel task first created the requested 09:00 and 21:00 Europe/Lisbon schedule with a verified €180 baseline. To check the drop rule without waiting for 09:00, a second hotel watch ran every minute. It saved €180 at 08:00, €159 at 08:01 and €159 at 08:02 Europe/Lisbon. It sent one drop alert and no repeat. The user then asked for the original hotel schedule to run every minute. Its 08:03 and 08:04 checks saved €159; it sent no second alert for a rate already reported in the same conversation. The extra test watch was paused before this change.
+The table covers the dedicated one-minute test watches. The hotel task first created the requested 09:00 and 21:00 Europe/Lisbon schedule with a verified €180 baseline. To check the drop rule without waiting for 09:00, a second hotel watch ran every minute. It saved €180 at 08:00, €159 at 08:01 and €159 at 08:02 Europe/Lisbon. It sent one drop alert and no repeat. The user then asked for the original hotel schedule to run every minute. Its two extra checks at 08:03 and 08:04 saved €159; it sent no second alert for a rate already reported in the same conversation. The extra test watch was paused before this change.
 
 The final flight run used the completed observation tool. Due runs started 1.12–1.17 seconds after their scheduled minute. The page showed €240 at 09:06 and €215 at 09:07 and 09:08 Europe/Madrid. Each run saved the checked fare, source, terms and time. The 09:07 run received €240 as its previous verified observation and sent one drop alert. The 09:08 run received €215 and sent no alert. The flight schedule was paused after the third check.
 

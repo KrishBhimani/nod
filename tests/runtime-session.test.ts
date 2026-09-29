@@ -1110,6 +1110,14 @@ test('scheduled observation tool accepts a source URL and binds the active task'
         call(tools, 'record_schedule_observation', { ...observation, runId: randomUUID() }),
         /schema/,
       );
+      await assert.rejects(
+        call(tools, 'record_schedule_observation', { ...observation, value: null }),
+        /schema/,
+      );
+      await assert.rejects(
+        call(tools, 'record_schedule_observation', { ...observation, status: 'unavailable' }),
+        /schema/,
+      );
       await call(tools, 'record_schedule_observation', observation);
     },
     {
