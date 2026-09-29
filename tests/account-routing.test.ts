@@ -295,7 +295,8 @@ test('the workspace shell shows a chat skeleton and mounts prefetched pages befo
         }),
       ),
     );
-    assert.equal(requests.filter((request) => request === '/api/state').length, 2);
+    assert.equal(requests.filter((request) => request === '/api/account/welcome').length, 1);
+    assert.equal(requests.filter((request) => request === '/api/state').length, 3);
     assert.equal(window.localStorage.getItem('otto.chat-layout'), 'welcome');
     await act(async () => {
       window.history.pushState(null, '', '/vault');

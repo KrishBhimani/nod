@@ -1124,10 +1124,10 @@ test('focus-message scrolls to a loaded message, pages back a bounded number of 
   let pages: Message[][] = [[older]];
   const historyRequests: string[] = [];
   globalThis.fetch = async (path) => {
-    if (path === '/api/state') return Response.json(base);
+    if (path === '/api/state') return Response.json({ ...base, hasEarlierMessages: true });
     if (String(path).startsWith('/api/messages?')) {
       historyRequests.push(String(path));
-      return Response.json(pages.shift() ?? []);
+      return Response.json({ messages: pages.shift() ?? [], hasMore: false });
     }
     throw new Error('Unexpected fixture request');
   };
@@ -1162,10 +1162,10 @@ test('focus-message scrolls to a loaded message, pages back a bounded number of 
   pages = [0, 1, 2, 3, 4, 5, 6].map(filler);
   historyRequests.length = 0;
   globalThis.fetch = async (path) => {
-    if (path === '/api/state') return Response.json(base);
+    if (path === '/api/state') return Response.json({ ...base, hasEarlierMessages: true });
     if (String(path).startsWith('/api/messages?')) {
       historyRequests.push(String(path));
-      return Response.json(pages.shift() ?? []);
+      return Response.json({ messages: pages.shift() ?? [], hasMore: true });
     }
     throw new Error('Unexpected fixture request');
   };
@@ -1185,7 +1185,7 @@ test('focus-message scrolls to a loaded message, pages back a bounded number of 
   }
   historyRequests.length = 0;
   globalThis.fetch = async (path) => {
-    if (path === '/api/state') return Response.json(base);
+    if (path === '/api/state') return Response.json({ ...base, hasEarlierMessages: true });
     if (String(path).startsWith('/api/messages?')) {
       historyRequests.push(String(path));
       return Response.json({ error: 'History is unavailable.' }, { status: 503 });
