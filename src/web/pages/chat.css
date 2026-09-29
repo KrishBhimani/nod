@@ -200,7 +200,7 @@
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface-overlay);
-  box-shadow: 0 8px 32px #2a14351c;
+  box-shadow: 0 8px 32px var(--shadow-overlay);
   z-index: 90;
 }
 .chat-message-menu > button {
@@ -254,7 +254,7 @@
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface-overlay);
-  box-shadow: 0 8px 32px #1b19241f;
+  box-shadow: 0 8px 32px var(--shadow-overlay);
   outline: none;
 }
 .chat-emoji-heading {
@@ -496,7 +496,7 @@
   border: 1px solid var(--border);
   border-radius: 9px;
   background: var(--surface-overlay);
-  box-shadow: 0 6px 24px #34194414;
+  box-shadow: 0 6px 24px var(--shadow-overlay);
   pointer-events: none;
   color: var(--text-secondary);
   font-size: 12px;

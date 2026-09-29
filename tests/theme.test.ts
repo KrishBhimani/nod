@@ -222,7 +222,17 @@ test('light and dark semantic text and button pairs meet normal-text contrast', 
       const ratio = (values[0]! + 0.05) / (values[1]! + 0.05);
       assert.ok(ratio >= 4.5, `${name} ${foreground}/${background}: ${ratio.toFixed(2)}`);
     }
-    for (const background of ['canvas', 'sidebar', 'surface', 'surface-overlay', 'control']) {
+    for (const background of [
+      'canvas',
+      'sidebar',
+      'surface',
+      'surface-overlay',
+      'surface-subtle',
+      'surface-inset',
+      'secondary',
+      'muted',
+      'control',
+    ]) {
       const values = [luminance(palette.ring!), luminance(palette[background]!)].sort(
         (a, b) => b - a,
       );

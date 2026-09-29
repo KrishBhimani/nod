@@ -1760,7 +1760,7 @@ a svg {
   overflow: auto;
   background: var(--surface-overlay);
   border: 1px solid var(--border);
-  box-shadow: 0 20px 80px #32133925;
+  box-shadow: 0 20px 80px var(--shadow-overlay);
   border-radius: 16px;
   padding: 28px;
 }

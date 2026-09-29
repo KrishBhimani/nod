@@ -41,6 +41,7 @@
   --info: #7554a0;
   --info-soft: #f2edf9;
   --overlay: #27162d66;
+  --shadow-overlay: #1b19241f;
 }
 
 :root[data-theme='dark'] {
@@ -85,6 +86,7 @@
   --info: #c1b8f2;
   --info-soft: #2c2a3b;
   --overlay: #000000b8;
+  --shadow-overlay: #0000005c;
 }
 
 body {
