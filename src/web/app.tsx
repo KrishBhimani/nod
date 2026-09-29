@@ -9,7 +9,9 @@ import { Inspector } from './pages/inspector';
 import { Goals } from './pages/goals';
 import { SchedulePage } from './pages/schedule';
 import { useAppState } from './hooks/use-app-state';
+import { prefetchPageData } from './hooks/use-page-data';
 import { Button, Loading, Notice } from './components/ui';
+import { ChatSkeleton, Splash } from './components/startup';
 import { Sidebar } from './components/sidebar';
 import { navigationItems } from './lib/navigation';
 import { BrowserWindow } from './pages/browser';
@@ -103,6 +105,27 @@ function Workspace({
     };
   }, [developer]);
   const currentPath = path === '/dev' || path === '/you' ? '/' : path;
+  const loaded = !!state;
+  const hasMessages = state ? state.messages.length > 0 : null;
+  useEffect(() => {
+    if (hasMessages !== null)
+      writeUiPreference('otto.chat-layout', hasMessages ? 'conversation' : 'welcome');
+  }, [hasMessages]);
+  const [handoff, setHandoff] = useState(false);
+  const [entering, setEntering] = useState(true);
+  useEffect(() => {
+    const timer = setTimeout(() => setEntering(false), 600);
+    return () => clearTimeout(timer);
+  }, []);
+  useEffect(() => {
+    if (!loaded) return;
+    setHandoff(true);
+    const timer = setTimeout(() => setHandoff(false), 700);
+    return () => clearTimeout(timer);
+  }, [loaded]);
+  useEffect(() => {
+    prefetchPageData(['/api/vault', '/api/goals', '/api/schedules', '/api/apps']);
+  }, []);
   useEffect(() => {
     if (path === '/dev') setInspector(true);
   }, [path]);
@@ -135,7 +158,7 @@ function Workspace({
   };
   return (
     <div
-      className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''} ${inspectorOpen ? 'with-inspector' : ''}`}
+      className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''} ${inspectorOpen ? 'with-inspector' : ''} ${entering ? 'shell-entering' : ''}`}
     >
       <a href="#workspace" className="skip-link">
         Skip to content
@@ -159,47 +182,47 @@ function Workspace({
       <div className="workspace-frame">
         <div className="workspace-body">
           <main id="workspace" className="main-workspace" tabIndex={-1}>
-            {!visibleState ? (
-              <div className="initial-loading">
-                {error ? (
-                  <>
-                    <Notice>{error}</Notice>
-                    <Button variant="outline" onClick={() => void refresh()}>
-                      Try again
-                    </Button>
-                  </>
-                ) : (
-                  <Loading label="Opening Otto…" />
-                )}
-              </div>
-            ) : (
-              <>
-                <div className="chat-route" hidden={currentPath !== '/'}>
-                  <Chat
-                    state={visibleState}
-                    streams={streams}
-                    refresh={refresh}
-                    resetConversation={resetConversation}
-                    composerDraft={composerDraft}
-                  />
+            <div
+              className={`chat-route ${handoff ? 'chat-entering' : ''}`}
+              hidden={currentPath !== '/'}
+            >
+              {visibleState ? (
+                <Chat
+                  state={visibleState}
+                  streams={streams}
+                  refresh={refresh}
+                  resetConversation={resetConversation}
+                  composerDraft={composerDraft}
+                />
+              ) : error ? (
+                <div className="initial-loading">
+                  <Notice>{error}</Notice>
+                  <Button variant="outline" onClick={() => void refresh()}>
+                    Try again
+                  </Button>
                 </div>
-                {currentPath === '/vault' && <Vault />}
-                {currentPath === '/apps' && <Apps />}
-                {currentPath === '/channels' && (
-                  <Channels hosted={session.auth.mode === 'google'} />
-                )}
-                {currentPath === '/goals' && <Goals />}
-                {currentPath === '/schedule' && <SchedulePage />}
-                {!navigationItems.some((item) => item.path === currentPath) && (
-                  <div className="empty-state">
-                    <h1>This page isn’t here.</h1>
-                    <Button variant="outline" onClick={() => navigate('/')}>
-                      <ArrowLeft size={16} />
-                      Back to chat
-                    </Button>
-                  </div>
-                )}
-              </>
+              ) : (
+                <ChatSkeleton />
+              )}
+              {handoff && (
+                <div className="startup-leaving" aria-hidden="true">
+                  <ChatSkeleton />
+                </div>
+              )}
+            </div>
+            {currentPath === '/vault' && <Vault />}
+            {currentPath === '/apps' && <Apps />}
+            {currentPath === '/channels' && <Channels hosted={session.auth.mode === 'google'} />}
+            {currentPath === '/goals' && <Goals />}
+            {currentPath === '/schedule' && <SchedulePage />}
+            {!navigationItems.some((item) => item.path === currentPath) && (
+              <div className="empty-state">
+                <h1>This page isn’t here.</h1>
+                <Button variant="outline" onClick={() => navigate('/')}>
+                  <ArrowLeft size={16} />
+                  Back to chat
+                </Button>
+              </div>
             )}
             {state && (error || !connected) && (
               <div className="connection-notice">
@@ -264,12 +287,7 @@ function AccountApp({ path, setPath }: { path: string; setPath(path: string): vo
         )}
       </main>
     );
-  if (sessionState.loading)
-    return (
-      <main className="initial-loading">
-        <Loading label="Opening Otto…" />
-      </main>
-    );
+  if (sessionState.loading) return <Splash />;
   if (!session?.user)
     return (
       <SignIn

@@ -18,7 +18,7 @@ import { Composer, type ComposerHandle, type ComposerSendResult } from '../compo
 import { MessageBubble } from '../components/message';
 import { ChatTurnRail } from '../components/chat-turn-rail';
 import { BrandMark } from '../components/brand';
-import { Button, Notice } from '../components/ui';
+import { Button, Notice, Skeleton } from '../components/ui';
 import { usePageData } from '../hooks/use-page-data';
 import { api, apiResponse, errorMessage, post } from '../lib/api';
 import {
@@ -557,16 +557,18 @@ export function Chat({
         <div className="conversation-column">
           {loadingHistory ? (
             <div className="history-skeleton" role="status" aria-label="Loading earlier messages">
-              <span className="history-skeleton-bubble" />
-              <span className="history-skeleton-row">
-                <span className="history-skeleton-mark" />
-                <span className="history-skeleton-lines">
-                  <span />
-                  <span />
-                  <span />
-                </span>
-              </span>
-              <span className="history-skeleton-bubble" />
+              <Skeleton className="ghost-bubble" style={{ width: 'min(240px, 50%)' }} />
+              <div className="history-skeleton-reply">
+                <div className="assistant-mark">
+                  <BrandMark small />
+                </div>
+                <div className="skeleton-lines">
+                  <Skeleton style={{ width: 'min(420px, 70%)' }} />
+                  <Skeleton style={{ width: 'min(360px, 60%)' }} />
+                  <Skeleton style={{ width: 'min(260px, 45%)' }} />
+                </div>
+              </div>
+              <Skeleton className="ghost-bubble" style={{ width: 'min(180px, 36%)' }} />
             </div>
           ) : (
             persistedMessages.length > 0 &&

@@ -51,6 +51,7 @@ Use distinct development and production Workers, Durable Object namespaces, priv
 | `BETTER_AUTH_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`                          | Login sessions and Google OAuth                                    |
 | `OTTO_MAX_USERS`                                                                          | Atomic admission limit, default eight                              |
 | `OTTO_DEVELOPER_IDS`                                                                      | Account UUIDs authorized for developer/computer views              |
+| `DEV_INSPECTOR=true`                                                                      | Inspector opt-in, limited to `OTTO_DEVELOPER_IDS` accounts         |
 | `COMPUTER_PROVIDER=cloudflare`                                                            | Selected separate Cloudflare browser/workspace roles               |
 | `COMPUTER_PROVIDER=e2b`, `E2B_API_KEY`, `E2B_COMPUTER_TEMPLATE`                           | Optional deferred combined E2B computer                            |
 | `OBJECT_STORAGE_PROVIDER=http`, `OBJECT_STORAGE_ENDPOINT=http://otto.storage/v1/objects/` | Private Cloudflare storage broker                                  |

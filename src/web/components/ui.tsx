@@ -2,7 +2,7 @@ import * as React from 'react';
 import { Slot } from '@radix-ui/react-slot';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { cva, type VariantProps } from 'class-variance-authority';
-import { X, LoaderCircle } from 'lucide-react';
+import { LoaderCircle, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 const buttonVariants = cva('button', {
@@ -38,13 +38,6 @@ export const Input = React.forwardRef<
   <input ref={ref} className={cn('input', className)} {...props} />
 ));
 Input.displayName = 'Input';
-export const Textarea = React.forwardRef<
-  HTMLTextAreaElement,
-  React.TextareaHTMLAttributes<HTMLTextAreaElement>
->(({ className, ...props }, ref) => (
-  <textarea ref={ref} className={cn('input textarea', className)} {...props} />
-));
-Textarea.displayName = 'Textarea';
 export const Dialog = DialogPrimitive.Root;
 export const DialogTrigger = DialogPrimitive.Trigger;
 export const DialogTitle = DialogPrimitive.Title;
@@ -101,10 +94,37 @@ export function Notice({
 }
 
 export function Loading({ label = 'Loading…' }: { label?: string }) {
+  const element = React.useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => {
+    const page = element.current?.closest<HTMLElement>('.secondary-page');
+    const shown = performance.now();
+    return () => {
+      if (!page || performance.now() - shown <= 300) return;
+      page.dataset.reveal = 'true';
+      setTimeout(() => delete page.dataset.reveal, 700);
+    };
+  }, []);
   return (
-    <div className="loading">
-      <LoaderCircle size={17} className="spin" />
-      <span>{label}</span>
+    <div className="loading" ref={element}>
+      <span className="loading-ghost" aria-hidden="true">
+        {[58, 44, 51].map((width) => (
+          <span key={width} className="resource-row">
+            <Skeleton className="ghost-icon" />
+            <span className="skeleton-lines">
+              <Skeleton style={{ width: `${width}%` }} />
+              <Skeleton style={{ width: `${width - 20}%` }} />
+            </span>
+          </span>
+        ))}
+      </span>
+      <span className="loading-label">
+        <LoaderCircle size={17} className="spin" />
+        <span>{label}</span>
+      </span>
     </div>
   );
+}
+
+export function Skeleton({ className, ...props }: React.HTMLAttributes<HTMLSpanElement>) {
+  return <span aria-hidden="true" className={cn('skeleton', className)} {...props} />;
 }
