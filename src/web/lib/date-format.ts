@@ -60,6 +60,18 @@ function supportedLocale(value: string | null | undefined) {
   return null;
 }
 
+let browserLocaleSave: Promise<void> | undefined;
+export function saveBrowserLocale(save: (locale: string) => Promise<void>) {
+  browserLocaleSave ??= save(browserLocale()).catch(() => {
+    browserLocaleSave = undefined;
+  });
+  return browserLocaleSave;
+}
+
+export function browserLocaleSaved() {
+  return browserLocaleSave;
+}
+
 export function browserLocale() {
   return (
     supportedLocale(typeof navigator === 'undefined' ? null : navigator.language) ?? fallbackLocale

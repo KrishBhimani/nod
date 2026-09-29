@@ -7,6 +7,7 @@ import { ConnectedAccount } from '../src/web/pages/apps.tsx';
 import { ChannelAccount, ChannelSetupStep } from '../src/web/pages/channels.tsx';
 import { GoalRow } from '../src/web/pages/goals.tsx';
 import { ScheduleRow } from '../src/web/pages/schedule.tsx';
+import { setDateFormat } from '../src/web/lib/date-format.ts';
 import {
   channelLabel,
   channelSetupBody,
@@ -19,6 +20,8 @@ import {
   scheduleDraft,
   telegramBotUrl,
 } from '../src/web/lib/secondary-pages.ts';
+
+setDateFormat({ locale: 'en-GB', hourCycle: 'auto', timeZone: 'Europe/Lisbon' });
 
 const account: Connection = {
   slug: 'gmail',

@@ -235,6 +235,9 @@ test('the signed-in profile, region and clock reach the model but not observatio
       return {
         resumed: false,
         prompt: async () => {
+          await options.tools
+            .find((tool) => tool.name === 'manage_personal_context')!
+            .execute({ action: 'history_search', args: { query: 'dentist' } });
           options.onEvent({
             type: 'model_usage',
             id: randomUUID(),
@@ -289,7 +292,11 @@ test('the signed-in profile, region and clock reach the model but not observatio
     );
     assert.match(prompts[0], /Call the user by preferredName naturally/);
     assert.match(prompts[0], /in the pt-PT format with a 12-hour clock/);
-    assert.ok(observed.length > 0);
+    assert.deepEqual(
+      observed.map((item) => (item as { type: string }).type),
+      ['tool_start', 'tool_end', 'model_usage'],
+    );
+    assert.ok(events.length >= 2);
     for (const value of [...observed.map((item) => JSON.stringify(item)), ...events])
       assert.doesNotMatch(value, /Samantha|sam\.synthetic|Sam\b/);
   } finally {

@@ -697,4 +697,8 @@ test('gateway sends the signed-in profile to the owner runtime once per change a
   assert.equal(direct.statusCode, 404);
   assert.equal(f.profiles.length, 4);
   assert.equal(f.calls.length, 5);
+  f.displayName('Sy');
+  await Promise.all([state(), state(), state()]);
+  assert.equal(f.profiles.length, 5);
+  assert.equal(JSON.parse(f.profiles[4].body).preferredName, 'Sy');
 });

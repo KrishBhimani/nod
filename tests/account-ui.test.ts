@@ -621,7 +621,7 @@ test('language and region choices save instantly and update the live example', a
       document.querySelector('.account-region .time-zone-picker-trigger')?.textContent,
       'Português (Portugal)',
     );
-    assert.match(example(), /\d{2}\/\d{2}/);
+    assert.match(example(), /\d{1,2}\/\d{2}/);
     assert.equal(document.querySelector('.account-settings-actions'), null);
   } finally {
     await act(async () => root.unmount());

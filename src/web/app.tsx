@@ -24,7 +24,7 @@ import { AccountSettings } from './components/account-settings';
 import type { AccountControls, AccountTab } from './components/account-menu';
 import { usePageData } from './hooks/use-page-data';
 import { api } from './lib/api';
-import { browserLocale, setDateFormat } from './lib/date-format';
+import { saveBrowserLocale, setDateFormat } from './lib/date-format';
 
 function navigate(path: string) {
   window.history.pushState(null, '', path);
@@ -32,18 +32,17 @@ function navigate(path: string) {
 }
 function useSavedDateFormat() {
   const { data, update } = usePageData<AccountPreferences>('/api/preferences');
-  const localeSaved = useRef(false);
   useEffect(() => {
     if (!data) return;
     setDateFormat(data);
-    if (data.locale || localeSaved.current) return;
-    localeSaved.current = true;
-    void api<AccountPreferences>('/api/preferences', {
-      method: 'PATCH',
-      body: JSON.stringify({ locale: browserLocale() }),
-    })
-      .then((result) => update(() => result))
-      .catch(() => {});
+    if (!data.locale)
+      void saveBrowserLocale(async (locale) => {
+        const result = await api<AccountPreferences>('/api/preferences', {
+          method: 'PATCH',
+          body: JSON.stringify({ locale }),
+        });
+        update(() => result);
+      });
   }, [data, update]);
 }
 

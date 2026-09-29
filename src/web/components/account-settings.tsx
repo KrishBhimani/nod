@@ -18,7 +18,13 @@ import { Button, Dialog, DialogContent, DialogTitle, Field, Input, Loading, Noti
 import { usePageData } from '../hooks/use-page-data';
 import { api, errorMessage } from '../lib/api';
 import { SearchPicker, TimeZonePicker } from './time-zone-picker';
-import { dateFormatFrom, formatDateTime, regionLocales, setDateFormat } from '../lib/date-format';
+import {
+  browserLocaleSaved,
+  dateFormatFrom,
+  formatDateTime,
+  regionLocales,
+  setDateFormat,
+} from '../lib/date-format';
 
 const editablePreferences = ['quietHoursEnabled', 'quietStart', 'quietEnd'] as const;
 const regionLabels = {
@@ -90,6 +96,7 @@ function LanguageAndRegion({
     setSaving(true);
     setError('');
     try {
+      await browserLocaleSaved();
       const result = await api<AccountPreferences>('/api/preferences', {
         method: 'PATCH',
         signal: controller.signal,

@@ -147,7 +147,18 @@ export async function createGateway(options: {
     },
   });
   const syncedProfiles = new Map<string, string>();
-  async function syncProfile(session: AuthenticatedSession) {
+  const profileSyncs = new Map<string, Promise<void>>();
+  function syncProfile(session: AuthenticatedSession) {
+    const owner = session.user.id;
+    const next = (profileSyncs.get(owner) ?? Promise.resolve()).then(() => sendProfile(session));
+    const settled = next.catch(() => {});
+    profileSyncs.set(owner, settled);
+    void settled.then(() => {
+      if (profileSyncs.get(owner) === settled) profileSyncs.delete(owner);
+    });
+    return next;
+  }
+  async function sendProfile(session: AuthenticatedSession) {
     const account = await options.accounts.read(session.user.id);
     const body = JSON.stringify({
       name: session.user.name.trim().slice(0, 200) || null,
