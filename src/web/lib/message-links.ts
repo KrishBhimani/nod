@@ -1,9 +1,12 @@
-import type { Definition, PhrasingContent, Root } from 'mdast';
+import type { Root, RootContent } from 'hast';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
-import { visit } from 'unist-util-visit';
-import { remarkLocalLinks } from './markdown';
+import remarkRehype from 'remark-rehype';
+import rehypeRaw from 'rehype-raw';
+import rehypeSanitize from 'rehype-sanitize';
+import { SKIP, visit } from 'unist-util-visit';
+import { rehypeLocalLinks } from './markdown';
 
 export type SetupKind = 'vault' | 'website' | 'app';
 type SafeLink =
@@ -96,12 +99,18 @@ export function safeMessageLink(value: string, origin: string): SafeLink | null 
   }
 }
 
-const setupParser = unified().use(remarkParse).use(remarkGfm).use(remarkLocalLinks);
+const setupParser = unified()
+  .use(remarkParse)
+  .use(remarkGfm)
+  .use(remarkRehype, { allowDangerousHtml: true })
+  .use(rehypeRaw)
+  .use(rehypeLocalLinks)
+  .use(rehypeSanitize);
 
-function linkText(children: PhrasingContent[]): string {
+function linkText(children: RootContent[]): string {
   return children
     .map((child) =>
-      'value' in child ? child.value : 'children' in child ? linkText(child.children) : '',
+      child.type === 'text' ? child.value : 'children' in child ? linkText(child.children) : '',
     )
     .join('');
 }
@@ -109,15 +118,10 @@ function linkText(children: PhrasingContent[]): string {
 export function messageSetupLinks(text: string, origin: string) {
   const actions = new Map<string, { href: string; setup: SetupKind; label: string }>();
   const tree = setupParser.runSync(setupParser.parse(text)) as Root;
-  const definitions = new Map<string, Definition>();
-  visit(tree, 'definition', (node) => {
-    if (!definitions.has(node.identifier)) definitions.set(node.identifier, node);
-  });
-  visit(tree, (node) => {
-    if (node.type !== 'link' && node.type !== 'linkReference') return;
-    const destination = node.type === 'link' ? node.url : definitions.get(node.identifier)?.url;
-    if (!destination) return;
-    const link = safeMessageLink(destination, origin);
+  visit(tree, 'element', (node) => {
+    if (node.tagName === 'code' || node.tagName === 'pre') return SKIP;
+    if (node.tagName !== 'a' || typeof node.properties.href !== 'string') return;
+    const link = safeMessageLink(node.properties.href, origin);
     const setup = link && setupLink(link, linkText(node.children));
     if (setup && !actions.has(setup.href)) actions.set(setup.href, setup);
   });

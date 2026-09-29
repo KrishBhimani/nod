@@ -216,3 +216,48 @@ test('plain browser connection paths hide their token behind one fixed action', 
   for (const token of ['x'.repeat(42), 'x'.repeat(44)])
     assert.deepEqual(messageSetupLinks(`/browser-connect/${token}`, origin), []);
 });
+
+test('raw HTML code remains inert even when an outside link shares its setup destination', () => {
+  for (const code of [
+    '<code>/vault/code-example</code>',
+    '<code>[Add login](/vault/code-example)</code>',
+    '<code><a href="/vault/code-example">Add login</a></code>',
+    '<pre>/vault/code-example</pre>',
+    '<pre><span><a href="/vault/code-example">Add login</a></span></pre>',
+  ]) {
+    assert.deepEqual(messageSetupLinks(code, origin), [], code);
+    assert.doesNotMatch(render(code), /setup-group|setup-phrase|<a /, code);
+    const mixed = `${code}\n\nand [Add login](/vault/code-example)`;
+    assert.deepEqual(messageSetupLinks(mixed, origin), [
+      { href: '/vault/code-example', setup: 'vault', label: 'Add login' },
+    ]);
+    const result = render(mixed);
+    assert.equal((result.match(/class="setup-phrase"/g) ?? []).length, 1, mixed);
+    assert.doesNotMatch(
+      result.match(/<(?:code|pre)>[\s\S]*?<\/(?:code|pre)>/)?.[0] ?? '',
+      /setup-phrase|<a /,
+      mixed,
+    );
+  }
+});
+
+test('sanitized HTML setup links use the same action group as rendered Markdown', () => {
+  const text =
+    '<a href="/vault/raw-link" onclick="alert(1)">Add login</a> and <a href="https://accounts.example.com/auth">Connect Gmail</a>';
+  assert.deepEqual(messageSetupLinks(text, origin), [
+    { href: '/vault/raw-link', setup: 'vault', label: 'Add login' },
+    { href: 'https://accounts.example.com/auth', setup: 'app', label: 'Connect Gmail' },
+  ]);
+  const result = render(text);
+  assert.equal((result.match(/class="setup-phrase"/g) ?? []).length, 2);
+  assert.doesNotMatch(result, /onclick|alert\(1\)/);
+  for (const unsafe of [
+    '<a href="javascript:alert(1)">Connect Gmail</a>',
+    '<script><a href="/vault/hidden">Add login</a></script>',
+    '<style>/vault/hidden</style>',
+    '<!-- [Add login](/vault/hidden) -->',
+  ]) {
+    assert.deepEqual(messageSetupLinks(unsafe, origin), [], unsafe);
+    assert.doesNotMatch(render(unsafe), /setup-group/, unsafe);
+  }
+});

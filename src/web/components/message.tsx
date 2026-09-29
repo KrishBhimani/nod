@@ -11,7 +11,7 @@ import { Button, Checkbox, Loading, Notice } from './ui';
 import { BrandMark } from './brand';
 import { errorMessage, post } from '../lib/api';
 import { messageSetupLinks, safeMessageLink, setupLink } from '../lib/message-links';
-import { remarkLocalLinks } from '../lib/markdown';
+import { rehypeLocalLinks } from '../lib/markdown';
 import { nextReaction, reactionName } from '../lib/reactions';
 import { MessageLinkPreviews } from './link-previews';
 import { SetupActions } from './setup-link';
@@ -34,8 +34,8 @@ export const MessageText = memo(function MessageText({
     <>
       <div className="message-text" ref={content}>
         <Markdown
-          remarkPlugins={[remarkGfm, remarkLocalLinks]}
-          rehypePlugins={[rehypeRaw, rehypeSanitize]}
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[rehypeRaw, rehypeLocalLinks, rehypeSanitize]}
           components={{
             a: ({ href, children }) => {
               const link = safeMessageLink(href ?? '', origin);
