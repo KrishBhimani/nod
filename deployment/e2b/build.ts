@@ -67,6 +67,7 @@ export async function buildE2BTemplate(options: {
       cpuCount: 2,
       memoryMB: options.role === 'computer' ? 3072 : options.role === 'browser' ? 2048 : 1024,
       requestTimeoutMs: 30_000,
+      retries: 0,
       signal: AbortSignal.timeout(30 * 60_000),
     });
     return {
