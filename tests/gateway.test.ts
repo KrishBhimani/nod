@@ -245,6 +245,7 @@ test('completing onboarding starts the welcome in the authenticated owner runtim
     payload: '{}',
   });
   assert.equal(landed.statusCode, 200);
+  assert.equal(f.calls.length, 3);
   assert.deepEqual(
     [f.calls.at(-1)!.owner, f.calls.at(-1)!.url, f.calls.at(-1)!.body],
     [f.users[1], `${origin}/api/onboarding/start`, '{"name":"Synthetic user"}'],

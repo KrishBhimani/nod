@@ -112,6 +112,11 @@ test(
         'Hi Sam, I’m looking through your Gmail for things I can take off your plate.',
       );
       assert.match(welcomeGreeting(undefined, []), /^Hi, I’m Otto\..*Connect one app/);
+      assert.equal(
+        welcomeGreeting('Alex', ['Gmail', 'Slack', 'Notion', 'Linear', 'Google Drive']),
+        'Hi Alex, I’m looking through your Gmail, Slack, Notion and 2 more apps for things I can take off your plate.',
+      );
+      assert.match(prompt, /If only one item is useful, offer only that one/);
       assert.equal(welcome.rows[0].source_message_id, null);
       assert.equal(welcome.rows[0].channel, 'web');
       assert.equal(welcome.rows[0].conversation_revision, before.conversationRevision);

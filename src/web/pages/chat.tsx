@@ -510,7 +510,9 @@ export function Chat({
               </Button>
             </div>
           )}
-          {visibleMessages.length === 0 && !welcoming && <Welcome onPick={pick} />}
+          {visibleMessages.length === 0 && !welcoming && !resetting && !working && !sending && (
+            <Welcome onPick={pick} />
+          )}
           <div
             className="messages"
             role="log"
