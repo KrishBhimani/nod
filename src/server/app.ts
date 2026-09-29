@@ -229,7 +229,6 @@ export async function createApp(dependencies: AppDependencies = {}) {
         text: z.string().trim().max(24000).default(''),
         attachmentIds: z.array(z.uuid()).max(5).default([]),
         taskId: z.uuid().optional(),
-        forceNew: z.boolean().optional(),
         replyToMessageId: z.uuid().optional(),
         clientMessageId: z.uuid().optional(),
         conversationRevision: z.number().int().nonnegative().optional(),
@@ -269,7 +268,6 @@ export async function createApp(dependencies: AppDependencies = {}) {
       ),
       {
         taskId: input.taskId,
-        forceNew: input.forceNew,
         channel: 'web',
         replyToMessageId: input.replyToMessageId,
         conversationRevision: input.conversationRevision,
