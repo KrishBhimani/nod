@@ -8,6 +8,7 @@ import test from 'node:test';
 import pg from 'pg';
 import type { Agent, RuntimeContext } from '../src/ports/agent.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';
+import { createPreferencesStore } from '../src/server/preferences.ts';
 import type { ThreadDependencies } from '../src/server/thread.ts';
 import type { SubmitMessageResponse } from '../src/shared/contracts.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
@@ -511,6 +512,33 @@ test(
           1,
         );
         firstThreadId = first.threadId;
+      });
+
+      await t.test('turns retain owned manual and automatic region preferences', async () => {
+        const preferences = createPreferencesStore(db.pool, ownerId);
+        const otherOwner = `region-owner-${randomUUID()}`;
+        const otherPreferences = createPreferencesStore(db.pool, otherOwner);
+        const original = await preferences.get();
+        try {
+          await otherPreferences.update({ locale: 'en-CA', timeZone: 'America/Toronto' });
+          await preferences.update({ locale: 'en-US', timeZone: 'Europe/Lisbon' });
+          const manual = await thread.submitUserMessage('Manual region fixture');
+          await waitFor(settled(manual.turnId));
+          assert.equal(ran(manual.turnId)?.locale, 'en-US');
+
+          await preferences.update({ locale: null });
+          await preferences.update({ hourCycle: 'h23' });
+          assert.equal((await preferences.get()).locale, null);
+          assert.equal((await otherPreferences.get()).locale, 'en-CA');
+          const automatic = await thread.submitUserMessage('Automatic region fixture');
+          await waitFor(settled(automatic.turnId));
+          assert.equal(ran(automatic.turnId)?.locale, 'en-PT');
+          assert.equal(ran(automatic.turnId)?.timeZone, 'Europe/Lisbon');
+          assert.equal(ran(automatic.turnId)?.hourCycle, 'h23');
+        } finally {
+          await preferences.update(original);
+          await db.pool.query('DELETE FROM preferences WHERE owner_id=$1', [otherOwner]);
+        }
       });
 
       await t.test('a message sent during a running turn queues and runs after it', async () => {

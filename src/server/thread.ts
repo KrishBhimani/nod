@@ -19,7 +19,8 @@ import type {
 } from '../ports/agent.ts';
 import { welcomeGreeting, welcomePrompt } from './welcome.ts';
 import { isMessageReaction, reactionEmoji } from '../shared/emoji.ts';
-import { defaultLocale, defaultPreferences } from './preferences.ts';
+import { defaultPreferences } from './preferences.ts';
+import { formattingLocale, timeZoneRegion } from '../shared/date-locale.ts';
 import type { IntegrationFile } from '../ports/integrations.ts';
 import type { AgentReactionInput } from './agent-reactions.ts';
 import type { ChatConfirmationInput } from './approvals.ts';
@@ -783,6 +784,7 @@ async function loadTurnContext(turn: any, dependencies: ThreadDependencies) {
     : undefined;
   const stored = profile.rows[0]?.data ?? {};
   const preference = preferences.rows[0];
+  const timeZone = preference?.time_zone || defaultPreferences.timeZone;
   return {
     sourceMessageId,
     uploads: [
@@ -792,8 +794,8 @@ async function loadTurnContext(turn: any, dependencies: ThreadDependencies) {
     replyTo,
     history: history.rows,
     context: {
-      timeZone: preference?.time_zone || defaultPreferences.timeZone,
-      locale: preference?.locale || defaultLocale,
+      timeZone,
+      locale: preference?.locale || formattingLocale(timeZoneRegion(timeZone)),
       hourCycle: preference?.hour_cycle || defaultPreferences.hourCycle,
       ...(account ? { account } : {}),
       personalContext: {

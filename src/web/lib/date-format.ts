@@ -1,6 +1,11 @@
 import { useSyncExternalStore } from 'react';
 import type { HourCycle, Preferences } from '../../shared/contracts';
-import { clockOptions, formattingLocale, localeRegion } from '../../shared/date-locale';
+import {
+  clockOptions,
+  formattingLocale,
+  localeRegion,
+  timeZoneRegion,
+} from '../../shared/date-locale';
 
 export interface DateFormat {
   locale: string;
@@ -47,16 +52,18 @@ export const regions = [
   'TW',
 ];
 
-function browserRegion() {
-  return localeRegion(typeof navigator === 'undefined' ? null : navigator.language) ?? 'GB';
+const browserRegions = new Map<string, string | null>();
+
+export function browserRegion() {
+  const region = browserRegions.get(Intl.DateTimeFormat().resolvedOptions().timeZone);
+  if (region) return region;
+  const languages =
+    typeof navigator === 'undefined' ? [] : [...navigator.languages, navigator.language];
+  return languages.map(localeRegion).find(Boolean) ?? 'GB';
 }
 
 export function regionLocale(region: string) {
   return `en-${region}`;
-}
-
-export function browserRegionLocale() {
-  return regionLocale(browserRegion());
 }
 
 function savedFormattingLocale(saved: string | null | undefined) {
@@ -78,6 +85,12 @@ let current: DateFormat = {
   timeZone: validTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone) ?? 'UTC',
 };
 const listeners = new Set<() => void>();
+
+export function resolveBrowserRegion() {
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (!browserRegions.has(timeZone)) browserRegions.set(timeZone, timeZoneRegion(timeZone));
+  for (const listener of listeners) listener();
+}
 
 export function dateFormatFrom(
   preferences: Pick<Preferences, 'locale' | 'hourCycle' | 'timeZone'>,
@@ -114,6 +127,10 @@ export function useDateFormat() {
     () => current,
     () => current,
   );
+}
+
+export function useBrowserRegion() {
+  return useSyncExternalStore(subscribe, browserRegion, browserRegion);
 }
 
 export function formatNumber(

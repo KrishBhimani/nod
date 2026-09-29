@@ -28,7 +28,13 @@ import {
 import { usePageData } from '../hooks/use-page-data';
 import { errorMessage } from '../lib/api';
 import { SearchPicker, TimeZonePicker } from './time-zone-picker';
-import { dateFormatFrom, formatDateTime, regionLocale, regions } from '../lib/date-format';
+import {
+  dateFormatFrom,
+  formatDateTime,
+  regionLocale,
+  regions,
+  useBrowserRegion,
+} from '../lib/date-format';
 import { savePreferences } from '../lib/preferences';
 import { localeRegion } from '../../shared/date-locale';
 
@@ -47,11 +53,19 @@ const clockOptions: Array<{ value: HourCycle; label: string }> = [
   { value: 'h23', label: '24-hour' },
 ];
 
-function regionOptions(current: string) {
+function regionOptions(current: string, detected: string) {
   const names = new Intl.DisplayNames(['en'], { type: 'region' });
-  return [...new Set([current, ...regions])]
-    .map((region) => ({ value: region, label: names.of(region) ?? region, keywords: region }))
-    .sort((a, b) => a.label.localeCompare(b.label, 'en'));
+  return [
+    {
+      value: 'auto',
+      label: `Automatic (${names.of(detected) ?? detected})`,
+      keywords: `location ${detected}`,
+    },
+    ...[...new Set([current, detected, ...regions])]
+      .filter((region) => region !== 'auto')
+      .map((region) => ({ value: region, label: names.of(region) ?? region, keywords: region }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'en')),
+  ];
 }
 
 function LanguageAndRegion({ saved }: { saved: AccountPreferences }) {
@@ -64,7 +78,8 @@ function LanguageAndRegion({ saved }: { saved: AccountPreferences }) {
   const request = useRef<AbortController | null>(null);
   useEffect(() => () => request.current?.abort(), []);
   const format = dateFormatFrom(saved);
-  const region = localeRegion(saved.locale) ?? localeRegion(format.locale) ?? 'GB';
+  const region = localeRegion(saved.locale) ?? 'auto';
+  const detected = useBrowserRegion();
   const zones = [
     ...new Set([
       saved.timeZone,
@@ -104,16 +119,16 @@ function LanguageAndRegion({ saved }: { saved: AccountPreferences }) {
         </span>
         <SearchPicker
           value={region}
-          options={regionOptions(region)}
+          options={regionOptions(region, detected)}
           labels={regionLabels}
           labelledBy={regionLabel}
           disabled={saving}
           onChange={(next) => {
-            if (next !== region) void save({ locale: regionLocale(next) });
+            if (next !== region) void save({ locale: next === 'auto' ? null : regionLocale(next) });
           }}
         />
       </div>
-      <div className="account-preference-row">
+      <div className="account-preference-row account-clock-row">
         <span id={clockLabel}>
           <Clock3 size={18} aria-hidden="true" />
           Clock
@@ -400,103 +415,106 @@ export function AccountSettings({
             })}
           </nav>
           <div
-            className="account-settings-body"
+            className="account-settings-pane"
             id={`${id}-content`}
             role="tabpanel"
             aria-labelledby={`${id}-${tab}`}
-            tabIndex={0}
           >
-            <h3>{tab}</h3>
-            {tab === 'Profile' && (
-              <form className="account-profile-form" onSubmit={(event) => void saveName(event)}>
-                <div className="account-profile-identity">
-                  <AccountAvatar user={account.user} large />
-                  <Field label="Display name">
-                    <Input
-                      value={name}
-                      onChange={(event) => setName(event.target.value)}
-                      required
-                      maxLength={80}
-                      autoComplete="name"
-                      disabled={account.saving}
-                    />
-                  </Field>
-                </div>
-                {account.user.email && (
-                  <div className="account-profile-email">
-                    <span>Email</span>
-                    <div>
-                      <GoogleMark />
-                      <span>{account.user.email}</span>
+            <header className="account-settings-header">
+              <h3>{tab}</h3>
+            </header>
+            <div key={tab} className="account-settings-body" tabIndex={0}>
+              {tab === 'Profile' && (
+                <form className="account-profile-form" onSubmit={(event) => void saveName(event)}>
+                  <div className="account-profile-identity">
+                    <AccountAvatar user={account.user} large />
+                    <Field label="Display name">
+                      <Input
+                        value={name}
+                        onChange={(event) => setName(event.target.value)}
+                        required
+                        maxLength={80}
+                        autoComplete="name"
+                        disabled={account.saving}
+                      />
+                    </Field>
+                  </div>
+                  {account.user.email && (
+                    <div className="account-profile-email">
+                      <span>Email</span>
+                      <div>
+                        <GoogleMark />
+                        <span>{account.user.email}</span>
+                      </div>
                     </div>
-                  </div>
-                )}
-                {error && <Notice>{error}</Notice>}
-                {name.trim() !== account.user.name && (
-                  <div className="account-settings-actions">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={account.saving}
-                      onClick={() => {
-                        setName(account.user.name);
-                        setError('');
-                      }}
-                    >
-                      Cancel
-                    </Button>
-                    <Button type="submit" disabled={account.saving || !name.trim()}>
-                      {account.saving ? 'Saving…' : 'Save changes'}
-                    </Button>
-                  </div>
-                )}
-              </form>
-            )}
-            {tab === 'Appearance' && (
-              <>
-                <div className="account-theme-previews" role="group" aria-label="Theme">
-                  {(['light', 'dark', 'system'] as AccountTheme[]).map((theme) => {
-                    const Icon = theme === 'light' ? Sun : theme === 'dark' ? Moon : Monitor;
-                    const label = theme[0].toUpperCase() + theme.slice(1);
-                    return (
-                      <button
-                        key={theme}
+                  )}
+                  {error && <Notice>{error}</Notice>}
+                  {name.trim() !== account.user.name && (
+                    <div className="account-settings-actions">
+                      <Button
                         type="button"
-                        aria-label={`${label} theme`}
-                        aria-pressed={account.theme === theme}
+                        variant="outline"
                         disabled={account.saving}
                         onClick={() => {
+                          setName(account.user.name);
                           setError('');
-                          void account.onTheme(theme).catch((cause) => {
-                            if (active.current) setError(errorMessage(cause));
-                          });
                         }}
                       >
-                        <span className={`account-theme-sample ${theme}`} aria-hidden="true">
-                          <i>
-                            <em />
-                            <em />
-                            <em />
-                          </i>
-                          <span>
-                            <b />
-                            <b />
-                            <b />
-                            <em />
+                        Cancel
+                      </Button>
+                      <Button type="submit" disabled={account.saving || !name.trim()}>
+                        {account.saving ? 'Saving…' : 'Save changes'}
+                      </Button>
+                    </div>
+                  )}
+                </form>
+              )}
+              {tab === 'Appearance' && (
+                <>
+                  <div className="account-theme-previews" role="group" aria-label="Theme">
+                    {(['light', 'dark', 'system'] as AccountTheme[]).map((theme) => {
+                      const Icon = theme === 'light' ? Sun : theme === 'dark' ? Moon : Monitor;
+                      const label = theme[0].toUpperCase() + theme.slice(1);
+                      return (
+                        <button
+                          key={theme}
+                          type="button"
+                          aria-label={`${label} theme`}
+                          aria-pressed={account.theme === theme}
+                          disabled={account.saving}
+                          onClick={() => {
+                            setError('');
+                            void account.onTheme(theme).catch((cause) => {
+                              if (active.current) setError(errorMessage(cause));
+                            });
+                          }}
+                        >
+                          <span className={`account-theme-sample ${theme}`} aria-hidden="true">
+                            <i>
+                              <em />
+                              <em />
+                              <em />
+                            </i>
+                            <span>
+                              <b />
+                              <b />
+                              <b />
+                              <em />
+                            </span>
                           </span>
-                        </span>
-                        <span className="account-theme-label">
-                          <Icon size={15} aria-hidden="true" />
-                          {label}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-                {error && <Notice>{error}</Notice>}
-              </>
-            )}
-            {tab === 'Preferences' && <PreferencesForm />}
+                          <span className="account-theme-label">
+                            <Icon size={15} aria-hidden="true" />
+                            {label}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {error && <Notice>{error}</Notice>}
+                </>
+              )}
+              {tab === 'Preferences' && <PreferencesForm />}
+            </div>
           </div>
           <div className="account-settings-signout">
             {account.canLogout && (
