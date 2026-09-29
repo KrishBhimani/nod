@@ -90,6 +90,7 @@ test(
     const app = Fastify();
     const channels = await createChannels(pool, {
       ownerId,
+      appOrigin: 'https://otto.example',
       transport: createChatSdkTransport(pool, environment),
       resolveAttachments: async (taskId, ids) => {
         if (holdResolve) {
@@ -181,6 +182,11 @@ test(
       assert.equal((await state(reply)).state, 'sent');
       await channels.drain();
       assert.equal(sent.length, 2);
+      const repeated = await addReply(taskId, [image, image]);
+      await channels.drain();
+      assert.equal((await state(repeated)).state, 'sent');
+      assert.equal(sent.length, 3);
+      assert.equal(sent[2].name, 'screenshot.png');
 
       failDocument = true;
       const uncertain = await addReply(taskId, [image, document]);
@@ -261,7 +267,9 @@ test(
       const localOnly = await addReply(taskId, [image]);
       await channels.drain();
       assert.equal((await state(localOnly)).state, 'sent');
-      assert.match(fallback[0], /Attachments are available in Otto/);
+      assert.match(fallback[0], /https:\/\/otto\.example\/api\/artifacts\//);
+      assert.match(fallback[0], /screenshot\.png/);
+      assert.doesNotMatch(fallback[0], /Attachments are available in Otto/);
     } finally {
       releaseResolve();
       await app.close();

@@ -944,10 +944,21 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         : { requiresApproval: true, action, args };
     }
     if (action === 'SEARCH_TOOLS') {
-      const { query } = z
-        .object({ query: z.string().trim().min(1).max(1000) })
+      const input = z
+        .object({
+          query: z.string().trim().min(1).max(1000),
+          connectionId: z.string().uuid().optional(),
+        })
         .strict()
-        .parse(args);
+        .safeParse(args);
+      if (!input.success)
+        return {
+          status: 'rejected',
+          code: 'invalid_search_arguments',
+          message:
+            'SEARCH_TOOLS requires a query of 1 to 1000 characters and accepts an optional UUID connectionId. No app request was sent. Correct the arguments before continuing.',
+        };
+      const { query } = input.data;
       try {
         const availableProviders = providers.filter((item) => item.configured);
         const results = await Promise.allSettled(
@@ -1479,7 +1490,15 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     ) => {
       if (action === 'list')
         return (await list()).map(
-          ({ accountId: _accountId, browserUrl: _browserUrl, ...connection }) => connection,
+          ({ accountId: _accountId, browserUrl: _browserUrl, ...connection }) => ({
+            ...connection,
+            ...(connection.accessPaths?.some((path) => path.kind === 'browser') &&
+              (connection.browserState === undefined
+                ? { browserAccess: 'credentials_saved' }
+                : ['saved', 'needs_sign_in'].includes(connection.browserState)
+                  ? { browserAccess: 'browser_session' }
+                  : {})),
+          }),
         );
       if (action === 'propose') {
         if (!options.discovered)

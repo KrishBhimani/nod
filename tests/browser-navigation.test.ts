@@ -5,6 +5,86 @@ import test from 'node:test';
 import { BrowserActionError } from '../src/ports/computer.ts';
 import { createBrowserFixture as createAgentBrowserComputer } from './browser-fixture.ts';
 import type { runProcess } from '../src/providers/process.ts';
+import { LoginPage, stagedLoginBrowser } from './login-fixture.ts';
+
+test('a browser observation waits for a page that first renders with no text', async () => {
+  const directory = await mkdtemp('/tmp/sk-hydration-');
+  const browser = stagedLoginBrowser();
+  const page = new LoginPage();
+  const text = page.text.bind(page);
+  let viewEvaluations = 0;
+  page.text = () => (viewEvaluations < 2 ? '' : text());
+  browser.pages.set('fixture', page);
+  const run: typeof runProcess = async (executable, args, options) => {
+    if (args.includes('eval') && options?.input?.includes('const text = String(root.innerText'))
+      viewEvaluations++;
+    return browser.run(executable, args, options);
+  };
+  const computer = createAgentBrowserComputer({ dataRoot: directory, run });
+  try {
+    const result = await computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    assert.match(result.text, /Page text [^\n]*:\nSign in/);
+    assert.ok(viewEvaluations >= 2);
+  } finally {
+    await computer.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a timed-out open uses the requested page when its text is ready', async () => {
+  const directory = await mkdtemp('/tmp/sk-slow-navigation-');
+  let currentUrl = 'about:blank';
+  const run: typeof runProcess = async (_executable, args, options) => {
+    if (args.includes('info'))
+      return {
+        stdout: JSON.stringify({ success: true, data: { active: false } }),
+        stderr: '',
+        exitCode: 0,
+      };
+    const command = args.slice(args.indexOf('--idle-timeout') + 2);
+    let data: Record<string, unknown> = {};
+    if (command[0] === 'open') {
+      if (command[1].endsWith('/slow') || command[1].endsWith('/blank')) currentUrl = command[1];
+      if (['/slow', '/missing', '/blank'].some((path) => command[1].endsWith(path)))
+        return {
+          stdout: JSON.stringify({
+            success: false,
+            error:
+              'Operation timed out. The page may still be loading or the element may not exist.',
+          }),
+          stderr: '',
+          exitCode: 1,
+        };
+      currentUrl = command[1];
+    }
+    if (command[0] === 'get') data = { url: currentUrl };
+    if (command[0] === 'eval')
+      data = options?.input?.includes('const text = String(root.innerText')
+        ? { result: { text: currentUrl.endsWith('/blank') ? '' : 'Page content is ready' } }
+        : { result: { masked: true, values: [], inputValues: [] } };
+    if (command[0] === 'snapshot') data = { snapshot: '- heading "Page content is ready"' };
+    return { stdout: JSON.stringify({ success: true, data }), stderr: '', exitCode: 0 };
+  };
+  const browser = createAgentBrowserComputer({ dataRoot: directory, run });
+  try {
+    const page = await browser.act('slow', { action: 'open', url: 'https://1.1.1.1/slow' });
+    assert.equal(page.url, 'https://1.1.1.1/slow');
+    assert.match(page.text, /Page content is ready/);
+    await assert.rejects(
+      browser.act('slow', { action: 'open', url: 'https://1.1.1.1/missing' }),
+      /could not complete/,
+    );
+    assert.match((await browser.act('slow', { action: 'snapshot' })).text, /website did not load/);
+    await assert.rejects(
+      browser.act('slow', { action: 'open', url: 'https://1.1.1.1/blank' }),
+      /could not complete/,
+    );
+    assert.match((await browser.act('slow', { action: 'snapshot' })).text, /website did not load/);
+  } finally {
+    await browser.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test('failed public navigation stays diagnosable without exposing a browser error page and a new open recovers', async () => {
   const directory = await mkdtemp('/tmp/sk-navigation-');

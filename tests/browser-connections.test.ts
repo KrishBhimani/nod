@@ -313,15 +313,47 @@ connectionTest(
       other.use(connectionId, { id: randomUUID(), revision: 0 }, 'https://www.linkedin.com/'),
       /unavailable/,
     );
+    const rejected = await other.request(
+      { action: 'use', connectionId, url: 'https://www.linkedin.com/' },
+      { id: randomUUID(), revision: 0 },
+    );
+    assert.ok('status' in rejected);
+    assert.equal(rejected.status, 'rejected');
+    const before = (
+      await pool.query('SELECT * FROM browser_connections WHERE id=$1', [connectionId])
+    ).rows[0];
+    const bindingCount = bindings.length;
+    const closeCount = closed.length;
+    for (const action of ['connect', 'use'] as const) {
+      for (const url of [
+        'https://www.technogym.com/en-IE/',
+        'https://api.linkedin.com/jobs/',
+        'https://www.linkedin.com:8443/jobs/',
+      ]) {
+        const mismatch = await service.request(
+          { action, connectionId, url },
+          { id: randomUUID(), revision: 0 },
+        );
+        assert.ok('code' in mismatch);
+        assert.equal(mismatch.status, 'rejected');
+        assert.equal(mismatch.code, 'browser_connection_origin_mismatch');
+      }
+    }
+    assert.equal(bindings.length, bindingCount);
+    assert.equal(closed.length, closeCount);
+    assert.deepEqual(
+      (await pool.query('SELECT * FROM browser_connections WHERE id=$1', [connectionId])).rows[0],
+      before,
+    );
     await pool.query("UPDATE browser_connections SET checked_at='2000-01-01' WHERE id=$1", [
       connectionId,
     ]);
     const nextTask = randomUUID();
-    const used = await service.use(
-      connectionId,
+    const used = await service.request(
+      { action: 'use', connectionId, url: 'https://www.linkedin.com/jobs/' },
       { id: nextTask, revision: 0 },
-      'https://www.linkedin.com/jobs/',
     );
+    assert.ok('status' in used);
     assert.equal(used.status, 'session_opened');
     assert.ok(new Date((await service.list())[0].checkedAt!).getTime() > Date.UTC(2020, 0, 1));
     assert.equal(bindings.at(-1)?.profileId, bindings[0].profileId);
@@ -349,6 +381,35 @@ connectionTest(
     state.failDelete = false;
     await service.disconnect(connectionId);
     assert.deepEqual(removed, [bindings[0].profileId]);
+  },
+);
+
+connectionTest(
+  'model connect can renew a pending session created outside a task',
+  async (value) => {
+    const { service, pool, bindings } = value;
+    const pending = await service.begin({ url: 'https://www.linkedin.com/' });
+    const before = (
+      await pool.query('SELECT * FROM browser_connections WHERE id=$1', [pending.connectionId])
+    ).rows[0];
+    assert.equal(before.state, 'pending');
+    assert.equal(before.task_id, null);
+    const taskId = randomUUID();
+    await pool.query("INSERT INTO tasks VALUES($1,'owner-a','running',0)", [taskId]);
+    const result = await service.request(
+      { action: 'connect', connectionId: pending.connectionId, url: 'https://www.linkedin.com/' },
+      { id: taskId, revision: 0 },
+    );
+    assert.ok('url' in result);
+    assert.notEqual(result.url, pending.url);
+    assert.equal(result.connectionId, pending.connectionId);
+    assert.equal(bindings.at(-1)?.taskId, taskId);
+    assert.equal(bindings.at(-1)?.profileId, before.profile_id);
+    const after = (
+      await pool.query('SELECT * FROM browser_connections WHERE id=$1', [pending.connectionId])
+    ).rows[0];
+    assert.equal(after.state, 'pending');
+    assert.equal(after.task_id, taskId);
   },
 );
 

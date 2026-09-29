@@ -1,10 +1,30 @@
 import { search } from 'pi-web-access/gemini-search.ts';
 import type { WebSearch } from '../../ports/web-search.ts';
 
-export function createWebSearch(run: typeof search = search): WebSearch {
+export function createWebSearch(
+  run: typeof search = search,
+  fallback: typeof search = search,
+): WebSearch {
   return async (query, signal) => {
     try {
-      const response = await run(query, { numResults: 8, signal });
+      let response: Awaited<ReturnType<typeof search>>;
+      try {
+        response = await run(query, { numResults: 8, signal });
+      } catch (error) {
+        signal.throwIfAborted();
+        if (
+          !(error instanceof Error) ||
+          !/^(Auto provider search failed:|No search provider available\.)/.test(error.message)
+        ) {
+          throw error;
+        }
+        try {
+          response = await fallback(query, { numResults: 8, signal, provider: 'anysearch' });
+        } catch {
+          signal.throwIfAborted();
+          response = await fallback(query, { numResults: 8, signal, provider: 'duckduckgo' });
+        }
+      }
       return {
         source: response.provider,
         ...(response.answer ? { answer: response.answer.slice(0, 3000) } : {}),

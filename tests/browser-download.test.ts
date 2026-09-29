@@ -235,6 +235,23 @@ test('no-target capture refuses an older file beside partial or completed downlo
   }
 });
 
+test('no-target capture waits while the browser shows a partial file beside its final name', async (t) => {
+  const root = await mkdtemp('/tmp/sk-download-reserved-');
+  const probe = downloadWaitProbe(t);
+  try {
+    await writeFile(join(root, 'held.pdf'), '');
+    await writeFile(join(root, 'held.pdf.crdownload'), browserDownloadPdf);
+    const pending = waitForDownload(root, probe.controller.signal);
+    void pending.catch(() => {});
+    await probe.scan(pending);
+    await rename(join(root, 'held.pdf.crdownload'), join(root, 'held.pdf'));
+    assert.equal(await pending, 'held.pdf');
+    assert.deepEqual((await readDownload(root, 'held.pdf')).bytes, browserDownloadPdf);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('no-target capture refuses replaced directories and unsafe native files', async (t) => {
   const root = await mkdtemp('/tmp/sk-download-unsafe-');
   try {

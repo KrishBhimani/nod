@@ -16,6 +16,10 @@ const inputSchema = z
     connectionId: idSchema.optional(),
   })
   .strict();
+const requestSchema = z.discriminatedUnion('action', [
+  inputSchema.extend({ action: z.literal('connect') }),
+  inputSchema.omit({ label: true }).extend({ action: z.literal('use'), connectionId: idSchema }),
+]);
 const fieldSchema = z
   .object({
     origin: z.url().max(2048),
@@ -474,6 +478,66 @@ export async function createBrowserConnections(
     return { ...result, ...link, status: 'needs_sign_in' as const };
   }
 
+  async function request(
+    raw: unknown,
+    task: { id: string; revision: number },
+    signal?: AbortSignal,
+  ) {
+    signal?.throwIfAborted();
+    const input = requestSchema.safeParse(raw);
+    const invalid = {
+      status: 'rejected' as const,
+      code: 'invalid_browser_connection_arguments',
+      message:
+        'Use connect with a secure website URL, or use with a saved browser session UUID and URL. Saved Vault credentials require the browser and request_credentials after fresh inspection. No browser action was started.',
+    };
+    if (!input.success) return invalid;
+    let address: URL;
+    try {
+      address = site(input.data.url);
+    } catch (error) {
+      if (error instanceof BrowserConnectionError && error.statusCode === 400) return invalid;
+      throw error;
+    }
+    if (input.data.connectionId) {
+      const found = await pool.query<{ id: string; origin: string; state: string }>(
+        'SELECT id,origin,state FROM browser_connections WHERE id=$1 AND owner_id=$2',
+        [input.data.connectionId, options.ownerId],
+      );
+      signal?.throwIfAborted();
+      const states =
+        input.data.action === 'connect'
+          ? ['pending', 'saved', 'needs_sign_in']
+          : ['saved', 'needs_sign_in'];
+      if (!found.rows.length || !states.includes(found.rows[0].state))
+        return {
+          status: 'rejected' as const,
+          code: 'browser_connection_unavailable',
+          message:
+            'The selected saved browser session is unavailable. Check manage_apps for browserAccess: browser_session. Entries marked credentials_saved require the browser and request_credentials after fresh inspection. No browser action was started.',
+        };
+      if (found.rows[0].origin !== address.origin)
+        return {
+          status: 'rejected' as const,
+          code: 'browser_connection_origin_mismatch',
+          message:
+            'The selected saved browser session belongs to another website origin. Use its saved origin or connect to the requested website separately. No browser action was started.',
+        };
+    }
+    signal?.throwIfAborted();
+    return input.data.action === 'connect'
+      ? begin(
+          {
+            url: input.data.url,
+            connectionId: input.data.connectionId,
+            label: input.data.label,
+          },
+          task,
+          signal,
+        )
+      : use(input.data.connectionId, task, input.data.url, signal);
+  }
+
   async function list(): Promise<Connection[]> {
     const rows = (
       await pool.query<Row>(
@@ -895,5 +959,5 @@ export async function createBrowserConnections(
     });
   }
 
-  return { begin, use, list, disconnect, registerRoutes };
+  return { begin, use, request, list, disconnect, registerRoutes };
 }

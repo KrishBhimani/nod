@@ -302,6 +302,7 @@ test(
       const id = randomUUID();
       usage.record({ ...base, id, inputTokens: 100, costUsd: 0.01, pricing: 'sdk_estimate' });
       usage.record({ ...base, id, inputTokens: 100, costUsd: 0.01, pricing: 'sdk_estimate' });
+      assert.deepEqual(await usage.taskCosts([task]), { [task]: 0.01 });
       usage.record({ ...base, inputTokens: 25, costUsd: 100, pricing: 'unavailable' });
       usage.record({ ...base, taskId: foreign, inputTokens: 999 });
       await usage.withTask(task, () =>
@@ -323,6 +324,7 @@ test(
       assert.equal(model.costUsd, 0.01);
       assert.equal(model.pricedRequests, 1);
       assert.equal(model.pricing, 'sdk_estimate');
+      assert.deepEqual(await usage.taskCosts([task, foreign]), { [task]: 0.01 });
       assert.equal(current.providers.find((row) => row.provider === 'composio')?.costUsd, null);
       assert.equal(
         current.providers.some((row) => row.provider === 'jev'),

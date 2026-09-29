@@ -275,6 +275,7 @@ export function createDefaultAdapters(
     integrations: createComposioProvider({
       apiKey: env.COMPOSIO_API_KEY,
       webhookSecret: env.COMPOSIO_WEBHOOK_SECRET,
+      webhookUrl: env.OTTO_COMPOSIO_WEBHOOK_URL,
       authConfigs,
     }),
     ...(['local', 'tenant'].includes(runtimeMode)
@@ -624,13 +625,7 @@ export async function createApplication(
       finishObservationSegment: inspector.finishSegment,
       connections: integrations.manageConnections,
       browserConnection: (request, task, signal) =>
-        request.action === 'connect'
-          ? browserConnections.begin(
-              { url: request.url, connectionId: request.connectionId, label: request.label },
-              task,
-              signal,
-            )
-          : browserConnections.use(request.connectionId, task, request.url, signal),
+        browserConnections.request(request, task, signal),
       speech,
       manage: async (taskId, action, args, provenance) => {
         if (
@@ -713,6 +708,7 @@ export async function createApplication(
     computer,
     runtime,
     inspector,
+    providerUsage,
     configuration: () =>
       configuration({
         provider: adapters.model.provider,
@@ -827,6 +823,7 @@ export async function createApplication(
     channels = await createChannels(pool, {
       admission,
       ownerId,
+      appOrigin: runtimeMode === 'tenant' ? publicOrigin : undefined,
       resolveAttachments: artifacts.readTaskArtifacts,
       transport: meterMessaging(messaging, providerUsage),
       acceptVerification: (text, input) => chatVerification.accept(text, input),
