@@ -71,7 +71,7 @@ interface BrowserState {
   browserExecutable?: string;
   desktop?: SignInDesktop;
 }
-export class BrowserLockedError extends Error {
+class BrowserLockedError extends Error {
   statusCode = 423;
   constructor() {
     super('Browser observations are paused during credential entry.');
@@ -103,6 +103,10 @@ export function redactBrowserText(text: string, secrets: Iterable<string>): stri
   const result = parts.map((part) => part ?? '[redacted]').join('');
   return result.replace(/(password[^\n]*?)(?:value=|: )[^\n]*/gi, '$1 [redacted]');
 }
+
+const browserTabList = z
+  .array(z.object({ tabId: z.string(), active: z.boolean(), url: z.string() }))
+  .max(64);
 
 export function redactBrowserUrl(
   value: string,
@@ -365,7 +369,11 @@ export function createAgentBrowserComputer(options: {
                                 }
                               : args[0] === 'close'
                                 ? { action: 'close' }
-                                : null;
+                                : args[0] === 'tab' && args[1] === 'list'
+                                  ? { action: 'tab_list' }
+                                  : args[0] === 'tab' && args[1] === 'switch'
+                                    ? { action: 'tab_switch', tabId: args[2] }
+                                    : null;
       if (!request) throw new Error('Reopen this page before continuing browser actions.');
       const result = await drainInterruptedCommand(state, args[0], () =>
         requestDaemon(state.socket!, request, options.signal, 45_000, options.maxBytes),
@@ -480,6 +488,7 @@ export function createAgentBrowserComputer(options: {
   async function currentUrl(state: BrowserState, signal?: AbortSignal): Promise<string> {
     const data = await command(state, ['get', 'url'], { signal });
     const url = String(data.url ?? data.value ?? '');
+    if (url === 'about:blank') return url;
     browserUrl(url);
     const storedUrl = new URL(url);
     storedUrl.search = '';
@@ -488,6 +497,55 @@ export function createAgentBrowserComputer(options: {
       storedUrl.pathname = '/';
     state.saved.url = storedUrl.href;
     return url;
+  }
+
+  async function browserTabs(state: BrowserState, signal?: AbortSignal) {
+    const data = await command(state, ['tab', 'list'], { signal });
+    return browserTabList.parse(data.tabs);
+  }
+
+  async function settleTabs(
+    state: BrowserState,
+    before: z.infer<typeof browserTabList>,
+    signal?: AbortSignal,
+  ) {
+    const known = new Set(before.map((tab) => tab.tabId));
+    const opener = before.find((tab) => tab.active)?.tabId;
+    const deadline = Date.now() + 5000;
+    let candidate: string | undefined;
+    for (;;) {
+      const tabs = await browserTabs(state, signal);
+      const opened = tabs.filter((tab) => !known.has(tab.tabId));
+      const loading = opened.some((tab) => !/^https?:/.test(tab.url));
+      const loaded = opened.findLast((tab) => /^https?:/.test(tab.url));
+      const settled = loaded && `${loaded.tabId} ${loaded.url}`;
+      const expired = Date.now() >= deadline;
+      const target = loading
+        ? expired
+          ? opener
+          : undefined
+        : !loaded
+          ? opener
+          : settled === candidate
+            ? loaded.tabId
+            : expired
+              ? opener
+              : undefined;
+      if (target) {
+        if (!tabs.some((tab) => tab.tabId === target && !tab.active)) return;
+        try {
+          await command(state, ['tab', 'switch', target], { signal });
+          return;
+        } catch (error) {
+          if (target === opener || !(error instanceof DaemonCommandError)) throw error;
+          known.add(target);
+          continue;
+        }
+      }
+      if (expired) return;
+      candidate = loading ? undefined : settled;
+      await delay(25, undefined, { signal });
+    }
   }
 
   async function saveState(state: BrowserState) {
@@ -926,6 +984,12 @@ export function createAgentBrowserComputer(options: {
     if (state.injecting || state.manualUntil || state.saved.signInPending)
       throw new BrowserLockedError();
     const url = await currentUrl(state, signal);
+    if (url === 'about:blank')
+      return {
+        text: 'The page opened a new tab that has not loaded. Take a snapshot again.',
+        url,
+        candidates: [],
+      };
     if (state.saved.allowedOrigin && new URL(url).origin !== state.saved.allowedOrigin)
       throw new BrowserActionError('browser_origin_changed');
     let inputValues = await maskFields(state, signal);
@@ -1097,8 +1161,12 @@ export function createAgentBrowserComputer(options: {
         if (!state.started) throw new Error('Open a website first.');
         markActivity(id);
         await currentUrl(state, signal);
-        if (input.action === 'click')
-          await command(state, ['click', selector(input.selector)], { signal });
+        if (input.action === 'click') {
+          const target = selector(input.selector);
+          const tabs = await browserTabs(state, signal);
+          await command(state, ['click', target], { signal });
+          await settleTabs(state, tabs, signal);
+        }
         if (input.action === 'fill') {
           const target = selector(input.selector);
           const type = await command(state, ['get', 'attr', target, 'type'], { signal });
@@ -1146,7 +1214,9 @@ export function createAgentBrowserComputer(options: {
             )
           )
             throw new Error('Choose a supported browser key.');
+          const tabs = await browserTabs(state, signal);
           await command(state, ['press', input.key], { signal });
+          await settleTabs(state, tabs, signal);
         }
       }
       if (input.waitMs !== undefined) {

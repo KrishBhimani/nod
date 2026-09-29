@@ -10,15 +10,28 @@ const origin = 'http://localhost:4399';
 test(
   'real Better Auth migrations, signed session reads, revocation and rejected callbacks use a disposable schema',
   { skip: !process.env.TEST_DATABASE_URL, timeout: 20_000 },
-  async () => {
+  async (t) => {
     const schema = `test_better_auth_${randomUUID().replaceAll('-', '').slice(0, 16)}`;
-    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 1 });
-    await admin.query(`CREATE SCHEMA ${schema}`);
+    const root = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 1 });
+    const url = new URL(process.env.TEST_DATABASE_URL!);
+    url.pathname = `/${schema}`;
+    url.searchParams.delete('options');
+    const admin = new pg.Pool({ connectionString: url.href, max: 1 });
     const database = new pg.Pool({
-      connectionString: process.env.TEST_DATABASE_URL,
+      connectionString: url.href,
       options: `-c search_path=${schema}`,
       max: 2,
     });
+    let created = false;
+    t.after(async () => {
+      await database.end();
+      await admin.end();
+      if (created) await root.query(`DROP DATABASE "${schema}"`);
+      await root.end();
+    });
+    await root.query(`CREATE DATABASE "${schema}"`);
+    created = true;
+    await admin.query(`CREATE SCHEMA ${schema}`);
     const secret = randomBytes(48).toString('hex');
     const authentication = createGoogleAuthentication({
       database,
@@ -128,9 +141,6 @@ test(
       );
     } finally {
       globalThis.fetch = previousFetch;
-      await database.end();
-      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
-      await admin.end();
     }
   },
 );

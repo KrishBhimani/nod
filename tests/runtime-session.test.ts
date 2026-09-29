@@ -249,6 +249,31 @@ test('historical role markers and attachment names stay quoted while the current
   }
 });
 
+test('message attachment metadata names the staged workspace copy', async () => {
+  const history = [
+    { name: 'statement.pdf', mimeType: 'application/pdf', workspaceFile: 'fixture-statement.pdf' },
+  ];
+  const replied = [
+    { name: 'invoice.pdf', mimeType: 'application/pdf', workspaceFile: 'fixture-invoice.pdf' },
+  ];
+  const result = await fixture(async () => {}, {
+    history: [{ id: 'fixture-message', role: 'assistant', text: '', attachments: history }],
+    replyTo: { id: 'fixture-reply', role: 'assistant', text: '', attachments: replied },
+  });
+  const instruction = JSON.parse(result.userPrompt.split('Request data (JSON):\n')[1]);
+  assert.deepEqual(instruction.recentConversation[0].attachments, history);
+  const system = result.supplied.systemPrompt;
+  const replyTarget = JSON.parse(
+    system.split('Reply target data: ')[1].split('.\nCurrent conversation context')[0],
+  );
+  assert.deepEqual(replyTarget.attachments, replied);
+  const conversation = JSON.parse(
+    system.split('(refreshes even when continuing earlier work):\n')[1].split('\n')[0],
+  );
+  assert.deepEqual(conversation[0].attachments, history);
+  assert.match(result.userPrompt, /for a PDF, extract the text with pdftotext/);
+});
+
 test('new and resumed sessions receive the current local time and owner time zone', async () => {
   for (const [timeZone, resumed] of [
     [undefined, false],
