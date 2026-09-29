@@ -45,8 +45,11 @@ test('browser icons and the early theme script are real static assets rather tha
       html.indexOf('<script type="module"'),
     );
     assert.match(splash, /class="app-shell startup-shell"/);
-    for (const [, geometry] of brand.matchAll(/<circle ([^/]+?)(?: stroke=| fill=)/g))
-      assert.ok(splash.includes(geometry), geometry);
+    const circles = [...brand.matchAll(/<circle [^>]+\/>/g)].map(([circle]) =>
+      circle.replace('strokeWidth', 'stroke-width'),
+    );
+    assert.equal(circles.length, 2);
+    for (const circle of circles) assert.ok(splash.includes(circle), circle);
     assert.match(splash, /Opening Otto/);
     assert.doesNotMatch(splash.replace(/<[^>]+>/g, ' '), /workspace|connecting/i);
     const { navigationItems } = await import('../src/web/lib/navigation.ts');

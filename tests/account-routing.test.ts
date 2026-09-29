@@ -249,12 +249,17 @@ test('the workspace shell shows a chat skeleton and mounts prefetched pages befo
   window.history.replaceState(null, '', '/');
   const requests: string[] = [];
   let stateSignal: AbortSignal | null | undefined;
+  let finishState: ((response: Response) => void) | undefined;
+  const scrollIntoView = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+  HTMLElement.prototype.scrollIntoView = () => {};
   globalThis.fetch = async (url, options) => {
     requests.push(String(url));
     if (String(url) === '/api/session') return Response.json(account);
     if (String(url) === '/api/state') {
       stateSignal = options?.signal;
-      return new Promise(() => {});
+      return new Promise((resolve) => {
+        finishState ??= resolve;
+      });
     }
     return Response.json([]);
   };
@@ -271,6 +276,27 @@ test('the workspace shell shows a chat skeleton and mounts prefetched pages befo
     await act(async () => Events.all.at(-1)!.onopen?.());
     assert.equal(stateSignal?.aborted, false);
     assert.equal(requests.filter((request) => request === '/api/state').length, 1);
+    await act(async () =>
+      finishState!(
+        Response.json({
+          conversationRevision: 0,
+          messages: [],
+          tasks: [],
+          configuration: {
+            provider: 'fixture',
+            model: 'fixture',
+            llmReady: true,
+            speechReady: false,
+            integrationsReady: false,
+            browserAssistReady: false,
+            inspectorEnabled: false,
+            localOnly: false,
+          },
+        }),
+      ),
+    );
+    assert.equal(requests.filter((request) => request === '/api/state').length, 2);
+    assert.equal(window.localStorage.getItem('otto.chat-layout'), 'welcome');
     await act(async () => {
       window.history.pushState(null, '', '/vault');
       window.dispatchEvent(new window.PopStateEvent('popstate'));
@@ -282,6 +308,10 @@ test('the workspace shell shows a chat skeleton and mounts prefetched pages befo
     element.remove();
     sessionStore.invalidate();
     globalThis.fetch = previous;
+    if (scrollIntoView)
+      Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scrollIntoView);
+    else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+    window.localStorage.removeItem('otto.chat-layout');
   }
 });
 

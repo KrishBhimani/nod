@@ -94,14 +94,18 @@ export function Notice({
 }
 
 export function Loading({ label = 'Loading…' }: { label?: string }) {
+  const element = React.useRef<HTMLDivElement>(null);
   React.useLayoutEffect(() => {
+    const page = element.current?.closest<HTMLElement>('.secondary-page');
     const shown = performance.now();
     return () => {
-      if (performance.now() - shown > 300) revealContent();
+      if (!page || performance.now() - shown <= 300) return;
+      page.dataset.reveal = 'true';
+      setTimeout(() => delete page.dataset.reveal, 700);
     };
   }, []);
   return (
-    <div className="loading">
+    <div className="loading" ref={element}>
       <span className="loading-ghost" aria-hidden="true">
         {[58, 44, 51].map((width) => (
           <span key={width} className="resource-row">
@@ -119,13 +123,6 @@ export function Loading({ label = 'Loading…' }: { label?: string }) {
       </span>
     </div>
   );
-}
-
-let revealTimer: ReturnType<typeof setTimeout> | undefined;
-function revealContent() {
-  document.documentElement.dataset.reveal = 'true';
-  clearTimeout(revealTimer);
-  revealTimer = setTimeout(() => delete document.documentElement.dataset.reveal, 700);
 }
 
 export function Skeleton({ className, ...props }: React.HTMLAttributes<HTMLSpanElement>) {

@@ -106,6 +106,11 @@ function Workspace({
   }, [developer]);
   const currentPath = path === '/dev' || path === '/you' ? '/' : path;
   const loaded = !!state;
+  const hasMessages = state ? state.messages.length > 0 : null;
+  useEffect(() => {
+    if (hasMessages !== null)
+      writeUiPreference('otto.chat-layout', hasMessages ? 'conversation' : 'welcome');
+  }, [hasMessages]);
   const [handoff, setHandoff] = useState(false);
   const [entering, setEntering] = useState(true);
   useEffect(() => {
@@ -114,7 +119,6 @@ function Workspace({
   }, []);
   useEffect(() => {
     if (!loaded) return;
-    writeUiPreference('otto.chat-layout', state!.messages.length ? 'conversation' : 'welcome');
     setHandoff(true);
     const timer = setTimeout(() => setHandoff(false), 700);
     return () => clearTimeout(timer);
