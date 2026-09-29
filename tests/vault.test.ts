@@ -1239,7 +1239,10 @@ test(
           origin,
           url: `${origin}/login`,
           ...(blocked ? { issue: 'browser_not_supported' as const } : {}),
-          fields: [{ kind: 'password', selector: '#password', label: 'Password' }],
+          fields: [
+            { kind: 'identifier', selector: '#username', label: 'Username' },
+            { kind: 'password', selector: '#password', label: 'Password' },
+          ],
           methods: [
             {
               id: 'credentials',
@@ -1313,6 +1316,14 @@ test(
           passwordSelector: '#other-field',
         }),
         /login field changed/,
+      );
+      await assert.rejects(
+        vault.request(turns.new, 'local-development', {
+          ...input,
+          usernameSelector: '#username',
+          passwordSelector: '@e2',
+        }),
+        /same browser view/,
       );
       assert.equal(injections, 0);
       assert.equal(resumes, 0);

@@ -820,6 +820,12 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     if (!target)
       throw new VaultError('Choose a visible sign-in field from the current browser page.', 409);
     if (
+      kind === 'password' &&
+      input.usernameSelector &&
+      /^@e\d+$/.test(target) !== /^@e\d+$/.test(input.usernameSelector)
+    )
+      throw new VaultError('Choose both sign-in fields from the same browser view.', 409);
+    if (
       observed &&
       ((!/^@e\d+$/.test(target) && target !== detected[0].selector) ||
         (kind === 'password' &&
