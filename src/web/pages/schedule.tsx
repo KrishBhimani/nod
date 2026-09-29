@@ -34,6 +34,12 @@ export function ScheduleRow({ schedule }: { schedule: Schedule }) {
         <span>{schedule.timeZone}</span>
       </p>
       <p className="saved-plan-description">{schedule.prompt}</p>
+      {schedule.baselineObservation?.status === 'verified' && (
+        <p className="saved-schedule-time">
+          Baseline: {schedule.baselineObservation.value} ·{' '}
+          {scheduleDate(schedule.baselineObservation.checkedAt, schedule.timeZone)}
+        </p>
+      )}
       <div className="saved-plan-footer">
         <span>
           {schedule.kind === 'recurring' && schedule.nextRun
@@ -83,6 +89,19 @@ export function ScheduleRunRow({ run }: { run: ScheduleRun }) {
         <span>{run.timeZone}</span>
       </p>
       {run.error && <p className="schedule-run-error">{run.error}</p>}
+      {run.observation && (
+        <p>
+          {run.observation.status === 'verified' ? run.observation.value : 'Source unavailable'} ·{' '}
+          Checked{' '}
+          <time dateTime={run.observation.checkedAt}>
+            {scheduleDate(run.observation.checkedAt, run.timeZone)}
+          </time>{' '}
+          · {run.observation.summary}{' '}
+          <a href={run.observation.sourceUrl} target="_blank" rel="noopener noreferrer">
+            Source
+          </a>
+        </p>
+      )}
     </article>
   );
 }
