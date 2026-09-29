@@ -38,4 +38,6 @@ For hosted development, use the [hosted environment example](deployment/hosted.e
 
 The production pilot is available at [otto.n8n-maintenance.workers.dev](https://otto.n8n-maintenance.workers.dev). Google sign-in, onboarding, all five Google metadata reads, public browser navigation and browser-to-chat PDF delivery have live checks at this origin. Gmail and Calendar events have reached the signed ingress and classification pipeline. Authenticated Via Verde statement retrieval and Telegram delivery remain unverified. Hosted computers use Cloudflare; E2B is deferred. The [dated cutover record](docs/testing/results/2026-09-28-otto-cutover.md) records exact releases, manual and automatic deployment results, legacy-resource retirement and remaining acceptance work.
 
+Account and environment deletion are operator maintenance procedures. Follow the [scoped reset runbook](docs/environment-reset.md) to preserve other accounts and shared configuration; [the verified single-account reset](docs/testing/results/2026-09-29-owner-erasure.md) records the checks and retention limits. Deleting an account does not fix or replay a task with an unknown outcome.
+
 The [system guide](docs/system-guide.md) describes product behavior and limits. [Architecture](docs/architecture.md) and the [API contract](docs/api-contract.md) describe the code.
