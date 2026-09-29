@@ -145,6 +145,9 @@ export async function createGateway(options: {
         .strict()
         .parse(await response.json());
     },
+    warm(ownerId) {
+      options.runtimes.warm?.(ownerId).catch(() => {});
+    },
   });
   const deployment = options.deployment
     ? createDeploymentControl({ ...options.deployment, runtimes: options.runtimes })
@@ -335,21 +338,22 @@ export async function createGateway(options: {
         : {}),
     });
     let result = await options.runtimes.fetch(session.user.id, forwarded, { developer });
-    try {
-      const current = await options.authentication.session(authenticationHeaders(request));
-      if (
-        !current ||
-        current.id !== session.id ||
-        current.user.id !== session.user.id ||
-        current.expiresAt <= new Date()
-      ) {
+    if (url.pathname === '/api/events')
+      try {
+        const current = await options.authentication.session(authenticationHeaders(request));
+        if (
+          !current ||
+          current.id !== session.id ||
+          current.user.id !== session.user.id ||
+          current.expiresAt <= new Date()
+        ) {
+          await result.body?.cancel().catch(() => {});
+          return reply.code(401).send({ error: 'Sign in to continue.' });
+        }
+      } catch {
         await result.body?.cancel().catch(() => {});
-        return reply.code(401).send({ error: 'Sign in to continue.' });
+        return reply.code(503).send({ error: 'This request could not be completed. Try again.' });
       }
-    } catch {
-      await result.body?.cancel().catch(() => {});
-      return reply.code(503).send({ error: 'This request could not be completed. Try again.' });
-    }
     result = privateRuntimeResponse(result, url.pathname.startsWith('/api/artifacts/'));
     if (url.pathname === '/api/events' && result.ok)
       result = guardedStream(result, {

@@ -40,6 +40,7 @@ export function createAccountSession(options: {
   localUser?: AccountUser;
   developerIds?: ReadonlySet<string>;
   prepare?(ownerId: string): Promise<void>;
+  warm?(ownerId: string): void;
 }) {
   const origin = new URL(options.origin).origin;
   const mode = options.authentication ? 'google' : 'local';
@@ -121,7 +122,9 @@ export function createAccountSession(options: {
   function register(app: FastifyInstance) {
     app.get('/api/session', async (request, reply) => {
       reply.header('cache-control', 'no-store');
-      return response(request);
+      const result = await response(request);
+      if (result.user) options.warm?.(result.user.id);
+      return result;
     });
     app.get('/api/account/avatar', async (request, reply) => {
       reply

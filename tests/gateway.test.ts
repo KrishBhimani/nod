@@ -37,6 +37,7 @@ async function fixture(
     developer: boolean;
   }[] = [];
   let streamCancelled = 0;
+  let lookups = 0;
   let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
   let reply: (owner: string, request: Request) => Promise<Response> = async (owner) =>
     Response.json({ owner, record: `Synthetic data for ${owner}` });
@@ -44,6 +45,7 @@ async function fixture(
     configured: true,
     async initialize() {},
     async session(headers) {
+      lookups++;
       const token = headers.get('cookie')?.match(/(?:^|;\s*)fixture=([^;]+)/)?.[1];
       const [id, signature] = token?.split('.') ?? [];
       if (!id || !signature) return null;
@@ -124,6 +126,7 @@ async function fixture(
     },
     stream: () => stream,
     streamCancelled: () => streamCancelled,
+    lookups: () => lookups,
   };
 }
 
@@ -602,10 +605,47 @@ test('gateway returns the authentication failure when discarded response cancell
     );
   });
   try {
-    const response = await f.app.inject({ url: '/api/state', headers: f.headers() });
+    const response = await f.app.inject({
+      url: `/api/events?account=${f.users[0]}`,
+      headers: f.headers(),
+    });
     assert.equal(response.statusCode, 401);
     assert.deepEqual(response.json(), { error: 'Sign in to continue.' });
     assert.equal(cancelled, 1);
+  } finally {
+    await f.app.close();
+  }
+});
+
+test('ordinary runtime requests look up the session once', async () => {
+  const f = await fixture();
+  try {
+    const response = await f.app.inject({ url: '/api/apps', headers: f.headers() });
+    assert.equal(response.statusCode, 200);
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.lookups(), 1);
+  } finally {
+    await f.app.close();
+  }
+});
+
+test('a signed-in session read warms only its own runtime without waiting for it', async () => {
+  const f = await fixture();
+  const warmed: string[] = [];
+  f.runtimes.warm = (owner) => {
+    warmed.push(owner);
+    return warmed.length === 1 ? new Promise(() => {}) : Promise.reject(new Error('Synthetic'));
+  };
+  try {
+    assert.equal((await f.app.inject({ url: '/api/session', headers: { host } })).statusCode, 200);
+    assert.deepEqual(warmed, []);
+    for (const index of [0, 1]) {
+      const response = await f.app.inject({ url: '/api/session', headers: f.headers(index) });
+      assert.equal(response.statusCode, 200);
+      assert.equal(response.json().user.id, f.users[index]);
+    }
+    assert.deepEqual(warmed, f.users);
+    assert.equal(f.calls.length, 0);
   } finally {
     await f.app.close();
   }
