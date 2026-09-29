@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import { z } from 'zod';
-import { conversationRoutingFailureCodes } from '../ports/conversation.ts';
 import type { ProviderUsageEvent } from '../ports/provider-usage.ts';
 import type { ProviderUsageResponse } from '../shared/provider-usage.ts';
 
@@ -25,17 +24,10 @@ const schema = z
     ]),
     operation: label,
     model: label.optional(),
-    taskId: z.uuid().optional(),
+    turnId: z.uuid().optional(),
     toolCallId: z.uuid().optional(),
     toolName: toolName.optional(),
     status: z.enum(['succeeded', 'failed', 'cancelled']),
-    routingFailure: z
-      .object({
-        code: z.enum(conversationRoutingFailureCodes),
-        httpStatus: z.number().int().min(100).max(599).optional(),
-      })
-      .strict()
-      .optional(),
     durationMs: metric.default(0),
     inputTokens: metric,
     outputTokens: metric,
@@ -49,17 +41,7 @@ const schema = z
     pricing: z.enum(['reported', 'sdk_estimate', 'unavailable']).optional(),
   })
   .strict()
-  .refine((event) => Boolean(event.toolCallId) === Boolean(event.toolName))
-  .refine(
-    (event) =>
-      !event.routingFailure ||
-      (event.category === 'relevance' &&
-        event.operation === 'conversation_route' &&
-        (event.status === 'failed' || event.status === 'cancelled') &&
-        !event.taskId &&
-        !event.toolCallId &&
-        !event.toolName),
-  );
+  .refine((event) => Boolean(event.toolCallId) === Boolean(event.toolName));
 
 export function createProviderUsageStore(
   pool: Pool,
@@ -70,7 +52,7 @@ export function createProviderUsageStore(
   },
 ) {
   const context = new AsyncLocalStorage<{
-    taskId: string;
+    turnId: string;
     toolCallId?: string;
     toolName?: string;
   }>();
@@ -98,15 +80,15 @@ export function createProviderUsageStore(
   }
   async function initialize(migrationPool: Pool = pool) {
     await migrationPool.query(`CREATE TABLE IF NOT EXISTS provider_usage (
-      id uuid PRIMARY KEY, owner_id text NOT NULL, task_id uuid REFERENCES tasks(id) ON DELETE SET NULL,
+      id uuid PRIMARY KEY, owner_id text NOT NULL, turn_id uuid REFERENCES turns(id) ON DELETE SET NULL,
       provider text NOT NULL, category text NOT NULL, operation text NOT NULL, model text,
       status text NOT NULL, duration_ms double precision NOT NULL, metrics jsonb NOT NULL,
-      cost_usd double precision, pricing text NOT NULL, recorded_at timestamptz NOT NULL DEFAULT now()
-    ); ALTER TABLE provider_usage ADD COLUMN IF NOT EXISTS tool_call_id uuid;
-    ALTER TABLE provider_usage ADD COLUMN IF NOT EXISTS tool_name text;
+      cost_usd double precision, pricing text NOT NULL, recorded_at timestamptz NOT NULL DEFAULT now(),
+      tool_call_id uuid, tool_name text
+    );
     CREATE INDEX IF NOT EXISTS provider_usage_owner_time_idx ON provider_usage(owner_id,recorded_at);
     CREATE INDEX IF NOT EXISTS provider_usage_tool_idx ON provider_usage(owner_id,tool_call_id) WHERE tool_call_id IS NOT NULL;
-    CREATE INDEX IF NOT EXISTS provider_usage_task_idx ON provider_usage(owner_id,task_id,recorded_at);`);
+    CREATE INDEX IF NOT EXISTS provider_usage_turn_idx ON provider_usage(owner_id,turn_id,recorded_at);`);
     await prune(true, migrationPool);
     if (!stopped && !retentionTimer) {
       retentionTimer = setInterval(() => {
@@ -116,12 +98,12 @@ export function createProviderUsageStore(
     }
   }
   function record(input: ProviderUsageEvent) {
-    if (stopped || (!options.enabled() && input.routingFailure === undefined)) return;
+    if (stopped || !options.enabled()) return;
     const current = context.getStore();
-    const inherited = !input.taskId || input.taskId === current?.taskId ? current : undefined;
+    const inherited = !input.turnId || input.turnId === current?.turnId ? current : undefined;
     const parsed = schema.safeParse({
       ...input,
-      taskId: input.taskId ?? current?.taskId,
+      turnId: input.turnId ?? current?.turnId,
       toolCallId:
         input.category === 'agent' ? undefined : (input.toolCallId ?? inherited?.toolCallId),
       toolName: input.category === 'agent' ? undefined : (input.toolName ?? inherited?.toolName),
@@ -132,40 +114,37 @@ export function createProviderUsageStore(
     }
     const event = parsed.data;
     const ownedTool =
-      event.toolCallId && event.taskId
-        ? "EXISTS(SELECT 1 FROM inspector_records r JOIN tasks t ON t.id=r.task_id AND t.owner_id=r.owner_id WHERE r.id=$13::uuid AND r.owner_id=$2 AND r.task_id=$3 AND r.kind='tool' AND r.name=$14)"
+      event.toolCallId && event.turnId
+        ? "EXISTS(SELECT 1 FROM inspector_records r JOIN turns u ON u.id=r.turn_id AND u.owner_id=r.owner_id WHERE r.id=$13::uuid AND r.owner_id=$2 AND r.turn_id=$3 AND r.kind='tool' AND r.name=$14)"
         : 'false';
     const priced = event.costUsd != null && event.pricing && event.pricing !== 'unavailable';
-    const metrics = {
-      ...Object.fromEntries(
-        [
-          'inputTokens',
-          'outputTokens',
-          'cacheReadTokens',
-          'cacheWriteTokens',
-          'audioSeconds',
-          'characters',
-          'messages',
-          'bytes',
-        ].flatMap((key) => {
-          const value = event[key as keyof typeof event];
-          return typeof value === 'number' ? [[key, value]] : [];
-        }),
-      ),
-      ...(event.routingFailure ? { routingFailure: event.routingFailure } : {}),
-    };
+    const metrics = Object.fromEntries(
+      [
+        'inputTokens',
+        'outputTokens',
+        'cacheReadTokens',
+        'cacheWriteTokens',
+        'audioSeconds',
+        'characters',
+        'messages',
+        'bytes',
+      ].flatMap((key) => {
+        const value = event[key as keyof typeof event];
+        return typeof value === 'number' ? [[key, value]] : [];
+      }),
+    );
     const write = (async () => {
       await prune();
-      if (!options.enabled() && !event.routingFailure) return;
+      if (!options.enabled()) return;
       await pool.query(
-        `INSERT INTO provider_usage(id,owner_id,task_id,provider,category,operation,model,status,duration_ms,metrics,cost_usd,pricing,tool_call_id,tool_name)
+        `INSERT INTO provider_usage(id,owner_id,turn_id,provider,category,operation,model,status,duration_ms,metrics,cost_usd,pricing,tool_call_id,tool_name)
         SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,CASE WHEN ${ownedTool} THEN $13::uuid END,CASE WHEN ${ownedTool} THEN $14::text END
-        WHERE $3::uuid IS NULL OR EXISTS(SELECT 1 FROM tasks WHERE id=$3 AND owner_id=$2)
+        WHERE $3::uuid IS NULL OR EXISTS(SELECT 1 FROM turns WHERE id=$3 AND owner_id=$2)
         ON CONFLICT(id) DO NOTHING`,
         [
           event.id ?? randomUUID(),
           options.ownerId,
-          event.taskId ?? null,
+          event.turnId ?? null,
           event.provider,
           event.category,
           event.operation,
@@ -214,18 +193,18 @@ export function createProviderUsageStore(
       throw error;
     }
   }
-  async function read(taskId?: string): Promise<ProviderUsageResponse> {
-    if (taskId) {
-      z.uuid().parse(taskId);
+  async function read(turnId?: string): Promise<ProviderUsageResponse> {
+    if (turnId) {
+      z.uuid().parse(turnId);
       if (
         !(
-          await pool.query('SELECT id FROM tasks WHERE id=$1 AND owner_id=$2', [
-            taskId,
+          await pool.query('SELECT id FROM turns WHERE id=$1 AND owner_id=$2', [
+            turnId,
             options.ownerId,
           ])
         ).rowCount
       )
-        throw Object.assign(new Error('Task not found.'), { statusCode: 404 });
+        throw Object.assign(new Error('Turn not found.'), { statusCode: 404 });
     }
     const result = await pool.query(
       `SELECT provider,category,operation,model,count(*)::int AS requests,
@@ -235,13 +214,13 @@ export function createProviderUsageStore(
       sum(cost_usd)::float8 AS "costUsd",count(cost_usd)::int AS "pricedRequests",
       CASE WHEN count(cost_usd)=0 THEN 'unavailable' WHEN count(DISTINCT pricing) FILTER(WHERE cost_usd IS NOT NULL)>1 THEN 'mixed' ELSE min(pricing) FILTER(WHERE cost_usd IS NOT NULL) END AS pricing,
       max(recorded_at) AS "lastRecordedAt"
-      FROM provider_usage WHERE owner_id=$1 AND ($2::uuid IS NULL OR task_id=$2) AND recorded_at>=now()-interval '7 days'
+      FROM provider_usage WHERE owner_id=$1 AND ($2::uuid IS NULL OR turn_id=$2) AND recorded_at>=now()-interval '7 days'
       GROUP BY provider,category,operation,model ORDER BY count(*) DESC,provider,operation`,
-      [options.ownerId, taskId ?? null],
+      [options.ownerId, turnId ?? null],
     );
     return {
-      scope: taskId ? 'task' : 'owner',
-      ...(taskId ? { taskId } : {}),
+      scope: turnId ? 'turn' : 'owner',
+      ...(turnId ? { turnId } : {}),
       retentionDays: 7,
       captureEnabled: options.enabled(),
       droppedEvents,
@@ -252,22 +231,22 @@ export function createProviderUsageStore(
       coverage: options.coverage,
     };
   }
-  async function taskCosts(taskIds: string[]): Promise<Record<string, number | null>> {
-    if (!taskIds.length) return {};
+  async function turnCosts(turnIds: string[]): Promise<Record<string, number | null>> {
+    if (!turnIds.length) return {};
     await Promise.all([...pending]);
     const result = await pool.query(
-      `SELECT task_id AS id,sum(cost_usd)::float8 AS cost
-       FROM provider_usage WHERE owner_id=$1 AND task_id=ANY($2::uuid[])
-       GROUP BY task_id`,
-      [options.ownerId, taskIds.map((id) => z.uuid().parse(id))],
+      `SELECT turn_id AS id,sum(cost_usd)::float8 AS cost
+       FROM provider_usage WHERE owner_id=$1 AND turn_id=ANY($2::uuid[])
+       GROUP BY turn_id`,
+      [options.ownerId, turnIds.map((id) => z.uuid().parse(id))],
     );
     return Object.fromEntries(result.rows.map((row) => [row.id, row.cost]));
   }
   function registerRoutes(app: FastifyInstance) {
     app.get('/api/inspector/providers', async (request, reply) => {
       if (!options.enabled()) return reply.code(404).send({ error: 'Inspector is disabled.' });
-      const query = z.object({ taskId: z.uuid().optional() }).parse(request.query);
-      return read(query.taskId);
+      const query = z.object({ turnId: z.uuid().optional() }).parse(request.query);
+      return read(query.turnId);
     });
   }
   return {
@@ -275,14 +254,14 @@ export function createProviderUsageStore(
     record,
     track,
     read,
-    taskCosts,
+    turnCosts,
     registerRoutes,
-    withTask: <T>(taskId: string, action: () => T) =>
-      context.run({ taskId: z.uuid().parse(taskId) }, action),
-    withTool: <T>(taskId: string, toolCallId: string, name: string, action: () => T) =>
+    withTurn: <T>(turnId: string, action: () => T) =>
+      context.run({ turnId: z.uuid().parse(turnId) }, action),
+    withTool: <T>(turnId: string, toolCallId: string, name: string, action: () => T) =>
       context.run(
         {
-          taskId: z.uuid().parse(taskId),
+          turnId: z.uuid().parse(turnId),
           toolCallId: z.uuid().parse(toolCallId),
           toolName: toolName.parse(name),
         },

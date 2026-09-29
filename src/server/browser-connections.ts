@@ -1,11 +1,13 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { getDomain } from 'tldts';
 import { z } from 'zod';
 import { BrowserActionError, type Computer, type LoginInspection } from '../ports/computer.ts';
 import type { Connection } from '../shared/contracts.ts';
 import { browserInputSchema } from '../shared/browser-input.ts';
+import type { TurnRef } from './thread.ts';
+import { waitingTurnSql } from './vault.ts';
 
 const idSchema = z.uuid();
 const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
@@ -44,9 +46,8 @@ type Row = {
   state: 'pending' | 'saved' | 'needs_sign_in' | 'disconnecting';
   token_hash: string | null;
   expires_at: Date | null;
-  task_id: string | null;
-  task_revision: number | null;
-  active_task_id: string | null;
+  thread_id: string | null;
+  turn_id: string | null;
   checked_at: Date | null;
   sign_in_started: boolean;
 };
@@ -122,7 +123,7 @@ export async function createBrowserConnections(
   options: {
     ownerId: string;
     computer: Computer;
-    resume?(taskId: string, revision: number, service: string): Promise<boolean>;
+    resume?(turnId: string, service: string): Promise<boolean>;
     saveLogin?(origin: string, label: string, username: string, password: string): Promise<string>;
     refresh?(): void;
   },
@@ -138,18 +139,16 @@ export async function createBrowserConnections(
       state text NOT NULL,
       token_hash text UNIQUE,
       expires_at timestamptz,
-      task_id uuid,
-      task_revision integer,
-      active_task_id uuid,
+      thread_id uuid,
+      turn_id uuid,
       checked_at timestamptz,
       sign_in_started boolean NOT NULL DEFAULT false,
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS browser_connections_owner ON browser_connections(owner_id,origin);
-    ALTER TABLE browser_connections ADD COLUMN IF NOT EXISTS sign_in_started boolean NOT NULL DEFAULT false;
   `);
-  const leases = new Map<string, { revision: number; until: number }>();
+  const controlled = new Set<string>();
   const pendingLogins = new Map<
     string,
     { origin: string; label: string; username: string; password: string; expiresAt: number }
@@ -196,64 +195,37 @@ export async function createBrowserConnections(
     return row;
   }
 
-  async function taskReady(row: Row) {
-    if (!row.task_id) return;
-    const current = (
-      await pool.query<{ status: string; revision: number }>(
-        'SELECT status,revision FROM tasks WHERE id=$1 AND owner_id=$2',
-        [row.task_id, options.ownerId],
-      )
-    ).rows[0];
-    if (current?.revision !== row.task_revision || current.status !== 'waiting_user')
-      throw new BrowserConnectionError('This task is no longer waiting for sign-in.');
+  async function threadReady(row: Row, database: Pick<Pool, 'query'> = pool) {
+    if (!row.thread_id && !row.turn_id) return;
+    const current = row.turn_id
+      ? await database.query(
+          `SELECT 1 FROM turns u WHERE u.id=$1 AND u.owner_id=$2 AND ${waitingTurnSql('u', 'question')}`,
+          [row.turn_id, options.ownerId],
+        )
+      : await database.query(
+          'SELECT 1 FROM threads WHERE id=$1 AND owner_id=$2 AND archived_at IS NULL',
+          [row.thread_id, options.ownerId],
+        );
+    if (!current.rowCount)
+      throw new BrowserConnectionError('This conversation is no longer waiting for sign-in.');
   }
 
-  async function claim(id: string, taskId: string, states: Row['state'][]) {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      const row = (
-        await client.query<Row>(
-          'SELECT * FROM browser_connections WHERE id=$1 AND owner_id=$2 FOR UPDATE',
-          [id, options.ownerId],
-        )
-      ).rows[0];
-      if (!row || row.state === 'disconnecting')
-        throw new BrowserConnectionError('This browser connection is unavailable.', 404);
-      if (!states.includes(row.state))
-        throw new BrowserConnectionError('This connection is not ready for this step.');
-      if (row.active_task_id && row.active_task_id !== taskId) {
-        const active = (
-          await client.query<{ status: string }>(
-            'SELECT status FROM tasks WHERE id=$1 AND owner_id=$2',
-            [row.active_task_id, options.ownerId],
-          )
-        ).rows[0];
-        if (
-          active &&
-          ['queued', 'running', 'waiting_user', 'waiting_credentials'].includes(active.status)
-        )
-          throw new BrowserConnectionError('This account is in use by another task.');
-      }
-      await client.query(
-        'UPDATE browser_connections SET active_task_id=$3,updated_at=now() WHERE id=$1 AND owner_id=$2',
-        [id, options.ownerId, taskId],
-      );
-      await client.query('COMMIT');
-      return row;
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+  async function lockThread(client: PoolClient) {
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
+      `thread:${options.ownerId}`,
+    ]);
   }
 
-  async function beginUnlocked(
-    raw: unknown,
-    task?: { id: string; revision: number },
-    signal?: AbortSignal,
-  ) {
+  async function ready(id: string, states: Row['state'][]) {
+    const row = await owned(id);
+    if (row.state === 'disconnecting')
+      throw new BrowserConnectionError('This browser connection is unavailable.', 404);
+    if (!states.includes(row.state))
+      throw new BrowserConnectionError('This connection is not ready for this step.');
+    return row;
+  }
+
+  async function beginUnlocked(raw: unknown, turn?: TurnRef, signal?: AbortSignal) {
     signal?.throwIfAborted();
     if (
       !browser.bindProfile ||
@@ -265,37 +237,25 @@ export async function createBrowserConnections(
       throw unavailable();
     const input = inputSchema.parse(raw);
     const address = site(input.url);
-    if (task) {
-      const current = (
-        await pool.query<{ status: string; revision: number }>(
-          'SELECT status,revision FROM tasks WHERE id=$1 AND owner_id=$2',
-          [idSchema.parse(task.id), options.ownerId],
-        )
-      ).rows[0];
-      if (current?.status !== 'running' || current.revision !== task.revision)
-        throw new BrowserConnectionError('This task has changed.');
-    }
     const id = input.connectionId ?? randomUUID();
     pendingLogins.delete(id);
     const existing = input.connectionId ? await owned(id) : null;
     const profileId = existing?.profile_id ?? randomUUID();
     if (existing && existing.origin !== address.origin)
       throw new BrowserConnectionError('This account belongs to another website.');
-    if (existing && leases.has(id))
+    if (existing && controlled.has(id))
       throw new BrowserConnectionError('Finish the open private browser step first.');
-    if (existing?.state === 'pending') await taskReady(existing);
+    if (existing?.state === 'pending') await threadReady(existing);
     const token = randomBytes(32).toString('base64url');
-    const pendingTask = existing?.state === 'pending' ? existing.task_id : null;
-    const pendingRevision = existing?.state === 'pending' ? existing.task_revision : null;
-    const browserId = task?.id ?? pendingTask ?? id;
+    const pendingThread = existing?.state === 'pending' ? existing.thread_id : null;
+    const pendingTurn = existing?.state === 'pending' ? existing.turn_id : null;
+    const browserId = turn?.threadId ?? pendingThread ?? id;
     const label = input.label ?? existing?.label ?? name(address.origin);
     if (input.connectionId) {
-      const current = await claim(id, browserId, ['pending', 'saved', 'needs_sign_in']);
-      if (current.active_task_id && current.active_task_id !== browserId)
-        await browser.close(current.active_task_id);
+      await ready(id, ['pending', 'saved', 'needs_sign_in']);
       await pool.query(
         `UPDATE browser_connections SET start_url=$3,label=$4,state='pending',token_hash=$5,
-         expires_at=$6,task_id=$7,task_revision=$8,active_task_id=$9,
+         expires_at=$6,thread_id=$7,turn_id=$8,
          sign_in_started=false,updated_at=now()
          WHERE id=$1 AND owner_id=$2`,
         [
@@ -305,16 +265,15 @@ export async function createBrowserConnections(
           label,
           hash(token),
           new Date(Date.now() + duration),
-          task?.id ?? pendingTask,
-          task?.revision ?? pendingRevision,
-          browserId,
+          turn?.threadId ?? pendingThread,
+          turn?.turnId ?? pendingTurn,
         ],
       );
     } else {
       await pool.query(
         `INSERT INTO browser_connections
-         (id,owner_id,origin,start_url,label,profile_id,state,token_hash,expires_at,task_id,task_revision,active_task_id)
-         VALUES($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,$10,$11)`,
+         (id,owner_id,origin,start_url,label,profile_id,state,token_hash,expires_at,thread_id,turn_id)
+         VALUES($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,$10)`,
         [
           id,
           options.ownerId,
@@ -324,9 +283,8 @@ export async function createBrowserConnections(
           profileId,
           hash(token),
           new Date(Date.now() + duration),
-          task?.id ?? null,
-          task?.revision ?? null,
-          browserId,
+          turn?.threadId ?? null,
+          turn?.turnId ?? null,
         ],
       );
     }
@@ -364,10 +322,10 @@ export async function createBrowserConnections(
     } catch (error) {
       await pool.query(
         `UPDATE browser_connections SET state='needs_sign_in',token_hash=NULL,expires_at=NULL,
-         active_task_id=NULL,updated_at=now() WHERE id=$1 AND owner_id=$2`,
+         updated_at=now() WHERE id=$1 AND owner_id=$2`,
         [id, options.ownerId],
       );
-      await browser.close(browserId).catch(() => {});
+      if (browserId === id) await browser.close(id).catch(() => {});
       if (signal?.aborted) signal.throwIfAborted();
       if (error instanceof BrowserConnectionError) throw error;
       throw new BrowserConnectionError(
@@ -377,23 +335,14 @@ export async function createBrowserConnections(
     }
   }
 
-  async function begin(
-    raw: unknown,
-    task?: { id: string; revision: number },
-    signal?: AbortSignal,
-  ) {
+  async function begin(raw: unknown, turn?: TurnRef, signal?: AbortSignal) {
     const input = inputSchema.parse(raw);
     return input.connectionId
-      ? exclusive(input.connectionId, () => beginUnlocked(input, task, signal))
-      : beginUnlocked(input, task, signal);
+      ? exclusive(input.connectionId, () => beginUnlocked(input, turn, signal))
+      : beginUnlocked(input, turn, signal);
   }
 
-  async function use(
-    rawId: string,
-    task: { id: string; revision: number },
-    rawUrl: string,
-    signal?: AbortSignal,
-  ) {
+  async function use(rawId: string, turn: TurnRef, rawUrl: string, signal?: AbortSignal) {
     signal?.throwIfAborted();
     if (!browser.bindProfile) throw unavailable();
     const address = site(rawUrl);
@@ -403,93 +352,79 @@ export async function createBrowserConnections(
     if (existing.state === 'needs_sign_in') {
       const link = await begin(
         { url: existing.start_url, connectionId: existing.id },
-        task,
+        turn,
         signal,
       );
       return { ...link, status: 'needs_sign_in' as const };
     }
     const result = await exclusive(existing.id, async () => {
       signal?.throwIfAborted();
-      const row = await claim(existing.id, idSchema.parse(task.id), ['saved']);
-      const release = () =>
-        pool.query(
-          'UPDATE browser_connections SET active_task_id=NULL WHERE id=$1 AND owner_id=$2 AND active_task_id=$3',
-          [row.id, options.ownerId, task.id],
-        );
+      const browserId = idSchema.parse(turn.threadId);
+      const row = await ready(existing.id, ['saved']);
+      await pool.query(
+        'UPDATE browser_connections SET thread_id=$3,updated_at=now() WHERE id=$1 AND owner_id=$2',
+        [row.id, options.ownerId, browserId],
+      );
+      await browser.bindProfile!(browserId, row.profile_id, row.origin);
+      signal?.throwIfAborted();
+      let observation;
       try {
-        if (row.active_task_id && row.active_task_id !== task.id)
-          await browser.close(row.active_task_id);
-        signal?.throwIfAborted();
-        await browser.bindProfile!(task.id, row.profile_id, row.origin);
-        signal?.throwIfAborted();
-        let observation;
-        try {
-          observation = await browser.act(task.id, { action: 'open', url: address.href }, signal);
-        } catch (error) {
-          if (!(error instanceof BrowserActionError) || error.code !== 'browser_origin_changed')
-            throw error;
-          await pool.query(
-            `UPDATE browser_connections SET state='needs_sign_in',updated_at=now() WHERE id=$1 AND owner_id=$2`,
-            [row.id, options.ownerId],
-          );
-          options.refresh?.();
-          return { connectionId: row.id, status: 'needs_sign_in' as const };
-        }
-        signal?.throwIfAborted();
-        if (blockedPage(observation.text)) {
-          await release();
-          return {
-            connectionId: row.id,
-            status: 'site_blocked' as const,
-            message: 'This website blocked Otto’s browser. Try an official account page later.',
-          };
-        }
-        const inspection = await browser.inspectLogin(task.id);
-        signal?.throwIfAborted();
-        if (inspection?.fields.length || inspection?.methods.length) {
-          await pool.query(
-            `UPDATE browser_connections SET state='needs_sign_in',updated_at=now() WHERE id=$1 AND owner_id=$2`,
-            [row.id, options.ownerId],
-          );
-          options.refresh?.();
-          return { connectionId: row.id, status: 'needs_sign_in' as const };
-        }
+        observation = await browser.act(browserId, { action: 'open', url: address.href }, signal);
+      } catch (error) {
+        if (!(error instanceof BrowserActionError) || error.code !== 'browser_origin_changed')
+          throw error;
         await pool.query(
-          `UPDATE browser_connections SET checked_at=now(),updated_at=now()
-           WHERE id=$1 AND owner_id=$2 AND state='saved'`,
+          `UPDATE browser_connections SET state='needs_sign_in',updated_at=now() WHERE id=$1 AND owner_id=$2`,
           [row.id, options.ownerId],
         );
         options.refresh?.();
+        return { connectionId: row.id, status: 'needs_sign_in' as const };
+      }
+      signal?.throwIfAborted();
+      if (blockedPage(observation.text)) {
         return {
           connectionId: row.id,
-          status: 'session_opened' as const,
-          message:
-            'The saved browser session opened. Check the page before relying on account access.',
-          observation,
+          status: 'site_blocked' as const,
+          message: 'This website blocked Otto’s browser. Try an official account page later.',
         };
-      } catch (error) {
-        await release();
-        if (signal?.aborted) await browser.close(task.id).catch(() => {});
-        throw error;
       }
+      const inspection = await browser.inspectLogin(browserId);
+      signal?.throwIfAborted();
+      if (inspection?.fields.length || inspection?.methods.length) {
+        await pool.query(
+          `UPDATE browser_connections SET state='needs_sign_in',updated_at=now() WHERE id=$1 AND owner_id=$2`,
+          [row.id, options.ownerId],
+        );
+        options.refresh?.();
+        return { connectionId: row.id, status: 'needs_sign_in' as const };
+      }
+      await pool.query(
+        `UPDATE browser_connections SET checked_at=now(),updated_at=now()
+         WHERE id=$1 AND owner_id=$2 AND state='saved'`,
+        [row.id, options.ownerId],
+      );
+      options.refresh?.();
+      return {
+        connectionId: row.id,
+        status: 'session_opened' as const,
+        message:
+          'The saved browser session opened. Check the page before relying on account access.',
+        observation,
+      };
     });
     if (result.status !== 'needs_sign_in') return result;
-    const link = await begin({ url: existing.start_url, connectionId: existing.id }, task, signal);
+    const link = await begin({ url: existing.start_url, connectionId: existing.id }, turn, signal);
     return { ...result, ...link, status: 'needs_sign_in' as const };
   }
 
-  async function request(
-    raw: unknown,
-    task: { id: string; revision: number },
-    signal?: AbortSignal,
-  ) {
+  async function request(raw: unknown, turn: TurnRef, signal?: AbortSignal) {
     signal?.throwIfAborted();
     const input = requestSchema.safeParse(raw);
     const invalid = {
       status: 'rejected' as const,
       code: 'invalid_browser_connection_arguments',
       message:
-        'Use connect with a secure website URL, or use with a saved browser session UUID and URL. Saved Vault credentials require the browser and request_credentials after fresh inspection. No browser action was started.',
+        'Use connect with a secure website URL, or use with a saved browser session UUID and URL. Saved Vault credentials require the browser and sign_in with action request after fresh inspection. No browser action was started.',
     };
     if (!input.success) return invalid;
     let address: URL;
@@ -514,7 +449,7 @@ export async function createBrowserConnections(
           status: 'rejected' as const,
           code: 'browser_connection_unavailable',
           message:
-            'The selected saved browser session is unavailable. Check manage_apps for browserAccess: browser_session. Entries marked credentials_saved require the browser and request_credentials after fresh inspection. No browser action was started.',
+            'The selected saved browser session is unavailable. Check manage_apps for browserAccess: browser_session. Entries marked credentials_saved require the browser and sign_in with action request after fresh inspection. No browser action was started.',
         };
       if (found.rows[0].origin !== address.origin)
         return {
@@ -532,10 +467,10 @@ export async function createBrowserConnections(
             connectionId: input.data.connectionId,
             label: input.data.label,
           },
-          task,
+          turn,
           signal,
         )
-      : use(input.data.connectionId, task, input.data.url, signal);
+      : use(input.data.connectionId, turn, input.data.url, signal);
   }
 
   async function list(): Promise<Connection[]> {
@@ -562,16 +497,16 @@ export async function createBrowserConnections(
 
   async function describe(rawToken: string) {
     const row = await attempt(rawToken);
-    const browserId = row.task_id ?? row.id;
+    const browserId = row.thread_id ?? row.id;
     let inspection: LoginInspection | null = null;
-    if (row.state === 'pending' && !leases.has(row.id))
+    if (row.state === 'pending' && !controlled.has(row.id))
       inspection = await browser.inspectLogin(browserId).catch(() => null);
     return {
       name: name(row.origin),
       label: row.label,
       origin: row.origin,
       state: row.state,
-      fromTask: Boolean(row.task_id),
+      fromChat: Boolean(row.turn_id),
       expiresAt: row.expires_at?.toISOString(),
       inspection: publicInspection(inspection, row.origin),
     };
@@ -581,11 +516,11 @@ export async function createBrowserConnections(
     const initial = await attempt(rawToken);
     return exclusive(initial.id, async () => {
       const row = await attempt(rawToken);
-      await taskReady(row);
-      if (row.state !== 'pending' || leases.has(row.id))
+      await threadReady(row);
+      if (row.state !== 'pending' || controlled.has(row.id))
         throw new BrowserConnectionError('Finish the current browser step first.');
       const input = fieldSchema.parse(raw);
-      const browserId = row.task_id ?? row.id;
+      const browserId = row.thread_id ?? row.id;
       const inspection = await browser.inspectLogin(browserId);
       if (inspection.origin !== input.origin || !sameSite(inspection.origin, row.origin))
         throw new BrowserConnectionError(
@@ -617,18 +552,10 @@ export async function createBrowserConnections(
           ).rows[0];
           if (current?.state !== 'pending' || current.token_hash !== row.token_hash)
             throw new BrowserConnectionError('This sign-in link is no longer active.');
-          if (row.task_id) {
-            const task = (
-              await client.query<{ status: string; revision: number }>(
-                'SELECT status,revision FROM tasks WHERE id=$1 AND owner_id=$2 FOR UPDATE',
-                [row.task_id, options.ownerId],
-              )
-            ).rows[0];
-            if (task?.status !== 'waiting_user' || task.revision !== row.task_revision)
-              throw new BrowserConnectionError('This task is no longer waiting for sign-in.');
-          }
+          await lockThread(client);
+          await threadReady(current, client);
           const submitted = await browser.injectCredentials({
-            taskId: browserId,
+            threadId: browserId,
             origin: inspection.origin,
             kind,
             ...(kind === 'password'
@@ -703,60 +630,50 @@ export async function createBrowserConnections(
   async function start(rawToken: string) {
     const row = await attempt(rawToken);
     return exclusive(row.id, async () => {
-      await taskReady(row);
+      await threadReady(row);
       if (row.state !== 'pending') throw new BrowserConnectionError('This sign-in has finished.');
-      const previous = leases.get(row.id);
-      if (previous && previous.until > Date.now())
-        return { revision: previous.revision, mode: 'sign_in' as const, resumable: false };
-      await browser.openSignIn!(row.task_id ?? row.id);
-      const lease = { revision: Date.now(), until: Date.now() + duration };
-      leases.set(row.id, lease);
-      return { revision: lease.revision, mode: 'sign_in' as const, resumable: false };
+      if (!controlled.has(row.id)) {
+        await browser.openSignIn!(row.thread_id ?? row.id);
+        controlled.add(row.id);
+      }
+      return { mode: 'sign_in' as const, resumable: false };
     });
   }
 
   async function controlState(rawToken: string) {
     const row = await attempt(rawToken);
-    const lease = leases.get(row.id);
-    const active = Boolean(row.state === 'pending' && lease && lease.until > Date.now());
+    const active = row.state === 'pending' && controlled.has(row.id);
     return {
       paused: active,
       active,
-      revision: active ? lease!.revision : null,
       mode: active ? ('sign_in' as const) : null,
       signInAvailable: true,
       resumable: false,
     };
   }
 
-  async function current(rawToken: string, revision: number) {
+  async function current(rawToken: string) {
     const row = await attempt(rawToken);
-    await taskReady(row);
-    const lease = leases.get(row.id);
-    if (
-      !lease ||
-      lease.revision !== revision ||
-      lease.until <= Date.now() ||
-      row.state !== 'pending'
-    )
+    await threadReady(row);
+    if (!controlled.has(row.id) || row.state !== 'pending')
       throw new BrowserConnectionError('This browser control session has ended.');
     return row;
   }
 
-  async function frame(rawToken: string, revision: number, signal?: AbortSignal) {
-    const row = await current(rawToken, revision);
-    const bytes = await browser.signInScreenshot!(row.task_id ?? row.id, signal);
-    await current(rawToken, revision);
+  async function frame(rawToken: string, signal?: AbortSignal) {
+    const row = await current(rawToken);
+    const bytes = await browser.signInScreenshot!(row.thread_id ?? row.id, signal);
+    await current(rawToken);
     if (!bytes?.length) throw unavailable();
     return bytes;
   }
 
-  async function input(rawToken: string, revision: number, value: unknown) {
-    const row = await current(rawToken, revision);
+  async function input(rawToken: string, value: unknown) {
+    const row = await current(rawToken);
     return exclusive(row.id, async () => {
       const action = browserInputSchema.parse(value);
-      await browser.signInControl!(row.task_id ?? row.id, action);
-      await current(rawToken, revision);
+      await browser.signInControl!(row.thread_id ?? row.id, action);
+      await current(rawToken);
       if (['click', 'type', 'press'].includes(action.action))
         await pool.query(
           'UPDATE browser_connections SET sign_in_started=true,updated_at=now() WHERE id=$1 AND owner_id=$2',
@@ -766,51 +683,68 @@ export async function createBrowserConnections(
     });
   }
 
-  async function finish(rawToken: string, revision?: number) {
+  async function finish(rawToken: string) {
     const initial = await attempt(rawToken);
     return exclusive(initial.id, async () => {
       const row = await attempt(rawToken);
       if (row.state === 'saved') return { ok: true, connected: true };
-      await taskReady(row);
+      await threadReady(row);
       if (!row.sign_in_started && !row.checked_at)
         throw new BrowserConnectionError('Sign in on the website before saving this session.');
-      const lease = leases.get(row.id);
-      if (lease && lease.until > Date.now() && lease.revision !== revision)
-        throw new BrowserConnectionError('This browser control session has changed.');
-      const browserId = row.task_id ?? row.id;
-      if (lease) {
-        await browser.finishSignIn!(browserId);
-        await browser.releaseControl?.(browserId);
-        leases.delete(row.id);
+      const browserId = row.thread_id ?? row.id;
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await lockThread(client);
+        const locked = (
+          await client.query<Row>(
+            'SELECT * FROM browser_connections WHERE id=$1 AND owner_id=$2 FOR UPDATE',
+            [row.id, options.ownerId],
+          )
+        ).rows[0];
+        if (locked?.state !== 'pending' || locked.token_hash !== row.token_hash)
+          throw new BrowserConnectionError('This sign-in link is no longer active.');
+        await threadReady(locked, client);
+        if (controlled.has(row.id)) {
+          await browser.finishSignIn!(browserId);
+          await browser.releaseControl?.(browserId);
+          controlled.delete(row.id);
+        }
+        const current = await browser.inspectLogin(browserId);
+        if (current.fields.some((field) => field.kind === 'otp'))
+          throw new BrowserConnectionError(
+            'This website needs a verification code. Enter it here or in the private browser.',
+          );
+        if (current.fields.length || current.methods.length)
+          throw new BrowserConnectionError(
+            'Sign-in is still needed. Complete it here or in the private browser.',
+          );
+        const observation = await browser.act(browserId, { action: 'open', url: row.start_url });
+        if (blockedPage(observation.text))
+          throw new BrowserConnectionError('This website blocked Otto’s browser. Try again later.');
+        const inspection = await browser.inspectLogin(browserId);
+        if (
+          new URL(observation.url).origin !== row.origin ||
+          inspection?.fields.length ||
+          inspection?.methods.length
+        )
+          throw new BrowserConnectionError(
+            'Sign-in is still needed. Complete it in the browser and try again.',
+          );
+        await browser.bindProfile!(browserId, row.profile_id, row.origin);
+        await browser.hold(browserId, null);
+        await client.query(
+          `UPDATE browser_connections SET state='saved',checked_at=now(),updated_at=now()
+           WHERE id=$1 AND owner_id=$2 AND state='pending'`,
+          [row.id, options.ownerId],
+        );
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
       }
-      const current = await browser.inspectLogin(browserId);
-      if (current.fields.some((field) => field.kind === 'otp'))
-        throw new BrowserConnectionError(
-          'This website needs a verification code. Enter it here or in the private browser.',
-        );
-      if (current.fields.length || current.methods.length)
-        throw new BrowserConnectionError(
-          'Sign-in is still needed. Complete it here or in the private browser.',
-        );
-      const observation = await browser.act(browserId, { action: 'open', url: row.start_url });
-      if (blockedPage(observation.text))
-        throw new BrowserConnectionError('This website blocked Otto’s browser. Try again later.');
-      const inspection = await browser.inspectLogin(browserId);
-      if (
-        new URL(observation.url).origin !== row.origin ||
-        inspection?.fields.length ||
-        inspection?.methods.length
-      )
-        throw new BrowserConnectionError(
-          'Sign-in is still needed. Complete it in the browser and try again.',
-        );
-      await browser.bindProfile!(browserId, row.profile_id, row.origin);
-      await browser.hold(browserId, null);
-      await pool.query(
-        `UPDATE browser_connections SET state='saved',checked_at=now(),updated_at=now()
-         WHERE id=$1 AND owner_id=$2 AND state='pending'`,
-        [row.id, options.ownerId],
-      );
       const login = pendingLogins.get(row.id);
       pendingLogins.delete(row.id);
       let loginSaved: boolean | undefined;
@@ -823,8 +757,7 @@ export async function createBrowserConnections(
         }
       }
       options.refresh?.();
-      if (row.task_id && row.task_revision !== null)
-        await options.resume?.(row.task_id, row.task_revision, name(row.origin));
+      if (row.turn_id) await options.resume?.(row.turn_id, name(row.origin));
       return { ok: true, connected: true, loginSaved };
     });
   }
@@ -833,31 +766,38 @@ export async function createBrowserConnections(
     const id = idSchema.parse(rawId);
     return exclusive(id, async () => {
       const row = await owned(id);
-      if (row.active_task_id) {
-        const task = (
-          await pool.query<{ status: string }>(
-            'SELECT status FROM tasks WHERE id=$1 AND owner_id=$2',
-            [row.active_task_id, options.ownerId],
-          )
-        ).rows[0];
-        if (
-          task &&
-          ['queued', 'running', 'waiting_user', 'waiting_credentials'].includes(task.status)
-        )
+      const browserId = row.thread_id ?? row.id;
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await lockThread(client);
+        const working = await client.query(
+          `SELECT 1 FROM threads th WHERE th.id=$1 AND th.owner_id=$2 AND th.archived_at IS NULL
+           AND (th.status<>'idle' OR EXISTS(SELECT 1 FROM turns u WHERE u.thread_id=th.id
+             AND (u.status IN ('queued','running') OR (${waitingTurnSql('u')}))))`,
+          [browserId, options.ownerId],
+        );
+        if (working.rowCount)
           throw new BrowserConnectionError(
-            'Stop the active task before disconnecting this account.',
+            'Stop the active work before disconnecting this account.',
           );
+        await client.query(
+          `UPDATE browser_connections SET state='disconnecting',token_hash=NULL,expires_at=NULL,
+           updated_at=now() WHERE id=$1 AND owner_id=$2`,
+          [row.id, options.ownerId],
+        );
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
       }
-      await pool.query(
-        `UPDATE browser_connections SET state='disconnecting',token_hash=NULL,expires_at=NULL,
-         updated_at=now() WHERE id=$1 AND owner_id=$2`,
-        [row.id, options.ownerId],
-      );
-      leases.delete(row.id);
+      controlled.delete(row.id);
       pendingLogins.delete(row.id);
       if (!browser.deleteProfile) throw unavailable();
       try {
-        if (row.active_task_id) await browser.close(row.active_task_id);
+        await browser.close(browserId);
         await browser.deleteProfile(row.profile_id);
       } catch {
         throw new BrowserConnectionError(
@@ -910,39 +850,33 @@ export async function createBrowserConnections(
       scope.post<{ Params: { token: string } }>(
         '/api/browser-connections/attempt/:token/control/start',
         async (request) => {
-          z.object({}).strict().parse(request.body);
+          z.object({})
+            .strict()
+            .parse(request.body ?? {});
           return start(request.params.token);
         },
       );
       scope.post<{ Params: { token: string } }>(
         '/api/browser-connections/attempt/:token/control/input',
         async (request) => {
-          const body = z
-            .object({
-              revision: z.number().int(),
-              input: browserInputSchema,
-            })
-            .strict()
-            .parse(request.body);
-          return input(request.params.token, body.revision, body.input);
+          const body = z.object({ input: browserInputSchema }).strict().parse(request.body);
+          return input(request.params.token, body.input);
         },
       );
       scope.get<{ Params: { token: string } }>(
         '/api/browser-connections/attempt/:token/control/sign-in-screen',
         async (request, reply) => {
-          const revision = z.coerce
-            .number()
-            .int()
-            .parse((request.query as { revision?: unknown }).revision);
-          const bytes = await frame(request.params.token, revision);
+          const bytes = await frame(request.params.token);
           return reply.header('Cache-Control', 'no-store').type('image/png').send(bytes);
         },
       );
       scope.post<{ Params: { token: string } }>(
         '/api/browser-connections/attempt/:token/control/resume',
         async (request) => {
-          const body = z.object({ revision: z.number().int() }).strict().parse(request.body);
-          return finish(request.params.token, body.revision);
+          z.object({})
+            .strict()
+            .parse(request.body ?? {});
+          return finish(request.params.token);
         },
       );
       scope.post<{ Params: { token: string } }>(

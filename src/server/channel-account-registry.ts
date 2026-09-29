@@ -171,9 +171,6 @@ export function createChannelAccountRegistry(options: {
             created_at timestamptz NOT NULL DEFAULT now(),
             PRIMARY KEY (environment,provider,account_id)
           )`);
-          await client.query(
-            `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS revision bigint NOT NULL DEFAULT 0`,
-          );
           await client.query(`CREATE TABLE IF NOT EXISTS ${revisions} (
             environment text NOT NULL,
             provider text NOT NULL CHECK (provider IN ('telegram','whatsapp')),
@@ -183,9 +180,6 @@ export function createChannelAccountRegistry(options: {
             released boolean NOT NULL,
             PRIMARY KEY(environment,provider,account_id,owner_id)
           )`);
-          await client.query(`INSERT INTO ${revisions}(environment,provider,account_id,owner_id,revision,released)
-            SELECT environment,provider,account_id,owner_id,revision,false FROM ${table}
-            ON CONFLICT DO NOTHING`);
           await client.query(`REVOKE ALL ON TABLE ${table},${revisions} FROM PUBLIC`);
           await client.query('COMMIT');
         } catch (error) {

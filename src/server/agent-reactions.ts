@@ -1,14 +1,13 @@
 import type { Pool } from 'pg';
 import { isMessageReaction, reactionEmoji } from '../shared/emoji.ts';
 import type { AgentReactionResult, MessageReaction } from '../shared/contracts.ts';
-import { currentConversationSql, lockConversation } from './conversations.ts';
+import { lockThread } from './thread.ts';
 
 export interface AgentReactionInput {
-  taskId: string;
-  revision: number;
+  threadId: string;
+  turnId: string;
   messageId: string;
   reaction: MessageReaction | null;
-  visibleMessageIds: readonly string[];
   signal?: AbortSignal;
 }
 
@@ -21,33 +20,31 @@ export function createAgentReactionService(dependencies: {
     input.signal?.throwIfAborted();
     if (input.reaction !== null && !isMessageReaction(input.reaction))
       throw new Error('Choose one emoji reaction.');
-    if (!input.visibleMessageIds.includes(input.messageId))
-      throw new Error('The message is not in this conversation context.');
     const client = await dependencies.pool.connect();
     let result: AgentReactionResult;
     try {
       await client.query('BEGIN');
-      await lockConversation(client, dependencies.ownerId);
+      const thread = await lockThread(client, dependencies.ownerId);
       input.signal?.throwIfAborted();
-      const current = await client.query(
-        `SELECT t.channel,t.source,t.conversation_revision FROM tasks t
-         WHERE t.id=$1 AND t.owner_id=$2 AND t.revision=$3 AND t.status='running'
-           AND ${currentConversationSql()} FOR NO KEY UPDATE`,
-        [input.taskId, dependencies.ownerId, input.revision],
-      );
-      if (!current.rowCount) throw new Error('This task segment is no longer active.');
+      const current =
+        thread.id === input.threadId
+          ? await client.query(
+              `SELECT u.channel,u.source FROM turns u
+               WHERE u.id=$1 AND u.owner_id=$2 AND u.thread_id=$3 AND u.status='running' FOR NO KEY UPDATE`,
+              [input.turnId, dependencies.ownerId, thread.id],
+            )
+          : { rowCount: 0, rows: [] };
+      if (!current.rowCount) throw new Error('This turn is no longer active.');
       input.signal?.throwIfAborted();
-      const task = current.rows[0];
-      if (task.channel !== 'web' || task.source !== 'user') {
+      const turn = current.rows[0];
+      if (turn.channel !== 'web' || turn.source !== 'user') {
         result = { status: 'skipped', reason: 'unavailable' };
       } else {
         const target = await client.query(
           `SELECT m.assistant_reaction,m.assistant_reacted_at FROM messages m
-           JOIN tasks t ON t.id=m.task_id
-           WHERE m.id=$1 AND m.owner_id=$2 AND m.role='user' AND t.owner_id=$2
-             AND t.channel='web' AND t.conversation_revision=$3 AND ${currentConversationSql()}
+           WHERE m.id=$1 AND m.owner_id=$2 AND m.role='user' AND m.thread_id=$3
            FOR UPDATE OF m`,
-          [input.messageId, dependencies.ownerId, task.conversation_revision],
+          [input.messageId, dependencies.ownerId, thread.id],
         );
         if (!target.rowCount) throw new Error('The message cannot receive this reaction.');
         const message = target.rows[0];
@@ -66,11 +63,11 @@ export function createAgentReactionService(dependencies: {
           result = { status: 'skipped', reason: 'already_reacted' };
         } else {
           const recent = await client.query(
-            `SELECT m.id FROM messages m JOIN tasks t ON t.id=m.task_id
-             WHERE m.owner_id=$1 AND t.owner_id=$1 AND t.channel='web'
-               AND ${currentConversationSql()} AND m.assistant_reacted_at > clock_timestamp()-interval '5 minutes'
+            `SELECT m.id FROM messages m
+             WHERE m.owner_id=$1 AND m.thread_id=$2
+               AND m.assistant_reacted_at > clock_timestamp()-interval '5 minutes'
              LIMIT 1`,
-            [dependencies.ownerId],
+            [dependencies.ownerId, thread.id],
           );
           if (recent.rowCount) result = { status: 'skipped', reason: 'cooldown' };
           else {

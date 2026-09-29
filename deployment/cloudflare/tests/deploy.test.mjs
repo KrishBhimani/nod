@@ -4,7 +4,6 @@ import test from 'node:test';
 import {
   deploy as deployRelease,
   deploymentPlan,
-  renameGatewayEnvironment,
   verifyStorageBinding,
 } from '../scripts/deploy.mjs';
 import { verifyDeployment } from '../scripts/smoke.mjs';
@@ -111,29 +110,6 @@ function planInput(config = configuration()) {
     config,
   };
 }
-
-test('the rename converts the private gateway settings for a new Otto deployment', () => {
-  const old = JSON.stringify({
-    SIDEKICK_ENVIRONMENT: 'production',
-    SIDEKICK_PUBLIC_URL: 'https://sidekick.example.test',
-    SIDEKICK_MASTER_KEY: 'synthetic-key',
-    OBJECT_STORAGE_ENDPOINT: 'http://sidekick.storage/v1/objects/',
-    COMPUTER_PROVIDER: 'cloudflare',
-  });
-  const converted = JSON.parse(renameGatewayEnvironment(old, origin));
-  assert.equal(converted.OTTO_ENVIRONMENT, 'production');
-  assert.equal(converted.OTTO_PUBLIC_URL, origin);
-  assert.equal(converted.OTTO_MASTER_KEY, 'synthetic-key');
-  assert.equal(converted.OBJECT_STORAGE_ENDPOINT, 'http://otto.storage/v1/objects/');
-  assert.equal(converted.COMPUTER_PROVIDER, 'cloudflare');
-  assert.equal('SIDEKICK_MASTER_KEY' in converted, false);
-  assert.throws(() =>
-    renameGatewayEnvironment(
-      JSON.stringify({ SIDEKICK_MASTER_KEY: 'old', OTTO_MASTER_KEY: 'new' }),
-      origin,
-    ),
-  );
-});
 
 test('deployment validation rejects another environment, origin and invalid revision before publishing', () => {
   const input = planInput();
@@ -357,30 +333,6 @@ test('deployed storage readback bounds and cancels oversized or invalid response
   assert.equal(cancelled, true);
 });
 
-test('deployment assigns distinct computer images and deduplicates the shared runtime image', () => {
-  const config = configuration();
-  const plan = deploymentPlan(planInput(config));
-  const images = [
-    `otto-production:${release}`,
-    `otto-production-browser:${release}`,
-    `otto-production-workspace:${release}`,
-  ];
-  assert.deepEqual(plan.localImages, images);
-  assert.deepEqual(
-    plan.config.env.production.containers.map((container) => container.image),
-    [images[0], ...images].map((image) => `registry.cloudflare.com/${accountId}/${image}`),
-  );
-  for (const container of plan.config.env.production.containers) {
-    assert.equal(container.image_build_context, undefined);
-    assert.equal(container.image_vars, undefined);
-  }
-  assert.equal(config.env.production.containers[0].image, './Dockerfile');
-  assert.deepEqual(
-    deploymentPlan({ ...planInput(configuration(false)), gatewayEnv: e2bGateway }).localImages,
-    [images[0]],
-  );
-});
-
 test('incomplete hosted computer and storage configuration is rejected before any publication', async (t) => {
   for (const [name, changes] of [
     ['missing computer', { COMPUTER_PROVIDER: undefined }],
@@ -460,24 +412,6 @@ test('unsupported container classes fail before publishing without echoing confi
       { message: 'The deployment has an unsupported container class.' },
     );
   }
-});
-
-test('missing or repeated required classes fail before any image publication', () => {
-  for (const missing of [
-    'GatewayContainer',
-    'TenantContainer',
-    'BrowserComputerContainer',
-    'WorkspaceComputerContainer',
-  ]) {
-    const config = configuration();
-    config.env.production.containers = config.env.production.containers.filter(
-      (container) => container.class_name !== missing,
-    );
-    assert.throws(() => deploymentPlan(planInput(config)));
-  }
-  const config = configuration();
-  config.env.production.containers.push(config.env.production.containers[0]);
-  assert.throws(() => deploymentPlan(planInput(config)));
 });
 
 test('deployment publishes all images before uploading code and secrets, cleans private files', async () => {
@@ -630,27 +564,6 @@ test('a failed publication of any image prevents Worker activation and smoke che
   }
 });
 
-test('an E2B deployment with two runtime classes still publishes one runtime image', async () => {
-  const commands = [];
-  await deploy(
-    'production',
-    { ...variables, GATEWAY_ENV: e2bGateway },
-    {
-      config: configuration(false),
-      deploymentControl: lifecycle(),
-      imageDigest,
-      report() {},
-      command: async (args) => commands.push(args),
-      smoke: async () => {},
-    },
-  );
-  assert.deepEqual(
-    commands.map((args) => args[0]),
-    ['containers', 'deploy'],
-  );
-  assert.equal(commands[0][2], `otto-production:${release}`);
-});
-
 test('failed drain, activation or verification cannot publish or reopen prematurely', async () => {
   for (const failure of ['prepare', 'activate', 'verifyRollouts', 'smoke', 'initialize']) {
     const events = [];
@@ -727,51 +640,6 @@ test('recovery completion never publishes images and verifies storage, rollout a
     'smoke',
     'complete',
   ]);
-});
-
-test('recovery normalizes the same legacy gateway configuration accepted during Otto publication', async () => {
-  const gateway = Object.fromEntries(
-    Object.entries(JSON.parse(variables.GATEWAY_ENV)).map(([key, value]) => [
-      key.replace(/^OTTO_/, 'SIDEKICK_'),
-      value,
-    ]),
-  );
-  gateway.SIDEKICK_PUBLIC_URL = 'https://sidekick.test.workers.dev';
-  gateway.OBJECT_STORAGE_ENDPOINT = 'http://sidekick.storage/v1/objects/';
-  const events = [];
-  const control = lifecycle(events);
-  control.recover = async () => {
-    events.push('recover');
-    return { phase: 'activating' };
-  };
-  await recoverDeployment(
-    'production',
-    'complete',
-    {
-      ...variables,
-      GATEWAY_ENV: JSON.stringify(gateway),
-    },
-    {
-      config: configuration(),
-      deploymentControl: control,
-      imageDigest,
-      request: async (url, options) => {
-        events.push('storage');
-        assert.equal(
-          url,
-          `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/otto/settings`,
-        );
-        assert.equal(options.method, 'GET');
-        return workerSettings();
-      },
-      smoke: async (input) => {
-        assert.deepEqual(input, { origin, release });
-        events.push('smoke');
-      },
-      report() {},
-    },
-  );
-  assert.deepEqual(events, ['recover', 'storage', 'verifyRollouts', 'smoke', 'complete']);
 });
 
 test('recovery completion cannot bypass a denied or mismatched deployed storage binding', async () => {

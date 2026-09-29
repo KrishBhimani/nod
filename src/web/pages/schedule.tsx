@@ -3,7 +3,7 @@ import { PageTitle } from '../components/page-title';
 import { CalendarClock, ChevronDown, MessageCircle } from 'lucide-react';
 import type { AppState, Schedule, ScheduleHistory, ScheduleRun } from '../../shared/contracts';
 import { Button, Loading, Notice } from '../components/ui';
-import { activeStatuses, StatusIcon, statusLabels } from '../components/task-list';
+import { activeStatuses, StatusIcon, statusLabels } from '../components/turn-status';
 import { usePageData } from '../hooks/use-page-data';
 import { api } from '../lib/api';
 import { scheduleDate, scheduleLabel } from '../lib/schedules';

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
-import { taskId } from '../../ports/task-identity.ts';
+import { threadIdentity } from '../../ports/thread-identity.ts';
 import type { CommandProcess } from '../command-process.ts';
 
 const inputLimit = 1024 * 1024 + 1024;
@@ -11,12 +11,12 @@ const frameLimit = 22_000;
 export function launchCloudflareCommand(options: {
   role: 'browser' | 'workspace';
   generation: string;
-  taskId?: string;
+  threadId?: string;
   fetch?: typeof fetch;
   origin?: string;
   onUncertain(): void;
 }): CommandProcess {
-  const { role, generation, taskId: selectedTaskId, onUncertain } = options;
+  const { role, generation, threadId: selectedThreadId, onUncertain } = options;
   let origin: string;
   try {
     const url = new URL(options.origin ?? 'http://otto.computer');
@@ -31,10 +31,10 @@ export function launchCloudflareCommand(options: {
         !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) ||
       !['browser', 'workspace'].includes(role) ||
       !/^[1-9]\d{0,18}$/.test(generation) ||
-      (role === 'workspace' && !selectedTaskId)
+      (role === 'workspace' && !selectedThreadId)
     )
       throw new Error();
-    if (selectedTaskId !== undefined) taskId(selectedTaskId);
+    if (selectedThreadId !== undefined) threadIdentity(selectedThreadId);
     origin = url.origin;
   } catch {
     throw new Error('The remote computer configuration is invalid.');
@@ -284,7 +284,7 @@ export function launchCloudflareCommand(options: {
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id, role, ...(selectedTaskId && { taskId: selectedTaskId }) }),
+        body: JSON.stringify({ id, role, ...(selectedThreadId && { threadId: selectedThreadId }) }),
       },
       async (response) => {
         if (response.status !== 201 || !response.body) throw error();
@@ -310,7 +310,7 @@ export function launchCloudflareCommand(options: {
     );
   });
   void ready
-    .then(() => request(`/v1/commands/${id}/output`, { method: 'GET' }, readOutput, 480_000))
+    .then(() => request(`/v1/commands/${id}/output`, { method: 'GET' }, readOutput, 3_720_000))
     .catch(fail);
   return Object.assign(events, {
     stdin,

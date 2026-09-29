@@ -17,7 +17,7 @@ const snapshotSchema = z.object({
 });
 const querySchema = z
   .object({
-    taskId: z.uuid().optional(),
+    turnId: z.uuid().optional(),
     before: z.iso.datetime({ offset: true }).optional(),
     beforeId: z.uuid().optional(),
   })
@@ -46,10 +46,13 @@ export function createPromptInspector(
   }
   async function initialize(migrationPool: Pool = pool) {
     await migrationPool.query(`CREATE TABLE IF NOT EXISTS inspector_prompts (
-      id uuid PRIMARY KEY, owner_id text NOT NULL, task_id uuid NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-      revision integer NOT NULL, payload jsonb NOT NULL, provider text NOT NULL, model text NOT NULL,
+      id uuid PRIMARY KEY, owner_id text NOT NULL,
+      thread_id uuid REFERENCES threads(id) ON DELETE CASCADE, turn_id uuid REFERENCES turns(id) ON DELETE CASCADE,
+      payload jsonb NOT NULL, provider text NOT NULL, model text NOT NULL,
       created_at timestamptz NOT NULL DEFAULT now()
-    ); CREATE INDEX IF NOT EXISTS inspector_prompts_owner ON inspector_prompts(owner_id, created_at DESC, id DESC);`);
+    );
+    CREATE INDEX IF NOT EXISTS inspector_prompts_owner ON inspector_prompts(owner_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS inspector_prompts_turn ON inspector_prompts(owner_id, turn_id, created_at DESC, id DESC);`);
     await prune(true, migrationPool);
     if (accepting && !retentionTimer) {
       retentionTimer = setInterval(() => {
@@ -74,7 +77,7 @@ export function createPromptInspector(
       });
     return pruning;
   }
-  function record(taskId: string, revision: number, snapshot: PromptSnapshot): Promise<void> {
+  function record(turnId: string, snapshot: PromptSnapshot): Promise<void> {
     if (!accepting || !options.enabled()) return Promise.resolve();
     if (pending.size >= 8) {
       dropped++;
@@ -82,8 +85,7 @@ export function createPromptInspector(
     }
     const write = Promise.resolve()
       .then(async () => {
-        z.uuid().parse(taskId);
-        z.number().int().nonnegative().parse(revision);
+        z.uuid().parse(turnId);
         const parsed = snapshotSchema.parse(snapshot);
         const safe = {
           ...parsed,
@@ -94,14 +96,13 @@ export function createPromptInspector(
         await prune();
         if (!options.enabled()) return;
         await pool.query(
-          `INSERT INTO inspector_prompts(id,owner_id,task_id,revision,payload,provider,model,created_at)
-        SELECT $1,$2,id,$4,$5,$6,$7,$8 FROM tasks WHERE id=$3 AND owner_id=$2 AND revision=$4 AND status='running'
+          `INSERT INTO inspector_prompts(id,owner_id,thread_id,turn_id,payload,provider,model,created_at)
+        SELECT $1,$2,thread_id,id,$4,$5,$6,$7 FROM turns WHERE id=$3 AND owner_id=$2 AND status='running'
         ON CONFLICT(id) DO NOTHING`,
           [
             parsed.id,
             options.ownerId,
-            taskId,
-            revision,
+            turnId,
             JSON.stringify(safe),
             safeText(options.provider).slice(0, 100),
             safeText(options.model).slice(0, 200),
@@ -121,10 +122,10 @@ export function createPromptInspector(
   ): Promise<InspectorPromptsResponse | null> {
     const query = querySchema.parse(input);
     if (
-      query.taskId &&
+      query.turnId &&
       !(
-        await pool.query('SELECT id FROM tasks WHERE id=$1 AND owner_id=$2', [
-          query.taskId,
+        await pool.query('SELECT id FROM turns WHERE id=$1 AND owner_id=$2', [
+          query.turnId,
           options.ownerId,
         ])
       ).rowCount
@@ -132,13 +133,14 @@ export function createPromptInspector(
       return null;
     await prune();
     const result = await pool.query(
-      `SELECT p.id,p.task_id AS "taskId",t.title,p.revision,p.payload,p.provider,p.model,p.created_at AS "createdAt"
-      FROM inspector_prompts p JOIN tasks t ON t.id=p.task_id AND t.owner_id=p.owner_id
-      WHERE p.owner_id=$1 AND ($2::uuid IS NULL OR p.task_id=$2)
+      `SELECT p.id,p.turn_id AS "turnId",left(COALESCE(m.text,u.prompt),100) AS title,p.payload,p.provider,p.model,p.created_at AS "createdAt"
+      FROM inspector_prompts p JOIN turns u ON u.id=p.turn_id AND u.owner_id=p.owner_id
+      LEFT JOIN messages m ON m.id=u.message_id AND m.owner_id=u.owner_id
+      WHERE p.owner_id=$1 AND ($2::uuid IS NULL OR p.turn_id=$2)
       AND p.created_at >= now()-interval '7 days'
       AND ($3::timestamptz IS NULL OR (p.created_at,p.id)<($3::timestamptz,$4::uuid))
       ORDER BY p.created_at DESC,p.id DESC LIMIT 21`,
-      [options.ownerId, query.taskId ?? null, query.before ?? null, query.beforeId ?? null],
+      [options.ownerId, query.turnId ?? null, query.before ?? null, query.beforeId ?? null],
     );
     const prompts: InspectorPrompt[] = result.rows.slice(0, 20).map(({ payload, ...row }) => {
       const { redactionVersion: version, ...snapshot } = payload;
@@ -172,7 +174,7 @@ export function createPromptInspector(
       reply.header('Cache-Control', 'no-store');
       return (
         (await read(querySchema.parse(request.query))) ??
-        reply.code(404).send({ error: 'Work not found.' })
+        reply.code(404).send({ error: 'Turn not found.' })
       );
     });
   }

@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
-import { ArrowUp, Paperclip, X, FileText, LoaderCircle, CornerUpLeft } from 'lucide-react';
+import { ArrowUp, Paperclip, X, FileText, LoaderCircle, CornerUpLeft, Square } from 'lucide-react';
 import type { Artifact, Message } from '../../shared/contracts';
 import { api, errorMessage } from '../lib/api';
 import { createComposerExtensions } from '../lib/composer-editor';
@@ -39,10 +39,12 @@ interface ComposerProps {
   replyTo: Pick<Message, 'id' | 'role' | 'text'> | null;
   clearReply(): void;
   onSend(text: string, attachments: Artifact[]): Promise<ComposerSendResult>;
+  onStop?(): void;
+  stopping?: boolean;
 }
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
-  { ready, sending, text, setText, replyTo, clearReply, onSend },
+  { ready, sending, text, setText, replyTo, clearReply, onSend, onStop, stopping = false },
   ref,
 ) {
   const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
@@ -126,8 +128,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   }
   async function upload(files: File[]) {
     if (!files.length) return;
-    if (files.length + attachmentValues.current.length > 5) {
-      setError('Attach up to five files per message.');
+    if (files.length + attachmentValues.current.length > 20) {
+      setError('Attach up to 20 files per message.');
       return;
     }
     if (files.some((file) => file.size > 15 * 1024 * 1024)) {
@@ -366,22 +368,38 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               aria-label="Attach files"
               title="Attach files or paste an image"
               onClick={() => fileInput.current?.click()}
-              disabled={attachments.length >= 5}
+              disabled={attachments.length >= 20}
             >
               <Paperclip size={18} />
             </Button>
           </div>
-          <Button
-            type="submit"
-            size="icon"
-            className="send-button"
-            aria-label="Send message"
-            disabled={
-              !ready || sending || pendingUploads > 0 || (!text.trim() && !attachments.length)
-            }
-          >
-            {sending ? <LoaderCircle size={18} className="spin" /> : <ArrowUp size={19} />}
-          </Button>
+          <div className="composer-right">
+            {onStop && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="stop-button"
+                aria-label="Stop Otto"
+                title="Stop"
+                disabled={stopping}
+                onClick={onStop}
+              >
+                <Square size={14} fill="currentColor" />
+              </Button>
+            )}
+            <Button
+              type="submit"
+              size="icon"
+              className="send-button"
+              aria-label="Send message"
+              disabled={
+                !ready || sending || pendingUploads > 0 || (!text.trim() && !attachments.length)
+              }
+            >
+              {sending ? <LoaderCircle size={18} className="spin" /> : <ArrowUp size={19} />}
+            </Button>
+          </div>
         </div>
       </form>
       <ImageViewer

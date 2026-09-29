@@ -7,21 +7,6 @@ export class BrowserActionError extends Error {
   }
 }
 
-export class WorkspaceExitError extends Error {
-  readonly output: string;
-
-  constructor(
-    readonly exitCode: number,
-    output: string,
-  ) {
-    super('Workspace command failed.');
-    if (!Number.isSafeInteger(exitCode) || exitCode === 0)
-      throw new Error('The workspace exit code is invalid.');
-    this.name = 'WorkspaceExitError';
-    this.output = output.slice(0, 20_000);
-  }
-}
-
 export interface BrowserAction {
   action: 'open' | 'snapshot' | 'click' | 'fill' | 'press' | 'scroll';
   url?: string;
@@ -77,7 +62,7 @@ export interface LoginInspection {
   emailCode?: { recipient: string; length?: number };
 }
 export interface CredentialInput {
-  taskId: string;
+  threadId: string;
   origin: string;
   kind?: CredentialKind;
   username?: string;
@@ -92,68 +77,67 @@ export interface CredentialSubmission {
 }
 export type ManualBrowserInput = import('../shared/browser-input.ts').BrowserInput;
 export interface Computer {
-  currentSession?(): { taskId: string; lastActivityAt: string } | undefined;
-  bindProfile?(taskId: string, profileId: string, allowedOrigin?: string): Promise<void>;
+  currentSession?(): { threadId: string; lastActivityAt: string } | undefined;
+  bindProfile?(threadId: string, profileId: string, allowedOrigin?: string): Promise<void>;
   deleteProfile?(profileId: string): Promise<void>;
-  takeControl?(taskId: string): Promise<void>;
-  openSignIn?(taskId: string): Promise<void>;
-  finishSignIn?(taskId: string): Promise<void>;
-  signInScreenshot?(taskId: string, signal?: AbortSignal): Promise<Buffer | null>;
-  signInControl?(taskId: string, input: ManualBrowserInput): Promise<void>;
-  control?(taskId: string, input: ManualBrowserInput): Promise<void>;
-  releaseControl?(taskId: string): Promise<void>;
-  act(taskId: string, input: BrowserAction, signal?: AbortSignal): Promise<BrowserObservation>;
+  takeControl?(threadId: string): Promise<void>;
+  openSignIn?(threadId: string): Promise<void>;
+  finishSignIn?(threadId: string): Promise<void>;
+  signInScreenshot?(threadId: string, signal?: AbortSignal): Promise<Buffer | null>;
+  signInControl?(threadId: string, input: ManualBrowserInput): Promise<void>;
+  control?(threadId: string, input: ManualBrowserInput): Promise<void>;
+  releaseControl?(threadId: string): Promise<void>;
+  act(threadId: string, input: BrowserAction, signal?: AbortSignal): Promise<BrowserObservation>;
   download?(
-    taskId: string,
+    threadId: string,
     input: BrowserDownloadInput,
     signal?: AbortSignal,
   ): Promise<BrowserDownload>;
-  screenshot(taskId: string, signal?: AbortSignal): Promise<Buffer | null>;
-  screenStatus?(taskId: string): {
+  screenshot(threadId: string, signal?: AbortSignal): Promise<Buffer | null>;
+  screenStatus?(threadId: string): {
     state: 'live' | 'last_known' | 'unavailable';
     capturedAt?: string;
   };
   injectCredentials(input: CredentialInput): Promise<CredentialSubmission | void>;
-  inspectLogin(taskId: string): Promise<LoginInspection>;
-  selectLoginMethod(taskId: string, origin: string, methodId: string): Promise<void>;
-  hold(taskId: string, until: number | null): Promise<void>;
-  close(taskId: string): Promise<void>;
+  inspectLogin(threadId: string): Promise<LoginInspection>;
+  selectLoginMethod(threadId: string, origin: string, methodId: string): Promise<void>;
+  hold(threadId: string, until: number | null): Promise<void>;
+  close(threadId: string): Promise<void>;
   dispose(): Promise<void>;
   status(): string;
+}
+export interface WorkspaceExecOptions {
+  input?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  onData?(chunk: Buffer): void;
 }
 export interface WorkspaceSession {
   path: string;
   instructions: string;
-  execute(command: string, timeoutSeconds?: number): Promise<string>;
+  exec(command: string, options?: WorkspaceExecOptions): Promise<{ exitCode: number }>;
   executeProgram?(
     program: string,
     args: string[],
     environment: Record<string, string>,
     timeoutSeconds?: number,
   ): Promise<{ exitCode: number; output: string }>;
-  readFile(path: string): Promise<string>;
-  writeFile(path: string, content: string): Promise<string>;
 }
 export interface Workspace {
   connectedCliAvailable?: boolean;
   writeArtifact?(
-    taskId: string,
+    threadId: string,
     path: string,
     bytes: Uint8Array,
     signal?: AbortSignal,
   ): Promise<void>;
   readArtifact?(
-    taskId: string,
+    threadId: string,
     path: string,
     maxBytes: number,
     purpose?: 'attachment' | 'publication',
   ): Promise<Uint8Array>;
-  open(input: { taskId: string; workspacePath: string; signal: AbortSignal }): WorkspaceSession;
+  open(input: { threadId: string; workspacePath: string; signal: AbortSignal }): WorkspaceSession;
   status(): string;
   dispose(): void | Promise<void>;
 }
-export type BrowserChooser = (
-  goal: string,
-  observation: BrowserObservation,
-  signal?: AbortSignal,
-) => Promise<{ action?: BrowserAction; outcome: string; elapsedMs: number }>;

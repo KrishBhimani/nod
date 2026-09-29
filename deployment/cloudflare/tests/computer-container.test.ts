@@ -212,7 +212,7 @@ test('both computer roles preserve the pinned image user for restore helpers and
         body: JSON.stringify({
           id: randomUUID(),
           role,
-          ...(role === 'workspace' ? { taskId: 'task' } : {}),
+          ...(role === 'workspace' ? { threadId: 'thread' } : {}),
         }),
       });
       assert.equal(response.status, 201);
@@ -234,7 +234,7 @@ test('both computer roles preserve the pinned image user for restore helpers and
         assert.equal(helper.options.stderr, 'ignore');
       }
       const launched = calls.at(-1)!;
-      assert.equal(launched.options.cwd, role === 'browser' ? '/app' : '/workspace/task');
+      assert.equal(launched.options.cwd, role === 'browser' ? '/app' : '/workspace/thread');
       assert.equal(launched.options.stdin, 'pipe');
       for (const call of calls) {
         assert.equal(Object.hasOwn(call.options, 'user'), false);
@@ -283,7 +283,7 @@ test('the same controller can launch a new generation after stopping an unused r
       const id = randomUUID();
       const created = await current.request('/v1/commands', {
         method: 'POST',
-        body: JSON.stringify({ id, role, ...(role === 'workspace' ? { taskId: 'task' } : {}) }),
+        body: JSON.stringify({ id, role, ...(role === 'workspace' ? { threadId: 'thread' } : {}) }),
       });
       assert.equal(created.status, 201);
       assert.deepEqual(await created.json(), { id });
@@ -363,7 +363,7 @@ for (const revoked of [false, true]) {
             body: JSON.stringify({
               id: randomUUID(),
               role,
-              ...(role === 'workspace' ? { taskId: 'task' } : {}),
+              ...(role === 'workspace' ? { threadId: 'thread' } : {}),
             }),
           });
           await entered.promise;
@@ -432,7 +432,7 @@ test('restore process creation is bounded and a late native handle cannot revive
   const response = await Promise.race([
     current.request('/v1/commands', {
       method: 'POST',
-      body: JSON.stringify({ id: randomUUID(), role: 'workspace', taskId: 'task' }),
+      body: JSON.stringify({ id: randomUUID(), role: 'workspace', threadId: 'thread' }),
     }),
     delay(500).then(() => assert.fail('Restoration did not respect its deadline')),
   ]);
@@ -461,7 +461,7 @@ test('checkpoint process creation is bounded and never emits a clean command exi
     (
       await current.request('/v1/commands', {
         method: 'POST',
-        body: JSON.stringify({ id, role: 'workspace', taskId: 'task' }),
+        body: JSON.stringify({ id, role: 'workspace', threadId: 'thread' }),
       })
     ).status,
     201,

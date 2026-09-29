@@ -42,18 +42,29 @@ export async function runAcceptanceJourney(input: JourneyInput) {
       drainTimeoutMs: 30_000,
     });
   let adapters = create();
-  const workspace = (selected = adapters, selectedSignal = signal) =>
-    selected.workspace.open({
-      taskId: plan.taskId,
-      workspacePath: `/workspace/${plan.taskId}`,
+  const workspace = (selected = adapters, selectedSignal = signal) => {
+    const session = selected.workspace.open({
+      threadId: plan.threadId,
+      workspacePath: `/workspace/${plan.threadId}`,
       signal: selectedSignal,
     });
+    const execute = async (command: string, timeoutSeconds = 30) => {
+      const chunks: Buffer[] = [];
+      const { exitCode } = await session.exec(command, {
+        timeoutMs: timeoutSeconds * 1000,
+        onData: (chunk) => chunks.push(chunk),
+      });
+      if (exitCode) throw fail();
+      return Buffer.concat(chunks).toString('utf8');
+    };
+    return { execute, readFile: (path: string) => execute(`cat -- '${path}'`) };
+  };
   const marker = `otto-e2b-${plan.nonce}`;
   const expected = Buffer.from(`marker,value\n${marker},144\n`);
   const cookie = `otto_e2b=${marker}`;
   const observeCookie = async () => {
     const page = await adapters.computer.act(
-      plan.taskId,
+      plan.threadId,
       { action: 'open', url: 'https://httpbin.org/cookies' },
       signal,
     );
@@ -72,7 +83,7 @@ export async function runAcceptanceJourney(input: JourneyInput) {
     const code = `from pathlib import Path\np=Path('acceptance.csv')\nwith p.open('x') as f: f.write(${JSON.stringify(expected.toString())})\nprint(12*12)`;
     if ((await workspace().execute(python(code))).trim() !== '144') throw fail();
     const bytes = await adapters.workspace.readArtifact!(
-      plan.taskId,
+      plan.threadId,
       'acceptance.csv',
       1024,
       'publication',
@@ -81,20 +92,24 @@ export async function runAcceptanceJourney(input: JourneyInput) {
   });
   await stage('browser-and-profile-seed', async () => {
     const page = await adapters.computer.act(
-      plan.taskId,
+      plan.threadId,
       { action: 'open', url: 'https://example.com/' },
       signal,
     );
     if (page.url !== 'https://example.com/' || !page.text.includes('Example Domain')) throw fail();
     const url = new URL('https://httpbin.org/response-headers');
     url.searchParams.set('Set-Cookie', `${cookie}; Max-Age=3600; Path=/; Secure; SameSite=Lax`);
-    const set = await adapters.computer.act(plan.taskId, { action: 'open', url: url.href }, signal);
+    const set = await adapters.computer.act(
+      plan.threadId,
+      { action: 'open', url: url.href },
+      signal,
+    );
     if (new URL(set.url).origin !== url.origin) throw fail();
     await observeCookie();
   });
   await stage('held-browser-refuses-pause', async () => {
     const before = providerPauses;
-    await adapters.computer.hold(plan.taskId, Date.now() + 60_000);
+    await adapters.computer.hold(plan.threadId, Date.now() + 60_000);
     let rejected = false;
     try {
       await adapters.pause();
@@ -103,7 +118,7 @@ export async function runAcceptanceJourney(input: JourneyInput) {
     }
     if (!rejected || providerPauses !== before) throw fail();
     await adapters.resume();
-    await adapters.computer.hold(plan.taskId, null);
+    await adapters.computer.hold(plan.threadId, null);
   });
   await stage('descendant-cancellation', async () => {
     const controller = new AbortController();
@@ -114,7 +129,7 @@ export async function runAcceptanceJourney(input: JourneyInput) {
       .execute(python(program), 120)
       .then(
         () => ({ cancelled: false }),
-        (error) => ({
+        (error: unknown) => ({
           cancelled:
             error instanceof WorkspaceCommandError && !error.uncertain && controller.signal.aborted,
         }),

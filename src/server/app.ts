@@ -16,16 +16,18 @@ import {
 import { events, type ServerEvent } from './events.ts';
 import { artifactView, maxFileSize, localArtifacts, type ArtifactService } from './artifacts.ts';
 import {
-  cancelTask,
+  activeThread,
   reactToAssistantMessage,
-  resetConversation,
+  resetThread,
+  stopThread,
   submitUserMessage,
   welcomeSourceId,
-} from './tasks.ts';
-import { conversationRevision, currentConversationSql } from './conversations.ts';
-import { TaskReviewRequiredError } from './outcomes.ts';
+} from './thread.ts';
 import { isMessageReaction } from '../shared/emoji.ts';
 import { registerLocalAccess } from './access.ts';
+import { inspectorPayloadLimit, inspectorRetentionDays, type InspectorStore } from './inspector.ts';
+import type { ProviderUsageStore } from './provider-usage.ts';
+import type { AgentToolMetadata } from '../ports/agent.ts';
 import { registerRuntimeAccess } from './runtime-auth.ts';
 import { createMultipartReader } from './multipart.ts';
 import type { SpeechService } from './speech.ts';
@@ -36,17 +38,14 @@ import type {
   Message,
   MessageHistoryPage,
   MessageReaction,
-  Task,
+  Turn,
 } from '../shared/contracts.ts';
-import type { AgentToolMetadata } from '../ports/agent.ts';
-import { inspectorPayloadLimit, inspectorRetentionDays, type InspectorStore } from './inspector.ts';
 import type { createChatVerification } from './chat-verification.ts';
 import { registerTenantDrain } from './tenant-drain.ts';
 import type { WorkAdmission } from './work-admission.ts';
 import type { TenantDrain } from '../ports/deployment.ts';
-import type { ProviderUsageStore } from './provider-usage.ts';
 
-const messageFields = `m.id,m.role,m.text,m.task_id AS "taskId",m.created_at AS "createdAt",m.attachments,m.stream_id AS "streamId",m.reaction,m.assistant_reaction AS "assistantReaction",m.reply_to_message_id AS "replyToMessageId",
+const messageFields = `m.id,m.role,m.text,m.turn_id AS "turnId",m.created_at AS "createdAt",m.attachments,m.stream_id AS "streamId",m.reaction,m.assistant_reaction AS "assistantReaction",m.reply_to_message_id AS "replyToMessageId",
  CASE WHEN target.id IS NULL THEN NULL ELSE json_build_object('id',target.id,'role',target.role,'text',left(target.text,1000)) END AS "replyTo"`;
 function messageView(row: Message & { assistantReaction?: MessageReaction | null }): Message {
   const { assistantReaction, ...message } = row;
@@ -68,13 +67,13 @@ export interface AppDependencies {
   speech?: SpeechService;
   computer?: Pick<Computer, 'screenshot' | 'status' | 'screenStatus' | 'currentSession'>;
   runtime?: {
-    status(): { browser: string; workspace: string; activeTasks?: number };
+    status(): { browser: string; workspace: string; activeThreads?: number };
     inspectTools?(): AgentToolMetadata[];
   };
   inspector?: Pick<InspectorStore, 'read'>;
-  providerUsage?: Pick<ProviderUsageStore, 'taskCosts'>;
+  providerUsage?: Pick<ProviderUsageStore, 'turnCosts'>;
   configuration?: () => Configuration;
-  onboard?: (timeZone?: string, conversationRevision?: number) => Promise<unknown>;
+  onboard?: (timeZone?: string, threadId?: string) => Promise<unknown>;
   startOnboarding?: (name?: string) => Promise<unknown>;
 }
 
@@ -117,13 +116,6 @@ export async function createApp(dependencies: AppDependencies = {}) {
     verifiedBody: runtimeAccess?.takeBody,
   });
   app.setErrorHandler((error, _request, reply) => {
-    if (error instanceof TaskReviewRequiredError)
-      return reply.code(409).send({
-        error: error.message,
-        code: error.code,
-        taskId: error.taskId,
-        summary: error.summary,
-      });
     const known = error instanceof Error ? (error as Error & { statusCode?: number }) : undefined;
     const status = error instanceof z.ZodError ? 400 : known?.statusCode || 500;
     reply.code(status).send({
@@ -141,47 +133,50 @@ export async function createApp(dependencies: AppDependencies = {}) {
     const release = process.env.OTTO_IMAGE_RELEASE || process.env.OTTO_RELEASE;
     return { ok: true, ...(release ? { release } : {}) };
   });
-  async function messageTasks(ids: string[]): Promise<Task[]> {
+  const turnFields = `u.id,u.status,u.source,u.error,u.created_at AS "createdAt",u.finished_at AS "finishedAt",(NOT u.background OR u.source_id=$2) AS "showTyping"`;
+  async function messageTurns(threadId: string, ids: string[]): Promise<Turn[]> {
     if (!ids.length) return [];
     const result = await pool.query(
-      `SELECT id,title,status,error,created_at AS "createdAt",updated_at AS "updatedAt",(source='user' OR source_id=$3) AS "showTyping" FROM tasks t WHERE owner_id=$1 AND channel='web' AND ${currentConversationSql()} AND id=ANY($2::uuid[])`,
-      [ownerId, [...new Set(ids)], welcomeSourceId],
+      `SELECT ${turnFields} FROM turns u WHERE u.owner_id=$1 AND u.thread_id=$3 AND u.id=ANY($4::uuid[])`,
+      [ownerId, welcomeSourceId, threadId, [...new Set(ids)]],
     );
     const costs = await dependencies.providerUsage
-      ?.taskCosts(result.rows.map((task) => task.id))
+      ?.turnCosts(result.rows.map((turn) => turn.id))
       .catch(() => undefined);
-    return result.rows.map((task) => ({ ...task, costUsd: costs?.[task.id] ?? null }));
+    return result.rows.map((turn) => ({ ...turn, costUsd: costs?.[turn.id] ?? null }));
   }
   app.get('/api/state', async () => {
-    const revision = await conversationRevision(pool, ownerId);
-    const [messages, tasks, verificationRequests] = await Promise.all([
+    const thread = await activeThread(pool);
+    const [messages, turns, verificationRequests] = await Promise.all([
       pool.query(
-        `SELECT ${messageFields} FROM (SELECT m.* FROM messages m JOIN tasks t ON t.id=m.task_id WHERE m.owner_id=$1 AND t.owner_id=$1 AND t.channel='web' AND ${currentConversationSql()} ORDER BY date_trunc('milliseconds',m.created_at) DESC,m.id DESC LIMIT 151) m
+        `SELECT ${messageFields} FROM (SELECT m.* FROM messages m WHERE m.owner_id=$1 AND m.thread_id=$2 ORDER BY date_trunc('milliseconds',m.created_at) DESC,m.id DESC LIMIT 151) m
          LEFT JOIN messages target ON target.id=m.reply_to_message_id AND target.owner_id=m.owner_id ORDER BY date_trunc('milliseconds',m.created_at),m.id`,
-        [ownerId],
+        [ownerId, thread.id],
       ),
       pool.query(
-        `SELECT id,title,status,error,created_at AS "createdAt",updated_at AS "updatedAt",(source='user' OR source_id=$2) AS "showTyping" FROM tasks t WHERE owner_id=$1 AND channel='web' AND ${currentConversationSql()} ORDER BY created_at DESC LIMIT 50`,
-        [ownerId, welcomeSourceId],
+        `SELECT ${turnFields} FROM turns u WHERE u.owner_id=$1 AND u.thread_id=$3 ORDER BY u.created_at DESC LIMIT 50`,
+        [ownerId, welcomeSourceId, thread.id],
       ),
       dependencies.verification?.pending() ?? [],
     ]);
     const hasEarlierMessages = messages.rows.length > 150;
-    const visibleMessages = messages.rows.slice(hasEarlierMessages ? 1 : 0);
     const costs = await dependencies.providerUsage
-      ?.taskCosts(tasks.rows.map((task) => task.id))
+      ?.turnCosts(turns.rows.map((turn) => turn.id))
       .catch(() => undefined);
-    const recentIds = new Set(tasks.rows.map((task) => task.id));
-    const olderTasks = await messageTasks(
-      visibleMessages.map((message) => message.taskId).filter((id) => id && !recentIds.has(id)),
+    const visibleMessages = messages.rows.slice(hasEarlierMessages ? 1 : 0);
+    const recentIds = new Set(turns.rows.map((turn) => turn.id));
+    const olderTurns = await messageTurns(
+      thread.id,
+      visibleMessages.map((message) => message.turnId).filter((id) => id && !recentIds.has(id)),
     );
     return {
-      conversationRevision: revision,
+      threadId: thread.id,
+      threadStatus: thread.status,
       hasEarlierMessages,
       messages: visibleMessages.map(messageView),
-      tasks: [
-        ...tasks.rows.map((task) => ({ ...task, costUsd: costs?.[task.id] ?? null })),
-        ...olderTasks,
+      turns: [
+        ...turns.rows.map((turn) => ({ ...turn, costUsd: costs?.[turn.id] ?? null })),
+        ...olderTurns,
       ],
       verificationRequests,
       configuration: publicConfiguration(),
@@ -192,36 +187,32 @@ export async function createApp(dependencies: AppDependencies = {}) {
       .object({
         before: z.iso.datetime({ offset: true }).optional(),
         beforeId: z.uuid().optional(),
-        conversationRevision: z
-          .number()
-          .int()
-          .nonnegative()
-          .or(z.string().regex(/^\d+$/).transform(Number))
-          .optional(),
+        threadId: z.uuid().optional(),
       })
       .parse(request.query);
-    if (
-      query.conversationRevision !== undefined &&
-      query.conversationRevision !== (await conversationRevision(pool, ownerId))
-    )
+    const thread = await activeThread(pool);
+    if (query.threadId !== undefined && query.threadId !== thread.id)
       throw Object.assign(
         new Error('This conversation has been reset. Reload it before continuing.'),
         { statusCode: 409 },
       );
     const rows = await pool.query(
-      `SELECT ${messageFields} FROM messages m JOIN tasks t ON t.id=m.task_id
+      `SELECT ${messageFields} FROM messages m
       LEFT JOIN messages target ON target.id=m.reply_to_message_id AND target.owner_id=m.owner_id
-      WHERE m.owner_id=$1 AND t.owner_id=$1 AND t.channel='web' AND ${currentConversationSql()} AND ($2::timestamptz IS NULL OR date_trunc('milliseconds',m.created_at) < $2 OR (date_trunc('milliseconds',m.created_at) = $2 AND $3::uuid IS NOT NULL AND m.id < $3))
+      WHERE m.owner_id=$1 AND m.thread_id=$4 AND ($2::timestamptz IS NULL OR date_trunc('milliseconds',m.created_at) < $2 OR (date_trunc('milliseconds',m.created_at) = $2 AND $3::uuid IS NOT NULL AND m.id < $3))
       ORDER BY date_trunc('milliseconds',m.created_at) DESC,m.id DESC LIMIT 61`,
-      [ownerId, query.before ?? null, query.beforeId ?? null],
+      [ownerId, query.before ?? null, query.beforeId ?? null, thread.id],
     );
     const page = rows.rows.slice(0, 60);
-    const tasks = await messageTasks(page.map((message) => message.taskId).filter(Boolean));
-    const byId = new Map(tasks.map((task) => [task.id, task]));
+    const turns = await messageTurns(
+      thread.id,
+      page.map((message) => message.turnId).filter(Boolean),
+    );
+    const byId = new Map(turns.map((turn) => [turn.id, turn]));
     return {
       messages: page.reverse().map((row) => ({
         ...messageView(row),
-        task: byId.get(row.taskId),
+        turn: byId.get(row.turnId),
       })),
       hasMore: rows.rows.length > 60,
     } satisfies MessageHistoryPage;
@@ -241,13 +232,13 @@ export async function createApp(dependencies: AppDependencies = {}) {
     z.object({})
       .strict()
       .parse(request.body ?? {});
-    return resetConversation();
+    return resetThread();
   });
   app.post('/api/onboarding', async (request) => {
-    const { timeZone, conversationRevision } = z
+    const { timeZone, threadId } = z
       .object({
         timeZone: z.string().max(100).optional(),
-        conversationRevision: z.number().int().nonnegative().optional(),
+        threadId: z.uuid().optional(),
       })
       .strict()
       .parse(request.body);
@@ -260,7 +251,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
     }
     if (!dependencies.onboard)
       throw Object.assign(new Error('Setup is unavailable.'), { statusCode: 503 });
-    return dependencies.onboard(timeZone, conversationRevision);
+    return dependencies.onboard(timeZone, threadId);
   });
   app.post('/api/onboarding/start', async (request) => {
     const { name } = z
@@ -275,12 +266,11 @@ export async function createApp(dependencies: AppDependencies = {}) {
   app.post('/api/messages', async (request) => {
     const input = z
       .object({
-        text: z.string().trim().max(24000).default(''),
-        attachmentIds: z.array(z.uuid()).max(5).default([]),
-        taskId: z.uuid().optional(),
+        text: z.string().trim().max(100_000).default(''),
+        attachmentIds: z.array(z.uuid()).max(20).default([]),
         replyToMessageId: z.uuid().optional(),
         clientMessageId: z.uuid().optional(),
-        conversationRevision: z.number().int().nonnegative().optional(),
+        threadId: z.uuid().optional(),
         verificationRequestId: z.uuid().optional(),
       })
       .strict()
@@ -316,23 +306,15 @@ export async function createApp(dependencies: AppDependencies = {}) {
         artifactView(result.rows.find((artifact) => artifact.id === id)!),
       ),
       {
-        taskId: input.taskId,
         channel: 'web',
         replyToMessageId: input.replyToMessageId,
-        conversationRevision: input.conversationRevision,
+        threadId: input.threadId,
         clientMessageId,
       },
     );
   });
-  app.get<{ Params: { id: string } }>('/api/tasks/:id', async (request, reply) => {
-    const result = await pool.query(
-      `SELECT id,title,status,error,created_at AS "createdAt",updated_at AS "updatedAt",(channel='web' AND (source='user' OR source_id=$3)) AS "showTyping" FROM tasks t WHERE id=$1 AND owner_id=$2 AND ${currentConversationSql()}`,
-      [z.uuid().parse(request.params.id), ownerId, welcomeSourceId],
-    );
-    return result.rows[0] ?? reply.code(404).send({ error: 'Task not found.' });
-  });
-  app.post<{ Params: { id: string } }>('/api/tasks/:id/cancel', async (request) => {
-    await cancelTask(z.uuid().parse(request.params.id));
+  app.post('/api/thread/stop', async () => {
+    await stopThread();
     return { ok: true };
   });
   app.get('/api/events', async (request, reply) => {
@@ -351,11 +333,11 @@ export async function createApp(dependencies: AppDependencies = {}) {
           : event.type === 'delta' && event.ownerId === ownerId && event.channel === 'web'
             ? {
                 type: 'delta',
-                taskId: event.taskId,
+                threadId: event.threadId,
+                turnId: event.turnId,
                 text: event.text,
                 streamId: event.streamId,
                 done: event.done,
-                conversationRevision: event.conversationRevision,
               }
             : undefined;
       if (payload && !reply.raw.destroyed) reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -452,41 +434,53 @@ export async function createApp(dependencies: AppDependencies = {}) {
       return reply.code(404).send({ error: 'Inspector is disabled.' });
     const query = z
       .object({
-        taskId: z.uuid().optional(),
+        turnId: z.uuid().optional(),
         before: z.iso.datetime({ offset: true }).optional(),
         beforeId: z.uuid().optional(),
         tool: z.string().min(1).max(160).optional(),
       })
       .refine((value) => Boolean(value.before) === Boolean(value.beforeId))
       .parse(request.query);
-    const result = await dependencies.inspector?.read(query.taskId, query);
-    return result ?? reply.code(404).send({ error: 'Task not found.' });
+    const result = await dependencies.inspector?.read(query.turnId, query);
+    return result ?? reply.code(404).send({ error: 'Turn not found.' });
   });
   async function readCurrentBrowser() {
+    const thread = await activeThread(pool);
     const activeBrowser = dependencies.computer?.currentSession?.();
-    const browser = await pool.query(
-      activeBrowser
-        ? 'SELECT id AS "taskId",title,status,$3::timestamptz AS "lastActivityAt" FROM tasks WHERE owner_id=$1 AND id=$2'
-        : `SELECT t.id AS "taskId",t.title,t.status,e.created_at AS "lastActivityAt" FROM task_events e JOIN tasks t ON t.id=e.task_id
-          WHERE t.owner_id=$1 AND e.type IN ('tool_start','tool_complete') AND e.summary IN ('browser','browser step','inspect login','request credentials')
-          ORDER BY e.created_at DESC LIMIT 1`,
-      activeBrowser ? [ownerId, activeBrowser.taskId, activeBrowser.lastActivityAt] : [ownerId],
+    if (activeBrowser && activeBrowser.threadId !== thread.id) return undefined;
+    const latest = await pool.query(
+      `SELECT left(COALESCE(m.text,u.prompt),100) AS title,u.status,COALESCE(e.created_at,u.created_at) AS "lastActivityAt"
+       FROM turns u LEFT JOIN messages m ON m.id=u.message_id
+       LEFT JOIN LATERAL (SELECT created_at FROM turn_events WHERE turn_id=u.id AND type IN ('tool_start','tool_complete') AND summary IN ('browser','browser step','inspect login','request credentials') ORDER BY created_at DESC LIMIT 1) e ON true
+       WHERE u.owner_id=$1 AND u.thread_id=$2 ${activeBrowser ? '' : 'AND e.created_at IS NOT NULL'}
+       ORDER BY e.created_at IS NULL,COALESCE(e.created_at,u.created_at) DESC LIMIT 1`,
+      [ownerId, thread.id],
     );
-    return browser.rows[0];
+    const row = latest.rows[0];
+    if (!row) return undefined;
+    return {
+      threadId: thread.id,
+      title: row.title,
+      status: row.status,
+      lastActivityAt: activeBrowser?.lastActivityAt ?? row.lastActivityAt,
+    };
   }
   app.get('/api/browser', async () => ({ currentBrowser: (await readCurrentBrowser()) ?? null }));
   app.get('/api/inspector', async (request, reply) => {
     if (!publicConfiguration().inspectorEnabled)
       return reply.code(404).send({ error: 'Inspector is disabled.' });
-    const { taskId } = z.object({ taskId: z.uuid().optional() }).strict().parse(request.query);
-    const tasks = await pool.query(
-      'SELECT id,title,status,error,created_at AS "createdAt",updated_at AS "updatedAt" FROM tasks WHERE owner_id=$1 AND ($2::uuid IS NULL OR id=$2) ORDER BY created_at DESC LIMIT 50',
-      [ownerId, taskId ?? null],
+    const { turnId } = z.object({ turnId: z.uuid().optional() }).strict().parse(request.query);
+    const thread = await activeThread(pool);
+    const turns = await pool.query(
+      `SELECT u.id,u.status,u.source,u.error,u.created_at AS "createdAt",u.finished_at AS "finishedAt" FROM turns u
+       WHERE u.owner_id=$1 AND u.thread_id=$2 AND ($3::uuid IS NULL OR u.id=$3) ORDER BY u.created_at DESC LIMIT 50`,
+      [ownerId, thread.id, turnId ?? null],
     );
-    if (taskId && !tasks.rowCount) return reply.code(404).send({ error: 'Task not found.' });
+    if (turnId && !turns.rowCount) return reply.code(404).send({ error: 'Turn not found.' });
     const events = await pool.query(
-      'SELECT e.id,e.task_id AS "taskId",e.type,e.summary,e.created_at AS "createdAt" FROM task_events e JOIN tasks t ON t.id=e.task_id WHERE t.owner_id=$1 AND ($2::uuid IS NULL OR t.id=$2) ORDER BY e.created_at DESC LIMIT 200',
-      [ownerId, taskId ?? null],
+      `SELECT e.id,e.turn_id AS "turnId",e.type,e.summary,e.created_at AS "createdAt" FROM turn_events e JOIN turns u ON u.id=e.turn_id
+       WHERE u.owner_id=$1 AND u.thread_id=$2 AND ($3::uuid IS NULL OR u.id=$3) ORDER BY e.created_at DESC LIMIT 200`,
+      [ownerId, thread.id, turnId ?? null],
     );
     const runtime = dependencies.runtime?.status() ?? {
       browser: dependencies.computer?.status() ?? 'Not configured',
@@ -494,32 +488,34 @@ export async function createApp(dependencies: AppDependencies = {}) {
     };
     const currentBrowser = await readCurrentBrowser();
     return {
-      tasks: tasks.rows,
+      turns: turns.rows,
       events: events.rows,
       artifacts: (
         await pool.query(
-          'SELECT * FROM artifacts WHERE owner_id=$1 AND task_id IS NOT NULL AND ($2::uuid IS NULL OR task_id=$2) ORDER BY created_at DESC LIMIT 50',
-          [ownerId, taskId ?? null],
+          'SELECT * FROM artifacts WHERE owner_id=$1 AND thread_id=$2 ORDER BY created_at DESC LIMIT 50',
+          [ownerId, thread.id],
         )
-      ).rows.map((row) => ({ ...artifactView(row), taskId: row.task_id })),
+      ).rows.map((row) => ({ ...artifactView(row), threadId: row.thread_id })),
       runtime: { ...runtime, database: 'PostgreSQL connected' },
       ...(currentBrowser ? { currentBrowser } : {}),
     };
   });
-  async function readBrowserScreen(request: FastifyRequest, reply: FastifyReply) {
-    const { taskId: id } = z.object({ taskId: z.uuid() }).parse(request.query);
-    const task = await pool.query(
-      'SELECT id,status,revision FROM tasks WHERE id=$1 AND owner_id=$2',
-      [id, ownerId],
+  async function credentialEntryOpen(threadId: string) {
+    const latest = await pool.query(
+      "SELECT status,waiting_reason FROM turns WHERE owner_id=$1 AND thread_id=$2 AND status<>'queued' ORDER BY created_at DESC,id DESC LIMIT 1",
+      [ownerId, threadId],
     );
-    if (!task.rowCount) return reply.code(404).send({ error: 'Task not found.' });
-    if (task.rows[0].status === 'waiting_credentials')
+    return latest.rows[0]?.status === 'waiting' && latest.rows[0].waiting_reason === 'credentials';
+  }
+  async function readBrowserScreen(_request: FastifyRequest, reply: FastifyReply) {
+    const thread = await activeThread(pool);
+    if (await credentialEntryOpen(thread.id))
       return reply
         .code(423)
         .send({ error: 'Browser observations are paused during credential entry.' });
     let screen: Buffer | null | undefined;
     try {
-      screen = await dependencies.computer?.screenshot(id);
+      screen = await dependencies.computer?.screenshot(thread.id);
     } catch (error) {
       const message =
         error instanceof BrowserActionError ? browserErrorMessage(error.code) : undefined;
@@ -527,19 +523,15 @@ export async function createApp(dependencies: AppDependencies = {}) {
         return reply.code(409).send({ code: error.code, error: message });
       throw error;
     }
-    const current = await pool.query(
-      'SELECT status,revision FROM tasks WHERE id=$1 AND owner_id=$2',
-      [id, ownerId],
-    );
-    if (!current.rowCount) return reply.code(404).send({ error: 'Task not found.' });
-    if (current.rows[0].status === 'waiting_credentials')
+    const current = await activeThread(pool);
+    if (current.id !== thread.id)
+      return reply.code(409).send({ error: 'The browser session changed. Request a new view.' });
+    if (await credentialEntryOpen(thread.id))
       return reply
         .code(423)
         .send({ error: 'Browser observations are paused during credential entry.' });
-    if (current.rows[0].revision !== task.rows[0].revision)
-      return reply.code(409).send({ error: 'The browser session changed. Request a new view.' });
-    if (!screen) return reply.code(404).send({ error: 'This task has no browser screen yet.' });
-    const screenStatus = dependencies.computer?.screenStatus?.(id);
+    if (!screen) return reply.code(404).send({ error: 'There is no browser screen yet.' });
+    const screenStatus = dependencies.computer?.screenStatus?.(thread.id);
     reply.header('X-Screen-State', screenStatus?.state ?? 'live');
     if (screenStatus?.capturedAt) reply.header('X-Screen-Captured-At', screenStatus.capturedAt);
     return reply.type('image/png').send(screen);
@@ -549,23 +541,6 @@ export async function createApp(dependencies: AppDependencies = {}) {
     if (!publicConfiguration().inspectorEnabled)
       return reply.code(404).send({ error: 'Inspector is disabled.' });
     return readBrowserScreen(request, reply);
-  });
-  app.get(
-    '/api/memory',
-    async () =>
-      (
-        await pool.query(
-          'SELECT id,text,source_message_id AS "sourceMessageId",created_at AS "createdAt" FROM memory_facts WHERE owner_id=$1 ORDER BY created_at DESC',
-          [ownerId],
-        )
-      ).rows,
-  );
-  app.delete<{ Params: { id: string } }>('/api/memory/:id', async (request) => {
-    await pool.query('DELETE FROM memory_facts WHERE id=$1 AND owner_id=$2', [
-      z.uuid().parse(request.params.id),
-      ownerId,
-    ]);
-    return { ok: true };
   });
   return app;
 }

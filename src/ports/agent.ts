@@ -1,5 +1,5 @@
 import type { ProviderUsageEvent } from './provider-usage.ts';
-import type { CredentialKind } from './computer.ts';
+import type { CredentialKind, WorkspaceSession } from './computer.ts';
 import type { AgentReactionResult, Artifact, MessageReaction } from '../shared/contracts.ts';
 export interface CredentialInvitation {
   origin: string;
@@ -54,8 +54,8 @@ export interface RuntimeAccount {
 }
 
 export interface RuntimeContext {
-  taskId: string;
-  ownerId: string;
+  threadId: string;
+  turnId: string;
   prompt: string;
   background?: boolean;
   readOnly?: boolean;
@@ -67,16 +67,12 @@ export interface RuntimeContext {
   currentMessageId?: string;
   replyTo?: { id: string; role: string; text: string; attachments?: MessageAttachment[] };
   history: Array<{
-    id?: string;
     role: string;
     text: string;
     createdAt?: string | Date;
     reaction?: string | null;
-    assistantReaction?: MessageReaction | null;
     attachments?: MessageAttachment[];
   }>;
-  sharedHistory?: Array<{ role: string; text: string; createdAt: string | Date; channel: string }>;
-  memories: string[];
   personalContext?: {
     profile: { name: string; location: string; phone: string; preferences: string };
     activeGoals: Array<{
@@ -105,19 +101,14 @@ export interface RuntimeContext {
   ): Promise<unknown>;
   browserConnection?(request: BrowserConnectionRequest): Promise<unknown>;
   waitForUser?(question: string): Promise<void>;
-  startExternalAction?(): Promise<void>;
-  freshSession?: boolean;
-  checkOutcome?: boolean;
-  reportOutcome?(outcome: 'completed' | 'not_completed', message: string): Promise<void>;
   delta(text: string, streamId?: string, done?: boolean): void;
-  remember(text: string): Promise<void>;
   publish(path: string, name?: string): Promise<Artifact>;
   publishScreenshot?(bytes: Uint8Array, name?: string): Promise<Artifact>;
   publishBrowserFile?(file: {
     bytes: Uint8Array;
     name: string;
     mimeType: string;
-  }): Promise<Artifact>;
+  }): Promise<Artifact & { workspaceFile: string }>;
   createAudio?(text: string): Promise<Artifact>;
   requestCredential(input: {
     origin: string;
@@ -131,7 +122,7 @@ export interface RuntimeContext {
   downloadIntegrationFile?(
     action: string,
     args: Record<string, unknown>,
-  ): Promise<Artifact & { content?: string }>;
+  ): Promise<Artifact & { workspaceFile: string }>;
   manage(action: string, args: Record<string, unknown>): Promise<unknown>;
 }
 export interface PromptSnapshot {
@@ -163,6 +154,7 @@ export interface AgentToolMetadata {
   parameters: Record<string, unknown>;
 }
 export interface AgentTool extends AgentToolMetadata {
+  parallel?: boolean;
   execute(args: Record<string, unknown>): Promise<AgentToolResult>;
 }
 export type AgentEvent =
@@ -175,12 +167,19 @@ export type AgentEvent =
   | ModelUsageObservation
   | { type: 'error' };
 export interface AgentSessionOptions {
-  taskId: string;
+  threadId: string;
+  turnId: string;
   systemPrompt: string;
   tools: AgentTool[];
+  workspace: WorkspaceSession;
+  skillsDir?: string;
+  runTool(
+    name: string,
+    params: unknown,
+    run: () => Promise<AgentToolResult>,
+  ): Promise<AgentToolResult>;
   onEvent(event: AgentEvent): void;
   shouldStop(): boolean;
-  fresh?: boolean;
 }
 export interface AgentSession {
   resumed: boolean;
@@ -189,6 +188,7 @@ export interface AgentSession {
   dispose(): void | Promise<void>;
 }
 export interface Agent {
+  nativeTools?: AgentToolMetadata[];
   open(options: AgentSessionOptions): Promise<AgentSession>;
   dispose(): void | Promise<void>;
 }

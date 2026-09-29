@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'no
 import { connect } from 'node:net';
 import { resolve } from 'node:path';
 import { z } from 'zod';
-import { taskId } from '../../ports/task-identity.ts';
+import { threadIdentity } from '../../ports/thread-identity.ts';
 import { BrowserActionError } from '../../ports/computer.ts';
 
 const storedScreen = z.object({
@@ -22,8 +22,8 @@ const storedScreen = z.object({
 export type StoredScreen = z.infer<typeof storedScreen>;
 
 export function createScreenStore(root: string) {
-  const path = (id: string) => resolve(root, `screen-${taskId(id)}.png`);
-  const metadata = (id: string) => resolve(root, `screen-${taskId(id)}.json`);
+  const path = (id: string) => resolve(root, `screen-${threadIdentity(id)}.png`);
+  const metadata = (id: string) => resolve(root, `screen-${threadIdentity(id)}.json`);
   return {
     path,
     async clearImage(id: string) {

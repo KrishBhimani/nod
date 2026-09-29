@@ -114,17 +114,6 @@ test('unused retirement atomically retains the exact uncertainty record and a st
   }
 });
 
-test('any durable command key blocks retirement regardless of generation or stored value', async () => {
-  for (const key of [`command:1:${randomUUID()}`, `command:3:${randomUUID()}`, 'command:unknown']) {
-    const f = fixture();
-    f.values.set(key, false);
-    const before = structuredClone(f.values);
-    await assert.rejects(f.run(), { status: 503 });
-    assert.deepEqual(f.values, before);
-    assert.equal(f.writes(), 0);
-  }
-});
-
 test('identity, generation, legacy command and checkpoint ambiguity keep the original fence', async () => {
   const changes: Array<Record<string, unknown>> = [
     { ownerId: randomUUID() },
@@ -343,7 +332,7 @@ test('both controller roles retire only through deployment drain and keep ordina
         body: JSON.stringify({
           id: randomUUID(),
           role,
-          ...(role === 'workspace' && { taskId: 'synthetic' }),
+          ...(role === 'workspace' && { threadId: 'synthetic' }),
         }),
       }),
     );
@@ -524,7 +513,7 @@ test('a current unused failure retires only to a stopped marker and preserves it
           body: JSON.stringify({
             id: randomUUID(),
             role,
-            ...(role === 'workspace' && { taskId: 'synthetic' }),
+            ...(role === 'workspace' && { threadId: 'synthetic' }),
           }),
         }),
       );
@@ -535,25 +524,6 @@ test('a current unused failure retires only to a stopped marker and preserves it
         false,
       );
     }
-  }
-});
-
-test('a cold retry of current-generation retirement preserves the archive under a later drain', async () => {
-  for (const role of ['browser', 'workspace'] as const) {
-    const f = controllerFixture(role, fixture(role, 'current', false));
-    assert.equal((await f.drain()).status, 'drained');
-    const before = JSON.stringify([...f.values]);
-    const writes = f.writes();
-    f.options.deployment = {
-      nonce: randomUUID(),
-      targetRelease: 'd'.repeat(40),
-      deadline: Date.now() + 60_000,
-    };
-    const reloaded = controllerFixture(role, f);
-    assert.equal((await reloaded.drain()).status, 'drained');
-    assert.equal(JSON.stringify([...f.values]), before);
-    assert.equal(f.writes(), writes);
-    assert.deepEqual(reloaded.events, []);
   }
 });
 

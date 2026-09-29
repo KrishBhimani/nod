@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Computer, Workspace } from '../../ports/computer.ts';
 import type { ComputerAllocationStore } from '../../ports/computer-allocation.ts';
-import { taskId } from '../../ports/task-identity.ts';
+import { threadIdentity } from '../../ports/thread-identity.ts';
 import { createBridgeComputer } from '../container-browser/client.ts';
 import { createCommandWorkspace } from '../docker/index.ts';
 import { runSupervisedCommand } from '../docker/command.ts';
@@ -83,7 +83,7 @@ export function createE2BAdapters(options: {
           launchE2BCommand(
             allocation,
             'workspace',
-            `mkdir -p /workspace/${taskId(id)} && cd /workspace/${taskId(id)} && exec /usr/bin/setpriv --no-new-privs python3 -u /opt/otto/workspace-command.py`,
+            `mkdir -p /workspace/${threadIdentity(id)} && cd /workspace/${threadIdentity(id)} && exec /usr/bin/setpriv --no-new-privs python3 -u /opt/otto/workspace-command.py`,
           ),
       });
     },

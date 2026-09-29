@@ -4,7 +4,6 @@ import { z } from 'zod';
 import type { RuntimeObservation } from '../ports/agent.ts';
 import type { InspectorObservationsResponse, ModelUsage, ToolCall } from '../shared/inspector.ts';
 import { createInspectorRedactor, inspectorPayloadLimit } from './inspector-redaction.ts';
-import { currentConversationSql } from './conversations.ts';
 
 export const inspectorRetentionDays = 7;
 export { inspectorPayloadLimit };
@@ -57,24 +56,22 @@ export function createInspectorStore(
       });
     return pruning;
   }
-  async function record(taskId: string, revision: number, event: RuntimeObservation) {
+  async function record(turnId: string, event: RuntimeObservation) {
     if (!options.enabled()) return;
-    z.uuid().parse(taskId);
+    z.uuid().parse(turnId);
     z.uuid().parse(event.id);
-    count.parse(revision);
     await prune();
     if (event.type === 'tool_start') {
       const name = z.string().min(1).max(100).parse(event.name);
       await pool.query(
-        `INSERT INTO inspector_records(id,owner_id,task_id,revision,kind,name,status,input,started_at)
-        SELECT $1,$2,id,$4,'tool',$5,'running',$6,$7 FROM tasks
-        WHERE id=$3 AND owner_id=$2 AND revision=$4 AND status='running'
+        `INSERT INTO inspector_records(id,owner_id,thread_id,turn_id,kind,name,status,input,started_at)
+        SELECT $1,$2,thread_id,id,'tool',$4,'running',$5,$6 FROM turns
+        WHERE id=$3 AND owner_id=$2 AND status='running'
         ON CONFLICT(id) DO NOTHING`,
         [
           event.id,
           options.ownerId,
-          taskId,
-          revision,
+          turnId,
           name,
           JSON.stringify(redact(event.input)),
           iso(time.parse(event.startedAt)),
@@ -85,17 +82,16 @@ export function createInspectorStore(
       const duration = z.number().nonnegative().finite().parse(event.durationMs);
       await pool.query(
         `UPDATE inspector_records r SET
-          status=CASE WHEN t.revision=r.revision AND t.status NOT IN ('cancelled','failed') THEN $5 ELSE 'interrupted' END,
-          output=CASE WHEN t.revision=r.revision AND t.status NOT IN ('cancelled','failed') THEN $6::jsonb ELSE NULL END,
-          error=CASE WHEN t.revision=r.revision AND t.status NOT IN ('cancelled','failed') THEN $7 ELSE 'The task segment changed before its result was recorded.' END,
-          duration_ms=$8,finished_at=$9
-        FROM tasks t WHERE r.id=$1 AND r.owner_id=$2 AND r.task_id=$3 AND r.revision=$4
-          AND r.kind='tool' AND r.status='running' AND t.id=r.task_id AND t.owner_id=$2`,
+          status=CASE WHEN u.status NOT IN ('cancelled','failed') THEN $4 ELSE 'interrupted' END,
+          output=CASE WHEN u.status NOT IN ('cancelled','failed') THEN $5::jsonb ELSE NULL END,
+          error=CASE WHEN u.status NOT IN ('cancelled','failed') THEN $6 ELSE 'The turn ended before its result was recorded.' END,
+          duration_ms=$7,finished_at=$8
+        FROM turns u WHERE r.id=$1 AND r.owner_id=$2 AND r.turn_id=$3
+          AND r.kind='tool' AND r.status='running' AND u.id=r.turn_id AND u.owner_id=$2`,
         [
           event.id,
           options.ownerId,
-          taskId,
-          revision,
+          turnId,
           result,
           event.output === undefined ? null : JSON.stringify(redact(event.output)),
           event.error ? String(redact(event.error)).slice(0, 1000) : null,
@@ -110,27 +106,25 @@ export function createInspectorStore(
       usage.provider = String(redact(usage.provider));
       usage.model = String(redact(usage.model));
       await pool.query(
-        `INSERT INTO inspector_records(id,owner_id,task_id,revision,kind,name,status,usage,started_at,finished_at)
-        SELECT $1,$2,id,$4,'model','model_request','succeeded',$5,$6,$6 FROM tasks
-        WHERE id=$3 AND owner_id=$2 AND revision >= $4 ON CONFLICT(id) DO NOTHING`,
+        `INSERT INTO inspector_records(id,owner_id,thread_id,turn_id,kind,name,status,usage,started_at,finished_at)
+        SELECT $1,$2,thread_id,id,'model','model_request','succeeded',$4,$5,$5 FROM turns
+        WHERE id=$3 AND owner_id=$2 ON CONFLICT(id) DO NOTHING`,
         [
           event.id,
           options.ownerId,
-          taskId,
-          revision,
+          turnId,
           JSON.stringify(usage),
           iso(time.parse(event.createdAt)),
         ],
       );
     }
   }
-  function recordFailure(taskId: string, revision: number, error: unknown): Promise<void> {
+  function recordFailure(turnId: string, error: unknown): Promise<void> {
     if (!acceptingFailures || !options.enabled() || pendingFailures.size >= 8)
       return Promise.resolve();
     const write = Promise.resolve()
       .then(async () => {
-        z.uuid().parse(taskId);
-        count.parse(revision);
+        z.uuid().parse(turnId);
         const seen = new Set<Error>();
         function detail(value: unknown, depth = 0): unknown {
           if (!(value instanceof Error))
@@ -157,17 +151,18 @@ export function createInspectorStore(
         }
         const diagnostic = redact(detail(error));
         const hash = createHash('sha256')
-          .update(`failure:${options.ownerId}:${taskId}:${revision}`)
+          .update(`failure:${options.ownerId}:${turnId}`)
           .digest('hex');
         const id = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
         await prune();
         if (!options.enabled()) return;
         await pool.query(
-          `INSERT INTO inspector_records(id,owner_id,task_id,revision,kind,name,status,output,started_at,finished_at)
-           SELECT $1,$2,id,$4,'failure','task_failure','failed',$5,updated_at,updated_at FROM tasks
-           WHERE id=$3 AND owner_id=$2 AND revision=$4 AND status='failed' AND ${currentConversationSql('tasks')}
+          `INSERT INTO inspector_records(id,owner_id,thread_id,turn_id,kind,name,status,output,started_at,finished_at)
+           SELECT $1,$2,u.thread_id,u.id,'failure','turn_failure','failed',$4,COALESCE(u.finished_at,now()),COALESCE(u.finished_at,now())
+           FROM turns u JOIN threads th ON th.id=u.thread_id
+           WHERE u.id=$3 AND u.owner_id=$2 AND u.status='failed' AND th.archived_at IS NULL
            ON CONFLICT(id) DO NOTHING`,
-          [id, options.ownerId, taskId, revision, JSON.stringify(diagnostic)],
+          [id, options.ownerId, turnId, JSON.stringify(diagnostic)],
         );
       })
       .catch(() => {});
@@ -187,24 +182,24 @@ export function createInspectorStore(
       [options.ownerId],
     );
   }
-  async function finishSegment(taskId: string, revision: number) {
+  async function finishSegment(turnId: string) {
     if (!options.enabled()) return;
     await pool.query(
       `UPDATE inspector_records SET status='interrupted',finished_at=now(),
-      error='The task segment ended without a recorded result.'
-      WHERE owner_id=$1 AND task_id=$2 AND revision=$3 AND kind='tool' AND status='running'`,
-      [options.ownerId, taskId, revision],
+      error='The turn ended without a recorded result.'
+      WHERE owner_id=$1 AND turn_id=$2 AND kind='tool' AND status='running'`,
+      [options.ownerId, turnId],
     );
   }
   async function read(
-    taskId?: string,
+    turnId?: string,
     cursor: { before?: string; beforeId?: string; tool?: string } = {},
   ): Promise<InspectorObservationsResponse | null> {
-    if (taskId) z.uuid().parse(taskId);
+    if (turnId) z.uuid().parse(turnId);
     await prune();
-    if (taskId) {
-      const owner = await pool.query('SELECT id FROM tasks WHERE id=$1 AND owner_id=$2', [
-        taskId,
+    if (turnId) {
+      const owner = await pool.query('SELECT id FROM turns WHERE id=$1 AND owner_id=$2', [
+        turnId,
         options.ownerId,
       ]);
       if (!owner.rowCount) return null;
@@ -212,15 +207,15 @@ export function createInspectorStore(
     const [records, totals, toolUsage, toolCosts] = await Promise.all([
       pool.query(
         `SELECT r.*,
-          CASE WHEN r.status='running' AND (t.revision<>r.revision OR t.status IN ('failed','cancelled','succeeded')) THEN 'interrupted' ELSE r.status END AS current_status
-        FROM inspector_records r JOIN tasks t ON t.id=r.task_id AND t.owner_id=r.owner_id
-        WHERE r.owner_id=$1 AND ($2::uuid IS NULL OR r.task_id=$2) AND r.recorded_at >= now() - interval '7 days'
+          CASE WHEN r.status='running' AND u.status<>'running' THEN 'interrupted' ELSE r.status END AS current_status
+        FROM inspector_records r JOIN turns u ON u.id=r.turn_id AND u.owner_id=r.owner_id
+        WHERE r.owner_id=$1 AND ($2::uuid IS NULL OR r.turn_id=$2) AND r.recorded_at >= now() - interval '7 days'
           AND ($3::timestamptz IS NULL OR r.started_at < $3 OR (r.started_at=$3 AND r.id<$4::uuid))
           AND ($5::text IS NULL OR (r.kind='tool' AND r.name=$5))
         ORDER BY r.started_at DESC,r.id DESC LIMIT 101`,
         [
           options.ownerId,
-          taskId ?? null,
+          turnId ?? null,
           cursor.before ?? null,
           cursor.beforeId ?? null,
           cursor.tool ?? null,
@@ -237,8 +232,8 @@ export function createInspectorStore(
           coalesce(sum((usage->>'totalTokens')::bigint),0)::float8 AS "totalTokens",
           sum((usage->>'costUsd')::numeric)::float8 AS "knownCostUsd",
           count(*) FILTER (WHERE kind='model' AND (usage->>'costUsd') IS NULL)::int AS "unpricedRequests"
-        FROM inspector_records WHERE owner_id=$1 AND ($2::uuid IS NULL OR task_id=$2) AND recorded_at >= now() - interval '7 days'`,
-        [options.ownerId, taskId ?? null],
+        FROM inspector_records WHERE owner_id=$1 AND ($2::uuid IS NULL OR turn_id=$2) AND recorded_at >= now() - interval '7 days'`,
+        [options.ownerId, turnId ?? null],
       ),
       pool.query(
         `SELECT name,count(*)::int AS calls,
@@ -254,21 +249,21 @@ export function createInspectorStore(
           max(started_at) AS "lastStartedAt"
         FROM (
           SELECT r.name,r.duration_ms,r.started_at,
-            CASE WHEN r.status='running' AND (t.revision<>r.revision OR t.status IN ('failed','cancelled','succeeded')) THEN 'interrupted' ELSE r.status END AS current_status
-          FROM inspector_records r JOIN tasks t ON t.id=r.task_id AND t.owner_id=r.owner_id
-          WHERE r.owner_id=$1 AND ($2::uuid IS NULL OR r.task_id=$2) AND r.kind='tool'
+            CASE WHEN r.status='running' AND u.status<>'running' THEN 'interrupted' ELSE r.status END AS current_status
+          FROM inspector_records r JOIN turns u ON u.id=r.turn_id AND u.owner_id=r.owner_id
+          WHERE r.owner_id=$1 AND ($2::uuid IS NULL OR r.turn_id=$2) AND r.kind='tool'
             AND r.recorded_at >= now() - interval '7 days'
         ) retained GROUP BY name ORDER BY calls DESC,name`,
-        [options.ownerId, taskId ?? null],
+        [options.ownerId, turnId ?? null],
       ),
       pool.query(
         `SELECT r.name,${directUsageFields}
-        FROM provider_usage u JOIN inspector_records r ON r.id=u.tool_call_id AND r.owner_id=u.owner_id AND r.task_id=u.task_id AND r.name=u.tool_name
-        JOIN tasks t ON t.id=r.task_id AND t.owner_id=r.owner_id
-        WHERE u.owner_id=$1 AND ($2::uuid IS NULL OR u.task_id=$2) AND r.kind='tool' AND u.category<>'agent'
+        FROM provider_usage u JOIN inspector_records r ON r.id=u.tool_call_id AND r.owner_id=u.owner_id AND r.turn_id=u.turn_id AND r.name=u.tool_name
+        JOIN turns tn ON tn.id=r.turn_id AND tn.owner_id=r.owner_id
+        WHERE u.owner_id=$1 AND ($2::uuid IS NULL OR u.turn_id=$2) AND r.kind='tool' AND u.category<>'agent'
           AND u.recorded_at >= now()-interval '7 days' AND r.recorded_at >= now()-interval '7 days'
         GROUP BY r.name`,
-        [options.ownerId, taskId ?? null],
+        [options.ownerId, turnId ?? null],
       ),
     ]);
     const page = records.rows.slice(0, 100);
@@ -276,7 +271,7 @@ export function createInspectorStore(
     const callCosts = pageIds.length
       ? await pool.query(
           `SELECT u.tool_call_id,${directUsageFields}
-      FROM provider_usage u JOIN inspector_records r ON r.id=u.tool_call_id AND r.owner_id=u.owner_id AND r.task_id=u.task_id AND r.name=u.tool_name
+      FROM provider_usage u JOIN inspector_records r ON r.id=u.tool_call_id AND r.owner_id=u.owner_id AND r.turn_id=u.turn_id AND r.name=u.tool_name
       WHERE u.owner_id=$1 AND u.tool_call_id=ANY($2::uuid[]) AND r.kind='tool' AND u.category<>'agent'
         AND u.recorded_at >= now()-interval '7 days' AND r.recorded_at >= now()-interval '7 days'
       GROUP BY u.tool_call_id`,
@@ -291,8 +286,7 @@ export function createInspectorStore(
       .filter((row) => row.kind === 'tool')
       .map((row) => ({
         id: row.id,
-        taskId: row.task_id,
-        revision: row.revision,
+        turnId: row.turn_id,
         name: row.name,
         input: redact(row.input),
         output: row.output === null ? null : redact(row.output),
@@ -308,23 +302,21 @@ export function createInspectorStore(
       .map((row) => ({
         ...row.usage,
         id: row.id,
-        taskId: row.task_id,
-        revision: row.revision,
+        turnId: row.turn_id,
         createdAt: iso(row.started_at),
       }));
     const hasOlder = records.rows.length > 100;
     const last = page.at(-1);
     return {
-      scope: taskId ? 'task' : 'owner',
-      ...(taskId ? { taskId } : {}),
+      scope: turnId ? 'turn' : 'owner',
+      ...(turnId ? { turnId } : {}),
       calls,
       usage,
       failures: page
         .filter((row) => row.kind === 'failure')
         .map((row) => ({
           id: row.id,
-          taskId: row.task_id,
-          revision: row.revision,
+          turnId: row.turn_id,
           occurredAt: iso(row.started_at),
           diagnostic: redact(row.output),
         })),

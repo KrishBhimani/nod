@@ -196,30 +196,32 @@ test(
         });
       assert.equal((await send(1, 'Fixture request')).statusCode, 200);
       await application.channels!.drain();
-      const first = (await pool.query('SELECT id,channel FROM tasks')).rows[0];
+      const first = (await pool.query('SELECT id,thread_id,channel FROM turns')).rows[0];
       assert.match(first.channel, /^telegram:[a-f0-9]{32}$/);
       await pool.query(
-        "UPDATE tasks SET status='waiting_user',waiting_reason='question',waiting_question='Which city?' WHERE id=$1",
+        "UPDATE turns SET status='waiting',waiting_reason='question',finished_at=now() WHERE id=$1",
         [first.id],
       );
       await pool.query(
-        "INSERT INTO messages(id,owner_id,role,text,task_id) SELECT $1,owner_id,'assistant','Which city?',id FROM tasks WHERE id=$2",
+        "INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id) SELECT $1,owner_id,'assistant','Which city?',thread_id,id FROM turns WHERE id=$2",
         [randomUUID(), first.id],
       );
       await application.channels!.drain();
       assert.deepEqual(sent, ['Which city?']);
       assert.equal((await send(2, 'Lisbon')).statusCode, 200);
       await application.channels!.drain();
-      assert.equal((await pool.query('SELECT * FROM tasks')).rowCount, 1);
+      const turns = (
+        await pool.query(
+          "SELECT id,thread_id,channel FROM turns WHERE source='user' ORDER BY created_at",
+        )
+      ).rows;
+      assert.equal(turns.length, 2);
+      assert.equal(turns[1].thread_id, first.thread_id);
+      assert.equal(turns[1].channel, first.channel);
       assert.equal(
-        (await pool.query('SELECT task_id FROM channel_inbox WHERE source_id LIKE $1', ['%:2']))
-          .rows[0].task_id,
-        first.id,
-      );
-      assert.equal(
-        (await pool.query('SELECT * FROM task_continuations WHERE task_id=$1', [first.id]))
-          .rowCount,
-        1,
+        (await pool.query('SELECT turn_id FROM channel_inbox WHERE source_id LIKE $1', ['%:2']))
+          .rows[0].turn_id,
+        turns[1].id,
       );
       const disabled = await application.app.inject({
         method: 'DELETE',

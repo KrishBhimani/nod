@@ -1,3 +1,4 @@
+import { existsSync, statSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -9,14 +10,21 @@ import {
   SessionManager,
   SettingsManager,
   type ResourceLoader,
+  type Skill,
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import type { Agent, AgentEvent } from '../../ports/agent.ts';
 import type { PrivateObjectStore } from '../../ports/object-storage.ts';
-import { createPiCheckpoint } from './checkpoint.ts';
-import { taskId } from '../../ports/task-identity.ts';
+import {
+  closeInterruptedCalls,
+  createPiCheckpoint,
+  rebaseAt,
+  rebaseSession,
+} from './checkpoint.ts';
+import { threadIdentity } from '../../ports/thread-identity.ts';
 import { createPiUsageTracker, piUsageMetrics, usageId } from './usage.ts';
 import { agentModels } from '../../shared/model-defaults.ts';
+import { createSandbox, stageResources } from './sandbox.ts';
 
 function isFinalAnswer(signature: string | undefined) {
   if (!signature?.startsWith('{')) return false;
@@ -28,10 +36,10 @@ function isFinalAnswer(signature: string | undefined) {
   }
 }
 
-function resources(systemPrompt: string): ResourceLoader {
+function resources(systemPrompt: string, skills: Skill[]): ResourceLoader {
   return {
     getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
-    getSkills: () => ({ skills: [], diagnostics: [] }),
+    getSkills: () => ({ skills, diagnostics: [] }),
     getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }),
     getAgentsFiles: () => ({ agentsFiles: [] }),
@@ -58,11 +66,20 @@ export function createPiAgent(options: {
   >();
   let disposed = false;
   return {
+    nativeTools: createSandbox({
+      path: '/workspace',
+      instructions: '',
+      exec: async () => ({ exitCode: 1 }),
+    }).map(({ name, description, parameters }) => ({
+      name,
+      description,
+      parameters: structuredClone(parameters) as Record<string, unknown>,
+    })),
     async open(input) {
       if (disposed) throw new Error('The agent service has stopped.');
       if (!options.apiKey)
         throw new Error('Configure the selected model provider to enable the assistant.');
-      const directory = resolve(options.sessionRoot, taskId(input.taskId));
+      const directory = resolve(options.sessionRoot, threadIdentity(input.threadId));
       await mkdir(directory, { recursive: true, mode: 0o700 });
       const runtime = await ModelRuntime.create({
         credentials: new InMemoryCredentialStore(),
@@ -78,16 +95,15 @@ export function createPiAgent(options: {
       const durable = options.objectStore
         ? await createPiCheckpoint({
             store: options.objectStore,
-            taskId: input.taskId,
+            threadId: input.threadId,
             directory,
-            fresh: input.fresh,
           })
         : undefined;
-      const manager =
-        durable?.manager ??
-        (input.fresh
-          ? SessionManager.create(directory, directory)
-          : SessionManager.continueRecent(directory, directory));
+      let manager = durable?.manager ?? SessionManager.continueRecent(directory, directory);
+      const file = durable ? undefined : manager.getSessionFile();
+      if (file && existsSync(file) && statSync(file).size > rebaseAt)
+        manager = rebaseSession(manager, SessionManager.create(directory, directory));
+      closeInterruptedCalls(manager);
       const completedEvents: AgentEvent[] = [];
       const checkpoint = async () => {
         await durable?.checkpoint();
@@ -97,36 +113,45 @@ export function createPiAgent(options: {
         if (durable) completedEvents.push(event);
         else input.onEvent(event);
       };
-      const tools: ToolDefinition[] = input.tools.map((tool) => ({
-        name: tool.name,
-        label: tool.name.replaceAll('_', ' '),
-        description: tool.description,
-        parameters: tool.parameters as ToolDefinition['parameters'],
-        executionMode: 'sequential',
-        execute: async (id, args) => {
-          const execute = async () => {
+      const tools: ToolDefinition[] = [
+        ...createSandbox(input.workspace).map((definition): ToolDefinition => ({
+          ...definition,
+          execute: async (id, params, signal, onUpdate, context) => {
+            await checkpoint();
+            const result = await input.runTool(definition.name, params, () =>
+              definition.execute(id, params, signal, onUpdate, context),
+            );
+            return { ...result, details: result.details ?? {} };
+          },
+        })),
+        ...input.tools.map((tool): ToolDefinition => ({
+          name: tool.name,
+          label: tool.name.replaceAll('_', ' '),
+          description: tool.description,
+          parameters: tool.parameters as ToolDefinition['parameters'],
+          executionMode: tool.parallel ? 'parallel' : 'sequential',
+          execute: async (_id, args) => {
             await checkpoint();
             return { ...(await tool.execute(args as Record<string, unknown>)), details: {} };
-          };
-          const result = durable ? await durable.execute(id, tool.name, execute) : await execute();
-          return { ...result, details: {} };
-        },
-      }));
+          },
+        })),
+      ];
+      const skills = await stageResources(input.workspace, input.skillsDir);
       const resumed = manager.buildSessionContext().messages.length > 0;
       const { session } = await (options.createSession ?? createAgentSession)({
-        cwd: directory,
+        cwd: input.workspace.path,
         agentDir: directory,
         modelRuntime: runtime,
         model,
-        thinkingLevel: 'low',
+        thinkingLevel: 'high',
         tools: tools.map((tool) => tool.name),
         customTools: tools,
         noTools: 'builtin',
-        resourceLoader: resources(input.systemPrompt),
+        resourceLoader: resources(input.systemPrompt, skills),
         sessionManager: manager,
         settingsManager: SettingsManager.inMemory({
           compaction: { enabled: true },
-          retry: { enabled: true, maxRetries: 2 },
+          retry: { enabled: true, maxRetries: 5 },
           transport: 'sse',
         }),
       });
@@ -174,7 +199,7 @@ export function createPiAgent(options: {
               category: 'agent',
               operation: 'compaction',
               model: model.id,
-              taskId: input.taskId,
+              turnId: input.turnId,
               status: event.aborted ? 'cancelled' : event.errorMessage ? 'failed' : 'succeeded',
               durationMs: compaction ? performance.now() - compaction.started : 0,
               ...piUsageMetrics(event.result?.usage),
@@ -196,7 +221,7 @@ export function createPiAgent(options: {
               category: 'agent',
               operation: event.entry.kind === 'cache_warm' ? 'cache_warm' : 'auxiliary',
               model: event.entry.model,
-              taskId: input.taskId,
+              turnId: input.turnId,
               status: 'succeeded',
               durationMs: 0,
               ...piUsageMetrics(event.entry.usage),
@@ -258,7 +283,7 @@ export function createPiAgent(options: {
         resumed,
         async prompt(text, images) {
           try {
-            await session.prompt(text, { images });
+            await session.prompt(text, { images, expandPromptTemplates: false });
           } finally {
             await checkpoint();
           }

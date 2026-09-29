@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
-import { deploymentPlan, renameGatewayEnvironment, verifyStorageBinding } from './deploy.mjs';
+import { deploymentPlan, verifyStorageBinding } from './deploy.mjs';
 import { createDeploymentClient, pinDeploymentImages } from './drain.mjs';
 import { verifyDeployment } from './smoke.mjs';
 
@@ -27,21 +27,16 @@ export async function recoverDeployment(
     if (parsed.error) throw new Error('The Cloudflare deployment configuration is invalid.');
     configuration = parsed.config;
   }
-  const renamedVariables = {
-    ...variables,
-    GATEWAY_ENV: renameGatewayEnvironment(variables.GATEWAY_ENV, variables.OTTO_PUBLIC_URL),
-  };
   const plan = deploymentPlan({
     environment,
     release: variables.OTTO_RELEASE,
     accountId: variables.CLOUDFLARE_ACCOUNT_ID,
     publicUrl: variables.OTTO_PUBLIC_URL,
-    gatewayEnv: renamedVariables.GATEWAY_ENV,
+    gatewayEnv: variables.GATEWAY_ENV,
     config: configuration,
   });
   const lifecycle =
-    dependencies.deploymentControl ??
-    createDeploymentClient({ environment, plan, variables: renamedVariables });
+    dependencies.deploymentControl ?? createDeploymentClient({ environment, plan, variables });
   const report = dependencies.report ?? ((message) => process.stdout.write(`${message}\n`));
   const state = await lifecycle.recover();
   if (action === 'status') {

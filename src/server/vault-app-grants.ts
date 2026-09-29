@@ -11,12 +11,10 @@ function seal(key: Buffer, owner: string, id: string, value: string) {
   return Buffer.concat([nonce, cipher.getAuthTag(), bytes]).toString('base64');
 }
 
-function open(key: Buffer, owner: string, id: string, value: string, legacy = false) {
+function open(key: Buffer, owner: string, id: string, value: string) {
   const bytes = Buffer.from(value, 'base64');
   const decipher = createDecipheriv('aes-256-gcm', key, bytes.subarray(0, 12));
-  decipher.setAAD(
-    Buffer.from(JSON.stringify([legacy ? 'otto-discovered-v1' : 'otto-app-grant-v1', owner, id])),
-  );
+  decipher.setAAD(Buffer.from(JSON.stringify(['otto-app-grant-v1', owner, id])));
   decipher.setAuthTag(bytes.subarray(12, 28));
   return Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString();
 }
@@ -32,7 +30,6 @@ export async function createAppGrantVault(
       expires_at timestamptz
     );
     CREATE INDEX IF NOT EXISTS vault_app_grants_owner ON vault_app_grants(owner_id);
-    ALTER TABLE vault_app_grants ADD COLUMN IF NOT EXISTS expires_at timestamptz;
   `);
   await pool.query('DELETE FROM vault_app_grants WHERE expires_at<=now()');
   const owner = options.ownerId;
@@ -79,24 +76,5 @@ export async function createAppGrantVault(
       owner,
     ]);
   }
-  async function adoptLegacy(id: string, ciphertext: string) {
-    const validId = z.uuid().parse(id);
-    const value = open(await key(), owner, validId, ciphertext, true);
-    await pool.query(
-      `INSERT INTO vault_app_grants(id,owner_id,ciphertext) VALUES($1,$2,$3)
-       ON CONFLICT(id) DO NOTHING`,
-      [validId, owner, seal(await key(), owner, validId, value)],
-    );
-    await read(validId);
-  }
-  async function adoptPlain(id: string, value: string, expiresAt: Date | null = null) {
-    const validId = z.uuid().parse(id);
-    await pool.query(
-      `INSERT INTO vault_app_grants(id,owner_id,ciphertext,expires_at) VALUES($1,$2,$3,$4)
-       ON CONFLICT(id) DO NOTHING`,
-      [validId, owner, seal(await key(), owner, validId, value), expiresAt],
-    );
-    await read(validId);
-  }
-  return { put, read, replace, remove, adoptLegacy, adoptPlain };
+  return { put, read, replace, remove };
 }

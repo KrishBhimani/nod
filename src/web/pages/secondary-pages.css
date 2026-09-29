@@ -428,8 +428,7 @@
   font-size: 11px;
 }
 .schedule-run-failed,
-.schedule-run-waiting_credentials,
-.schedule-run-waiting_user {
+.schedule-run-waiting {
   color: var(--accent);
 }
 .schedule-run > p {

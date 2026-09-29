@@ -81,7 +81,7 @@ function Workspace({
     () => readUiPreference('otto.sidebar') === 'collapsed',
   );
   const [pendingMessageFocus, setPendingMessageFocus] = useState<string>();
-  const [inspectionFocus, setInspectionFocus] = useState<{ messageId: string; taskId: string }>();
+  const [inspectionFocus, setInspectionFocus] = useState<{ messageId: string; turnId: string }>();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<AccountTab>('Profile');
   const settingsTrigger = useRef<HTMLElement | null>(null);
@@ -121,8 +121,8 @@ function Workspace({
     };
     const inspect = (event: Event) => {
       if (!developer) return;
-      const detail = (event as CustomEvent<{ messageId: string; taskId: string }>).detail;
-      if (!detail?.taskId) return;
+      const detail = (event as CustomEvent<{ messageId: string; turnId: string }>).detail;
+      if (!detail?.turnId) return;
       setInspectionFocus(detail);
       setInspector(true);
     };

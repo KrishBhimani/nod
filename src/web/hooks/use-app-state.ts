@@ -11,23 +11,30 @@ export function useAppState(accountId?: string) {
   const [error, setError] = useState('');
   const [connected, setConnected] = useState(false);
   const requestVersion = useRef(0);
-  const conversationRevision = useRef(0);
-  const resetRequest = useRef<Promise<number> | null>(null);
+  const threadId = useRef('');
+  const retiredThreads = useRef(new Set<string>());
+  const resetRequest = useRef<Promise<string> | null>(null);
   const active = useRef(false);
   const stateRequest = useRef<AbortController | null>(null);
   const refreshAfterRequest = useRef(false);
-  const advanceConversation = useCallback((revision: number) => {
-    if (revision <= conversationRevision.current) return;
-    conversationRevision.current = revision;
-    requestVersion.current++;
-    dispatchStream({ type: 'conversation', conversationRevision: revision });
+  const advanceThread = useCallback((next: string) => {
+    if (next === threadId.current) return;
+    if (threadId.current) {
+      retiredThreads.current.add(threadId.current);
+      const [oldest] = retiredThreads.current;
+      if (retiredThreads.current.size > 20 && oldest) retiredThreads.current.delete(oldest);
+      requestVersion.current++;
+    }
+    threadId.current = next;
+    dispatchStream({ type: 'thread', threadId: next });
     setState((current) =>
-      current
+      current && current.threadId !== next
         ? {
             ...current,
-            conversationRevision: revision,
+            threadId: next,
+            threadStatus: 'idle',
             messages: [],
-            tasks: current.tasks.map((task) => ({ ...task, showTyping: false })),
+            turns: [],
           }
         : current,
     );
@@ -43,16 +50,15 @@ export function useAppState(accountId?: string) {
       const next = await api<AppState>('/api/state', { signal: controller.signal });
       if (!active.current || controller.signal.aborted || version !== requestVersion.current)
         return;
-      const revision = next.conversationRevision ?? 0;
-      if (revision < conversationRevision.current) return;
-      advanceConversation(revision);
+      if (retiredThreads.current.has(next.threadId)) return;
+      advanceThread(next.threadId);
       dispatchStream({
         type: 'persisted',
-        conversationRevision: revision,
+        threadId: next.threadId,
         streamIds: next.messages.flatMap((message) => (message.streamId ? [message.streamId] : [])),
-        discardedTaskIds: next.tasks
-          .filter((task) => task.status === 'failed' || task.status === 'cancelled')
-          .map((task) => task.id),
+        discardedTurnIds: next.turns
+          .filter((turn) => turn.status === 'failed' || turn.status === 'cancelled')
+          .map((turn) => turn.id),
       });
       setState(next);
       setError('');
@@ -65,21 +71,19 @@ export function useAppState(accountId?: string) {
         if (refreshAfterRequest.current) void refresh();
       }
     }
-  }, [advanceConversation]);
+  }, [advanceThread]);
 
   const resetConversation = useCallback(() => {
     if (resetRequest.current) return resetRequest.current;
     const request = (async () => {
       requestVersion.current++;
-      const result = await post<{ ok: true; conversationRevision: number }>(
-        '/api/conversation/reset',
-      );
-      if (!Number.isSafeInteger(result.conversationRevision) || result.conversationRevision < 0)
+      const result = await post<{ ok: true; threadId: string }>('/api/conversation/reset');
+      if (typeof result.threadId !== 'string' || !result.threadId)
         throw new Error('The conversation could not be restarted. Try again.');
-      if (!active.current) return result.conversationRevision;
-      advanceConversation(result.conversationRevision);
+      if (!active.current) return result.threadId;
+      advanceThread(result.threadId);
       setError('');
-      return result.conversationRevision;
+      return result.threadId;
     })();
     resetRequest.current = request;
     void request
@@ -88,7 +92,7 @@ export function useAppState(accountId?: string) {
       })
       .catch(() => {});
     return request;
-  }, [advanceConversation]);
+  }, [advanceThread]);
 
   useEffect(() => {
     active.current = true;
@@ -110,11 +114,11 @@ export function useAppState(accountId?: string) {
         try {
           const data = JSON.parse(event.data) as {
             type: string;
-            taskId?: string;
+            threadId?: string;
+            turnId?: string;
             text?: string;
             streamId?: string;
             done?: boolean;
-            conversationRevision?: number;
           };
           if (data.type === 'refresh') {
             pageDataCache.revalidateActive();
@@ -122,19 +126,18 @@ export function useAppState(accountId?: string) {
           }
           if (
             data.type === 'delta' &&
-            typeof data.taskId === 'string' &&
+            typeof data.threadId === 'string' &&
+            typeof data.turnId === 'string' &&
             (typeof data.text === 'string' || data.done === true)
           ) {
-            const revision = data.conversationRevision ?? 0;
-            if (revision < conversationRevision.current) return;
-            if (revision > conversationRevision.current) {
-              advanceConversation(revision);
-              void refresh();
+            if (threadId.current && data.threadId !== threadId.current) {
+              if (!retiredThreads.current.has(data.threadId)) void refresh();
+              return;
             }
             dispatchStream({
               type: 'delta',
-              conversationRevision: revision,
-              taskId: data.taskId,
+              threadId: data.threadId,
+              turnId: data.turnId,
               text: typeof data.text === 'string' ? data.text : '',
               ...(typeof data.streamId === 'string' ? { streamId: data.streamId } : {}),
               done: data.done === true,
@@ -152,7 +155,7 @@ export function useAppState(accountId?: string) {
       stateRequest.current?.abort();
       closeEvents();
     };
-  }, [refresh, advanceConversation, accountId]);
+  }, [refresh, advanceThread, accountId]);
 
   const streams = Object.fromEntries(
     Object.entries(streamState.active).map(([id, stream]) => [id, stream.text]),

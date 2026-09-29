@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { apiResponse } from '../lib/api';
 
-export function useSignInScreen(path: string, revision: number | null, active: boolean) {
-  const session = `${path}:${revision}`;
+export function useSignInScreen(path: string, sessionId: number | null, active: boolean) {
+  const session = `${path}:${sessionId}`;
   const [frame, setFrame] = useState<{ session: string; url: string } | null>(null);
   const [error, setError] = useState('');
   const source = useRef('');
@@ -19,7 +19,7 @@ export function useSignInScreen(path: string, revision: number | null, active: b
     };
     clear();
     setError('');
-    if (!active || revision === null) return;
+    if (!active || sessionId === null) return;
     async function capture() {
       if (stopped || !visible) return;
       const current = ++generation;
@@ -27,7 +27,7 @@ export function useSignInScreen(path: string, revision: number | null, active: b
       const controller = new AbortController();
       request = controller;
       try {
-        const response = await apiResponse(`${path}/sign-in-screen?revision=${revision}`, {
+        const response = await apiResponse(`${path}/sign-in-screen`, {
           cache: 'no-store',
           credentials: 'same-origin',
           signal: controller.signal,
@@ -81,6 +81,6 @@ export function useSignInScreen(path: string, revision: number | null, active: b
       window.removeEventListener('focus', show);
       document.removeEventListener('visibilitychange', visibility);
     };
-  }, [path, revision, active, session]);
+  }, [path, sessionId, active, session]);
   return { screen: active && frame?.session === session ? frame.url : null, error };
 }

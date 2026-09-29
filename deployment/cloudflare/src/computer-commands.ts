@@ -6,6 +6,7 @@ import {
   ownerIdentity,
   RuntimeControlError,
 } from './protocol.ts';
+import { threadIdentity } from '../../../src/ports/thread-identity.ts';
 
 type Command = {
   id: string;
@@ -37,7 +38,7 @@ const receiptLimit = 32;
 export function createComputerCommands(options: {
   role: 'browser' | 'workspace';
   authorize(generation: string): Promise<void>;
-  launch(input: { id: string; generation: string; taskId?: string }): Promise<ExecProcess>;
+  launch(input: { id: string; generation: string; threadId?: string }): Promise<ExecProcess>;
   completed(input: { id: string; generation: string; code: number }): Promise<void>;
   uncertain(input: { id: string; generation: string }): Promise<void>;
   timeoutMs?: number;
@@ -47,7 +48,7 @@ export function createComputerCommands(options: {
   const commands = new Map<string, Command>();
   const receipts = new Map<string, number>();
   const encoder = new TextEncoder();
-  const timeout = options.timeoutMs ?? 480_000;
+  const timeout = options.timeoutMs ?? 3_720_000;
   const authorizationInterval = Math.min(options.authorizationIntervalMs ?? 1000, 1000);
   const receiptTimeout = Math.min(options.receiptTimeoutMs ?? 30_000, 30_000);
   if (
@@ -225,7 +226,7 @@ export function createComputerCommands(options: {
   }
 
   async function create(request: Request, version: string) {
-    let input: { id: string; role: string; taskId?: string };
+    let input: { id: string; role: string; threadId?: string };
     try {
       input = JSON.parse(
         new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(
@@ -236,15 +237,15 @@ export function createComputerCommands(options: {
         !input ||
         typeof input !== 'object' ||
         Array.isArray(input) ||
-        Object.keys(input).some((key) => !['id', 'role', 'taskId'].includes(key)) ||
+        Object.keys(input).some((key) => !['id', 'role', 'threadId'].includes(key)) ||
         input.role !== options.role ||
-        (input.taskId !== undefined &&
-          (typeof input.taskId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(input.taskId))) ||
-        (options.role === 'workspace' && !input.taskId) ||
-        (options.role === 'browser' && input.taskId !== undefined)
+        (input.threadId !== undefined && typeof input.threadId !== 'string') ||
+        (options.role === 'workspace' && !input.threadId) ||
+        (options.role === 'browser' && input.threadId !== undefined)
       )
         throw new Error();
       ownerIdentity(input.id);
+      if (input.threadId !== undefined) threadIdentity(input.threadId);
     } catch (error) {
       if (error instanceof RuntimeControlError) throw error;
       throw new RuntimeControlError(400);
@@ -315,7 +316,7 @@ export function createComputerCommands(options: {
         command.process = await options.launch({
           id: input.id,
           generation: version,
-          taskId: input.taskId,
+          threadId: input.threadId,
         });
       } catch (error) {
         rejected = !command.failed && error instanceof RuntimeControlError && error.status === 409;

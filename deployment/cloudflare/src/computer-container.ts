@@ -325,25 +325,25 @@ abstract class ComputerContainer extends Container<Bindings> {
           throw unavailable();
         return stopping || response.result === true;
       },
-      launch: async (_state, taskId) => {
+      launch: async (_state, threadId) => {
         this.renewActivityTimeout();
         if (this.role === 'browser')
           return launchComputerExec({
             timeoutMs: 30_000,
             launch: (signal) => this.exec(browserArgs, { cwd: '/app', stdin: 'pipe', signal }),
           });
-        if (!taskId || !/^[a-zA-Z0-9_-]{1,100}$/.test(taskId)) throw unavailable();
+        if (!threadId || !/^[a-zA-Z0-9_-]{1,100}$/.test(threadId)) throw unavailable();
         await this.helper([
           'python3',
           '-c',
           'import os,sys;os.umask(0o077);os.makedirs(sys.argv[1],mode=0o700,exist_ok=True)',
-          `/workspace/${taskId}`,
+          `/workspace/${threadId}`,
         ]);
         return launchComputerExec({
           timeoutMs: 30_000,
           launch: (signal) =>
             this.exec(['python3', '-u', '/opt/otto/workspace-command.py'], {
-              cwd: `/workspace/${taskId}`,
+              cwd: `/workspace/${threadId}`,
               stdin: 'pipe',
               signal,
             }),

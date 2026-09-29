@@ -1,45 +1,39 @@
 # Otto
 
-Otto is a personal assistant you use through one chat. It can browse websites, run commands, and create files in a Linux workspace. It can also track goals, run scheduled tasks, and use accounts that you connect.
+Otto is a personal assistant you use through one chat. Each owner has one persistent thread with its own Linux workspace and browser, so Otto can research, run commands, create files, use connected apps, run schedules and reply on Telegram or WhatsApp. See [architecture](docs/architecture.md) for how it works.
 
-- **Chat:** Send messages and files, follow task progress, and keep chat history between sessions.
-- **Computer:** Let Otto use its own browser and workspace. In local mode, you can take control of the browser when a task needs your input.
-- **Planning:** Keep goals and schedules in the app. Use the Vault to save website logins and payment cards.
+## Local setup
 
-## Start on your computer
-
-Install Node.js **24.21.0 or newer** and Docker with Compose v2. You can use Node 26 locally. CI and Docker images use Node 24 LTS. On Mac, start Docker Desktop. Run this command from the repository root:
+Requirements: Node.js 24.21.0 or newer and Docker with Compose v2 (start Docker Desktop on Mac). From the repository root:
 
 ```sh
 npm run dev
 ```
 
-The first run installs dependencies, creates `.env`, and starts PostgreSQL and the Docker containers for the browser and workspace. Open [http://localhost:4310](http://localhost:4310) in your browser. Otto's browser runs inside Docker. It does not use a browser profile from your computer.
+The first run installs dependencies, creates `.env`, and starts PostgreSQL plus the workspace and browser containers. Open [http://localhost:4310](http://localhost:4310). Local mode serves one owner on `127.0.0.1` with no login.
 
-Chat needs a model key. For OpenAI, set `LLM_PROVIDER=openai` and `OPENAI_API_KEY`. For Anthropic, set `LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`. Put these settings in the ignored `.env` file or export them in the shell that starts Otto. If a setting is in both places, the shell value takes priority. Restart Otto after you edit `.env`. Keep keys out of chat and Git.
+Configuration lives in the ignored `.env` (all local settings are listed in `.env.example`; shell variables take priority; restart after edits):
 
-The local setup supports one owner and listens only on `127.0.0.1`. Chat and computer tasks need Docker and a model key. They do not need Cloudflare, E2B, or Google sign-in.
+| Setting                                  | Needed for                                                |
+| ---------------------------------------- | --------------------------------------------------------- |
+| `LLM_PROVIDER=openai` + `OPENAI_API_KEY` | Chat (required; or `anthropic` + `ANTHROPIC_API_KEY`)     |
+| `COMPOSIO_API_KEY`                       | Gmail, Calendar, Drive, Sheets, Docs, Slack               |
+| `OTTO_VAULT_KEY`                         | Vault encryption on non-macOS hosts (macOS uses Keychain) |
+| `DEV_INSPECTOR=false`                    | Disables the Inspector view (on by default locally)       |
 
-## Optional connections
+Notion and Linear connect through their hosted MCP servers without extra keys. Telegram and WhatsApp are configured from the **Channels** page.
 
-- **Apps:** Connect Notion and Linear through their hosted MCP servers from **Apps** or chat. Gmail, Calendar, Drive, Sheets, Docs, and Slack use Composio; set `COMPOSIO_API_KEY` for those services and for existing Composio Notion accounts. For other services, Otto can research an HTTPS MCP, HTTP API, or installed CLI path. A discovered MCP path can use OAuth or a token; HTTP and CLI paths use a token. Local Docker and hosted E2B run saved CLI calls with a Vault grant. Vault holds discovered and direct Notion/Linear grants, and Apps lists saved website logins as browser paths. See [connections](docs/connections.md) and [Composio setup](docs/composio.md).
-- **Channels:** Set up Telegram or WhatsApp from **Channels**. Telegram can poll locally. WhatsApp needs a Meta callback and an eligible account. See [channel setup](docs/channels.md).
-- **Vault:** On macOS, Keychain supplies the encryption key. Other hosts need `OTTO_VAULT_KEY`. See [vault setup](docs/vault.md).
+Ports: 4310 local app, 4330 hosted development (`node scripts/start-hosted.mjs`, see [Cloudflare](deployment/cloudflare/README.md)), 4320 E2E harness, 4346 hosted UI fixture.
 
-Invalid app tool searches can be corrected within the task. If an earlier external action has no confirmed outcome, Otto blocks repeating it; a later fix does not clear that protection. See [connection execution and recovery](docs/composio.md).
+Ctrl-C stops the server; `docker compose stop` stops the containers. Data stays in `.local/` and Docker volumes.
 
-Press Ctrl-C to stop the server. Run `docker compose stop` to stop its containers. Task files stay in `.local/`. PostgreSQL, browser data, and installed workspace tools stay in Docker volumes. Keep these stores if you want to keep your local data.
+## Checks
 
-## Hosted mode
+```sh
+npm run check             # types, import boundaries, formatting
+npm test                  # deterministic tests (database cases skip without TEST_DATABASE_URL)
+npm run test:integration  # all tests against the local PostgreSQL
+npm run build             # types and web bundle
+```
 
-Hosted mode signs users in with Google and keeps their work separate. The selected setup uses Cloudflare Containers, a dedicated PostgreSQL database, Google OAuth credentials and server-owned model/integration keys. One shared gateway serves up to eight total provisioned users. Each owner has a private application runtime and separate browser/workspace containers that start on first use; signup does not create those computer containers. E2B remains an optional, deferred adapter. Docker computer mode is only for the private local setup.
-
-For hosted development, use the [hosted environment example](deployment/hosted.env.example) and [development guide](docs/development.md#hosted-mode-on-your-computer). For deployment, use the [Cloudflare runbook](deployment/cloudflare/README.md) and [production requirements](docs/production.md). Cloudflare credentials are for deployment. They are not needed for the local setup.
-
-Before enabling E2B, follow its [development acceptance procedure](deployment/e2b/README.md#opt-in-disposable-development-acceptance). The live probe requires separate isolation results for ordinary workspace and connected CLI users; offline fixtures do not establish provider acceptance.
-
-The production pilot is available at [otto.n8n-maintenance.workers.dev](https://otto.n8n-maintenance.workers.dev). Google sign-in, onboarding, all five Google metadata reads, public browser navigation and browser-to-chat PDF delivery have live checks at this origin. Gmail and Calendar events have reached the signed ingress and classification pipeline. Authenticated Via Verde statement retrieval and Telegram delivery remain unverified. Hosted computers use Cloudflare; E2B is deferred. The [dated cutover record](docs/testing/results/2026-09-28-otto-cutover.md) records exact releases, manual and automatic deployment results, legacy-resource retirement and remaining acceptance work.
-
-Account and environment deletion are operator maintenance procedures. Follow the [scoped reset runbook](docs/environment-reset.md) to preserve other accounts and shared configuration; [the verified single-account reset](docs/testing/results/2026-09-29-owner-erasure.md) records the checks and retention limits. Deleting an account does not fix or replay a task with an unknown outcome.
-
-The [system guide](docs/system-guide.md) describes product behavior and limits. [Architecture](docs/architecture.md) and the [API contract](docs/api-contract.md) describe the code.
+Hosted deployment: [deployment/cloudflare/README.md](deployment/cloudflare/README.md). Rules for coding agents: [AGENTS.md](AGENTS.md).

@@ -10,7 +10,7 @@ const identity = {
   id: z.uuid(),
   namespace: z.string().regex(/^sk-[a-f0-9]{24}$/),
 };
-const task = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
+const thread = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const selector = z.string().min(1).max(500);
 export const browserDownloadInput = z
   .object({
@@ -42,7 +42,7 @@ const browserAction = z
   .strict();
 const credential = z
   .object({
-    taskId: task,
+    threadId: thread,
     origin: z.string().max(2048),
     kind: z.enum(['identifier', 'password', 'otp']).optional(),
     username: z.string().max(8192).optional(),
@@ -55,12 +55,14 @@ const credential = z
   .strict();
 
 export const browserRequest = z.discriminatedUnion('method', [
-  z.object({ ...identity, method: z.literal('act'), taskId: task, input: browserAction }).strict(),
+  z
+    .object({ ...identity, method: z.literal('act'), threadId: thread, input: browserAction })
+    .strict(),
   z
     .object({
       ...identity,
       method: z.literal('bindProfile'),
-      taskId: task,
+      threadId: thread,
       profileId: z.uuid(),
       allowedOrigin: z.url().max(2048).optional(),
     })
@@ -70,33 +72,38 @@ export const browserRequest = z.discriminatedUnion('method', [
     .object({
       ...identity,
       method: z.literal('download'),
-      taskId: task,
+      threadId: thread,
       input: browserDownloadInput,
     })
     .strict(),
-  z.object({ ...identity, method: z.literal('screenshot'), taskId: task }).strict(),
-  z.object({ ...identity, method: z.literal('signInScreenshot'), taskId: task }).strict(),
-  z.object({ ...identity, method: z.literal('takeControl'), taskId: task }).strict(),
-  z.object({ ...identity, method: z.literal('openSignIn'), taskId: task }).strict(),
-  z.object({ ...identity, method: z.literal('finishSignIn'), taskId: task }).strict(),
+  z.object({ ...identity, method: z.literal('screenshot'), threadId: thread }).strict(),
+  z.object({ ...identity, method: z.literal('signInScreenshot'), threadId: thread }).strict(),
+  z.object({ ...identity, method: z.literal('takeControl'), threadId: thread }).strict(),
+  z.object({ ...identity, method: z.literal('openSignIn'), threadId: thread }).strict(),
+  z.object({ ...identity, method: z.literal('finishSignIn'), threadId: thread }).strict(),
   z
-    .object({ ...identity, method: z.literal('control'), taskId: task, input: manualInputSchema })
+    .object({
+      ...identity,
+      method: z.literal('control'),
+      threadId: thread,
+      input: manualInputSchema,
+    })
     .strict(),
   z
     .object({
       ...identity,
       method: z.literal('signInControl'),
-      taskId: task,
+      threadId: thread,
       input: manualInputSchema,
     })
     .strict(),
-  z.object({ ...identity, method: z.literal('releaseControl'), taskId: task }).strict(),
-  z.object({ ...identity, method: z.literal('inspectLogin'), taskId: task }).strict(),
+  z.object({ ...identity, method: z.literal('releaseControl'), threadId: thread }).strict(),
+  z.object({ ...identity, method: z.literal('inspectLogin'), threadId: thread }).strict(),
   z
     .object({
       ...identity,
       method: z.literal('selectLoginMethod'),
-      taskId: task,
+      threadId: thread,
       origin: z.string().max(2048),
       methodId: z.string().max(100),
     })
@@ -106,11 +113,11 @@ export const browserRequest = z.discriminatedUnion('method', [
     .object({
       ...identity,
       method: z.literal('hold'),
-      taskId: task,
+      threadId: thread,
       until: z.number().finite().nullable(),
     })
     .strict(),
-  z.object({ ...identity, method: z.literal('close'), taskId: task }).strict(),
+  z.object({ ...identity, method: z.literal('close'), threadId: thread }).strict(),
   z.object({ ...identity, method: z.literal('dispose') }).strict(),
   z.object({ ...identity, method: z.literal('quiesce') }).strict(),
   z.object({ ...identity, method: z.literal('status') }).strict(),
@@ -130,12 +137,12 @@ export const browserMetadata = z
   .object({
     status: z.string().max(256),
     currentSession: z
-      .object({ taskId: task, lastActivityAt: z.iso.datetime() })
+      .object({ threadId: thread, lastActivityAt: z.iso.datetime() })
       .strict()
       .nullable(),
     screen: z
       .object({
-        taskId: task,
+        threadId: thread,
         state: z.enum(['live', 'last_known', 'unavailable']),
         capturedAt: z.iso.datetime().optional(),
       })

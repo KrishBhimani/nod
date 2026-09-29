@@ -1,5 +1,4 @@
 import type { Agent, ModelUsageObservation } from '../ports/agent.ts';
-import { z } from 'zod';
 import type { Computer, Workspace } from '../ports/computer.ts';
 import type { IntegrationProvider, IntegrationSession } from '../ports/integrations.ts';
 import type { MessagingTransport } from '../ports/messaging.ts';
@@ -24,7 +23,7 @@ export function meterAgent(agent: Agent, usage: ProviderUsageStore): Agent {
               category: 'agent',
               operation: 'response',
               model: value.model,
-              taskId: options.taskId,
+              turnId: options.turnId,
               status: value.status ?? 'succeeded',
               durationMs: performance.now() - started,
               inputTokens: value.inputTokens,
@@ -36,7 +35,7 @@ export function meterAgent(agent: Agent, usage: ProviderUsageStore): Agent {
             });
           }
           if (event.type === 'provider_usage')
-            usage.record({ ...event.usage, taskId: options.taskId });
+            usage.record({ ...event.usage, turnId: options.turnId });
           else options.onEvent(event);
         },
       });
@@ -46,67 +45,52 @@ export function meterAgent(agent: Agent, usage: ProviderUsageStore): Agent {
 
 export function meterComputer(computer: Computer, usage: ProviderUsageStore): Computer {
   const base = { provider: 'agent-browser', category: 'browser' as const };
-  const taskScope = (id: string) => (z.uuid().safeParse(id).success ? { taskId: id } : {});
   return {
     ...computer,
     act: (id, input, signal) =>
-      usage.track({ ...base, taskId: id, operation: input.action }, () =>
-        computer.act(id, input, signal),
-      ),
+      usage.track({ ...base, operation: input.action }, () => computer.act(id, input, signal)),
     screenshot: (id, signal) =>
       usage.track(
-        { ...base, taskId: id, operation: 'screenshot' },
+        { ...base, operation: 'screenshot' },
         () => computer.screenshot(id, signal),
         (value) => ({ bytes: value?.byteLength ?? 0 }),
       ),
     inspectLogin: (id) =>
-      usage.track({ ...base, taskId: id, operation: 'inspect_login' }, () =>
-        computer.inspectLogin(id),
-      ),
+      usage.track({ ...base, operation: 'inspect_login' }, () => computer.inspectLogin(id)),
     injectCredentials: (input) =>
-      usage.track({ ...base, taskId: input.taskId, operation: 'secure_entry' }, () =>
-        computer.injectCredentials(input),
-      ),
+      usage.track({ ...base, operation: 'secure_entry' }, () => computer.injectCredentials(input)),
     selectLoginMethod: (id, origin, method) =>
-      usage.track({ ...base, taskId: id, operation: 'select_login_method' }, () =>
+      usage.track({ ...base, operation: 'select_login_method' }, () =>
         computer.selectLoginMethod(id, origin, method),
       ),
     ...(computer.takeControl
       ? {
           takeControl: (id: string) =>
-            usage.track({ ...base, taskId: id, operation: 'take_control' }, () =>
-              computer.takeControl!(id),
-            ),
+            usage.track({ ...base, operation: 'take_control' }, () => computer.takeControl!(id)),
         }
       : {}),
     ...(computer.control
       ? {
           control: (id: string, input: Parameters<NonNullable<Computer['control']>>[1]) =>
-            usage.track({ ...base, taskId: id, operation: 'manual_input' }, () =>
-              computer.control!(id, input),
-            ),
+            usage.track({ ...base, operation: 'manual_input' }, () => computer.control!(id, input)),
         }
       : {}),
     ...(computer.openSignIn
       ? {
           openSignIn: (id: string) =>
-            usage.track({ ...base, ...taskScope(id), operation: 'open_sign_in' }, () =>
-              computer.openSignIn!(id),
-            ),
+            usage.track({ ...base, operation: 'open_sign_in' }, () => computer.openSignIn!(id)),
         }
       : {}),
     ...(computer.finishSignIn
       ? {
           finishSignIn: (id: string) =>
-            usage.track({ ...base, ...taskScope(id), operation: 'finish_sign_in' }, () =>
-              computer.finishSignIn!(id),
-            ),
+            usage.track({ ...base, operation: 'finish_sign_in' }, () => computer.finishSignIn!(id)),
         }
       : {}),
     ...(computer.releaseControl
       ? {
           releaseControl: (id: string) =>
-            usage.track({ ...base, ...taskScope(id), operation: 'release_control' }, () =>
+            usage.track({ ...base, operation: 'release_control' }, () =>
               computer.releaseControl!(id),
             ),
         }
@@ -129,7 +113,6 @@ export function meterWorkspace(workspace: Workspace, usage: ProviderUsageStore):
               {
                 provider: 'local-workspace',
                 category: 'workspace',
-                taskId: id,
                 operation:
                   purpose === 'publication'
                     ? 'publish_file'
@@ -146,12 +129,15 @@ export function meterWorkspace(workspace: Workspace, usage: ProviderUsageStore):
       const base = {
         provider: 'local-workspace',
         category: 'workspace' as const,
-        taskId: input.taskId,
       };
       return {
         ...session,
-        execute: (command, timeout) =>
-          usage.track({ ...base, operation: 'execute' }, () => session.execute(command, timeout)),
+        exec: (command, options) =>
+          usage.track(
+            { ...base, operation: 'execute' },
+            () => session.exec(command, options),
+            (result) => ({ status: result.exitCode === 0 ? 'succeeded' : 'failed' }),
+          ),
         ...(session.executeProgram
           ? {
               executeProgram: (
@@ -167,10 +153,6 @@ export function meterWorkspace(workspace: Workspace, usage: ProviderUsageStore):
                 ),
             }
           : {}),
-        readFile: (path) =>
-          usage.track({ ...base, operation: 'read_file' }, () => session.readFile(path)),
-        writeFile: (path, content) =>
-          usage.track({ ...base, operation: 'write_file' }, () => session.writeFile(path, content)),
       };
     },
   };

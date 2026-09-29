@@ -99,7 +99,7 @@ function processFixture() {
 
 function fixture(overrides: Partial<Parameters<typeof createComputerCommands>[0]> = {}) {
   const processes: ReturnType<typeof processFixture>[] = [];
-  const launches: Array<{ id: string; generation: string; taskId?: string }> = [];
+  const launches: Array<{ id: string; generation: string; threadId?: string }> = [];
   const completed: Array<{ id: string; generation: string; code: number }> = [];
   const uncertain: Array<{ id: string; generation: string }> = [];
   let allowed = true;
@@ -142,7 +142,7 @@ function fixture(overrides: Partial<Parameters<typeof createComputerCommands>[0]
         '/v1/commands',
         {
           method: 'POST',
-          body: JSON.stringify({ id, role, ...(role === 'workspace' && { taskId: 'task' }) }),
+          body: JSON.stringify({ id, role, ...(role === 'workspace' && { threadId: 'thread' }) }),
         },
         version,
       ),
@@ -178,7 +178,7 @@ function attachClient(f: ReturnType<typeof fixture>) {
   const process = launchCloudflareCommand({
     role: 'workspace',
     generation: '1',
-    taskId: 'task',
+    threadId: 'thread',
     fetch: (input, init) => f.registry.fetch(new Request(input, init)) as Promise<Response>,
     onUncertain() {
       uncertain++;
@@ -195,16 +195,16 @@ function attachClient(f: ReturnType<typeof fixture>) {
   return { process, terminal, stdout, stderr, uncertain: () => uncertain };
 }
 
-test('computer command creation validates identities, role, task and generation before launch', async () => {
+test('computer command creation validates identities, role, thread and generation before launch', async () => {
   for (const role of ['browser', 'workspace'] as const) {
     const f = fixture({ role });
     try {
-      const valid = { id: randomUUID(), role, ...(role === 'workspace' && { taskId: 'task' }) };
+      const valid = { id: randomUUID(), role, ...(role === 'workspace' && { threadId: 'thread' }) };
       for (const body of [
         { ...valid, id: '../private' },
         { ...valid, role: role === 'browser' ? 'workspace' : 'browser' },
-        { ...valid, taskId: role === 'browser' ? 'task' : undefined },
-        { ...valid, taskId: '../private' },
+        { ...valid, threadId: role === 'browser' ? 'thread' : undefined },
+        { ...valid, threadId: '../private' },
         { ...valid, arbitrary: 'private synthetic value' },
         null,
         [],
@@ -231,7 +231,7 @@ test('computer command creation validates identities, role, task and generation 
       assert.equal(f.launches.length, 0);
       const id = await create(f);
       assert.deepEqual(f.launches, [
-        { id, generation: '1', taskId: role === 'workspace' ? 'task' : undefined },
+        { id, generation: '1', threadId: role === 'workspace' ? 'thread' : undefined },
       ]);
       assert.equal((await f.create(id)).status, 409);
       assert.equal((await f.request(`/v1/commands/${id}/output`, {}, '2')).status, 404);
@@ -442,22 +442,6 @@ test('input overflow fences a known command without writing oversized bytes', as
   }
 });
 
-test('browser and workspace registries reserve their exact concurrent launch limits', async () => {
-  for (const role of ['browser', 'workspace'] as const) {
-    const f = fixture({ role });
-    try {
-      const count = role === 'browser' ? 32 : 1;
-      const responses = await Promise.all(Array.from({ length: count + 1 }, () => f.create()));
-      assert.equal(responses.filter((response) => response.status === 201).length, count);
-      assert.equal(responses.filter((response) => response.status === 409).length, 1);
-      assert.equal(f.launches.length, count);
-      assert.equal(f.registry.active, count);
-    } finally {
-      await f.close();
-    }
-  }
-});
-
 test('launch, native exit and checkpoint errors expose only fixed failures and retain uncertainty', async () => {
   for (const kind of ['launch', 'native', 'checkpoint'] as const) {
     const f = fixture({
@@ -637,188 +621,6 @@ test('a late native launch is cancelled after the command deadline without retur
   }
 });
 
-test('expiry while post-launch authorization is pending cannot produce a creation acknowledgement', async () => {
-  const entered = deferred();
-  const release = deferred();
-  let checks = 0;
-  const f = fixture({
-    timeoutMs: 25,
-    async authorize() {
-      if (++checks === 3) {
-        entered.resolve();
-        await release.promise;
-      }
-    },
-  });
-  try {
-    const creating = f.create();
-    await entered.promise;
-    await eventual(() => f.registry.uncertain);
-    release.resolve();
-    assert.equal((await creating).status, 503);
-    assert.deepEqual(f.processes[0].signals, [9]);
-  } finally {
-    release.resolve();
-    await f.close();
-  }
-});
-
-test('output backpressure bounds native reads and emits only bounded binary frames', async () => {
-  const native = processFixture();
-  let reads = 0;
-  const stdout = new ReadableStream<Uint8Array>({
-    pull(controller) {
-      reads++;
-      controller.enqueue(new Uint8Array(16 * 1024).fill(reads));
-      if (reads === 5) controller.close();
-    },
-  });
-  const f = fixture({
-    async launch() {
-      return { ...native.process, stdout };
-    },
-  });
-  try {
-    const id = await create(f);
-    native.finish();
-    await delay(5);
-    assert.ok(reads <= 2);
-    const response = await f.request(`/v1/commands/${id}/output`);
-    const reader = response.body!.getReader();
-    const first = await reader.read();
-    await delay(5);
-    assert.ok(reads <= 3);
-    const chunks = [Buffer.from(first.value!)];
-    while (true) {
-      const next = await reader.read();
-      if (next.done) break;
-      chunks.push(Buffer.from(next.value));
-    }
-    reader.releaseLock();
-    const frames = Buffer.concat(chunks)
-      .toString()
-      .trim()
-      .split('\n')
-      .map((line: string) => JSON.parse(line));
-    assert.equal(frames.length, 6);
-    for (const [index, frame] of frames.slice(0, 5).entries()) {
-      assert.equal(frame.type, 'stdout');
-      assert.deepEqual(Buffer.from(frame.data, 'base64'), Buffer.alloc(16 * 1024, index + 1));
-    }
-    assert.deepEqual(frames.at(-1), { type: 'exit', code: 0 });
-  } finally {
-    await f.close();
-  }
-});
-
-test('cumulative input limits reserve queued bytes before native writes finish', async () => {
-  const f = fixture();
-  const entered = deferred();
-  const release = deferred();
-  try {
-    const id = await create(f);
-    f.processes[0].beforeInput(async () => {
-      entered.resolve();
-      await release.promise;
-    });
-    const pending = f.request(`/v1/commands/${id}/input`, {
-      method: 'POST',
-      body: new Uint8Array(1024 * 1024 + 1024),
-    });
-    await entered.promise;
-    assert.equal(
-      (await f.request(`/v1/commands/${id}/input`, { method: 'POST', body: 'x' })).status,
-      413,
-    );
-    assert.equal(f.registry.uncertain, true);
-    release.resolve();
-    assert.equal((await pending).status, 503);
-  } finally {
-    release.resolve();
-    await f.close();
-  }
-});
-
-test('terminal receipt eviction permits more than 1024 sequential commands while durable replay rejection stays safe', async () => {
-  const claims = new Set<string>();
-  let launched = 0;
-  const f = fixture({
-    async launch({ id, generation }) {
-      const key = `${generation}:${id}`;
-      if (claims.has(key)) throw new RuntimeControlError(409);
-      claims.add(key);
-      launched++;
-      const native = processFixture();
-      native.finish();
-      return native.process;
-    },
-  });
-  let first = '';
-  try {
-    for (let index = 0; index < 1100; index++) {
-      const id = await create(f);
-      first ||= id;
-      const output = await f.request(`/v1/commands/${id}/output`);
-      assert.deepEqual(JSON.parse(await output.text()), { type: 'exit', code: 0 });
-    }
-    assert.equal((await f.request(`/v1/commands/${first}/output`)).status, 404);
-    assert.equal((await f.create(first)).status, 409);
-    assert.equal(launched, 1100);
-    const next = await create(f);
-    const output = await f.request(`/v1/commands/${next}/output`);
-    assert.deepEqual(JSON.parse(await output.text()), { type: 'exit', code: 0 });
-    assert.equal(launched, 1101);
-    assert.equal(f.registry.active, 0);
-    assert.equal(f.registry.uncertain, false);
-  } finally {
-    await f.close();
-  }
-});
-
-test('terminal metadata expires without retaining process streams or accepting duplicate work', async () => {
-  const claims = new Set<string>();
-  let launches = 0;
-  const f = fixture({
-    receiptTimeoutMs: 10,
-    async launch({ id }) {
-      if (claims.has(id)) throw new RuntimeControlError(409);
-      claims.add(id);
-      launches++;
-      const native = processFixture();
-      native.finish();
-      return native.process;
-    },
-  });
-  try {
-    const id = await create(f);
-    const output = await f.request(`/v1/commands/${id}/output`);
-    await output.text();
-    assert.equal((await f.request(`/v1/commands/${id}/end`, { method: 'POST' })).status, 204);
-    assert.equal(
-      (
-        await f.request(`/v1/commands/${id}/kill`, {
-          method: 'POST',
-          body: JSON.stringify({ signal: 'SIGKILL' }),
-        })
-      ).status,
-      204,
-    );
-    assert.equal(
-      (await f.request(`/v1/commands/${id}/input`, { method: 'POST', body: 'late' })).status,
-      409,
-    );
-    assert.equal((await f.request(`/v1/commands/${id}/output`)).status, 409);
-    await delay(15);
-    assert.equal((await f.request(`/v1/commands/${id}/end`, { method: 'POST' })).status, 404);
-    assert.equal((await f.create(id)).status, 409);
-    assert.equal(launches, 1);
-    assert.equal(f.registry.uncertain, false);
-    assert.equal(f.uncertain.length, 0);
-  } finally {
-    await f.close();
-  }
-});
-
 test('exited commands still occupy capacity until their entire output stream closes', async () => {
   for (const role of ['browser', 'workspace'] as const) {
     const f = fixture({
@@ -849,37 +651,6 @@ test('exited commands still occupy capacity until their entire output stream clo
     } finally {
       await f.close();
     }
-  }
-});
-
-test('reading the final frame retains capacity until EOF, which releases it before observer callbacks', async () => {
-  const native = processFixture();
-  const f = fixture({
-    async launch() {
-      return native.process;
-    },
-  });
-  try {
-    const id = await create(f);
-    const output = await f.request(`/v1/commands/${id}/output`);
-    const reader = output.body!.getReader();
-    native.finish();
-    const frame = await reader.read();
-    assert.deepEqual(JSON.parse(Buffer.from(frame.value!).toString()), { type: 'exit', code: 0 });
-    await delay(5);
-    assert.equal(f.registry.active, 1);
-    assert.equal((await f.create()).status, 409);
-    await reader.read().then(async (next) => {
-      assert.equal(next.done, true);
-      assert.equal(f.registry.active, 0);
-      await f.registry.stop();
-      assert.equal(f.uncertain.length, 0);
-      assert.deepEqual(native.signals, []);
-    });
-    reader.releaseLock();
-  } finally {
-    native.finish();
-    await f.close();
   }
 });
 

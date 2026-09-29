@@ -25,9 +25,7 @@ export function fakeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
     open: () => ({
       path: '/fixture/workspace',
       instructions: 'Fixture workspace only.',
-      execute: async () => 'Fixture output',
-      readFile: async () => 'Fixture content',
-      writeFile: async () => 'File saved',
+      exec: async () => ({ exitCode: 0 }),
     }),
     status: () => 'fixture workspace',
     dispose: () => {},

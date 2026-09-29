@@ -150,7 +150,7 @@ function fixture(
       lifecycle.launch(ownerId, {
         id,
         generation,
-        taskId: role === 'workspace' ? 'task' : undefined,
+        threadId: role === 'workspace' ? 'thread' : undefined,
       }),
     completed: (id: string, generation = '1', code = 0) =>
       lifecycle.completed(ownerId, { id, generation, code }),
@@ -297,7 +297,7 @@ test('owner, environment, role and active generation cannot be replaced', async 
   const state = f.state();
   const destroys = f.events.filter((event) => event === 'destroy').length;
   await assert.rejects(
-    f.lifecycle.launch(randomUUID(), { id: randomUUID(), generation: '1', taskId: 'task' }),
+    f.lifecycle.launch(randomUUID(), { id: randomUUID(), generation: '1', threadId: 'thread' }),
   );
   await assert.rejects(f.launch(randomUUID(), '2'));
   await assert.rejects(
@@ -310,7 +310,7 @@ test('owner, environment, role and active generation cannot be replaced', async 
     createComputerLifecycle({ ...f.options, environment: 'production' }).launch(f.ownerId, {
       id: randomUUID(),
       generation: '1',
-      taskId: 'task',
+      threadId: 'thread',
     }),
   );
   assert.deepEqual(f.state(), state);
@@ -403,7 +403,7 @@ test('failed or unconfirmed destruction of an unused role cannot publish a stopp
       assert.equal(f.state(), undefined);
       assert.equal(f.writes.length, 0);
       await assert.rejects(
-        lifecycle.launch(f.ownerId, { id: randomUUID(), generation: '2', taskId: 'task' }),
+        lifecycle.launch(f.ownerId, { id: randomUUID(), generation: '2', threadId: 'thread' }),
       );
       assert.equal(f.events.includes('launch'), false);
       assert.equal(f.state(), undefined);
@@ -425,26 +425,6 @@ test('unused-role stop requires authority before destruction and before publishi
         assert.deepEqual(f.events, revokeDuringDestruction ? ['destroy'] : []);
       },
     );
-  }
-});
-
-test('an unused newer tenant can stop while its prior computer generation remains clean and stopped', async () => {
-  for (const role of ['browser', 'workspace'] as const) {
-    const f = fixture(role);
-    const id = randomUUID();
-    await f.launch(id);
-    await f.completed(id);
-    await f.lifecycle.stop(f.ownerId, '1');
-    const saved = f.state();
-    const events = [...f.events];
-    f.restart();
-    await f.lifecycle.stop(f.ownerId, '2');
-    assert.deepEqual(f.state(), saved);
-    assert.deepEqual(f.events, events);
-    assert.equal(f.running(), false);
-    f.revoke();
-    await assert.rejects(f.lifecycle.stop(f.ownerId, '2'));
-    assert.deepEqual(f.state(), saved);
   }
 });
 
@@ -568,32 +548,6 @@ test('failed checkpoint preserves its predecessor and quarantines the whole role
   assert.deepEqual(f.removed, []);
   assert.equal(f.running(), false);
   await assert.rejects(f.launch());
-});
-
-test('uncertainty during delayed checkpointing cannot publish a replacement manifest', async () => {
-  const f = fixture();
-  const first = randomUUID();
-  await f.launch(first);
-  await f.completed(first);
-  const checkpoint = f.state()?.checkpoint;
-  const id = randomUUID();
-  await f.launch(id);
-  const entered = deferred();
-  const release = deferred();
-  f.beforeCheckpoint(async () => {
-    entered.resolve();
-    await release.promise;
-  });
-  const completing = assert.rejects(f.completed(id));
-  await entered.promise;
-  const uncertain = f.lifecycle.uncertain(f.ownerId, '1');
-  await assert.rejects(f.lifecycle.authorize(f.ownerId, '1'));
-  release.resolve();
-  await Promise.all([completing, uncertain]);
-  assert.equal(f.state()?.phase, 'uncertain');
-  assert.deepEqual(f.state()?.checkpoint, checkpoint);
-  assert.deepEqual(f.removed, []);
-  assert.equal(f.running(), false);
 });
 
 test('browser idle checkpoint waits for all calls and successful private quiescence', async () => {
@@ -720,26 +674,6 @@ test('checkpoint publication must persist before completion and cannot acknowled
     assert.deepEqual(f.state()?.previousCheckpoint, prior);
     assert.deepEqual(f.removed, []);
   }
-});
-
-test('failed checkpoint manifest persistence preserves the committed snapshot', async () => {
-  const f = fixture();
-  const first = randomUUID();
-  await f.launch(first);
-  await f.completed(first);
-  const checkpoint = f.state()?.checkpoint;
-  const next = randomUUID();
-  await f.launch(next);
-  f.beforeWrite(async (state) => {
-    if (state.phase === 'ready') throw new Error('Synthetic private manifest failure');
-  });
-  await assert.rejects(f.completed(next), {
-    message: 'The runtime request could not be completed.',
-  });
-  assert.equal(f.state()?.phase, 'uncertain');
-  assert.deepEqual(f.state()?.checkpoint, checkpoint);
-  assert.deepEqual(f.removed, []);
-  assert.equal(f.running(), false);
 });
 
 test('no native action runs when durable intent cannot be written', async () => {

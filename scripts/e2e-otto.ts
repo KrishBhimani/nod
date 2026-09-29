@@ -134,11 +134,11 @@ try {
     '--security-opt',
     'no-new-privileges',
     '--pids-limit',
-    '128',
+    '4096',
     '--memory',
-    '4g',
+    '8g',
     '--cpus',
-    '2',
+    '4',
     '--user',
     'node',
     '--mount',
@@ -265,7 +265,6 @@ try {
     { createApplication },
     { pool },
     { createPiAgent },
-    { createPiConversationRouter },
     { createContainerBrowserComputer },
     { createDockerWorkspace },
     { createOpenAIRelevanceClassifier },
@@ -275,7 +274,6 @@ try {
     import('../src/server/composition.ts'),
     import('../src/server/db.ts'),
     import('../src/providers/pi/index.ts'),
-    import('../src/providers/pi/conversation.ts'),
     import('../src/providers/container-browser/index.ts'),
     import('../src/providers/docker/index.ts'),
     import('../src/providers/openai/relevance.ts'),
@@ -289,8 +287,6 @@ try {
     throw new Error('Speech is disabled in this acceptance harness.');
   };
   application = await createApplication({
-    createConversationRouter: (onUsage) =>
-      createPiConversationRouter({ provider, model: environment.ROUTING_MODEL, apiKey, onUsage }),
     agent: createPiAgent({
       provider,
       model,
@@ -360,8 +356,12 @@ try {
     ) {
       try {
         const result = JSON.parse(payload);
-        if (typeof result.taskId === 'string')
-          audit('chat_request_accepted', { requestId: request.id, taskId: result.taskId });
+        if (typeof result.turnId === 'string')
+          audit('chat_request_accepted', {
+            requestId: request.id,
+            threadId: result.threadId,
+            turnId: result.turnId,
+          });
       } catch {}
     }
     return payload;
@@ -369,15 +369,26 @@ try {
   const streams = new Set<string>();
   events.on(
     'event',
-    (event: { type?: string; taskId?: string; streamId?: string; text?: string }) => {
-      if (event.type !== 'delta' || !event.taskId || !event.text) return;
-      const key = `${event.taskId}:${event.streamId || 'default'}`;
+    (event: {
+      type?: string;
+      threadId?: string;
+      turnId?: string;
+      streamId?: string;
+      text?: string;
+    }) => {
+      if (event.type !== 'delta' || !event.turnId || !event.text) return;
+      const key = `${event.turnId}:${event.streamId || 'default'}`;
       if (streams.has(key)) return;
       streams.add(key);
-      audit('first_visible_delta', { taskId: event.taskId, streamId: event.streamId || '' });
+      audit('first_visible_delta', {
+        threadId: event.threadId ?? '',
+        turnId: event.turnId,
+        streamId: event.streamId || '',
+      });
     },
   );
   const states = new Map<string, string>();
+  const eventIds = new Set<string>();
   const messageIds = new Set<string>();
   const jobs = new Set<string>();
   let polling = false;
@@ -385,30 +396,43 @@ try {
     if (polling || stopping) return;
     polling = true;
     try {
-      const tasks = await pool.query(
-        'SELECT id,status,revision,source,created_at,updated_at FROM tasks ORDER BY created_at',
+      const turns = await pool.query(
+        'SELECT id,thread_id,status,source,created_at,started_at,finished_at FROM turns ORDER BY created_at',
       );
-      for (const task of tasks.rows) {
-        const state = `${task.revision}:${task.status}`;
-        if (states.get(task.id) === state) continue;
-        states.set(task.id, state);
-        audit('task_state', {
-          taskId: task.id,
-          status: task.status,
-          revision: task.revision,
-          source: task.source,
-          createdAt: task.created_at.toISOString(),
-          updatedAt: task.updated_at.toISOString(),
+      for (const turn of turns.rows) {
+        if (states.get(turn.id) === turn.status) continue;
+        states.set(turn.id, turn.status);
+        audit('turn_state', {
+          threadId: turn.thread_id,
+          turnId: turn.id,
+          status: turn.status,
+          source: turn.source,
+          createdAt: turn.created_at.toISOString(),
+          startedAt: turn.started_at?.toISOString() ?? null,
+          finishedAt: turn.finished_at?.toISOString() ?? null,
+        });
+      }
+      const turnEvents = await pool.query(
+        'SELECT id,turn_id,type,created_at FROM turn_events ORDER BY created_at',
+      );
+      for (const event of turnEvents.rows) {
+        if (eventIds.has(event.id)) continue;
+        eventIds.add(event.id);
+        audit('turn_event', {
+          turnId: event.turn_id,
+          type: event.type,
+          createdAt: event.created_at.toISOString(),
         });
       }
       const messages = await pool.query(
-        "SELECT id,task_id,created_at,text IN ('I’m on it. I’ll share the result when it’s ready.','I’m working on that. I’ll be back with the result.','I’m on it. This is taking a little longer.') AS acknowledgement FROM messages WHERE role='assistant' ORDER BY created_at",
+        "SELECT id,thread_id,turn_id,created_at FROM messages WHERE role='assistant' ORDER BY created_at",
       );
       for (const message of messages.rows) {
         if (messageIds.has(message.id)) continue;
         messageIds.add(message.id);
-        audit(message.acknowledgement ? 'acknowledgement_saved' : 'assistant_message_saved', {
-          taskId: message.task_id,
+        audit('assistant_message_saved', {
+          threadId: message.thread_id,
+          turnId: message.turn_id,
           messageId: message.id,
           createdAt: message.created_at.toISOString(),
         });
@@ -458,7 +482,7 @@ try {
     timings: logPath,
     model: { provider, name: model },
     evidence:
-      'Real app, Pi model, Chrome, Vault and task workspace; synthetic connected apps, sign-in website and channel setup. Speech and channel delivery disabled.',
+      'Real app, Pi model, Chrome, Vault and thread workspace; synthetic connected apps, sign-in website and channel setup. Speech and channel delivery disabled.',
   };
   await writeFile(join(directory, 'manifest.json'), JSON.stringify(manifest, null, 2), {
     mode: 0o600,
