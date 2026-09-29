@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { resolve } from 'node:path';
 import { z } from 'zod';
@@ -14,6 +14,8 @@ const storedScreen = z.object({
   navigationFailed: z.boolean().optional(),
   signInPending: z.boolean().optional(),
   restoreSession: z.boolean().optional(),
+  profileId: z.uuid().optional(),
+  allowedOrigin: z.url().max(2048).optional(),
   resumeUrl: z.string().max(8192).optional(),
   capturedAt: z.iso.datetime().optional(),
 });
@@ -24,6 +26,25 @@ export function createScreenStore(root: string) {
   const metadata = (id: string) => resolve(root, `screen-${taskId(id)}.json`);
   return {
     path,
+    async clearImage(id: string) {
+      await rm(path(id), { force: true });
+    },
+    async profileScreens(profileId: string) {
+      const files = await readdir(root).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return [];
+        throw error;
+      });
+      const ids = files
+        .map((file) => /^screen-([A-Za-z0-9_-]{1,100})\.json$/.exec(file)?.[1])
+        .filter((id): id is string => Boolean(id));
+      const matches = await Promise.all(
+        ids.map(async (id) => ((await this.load(id))?.profileId === profileId ? id : null)),
+      );
+      return matches.filter((id): id is string => Boolean(id));
+    },
+    async delete(id: string) {
+      await Promise.all([rm(path(id), { force: true }), rm(metadata(id), { force: true })]);
+    },
     async load(id: string): Promise<StoredScreen | null> {
       try {
         if ((await stat(metadata(id))).size > 16_384) return null;
@@ -63,6 +84,22 @@ export class DaemonCommandError extends Error {
   constructor() {
     super('Browser action could not complete. Observe the page again before retrying.');
   }
+}
+
+function interceptedClick(command: Record<string, unknown>, error: unknown): boolean {
+  if (
+    command.action !== 'click' ||
+    typeof command.selector !== 'string' ||
+    typeof error !== 'string'
+  )
+    return false;
+  const prefix = `Element '${command.selector}' is covered by <`;
+  const suffix =
+    '> at its click point, so the input would land on that element instead. Dismiss or interact with the covering element first (it is often a dialog, banner, or sticky header).';
+  if (!error.startsWith(prefix) || !error.endsWith(suffix)) return false;
+  return /^[a-z][a-z0-9-]*(?:[#.][^<>\u0000-\u001f]{1,512}| inside [a-z][a-z0-9-]*#[^<>\u0000-\u001f]{1,512})?$/.test(
+    error.slice(prefix.length, -suffix.length),
+  );
 }
 
 export function existingDaemonCommand(
@@ -105,6 +142,8 @@ export function existingDaemonCommand(
       try {
         const response = JSON.parse(received.slice(0, end));
         if (response.success === false) {
+          if (interceptedClick(command, response.error))
+            return stop(new BrowserActionError('browser_click_intercepted'));
           if (
             command.action === 'navigate' &&
             typeof response.error === 'string' &&

@@ -75,6 +75,7 @@ export function createBrowserFixture(options: Options, preferRealSocket = false)
                       'snapshot',
                       ...(command.compact === true ? ['-c'] : []),
                       ...(command.interactive === true ? ['-i'] : []),
+                      ...(typeof command.selector === 'string' ? ['-s', command.selector] : []),
                     ]
                   : command.action === 'screenshot'
                     ? ['screenshot', String(command.path)]
@@ -82,11 +83,20 @@ export function createBrowserFixture(options: Options, preferRealSocket = false)
                       ? ['click', String(command.selector)]
                       : command.action === 'fill'
                         ? ['fill', String(command.selector), String(command.value)]
-                        : command.action === 'scroll'
-                          ? ['scroll', String(command.direction), String(command.amount)]
-                          : command.action === 'close'
-                            ? ['close']
-                            : null;
+                        : command.action === 'press'
+                          ? ['press', String(command.key)]
+                          : command.action === 'scroll'
+                            ? [
+                                'scroll',
+                                String(command.direction),
+                                String(command.amount),
+                                ...(typeof command.selector === 'string'
+                                  ? ['-s', command.selector]
+                                  : []),
+                              ]
+                            : command.action === 'close'
+                              ? ['close']
+                              : null;
       if (!args) throw new Error('Unsupported synthetic browser action.');
       const result = await run(session.executable, [...session.args, ...args], {
         ...session.options,

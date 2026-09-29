@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import filesystem, { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { createServer, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -336,6 +337,70 @@ test('an expired takeover refuses input and releases its idle hold without resum
   }
 });
 
+test('queued browser closes cannot persist a retired session after disposal', async (t) => {
+  const f = await fixture();
+  const closeStarted = deferred();
+  const closeAllowed = deferred();
+  const detachedWrite = deferred();
+  const writeAllowed = deferred();
+  const originalWrite = filesystem.writeFile;
+  const closing: Promise<void>[] = [];
+  let closedWrites = 0;
+  const write = t.mock.method(
+    filesystem,
+    'writeFile',
+    async (...args: Parameters<typeof writeFile>) => {
+      if (
+        typeof args[0] === 'string' &&
+        args[0].startsWith(join(f.directory, 'runtime/screen-fixture.json.')) &&
+        typeof args[1] === 'string' &&
+        JSON.parse(args[1]).active === false
+      ) {
+        closedWrites++;
+        if (closedWrites === 2) {
+          detachedWrite.resolve();
+          await writeAllowed.promise;
+        }
+      }
+      return originalWrite(...args);
+    },
+  );
+  syncBuiltinESMExports();
+  try {
+    await f.computer.takeControl!('fixture');
+    f.before(async (command) => {
+      if (command.action === 'close') {
+        closeStarted.resolve();
+        await closeAllowed.promise;
+      }
+    });
+    closing.push(f.computer.close('fixture'));
+    await closeStarted.promise;
+    closing.push(f.computer.close('fixture'));
+    closeAllowed.resolve();
+    await closing[0];
+    const outcome = await Promise.race([
+      closing[1].then(() => 'closed'),
+      detachedWrite.promise.then(() => 'detached write'),
+    ]);
+    writeAllowed.resolve();
+    await f.computer.dispose();
+    assert.equal(outcome, 'closed');
+    assert.equal(closedWrites, 1);
+    assert.equal(
+      JSON.parse(await readFile(join(f.directory, 'runtime/screen-fixture.json'), 'utf8')).active,
+      false,
+    );
+  } finally {
+    closeAllowed.resolve();
+    writeAllowed.resolve();
+    await Promise.allSettled(closing);
+    write.mock.restore();
+    syncBuiltinESMExports();
+    await f.cleanup();
+  }
+});
+
 test('a recovered browser resumes supported agent actions over its existing private socket', async () => {
   const f = await fixture();
   const restored = createAgentBrowserComputer({ dataRoot: f.directory, run: f.run });
@@ -349,13 +414,25 @@ test('a recovered browser resumes supported agent actions over its existing priv
       selector: '#ordinary-search',
       text: 'synthetic query',
     });
+    await restored.act('fixture', { action: 'press', key: 'Enter' });
     await restored.act('fixture', { action: 'scroll', direction: 'up' });
+    await restored.act('fixture', { action: 'scroll', direction: 'down', selector: '#inbox' });
+    const waiting = Date.now();
+    await restored.act('fixture', { action: 'snapshot', waitMs: 20 });
+    await restored.act('fixture', { action: 'snapshot', selector: 'body', offset: 100 });
+    assert.ok(Date.now() - waiting >= 15);
+    await assert.rejects(restored.act('fixture', { action: 'snapshot', waitMs: 15_001 }));
+    await assert.rejects(restored.act('fixture', { action: 'snapshot', offset: 100_001 }));
     assert.equal(
       f.actions.some((action) => action.action === 'click' && action.selector === '@e1'),
       true,
     );
     assert.equal(
       f.actions.some((action) => action.action === 'fill' && action.value === 'synthetic query'),
+      true,
+    );
+    assert.equal(
+      f.actions.some((action) => action.action === 'press' && action.key === 'Enter'),
       true,
     );
     assert.equal(
@@ -369,6 +446,14 @@ test('a recovered browser resumes supported agent actions over its existing priv
         (action) =>
           action.action === 'scroll' && action.amount === 600 && action.direction === 'up',
       ),
+      true,
+    );
+    assert.equal(
+      f.actions.some((action) => action.action === 'scroll' && action.selector === '#inbox'),
+      true,
+    );
+    assert.equal(
+      f.actions.some((action) => action.action === 'snapshot' && action.selector === 'body'),
       true,
     );
     assert.equal(

@@ -10,7 +10,12 @@ import { delta, refresh } from './events.ts';
 import { localArtifacts, type ArtifactService } from './artifacts.ts';
 import type { SpeechService } from './speech.ts';
 import type { Artifact, MessageReaction } from '../shared/contracts.ts';
-import type { RuntimeContext, RuntimeObservation, RuntimeResult } from '../ports/agent.ts';
+import type {
+  BrowserConnectionRequest,
+  RuntimeContext,
+  RuntimeObservation,
+  RuntimeResult,
+} from '../ports/agent.ts';
 import { conversationRevision, currentConversationSql, lockConversation } from './conversations.ts';
 import { isMessageReaction, reactionEmoji } from '../shared/emoji.ts';
 import { defaultPreferences } from './preferences.ts';
@@ -95,6 +100,11 @@ export interface TaskDependencies {
     service?: string,
     task?: { id: string; revision: number },
     proposal?: unknown,
+  ) => Promise<unknown>;
+  browserConnection?: (
+    request: BrowserConnectionRequest,
+    task: { id: string; revision: number },
+    signal: AbortSignal,
   ) => Promise<unknown>;
   reactToMessage?: (
     input: AgentReactionInput,
@@ -1251,6 +1261,18 @@ async function executeTask(taskId: string, revision: number, dependencies: TaskD
                 revision,
               },
               proposal,
+            );
+            await ensureCurrent();
+            return result;
+          }
+        : undefined,
+      browserConnection: dependencies.browserConnection
+        ? async (request) => {
+            await ensureCurrent();
+            const result = await dependencies.browserConnection!(
+              request,
+              { id: taskId, revision },
+              controller.signal,
             );
             await ensureCurrent();
             return result;

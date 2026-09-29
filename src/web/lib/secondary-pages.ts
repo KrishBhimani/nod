@@ -15,6 +15,9 @@ export function connectionGroups(connections: Connection[]) {
 }
 
 export function connectionIssue(connection: Connection) {
+  if (connection.browserState === 'disconnecting') return 'Removal needs retry';
+  if (connection.browserState === 'pending') return 'Finish sign-in';
+  if (connection.browserState === 'needs_sign_in') return 'Sign-in required';
   if (connection.status !== 'connected') return 'Sign-in required';
   return null;
 }

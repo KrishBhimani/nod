@@ -628,6 +628,12 @@ test('Composio adapter normalizes sessions without exposing SDK metadata and aut
     provider.verifyWebhook(body, { ...signed(), 'webhook-signature': 'v1,invalid' }),
   );
   await assert.rejects(
+    createComposioProvider({
+      client,
+      webhookSecret: 'different-fixture-signing-secret',
+    }).verifyWebhook(body, signed()),
+  );
+  await assert.rejects(
     provider.verifyWebhook(body, signed(String(Math.floor(Date.now() / 1000) - 600))),
   );
 });

@@ -25,8 +25,9 @@ async function fixture() {
   const actions: string[] = [];
   const launches: string[] = [];
   const sockets = new Set<Socket>();
-  let before = async (_action: string) => {};
+  let before = async (_action: string, _command: Record<string, unknown>) => {};
   let failedAction: string | undefined;
+  let failedMessage = 'Navigation failed: net::ERR_HTTP_RESPONSE_CODE_FAILURE PRIVATE-UPSTREAM';
   const server = createServer((socket) => {
     sockets.add(socket);
     socket.on('error', () => {});
@@ -38,12 +39,12 @@ async function fixture() {
       const command = JSON.parse(input);
       input = '';
       actions.push(command.action);
-      await before(command.action);
+      await before(command.action, command);
       if (command.action === failedAction) {
         socket.end(
           JSON.stringify({
             success: false,
-            error: 'Navigation failed: net::ERR_HTTP_RESPONSE_CODE_FAILURE PRIVATE-UPSTREAM',
+            error: failedMessage,
           }) + '\n',
         );
         return;
@@ -91,8 +92,9 @@ async function fixture() {
     computer,
     actions,
     launches,
-    fail(action?: string) {
+    fail(action?: string, message?: string) {
       failedAction = action;
+      if (message !== undefined) failedMessage = message;
     },
     before(value: typeof before) {
       before = value;
@@ -116,6 +118,61 @@ test('warm browser commands use one private socket request and reuse the launche
     assert.deepEqual(f.launches, ['open', 'info']);
     assert.equal(f.actions.filter((action) => action === 'navigate').length, 1);
     assert.equal(f.actions.filter((action) => action === 'screenshot').length, 1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+const interceptedMessage = (target: string, blocker = 'div#private-fixture-secret') =>
+  `Element '${target}' is covered by <${blocker}> at its click point, so the input would land on that element instead. Dismiss or interact with the covering element first (it is often a dialog, banner, or sticky header).`;
+
+test('only exact matching native click interception is classified as a safe refusal', async () => {
+  const f = await fixture();
+  try {
+    await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    for (const blocker of [
+      'div',
+      'div#private-fixture-secret',
+      'div inside div#private-fixture-secret',
+    ]) {
+      f.fail('click', interceptedMessage('@e1', blocker));
+      await assert.rejects(
+        f.computer.act('fixture', { action: 'click', selector: '@e1' }),
+        (error: unknown) => {
+          assert.ok(error instanceof BrowserActionError);
+          assert.equal(error.code, 'browser_click_intercepted');
+          assert.doesNotMatch(error.message, /private-fixture-secret|@e1/);
+          return true;
+        },
+      );
+    }
+    for (const message of [
+      interceptedMessage('@other'),
+      `Prefix ${interceptedMessage('@e1')}`,
+      `${interceptedMessage('@e1')} suffix`,
+      "Element '@e1' is covered by <div>",
+      'Private failure after mouse dispatch',
+    ]) {
+      f.fail('click', message);
+      await assert.rejects(
+        f.computer.act('fixture', { action: 'click', selector: '@e1' }),
+        (error: unknown) => error instanceof Error && !(error instanceof BrowserActionError),
+      );
+    }
+    f.fail('evaluate', interceptedMessage('@e1'));
+    await assert.rejects(
+      f.computer.act('fixture', { action: 'snapshot' }),
+      (error: unknown) => error instanceof Error && !(error instanceof BrowserActionError),
+    );
+    await assert.rejects(
+      f.computer.act('fixture', { action: 'click', selector: '@e1' }),
+      (error: unknown) => error instanceof Error && !(error instanceof BrowserActionError),
+    );
+    f.fail();
+    assert.match((await f.computer.act('fixture', { action: 'snapshot' })).text, /Sign in/);
+    assert.equal(f.actions.filter((action) => action === 'click').length, 9);
+    assert.equal(f.actions.includes('close'), false);
+    assert.deepEqual(f.launches, ['open', 'info']);
   } finally {
     await f.cleanup();
   }
@@ -182,6 +239,154 @@ test('a completed daemon error keeps the session available and navigation failur
     );
     assert.equal(f.actions.includes('close'), false);
   } finally {
+    await f.cleanup();
+  }
+});
+
+for (const failedClose of [false, true]) {
+  test(`interrupted credential feedback preserves the ${failedClose ? 'unconfirmed' : 'confirmed'} close fence without replay or cleanup commands`, async () => {
+    const f = await fixture();
+    const releaseFeedback = deferred();
+    try {
+      await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+      const login = await f.computer.inspectLogin('fixture');
+      let feedbackCalls = 0;
+      f.before(async (action, command) => {
+        if (
+          action === 'evaluate' &&
+          typeof command.script === 'string' &&
+          command.script.includes('mark=false;')
+        ) {
+          feedbackCalls++;
+          await releaseFeedback.promise;
+        }
+        if (action === 'close') {
+          releaseFeedback.resolve();
+          if (failedClose) f.fail('close');
+        }
+      });
+      await assert.rejects(
+        f.computer.injectCredentials({
+          taskId: 'fixture',
+          origin: login.origin,
+          kind: 'identifier',
+          username: 'private-credential-fixture@example.test',
+          usernameSelector: login.fields[0].selector,
+          submitSelector: login.submitSelector,
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.equal(
+            error.message,
+            'Secure entry could not be confirmed. Check the login page before continuing.',
+          );
+          return true;
+        },
+      );
+      assert.equal(feedbackCalls, 1);
+      const closed = f.actions.indexOf('close');
+      assert.notEqual(closed, -1);
+      assert.deepEqual(f.actions.slice(closed), ['close']);
+      await assert.rejects(f.computer.act('fixture', { action: 'snapshot' }), /expired/);
+      assert.deepEqual(f.actions.slice(closed), ['close']);
+      assert.deepEqual(f.launches, ['open', 'info']);
+    } finally {
+      releaseFeedback.resolve();
+      f.fail();
+      await f.cleanup();
+    }
+  });
+}
+
+test('completed credential feedback errors remain optional while the browser is healthy', async () => {
+  const f = await fixture();
+  try {
+    await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    const login = await f.computer.inspectLogin('fixture');
+    let feedbackCalls = 0;
+    f.before(async (action, command) => {
+      if (
+        action === 'evaluate' &&
+        typeof command.script === 'string' &&
+        command.script.includes('mark=false;')
+      ) {
+        feedbackCalls++;
+        f.fail('evaluate');
+      } else f.fail();
+    });
+    assert.deepEqual(
+      await f.computer.injectCredentials({
+        taskId: 'fixture',
+        origin: login.origin,
+        kind: 'identifier',
+        username: 'private-credential-fixture@example.test',
+        usernameSelector: login.fields[0].selector,
+        submitSelector: login.submitSelector,
+      }),
+      { status: 'submitted' },
+    );
+    assert.ok(feedbackCalls > 1);
+    assert.equal(f.actions.includes('close'), false);
+    const observation = await f.computer.act('fixture', { action: 'snapshot' });
+    assert.match(observation.text, /Sign in password/);
+    assert.equal(observation.text.includes('private-credential-fixture@example.test'), false);
+    assert.deepEqual(f.launches, ['open', 'info']);
+  } finally {
+    f.fail();
+    await f.cleanup();
+  }
+});
+
+test('closing during successful credential feedback cannot report submission or clear credentials', async () => {
+  const f = await fixture();
+  const feedbackStarted = deferred();
+  const releaseFeedback = deferred();
+  try {
+    await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    const login = await f.computer.inspectLogin('fixture');
+    let feedbackIndex = -1;
+    let clearingCommands = 0;
+    f.before(async (action, command) => {
+      if (
+        action === 'evaluate' &&
+        typeof command.script === 'string' &&
+        command.script.includes("e.value=''")
+      )
+        clearingCommands++;
+      if (
+        action === 'evaluate' &&
+        typeof command.script === 'string' &&
+        command.script.includes('mark=false;')
+      ) {
+        feedbackIndex = f.actions.length - 1;
+        feedbackStarted.resolve();
+        await releaseFeedback.promise;
+      }
+    });
+    const rejected = assert.rejects(
+      f.computer.injectCredentials({
+        taskId: 'fixture',
+        origin: login.origin,
+        kind: 'identifier',
+        username: 'private-credential-fixture@example.test',
+        usernameSelector: login.fields[0].selector,
+        submitSelector: login.submitSelector,
+      }),
+      /Secure entry could not be confirmed/,
+    );
+    await feedbackStarted.promise;
+    const closed = f.computer.close('fixture');
+    releaseFeedback.resolve();
+    await Promise.all([rejected, closed]);
+    assert.notEqual(feedbackIndex, -1);
+    assert.equal(clearingCommands, 0);
+    assert.equal(f.actions.filter((action) => action === 'close').length, 1);
+    assert.equal(f.actions.at(-1), 'close');
+    const completedActions = f.actions.length;
+    await assert.rejects(f.computer.act('fixture', { action: 'snapshot' }), /Open a website first/);
+    assert.equal(f.actions.length, completedActions);
+  } finally {
+    releaseFeedback.resolve();
     await f.cleanup();
   }
 });

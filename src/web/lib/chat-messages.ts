@@ -43,12 +43,7 @@ export function collapseScreenshotMessages(messages: Message[]) {
       !message.replyToMessageId &&
       !message.replyTo;
     const previous = result.at(-1);
-    if (
-      isScreenshot &&
-      previousWasScreenshot &&
-      previous?.taskId === message.taskId &&
-      messagesAreGrouped(previous, message)
-    ) {
+    if (isScreenshot && previousWasScreenshot && previous?.taskId === message.taskId) {
       const attachments = [...previous.attachments, artifact];
       result[result.length - 1] = {
         ...previous,

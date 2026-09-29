@@ -1899,6 +1899,8 @@ export async function createVault(pool: Pool, options: VaultOptions) {
 
   return {
     registerRoutes,
+    saveLogin: (input: { origin: string; label: string; username: string; password: string }) =>
+      save(owner, input),
     request,
     list,
     removeLogin,

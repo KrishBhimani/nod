@@ -160,6 +160,8 @@ export function createBridgeComputer(options: {
         if (response.ok) return resolve(response.result);
         if (response.error === 'navigation')
           return reject(new BrowserActionError('browser_navigation_failed'));
+        if (response.error === 'click_intercepted')
+          return reject(new BrowserActionError('browser_click_intercepted'));
         if (response.error === 'locked') {
           const error = new Error('Browser observations are paused during credential entry.');
           return reject(Object.assign(error, { statusCode: 423 }));
@@ -202,6 +204,13 @@ export function createBridgeComputer(options: {
       return result;
     },
     currentSession: () => currentSession,
+    bindProfile: async (id, profileId, allowedOrigin) => {
+      await call({ method: 'bindProfile', taskId: taskId(id), profileId, allowedOrigin });
+      screens.delete(taskId(id));
+    },
+    deleteProfile: async (profileId) => {
+      await call({ method: 'deleteProfile', profileId });
+    },
     screenStatus: (id) => screens.get(taskId(id))?.value ?? { state: 'unavailable' },
     status: () => (uncertain ? 'Workspace browser needs a restart.' : status),
     act: async (id, input, signal) =>
@@ -210,7 +219,7 @@ export function createBridgeComputer(options: {
           text: z.string().max(256 * 1024),
           url: z.string().max(8192),
           candidates: z
-            .array(z.object({ id: z.string().max(128), label: z.string().max(350) }).strict())
+            .array(z.object({ id: z.string().max(500), label: z.string().max(350) }).strict())
             .max(100),
         })
         .strict()

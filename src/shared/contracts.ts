@@ -29,6 +29,7 @@ export interface Message {
   reactions?: Array<{ actor: 'user' | 'assistant'; reaction: MessageReaction }>;
   replyToMessageId?: string | null;
   replyTo?: { id: string; role: 'user' | 'assistant'; text: string } | null;
+  task?: Task;
 }
 export interface SubmitMessageResponse {
   taskId: string;
@@ -145,6 +146,9 @@ export interface Connection {
   description?: string;
   supportsTriggers?: boolean;
   accessPaths?: Array<{ id: string; kind: 'http' | 'mcp' | 'browser' | 'cli'; endpoint: string }>;
+  browserState?: 'pending' | 'saved' | 'needs_sign_in' | 'disconnecting';
+  checkedAt?: string;
+  browserUrl?: string;
 }
 export interface Configuration {
   provider: string;

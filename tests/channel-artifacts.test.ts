@@ -182,6 +182,11 @@ test(
       assert.equal((await state(reply)).state, 'sent');
       await channels.drain();
       assert.equal(sent.length, 2);
+      const repeated = await addReply(taskId, [image, image]);
+      await channels.drain();
+      assert.equal((await state(repeated)).state, 'sent');
+      assert.equal(sent.length, 3);
+      assert.equal(sent[2].name, 'screenshot.png');
 
       failDocument = true;
       const uncertain = await addReply(taskId, [image, document]);

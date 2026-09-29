@@ -498,7 +498,7 @@ export function Chat({
                   message={message}
                   task={
                     message.taskId && finalAssistantMessages.get(message.taskId) === message.id
-                      ? state.tasks.find((task) => task.id === message.taskId)
+                      ? (state.tasks.find((task) => task.id === message.taskId) ?? message.task)
                       : undefined
                   }
                   taskStartedAt={

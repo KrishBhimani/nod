@@ -6,6 +6,9 @@ import { safeMessageLink } from '../lib/message-links';
 
 type Sheet = { name: string; rows: string[][]; header: boolean };
 type Content = { kind: 'markdown'; text: string } | { kind: 'spreadsheet'; sheets: Sheet[] };
+const previewRows = 202;
+const previewColumns = 100;
+const previewCellLength = 10_000;
 
 function SpreadsheetCell({ value }: { value: string }) {
   const parts = value.split(/[;\n]\s*(?=https?:\/\/)/i);
@@ -48,26 +51,33 @@ function parseCsv(text: string): string[][] {
   let row: string[] = [];
   let cell = '';
   let quoted = false;
+  let cellStarted = false;
   for (let index = 0; index < text.length; index += 1) {
     const char = text[index];
     if (char === '"') {
+      cellStarted = true;
       if (quoted && text[index + 1] === '"') {
-        cell += '"';
+        if (cell.length < previewCellLength) cell += '"';
         index += 1;
       } else if (!cell || quoted) quoted = !quoted;
-      else cell += char;
+      else if (cell.length < previewCellLength) cell += char;
     } else if (!quoted && (char === ',' || char === '\n' || char === '\r')) {
-      row.push(cell);
+      if (row.length < previewColumns) row.push(cell);
       cell = '';
+      cellStarted = false;
       if (char !== ',') {
         rows.push(row);
+        if (rows.length >= previewRows) return rows;
         row = [];
         if (char === '\r' && text[index + 1] === '\n') index += 1;
       }
-    } else cell += char;
+    } else {
+      cellStarted = true;
+      if (cell.length < previewCellLength) cell += char;
+    }
   }
   if (quoted) throw new Error('Invalid CSV');
-  if (row.length || cell) rows.push([...row, cell]);
+  if (row.length || cellStarted) rows.push([...row, cell].slice(0, previewColumns));
   return rows;
 }
 
@@ -177,7 +187,11 @@ export default function AttachmentData({
           };
         else {
           const { read, utils } = await import('@e965/xlsx');
-          const workbook = read(await blob.arrayBuffer(), { type: 'array', cellText: true });
+          const workbook = read(await blob.arrayBuffer(), {
+            type: 'array',
+            cellText: true,
+            sheetRows: previewRows,
+          });
           next = {
             kind: 'spreadsheet',
             sheets: workbook.SheetNames.map((name) => ({
@@ -189,8 +203,15 @@ export default function AttachmentData({
                   raw: false,
                   defval: '',
                   blankrows: true,
+                  range: 'A1:CV202',
                 }) as unknown[][]
-              ).map((row) => row.map((cell) => String(cell ?? ''))),
+              )
+                .slice(0, previewRows)
+                .map((row) =>
+                  row
+                    .slice(0, previewColumns)
+                    .map((cell) => String(cell ?? '').slice(0, previewCellLength)),
+                ),
             })),
           };
         }

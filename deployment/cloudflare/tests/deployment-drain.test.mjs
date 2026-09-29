@@ -556,6 +556,23 @@ test('existing deployment requires signed drain and all four exact image rollout
   assert.equal(f.applicationReads(), 20);
 });
 
+test('ordinary deployment refuses the already running release without opening a control operation', async () => {
+  const f = fixture({ published: true });
+  await assert.rejects(f.client.prepare(), {
+    message: 'Deployment safety checks did not pass; admission remains unchanged or closed.',
+  });
+  await assert.rejects(f.client.activate());
+  await assert.rejects(f.client.complete());
+  await assert.rejects(f.client.abort());
+  assert.deepEqual(f.controls, []);
+  assert.deepEqual(
+    f.requests.map(({ url }) => url.pathname),
+    [`/client/v4/accounts/${'c'.repeat(32)}/workers/scripts/otto/settings`, '/api/health'],
+  );
+  assert.equal(f.registryReads(), 0);
+  assert.equal(f.applicationReads(), 0);
+});
+
 test('initial deployment requires confirmed absent Worker, absent applications and empty database registry', async () => {
   const f = fixture({ missing: true });
   await f.client.prepare();
@@ -695,6 +712,26 @@ test('recovery retains the exact interrupted deployment identity and re-verifies
   );
   assert.equal(f.controls[1].nonce, original.nonce);
   assert.equal(f.controls[1].deadline, original.deadline);
+});
+
+test('explicit recovery preserves existing same-release operations for completion and abort', async () => {
+  for (const action of ['complete', 'abort']) {
+    const original = interrupted(action === 'complete' ? 'activating' : 'failed', {
+      previousRelease: 'b'.repeat(40),
+    });
+    const f = fixture({ control: original, published: true });
+    const status = await f.client.recover();
+    assert.equal(status.previousRelease, status.targetRelease);
+    if (action === 'complete') await f.client.verifyRollouts();
+    await f.client[action]();
+    assert.deepEqual(
+      f.controls.map((input) => input.action),
+      ['status', action],
+    );
+    const { action: _action, ...identity } = f.controls[1];
+    const { phase: _phase, receipts: _receipts, ...expected } = original;
+    assert.deepEqual(identity, expected);
+  }
 });
 
 test('recovery keeps admission closed until every present target has a known matching image', async () => {

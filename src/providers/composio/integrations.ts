@@ -121,10 +121,29 @@ function identityFields(
 export function createComposioProvider(options: {
   apiKey?: string;
   webhookSecret?: string;
+  webhookUrl?: string;
   authConfigs?: Partial<Record<IntegrationService, string>>;
   client?: Composio;
   fileDownload?: Parameters<typeof createIntegrationFileDownloader>[0];
 }): IntegrationProvider {
+  let webhookUrl: string | undefined;
+  if (options.webhookUrl !== undefined) {
+    try {
+      const url = new URL(options.webhookUrl);
+      if (
+        url.protocol !== 'https:' ||
+        url.pathname !== '/api/webhooks/composio' ||
+        url.username ||
+        url.password ||
+        url.search ||
+        url.hash
+      )
+        throw new Error();
+      webhookUrl = url.href;
+    } catch {
+      throw new Error('The Composio webhook URL is invalid.');
+    }
+  }
   const downloadFile = createIntegrationFileDownloader(options.fileDownload);
   const identities = new Map<string, AccountIdentity>();
   const pendingIdentities = new Map<string, Promise<AccountIdentity>>();
@@ -440,6 +459,17 @@ export function createComposioProvider(options: {
       if (!(service in subscriptions))
         throw new Error('Automatic updates are unavailable for this service.');
       const subscription = subscriptions[service as keyof typeof subscriptions];
+      if (webhookUrl) {
+        const sdk = required();
+        const result = await sdk.getClient().triggerInstances.upsert(subscription.trigger, {
+          connected_account_id: accountId,
+          trigger_config: subscription.config,
+          toolkit_versions: sdk.getConfig().toolkitVersions,
+          user_id: ownerId,
+          egress_url: webhookUrl,
+        });
+        return { id: result.trigger_id };
+      }
       const result = await required().triggers.create(ownerId, subscription.trigger, {
         connectedAccountId: accountId,
         triggerConfig: subscription.config,

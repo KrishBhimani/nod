@@ -20,6 +20,7 @@ services:
       context: .
       dockerfile: Dockerfile.browser
     container_name: otto-browser
+    hostname: otto-browser
     init: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]

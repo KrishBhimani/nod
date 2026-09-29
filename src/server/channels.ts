@@ -442,17 +442,18 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
             .min(1)
             .max(10)
             .parse(row.attachments);
+          const unique = [...new Map(requested.map((item) => [item.id, item])).values()];
           if (!options.resolveAttachments || !row.task_id)
             throw new Error('Attachment delivery is unavailable.');
           const resolved = await options.resolveAttachments(
             row.task_id,
-            requested.map(({ id }) => id),
+            unique.map(({ id }) => id),
           );
-          if (resolved.length !== requested.length)
+          if (resolved.length !== unique.length)
             throw new Error('Attachment delivery is unavailable.');
           if (canDeliverAttachments) attachments = resolved;
           else if (appOrigin)
-            privateLinks = requested.map(({ id }, index) => ({
+            privateLinks = unique.map(({ id }, index) => ({
               name: resolved[index].name,
               url: `${appOrigin}/api/artifacts/${id}`,
             }));

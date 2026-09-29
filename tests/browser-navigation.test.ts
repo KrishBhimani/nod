@@ -12,13 +12,21 @@ test('a browser observation waits for a page that first renders with no text', a
   const browser = stagedLoginBrowser();
   const page = new LoginPage();
   const text = page.text.bind(page);
-  const readyAt = Date.now() + 300;
-  page.text = () => (Date.now() < readyAt ? '' : text());
+  const readyAt = Date.now() + 1_000;
+  let emptyReads = 0;
+  page.text = () => {
+    if (Date.now() < readyAt) {
+      emptyReads++;
+      return '';
+    }
+    return text();
+  };
   browser.pages.set('fixture', page);
   const computer = createAgentBrowserComputer({ dataRoot: directory, run: browser.run });
   try {
     const result = await computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
     assert.match(result.text, /Sign in/);
+    assert.ok(emptyReads > 0);
   } finally {
     await computer.dispose();
     await rm(directory, { recursive: true, force: true });
@@ -53,7 +61,7 @@ test('a timed-out open uses the requested page when its text is ready', async ()
     }
     if (command[0] === 'get') data = { url: currentUrl };
     if (command[0] === 'eval')
-      data = options?.input?.includes('document.body?.innerText')
+      data = options?.input?.includes('const text = String(root.innerText')
         ? { result: { text: currentUrl.endsWith('/blank') ? '' : 'Page content is ready' } }
         : { result: { masked: true, values: [], inputValues: [] } };
     if (command[0] === 'snapshot') data = { snapshot: '- heading "Page content is ready"' };
@@ -68,10 +76,12 @@ test('a timed-out open uses the requested page when its text is ready', async ()
       browser.act('slow', { action: 'open', url: 'https://1.1.1.1/missing' }),
       /could not complete/,
     );
+    assert.match((await browser.act('slow', { action: 'snapshot' })).text, /website did not load/);
     await assert.rejects(
       browser.act('slow', { action: 'open', url: 'https://1.1.1.1/blank' }),
       /could not complete/,
     );
+    assert.match((await browser.act('slow', { action: 'snapshot' })).text, /website did not load/);
   } finally {
     await browser.dispose();
     await rm(directory, { recursive: true, force: true });

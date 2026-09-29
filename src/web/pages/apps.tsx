@@ -17,6 +17,8 @@ import {
   DialogContent,
   DialogDescription,
   DialogTitle,
+  Field,
+  Input,
   Loading,
   Notice,
 } from '../components/ui';
@@ -63,10 +65,12 @@ export function ConnectedAccount({
   account,
   busy,
   onDisconnect,
+  onReconnect,
 }: {
   account: Connection;
   busy: boolean;
   onDisconnect(trigger: HTMLButtonElement): void;
+  onReconnect?(): void;
 }) {
   const issue = connectionIssue(account);
   const label = accountLabel(account);
@@ -85,6 +89,12 @@ export function ConnectedAccount({
             {issue}
           </p>
         )}
+        {(account.browserState === 'needs_sign_in' || account.browserState === 'pending') &&
+          onReconnect && (
+            <Button variant="ghost" size="sm" disabled={busy} onClick={onReconnect}>
+              {account.browserState === 'pending' ? 'Continue sign-in' : 'Reconnect'}
+            </Button>
+          )}
       </div>
       <Button
         variant="ghost"
@@ -115,6 +125,13 @@ export function Apps() {
   const [manageService, setManageService] = useState<string | null>(null);
   const [disconnectAccount, setDisconnectAccount] = useState<Connection | null>(null);
   const [disconnectError, setDisconnectError] = useState('');
+  const [websiteOpen, setWebsiteOpen] = useState(false);
+  const [websiteUrl, setWebsiteUrl] = useState('');
+  const [websiteLabel, setWebsiteLabel] = useState('');
+  const [websiteConnectionId, setWebsiteConnectionId] = useState<string>();
+  const [websiteError, setWebsiteError] = useState('');
+  const [websiteBusy, setWebsiteBusy] = useState(false);
+  const [websiteSeconds, setWebsiteSeconds] = useState(0);
   const discoveryId = new URLSearchParams(window.location.search).get('connect');
   const [discovery, setDiscovery] = useState<{
     name: string;
@@ -144,6 +161,18 @@ export function Apps() {
   const connected = groups.filter((group) => group.accounts.length);
   const available = groups.filter((group) => !group.accounts.length);
   useEffect(() => () => actionRequest.current?.abort(), []);
+  useEffect(() => {
+    if (!websiteBusy) {
+      setWebsiteSeconds(0);
+      return;
+    }
+    const started = Date.now();
+    const timer = window.setInterval(
+      () => setWebsiteSeconds(Math.floor((Date.now() - started) / 1000)),
+      1000,
+    );
+    return () => window.clearInterval(timer);
+  }, [websiteBusy]);
   useEffect(() => {
     if (!discoveryId) return;
     const request = new AbortController();
@@ -218,9 +247,22 @@ export function Apps() {
       setSavingDiscovery(false);
     }
   }
-  async function connect(connection: Connection) {
+  async function connect(connection: Connection, addAccount = false) {
     if (actionRequest.current || busy) return;
     if (connection.accessPaths?.some((path) => path.kind === 'browser')) {
+      if (connection.browserState) {
+        setWebsiteUrl(
+          connection.browserUrl ??
+            connection.accessPaths.find((path) => path.kind === 'browser')?.endpoint ??
+            '',
+        );
+        setWebsiteLabel('');
+        setWebsiteConnectionId(addAccount ? undefined : connection.connectionId);
+        setWebsiteError('');
+        setManageService(null);
+        setWebsiteOpen(true);
+        return;
+      }
       window.location.assign('/vault');
       return;
     }
@@ -339,6 +381,18 @@ export function Apps() {
           <PageTitle path="/apps" />
           <p>Your tools, connected to Otto.</p>
         </div>
+        <Button
+          variant="outline"
+          onClick={() => {
+            setWebsiteUrl('');
+            setWebsiteLabel('');
+            setWebsiteConnectionId(undefined);
+            setWebsiteError('');
+            setWebsiteOpen(true);
+          }}
+        >
+          Connect website
+        </Button>
       </header>
       {(error || loadError) && <Notice>{error || loadError}</Notice>}
       {!connections ? (
@@ -404,6 +458,7 @@ export function Apps() {
                   setDisconnectError('');
                   setDisconnectAccount(account);
                 }}
+                onReconnect={() => void connect(account)}
               />
             ))}
           </div>
@@ -411,13 +466,83 @@ export function Apps() {
             data-add-account
             variant="outline"
             disabled={Boolean(busy)}
-            onClick={() => managed && void connect(managed.accounts[0])}
+            onClick={() => managed && void connect(managed.accounts[0], true)}
           >
             {busy === `connect:${manageService}` ? (
               <LoaderCircle size={15} className="spin" aria-hidden="true" />
             ) : null}
             Add account
           </Button>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={websiteOpen} onOpenChange={(open) => !websiteBusy && setWebsiteOpen(open)}>
+        <DialogContent className="app-website-dialog">
+          <DialogTitle>Connect a website</DialogTitle>
+          <DialogDescription>
+            Otto will open the site in a private browser. Sign in once, then use the saved session
+            in later tasks.
+          </DialogDescription>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (websiteBusy) return;
+              setWebsiteBusy(true);
+              setWebsiteError('');
+              void api<{ url: string }>('/api/browser-connections', {
+                method: 'POST',
+                body: JSON.stringify({
+                  url: websiteUrl,
+                  ...(websiteLabel.trim() ? { label: websiteLabel.trim() } : {}),
+                  ...(websiteConnectionId ? { connectionId: websiteConnectionId } : {}),
+                }),
+              })
+                .then((result) => window.location.assign(result.url))
+                .catch((cause) => {
+                  setWebsiteError(errorMessage(cause));
+                  setWebsiteBusy(false);
+                });
+            }}
+          >
+            <Field label="Website address">
+              <Input
+                type="url"
+                value={websiteUrl}
+                onChange={(event) => setWebsiteUrl(event.target.value)}
+                placeholder="https://example.com/account"
+                autoFocus
+                required
+                disabled={websiteBusy}
+              />
+            </Field>
+            <Field label="Account name">
+              <Input
+                value={websiteLabel}
+                onChange={(event) => setWebsiteLabel(event.target.value)}
+                placeholder="Optional"
+                maxLength={100}
+                disabled={websiteBusy}
+              />
+            </Field>
+            {websiteBusy && (
+              <div className="app-website-progress">
+                <LoaderCircle size={17} className="spin" aria-hidden="true" />
+                <div>
+                  <div role="status" aria-live="polite">
+                    <strong>Opening the site and checking sign-in</strong>
+                    <p>
+                      The secure sign-in page will open when Otto is ready. The site may ask for a
+                      code after you enter your details.
+                    </p>
+                  </div>
+                  {websiteSeconds >= 10 && <small>Still working · {websiteSeconds}s</small>}
+                </div>
+              </div>
+            )}
+            {websiteError && <Notice>{websiteError}</Notice>}
+            <Button type="submit" disabled={websiteBusy}>
+              {websiteBusy ? 'Opening…' : 'Open secure sign-in'}
+            </Button>
+          </form>
         </DialogContent>
       </Dialog>
       <Dialog

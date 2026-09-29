@@ -841,6 +841,20 @@ test('background page reports reject no-change claims for failed browser pages',
         synonym.content[0].type === 'text' ? synonym.content[0].text : '',
         /needs_revision/,
       );
+      const baseline = await call(tools, 'send_message', {
+        text: 'Example: same as the baseline.\nhttps://example.com/pricing',
+      });
+      assert.match(
+        baseline.content[0].type === 'text' ? baseline.content[0].text : '',
+        /needs_revision/,
+      );
+      const multiline = await call(tools, 'send_message', {
+        text: 'Example: no change.\nhttps://example.com/pricing',
+      });
+      assert.match(
+        multiline.content[0].type === 'text' ? multiline.content[0].text : '',
+        /needs_revision/,
+      );
       await call(tools, 'send_message', {
         text: 'Example: https://example.com/pricing is unverified. Its current price is unknown.',
       });
@@ -868,6 +882,35 @@ test('background page reports reject no-change claims for failed browser pages',
     'Example: https://example.com/pricing is unverified. Its current price is unknown.',
     'Example: no change on https://example.com/pricing after a fresh page check.',
   ]);
+});
+
+test('failed page checks keep query variants separate', async () => {
+  const result = await fixture(
+    async (tools) => {
+      await assert.rejects(
+        call(tools, 'browser', { action: 'open', url: 'https://example.com/pricing?plan=one' }),
+      );
+      await call(tools, 'send_message', {
+        text: 'No change on https://example.com/pricing?plan=two',
+      });
+      const blocked = await call(tools, 'send_message', {
+        text: 'No change on https://example.com/pricing?plan=one',
+      });
+      assert.match(
+        blocked.content[0].type === 'text' ? blocked.content[0].text : '',
+        /needs_revision/,
+      );
+    },
+    { background: true },
+    {
+      computer: fakeComputer({
+        act: async () => {
+          throw new Error('Page load failed.');
+        },
+      }),
+    },
+  );
+  assert.deepEqual(result.replies, ['No change on https://example.com/pricing?plan=two']);
 });
 
 test('normal user tasks still stream and deliver automatic final replies', async () => {
@@ -2230,6 +2273,41 @@ test('screenshot publishing waits for visible cookie consent to clear', async ()
     },
   );
   assert.equal(published, 2);
+});
+
+test('screenshot publishing requires a successful consent check and detects visible choices', async () => {
+  let published = 0;
+  let snapshots = 0;
+  await fixture(
+    async (tools) => {
+      await assert.rejects(call(tools, 'send_screenshot', {}), /cookie consent dialog/);
+      await assert.rejects(call(tools, 'send_screenshot', {}), /could not be completed/);
+    },
+    {
+      publishScreenshot: async () => {
+        published++;
+        throw new Error('Unexpected publication.');
+      },
+    },
+    {
+      computer: fakeComputer({
+        act: async () => {
+          snapshots++;
+          if (snapshots === 2) throw new Error('Consent check failed.');
+          return {
+            text: 'We use cookies to improve this site.',
+            url: 'https://example.com',
+            candidates: [
+              { id: '@accept', label: 'Accept all cookies' },
+              { id: '@reject', label: 'Reject optional cookies' },
+            ],
+          };
+        },
+        screenshot: async () => Buffer.from('image'),
+      }),
+    },
+  );
+  assert.equal(published, 0);
 });
 
 test('screenshot publishing cannot bypass secure-entry locks, unavailable screens or cancellation', async () => {

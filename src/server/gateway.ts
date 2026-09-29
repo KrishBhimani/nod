@@ -314,7 +314,9 @@ export async function createGateway(options: {
     const developer = options.developerIds?.has(session.user.id) ?? false;
     if (
       !developer &&
-      (url.pathname.startsWith('/api/inspector') || url.pathname.startsWith('/api/browser'))
+      (url.pathname.startsWith('/api/inspector') ||
+        url.pathname === '/api/browser' ||
+        url.pathname.startsWith('/api/browser/'))
     )
       return reply.code(404).send({ error: 'Route not found.' });
     const headers = new Headers();

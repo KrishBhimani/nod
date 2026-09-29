@@ -254,6 +254,7 @@ export function createProviderUsageStore(
   }
   async function taskCosts(taskIds: string[]): Promise<Record<string, number | null>> {
     if (!taskIds.length) return {};
+    await Promise.all([...pending]);
     const result = await pool.query(
       `SELECT task_id AS id,sum(cost_usd)::float8 AS cost
        FROM provider_usage WHERE owner_id=$1 AND task_id=ANY($2::uuid[])

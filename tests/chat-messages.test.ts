@@ -92,6 +92,8 @@ test('adjacent screenshots from one task appear as one gallery', () => {
   assert.equal(result[1].id, 'answer');
   assert.equal(result[2].id, 'three');
   assert.equal(first.attachments.length, 1);
+  const nextDay = { ...image('two'), createdAt: '2026-09-26T12:00:00Z' };
+  assert.equal(collapseScreenshotMessages([first, nextDay])[0].attachments.length, 2);
 });
 
 function click(element: Element) {
