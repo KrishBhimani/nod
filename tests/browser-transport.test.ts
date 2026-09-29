@@ -270,6 +270,34 @@ test('a new tab is followed only after its address is stable', async () => {
   }
 });
 
+test('a new tab that closes during the switch returns to the opener', async () => {
+  const f = await fixture();
+  try {
+    await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    let lists = 0;
+    let closed = false;
+    f.tabs((url) =>
+      ++lists === 1 || closed
+        ? [{ tabId: 't1', active: !closed, url }]
+        : [
+            { tabId: 't1', active: true, url },
+            { tabId: 't2', active: false, url: 'https://1.1.1.1/other' },
+          ],
+    );
+    f.before(async (action, command) => {
+      if (action === 'tab_switch' && command.tabId === 't2') {
+        closed = true;
+        f.fail('tab_switch', 'Tab closed');
+      } else if (action === 'tab_switch') f.fail();
+    });
+    const observed = await f.computer.act('fixture', { action: 'click', selector: '@e1' });
+    assert.equal(observed.url, 'https://1.1.1.1/login');
+    assert.deepEqual(f.switches, ['t1']);
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test('a new tab that stays blank is ignored after the bounded wait', async (t) => {
   const f = await fixture();
   try {

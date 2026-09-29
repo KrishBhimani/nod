@@ -519,9 +519,15 @@ export function createAgentBrowserComputer(options: {
               ? opener
               : undefined;
       if (target) {
-        if (tabs.some((tab) => tab.tabId === target && !tab.active))
+        if (!tabs.some((tab) => tab.tabId === target && !tab.active)) return;
+        try {
           await command(state, ['tab', 'switch', target], { signal });
-        return;
+          return;
+        } catch (error) {
+          if (target === opener || !(error instanceof DaemonCommandError)) throw error;
+          known.add(target);
+          continue;
+        }
       }
       if (expired) return;
       candidate = loading ? undefined : settled;

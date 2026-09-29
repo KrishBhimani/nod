@@ -66,8 +66,9 @@ export function createBrowserFixture(options: Options, preferRealSocket = false)
           ...session.options,
           signal,
         });
-        const url = String(JSON.parse(result.stdout).data?.url ?? '');
-        return { tabs: [{ tabId: 't1', active: true, url }] };
+        const response = JSON.parse(result.stdout);
+        if (result.exitCode || response.success === false) throw new DaemonCommandError();
+        return { tabs: [{ tabId: 't1', active: true, url: String(response.data?.url ?? '') }] };
       }
       const args =
         command.action === 'navigate'
