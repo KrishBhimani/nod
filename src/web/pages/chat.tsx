@@ -289,8 +289,7 @@ export function Chat({
     const sentThread = threadId;
     const reply = replyTo;
     const verificationRequests = (state.verificationRequests ?? []).filter(
-      (request) =>
-        Date.parse(request.expiresAt) > Date.now() && (!reply || request.turnId === reply.turnId),
+      (request) => !reply || request.turnId === reply.turnId,
     );
     let privateVerification =
       classifyVerificationReply(value).kind !== 'ordinary' && verificationRequests.length > 0;
