@@ -61,7 +61,7 @@ test('local links consume private suffixes and do not nest inside formatted link
     '/vault/request?token=hidden#secret. Next [**/vault/label**](https://example.com/article) and /approvals/retired.',
   );
   assert.match(result, /href="\/vault\/request"/);
-  assert.doesNotMatch(result, /token=hidden|#secret|href="\/vault\/label"|href="\/approvals/);
+  assert.doesNotMatch(result, /(?<!aria-)hidden|#secret|href="\/vault\/label"|href="\/approvals/);
   assert.equal((result.match(/<a /g) ?? []).length, 2);
   assert.match(result, /Next/);
   assert.match(result, /\/approvals\/retired/);

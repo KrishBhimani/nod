@@ -16,7 +16,7 @@ export function vaultInvitation(step: CredentialInvitation, url?: string) {
   if (step.savedLoginAvailable === false)
     return `${site} needs you to sign in. There isn’t a login saved for this website in Vault. [Add login](${url}) and I will continue the task.`;
   if (step.savedLoginAvailable === true)
-    return `${site} needs you to sign in. [Continue sign-in](${url}) with your saved login, then I will finish the task.`;
+    return `${site} needs you to sign in. [Continue sign-in](${url}) with your saved login and I will continue the task.`;
   return `${site} needs you to sign in. [Enter login details](${url}) and I will continue the task.`;
 }
 

@@ -91,9 +91,11 @@ export function safeMessageLink(value: string, origin: string): SafeLink | null 
 
 export function messageSetupLinks(text: string, origin: string) {
   const actions = new Map<string, { href: string; setup: SetupKind; label: string }>();
-  for (const match of text.matchAll(
-    /\[([^\]\n]+)\]\(([^()\s]+)\)|(?<![\w/:])\/(?:vault|credentials)\/[A-Za-z0-9_-]+(?:[?#][^\s<>"'\[\]()]+)?/g,
-  )) {
+  for (const match of text
+    .replace(/```[\s\S]*?(?:```|$)|`[^`\n]*`/g, '')
+    .matchAll(
+      /\[([^\]\n]+)\]\(([^()\s]+)\)|(?<![\w/:])\/(?:vault|credentials)\/[A-Za-z0-9_-]+(?:[?#][^\s<>"'\[\]()]+)?/g,
+    )) {
     const link = safeMessageLink(match[2] ?? match[0].replace(/[.,;:!?]+$/, ''), origin);
     const setup = link && setupLink(link, match[1] ?? '');
     if (setup && !actions.has(setup.href)) actions.set(setup.href, setup);

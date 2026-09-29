@@ -163,6 +163,14 @@ test('setup actions are listed once per destination', () => {
   );
 });
 
+test('setup links inside code stay code', () => {
+  assert.deepEqual(
+    messageSetupLinks('Use `[Add login](/vault/one)` or\n\n```\n/credentials/two\n```\n', origin),
+    [],
+  );
+  assert.doesNotMatch(render('`[Add login](/vault/one)`'), /setup-group/);
+});
+
 test('plain Vault request paths use the canonical label', () => {
   const result = render('See /vault/private-link?token=hidden#fragment.');
   assert.match(result, /See <strong class="setup-phrase">Vault<\/strong>\./);
