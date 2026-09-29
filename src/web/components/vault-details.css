@@ -1,55 +1,19 @@
 .vault-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 38px;
   margin-bottom: 12px;
-  padding: 0 12px;
-  border-radius: 10px;
-  background: var(--surface-inset);
-  color: var(--muted-foreground);
-}
-.vault-search:focus-within {
-  outline: 2px solid var(--focus-shadow);
-  box-shadow: inset 0 0 0 1px var(--ring);
-}
-.vault-search input {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  background: none;
-  color: var(--foreground);
-  font: inherit;
-  font-size: 14px;
-  outline: none;
-}
-.vault-search input::placeholder {
-  color: var(--placeholder);
 }
 .vault-items {
   display: grid;
 }
-.vault-item {
-  position: relative;
+.vault-item.button {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) auto;
-  align-items: center;
+  justify-content: stretch;
   gap: 12px;
   width: 100%;
   min-height: 58px;
   padding: 8px 12px;
-  border: 0;
-  border-radius: 10px;
-  background: none;
-  color: var(--foreground);
-  font: inherit;
   text-align: left;
-}
-.vault-item:hover {
-  background: var(--surface-subtle);
-}
-.vault-item[aria-current='true'] {
-  background: var(--accent-soft);
+  white-space: normal;
 }
 .vault-item-icon {
   display: flex;
@@ -70,6 +34,7 @@
   white-space: nowrap;
 }
 .vault-item-text strong {
+  color: var(--foreground);
   font-size: 14px;
   font-weight: 500;
 }
@@ -105,36 +70,10 @@
   color: var(--muted-foreground);
   font-size: 13px;
 }
-.vault-new-menu {
+.connection-menu-options.vault-new-menu {
+  position: static;
   z-index: 60;
-  min-width: 210px;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  background: var(--surface);
-  box-shadow: 0 14px 44px #1b192430;
-}
-.vault-new-menu button {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 9px 10px;
-  border: 0;
-  border-radius: 7px;
-  background: none;
-  color: var(--foreground);
-  font: inherit;
-  font-size: 13px;
-  text-align: left;
-}
-.vault-new-menu button > svg {
-  color: var(--muted-foreground);
-}
-.vault-new-menu button:hover,
-.vault-new-menu button:focus-visible {
-  outline: none;
-  background: var(--surface-subtle);
+  width: 210px;
 }
 
 .vault-surface {
@@ -153,13 +92,6 @@
   display: flex;
   gap: 6px;
   margin-left: auto;
-}
-.vault-back.button {
-  gap: 0;
-  margin-left: -10px;
-  padding-inline: 6px 10px;
-  color: var(--accent);
-  font-size: 14px;
 }
 .vault-hero {
   display: grid;
@@ -183,7 +115,6 @@
   letter-spacing: -0.4px;
   overflow-wrap: anywhere;
 }
-.vault-hero-title:focus,
 .vault-hero-title:focus-visible {
   outline: none;
 }
@@ -246,31 +177,14 @@
 .vault-inset .button-icon {
   width: 32px;
   height: 32px;
-  color: var(--muted-foreground);
-}
-.vault-inset .input,
-.vault-field-box {
-  min-height: 30px;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-}
-.vault-inset .input:focus-visible {
-  outline: none;
 }
 .vault-field-box {
   display: flex;
   align-items: center;
   gap: 2px;
   min-width: 0;
+  min-height: 30px;
   font-size: 14px;
-}
-.vault-field-box > .input {
-  flex: 1;
-}
-.vault-inset > .field:focus-within {
-  box-shadow: inset 3px 0 0 var(--ring);
 }
 .vault-field-heading {
   display: flex;
@@ -284,29 +198,15 @@
   gap: 2px;
   margin: -6px 0;
 }
-.vault-field-heading-actions .button {
-  color: var(--accent);
-}
 .vault-secret-empty {
   flex: 1;
   color: var(--muted-foreground);
   font-size: 13px;
 }
-.vault-delete-row {
+.vault-delete-row.button {
   width: 100%;
-  justify-content: center;
-  border: 0;
-  background: none;
-  color: var(--error);
-  font: inherit;
-  font-size: 14px;
-  cursor: pointer;
-}
-.vault-delete-row:hover:not(:disabled) {
-  background: var(--error-soft);
-}
-.vault-delete-row:focus-visible {
-  outline-offset: -3px;
+  min-height: 48px;
+  border-radius: 0;
 }
 .vault-surface .vault-detail-status {
   margin: -8px 0 0;
@@ -356,9 +256,6 @@
   overflow-y: auto;
   border-right: 1px solid var(--border);
   background: var(--surface-subtle);
-}
-.vault-page.is-split .vault-search {
-  margin: 0 4px 10px;
 }
 .vault-page.is-split .vault-detail-column {
   padding: 20px 32px 32px;

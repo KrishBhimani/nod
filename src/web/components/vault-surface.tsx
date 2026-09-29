@@ -57,7 +57,12 @@ export function VaultSurface({
       className="vault-surface"
       aria-label={label}
       onKeyDown={(event) => {
-        if (event.key === 'Escape' && !event.defaultPrevented) onClose();
+        if (
+          event.key === 'Escape' &&
+          !event.defaultPrevented &&
+          event.currentTarget.contains(event.target as Node)
+        )
+          onClose();
       }}
     >
       {children}

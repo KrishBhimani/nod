@@ -5,7 +5,6 @@ import { parse } from 'parse5';
 import type {
   LinkPreviewProvider,
   PublicLinkMetadata,
-  PreviewImage,
   SiteIcon,
 } from '../../ports/link-preview.ts';
 import { previewableUrl } from '../../shared/link-preview.ts';
@@ -23,7 +22,7 @@ export type PreviewRequest = (input: {
   signal: AbortSignal;
   maxBytes: number;
   metadata: boolean;
-  purpose?: 'preview' | 'download';
+  purpose?: 'preview' | 'download' | 'icon';
 }) => Promise<PublicResponse>;
 
 export const requestPublicPreview: PreviewRequest = ({
@@ -50,7 +49,9 @@ export const requestPublicPreview: PreviewRequest = ({
           Accept:
             purpose === 'download'
               ? '*/*'
-              : 'text/html,application/xhtml+xml,image/png,image/jpeg,image/webp',
+              : purpose === 'icon'
+                ? 'image/x-icon,image/vnd.microsoft.icon,image/png,image/jpeg,image/webp'
+                : 'text/html,application/xhtml+xml,image/png,image/jpeg,image/webp',
           'Accept-Encoding': 'identity',
         },
         maxHeaderSize: 16384,
@@ -163,7 +164,13 @@ function icoImage(bytes: Uint8Array) {
   const value = Buffer.from(bytes);
   if (value.length < 22 || value.readUInt32LE(0) !== 0x10000) return false;
   const count = value.readUInt16LE(4);
-  return count > 0 && value.length >= 6 + count * 16;
+  if (!count || value.length < 6 + count * 16) return false;
+  for (let index = 0; index < count; index++) {
+    const size = value.readUInt32LE(6 + index * 16 + 8);
+    const offset = value.readUInt32LE(6 + index * 16 + 12);
+    if (size > 0 && offset >= 6 + count * 16 && offset + size <= value.length) return true;
+  }
+  return false;
 }
 
 function iconLink(html: string) {
@@ -198,6 +205,7 @@ export function createPublicLinkPreviewProvider(
     metadata = maxBytes < 1024 * 1024,
     destination = previewableUrl,
     signal = AbortSignal.timeout(Math.min(5000, options.timeoutMs ?? 5000)),
+    purpose?: 'icon',
   ) {
     let current = value;
     for (let redirects = 0; redirects <= 3; redirects++) {
@@ -217,6 +225,7 @@ export function createPublicLinkPreviewProvider(
         signal,
         maxBytes,
         metadata,
+        purpose,
       });
       signal.throwIfAborted();
       if ([301, 302, 303, 307, 308].includes(result.status)) {
@@ -252,7 +261,7 @@ export function createPublicLinkPreviewProvider(
     async icon(origin) {
       const signal = AbortSignal.timeout(Math.min(8000, options.timeoutMs ?? 8000));
       const fetchIcon = async (url: string): Promise<SiteIcon | null> => {
-        const result = await fetchPublic(url, 128 * 1024, false, iconUrl, signal);
+        const result = await fetchPublic(url, 128 * 1024, false, iconUrl, signal, 'icon');
         const mimeType = icoImage(result.body) ? 'image/x-icon' : rasterImageType(result.body);
         return mimeType ? { bytes: result.body, mimeType } : null;
       };

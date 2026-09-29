@@ -1,15 +1,15 @@
 import { PageTitle } from '../components/page-title';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import * as Popover from '@radix-ui/react-popover';
-import { ChevronRight, CreditCard, Globe, Plus, Search } from 'lucide-react';
+import { ChevronRight, CreditCard, Globe, Plus } from 'lucide-react';
 import type { VaultListEntry } from '../../shared/contracts';
 import { usePageData } from '../hooks/use-page-data';
 import { VaultDetails } from '../components/vault-details';
 import { VaultEntryIcon, VaultSurface } from '../components/vault-surface';
-import { VaultItemForm } from '../components/vault-item-form';
+import { formatCardExpiry, VaultItemForm } from '../components/vault-item-form';
 import { originLabel } from '../lib/vault-name';
 import { cn } from '../lib/utils';
-import { Loading, Notice } from '../components/ui';
+import { Input, Loading, Notice } from '../components/ui';
 
 const phoneQuery = '(max-width: 720px)';
 
@@ -26,7 +26,7 @@ function usePhone() {
 
 function subtitle(entry: VaultListEntry) {
   return entry.kind === 'card'
-    ? `${entry.brand} •••• ${entry.last4}`
+    ? `${entry.brand} •••• ${entry.last4} · ${formatCardExpiry(entry.expiryMonth, entry.expiryYear)}`
     : entry.username || originLabel(entry.origin);
 }
 
@@ -90,6 +90,7 @@ export function Vault() {
   function closeDetail() {
     if (split) return;
     returnTo.current = selectedId;
+    setChosen(false);
     setSelectedId(null);
   }
 
@@ -101,6 +102,7 @@ export function Vault() {
 
   function closeAdd() {
     returnTo.current = 'new';
+    setChosen(false);
     setAdding(null);
   }
 
@@ -109,7 +111,10 @@ export function Vault() {
       <button
         key={entry.id}
         type="button"
-        className="vault-item"
+        className={cn(
+          'button vault-item',
+          split && selected?.id === entry.id ? 'button-secondary' : 'button-ghost',
+        )}
         data-vault-item={entry.id}
         aria-current={split && selected?.id === entry.id ? 'true' : undefined}
         onClick={() => open(entry)}
@@ -147,7 +152,7 @@ export function Vault() {
     <VaultDetails
       key={selected.id}
       entry={selected}
-      autoFocus={chosen}
+      autoFocus={chosen && selectedId === selected.id}
       onClose={closeDetail}
       onSaved={(entry) => {
         save(entry);
@@ -188,7 +193,11 @@ export function Vault() {
               </button>
             </Popover.Trigger>
             <Popover.Portal>
-              <Popover.Content className="vault-new-menu" align="end" sideOffset={6}>
+              <Popover.Content
+                className="connection-menu-options vault-new-menu"
+                align="end"
+                sideOffset={6}
+              >
                 <button type="button" onClick={() => start('login')}>
                   <Globe size={16} aria-hidden="true" />
                   New login
@@ -206,16 +215,14 @@ export function Vault() {
       <div className="vault-layout">
         {!pageMode && (
           <div className="vault-browser">
-            <label className="vault-search">
-              <Search size={16} aria-hidden="true" />
-              <input
-                type="search"
-                value={query}
-                placeholder="Search"
-                aria-label="Search Vault"
-                onChange={(event) => setQuery(event.target.value)}
-              />
-            </label>
+            <Input
+              className="vault-search"
+              type="search"
+              value={query}
+              placeholder="Search"
+              aria-label="Search Vault"
+              onChange={(event) => setQuery(event.target.value)}
+            />
             {!entries ? (
               loading && <Loading label="Opening your vault…" />
             ) : !entries.length ? (

@@ -266,7 +266,6 @@
 }
 
 .channels-page .channel-option.is-coming-soon .channel-option-heading > img,
-.channels-page .channel-option.is-coming-soon h3,
-.channels-page .channel-option.is-coming-soon .channel-option-benefit {
+.channels-page .channel-option.is-coming-soon h3 {
   opacity: 0.6;
 }

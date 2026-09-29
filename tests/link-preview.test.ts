@@ -7,7 +7,6 @@ import {
   createPublicLinkPreviewProvider,
   parseLinkMetadata,
   requestPublicPreview,
-  type PreviewRequest,
 } from '../src/providers/public-web/link-preview.ts';
 import { createLinkPreviews } from '../src/server/link-previews.ts';
 import { registerLocalAccess } from '../src/server/access.ts';
@@ -390,18 +389,20 @@ test('image previews reject PNG animation chunks and truncated chunk lengths', a
 });
 
 test('saved website icons use the pinned public fetcher and accept only ICO or raster bytes', async () => {
-  const ico = Buffer.concat([
-    Buffer.from([0, 0, 1, 0, 1, 0, 16, 16, 0, 0, 1, 0, 32, 0]),
-    Buffer.alloc(8),
-    png,
-  ]);
+  const entry = Buffer.alloc(16);
+  entry.set([16, 16, 0, 0, 1, 0, 32, 0]);
+  entry.writeUInt32LE(png.length, 8);
+  entry.writeUInt32LE(22, 12);
+  const ico = Buffer.concat([Buffer.from([0, 0, 1, 0, 1, 0]), entry, png]);
+  const emptyIco = Buffer.concat([Buffer.from([0, 0, 1, 0, 1, 0]), Buffer.alloc(16), png]);
   const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>');
   const fetchWith = (routes: Record<string, { status: number; type?: string; body: Buffer }>) => {
     const calls: string[] = [];
     const provider = createPublicLinkPreviewProvider({
       resolver: addresses,
-      request: async ({ url, address }) => {
+      request: async ({ url, address, purpose }) => {
         assert.equal(address, '93.184.216.34');
+        assert.equal(purpose, url.pathname === '/' ? undefined : 'icon');
         calls.push(url.href);
         const route = routes[url.href] ?? { status: 404, body: Buffer.alloc(0) };
         return {
@@ -413,6 +414,11 @@ test('saved website icons use the pinned public fetcher and accept only ICO or r
     });
     return { provider, calls };
   };
+
+  const empty = fetchWith({
+    'https://example.com/favicon.ico': { status: 200, type: 'image/x-icon', body: emptyIco },
+  });
+  assert.equal(await empty.provider.icon!('https://example.com'), null);
 
   const direct = fetchWith({
     'https://login.example.com/favicon.ico': { status: 200, type: 'text/plain', body: ico },

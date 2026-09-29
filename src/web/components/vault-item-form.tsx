@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { Copy, CreditCard, Globe } from 'lucide-react';
+import { CreditCard, Globe } from 'lucide-react';
 import type { VaultEntry, VaultEntryDetails, VaultListEntry } from '../../shared/contracts';
 import { api } from '../lib/api';
 import { Button, Field, Input, Notice } from './ui';
@@ -35,7 +35,6 @@ function VaultSecretField({
   saved = true,
   mask = '••••••••',
   disabled,
-  controls,
   onChange,
 }: {
   name: VaultSecretName;
@@ -44,7 +43,6 @@ function VaultSecretField({
   saved?: boolean;
   mask?: string;
   disabled: boolean;
-  controls?: React.ReactNode;
   onChange?(): void;
 }) {
   const [mode, setMode] = useState<'keep' | 'replace' | 'remove'>('keep');
@@ -114,11 +112,9 @@ function VaultSecretField({
               <input name="removeSecurityCode" type="hidden" value="true" />
             </>
           ) : saved ? (
-            (controls ?? (
-              <span className="vault-password-mask" aria-label={`${label} hidden`}>
-                {mask}
-              </span>
-            ))
+            <span className="vault-password-mask" aria-label={`${label} hidden`}>
+              {mask}
+            </span>
           ) : (
             <span className="vault-secret-empty">Not saved</span>
           )}
@@ -175,20 +171,13 @@ export function VaultFields({
   kind,
   details,
   disabled,
-  secretControls,
   onSecretChange,
-  onCopyIdentity,
-  identityBusy = false,
 }: {
   kind: 'login' | 'card';
   details?: VaultEntryDetails;
   disabled: boolean;
-  secretControls?: Partial<Record<VaultSecretName, React.ReactNode>>;
   onSecretChange?(): void;
-  onCopyIdentity?(): void;
-  identityBusy?: boolean;
 }) {
-  const identityId = useId();
   const identityLabel =
     details?.kind === 'login'
       ? (details.identifierLabel ?? 'Username')
@@ -220,43 +209,24 @@ export function VaultFields({
           />
         </Field>
       )}
-      <div className="field">
-        <label className="field-label" htmlFor={identityId}>
-          {identityLabel}
-        </label>
-        <div className="vault-field-box">
-          <Input
-            id={identityId}
-            name={kind === 'card' ? 'cardholder' : 'username'}
-            defaultValue={details?.kind === 'card' ? details.cardholder : (details?.username ?? '')}
-            autoComplete={kind === 'card' ? 'cc-name' : 'username'}
-            autoCapitalize="none"
-            spellCheck={false}
-            maxLength={kind === 'card' ? 200 : 320}
-            required={kind === 'card'}
-            disabled={disabled}
-          />
-          {onCopyIdentity && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              aria-label={`Copy ${identityLabel.toLowerCase()}`}
-              disabled={disabled || identityBusy}
-              onClick={onCopyIdentity}
-            >
-              <Copy size={16} aria-hidden="true" />
-            </Button>
-          )}
-        </div>
-      </div>
+      <Field label={identityLabel}>
+        <Input
+          name={kind === 'card' ? 'cardholder' : 'username'}
+          defaultValue={details?.kind === 'card' ? details.cardholder : (details?.username ?? '')}
+          autoComplete={kind === 'card' ? 'cc-name' : 'username'}
+          autoCapitalize="none"
+          spellCheck={false}
+          maxLength={kind === 'card' ? 200 : 320}
+          required={kind === 'card'}
+          disabled={disabled}
+        />
+      </Field>
       <VaultSecretField
         name={kind === 'card' ? 'cardNumber' : 'password'}
         label={kind === 'card' ? 'Card number' : 'Password'}
         editing={Boolean(details)}
         mask={details?.kind === 'card' ? `•••• ${details.last4}` : undefined}
         disabled={disabled}
-        controls={secretControls?.[kind === 'card' ? 'cardNumber' : 'password']}
         onChange={onSecretChange}
       />
       {kind === 'card' && (
@@ -284,7 +254,6 @@ export function VaultFields({
             saved={details?.kind === 'card' && details.hasSecurityCode}
             mask="••••"
             disabled={disabled}
-            controls={secretControls?.securityCode}
             onChange={onSecretChange}
           />
         </>

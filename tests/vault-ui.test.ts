@@ -1302,6 +1302,16 @@ test('Vault deletion is only available in details and requires an explicit confi
       requests.some(({ options }) => options.method === 'DELETE'),
       false,
     );
+    await act(async () =>
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      ),
+    );
+    await settle();
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+    assert.ok(document.querySelector('.vault-surface'));
+    assert.equal(document.activeElement, row);
+    await click('Delete card');
     await click('Cancel', confirmation());
     assert.equal(document.querySelector('[role="dialog"]'), null);
     assert.equal(document.activeElement, row);

@@ -207,13 +207,14 @@ function localHost(hostname: string) {
 
 function savedCredentialOrigin(value: string) {
   const trimmed = value.trim();
-  const origin = credentialOrigin(
-    /^[a-z][a-z\d+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`,
-  );
-  const { hostname } = new URL(origin);
+  return credentialOrigin(/^[a-z][a-z\d+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
+}
+
+function requireFullHost(raw: unknown) {
+  const { origin } = z.object({ origin: z.string().max(2048) }).parse(raw);
+  const { hostname } = new URL(savedCredentialOrigin(origin));
   if (!localHost(hostname) && !/[^.]\.[^.]/.test(hostname))
     throw new VaultError('Enter a full website domain, such as example.com.');
-  return origin;
 }
 
 function binding(entry: Pick<EntryRow, 'id' | 'owner_id' | 'origin'>) {
@@ -1830,7 +1831,9 @@ export async function createVault(pool: Pool, options: VaultOptions) {
         const { kind } = z
           .object({ kind: z.enum(['login', 'card']).optional() })
           .parse(request.body);
-        return kind === 'card' ? saveCard(request.body) : save(owner, request.body);
+        if (kind === 'card') return saveCard(request.body);
+        requireFullHost(request.body);
+        return save(owner, request.body);
       });
       scope.patch<{ Params: { id: string } }>(
         '/api/vault/:id',

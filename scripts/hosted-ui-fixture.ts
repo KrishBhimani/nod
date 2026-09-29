@@ -89,39 +89,50 @@ const vaultIcons = new Map([
   ['https://work.example.com', icon([79, 70, 229], [224, 231, 255], false, false)],
   ['https://shop.example.net:8443', icon([22, 163, 74], [240, 253, 244], true, false)],
 ]);
-const vault = new Map<string, Record<string, unknown>>(
-  [
-    ['Personal email', 'https://mail.example.com', 'alex@example.test'],
-    ['Work account', 'https://work.example.com', 'alex.morgan@work.example.com'],
-    ['Admin account', 'https://work.example.com', 'admin@work.example.com'],
-    ['Grocery orders', 'https://shop.example.net:8443', 'alex@example.test'],
-    ['Library card', 'https://library.example.org', 'member-40219'],
-  ]
-    .map(([label, entryOrigin, username]) => ({
-      kind: 'login',
+const seedVault: Array<Record<string, unknown>> = [
+  ['Personal email', 'https://mail.example.com', 'alex@example.test'],
+  ['Work account', 'https://work.example.com', 'alex.morgan@work.example.com'],
+  ['Admin account', 'https://work.example.com', 'admin@work.example.com'],
+  ['Grocery orders', 'https://shop.example.net:8443', 'alex@example.test'],
+  ['Library card', 'https://library.example.org', 'member-40219'],
+]
+  .map(([label, entryOrigin, username]) => ({
+    kind: 'login',
+    id: randomUUID(),
+    label,
+    origin: entryOrigin,
+    username,
+    usernameHint: `${username.slice(0, 2)}…`,
+    updatedAt: '2026-09-20T10:00:00.000Z',
+  }))
+  .concat([
+    {
+      kind: 'card',
       id: randomUUID(),
-      label,
-      origin: entryOrigin,
-      username,
-      usernameHint: `${username.slice(0, 2)}…`,
+      label: 'Everyday card',
+      brand: 'Visa',
+      last4: '4242',
+      expiryMonth: 4,
+      expiryYear: 2031,
+      cardholder: 'Alex Morgan',
+      hasSecurityCode: true,
       updatedAt: '2026-09-20T10:00:00.000Z',
-    }))
-    .concat([
-      {
-        kind: 'card',
-        id: randomUUID(),
-        label: 'Everyday card',
-        brand: 'Visa',
-        last4: '4242',
-        expiryMonth: 4,
-        expiryYear: 2031,
-        cardholder: 'Alex Morgan',
-        hasSecurityCode: true,
-        updatedAt: '2026-09-20T10:00:00.000Z',
-      } as never,
-    ])
-    .map((entry) => [entry.id, entry]),
-);
+    } as never,
+  ]);
+const vaults = new Map<string, Map<string, Record<string, unknown>>>();
+function vaultFor(owner: string) {
+  if (!vaults.has(owner))
+    vaults.set(
+      owner,
+      new Map(
+        seedVault.map((entry) => {
+          const id = randomUUID();
+          return [id, { ...entry, id }];
+        }),
+      ),
+    );
+  return vaults.get(owner)!;
+}
 const authentication: AuthenticationProvider = {
   configured: true,
   async initialize() {},
@@ -180,6 +191,7 @@ const app = await createGateway({
     async fetch(owner, request) {
       const url = new URL(request.url);
       if (url.pathname === '/api/account/prepare') return Response.json({ ok: true });
+      const vault = vaultFor(owner);
       if (url.pathname === '/api/vault') {
         if (request.method === 'POST') {
           const input = (await request.json()) as Record<string, unknown>;
@@ -202,7 +214,9 @@ const app = await createGateway({
                   kind: 'login',
                   id,
                   label: input.label,
-                  origin: `https://${String(input.origin).replace(/^https?:\/\//, '')}`,
+                  origin: /^https?:\/\//.test(String(input.origin))
+                    ? String(input.origin)
+                    : `https://${String(input.origin)}`,
                   username: input.username,
                   usernameHint: `${String(input.username).slice(0, 2)}…`,
                   updatedAt: new Date().toISOString(),

@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { Copy, Eye, EyeOff, ExternalLink } from 'lucide-react';
+import { Copy, Eye, EyeOff, ExternalLink, Trash2 } from 'lucide-react';
 import type {
   VaultEntry,
   VaultEntryDetails,
@@ -582,13 +582,14 @@ export function VaultDetails({
           <button
             ref={deleteTrigger}
             type="button"
-            className="vault-inset-row vault-delete-row"
+            className="button button-ghost button-default vault-delete-row"
             disabled={saving}
             onClick={() => {
               hideSecrets();
               setDeleting(true);
             }}
           >
+            <Trash2 size={15} aria-hidden="true" />
             Delete {item}
           </button>
         </div>
