@@ -38,7 +38,7 @@ import {
 } from '../src/server/provider-metering.ts';
 import { createAppGrantVault } from '../src/server/vault-app-grants.ts';
 import { integrationServiceIds } from '../src/shared/integrations.ts';
-import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
+import { fakeComputer, fakeWorkspace, fixtureReadOnly } from './runtime-fixtures.ts';
 
 function fakeProvider(session: IntegrationSession): IntegrationProvider {
   return {
@@ -48,6 +48,7 @@ function fakeProvider(session: IntegrationSession): IntegrationProvider {
     supportsSubscriptions: ['gmail', 'googlecalendar'],
     createSession: async () => session,
     restoreSession: async () => session,
+    readOnly: fixtureReadOnly,
     deleteSession: async () => {},
     inspectAccount: async () => ({ active: true, service: 'gmail' }),
     deleteAccount: async () => {},
@@ -280,11 +281,11 @@ test(
       );
       assert.equal(searches.mock.callCount(), 1);
       t.mock.method(session, 'search', async () => {
-        throw new Error('raw-provider-secret and internal setup details');
+        throw new Error('Fixture tool router timed out');
       });
       await assert.rejects(
         integrations.execute('local-development', 'SEARCH_TOOLS', { query: 'List Gmail labels' }),
-        { message: 'App tool search is unavailable. Try again later.', statusCode: 502 },
+        { message: 'App tool search failed: Fixture tool router timed out', statusCode: 502 },
       );
       await pool.query(
         "INSERT INTO integration_events (id,owner_id,summary,slug,account_id,trigger_id,provider_id) VALUES ('event-queued-before-disconnect','local-development','Obsolete event','gmail','ca-fixture','ti-fixture','fixture')",
@@ -757,6 +758,7 @@ async function appsFixture(t: TestContext) {
     restoreSession: async () => {
       assert.fail('An old session must be replaced.');
     },
+    readOnly: fixtureReadOnly,
     deleteSession: async (id) => {
       removed.push(id);
     },
@@ -1004,7 +1006,7 @@ test(
     });
     finish(file);
     await assert.rejects(pending, {
-      message: 'The file could not be downloaded. Check the account and file, then try again.',
+      message: 'The file could not be downloaded: This connected account is unavailable.',
       statusCode: 502,
     });
     assert.ok((await f.service.list()).some((item) => item.connectionId === second.connectionId));
@@ -1125,6 +1127,7 @@ async function searchFixture(
       return session;
     },
     restoreSession: async () => session,
+    readOnly: fixtureReadOnly,
     deleteSession: async () => {},
     inspectAccount: async (id) => ({
       active: true,
@@ -1262,7 +1265,7 @@ test(
 );
 
 test(
-  'an uncertain app execution stops the turn without exposing provider details',
+  'a failed app execution stops the turn and reaches the harness with the provider error',
   { skip: !process.env.TEST_DATABASE_URL },
   async (t) => {
     const f = await searchFixture(
@@ -1277,10 +1280,10 @@ test(
         },
       },
     );
-    await assert.rejects(f.run(), /The action failed/);
+    await assert.rejects(f.run(), /The app request failed: private-provider-diagnostic/);
     assert.equal(f.calls.length, 1);
     assert.deepEqual(f.modelResults, []);
-    assert.doesNotMatch(JSON.stringify(f.observations), /private-provider-diagnostic/);
+    assert.match(JSON.stringify(f.observations), /private-provider-diagnostic/);
   },
 );
 
@@ -1802,6 +1805,7 @@ test(
         return session(id);
       },
       restoreSession: async () => session(id),
+      readOnly: fixtureReadOnly,
       deleteSession: async () => {},
       inspectAccount: async (accountId) => {
         if (accountId.endsWith('linear') && failInspectOnce) {
@@ -2089,7 +2093,7 @@ test(
   },
 );
 
-test('Composio execution rejects failure envelopes without exposing provider details', async (t) => {
+test('Composio execution failures carry the provider error and log ID', async (t) => {
   const client = new Composio({
     apiKey: 'fixture-key-never-live',
     allowTracking: false,
@@ -2102,19 +2106,61 @@ test('Composio execution rejects failure envelopes without exposing provider det
     execute: async () => result,
   }));
   const session = await createComposioProvider({ client }).createSession('local-development', {});
-  for (const failure of [
-    { data: {}, error: 'private-provider-error', logId: 'private-log' },
-    { data: {}, error: { message: 'private-provider-error' }, logId: 'private-log' },
-    { data: {}, successful: false },
-    { data: { successful: false, error: 'private-provider-error' }, error: null },
-  ]) {
+  for (const [failure, message] of [
+    [
+      { data: {}, error: 'Fixture rate limit', logId: 'log-fixture' },
+      'Composio could not complete GMAIL_SEND_EMAIL: Fixture rate limit (Composio log log-fixture)',
+    ],
+    [
+      { data: {}, error: { message: 'Fixture rate limit' }, logId: 'log-fixture' },
+      'Composio could not complete GMAIL_SEND_EMAIL: {"message":"Fixture rate limit"} (Composio log log-fixture)',
+    ],
+    [
+      { data: {}, successful: false },
+      'Composio could not complete GMAIL_SEND_EMAIL: {"data":{},"successful":false}',
+    ],
+    [
+      { data: { successful: false, error: 'Fixture rate limit' }, error: null },
+      'Composio could not complete GMAIL_SEND_EMAIL: Fixture rate limit',
+    ],
+  ] as const) {
     result = failure;
-    await assert.rejects(session.execute('GMAIL_SEND_EMAIL', {}, 'fixture-account'), {
-      message: 'The connection provider could not complete this action.',
-    });
+    await assert.rejects(session.execute('GMAIL_SEND_EMAIL', {}, 'fixture-account'), { message });
   }
   result = { data: { successful: true, id: 'fixture-message' }, error: null };
   assert.deepEqual(await session.execute('GMAIL_SEND_EMAIL', {}, 'fixture-account'), result);
+});
+
+test('Composio actions skip review only when the catalog tags them read-only', async (t) => {
+  const client = new Composio({
+    apiKey: 'fixture-key-never-live',
+    allowTracking: false,
+    disableVersionCheck: true,
+    fileUploadDirs: false,
+  });
+  const tags: Record<string, string[]> = {
+    GMAIL_GET_PROFILE: ['readOnlyHint', 'openWorldHint'],
+    GMAIL_SEND_EMAIL: ['openWorldHint'],
+    SLACK_GET_AND_DELETE_MESSAGES: ['readOnlyHint', 'destructiveHint'],
+    GMAIL_UNTAGGED_ACTION: [],
+    GMAIL_LIST_THREADS: ['readOnlyHint'],
+  };
+  let outage = true;
+  const lookup = t.mock.method(client.tools, 'getRawComposioToolBySlug', async (slug: string) => {
+    if (slug === 'GMAIL_LIST_THREADS' && outage) throw new Error('Fixture catalog outage');
+    return { slug, name: slug, tags: tags[slug] };
+  });
+  const provider = createComposioProvider({ client });
+  assert.equal(await provider.readOnly('GMAIL_GET_PROFILE'), true);
+  assert.equal(await provider.readOnly('GMAIL_SEND_EMAIL'), false);
+  assert.equal(await provider.readOnly('SLACK_GET_AND_DELETE_MESSAGES'), false);
+  assert.equal(await provider.readOnly('GMAIL_UNTAGGED_ACTION'), false);
+  assert.equal(await provider.readOnly('not a tool slug'), false);
+  assert.equal(await provider.readOnly('GMAIL_LIST_THREADS'), false);
+  outage = false;
+  assert.equal(await provider.readOnly('GMAIL_LIST_THREADS'), true);
+  assert.equal(await provider.readOnly('GMAIL_GET_PROFILE'), true);
+  assert.equal(lookup.mock.callCount(), 6);
 });
 
 test('Composio account identity comes from an account-bound Google response and excludes credentials', async (t) => {
@@ -2298,6 +2344,7 @@ test(
       restoreSession: async () => {
         throw new Error();
       },
+      readOnly: fixtureReadOnly,
       deleteSession: async () => {},
       deleteAccount: async () => {},
       inspectAccount: async (id, owner) => {

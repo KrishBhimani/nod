@@ -981,6 +981,12 @@ export function createIntegrationFixture(baseUrl: string, audit: Audit = () => {
       if (!session) throw new Error('Synthetic session expired.');
       return session;
     },
+    async readOnly(action) {
+      return (
+        toolDefinitions.some((tool) => tool.name === action) &&
+        !['GMAIL_CREATE_EMAIL_DRAFT', 'GMAIL_DELETE_MESSAGE', 'GMAIL_SEND_EMAIL'].includes(action)
+      );
+    },
     async deleteSession(id) {
       sessions.delete(id);
     },

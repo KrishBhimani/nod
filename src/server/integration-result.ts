@@ -1,14 +1,13 @@
-export const integrationResultBytes = 18_000;
+export const appResultInlineChars = 40_000;
 
-export function integrationResultSnapshot(value: unknown) {
-  const text = JSON.stringify(value ?? null);
-  const originalBytes = Buffer.byteLength(text);
-  if (originalBytes <= integrationResultBytes) return JSON.parse(text);
+export async function inlineAppResult(result: unknown, save: (text: string) => Promise<string>) {
+  const text = JSON.stringify(result ?? null);
+  if (text.length <= appResultInlineChars) return result;
   return {
-    truncated: true,
-    resultOmitted: true,
-    originalBytes,
+    workspaceFile: await save(text),
+    bytes: Buffer.byteLength(text),
+    preview: text.slice(0, 2000),
     message:
-      'The app response was too large and has been omitted. This is incomplete evidence, not a not-found result. Do not repeat a completed action. If the current request permits it, use a narrower read-only query with fewer results or fields; otherwise explain that the result could not be inspected.',
+      'The full app result is saved in this workspace file. Inspect it with read or bash, for example jq, instead of repeating the request.',
   };
 }

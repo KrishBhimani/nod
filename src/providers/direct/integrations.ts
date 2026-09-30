@@ -15,6 +15,17 @@ const linearTools = {
   LINEAR_LIST_TEAMS: 'list_teams',
   LINEAR_GET_STATUS_UPDATES: 'get_status_updates',
 } as const;
+
+function toolFailure(label: string, result: Record<string, unknown>) {
+  const blocks = Array.isArray(result.content)
+    ? (result.content as Array<{ type: string; text?: string }>)
+    : [];
+  const text = blocks
+    .map((block) => block.text ?? '')
+    .join('\n')
+    .trim();
+  return `${label}: ${(text || JSON.stringify(result.content ?? null)).slice(0, 4000)}`;
+}
 export function createDirectProvider(options: {
   pool: Pool;
   keyStore: CredentialKeyStore;
@@ -60,7 +71,8 @@ export function createDirectProvider(options: {
           if (!tools.some((tool) => tool.name === 'notion-get-tool-access'))
             throw new Error('The Notion search access check is unavailable.');
           const access = await client.callTool({ name: 'notion-get-tool-access', arguments: {} });
-          if (access.isError) throw new Error('The Notion search access check failed.');
+          if (access.isError)
+            throw new Error(toolFailure('The Notion search access check failed', access));
           const blocks = Array.isArray(access.content)
             ? (access.content as Array<{ type: string; text?: string }>)
             : [];
@@ -90,7 +102,7 @@ export function createDirectProvider(options: {
           ? { id: args.id ?? args.page_id ?? args.pageId }
           : { query: args.query ?? args.search_query ?? args.searchQuery };
         const result = await client.callTool({ name: selected.name, arguments: input });
-        if (result.isError) throw new Error('The Notion read failed.');
+        if (result.isError) throw new Error(toolFailure('The Notion read failed', result));
         return result;
       });
     }
@@ -101,7 +113,7 @@ export function createDirectProvider(options: {
         if (!(await client.listTools()).tools.some((tool) => tool.name === toolName))
           throw new Error('The Linear read tool is unavailable.');
         const result = await client.callTool({ name: toolName, arguments: args });
-        if (result.isError) throw new Error('The Linear read failed.');
+        if (result.isError) throw new Error(toolFailure('The Linear read failed', result));
         return result;
       });
     }
@@ -221,6 +233,9 @@ export function createDirectProvider(options: {
       return this.createSession(id, {});
     },
     async deleteSession() {},
+    async readOnly(action) {
+      return Object.hasOwn(tools, action);
+    },
     async inspectAccount(id, ownerId) {
       const account = await oauth.access(ownerId, id);
       const details = await mcp(account.service, account.accessToken, async (client) => {
