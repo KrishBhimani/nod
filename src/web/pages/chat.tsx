@@ -58,7 +58,10 @@ const starterSuggestions = ['Plan my day', 'Help me research something', 'Start 
 function Welcome({ onPick }: { onPick(label: string): void }) {
   const { data, loading } = usePageData<Connection[]>('/api/apps');
   const connected = integrationServiceIds.filter((slug) =>
-    data?.some((connection) => connection.slug === slug && connection.status === 'connected'),
+    data?.some(
+      (connection) =>
+        connection.slug === slug && connection.status === 'connected' && !connection.accessPaths,
+    ),
   );
   const labels = [...connected.map((slug) => appSuggestions[slug]), ...starterSuggestions].slice(
     0,
@@ -101,10 +104,9 @@ export function Chat({
       new Set(
         connections
           ?.filter((connection) => connection.status === 'connected')
-          .flatMap((connection) => [
-            connection.slug,
-            ...(connection.accessPaths?.map((path) => path.id) ?? []),
-          ]) ?? [],
+          .flatMap(
+            (connection) => connection.accessPaths?.map((path) => path.id) ?? [connection.slug],
+          ) ?? [],
       ),
     [connections],
   );
