@@ -1,5 +1,6 @@
 FROM node:24.21.0-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python-is-python3 python3-pip python3-venv pipx ffmpeg poppler-utils ca-certificates curl git unzip ripgrep && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/yt-dlp && /opt/yt-dlp/bin/pip install --no-cache-dir yt-dlp==2026.8.19 && ln -s /opt/yt-dlp/bin/yt-dlp /usr/local/bin/yt-dlp
 RUN mkdir -p /workspace /home/node/.local/bin /opt/otto && chown -R node:node /workspace /home/node
 COPY workspace-command.py /opt/otto/workspace-command.py
 RUN chmod 555 /opt/otto && chmod 444 /opt/otto/workspace-command.py

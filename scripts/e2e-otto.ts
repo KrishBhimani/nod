@@ -112,7 +112,15 @@ async function shutdown(exitCode = 0) {
 process.on('SIGINT', () => void shutdown());
 process.on('SIGTERM', () => void shutdown());
 try {
-  const image = await runProcess('docker', ['inspect', 'otto-workspace', '--format', '{{.Image}}']);
+  const image = environment.OTTO_E2E_WORKSPACE_IMAGE
+    ? await runProcess('docker', [
+        'image',
+        'inspect',
+        environment.OTTO_E2E_WORKSPACE_IMAGE,
+        '--format',
+        '{{.Id}}',
+      ])
+    : await runProcess('docker', ['inspect', 'otto-workspace', '--format', '{{.Image}}']);
   const network = await runProcess('docker', [
     'inspect',
     'otto-workspace',
@@ -489,7 +497,9 @@ try {
   });
   audit('harness_ready');
   process.stdout.write(JSON.stringify(manifest, null, 2) + '\n');
-} catch {
+} catch (error) {
+  if (error instanceof Error && /^[A-Za-z .-]+$/.test(error.message))
+    process.stderr.write(`${error.name}: ${error.message}\n`);
   process.stderr.write(
     'The isolated acceptance harness could not start. Check local Docker, PostgreSQL, build output and model configuration.\n',
   );
