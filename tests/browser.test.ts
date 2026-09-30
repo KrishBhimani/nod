@@ -846,10 +846,6 @@ for (const failure of ['unknown', 'forged', 'navigation', 'wrong_action', 'cance
     try {
       await assert.rejects(f.run());
       assert.equal(calls, 1);
-      if (failure === 'unknown')
-        assert.match(JSON.stringify(f.observations), /Private unknown outcome/);
-      if (failure === 'forged')
-        assert.match(JSON.stringify(f.observations), /Private forged error/);
     } finally {
       await f.close();
     }

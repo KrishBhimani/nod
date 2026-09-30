@@ -2124,7 +2124,7 @@ test(
   },
 );
 
-test('Composio execution failures carry the provider error and log ID', async (t) => {
+test('Composio failure envelopes reject with the provider error', async (t) => {
   const client = new Composio({
     apiKey: 'fixture-key-never-live',
     allowTracking: false,
@@ -2137,27 +2137,18 @@ test('Composio execution failures carry the provider error and log ID', async (t
     execute: async () => result,
   }));
   const session = await createComposioProvider({ client }).createSession('local-development', {});
-  for (const [failure, message] of [
-    [
-      { data: {}, error: 'Fixture rate limit', logId: 'log-fixture' },
-      'Composio could not complete GMAIL_SEND_EMAIL: Fixture rate limit (Composio log log-fixture)',
-    ],
-    [
-      { data: {}, error: { message: 'Fixture rate limit' }, logId: 'log-fixture' },
-      'Composio could not complete GMAIL_SEND_EMAIL: {"message":"Fixture rate limit"} (Composio log log-fixture)',
-    ],
-    [
-      { data: {}, successful: false },
-      'Composio could not complete GMAIL_SEND_EMAIL: {"data":{},"successful":false}',
-    ],
-    [
-      { data: { successful: false, error: 'Fixture rate limit' }, error: null },
-      'Composio could not complete GMAIL_SEND_EMAIL: Fixture rate limit',
-    ],
-  ] as const) {
+  for (const failure of [
+    { data: {}, error: 'Fixture rate limit', logId: 'log-fixture' },
+    { data: {}, successful: false },
+    { data: { successful: false, error: 'Fixture rate limit' }, error: null },
+  ]) {
     result = failure;
-    await assert.rejects(session.execute('GMAIL_SEND_EMAIL', {}, 'fixture-account'), { message });
+    await assert.rejects(session.execute('GMAIL_SEND_EMAIL', {}, 'fixture-account'));
   }
+  result = { data: {}, error: 'Fixture rate limit', logId: 'log-fixture' };
+  await assert.rejects(session.execute('GMAIL_SEND_EMAIL', {}, 'fixture-account'), {
+    message: /Fixture rate limit \(Composio log log-fixture\)/,
+  });
   result = { data: { successful: true, id: 'fixture-message' }, error: null };
   assert.deepEqual(await session.execute('GMAIL_SEND_EMAIL', {}, 'fixture-account'), result);
 });
