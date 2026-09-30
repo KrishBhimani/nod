@@ -14,13 +14,35 @@ let stopping;
 function socketReady() {
   return new Promise((resolve) => {
     const socket = connect('/data/control.sock');
+    const id = '00000000-0000-4000-8000-000000000000';
+    let incoming = '';
     const finish = (ready) => {
       socket.destroy();
       resolve(ready);
     };
     socket.setTimeout(500, () => finish(false));
-    socket.once('connect', () => finish(true));
+    socket.setEncoding('utf8');
+    socket.once('connect', () =>
+      socket.write(
+        JSON.stringify({
+          type: 'request',
+          request: { id, namespace: 'sk-000000000000000000000000', method: 'quiesce' },
+        }) + '\n',
+      ),
+    );
+    socket.on('data', (chunk) => {
+      incoming += chunk;
+      const end = incoming.indexOf('\n');
+      if (end < 0) return;
+      try {
+        const response = JSON.parse(incoming.slice(0, end));
+        finish(response.id === id && response.ok === true && response.result === true);
+      } catch {
+        finish(false);
+      }
+    });
     socket.once('error', () => finish(false));
+    socket.once('close', () => finish(false));
   });
 }
 

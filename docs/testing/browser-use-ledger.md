@@ -100,4 +100,4 @@ The disposable UI check opened the current `/dev` page and inspected the Inspect
 
 `npm run check` and `npm run build` passed. `npm run test:integration` passed with 376 tests and two skips. The Cloudflare check, 397 tests, and both Wrangler dry runs passed. The PR reports fixture, UI, and live results separately.
 
-After the 30 September browser changes, `npm run check` and `npm run build` passed. The integration run passed with 376 tests and two skips. It used `TEST_DATABASE_URL` from the existing local PostgreSQL service; each database test made a disposable schema. No deployment code changed, so the Cloudflare gates above were not repeated.
+After the 30 September browser changes, `npm run check` and `npm run build` passed. The integration run passed with 376 tests and two skips. It used `TEST_DATABASE_URL` from the existing local PostgreSQL service; each database test made a disposable schema. After the readiness change, the Cloudflare check, 397 tests, and both Wrangler dry runs passed. A disposable browser image with the updated entrypoint returned 200 from `/health` after a valid worker response.
