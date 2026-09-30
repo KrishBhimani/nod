@@ -1,12 +1,18 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
+import { JSDOM } from 'jsdom';
 import pg from 'pg';
+import type { BrowserConnectionRequest } from '../src/ports/agent.ts';
 import type { Computer } from '../src/ports/computer.ts';
+import {
+  loginInspectionSchema,
+  loginInspectionScript,
+} from '../src/providers/agent-browser/login.ts';
 import { createBrowserConnections } from '../src/server/browser-connections.ts';
 
 test(
-  'Pi saves and reuses a verified browser profile for one owner',
+  'browser profiles require an explicit observed sign-in outcome and retain owner and turn fences',
   { skip: !process.env.TEST_DATABASE_URL },
   async () => {
     const schema = `browser_connections_${randomUUID().replaceAll('-', '')}`;
@@ -16,6 +22,15 @@ test(
       connectionString: process.env.TEST_DATABASE_URL,
       options: `-c search_path=${schema}`,
     });
+    const dom = new JSDOM('<form><input type="password"></form>', {
+      url: 'https://example.test/login',
+      runScripts: 'outside-only',
+    });
+    dom.window.HTMLElement.prototype.getClientRects = () => [{}] as unknown as DOMRectList;
+    const page = (html: string, path = '/account') => {
+      dom.window.document.body.innerHTML = html;
+      dom.reconfigure({ url: `https://example.test${path}` });
+    };
     try {
       await pool.query(
         'CREATE TABLE threads (id uuid PRIMARY KEY,owner_id text,status text,archived_at timestamptz)',
@@ -34,32 +49,26 @@ test(
           [turn.turnId, turn.threadId],
         );
       }
-      let signedIn = false;
       let cancelTurnId: string | undefined;
+      let changeOrigin = false;
       const bindings: string[] = [];
       const removed: string[] = [];
       const computer = {
         async bindProfile(_threadId: string, profileId: string) {
           bindings.push(profileId);
         },
-        async act(_threadId: string, input: { action: string; url?: string }) {
+        async act() {
           return {
-            url: signedIn ? 'https://example.test/account' : 'https://example.test/login',
-            text: 'Synthetic page',
+            url: dom.window.location.href,
+            text: dom.window.document.body.textContent,
             candidates: [],
           };
         },
         async inspectLogin() {
           if (cancelTurnId)
             await pool.query("UPDATE turns SET status='cancelled' WHERE id=$1", [cancelTurnId]);
-          return {
-            origin: 'https://example.test',
-            url: signedIn ? 'https://example.test/account' : 'https://example.test/login',
-            fields: signedIn
-              ? []
-              : [{ kind: 'password', selector: '#password', label: 'Password' }],
-            methods: [],
-          };
+          if (changeOrigin) dom.reconfigure({ url: 'https://other.test/account' });
+          return loginInspectionSchema.parse(dom.window.eval(loginInspectionScript()));
         },
         async hold() {},
         async close() {},
@@ -84,9 +93,51 @@ test(
         ).status,
         'needs_sign_in',
       );
-      const save = { action: 'save' as const, url: 'https://example.test/login', connectionId };
+      const save = {
+        action: 'save' as const,
+        url: 'https://example.test/login',
+        connectionId,
+        signedIn: true as const,
+      };
       assert.equal((await service.request(save, first)).status, 'needs_sign_in');
-      signedIn = true;
+      const unknownPages = [
+        '<form><label>会員番号<input id="member"></label><button>Continue</button></form>',
+        '<h1>This browser or app may not be secure</h1><p>Try using a different browser.</p>',
+      ];
+      for (const state of ['pending', 'needs_sign_in']) {
+        for (const html of unknownPages) {
+          page(html);
+          assert.equal((await computer.inspectLogin('fixture')).fields.length, 0);
+          await pool.query('UPDATE browser_connections SET state=$2,checked_at=NULL WHERE id=$1', [
+            connectionId,
+            state,
+          ]);
+          const opened = await service.request(
+            { action: 'use', url: 'https://example.test/account', connectionId },
+            first,
+          );
+          assert.equal(opened.status, 'session_opened');
+          for (const signedIn of [undefined, false]) {
+            const unconfirmed = {
+              action: 'save',
+              url: 'https://example.test/account',
+              connectionId,
+              ...(signedIn === undefined ? {} : { signedIn }),
+            } as BrowserConnectionRequest;
+            assert.equal((await service.request(unconfirmed, first)).status, 'rejected');
+          }
+          const stored = (await service.list())[0];
+          assert.equal(stored.browserState, state);
+          assert.equal(stored.status, 'disconnected');
+          assert.equal(stored.checkedAt, undefined);
+        }
+      }
+      page('<main>Account is open</main>', '/login');
+      changeOrigin = true;
+      assert.equal((await service.request(save, first)).status, 'needs_sign_in');
+      assert.equal((await service.list())[0].browserState, 'needs_sign_in');
+      changeOrigin = false;
+      page('<main>Account is open</main>', '/login');
       cancelTurnId = first.turnId;
       await assert.rejects(service.request(save, first), /no longer active|unavailable/);
       assert.equal((await service.list())[0].browserState, 'needs_sign_in');
@@ -94,6 +145,12 @@ test(
       cancelTurnId = undefined;
       assert.equal((await service.request(save, first)).status, 'session_saved');
       assert.equal((await service.list())[0].browserState, 'saved');
+      await pool.query(
+        "UPDATE browser_connections SET checked_at='2001-01-01T00:00:00Z' WHERE id=$1",
+        [connectionId],
+      );
+      const checkedAt = (await service.list())[0].checkedAt;
+      const priorBindings = bindings.length;
       cancelTurnId = second.turnId;
       await assert.rejects(
         service.request(
@@ -103,8 +160,10 @@ test(
         /no longer active/,
       );
       assert.equal((await service.list())[0].browserState, 'saved');
+      assert.equal((await service.list())[0].checkedAt, checkedAt);
       await pool.query("UPDATE turns SET status='running' WHERE id=$1", [second.turnId]);
       cancelTurnId = undefined;
+      page(unknownPages[0]);
       assert.equal(
         (
           await service.request(
@@ -114,8 +173,28 @@ test(
         ).status,
         'session_opened',
       );
-      assert.equal(bindings.length, 4);
+      assert.equal((await service.list())[0].browserState, 'saved');
+      assert.equal((await service.list())[0].checkedAt, checkedAt);
+      assert.equal(bindings.length, priorBindings + 2);
       assert.equal(new Set(bindings).size, 1);
+      page('<main>Account is open</main>');
+      assert.equal((await service.request(save, second)).status, 'session_saved');
+      const recheckedAt = (await service.list())[0].checkedAt;
+      assert.notEqual(recheckedAt, checkedAt);
+      changeOrigin = true;
+      assert.equal(
+        (
+          await service.request(
+            { action: 'use', url: 'https://example.test/account', connectionId },
+            second,
+          )
+        ).status,
+        'needs_sign_in',
+      );
+      assert.equal((await service.list())[0].browserState, 'needs_sign_in');
+      assert.equal((await service.list())[0].checkedAt, recheckedAt);
+      changeOrigin = false;
+      page('<main>Account is open</main>');
       assert.equal(
         (await service.request({ action: 'use', url: 'https://other.test/', connectionId }, second))
           .status,
@@ -142,6 +221,7 @@ test(
       await service.disconnect(connectionId);
       assert.deepEqual(removed, [bindings[0]]);
     } finally {
+      dom.window.close();
       await pool.end();
       await admin.query(`DROP SCHEMA ${schema} CASCADE`);
       await admin.end();

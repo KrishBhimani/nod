@@ -116,7 +116,23 @@ export const browserRequest = z.discriminatedUnion('method', [
     })
     .strict(),
   z.object({ ...identity, method: z.literal('screenshot'), threadId: thread }).strict(),
-  z.object({ ...identity, method: z.literal('inspectLogin'), threadId: thread }).strict(),
+  z
+    .object({
+      ...identity,
+      method: z.literal('inspectLogin'),
+      threadId: thread,
+      target: z
+        .object({
+          origin: z.string().min(1).max(2048),
+          kind: z.enum(['identifier', 'password', 'otp']),
+          usernameSelector: selector.optional(),
+          passwordSelector: selector.optional(),
+          emailCode: z.boolean().optional(),
+        })
+        .strict()
+        .optional(),
+    })
+    .strict(),
   z.object({ ...identity, method: z.literal('injectCredentials'), input: credential }).strict(),
   z
     .object({

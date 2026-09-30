@@ -130,7 +130,7 @@ export const toolDefinitions = {
   ),
   get_credential: defineTool(
     'get_credential',
-    'Get a saved website login from Vault by its ID and exact origin. The result includes the username and password. To fill a protected browser field, omit the ID and give field references from the latest browser snapshot. Vault then tries a saved login or opens a secure form.',
+    'Get a saved website login from Vault by its ID and exact origin. The result includes the username and password. To fill protected browser fields, omit the ID and give field references from a fresh browser snapshot. Pass savedLoginId to select one applicable login. For OTP, set emailCode:true only when the page says it sent a code by email. Vault can fill a saved login or open a secure form. Submit with browser and inspect the result.',
     Type.Union([
       Type.Object({
         id: uuid,
@@ -142,12 +142,14 @@ export const toolDefinitions = {
         kind: literals(['identifier', 'password', 'otp']),
         usernameSelector: Type.Optional(Type.String()),
         passwordSelector: Type.Optional(Type.String()),
+        emailCode: Type.Optional(Type.Boolean()),
+        savedLoginId: Type.Optional(uuid),
       }),
     ]),
   ),
   browser_session: defineTool(
     'browser_session',
-    'Browser profiles for website accounts. connect opens a new private profile; use opens an existing profile; save checks and keeps the current signed-in profile.',
+    'Browser profiles for website accounts. connect opens a new private profile; use opens an existing profile without verifying sign-in. Inspect the current page to determine the outcome. save with signedIn:true records that you observed a successful sign-in on this origin.',
     Type.Union([
       Type.Object({
         action: Type.Literal('connect'),
@@ -155,9 +157,15 @@ export const toolDefinitions = {
         label: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
       }),
       Type.Object({
-        action: literals(['use', 'save']),
+        action: Type.Literal('use'),
         url: Type.String({ minLength: 1, maxLength: 2048 }),
         connectionId: uuid,
+      }),
+      Type.Object({
+        action: Type.Literal('save'),
+        url: Type.String({ minLength: 1, maxLength: 2048 }),
+        connectionId: uuid,
+        signedIn: Type.Literal(true),
       }),
     ]),
   ),
@@ -171,7 +179,7 @@ export const toolDefinitions = {
   ),
   manage_apps: defineTool(
     'manage_apps',
-    'list saved accounts and access paths; connect {service} starts a native sign-in and pauses; propose {service, proposal} saves a new MCP, HTTP or CLI path and gives the user a private setup link.',
+    'list saved accounts and access paths: savedLogin:true marks Vault logins for their exact access-path origin; browserAccess:browser_session marks private browser profiles. Neither exposes credentials. connect {service} starts a native sign-in and pauses; propose {service, proposal} saves a new MCP, HTTP or CLI path and gives the user a private setup link.',
     Type.Object({
       action: literals(['list', 'connect', 'propose']),
       service: Type.Optional(Type.String({ maxLength: 80 })),

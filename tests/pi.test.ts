@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 import test from 'node:test';
+import { JSDOM } from 'jsdom';
 import {
   createAgentSession,
   SessionManager,
@@ -926,13 +927,24 @@ function browserFixture() {
   const commands: string[][] = [];
   const launches: string[][] = [];
   const png = Buffer.from('fixture-png');
+  const dom = new JSDOM('<input id="password" type="password">', {
+    url: 'https://1.1.1.1/',
+    runScripts: 'outside-only',
+  });
+  dom.window.HTMLElement.prototype.getClientRects = () => [{}] as unknown as DOMRectList;
   const run: typeof runProcess = async (_executable, args, options) => {
     launches.push(args);
     const command = args.slice(args.indexOf('--idle-timeout') + 2);
     commands.push(command);
     let data: Record<string, unknown> = {};
     if (command[0] === 'get')
-      data = command[1] === 'url' ? { url: 'https://1.1.1.1/' } : { value: 'text' };
+      data =
+        command[1] === 'url'
+          ? { url: 'https://1.1.1.1/' }
+          : {
+              value:
+                dom.window.document.querySelector(command[2])?.getAttribute(command[3]) ?? null,
+            };
     if (command[0] === 'eval')
       data = {
         result: options?.input?.includes('const root =')
@@ -944,9 +956,7 @@ function browserFixture() {
               scrollAreas: [],
               scrollAreasTotal: 0,
             }
-          : options?.input?.includes('data-otto-entry-target')
-            ? { ok: true, counts: [1] }
-            : { ok: true },
+          : dom.window.eval(options?.input ?? ''),
       };
     if (command[0] === 'snapshot')
       data = {
@@ -955,7 +965,7 @@ function browserFixture() {
     if (command[0] === 'screenshot') await writeFile(command[1], png);
     return { stdout: JSON.stringify({ success: true, data }), stderr: '', exitCode: 0 };
   };
-  return { run, commands, launches, png };
+  return { run, commands, launches, png, dom };
 }
 
 test('computer observations retain body text, normalize controls, protect credentials and return screenshot bytes', async () => {
@@ -982,6 +992,10 @@ test('computer observations retain body text, normalize controls, protect creden
       passwordSelector: '#password',
     });
     assert.equal(
+      fixture.dom.window.document.querySelector<HTMLInputElement>('#password')!.value,
+      'fixture-secret',
+    );
+    assert.equal(
       (await computer.act('fixture', { action: 'snapshot' })).text.includes('fixture-secret'),
       false,
     );
@@ -996,6 +1010,7 @@ test('computer observations retain body text, normalize controls, protect creden
     assert.equal(fixture.commands.filter((command) => command[0] === 'close').length, 1);
   } finally {
     await computer.dispose();
+    fixture.dom.window.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

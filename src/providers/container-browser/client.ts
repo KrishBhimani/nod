@@ -280,9 +280,13 @@ export function createBridgeComputer(options: {
         throw new Error('The browser file is unavailable.');
       return { bytes, name: result.name, mimeType: result.mimeType };
     },
-    inspectLogin: async (id) =>
+    inspectLogin: async (id, target) =>
       loginInspectionSchema.parse(
-        await call({ method: 'inspectLogin', threadId: threadIdentity(id) }),
+        await call({
+          method: 'inspectLogin',
+          threadId: threadIdentity(id),
+          ...(target ? { target } : {}),
+        }),
       ),
     injectCredentials: async (input) => {
       const {

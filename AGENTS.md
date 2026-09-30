@@ -23,6 +23,8 @@ Setup and commands are in [README](README.md); how the system works is in [archi
 
 - Approvals: unknown, destructive or ambiguous outside actions need an owned yes/no confirmation bound to the exact action, account and arguments. Confirmed actions run once; interrupted ones become uncertain and are never re-run.
 - Vault and sign-in: `get_credential` can return one saved login to Pi by owned ID and exact origin. The value enters the Pi model context and saved session. Omit it from separate tool observations and user messages. New credentials go through secure forms and the trusted browser broker, bound to owner, turn, exact origin and expiry.
+- Pi interprets website login methods and field roles from the current browser page. The broker validates selected elements and secure entry; do not gate login on site names or field-label dictionaries. Keep site-specific cases in regression fixtures.
+- Before choosing a login method, check saved account metadata. Reuse a uniquely applicable login; ask when several methods are available without a matching saved login, unless the user already chose. Ask when the matching account or method remains ambiguous.
 - Credential guard: the runtime withholds messages that ask the user for passwords, codes or API keys and redirects the model to `get_credential`.
 - The onboarding welcome turn is read-only.
 - Owner and tenant isolation: every query and route is owner-scoped; tenants get their own SQL role and schemas and never receive control or auth credentials.

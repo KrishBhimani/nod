@@ -634,24 +634,31 @@ export async function createApplication(
             throw new Error('This saved login does not match the requested website.');
           return { credential: secret };
         }
-        if (input.kind === 'otp' && (await vault.fillEmailCode(turn, ownerId, input)))
+        const { savedLoginId, ...request } = input;
+        if (savedLoginId !== undefined) {
+          if (request.kind === 'otp')
+            throw new Error('Saved logins cannot supply verification codes.');
+          await vault.fillSaved(turn, ownerId, savedLoginId, request);
           return { filled: true };
-        if (input.kind !== 'otp') {
-          const selected = await vault.fillSelected(turn, ownerId, input);
+        }
+        if (request.kind === 'otp' && (await vault.fillEmailCode(turn, ownerId, request)))
+          return { filled: true };
+        if (request.kind !== 'otp') {
+          const selected = await vault.fillSelected(turn, ownerId, request);
           if (selected) return { filled: true };
           if (selected === undefined) {
             const matches = (await vault.list(ownerId)).filter(
-              (entry) => entry.origin === input.origin,
+              (entry) => entry.origin === request.origin,
             );
             if (matches.length === 1) {
               try {
-                await vault.fillSaved(turn, ownerId, matches[0].id, input);
+                await vault.fillSaved(turn, ownerId, matches[0].id, request);
                 return { filled: true };
               } catch {}
             }
           }
         }
-        return vault.request(turn, ownerId, input);
+        return vault.request(turn, ownerId, request);
       },
       integration: async (turn, action, args, options) => {
         const result = await integrations.execute(ownerId, action, args, turn, options?.signal);

@@ -31,6 +31,7 @@ import { createIntegrations, eventOverview } from '../src/server/integrations.ts
 import { createProviderUsageStore } from '../src/server/provider-usage.ts';
 import {
   meterAgent,
+  meterComputer,
   meterIntegrations,
   meterRelevance,
   meterSpeech,
@@ -81,7 +82,7 @@ test('notification summaries exclude message bodies, tokens, and unbounded provi
 });
 
 test(
-  'integration policy accepts verified events, rejects cross-account events, deduplicates, and gates writes',
+  'integration accounts stay owner-private while event policy verifies, deduplicates, and gates writes',
   { skip: !process.env.TEST_DATABASE_URL },
   async (t) => {
     const schema = `test_composio_${randomUUID().replaceAll('-', '')}`;
@@ -109,10 +110,25 @@ test(
     const provider = fakeProvider(session);
     const discoveredBrowserId = randomUUID();
     const pendingBrowserId = randomUUID();
+    const savedLoginIds = [randomUUID(), randomUUID()];
+    let savedLoginReads = 0;
     const integrations = await createIntegrations(pool, {
       ownerId: 'local-development',
       provider,
       baseUrl: 'http://localhost:4310',
+      browserAccounts: async () => {
+        savedLoginReads++;
+        return savedLoginIds.map((id, index) => ({
+          kind: 'login' as const,
+          id,
+          label: index ? 'Personal' : 'Work',
+          origin: 'https://login.example.test',
+          usernameHint: 'synthetic-private-hint',
+          username: 'synthetic-private-username',
+          password: 'synthetic-private-password',
+          updatedAt: '2026-01-01T00:00:00Z',
+        }));
+      },
       browserConnections: async () =>
         [
           { id: discoveredBrowserId, state: undefined },
@@ -131,14 +147,6 @@ test(
         assert.equal(prompt.includes('provider-secret'), false);
       },
     });
-    const browserPaths = await integrations.manageConnections('list');
-    assert.ok(Array.isArray(browserPaths));
-    assert.deepEqual(
-      browserPaths
-        .filter((connection) => connection.accessPaths?.some((path) => path.kind === 'browser'))
-        .map((connection) => connection.connectionId),
-      [discoveredBrowserId, pendingBrowserId],
-    );
     integrations.registerRoutes(app);
     const event = {
       id: 'event-fixture-1',
@@ -162,6 +170,31 @@ test(
       });
     }
     try {
+      const browserPaths = await integrations.manageConnections('list');
+      assert.ok(Array.isArray(browserPaths));
+      assert.deepEqual(
+        browserPaths
+          .filter((connection) => connection.accessPaths?.some((path) => path.kind === 'browser'))
+          .map((connection) => connection.connectionId),
+        [discoveredBrowserId, pendingBrowserId, ...savedLoginIds],
+      );
+      assert.deepEqual(
+        browserPaths
+          .filter((connection) => connection.savedLogin)
+          .map(({ connectionId, accessPaths }) => ({ connectionId, accessPaths })),
+        savedLoginIds.map((id) => ({
+          connectionId: id,
+          accessPaths: [{ id, kind: 'browser', endpoint: 'https://login.example.test' }],
+        })),
+      );
+      assert.equal(
+        browserPaths.find((connection) => connection.connectionId === pendingBrowserId)
+          ?.browserAccess,
+        'browser_session',
+      );
+      assert.doesNotMatch(JSON.stringify(browserPaths), /synthetic-private|usernameHint|password/);
+      await assert.rejects(integrations.list('another-user'), { statusCode: 403 });
+      assert.equal(savedLoginReads, 1);
       await pool.query(
         "INSERT INTO app_connections (owner_id,slug,account_id,trigger_id,triggers_enabled,provider_id) VALUES ('local-development','gmail','ca-fixture','ti-fixture',true,'fixture')",
       );
@@ -2612,6 +2645,28 @@ test('metering covers capabilities without recording prompts, arguments, output 
   await (
     await meterIntegrations(integration, usage).restoreSession('private-session')
   ).execute('ACTION', { secret: 'private-credential' }, 'private-account');
+  const target = {
+    origin: 'https://private.example',
+    kind: 'otp' as const,
+    passwordSelector: '@e19',
+    emailCode: true,
+  };
+  await meterComputer(
+    {
+      ...fakeComputer(),
+      inspectLogin: async (threadId, selected) => {
+        assert.equal(threadId, 'private-thread');
+        assert.deepEqual(selected, target);
+        return {
+          origin: 'https://private.example',
+          url: 'https://private.example/verification',
+          fields: [],
+          methods: [],
+        };
+      },
+    },
+    usage,
+  ).inspectLogin('private-thread', target);
   await usage.flush();
   assert.deepEqual(
     rows.map((row) => row[5]).sort(),
@@ -2623,6 +2678,7 @@ test('metering covers capabilities without recording prompts, arguments, output 
       'classify',
       'restore_session',
       'execute',
+      'inspect_login',
     ].sort(),
   );
   assert.doesNotMatch(JSON.stringify(rows), /private|secret\.example/);

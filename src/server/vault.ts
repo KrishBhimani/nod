@@ -13,7 +13,12 @@ import type {
   VaultCardNumber,
   VaultCardSecurityCode,
 } from '../shared/contracts.ts';
-import type { CredentialKind, CredentialSubmission, LoginInspection } from '../ports/computer.ts';
+import type {
+  CredentialKind,
+  CredentialSubmission,
+  LoginInspection,
+  LoginTarget,
+} from '../ports/computer.ts';
 import type { CredentialKeyStore } from '../ports/key-store.ts';
 import type { SiteIcon } from '../ports/link-preview.ts';
 import type { CredentialInvitation } from '../ports/agent.ts';
@@ -93,6 +98,7 @@ const requestInput = z
     kind: z.enum(['identifier', 'password', 'otp']),
     usernameSelector: z.string().min(1).max(2048).optional(),
     passwordSelector: z.string().min(1).max(2048).optional(),
+    emailCode: z.boolean().optional(),
   })
   .strict();
 type CredentialInput = z.infer<typeof requestInput>;
@@ -108,7 +114,7 @@ type VaultOptions = {
   retry(turnId: string): Promise<void>;
   inject(input: CredentialInjection): Promise<CredentialSubmission | void>;
   keyStore: CredentialKeyStore;
-  inspect?(threadId: string): Promise<LoginInspection>;
+  inspect?(threadId: string, target?: LoginTarget): Promise<LoginInspection>;
   hold?(threadId: string, until: number | null): Promise<void>;
   emailCode?(input: EmailCodeRequest, signal: AbortSignal): Promise<PrivateEmailCode | undefined>;
   icon?(origin: string): Promise<SiteIcon | null>;
@@ -799,7 +805,13 @@ export async function createVault(pool: Pool, options: VaultOptions) {
   async function inspectRequest(threadId: string, raw: CredentialInput) {
     const input = requestInput.parse(raw);
     const origin = credentialOrigin(input.origin);
-    const observed = await options.inspect?.(threadId);
+    const observed = await options.inspect?.(threadId, {
+      origin,
+      kind: input.kind,
+      usernameSelector: input.usernameSelector,
+      passwordSelector: input.passwordSelector,
+      emailCode: input.emailCode,
+    });
     if (observed && observed.origin !== origin)
       throw new VaultError(
         'The login page origin changed. Request a new secure sign-in step.',
@@ -807,34 +819,28 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       );
     if (observed) assertSupportedBrowser(observed);
     const kind = input.kind;
-    const detected = observed?.fields.filter((field) => field.kind === kind) ?? [];
+    const selected = observed?.fields.filter((field) => field.kind === kind) ?? [];
+    const identifiers = observed?.fields.filter((field) => field.kind === 'identifier') ?? [];
     if (
       observed &&
-      (!observed.methods.some((method) => method.id === 'credentials' && method.supported) ||
-        detected.length !== 1)
+      (selected.length !== 1 ||
+        (kind === 'password' && input.usernameSelector && identifiers.length !== 1))
     )
-      throw new VaultError('The current page does not support this credential step.', 409);
-    const target =
-      (kind === 'identifier' ? input.usernameSelector : input.passwordSelector) ??
-      (detected.length === 1 ? detected[0].selector : undefined);
+      throw new VaultError('The login field changed. Request a fresh secure form.', 409);
+    const target = observed
+      ? selected[0].selector
+      : kind === 'identifier'
+        ? input.usernameSelector
+        : input.passwordSelector;
+    const usernameSelector =
+      kind === 'password' && input.usernameSelector
+        ? observed
+          ? identifiers[0].selector
+          : input.usernameSelector
+        : undefined;
     if (!target)
       throw new VaultError('Choose a visible sign-in field from the current browser page.', 409);
-    if (
-      kind === 'password' &&
-      input.usernameSelector &&
-      /^@e\d+$/.test(target) !== /^@e\d+$/.test(input.usernameSelector)
-    )
-      throw new VaultError('Choose both sign-in fields from the same browser view.', 409);
-    if (
-      observed &&
-      ((!/^@e\d+$/.test(target) && target !== detected[0].selector) ||
-        (kind === 'password' &&
-          input.usernameSelector &&
-          !/^@e\d+$/.test(input.usernameSelector) &&
-          !observed.fields.some(
-            (field) => field.kind === 'identifier' && field.selector === input.usernameSelector,
-          )))
-    )
+    if (usernameSelector && usernameSelector === target)
       throw new VaultError('The login field changed. Request a fresh secure form.', 409);
     const resolved: CredentialInput = {
       origin,
@@ -844,12 +850,13 @@ export async function createVault(pool: Pool, options: VaultOptions) {
         ? { usernameSelector: target }
         : {
             passwordSelector: target,
-            ...(input.usernameSelector ? { usernameSelector: input.usernameSelector } : {}),
+            ...(usernameSelector ? { usernameSelector } : {}),
           }),
+      ...(kind === 'otp' && input.emailCode !== undefined ? { emailCode: input.emailCode } : {}),
     };
     const fields: LoginInspection['fields'] = [
-      ...(kind === 'password' && input.usernameSelector
-        ? [{ kind: 'identifier' as const, selector: input.usernameSelector, label: 'Username' }]
+      ...(usernameSelector
+        ? [{ kind: 'identifier' as const, selector: usernameSelector, label: 'Username' }]
         : []),
       {
         kind,
@@ -864,7 +871,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
         origin,
         url: observed?.url ?? origin,
         fields,
-        methods: observed?.methods ?? [
+        methods: [
           {
             id: 'credentials',
             kind: 'credentials' as const,
@@ -872,7 +879,9 @@ export async function createVault(pool: Pool, options: VaultOptions) {
             supported: true,
           },
         ],
-        ...(kind === 'otp' && observed?.emailCode ? { emailCode: observed.emailCode } : {}),
+        ...(kind === 'otp' && input.emailCode && observed?.emailCode
+          ? { emailCode: observed.emailCode }
+          : {}),
       },
     };
   }
@@ -1140,12 +1149,6 @@ export async function createVault(pool: Pool, options: VaultOptions) {
         const { input, inspection } = await inspectRequest(row.thread_id, row.selectors);
         if (input.kind !== row.kind)
           throw new VaultError('The login step changed. Request a fresh secure form.', 409);
-        if (
-          options.inspect &&
-          (!inspection.methods.some((method) => method.id === 'credentials' && method.supported) ||
-            !inspection.fields.some((field) => field.kind === row.kind))
-        )
-          throw new VaultError('The current page does not support this credential step.', 409);
         const savedIdentifier = identifiers.get(
           identifierKey(row.root_turn_id, row.owner_id, row.origin),
         );
@@ -1251,14 +1254,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     return consume(token, async (row, client) => {
       if (row.kind === 'otp') throw new VaultError('Enter the current verification code.', 409);
       const fresh = await inspectRequest(row.thread_id, row.selectors);
-      if (
-        fresh.input.kind !== row.kind ||
-        (options.inspect &&
-          (!fresh.inspection.fields.some((field) => field.kind === row.kind) ||
-            !fresh.inspection.methods.some(
-              (method) => method.id === 'credentials' && method.supported,
-            )))
-      )
+      if (fresh.input.kind !== row.kind)
         throw new VaultError('The login step changed. Request a fresh secure form.', 409);
       const selected = await selection(row.root_turn_id, row.owner_id, row.origin, client);
       const staged = await stagedUsername(selected);
@@ -1385,11 +1381,6 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       );
       if (!rows[0] || !['identifier', 'password'].includes(input.kind))
         throw new VaultError('No saved password is available for this website.', 404);
-      if (
-        options.inspect &&
-        !inspection.methods.some((method) => method.id === 'credentials' && method.supported)
-      )
-        throw new VaultError('The current page does not support saved credentials.', 409);
       const attempt = await client.query(
         `INSERT INTO credential_autofill_attempts(root_turn_id,owner_id,origin,entry_id,kind)
          SELECT $1,$2,$3,$4,$5 WHERE NOT EXISTS(SELECT 1 FROM credential_requests WHERE root_turn_id=$1 AND owner_id=$2 AND origin=$3 AND kind=$5 AND status='filled')
@@ -1491,11 +1482,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       )
         throw new VaultError('This saved sign-in step is no longer available.', 409);
       const fresh = await inspectRequest(turn.threadId, raw);
-      if (
-        fresh.input.kind !== 'password' ||
-        !fresh.inspection.fields.some((field) => field.kind === 'password') ||
-        !fresh.inspection.methods.some((method) => method.id === 'credentials' && method.supported)
-      )
+      if (fresh.input.kind !== 'password')
         throw new VaultError('The password step is not ready.', 409);
       const encryptionKey = await key();
       const secret = openCredential(encryptionKey, selected);
@@ -1528,14 +1515,8 @@ export async function createVault(pool: Pool, options: VaultOptions) {
         new Date(retained.expires_at).getTime() <= Date.now()
       )
         throw new VaultError('This task step is no longer active.', 409);
-      const verified = await inspectRequest(turn.threadId, raw);
-      if (
-        verified.input.kind !== 'password' ||
-        !verified.inspection.fields.some((field) => field.kind === 'password') ||
-        !verified.inspection.methods.some(
-          (method) => method.id === 'credentials' && method.supported,
-        )
-      )
+      const verified = await inspectRequest(turn.threadId, fresh.input);
+      if (verified.input.kind !== 'password')
         throw new VaultError('The password step changed.', 409);
       const submission = await options.inject({
         ...verified.input,
@@ -1600,7 +1581,13 @@ export async function createVault(pool: Pool, options: VaultOptions) {
   }
 
   async function fillEmailCode(turn: TurnRef, ownerId: string, raw: CredentialInput) {
-    if (ownerId !== owner || !options.inspect || !options.emailCode || raw.kind !== 'otp')
+    if (
+      ownerId !== owner ||
+      !options.inspect ||
+      !options.emailCode ||
+      raw.kind !== 'otp' ||
+      raw.emailCode !== true
+    )
       return false;
     let client: PoolClient | undefined;
     try {
@@ -1625,14 +1612,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       const fresh = await inspectRequest(turn.threadId, raw);
       const email = fresh.inspection.emailCode;
       const username = email ? verificationRecipient(email, selectedUsername) : undefined;
-      if (
-        !username ||
-        !email ||
-        fresh.input.kind !== 'otp' ||
-        fresh.inspection.origin !== origin ||
-        !fresh.inspection.fields.some((field) => field.kind === 'otp') ||
-        !fresh.inspection.methods.some((method) => method.id === 'credentials' && method.supported)
-      )
+      if (!username || !email || fresh.input.kind !== 'otp' || fresh.inspection.origin !== origin)
         return false;
       const attempt = await pool.query(
         `INSERT INTO credential_autofill_attempts(root_turn_id,owner_id,origin,entry_id,kind)
@@ -1694,7 +1674,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
         ).rowCount
       )
         throw new VaultError('This saved login is no longer available.', 409);
-      const verified = await inspectRequest(turn.threadId, raw);
+      const verified = await inspectRequest(turn.threadId, fresh.input);
       if (
         verified.input.kind !== 'otp' ||
         verified.inspection.origin !== origin ||
@@ -1702,11 +1682,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
         verificationRecipient(verified.inspection.emailCode, selectedUsername) !== username ||
         verified.inspection.emailCode.recipient !== email.recipient ||
         verified.inspection.emailCode.recipientHint !== email.recipientHint ||
-        verified.inspection.emailCode?.length !== email.length ||
-        !verified.inspection.fields.some((field) => field.kind === 'otp') ||
-        !verified.inspection.methods.some(
-          (method) => method.id === 'credentials' && method.supported,
-        )
+        verified.inspection.emailCode?.length !== email.length
       )
         throw new VaultError('This verification step changed.', 409);
       if (!(await found.current(client)))
