@@ -1,4 +1,4 @@
-import { chmod, lstat, mkdir, unlink } from 'node:fs/promises';
+import { chmod, lstat, mkdir, rm, unlink } from 'node:fs/promises';
 import { createServer, connect, type Socket } from 'node:net';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -151,6 +151,7 @@ export async function startContainerBrowserWorker(
     maxPendingPerNamespace?: number;
   } = {},
 ) {
+  await rm('/tmp/otto-browser-uploads', { recursive: true, force: true });
   const path = options.socketPath ?? browserSocketPath;
   const dataRoot = options.dataRoot ?? '/data';
   const createComputer =

@@ -35,7 +35,7 @@ This ledger records manual Pi runs with `gpt-6-sol` on 29 and 30 September 2026.
 
 ## Additional browser runs
 
-On 30 September, I froze 30 new prompts, checks, the `gpt-6-sol` model, a five-minute limit, and three repeat cases before the first run. I froze two holdout tasks, eight stress tasks, and two browser-only checks before their runs. The 42 prompts produced 54 runs. A pass means that the browser trace and the answer support the required result in the same run. A successful turn status alone does not count as a pass.
+On 30 September, I froze 30 new prompts, checks, the `gpt-6-sol` model, a five-minute limit, and three repeat cases before the first run. I froze two holdout tasks, eight stress tasks, and two browser-only checks before their runs. The 42 prompts produced 55 runs. A pass means that the browser trace and the answer support the required result in the same run. A successful turn status alone does not count as a pass.
 
 | ID  | Task                                                           | Browser result          | Evidence and limit                                                                                                                                                                                                                           |
 | --- | -------------------------------------------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -70,7 +70,7 @@ On 30 September, I froze 30 new prompts, checks, the `gpt-6-sol` model, a five-m
 | B53 | Compare first books across three categories.                   | Pass                    | Pi opened three product pages and found The Secret Garden as the cheapest.                                                                                                                                                                   |
 | B54 | Reach the phone and PIN fields on the synthetic identity site. | Pass after setup repair | The first fixture ran outside the browser container. A long-thread rerun reached the controls but gave an incomplete answer. In a fresh thread, Pi clicked through and named the two secure fields in 15 seconds. No credential was entered. |
 | B55 | Drag a card on a different synthetic page.                     | Pass with recovery      | Two selectors failed. Pi used the current page structure, called native drag, and read “Dropped: BLUE.”                                                                                                                                      |
-| B56 | Upload and submit a different synthetic file.                  | Pass                    | Pi used native upload and submit. The result page showed the filename and confirmed the file marker.                                                                                                                                         |
+| B56 | Upload and submit a different synthetic file.                  | Pass twice              | Pi used native upload and submit. Both runs showed the filename and confirmed the file marker, including a run after browser startup cleanup.                                                                                                |
 
 | B57 | Compare six product pages across six book categories. | Browser check failed | The answer was correct, but Pi used a workspace script for most pages. The trace shows only one product page in the browser. |
 | B58 | Put three Wikipedia biographies in birth-year order. | Pass | Pi opened all three articles and gave 1815, 1906, and 1912 in order. |
@@ -83,7 +83,7 @@ On 30 September, I froze 30 new prompts, checks, the `gpt-6-sol` model, a five-m
 | B65 | Repeat the six-product comparison with browser-only evidence. | Pass | The trace shows browser navigation through all six categories and product pages. Pi gave six correct prices and links, and one chat progress message. The run took 145 seconds. |
 | B66 | Repeat the PDF and two-page task with browser download. | Pass | The trace shows native browser download, then MDN and Wikipedia navigation. Pi gave the three checked facts and links. |
 
-The drag and upload fixes add native agent-browser actions to Otto's browser tool. Upload reads only a file in the current task workspace, sends at most 12 MB to the isolated browser, and keeps a private temporary copy until the browser session closes. Browser tasks B46, B56, and B61 used this path. An old saved profile failed after a browser service restart in one B45 rerun. Saved public profile restart reliability remains unconfirmed.
+The drag and upload fixes add native agent-browser actions to Otto's browser tool. Upload reads only a file in the current task workspace, sends at most 12 MB to the isolated browser, and keeps a private temporary copy until the browser session closes. Browser service startup clears copies left by an interrupted session. A focused worker startup check removed a synthetic stale file. Browser tasks B46, B56, and B61 used this path. An old saved profile failed after a browser service restart in one B45 rerun. Saved public profile restart reliability remains unconfirmed.
 
 ## Findings
 

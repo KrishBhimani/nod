@@ -143,6 +143,7 @@ export function createAgentBrowserComputer(options: {
   const screens = createScreenStore(runtimeRoot);
   const screenStatuses = new Map<string, ReturnType<NonNullable<Computer['screenStatus']>>>();
   const namespace = `sk-${createHash('sha256').update(runtimeRoot).digest('hex').slice(0, 12)}`;
+  const uploadRoot = resolve('/tmp/otto-browser-uploads', namespace);
   const executable =
     options.executable ?? resolve(process.cwd(), 'node_modules/.bin/agent-browser');
   const run = options.run ?? runProcess;
@@ -936,7 +937,7 @@ export function createAgentBrowserComputer(options: {
       const current = await currentUrl(state, signal);
       if (state.saved.allowedOrigin && new URL(current).origin !== state.saved.allowedOrigin)
         throw new BrowserActionError('browser_origin_changed');
-      const directory = resolve('/tmp/otto-browser-uploads', namespace, randomUUID());
+      const directory = resolve(uploadRoot, randomUUID());
       await mkdir(directory, { recursive: true, mode: 0o700 });
       const file = resolve(directory, input.name);
       try {
