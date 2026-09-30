@@ -39,9 +39,18 @@ import {
 } from '../src/server/provider-metering.ts';
 import { createAppGrantVault } from '../src/server/vault-app-grants.ts';
 import { integrationServiceIds } from '../src/shared/integrations.ts';
-import { fakeComputer, fakeWorkspace, fixtureReadOnly } from './runtime-fixtures.ts';
+import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 
-function fakeProvider(session: IntegrationSession): IntegrationProvider {
+const readTool = { annotations: { readOnlyHint: true } };
+
+function catalogReadOnly(tools: Record<string, { annotations?: { readOnlyHint?: boolean } }>) {
+  return async (action: string) => tools[action]?.annotations?.readOnlyHint === true;
+}
+
+function fakeProvider(
+  session: IntegrationSession,
+  tools: Parameters<typeof catalogReadOnly>[0] = {},
+): IntegrationProvider {
   return {
     id: 'fixture',
     configured: true,
@@ -49,7 +58,7 @@ function fakeProvider(session: IntegrationSession): IntegrationProvider {
     supportsSubscriptions: ['gmail', 'googlecalendar'],
     createSession: async () => session,
     restoreSession: async () => session,
-    readOnly: fixtureReadOnly,
+    readOnly: catalogReadOnly(tools),
     deleteSession: async () => {},
     inspectAccount: async () => ({ active: true, service: 'gmail' }),
     deleteAccount: async () => {},
@@ -109,7 +118,7 @@ test(
         suggestions: [{ useCase: 'Send email', primaryToolSlugs: ['GMAIL_SEND_EMAIL'] }],
       }),
     };
-    const provider = fakeProvider(session);
+    const provider = fakeProvider(session, { GMAIL_FETCH_EMAILS: readTool });
     const discoveredBrowserId = randomUUID();
     const pendingBrowserId = randomUUID();
     const savedLoginIds = [randomUUID(), randomUUID()];
@@ -509,7 +518,7 @@ test(
         return { data: { labels: [] } };
       },
     };
-    const provider = fakeProvider(session);
+    const provider = fakeProvider(session, { GMAIL_LIST_LABELS: readTool });
     provider.createSession = async (_owner, accounts) => {
       accountSets.push(accounts);
       return session;
@@ -724,6 +733,11 @@ async function appsFixture(t: TestContext) {
   const removed: string[] = [];
   const sessions: unknown[] = [];
   const wakes: string[] = [];
+  const tools = {
+    GMAIL_GET_ATTACHMENT: readTool,
+    NOTION_RETRIEVE_PAGE: readTool,
+    SLACK_SEARCH_MESSAGES: readTool,
+  };
   const session: IntegrationSession = {
     id: 'current-session',
     authorize: async (service, callback) => {
@@ -759,7 +773,7 @@ async function appsFixture(t: TestContext) {
     restoreSession: async () => {
       assert.fail('An old session must be replaced.');
     },
-    readOnly: fixtureReadOnly,
+    readOnly: catalogReadOnly(tools),
     deleteSession: async (id) => {
       removed.push(id);
     },
@@ -1037,7 +1051,7 @@ test(
 
 const query = 'List Gmail labels';
 const searchResult = {
-  tools: { GMAIL_LIST_LABELS: { inputSchema: { type: 'object' } } },
+  tools: { GMAIL_LIST_LABELS: { inputSchema: { type: 'object' }, ...readTool } },
   suggestions: [{ useCase: query, primaryToolSlugs: ['GMAIL_LIST_LABELS'] }],
 };
 type Execute = (id: string, action: string, args: Record<string, unknown>) => Promise<unknown>;
@@ -1128,7 +1142,7 @@ async function searchFixture(
       return session;
     },
     restoreSession: async () => session,
-    readOnly: fixtureReadOnly,
+    readOnly: catalogReadOnly(searchResult.tools),
     deleteSession: async () => {},
     inspectAccount: async (id) => ({
       active: true,
@@ -1819,7 +1833,10 @@ test(
         return session(id);
       },
       restoreSession: async () => session(id),
-      readOnly: fixtureReadOnly,
+      readOnly: catalogReadOnly({
+        NOTION_SEARCH_NOTION_PAGE: readTool,
+        LINEAR_LIST_PROJECTS: readTool,
+      }),
       deleteSession: async () => {},
       inspectAccount: async (accountId) => {
         if (accountId.endsWith('linear') && failInspectOnce) {
@@ -2358,7 +2375,7 @@ test(
       restoreSession: async () => {
         throw new Error();
       },
-      readOnly: fixtureReadOnly,
+      readOnly: async () => false,
       deleteSession: async () => {},
       deleteAccount: async () => {},
       inspectAccount: async (id, owner) => {
