@@ -550,15 +550,23 @@ export function Chat({
   }
   async function copyBugReport() {
     if (reportStatus === 'copying') return;
+    const requestedThread = threadId;
     setReportStatus('copying');
     setError('');
     try {
-      const report = await api<unknown>('/api/conversation/bug-report');
+      const report = await api<{ threadId: string }>('/api/conversation/bug-report');
+      if (threadRef.current !== requestedThread) return;
+      if (report.threadId !== requestedThread) {
+        setReportStatus('idle');
+        return;
+      }
       await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
-      setReportStatus('copied');
+      if (threadRef.current === requestedThread) setReportStatus('copied');
     } catch (cause) {
-      setReportStatus('idle');
-      setError(errorMessage(cause));
+      if (threadRef.current === requestedThread) {
+        setReportStatus('idle');
+        setError(errorMessage(cause));
+      }
     }
   }
   return (
