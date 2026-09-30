@@ -3,6 +3,8 @@ import { Value } from '@sinclair/typebox/value';
 import type { AgentToolMetadata } from '../ports/agent.ts';
 import type { BrowserAction } from '../ports/computer.ts';
 import { browserDownloadBytes } from '../ports/computer.ts';
+import { browserUploadBytes } from '../ports/computer.ts';
+import { basename } from 'node:path';
 import { isMessageReaction } from '../shared/emoji.ts';
 import { integrationDownloadActions } from '../shared/integrations.ts';
 import { requestsPrivateInput, vaultInvitation } from './communication.ts';
@@ -86,7 +88,7 @@ export const toolDefinitions = {
   ),
   browser: defineTool(
     'browser',
-    'Control your private agent-browser session. open {url}; snapshot (text, controls, scrollable areas; selector/offset/controlOffset page through more); click {selector}; fill {selector, text} (never secrets); select {selector, text} by visible label or value; check/uncheck/hover {selector}; back/forward/reload; tab_list and tab_switch {tabId}; press {key}; scroll {direction, selector?}; screenshot (image for you); share_screenshot {name?} (send the image to the user); download {url? | selector?, name?} (send a file to the user and copy it into the workspace; with neither, the open PDF or the last download). waitMs (up to 15000) waits for slow pages.',
+    'Control your private agent-browser session. open {url}; snapshot (text, controls, scrollable areas; selector/offset/controlOffset page through more); click {selector}; fill {selector, text} (never secrets); select {selector, text} by visible label or value; check/uncheck/hover {selector}; drag {selector, targetSelector}; upload {selector, path} from the task workspace; back/forward/reload; tab_list and tab_switch {tabId}; press {key}; scroll {direction, selector?}; screenshot (image for you); share_screenshot {name?} (send the image to the user); download {url? | selector?, name?} (send a file to the user and copy it into the workspace; with neither, the open PDF or the last download). waitMs (up to 15000) waits for slow pages.',
     Type.Object({
       action: literals([
         'open',
@@ -99,6 +101,8 @@ export const toolDefinitions = {
         'check',
         'uncheck',
         'hover',
+        'drag',
+        'upload',
         'back',
         'forward',
         'reload',
@@ -111,6 +115,8 @@ export const toolDefinitions = {
       url: Type.Optional(Type.String({ maxLength: 8192 })),
       tabId: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
       selector: Type.Optional(Type.String()),
+      targetSelector: Type.Optional(Type.String()),
+      path: Type.Optional(Type.String()),
       text: Type.Optional(Type.String({ maxLength: 8000 })),
       key: Type.Optional(
         literals(['Enter', 'Escape', 'Tab', 'ArrowDown', 'ArrowUp', 'PageDown', 'PageUp']),
@@ -313,6 +319,17 @@ export function ottoTools(turn: Turn): OttoTool[] {
         if (!file.bytes.length || file.bytes.length > browserDownloadBytes)
           throw new Error('Browser file delivery exceeds the download limit.');
         return context.publishBrowserFile(file);
+      }
+      if (action === 'upload') {
+        if (!computer.upload || !context.readWorkspaceFile)
+          throw new Error('Browser file upload is unavailable.');
+        if (!rest.selector || !rest.path) throw new Error('Choose a file and upload field.');
+        const bytes = await context.readWorkspaceFile(rest.path, browserUploadBytes);
+        return computer.upload(
+          threadId,
+          { selector: rest.selector, name: basename(rest.path), bytes },
+          signal,
+        );
       }
       return computer.act(threadId, { action, ...rest } as BrowserAction, signal);
     }),

@@ -19,6 +19,7 @@ export interface BrowserAction {
     | 'check'
     | 'uncheck'
     | 'hover'
+    | 'drag'
     | 'back'
     | 'forward'
     | 'reload'
@@ -27,6 +28,7 @@ export interface BrowserAction {
   url?: string;
   tabId?: string;
   selector?: string;
+  targetSelector?: string;
   text?: string;
   key?: 'Enter' | 'Escape' | 'Tab' | 'ArrowDown' | 'ArrowUp' | 'PageDown' | 'PageUp';
   direction?: 'up' | 'down';
@@ -44,6 +46,7 @@ export interface BrowserObservation {
   candidates: BrowserCandidate[];
 }
 export const browserDownloadBytes = 12 * 1024 * 1024;
+export const browserUploadBytes = 12 * 1024 * 1024;
 export interface BrowserDownloadInput {
   selector?: string;
   url?: string;
@@ -53,6 +56,11 @@ export interface BrowserDownload {
   bytes: Buffer;
   name: string;
   mimeType: string;
+}
+export interface BrowserUploadInput {
+  selector: string;
+  name: string;
+  bytes: Uint8Array;
 }
 export type CredentialKind = 'identifier' | 'password' | 'otp';
 export interface LoginField {
@@ -101,6 +109,11 @@ export interface Computer {
     input: BrowserDownloadInput,
     signal?: AbortSignal,
   ): Promise<BrowserDownload>;
+  upload?(
+    threadId: string,
+    input: BrowserUploadInput,
+    signal?: AbortSignal,
+  ): Promise<BrowserObservation>;
   screenshot(threadId: string, signal?: AbortSignal): Promise<Buffer | null>;
   screenStatus?(threadId: string): {
     state: 'live' | 'last_known' | 'unavailable';

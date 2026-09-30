@@ -6,13 +6,14 @@ import { z } from 'zod';
 import type {
   BrowserAction,
   BrowserDownloadInput,
+  BrowserUploadInput,
   BrowserObservation,
   Computer,
   CredentialInput,
   CredentialSubmission,
   LoginInspection,
 } from '../../ports/computer.ts';
-import { BrowserActionError } from '../../ports/computer.ts';
+import { BrowserActionError, browserUploadBytes } from '../../ports/computer.ts';
 import { threadIdentity } from '../../ports/thread-identity.ts';
 import { runProcess, serviceEnvironment } from '../process.ts';
 import { createBrowserProxy, browserUrl } from './network.ts';
@@ -41,6 +42,7 @@ interface BrowserState {
   injecting: boolean;
   secrets: Set<string>;
   protectedSelectors: Set<string>;
+  uploads: Set<string>;
   started: boolean;
   lastUsed: number;
   busy: number;
@@ -183,6 +185,7 @@ export function createAgentBrowserComputer(options: {
         injecting: false,
         secrets: new Set(),
         protectedSelectors: new Set(),
+        uploads: new Set(),
         started: false,
         lastUsed: Date.now(),
         busy: 0,
@@ -295,7 +298,17 @@ export function createAgentBrowserComputer(options: {
     options.signal?.throwIfAborted();
     if (
       state.socket &&
-      !['select', 'check', 'uncheck', 'hover', 'back', 'forward', 'reload'].includes(args[0])
+      ![
+        'select',
+        'check',
+        'uncheck',
+        'hover',
+        'drag',
+        'upload',
+        'back',
+        'forward',
+        'reload',
+      ].includes(args[0])
     ) {
       const request =
         args[0] === 'open'
@@ -884,6 +897,10 @@ export function createAgentBrowserComputer(options: {
         }
         if (['check', 'uncheck', 'hover'].includes(input.action))
           await command(state, [input.action, selector(input.selector)], { signal });
+        if (input.action === 'drag')
+          await command(state, ['drag', selector(input.selector), selector(input.targetSelector)], {
+            signal,
+          });
         if (['back', 'forward', 'reload'].includes(input.action))
           await command(state, [input.action], { signal });
       }
@@ -897,6 +914,40 @@ export function createAgentBrowserComputer(options: {
       if (error instanceof DaemonCommandError)
         throw new BrowserActionError('browser_action_failed');
       throw error;
+    });
+  }
+
+  async function upload(id: string, input: BrowserUploadInput, signal?: AbortSignal) {
+    if (
+      !input.bytes.length ||
+      input.bytes.length > browserUploadBytes ||
+      !/^[^/\\\u0000-\u001f\u007f]{1,200}$/.test(input.name)
+    )
+      throw new Error('Choose a file of at most 12 MB.');
+    const state = await recoverBrowser(id);
+    if (!state?.started) throw new Error('Open the upload website first.');
+    if (state.injecting) throw new BrowserLockedError();
+    return serialize(state, async () => {
+      if (state.injecting) throw new BrowserLockedError();
+      signal?.throwIfAborted();
+      if (state.uploads.size >= 8)
+        throw new Error('Close this browser before uploading more files.');
+      markActivity(id);
+      const current = await currentUrl(state, signal);
+      if (state.saved.allowedOrigin && new URL(current).origin !== state.saved.allowedOrigin)
+        throw new BrowserActionError('browser_origin_changed');
+      const directory = resolve('/tmp/otto-browser-uploads', namespace, randomUUID());
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      const file = resolve(directory, input.name);
+      try {
+        await writeFile(file, input.bytes, { mode: 0o600 });
+        await command(state, ['upload', selector(input.selector), file], { signal });
+        state.uploads.add(directory);
+        return observe(state, signal);
+      } catch (error) {
+        if (!state.uploads.has(directory)) await rm(directory, { recursive: true, force: true });
+        throw error;
+      }
     });
   }
 
@@ -1265,6 +1316,8 @@ export function createAgentBrowserComputer(options: {
       await saveState(state);
       state.secrets.clear();
       state.protectedSelectors.clear();
+      for (const directory of state.uploads) await rm(directory, { recursive: true, force: true });
+      state.uploads.clear();
       if (browsers.get(id) === state) browsers.delete(id);
       screenStatuses.set(
         id,
@@ -1387,6 +1440,7 @@ export function createAgentBrowserComputer(options: {
     bindProfile: tracked(bindProfile),
     deleteProfile: tracked(deleteProfile),
     act: tracked(browserAction),
+    upload: tracked(upload),
     download: tracked(download),
     screenshot: tracked(getScreenshot),
     screenStatus: (id) => screenStatuses.get(threadIdentity(id)) ?? { state: 'unavailable' },

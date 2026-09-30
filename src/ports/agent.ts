@@ -104,6 +104,7 @@ export interface RuntimeContext {
   waitForUser?(question: string): Promise<void>;
   delta(text: string, streamId?: string, done?: boolean): void;
   publish(path: string, name?: string): Promise<Artifact>;
+  readWorkspaceFile?(path: string, maxBytes: number): Promise<Uint8Array>;
   publishScreenshot?(bytes: Uint8Array, name?: string): Promise<Artifact>;
   publishBrowserFile?(file: {
     bytes: Uint8Array;

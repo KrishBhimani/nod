@@ -946,6 +946,9 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
         await post(`Created ${artifact.name}.`, [artifact]);
         return artifact;
       },
+      readWorkspaceFile:
+        dependencies.readArtifact &&
+        fenced((path, maxBytes) => dependencies.readArtifact!(threadId, path, maxBytes)),
       publishScreenshot: (bytes, name) => {
         const fileName =
           name && /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\.png$/.test(name) ? name : 'screenshot.png';

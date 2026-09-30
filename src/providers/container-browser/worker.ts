@@ -3,7 +3,11 @@ import { createServer, connect, type Socket } from 'node:net';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Computer } from '../../ports/computer.ts';
-import { BrowserActionError, browserDownloadBytes } from '../../ports/computer.ts';
+import {
+  BrowserActionError,
+  browserDownloadBytes,
+  browserUploadBytes,
+} from '../../ports/computer.ts';
 import { createAgentBrowserComputer } from '../agent-browser/index.ts';
 import { containerBrowserOptions } from './config.ts';
 import {
@@ -82,6 +86,15 @@ async function dispatch(computer: Computer, request: BrowserRequest, signal: Abo
       )
         throw new Error();
       return { data: file.bytes.toString('base64'), name: file.name, mimeType: file.mimeType };
+    }
+    case 'upload': {
+      if (!computer.upload) throw new Error();
+      const { data, ...input } = request.input;
+      if (data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new Error();
+      const bytes = Buffer.from(data, 'base64');
+      if (!bytes.length || bytes.length > browserUploadBytes || bytes.toString('base64') !== data)
+        throw new Error();
+      return computer.upload(request.threadId, { ...input, bytes }, signal);
     }
     case 'screenshot': {
       const image = await computer.screenshot(request.threadId, signal);

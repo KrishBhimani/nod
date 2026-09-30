@@ -1,7 +1,8 @@
 import { z } from 'zod';
+import { browserUploadBytes } from '../../ports/computer.ts';
 
 export const browserSocketPath = '/data/control.sock';
-export const requestBytes = 128 * 1024;
+export const requestBytes = Math.ceil(browserUploadBytes / 3) * 4 + 8192;
 export const responseBytes = 17 * 1024 * 1024;
 export const imageBytes = 12 * 1024 * 1024;
 
@@ -37,6 +38,7 @@ const browserAction = z
       'check',
       'uncheck',
       'hover',
+      'drag',
       'back',
       'forward',
       'reload',
@@ -46,6 +48,7 @@ const browserAction = z
     url: z.string().max(8192).optional(),
     tabId: z.string().min(1).max(200).optional(),
     selector: selector.optional(),
+    targetSelector: selector.optional(),
     text: z.string().max(20_000).optional(),
     key: z
       .enum(['Enter', 'Escape', 'Tab', 'ArrowDown', 'ArrowUp', 'PageDown', 'PageUp'])
@@ -89,6 +92,27 @@ export const browserRequest = z.discriminatedUnion('method', [
       method: z.literal('download'),
       threadId: thread,
       input: browserDownloadInput,
+    })
+    .strict(),
+  z
+    .object({
+      ...identity,
+      method: z.literal('upload'),
+      threadId: thread,
+      input: z
+        .object({
+          selector,
+          name: z
+            .string()
+            .min(1)
+            .max(200)
+            .regex(/^[^/\\\u0000-\u001f\u007f]+$/),
+          data: z
+            .string()
+            .min(4)
+            .max(Math.ceil(browserUploadBytes / 3) * 4),
+        })
+        .strict(),
     })
     .strict(),
   z.object({ ...identity, method: z.literal('screenshot'), threadId: thread }).strict(),
