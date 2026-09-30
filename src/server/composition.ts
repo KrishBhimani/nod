@@ -76,6 +76,7 @@ import { events, refresh } from './events.ts';
 import { createIntegrations } from './integrations.ts';
 import { createInspectorStore } from './inspector.ts';
 import { createPromptInspector } from './inspector-prompts.ts';
+import { registerBugReport } from './bug-report.ts';
 import { createPersonalService } from './personal.ts';
 import { createSpeech } from './speech.ts';
 import {
@@ -717,6 +718,14 @@ export async function createApplication(
         speechReady: adapters.speech.configured,
         integrationsReady: adapters.integrations.configured,
       }),
+  });
+  registerBugReport(app, {
+    pool,
+    ownerId,
+    captureEnabled: () => configuration().inspectorEnabled,
+    secrets: inspectorSecrets,
+    provider: adapters.model.provider,
+    model: adapters.model.name,
   });
   if (localAccounts) {
     registerPrivacyNotice(app, privacyNotice);

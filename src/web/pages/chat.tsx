@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowUpRight } from 'lucide-react';
+import { ArrowDown, ArrowUpRight, Bug, Check } from 'lucide-react';
 import type {
   AppState,
   Artifact,
@@ -114,6 +114,7 @@ export function Chat({
   const [sending, setSending] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [error, setError] = useState('');
+  const [reportStatus, setReportStatus] = useState<'idle' | 'copying' | 'copied'>('idle');
   const [connectionNotice, setConnectionNotice] = useState('');
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [focusTarget, setFocusTarget] = useState<{ id: string; pages: number } | null>(() =>
@@ -234,6 +235,7 @@ export function Chat({
     setText('');
     setSending(false);
     setError('');
+    setReportStatus('idle');
     setStopping(false);
     stickToBottom.current = true;
   }, [threadId]);
@@ -546,8 +548,39 @@ export function Chat({
       if (threadRef.current === stoppedThread) setStopping(false);
     }
   }
+  async function copyBugReport() {
+    if (reportStatus === 'copying') return;
+    setReportStatus('copying');
+    setError('');
+    try {
+      const report = await api<unknown>('/api/conversation/bug-report');
+      await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
+      setReportStatus('copied');
+    } catch (cause) {
+      setReportStatus('idle');
+      setError(errorMessage(cause));
+    }
+  }
   return (
     <div className="chat-page">
+      <div className="chat-report-action">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => void copyBugReport()}
+          disabled={reportStatus === 'copying'}
+          aria-label={reportStatus === 'copied' ? 'Bug report copied' : 'Copy bug report'}
+          title="Copy conversation and trace as JSON"
+        >
+          {reportStatus === 'copied' ? <Check size={15} /> : <Bug size={15} />}
+          {reportStatus === 'copying'
+            ? 'Copying…'
+            : reportStatus === 'copied'
+              ? 'Copied'
+              : 'Copy bug report'}
+        </Button>
+      </div>
       <ChatTurnRail
         messages={allMessages}
         activeId={activeTurn}
