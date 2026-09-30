@@ -16,6 +16,7 @@ import type { Computer, Workspace } from '../ports/computer.ts';
 import { BrowserActionError } from '../ports/computer.ts';
 import { threadIdentity } from '../ports/thread-identity.ts';
 import { browserErrorMessage } from '../shared/browser-errors.ts';
+import { createBrowserFlows } from './browser-flows.ts';
 import { requestsPrivateInput } from './communication.ts';
 import { createObservationQueue } from './observations.ts';
 import { firstInstruction, systemPrompt } from './prompt.ts';
@@ -38,6 +39,7 @@ const readOnlyTools: Record<string, true | string[]> = {
   source_check: true,
   get_search_content: true,
   browser: ['open', 'snapshot', 'scroll', 'screenshot'],
+  browser_flow: ['list', 'get'],
   manage_apps: ['list'],
   manage_personal_context: [
     'profile_get',
@@ -235,7 +237,11 @@ export function createAgentRuntime(dependencies: {
           typeof params === 'object' &&
           (params as { action?: unknown }).action === 'fill'
             ? { ...params, text: '[redacted]' }
-            : params;
+            : name === 'browser_flow' && params && typeof params === 'object'
+              ? (params as { action?: unknown }).action === 'save'
+                ? { action: 'save', flow: '[redacted]' }
+                : { ...params, query: '[redacted]', inputs: '[redacted]' }
+              : params;
         await observe({
           type: 'tool_start',
           id,
@@ -258,7 +264,10 @@ export function createAgentRuntime(dependencies: {
           signal.throwIfAborted();
           if (!stopped) await context.emit('tool_complete', label);
           result = isToolResult(output) ? output : textResult(output);
-          await end({ status: 'succeeded', ...(name === 'get_credential' ? {} : { output }) });
+          await end({
+            status: 'succeeded',
+            ...(['get_credential', 'browser_flow'].includes(name) ? {} : { output }),
+          });
         } catch (error) {
           if (!stopped) await context.emit('tool_failed', label).catch(() => {});
           const browserFailure =
@@ -302,7 +311,7 @@ export function createAgentRuntime(dependencies: {
         pause,
         confirm,
       };
-      const tools = ottoTools(turn).map(
+      const tools = ottoTools(turn, createBrowserFlows(workspace, computer, threadId, signal)).map(
         ({ name, description, parameters, execute }): AgentTool => ({
           name,
           description,
