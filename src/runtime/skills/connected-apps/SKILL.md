@@ -11,4 +11,3 @@ description: Read and act in the user's connected accounts (email, calendar, fil
 4. Truncated results are incomplete, not a not-found answer. Page or narrow the query.
 5. A draft is not a send. Create drafts when asked to draft; send, post, delete or share only when the user asked for that exact action. Writes may return a confirmation question that is already in chat; stop and wait.
 6. If the service is not connected, use manage_apps connect {service}. If no native app exists, research an official MCP, HTTP API or installed CLI path and use manage_apps propose; the user completes setup through a private link, never by pasting a token in chat.
-7. After a connection completes, continue the original request and answer when it is done. Do not send a progress message or run a separate authentication test. If the user only asked to connect, check manage_apps list and confirm the saved account. For a read request, read the requested source.
