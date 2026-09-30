@@ -40,6 +40,7 @@ import { createKeychainKeyStore } from '../providers/keychain/key-store.ts';
 import { createOpenAIRelevanceClassifier } from '../providers/openai/relevance.ts';
 import { createOpenAISpeechProvider } from '../providers/openai/speech.ts';
 import { createPiAgent } from '../providers/pi/index.ts';
+import { readPiSessionEntries } from '../providers/pi/checkpoint.ts';
 import { createPublicLinkPreviewProvider } from '../providers/public-web/link-preview.ts';
 import { createAgentRuntime } from '../runtime/index.ts';
 import { createApp } from './app.ts';
@@ -76,6 +77,7 @@ import { events, refresh } from './events.ts';
 import { createIntegrations } from './integrations.ts';
 import { createInspectorStore } from './inspector.ts';
 import { createPromptInspector } from './inspector-prompts.ts';
+import { registerBugReport } from './bug-report.ts';
 import { createPersonalService } from './personal.ts';
 import { createSpeech } from './speech.ts';
 import {
@@ -716,6 +718,20 @@ export async function createApplication(
         llmReady: adapters.model.configured,
         speechReady: adapters.speech.configured,
         integrationsReady: adapters.integrations.configured,
+      }),
+  });
+  registerBugReport(app, {
+    pool,
+    ownerId,
+    captureEnabled: () => configuration().inspectorEnabled,
+    secrets: inspectorSecrets,
+    provider: adapters.model.provider,
+    model: adapters.model.name,
+    sessionEntries: (threadId) =>
+      readPiSessionEntries({
+        threadId,
+        sessionRoot: join(dataRoot, 'sessions'),
+        objectStore: adapters.objectStore,
       }),
   });
   if (localAccounts) {

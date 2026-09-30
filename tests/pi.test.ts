@@ -21,6 +21,7 @@ import { createFilesystemObjectStore } from '../src/providers/object-storage/fil
 import {
   closeInterruptedCalls,
   createPiCheckpoint,
+  readPiSessionEntries,
   rebaseAt,
 } from '../src/providers/pi/checkpoint.ts';
 import { createPiAgent } from '../src/providers/pi/index.ts';
@@ -537,6 +538,55 @@ test('a stale Pi writer cannot overwrite a newer session checkpoint', async () =
     const restored = await createPiCheckpoint({ ...f, directory: f.directory });
     assert.match(JSON.stringify(restored.manager.getEntries()), /new version/);
     assert.doesNotMatch(JSON.stringify(restored.manager.getEntries()), /stale version/);
+  } finally {
+    await f.close();
+  }
+});
+
+test('the bug report reads only the requested saved Pi session', async () => {
+  const f = await fixture();
+  try {
+    const checkpoint = await createPiCheckpoint({
+      store: f.store,
+      threadId: f.threadId,
+      directory: f.directory,
+    });
+    checkpoint.manager.appendMessage({
+      role: 'user',
+      content: 'Saved fixture question',
+      timestamp: Date.now(),
+    });
+    await checkpoint.checkpoint();
+    const saved = await readPiSessionEntries({
+      threadId: f.threadId,
+      sessionRoot: f.directory,
+      objectStore: f.store,
+    });
+    assert.match(JSON.stringify(saved), /Saved fixture question/);
+    assert.equal(
+      (
+        await readPiSessionEntries({
+          threadId: randomUUID(),
+          sessionRoot: f.directory,
+          objectStore: f.store,
+        })
+      ).length,
+      0,
+    );
+    const localRoot = join(f.directory, 'local');
+    const localDirectory = join(localRoot, f.threadId);
+    await mkdir(localDirectory, { recursive: true });
+    const localManager = SessionManager.continueRecent(localDirectory, localDirectory);
+    localManager.appendMessage({
+      role: 'user',
+      content: 'Local fixture question',
+      timestamp: Date.now(),
+    });
+    dangling(localManager, []);
+    assert.equal(localManager.getSessionDir(), localDirectory);
+    assert.ok((await readdir(localDirectory)).some((name) => name.endsWith('.jsonl')));
+    const local = await readPiSessionEntries({ threadId: f.threadId, sessionRoot: localRoot });
+    assert.match(JSON.stringify(local), /Local fixture question/);
   } finally {
     await f.close();
   }

@@ -41,6 +41,8 @@ test(
     const db = await import('../src/server/db.ts');
     const thread = await import('../src/server/thread.ts');
     const { createApp } = await import('../src/server/app.ts');
+    const { registerBugReport } = await import('../src/server/bug-report.ts');
+    const { createPromptInspector } = await import('../src/server/inspector-prompts.ts');
     const { configuration, dataRoot, ownerId, port } = await import('../src/server/config.ts');
     const { localArtifacts, storeArtifact } = await import('../src/server/artifacts.ts');
     const { createPersonalService } = await import('../src/server/personal.ts');
@@ -61,6 +63,13 @@ test(
       refresh() {},
     });
     await personal.initialize({ workers: false });
+    const promptInspector = createPromptInspector(db.pool, {
+      ownerId,
+      enabled: () => true,
+      provider: 'fixture',
+      model: 'fixture',
+    });
+    await promptInspector.initialize(db.pool);
     let injected = 0;
     let executed = 0;
     const fixtureKey = randomBytes(32);
@@ -84,6 +93,17 @@ test(
       configuration: () => ({ ...configuration(), llmReady: true }),
       onboard: (_timeZone, threadId) => thread.restartOnboarding(threadId),
       startOnboarding: thread.startOnboarding,
+    });
+    let savedPiEntries: unknown[] = [];
+    let reportedPiThread = '';
+    registerBugReport(app, {
+      pool: db.pool,
+      ownerId,
+      captureEnabled: () => true,
+      sessionEntries: async (threadId) => {
+        reportedPiThread = threadId;
+        return savedPiEntries;
+      },
     });
     personal.registerRoutes(app);
     vault.registerRoutes(app);
@@ -1239,6 +1259,151 @@ test(
           );
         },
       );
+      await t.test('bug report includes the active thread and masks saved secrets', async () => {
+        savedPiEntries = [
+          {
+            type: 'message',
+            id: 'pi-assistant',
+            parentId: null,
+            timestamp: '2026-01-01T00:00:00.000Z',
+            message: {
+              role: 'assistant',
+              model: 'fixture',
+              content: [
+                {
+                  type: 'thinking',
+                  thinking:
+                    'The page gave me fixture-login-value, so I should inspect the next step.',
+                  thinkingSignature: 'opaque-fixture-signature',
+                },
+                {
+                  type: 'toolCall',
+                  id: 'credential-call',
+                  name: 'get_credential',
+                  arguments: { id: 'fixture-account', origin: 'https://example.test' },
+                },
+              ],
+            },
+          },
+          {
+            type: 'message',
+            id: 'pi-result',
+            parentId: 'pi-assistant',
+            timestamp: '2026-01-01T00:00:01.000Z',
+            message: {
+              role: 'toolResult',
+              toolCallId: 'credential-call',
+              toolName: 'get_credential',
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    username: 'fixture-login-user',
+                    password: 'fixture-login-value',
+                  }),
+                },
+              ],
+              details: { password: 'fixture-login-value' },
+            },
+          },
+          {
+            type: 'compaction',
+            id: 'pi-compaction',
+            parentId: 'pi-result',
+            timestamp: '2026-01-01T00:00:02.000Z',
+            summary: 'The assistant chose the saved account.',
+            tokensBefore: 1000,
+            systemMessage: { content: 'Saved fixture system instruction' },
+          },
+          {
+            type: 'context_edit',
+            id: 'pi-credential-edit',
+            parentId: 'pi-compaction',
+            timestamp: '2026-01-01T00:00:03.000Z',
+            targetId: 'pi-result',
+            replacement: { content: 'fixture-login-value' },
+          },
+          {
+            type: 'context_edit',
+            id: 'pi-safe-edit',
+            parentId: 'pi-credential-edit',
+            timestamp: '2026-01-01T00:00:04.000Z',
+            targetId: 'pi-assistant',
+            replacement: { content: 'Safe context update' },
+          },
+        ];
+        const turnId = randomUUID();
+        await db.pool.query(
+          "INSERT INTO turns(id,owner_id,thread_id,source,prompt,status) VALUES($1,$2,$3,'user','Inspect this action','succeeded')",
+          [turnId, ownerId, freshThread],
+        );
+        await db.pool.query(
+          "INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id) VALUES($1,$2,'user','password=fixture-secret',$3,$4)",
+          [randomUUID(), ownerId, freshThread, turnId],
+        );
+        await db.pool.query(
+          "INSERT INTO inspector_records(id,owner_id,thread_id,turn_id,kind,name,status,input,started_at) VALUES($1,$2,$3,$4,'tool','browser','succeeded',$5,now())",
+          [randomUUID(), ownerId, freshThread, turnId, { token: 'fixture-token', step: 'read' }],
+        );
+        await db.pool.query(
+          'INSERT INTO inspector_prompts(id,owner_id,thread_id,turn_id,payload,provider,model) VALUES($1,$2,$3,$4,$5,$6,$7)',
+          [
+            randomUUID(),
+            ownerId,
+            freshThread,
+            turnId,
+            { system: 'Fixture system' },
+            'fixture',
+            'fixture',
+          ],
+        );
+        const result = await request('GET', '/api/conversation/bug-report');
+        assert.equal(result.statusCode, 200);
+        assert.equal(result.headers['cache-control'], 'no-store');
+        const report = result.json<{
+          threadId: string;
+          messages: Array<{ text: string }>;
+          turns: Array<{ id: string }>;
+          trace: Array<{ name: string; input: { token: string } }>;
+          prompts: Array<{ turn_id: string }>;
+          piSession: {
+            available: boolean;
+            entries: Array<{ type: string; message?: unknown; summaryOmitted?: boolean }>;
+          };
+        }>();
+        assert.equal(report.threadId, freshThread);
+        assert.equal(reportedPiThread, freshThread);
+        assert.equal(report.piSession.available, true);
+        assert.ok(report.piSession.entries.some((entry) => entry.summaryOmitted === true));
+        assert.match(JSON.stringify(report.piSession), /inspect the next step/);
+        assert.match(JSON.stringify(report.piSession), /credential-call/);
+        assert.ok(!JSON.stringify(report.piSession).includes('Saved fixture system instruction'));
+        assert.match(JSON.stringify(report.piSession), /Safe context update/);
+        assert.ok(report.turns.some((turn) => turn.id === turnId));
+        assert.ok(report.trace.some((record) => record.name === 'browser'));
+        assert.ok(report.prompts.some((prompt) => prompt.turn_id === turnId));
+        assert.ok(report.messages.length > 60);
+        assert.ok(!JSON.stringify(report).includes('fixture-secret'));
+        assert.ok(!JSON.stringify(report).includes('fixture-token'));
+        assert.ok(!JSON.stringify(report).includes('fixture-login-value'));
+        assert.ok(!JSON.stringify(report).includes('fixture-login-user'));
+        assert.ok(!JSON.stringify(report).includes('opaque-fixture-signature'));
+        assert.ok(!JSON.stringify(report).includes('private content'));
+        assert.ok(!JSON.stringify(report).includes('Late old answer'));
+        savedPiEntries = [
+          {
+            type: 'compaction',
+            id: 'rebased-summary',
+            parentId: null,
+            timestamp: '2026-01-01T00:00:00.000Z',
+            summary: 'The old login was orphaned-fixture-password.',
+            details: { summary: 'orphaned-fixture-password' },
+            systemMessage: { content: 'orphaned-fixture-password' },
+          },
+        ];
+        const rebased = (await request('GET', '/api/conversation/bug-report')).json();
+        assert.ok(!JSON.stringify(rebased).includes('orphaned-fixture-password'));
+      });
     } finally {
       for (const resolve of gates.values()) resolve();
       releaseFence();
@@ -1246,6 +1411,7 @@ test(
       await thread.stopThreadWorkers();
       await readOnlyRuntime.dispose();
       await app.close();
+      await promptInspector.close();
       await db.pool.end();
       await admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`);
       await admin.query(`DROP SCHEMA ${schema} CASCADE`);
