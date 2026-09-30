@@ -1,4 +1,5 @@
 import type { ProviderUsageEvent } from './provider-usage.ts';
+import type { ConnectedApp } from './integrations.ts';
 import type { CredentialKind, WorkspaceSession } from './computer.ts';
 import type { AgentReactionResult, Artifact, MessageReaction } from '../shared/contracts.ts';
 export interface CredentialInvitation {
@@ -54,17 +55,33 @@ export interface RuntimeAccount {
   email: string | null;
 }
 
+export type ActivityCheckResult =
+  | {
+      status: 'verified';
+      value: string;
+      summary: string;
+      finding?: { id: string; version?: string; url?: string; summary: string };
+    }
+  | { status: 'unavailable'; summary: string };
+
 export interface RuntimeContext {
   threadId: string;
   turnId: string;
   prompt: string;
   background?: boolean;
   readOnly?: boolean;
+  limits?: { maxToolCalls: number; timeoutMs: number };
+  activityCheck?: {
+    connectionId: string;
+    previous?: { checkedAt: string; value: string; summary: string };
+    record(result: ActivityCheckResult, signal?: AbortSignal): Promise<void>;
+  };
   channel?: string;
   timeZone?: string;
   locale?: string;
   hourCycle?: 'auto' | 'h12' | 'h23';
   account?: RuntimeAccount;
+  connectedApps?: ConnectedApp[];
   currentMessageId?: string;
   replyTo?: { id: string; role: string; text: string; attachments?: MessageAttachment[] };
   history: Array<{
@@ -133,7 +150,12 @@ export interface RuntimeContext {
     invitation?: CredentialInvitation;
     credential?: { username: string; password: string };
   }>;
-  integration(action: string, args: Record<string, unknown>): Promise<unknown>;
+  integration(
+    action: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<unknown>;
+
   downloadIntegrationFile?(
     action: string,
     args: Record<string, unknown>,

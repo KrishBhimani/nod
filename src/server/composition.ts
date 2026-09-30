@@ -474,6 +474,7 @@ export async function createApplication(
     classifier: classify,
     getProfile: personal.getProfile,
     listGoals: personal.listGoals,
+    connectedApps: () => integrations.connectedApps(),
   });
   const grantVault = await createAppGrantVault(pool, {
     ownerId,
@@ -485,6 +486,7 @@ export async function createApplication(
     keyStore: adapters.keyStore,
     grantVault,
     transport: createDiscoveredTransport(),
+    accountReplaced: triage.invalidateActivityCheck,
     oauth: createDiscoveredOAuth(),
     runCli: workspace.connectedCliAvailable
       ? async (threadId, command, args, envName, token, timeoutSeconds, signal) => {
@@ -512,6 +514,7 @@ export async function createApplication(
     admission,
     ownerId,
     provider: integrationProvider,
+    validateActivityCheck: triage.validateActivityCheck,
     resumeConnection: resumeAfterConnection,
     ...(adapters.directIntegrations
       ? {
@@ -620,6 +623,8 @@ export async function createApplication(
       inspectPrompt: promptInspector.record,
       finishObservationSegment: inspector.finishSegment,
       accountProfile,
+      connectedApps: integrations.connectedApps,
+      activityCheck: triage.activityCheck,
       memoryContext: memory.context,
       markUntrustedContext: (turn) => memory.markUntrusted(turn.threadId),
       connections: integrations.manageConnections,
@@ -698,7 +703,14 @@ export async function createApplication(
         return vault.request(turn, ownerId, request);
       },
       integration: async (turn, action, args, options) => {
-        const result = await integrations.execute(ownerId, action, args, turn, options?.signal);
+        const result = await integrations.execute(
+          ownerId,
+          action,
+          args,
+          turn,
+          options?.signal,
+          options?.checkConnectionId,
+        );
         if (
           result &&
           typeof result === 'object' &&

@@ -26,13 +26,44 @@ const labels: Record<string, string> = {
 };
 
 function plain(value: string) {
+  const escape = (text: string) => text.replace(/[\\`*_{}\[\]<>()#!|]/g, '\\$&');
   return value
     .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '')
-    .replace(/[\\`*_{}\[\]<>()#!|]/g, '\\$&');
+    .split(/(https?:\/\/[^\s<>"'\\`]+)/gi)
+    .map((part, index) => {
+      if (index % 2) {
+        try {
+          const parsed = new URL(part);
+          if (!parsed.username && !parsed.password) return `<${part}>`;
+        } catch {}
+      }
+      return escape(part);
+    })
+    .join('');
 }
 
 function text(value: unknown) {
   return typeof value === 'string' && value.trim() ? plain(value.trim()) : undefined;
+}
+
+function fieldLabel(key: string) {
+  const words = key.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ');
+  return plain(words.charAt(0).toUpperCase() + words.slice(1));
+}
+
+function calendarValue(value: unknown): string {
+  if (value === null) return 'None';
+  if (Array.isArray(value))
+    return value.length
+      ? value.map((item, index) => `${index + 1}. ${calendarValue(item)}`).join('\n')
+      : 'Empty list';
+  if (typeof value === 'object' && value) {
+    const entries = Object.entries(value);
+    return entries.length
+      ? entries.map(([key, item]) => `${fieldLabel(key)}: ${calendarValue(item)}`).join('\n')
+      : 'No fields';
+  }
+  return typeof value === 'string' ? plain(value) || 'Empty text' : String(value);
 }
 
 function recipients(value: unknown) {
@@ -96,7 +127,15 @@ export function actionConfirmation(
     seen.add(label);
     details.push(`${label}: ${value}`);
   };
-  add('For', text(targetTitle));
+  add(action === 'GMAIL_REPLY_TO_THREAD' ? 'Thread subject' : 'For', text(targetTitle));
+  if (action.startsWith('GOOGLECALENDAR_')) {
+    for (const [key, value] of Object.entries(args)) {
+      if (key === 'connectionId') continue;
+      const label = fieldLabel(key);
+      seen.add(label);
+      details.push(`${label}: ${calendarValue(value)}`);
+    }
+  }
   if (action === 'CONNECTED_HTTP') {
     add('Method', connectedText(args.method));
     add('Path', connectedText(args.path));
@@ -171,7 +210,7 @@ export function actionConfirmation(
             : `Custom timing (${plain(args.cron)})`,
     );
   }
-  for (const key of ['body', 'text', 'content', 'prompt'])
+  for (const key of ['body', 'message_body', 'text', 'content', 'prompt'])
     add(action === 'OTTO_memory_save' ? 'Note' : 'Message', text(args[key]));
-  return `${label}${using}?${details.length ? `\n\n${details.join('\n\n')}` : ''}\n\nReply yes to confirm or no to leave it unchanged.`;
+  return `${label}${using}?${details.length ? `\n\n${details.join('\n\n')}` : ''}\n\nReply yes to confirm, no to leave it unchanged, or tell me what to change.`;
 }

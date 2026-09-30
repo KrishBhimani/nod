@@ -68,6 +68,39 @@ export const scheduleObservation = Type.Union([
   ),
 ]);
 
+const activityCheckTool = defineTool(
+  'record_activity_check',
+  'Record this read-only activity check once. verified requires a successful read from the selected account; include at most one useful finding with its stable source ID. Use unavailable when the source could not be inspected. This does not notify the user or prepare work.',
+  Type.Union([
+    Type.Object(
+      {
+        status: Type.Literal('verified'),
+        value: Type.String({ minLength: 1, maxLength: 300 }),
+        summary: Type.String({ minLength: 1, maxLength: 500 }),
+        finding: Type.Optional(
+          Type.Object(
+            {
+              id: Type.String({ minLength: 1, maxLength: 300 }),
+              version: Type.Optional(Type.String({ minLength: 1, maxLength: 300 })),
+              url: Type.Optional(Type.String({ minLength: 1, maxLength: 2048 })),
+              summary: Type.String({ minLength: 1, maxLength: 500 }),
+            },
+            { additionalProperties: false },
+          ),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        status: Type.Literal('unavailable'),
+        summary: Type.String({ minLength: 1, maxLength: 500 }),
+      },
+      { additionalProperties: false },
+    ),
+  ]),
+);
+
 export const toolDefinitions = {
   send_message: defineTool(
     'send_message',
@@ -92,7 +125,7 @@ export const toolDefinitions = {
   ),
   browser: defineTool(
     'browser',
-    'Control your private agent-browser session. open {url}; snapshot (text, controls, scrollable areas; selector/offset/controlOffset page through more); click {selector}; fill {selector, text} (never secrets); select {selector, text} by visible label or value; check/uncheck/hover {selector}; drag {selector, targetSelector}; upload {selector, path} from the task workspace; back/forward/reload; tab_list and tab_switch {tabId}; press {key}; scroll {direction, selector?}; screenshot (image for you); share_screenshot {name?} (send the image to the user); download {url? | selector?, name?} (send a file to the user and copy it into the workspace; with neither, the open PDF or the last download). waitMs (up to 15000) waits for slow pages.',
+    'Control your private agent-browser session. open {url}; snapshot (text, controls, scrollable areas; selector/offset/controlOffset page through more); click {selector}; fill {selector, text} (never secrets); select {selector, text} by visible label or value; check/uncheck/hover {selector}; drag {selector, targetSelector}; upload {selector, path} from the task workspace; back/forward/reload; tab_list and tab_switch {tabId}; press {key}; scroll {direction, selector?}; screenshot (image for you); share_screenshot {name?} (send the image to the user); download {url? | selector?, name?} (copy a file into the workspace; foreground downloads also deliver it, while background downloads stay private until share_file; with neither, the open PDF or the last download). waitMs (up to 15000) waits for slow pages.',
     Type.Object({
       action: literals([
         'open',
@@ -180,7 +213,7 @@ export const toolDefinitions = {
   ),
   apps: defineTool(
     'apps',
-    "Use the user's connected accounts. SEARCH_TOOLS {query} returns exact actions, schemas, account and path IDs. Other actions run with args; download actions send the file to the user and copy it into the workspace. Writes may pause for confirmation.",
+    "Use the user's connected accounts. SEARCH_TOOLS {query} returns exact actions, schemas, account and path IDs. Other actions run with args; download actions copy files into the workspace. Foreground downloads also deliver them; background downloads stay private until share_file. Writes may pause for confirmation.",
     Type.Object({
       action: Type.String({ maxLength: 150 }),
       args: Type.Record(Type.String(), Type.Unknown()),
@@ -375,8 +408,11 @@ export function ottoTools(
       return result;
     }),
     bind(toolDefinitions.apps, async (p) => {
-      if (!(integrationDownloadActions as readonly string[]).includes(p.action))
-        return confirm(await context.integration(p.action, p.args));
+      if (!(integrationDownloadActions as readonly string[]).includes(p.action)) {
+        const result = await context.integration(p.action, p.args, signal);
+        signal.throwIfAborted();
+        return context.activityCheck ? result : confirm(result);
+      }
       if (!context.downloadIntegrationFile) throw new Error('App file delivery is unavailable.');
       return context.downloadIntegrationFile(p.action, p.args);
     }),
@@ -406,6 +442,17 @@ export function ottoTools(
       return context.createAudio(p.text);
     }),
   ];
+  if (context.activityCheck) {
+    const check = context.activityCheck;
+    return [
+      ...tools.filter((tool) => tool.name === 'apps'),
+      bind(activityCheckTool, async (result) => {
+        signal.throwIfAborted();
+        await check.record(result, signal);
+        return 'Activity check recorded.';
+      }),
+    ];
+  }
   return tools;
 }
 

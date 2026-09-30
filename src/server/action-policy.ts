@@ -24,6 +24,10 @@ const ordinaryActions: Record<string, Intent[]> = {
   OTTO_memory_save: ['memory'],
 };
 
+export function isPrivateDraftAction(action: string) {
+  return action === 'GMAIL_CREATE_EMAIL_DRAFT';
+}
+
 export function isReversiblePlanAction(action: string) {
   return [
     'OTTO_goal_create',

@@ -2903,6 +2903,10 @@ test(
     const turns = await seedCodeTurns(pool);
     const other = await turns.start('other');
     const chat = await turns.start('chat');
+    await pool.query(
+      "UPDATE turns SET started_at=(SELECT started_at FROM turns WHERE id=$2)-interval '1 millisecond' WHERE id=$1",
+      [other.turnId, chat.turnId],
+    );
     const app = Fastify();
     t.after(async () => {
       await app.close();

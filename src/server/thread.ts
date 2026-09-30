@@ -23,9 +23,9 @@ import { defaultPreferences } from './preferences.ts';
 import { formattingLocale, timeZoneRegion } from '../shared/date-locale.ts';
 import type { IntegrationFile } from '../ports/integrations.ts';
 import type { AgentReactionInput } from './agent-reactions.ts';
-import type { ChatConfirmationInput } from './approvals.ts';
+import type { ChatConfirmationInput, ChatConfirmationResult } from './approvals.ts';
 import type { WorkConsumers } from './work-admission.ts';
-import { inlineAppResult } from './integration-result.ts';
+import { appResultInlineChars, inlineAppResult } from './integration-result.ts';
 
 const queue = 'thread-drain';
 export const boss = new PgBoss({
@@ -68,7 +68,7 @@ export interface SubmitUserMessageResult {
 type ConfirmAction = (
   client: PoolClient,
   input: ChatConfirmationInput,
-) => Promise<SubmitUserMessageResult | undefined>;
+) => Promise<ChatConfirmationResult>;
 
 export interface ThreadDependencies {
   consumers?: WorkConsumers;
@@ -90,6 +90,8 @@ export interface ThreadDependencies {
   inspectPrompt?: (turnId: string, snapshot: PromptSnapshot) => Promise<void>;
   finishObservationSegment?: (turnId: string) => Promise<void>;
   accountProfile?: () => Promise<RuntimeContext['account']>;
+  connectedApps?: () => Promise<NonNullable<RuntimeContext['connectedApps']>>;
+  activityCheck?: (turn: TurnRef) => Promise<RuntimeContext['activityCheck']>;
   memoryContext?: () => Promise<RuntimeContext['memory']>;
   markUntrustedContext?: (turn: TurnRef) => Promise<void>;
   runTurn: (context: RuntimeContext) => Promise<RuntimeResult>;
@@ -102,7 +104,7 @@ export interface ThreadDependencies {
     turn: TurnRef,
     action: string,
     args: Record<string, unknown>,
-    options: { readOnly: boolean; signal: AbortSignal },
+    options: { readOnly: boolean; signal: AbortSignal; checkConnectionId?: string },
   ) => Promise<unknown>;
   connections?: (
     action: 'list' | 'connect' | 'propose',
@@ -342,7 +344,8 @@ export async function submitUserMessage(
       if (prior) return { threadId: thread.id, turnId: prior.id, messageId: prior.message_id };
     }
     await assertReplyTarget(client, thread.id, options.replyToMessageId);
-    if (confirmAction && !attachments.length) {
+    let supersededApprovalId: string | undefined;
+    if (confirmAction) {
       const confirmed = await confirmAction(client, {
         text,
         channel,
@@ -350,8 +353,11 @@ export async function submitUserMessage(
         replyToMessageId: options.replyToMessageId,
         clientMessageId: options.clientMessageId,
         sourceId: options.sourceId,
+        hasAttachments: attachments.length > 0,
       });
-      if (confirmed) return confirmed;
+      if (confirmed && 'supersededApprovalId' in confirmed)
+        supersededApprovalId = confirmed.supersededApprovalId;
+      else if (confirmed) return confirmed;
     }
     const messageId = options.clientMessageId ?? randomUUID();
     const turnId = randomUUID();
@@ -380,6 +386,11 @@ export async function submitUserMessage(
         options.replyToMessageId ?? null,
       ],
     );
+    if (supersededApprovalId)
+      await client.query(
+        "UPDATE approvals SET confirmation_reply_id=$1 WHERE id=$2 AND owner_id=$3 AND thread_id=$4 AND status='expired'",
+        [messageId, supersededApprovalId, ownerId, thread.id],
+      );
     await sendDrain(client, thread.id);
     return { threadId: thread.id, turnId, messageId };
   };
@@ -524,7 +535,7 @@ async function resumeTurn(turnId: string, sourceId: string, prompt: string, pend
     await lockThread(client);
     const turn = (
       await client.query(
-        `SELECT u.channel,u.status,th.archived_at IS NULL AS active FROM turns u JOIN threads th ON th.id=u.thread_id
+        `SELECT u.channel,u.status,u.background,th.archived_at IS NULL AS active FROM turns u JOIN threads th ON th.id=u.thread_id
          WHERE u.id=$1 AND u.owner_id=$2`,
         [turnId, ownerId],
       )
@@ -535,7 +546,7 @@ async function resumeTurn(turnId: string, sourceId: string, prompt: string, pend
       source: 'resume',
       sourceId,
       channel: turn?.channel ?? 'web',
-      background: false,
+      background: turn?.background ?? false,
       client,
     });
     return true;
@@ -716,7 +727,17 @@ type StoredAttachment = { id?: string; name?: string; mimeType?: string };
 async function loadTurnContext(turn: any, dependencies: ThreadDependencies) {
   const threadId = turn.thread_id as string;
   const sourceMessageId: string | null = turn.message_id ?? null;
-  const [source, history, profile, goals, preferences, account, memory] = await Promise.all([
+  const [
+    source,
+    history,
+    profile,
+    goals,
+    preferences,
+    account,
+    memory,
+    connectedApps,
+    activityCheck,
+  ] = await Promise.all([
     sourceMessageId
       ? pool.query(
           `SELECT s.attachments,r.id,r.role,left(r.text,6000) AS text,r.attachments AS reply_attachments
@@ -740,6 +761,8 @@ async function loadTurnContext(turn: any, dependencies: ThreadDependencies) {
     pool.query('SELECT time_zone,locale,hour_cycle FROM preferences WHERE owner_id=$1', [ownerId]),
     dependencies.accountProfile?.().catch(() => undefined),
     dependencies.memoryContext?.().catch(() => []),
+    turn.background ? dependencies.connectedApps?.() : undefined,
+    turn.background ? dependencies.activityCheck?.({ threadId, turnId: turn.id }) : undefined,
   ]);
   const message = source?.rows[0];
   const replyTo = message?.id
@@ -767,6 +790,8 @@ async function loadTurnContext(turn: any, dependencies: ThreadDependencies) {
       hourCycle: preference?.hour_cycle || defaultPreferences.hourCycle,
       ...(account ? { account } : {}),
       memory: memory ?? [],
+      ...(connectedApps ? { connectedApps } : {}),
+      ...(activityCheck ? { activityCheck, limits: { maxToolCalls: 8, timeoutMs: 90_000 } } : {}),
       personalContext: {
         profile: {
           name: String(stored.name ?? ''),
@@ -816,25 +841,38 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
   try {
     const workspacePath = join(dataRoot, 'workspaces', threadId);
     await mkdir(workspacePath, { recursive: true });
-    const stage = async (id: string, fileName: string, bytes: Uint8Array) => {
+    const stage = async (
+      id: string,
+      fileName: string,
+      bytes: Uint8Array,
+      operation?: AbortSignal,
+    ) => {
+      operation?.throwIfAborted();
       const name = `${id}-${basename(fileName)}`;
       if (dependencies.writeArtifact)
-        await dependencies.writeArtifact(threadId, name, bytes, signal);
+        await dependencies.writeArtifact(threadId, name, bytes, operation);
       else
         await writeFile(join(workspacePath, name), bytes, {
           mode: 0o600,
           flag: constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW,
+          signal: operation,
         });
+      operation?.throwIfAborted();
       return name;
     };
-    const inline = (action: string, result: unknown) =>
-      inlineAppResult(result, (text) =>
+    const inline = async (action: string, result: unknown, operation = signal) => {
+      operation.throwIfAborted();
+      const value = await inlineAppResult(result, (text) =>
         stage(
           randomUUID(),
           `${action.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80)}.json`,
           Buffer.from(text),
+          operation,
         ),
       );
+      operation.throwIfAborted();
+      return value;
+    };
     const confirmed = await dependencies.executeConfirmation?.(turnId, signal, inline);
     if (confirmed) turn.prompt = confirmed.prompt;
     await ensureCurrent();
@@ -851,7 +889,12 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
     const stagedFiles = new Map<string, string>();
     const attachments: RuntimeContext['attachments'] = [];
     for (const upload of uploads) {
-      const name = await stage(upload.id, upload.name, await artifacts.readArtifact(upload.id));
+      const name = await stage(
+        upload.id,
+        upload.name,
+        await artifacts.readArtifact(upload.id),
+        signal,
+      );
       stagedFiles.set(upload.id, name);
       attachments.push({ path: join(workspacePath, name), mimeType: upload.mime_type });
     }
@@ -870,7 +913,13 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
           }
         : row;
     };
-    const attach = async (bytes: Uint8Array, name: string, mimeType: string, text = '') => {
+    const attach = async (
+      bytes: Uint8Array,
+      name: string,
+      mimeType: string,
+      text = '',
+      publish = true,
+    ) => {
       const artifact = await current(async (client) => {
         const artifact = await artifacts.storeArtifact(
           Buffer.from(bytes),
@@ -879,15 +928,23 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
           threadId,
           client,
         );
-        await insertAssistantMessage(client, ref, text, [artifact]);
+        if (publish) await insertAssistantMessage(client, ref, text, [artifact]);
         return artifact;
       });
       refresh();
       return artifact;
     };
     const attachFile = async (file: { bytes: Uint8Array; name: string; mimeType: string }) => {
-      const artifact = await attach(file.bytes, file.name, file.mimeType);
-      return { ...artifact, workspaceFile: await stage(artifact.id, artifact.name, file.bytes) };
+      const artifact = await attach(file.bytes, file.name, file.mimeType, '', !turn.background);
+      return {
+        ...artifact,
+        workspaceFile: await stage(
+          artifact.id,
+          artifact.name,
+          file.bytes,
+          turn.background ? signal : undefined,
+        ),
+      };
     };
     const emit = async (type: string, summary: string) => {
       await current((client) => insertEvent(client, turnId, type, summary));
@@ -936,15 +993,24 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
       browserConnection:
         browserConnection && fenced((request) => browserConnection(request, ref, signal)),
       requestCredential: fenced((input) => dependencies.requestCredential(ref, input)),
-      integration: fenced(async (action, args) =>
-        inline(
-          action,
-          await dependencies.integration(ref, action, args, {
-            readOnly: turn.read_only || turn.source_id?.startsWith('onboarding:') === true,
-            signal,
-          }),
-        ),
-      ),
+      integration: fenced(async (action, args, callSignal?: AbortSignal) => {
+        const operation = callSignal ? AbortSignal.any([signal, callSignal]) : signal;
+        operation.throwIfAborted();
+        const result = await dependencies.integration(ref, action, args, {
+          readOnly: turn.read_only || turn.source_id?.startsWith('onboarding:') === true,
+          signal: operation,
+          checkConnectionId: loaded.context.activityCheck?.connectionId,
+        });
+        operation.throwIfAborted();
+        if (
+          loaded.context.activityCheck &&
+          JSON.stringify(result ?? null).length > appResultInlineChars
+        )
+          throw new Error(
+            'Activity check result is too large. Use a smaller page or narrower query.',
+          );
+        return inline(action, result, operation);
+      }),
       manage: fenced((action, args) =>
         dependencies.manage(ref, action, args, { sourceMessageId: loaded.sourceMessageId }),
       ),
@@ -970,7 +1036,9 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
       publishScreenshot: (bytes, name) => {
         const fileName =
           name && /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\.png$/.test(name) ? name : 'screenshot.png';
-        return attach(bytes, fileName, 'image/png', `Browser screenshot: ${fileName}`);
+        return turn.background
+          ? attachFile({ bytes, name: fileName, mimeType: 'image/png' })
+          : attach(bytes, fileName, 'image/png', `Browser screenshot: ${fileName}`);
       },
       publishBrowserFile: attachFile,
     });

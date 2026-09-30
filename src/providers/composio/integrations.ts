@@ -1,12 +1,13 @@
-import { Composio } from '@composio/core';
+import { Composio, type ToolRouterSession } from '@composio/core';
 import { z } from 'zod';
 import { integrationServiceIds } from '../../shared/integrations.ts';
 import { createIntegrationFileDownloader, downloadArguments } from './downloads.ts';
 import { readVerificationEmails } from './verification-email.ts';
-import type {
-  IntegrationProvider,
-  IntegrationService,
-  IntegrationSession,
+import {
+  IntegrationInboxCursorExpired,
+  type IntegrationProvider,
+  type IntegrationService,
+  type IntegrationSession,
 } from '../../ports/integrations.ts';
 
 const toolkits = integrationServiceIds.filter((service) => service !== 'linear');
@@ -22,7 +23,8 @@ const subscriptions = {
   slack: { trigger: 'SLACK_DIRECT_MESSAGE_RECEIVED', config: {} },
   notion: { trigger: 'NOTION_PAGE_CONTENT_UPDATED', config: {} },
 } as const;
-type ManagedSession = Awaited<ReturnType<Composio['sessions']['use']>>;
+type ManagedSession = Awaited<ReturnType<Composio['sessions']['use']>> &
+  Pick<InstanceType<typeof ToolRouterSession>, 'search' | 'execute'>;
 type AccountIdentity = { expiresAt: number; accountName?: string; accountEmail?: string };
 const toolSlug = z
   .string()
@@ -163,7 +165,10 @@ export function createComposioProvider(options: {
   const downloadFile = createIntegrationFileDownloader(options.fileDownload);
   const identities = new Map<string, AccountIdentity>();
   const pendingIdentities = new Map<string, Promise<AccountIdentity>>();
-  const readTools = new Map<string, Promise<boolean>>();
+  const readTools = new Map<
+    string,
+    { promise: Promise<boolean>; controller: AbortController; waiters: number; settled: boolean }
+  >();
   const authConfigs = Object.fromEntries(
     Object.entries(options.authConfigs ?? {}).filter(
       ([, id]) => typeof id === 'string' && id.trim().length > 0,
@@ -293,9 +298,11 @@ export function createComposioProvider(options: {
           throw new Error('The connection sign-in address is invalid.');
         return { accountId: result.id, url: result.redirectUrl };
       },
-      async search(query) {
+      async search(query, signal) {
         try {
-          const result = await value.search({ query, toolkits });
+          signal?.throwIfAborted();
+          const result = await value.search({ query, toolkits }, { signal });
+          signal?.throwIfAborted();
           if (!result.success || result.error != null) throw new Error();
           const entries = Object.entries(result.toolSchemas).map(
             ([slug, tool]) =>
@@ -328,7 +335,9 @@ export function createComposioProvider(options: {
             entries.map(([slug, { schemaRef: _, ...tool }]) => [slug, tool]),
           );
           if (missing.length) {
-            const signal = AbortSignal.timeout(15_000);
+            const operation = signal
+              ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
+              : AbortSignal.timeout(15_000);
             const response = await required()
               .getClient()
               .toolRouter.session.executeMeta(
@@ -340,9 +349,9 @@ export function createComposioProvider(options: {
                     include: ['input_schema'],
                   },
                 },
-                { signal, maxRetries: 0 },
+                { signal: operation, maxRetries: 0 },
               );
-            signal.throwIfAborted();
+            operation.throwIfAborted();
             const envelope = toolSchemasResponse.parse(response).data;
             const schemas =
               'tool_schemas' in envelope ? envelope.tool_schemas : envelope.data.tool_schemas;
@@ -370,6 +379,7 @@ export function createComposioProvider(options: {
             })),
           };
         } catch (error) {
+          signal?.throwIfAborted();
           throw new Error(`The app tool schemas could not be loaded: ${errorText(error)}`);
         }
       },
@@ -396,12 +406,15 @@ export function createComposioProvider(options: {
           );
         }
       },
-      async execute(action, args, accountId) {
+      async execute(action, args, accountId, signal) {
+        signal?.throwIfAborted();
         const result = await value.execute(
           action,
           args,
           accountId ? { account: accountId } : undefined,
+          { signal },
         );
+        signal?.throwIfAborted();
         if (
           result.error != null ||
           ('successful' in result && result.successful === false) ||
@@ -423,41 +436,343 @@ export function createComposioProvider(options: {
     supportsSubscriptions: ['gmail', 'googlecalendar', 'slack', 'notion'],
     verificationEmails: (accountId, query, signal) =>
       readVerificationEmails(required().tools, accountId, query, signal),
-    async createSession(ownerId, accounts) {
+    async pollInbox(accountId, cursor, signal) {
+      const deadline = AbortSignal.timeout(25_000);
+      const operation = AbortSignal.any([signal, deadline]);
+      let phase = 'cursor';
+      let category = 'cursor';
+      let status: number | undefined;
+      const id = z.string().regex(/^[a-zA-Z0-9_-]{1,200}$/);
+      const historyId = z.string().regex(/^\d{1,32}$/);
+      const addedMessage = z.object({ message: z.object({ id }) });
+      const mailHeader = z.object({ name: z.string().max(100), value: z.string().max(8192) });
+      const stateSchema = z.object({
+        accountId: z.string().min(1).max(200),
+        historyId,
+        pageToken: z.string().min(1).max(2048).optional(),
+        pending: z.array(id).max(1000).default([]),
+        finalHistoryId: historyId.optional(),
+      });
+      async function get(path: string, parameters: Array<[string, string | number]>) {
+        operation.throwIfAborted();
+        phase = path === 'profile' ? 'baseline' : path === 'history' ? 'history' : 'message';
+        category = 'request';
+        status = undefined;
+        const response = await required().tools.proxyExecute(
+          {
+            connectedAccountId: accountId,
+            endpoint: `https://gmail.googleapis.com/gmail/v1/users/me/${path}`,
+            method: 'GET',
+            parameters: parameters.map(([name, value]) => ({ in: 'query', name, value })),
+          },
+          { signal: operation },
+        );
+        operation.throwIfAborted();
+        status = response.status;
+        if (response.status === 404 && path.startsWith('messages/')) return null;
+        if (response.status === 404 && path === 'history')
+          throw new IntegrationInboxCursorExpired();
+        category = 'http';
+        if (response.status !== 200) throw new Error();
+        category = 'response_size';
+        if (JSON.stringify(response.data).length > 1_000_000) {
+          if (path === 'history') throw new IntegrationInboxCursorExpired();
+          throw new Error();
+        }
+        category = 'response';
+        return response.data;
+      }
+      try {
+        if (cursor === null) {
+          const baseline = z
+            .object({ historyId })
+            .parse(await get('profile', [['fields', 'historyId']]));
+          return {
+            cursor: JSON.stringify(stateSchema.parse({ accountId, historyId: baseline.historyId })),
+            hasMore: false,
+            messages: [],
+          };
+        }
+        if (cursor.length > 220_000) throw new Error();
+        const state = stateSchema.parse(JSON.parse(cursor));
+        if (state.accountId !== accountId) throw new Error();
+        if (!state.pending.length) {
+          const page = z
+            .object({
+              historyId,
+              nextPageToken: z.string().min(1).max(2048).optional(),
+              history: z
+                .array(
+                  z.object({
+                    messagesAdded: z.array(addedMessage).optional(),
+                  }),
+                )
+                .max(20)
+                .optional(),
+            })
+            .parse(
+              await get('history', [
+                ['startHistoryId', state.historyId],
+                ['historyTypes', 'messageAdded'],
+                ['labelId', 'INBOX'],
+                ['maxResults', 20],
+                ['fields', 'history/messagesAdded/message/id,historyId,nextPageToken'],
+                ...(state.pageToken ? [['pageToken', state.pageToken] as [string, string]] : []),
+              ]),
+            );
+          const pending = stateSchema.shape.pending.safeParse([
+            ...new Set(
+              page.history?.flatMap(
+                (entry) => entry.messagesAdded?.map(({ message }) => message.id) ?? [],
+              ),
+            ),
+          ]);
+          if (!pending.success) throw new IntegrationInboxCursorExpired();
+          state.pending = pending.data;
+          state.pageToken = page.nextPageToken;
+          state.finalHistoryId = page.nextPageToken ? undefined : page.historyId;
+        }
+        const messages = [];
+        let consumed = 0;
+        for (const pendingId of state.pending.slice(0, 20)) {
+          let response;
+          try {
+            response = await get(`messages/${pendingId}`, [
+              ['format', 'metadata'],
+              ['fields', 'id,threadId,internalDate,labelIds,payload/headers'],
+            ]);
+          } catch (error) {
+            if (!signal.aborted && deadline.aborted && consumed) break;
+            throw error;
+          }
+          if (response === null) {
+            consumed++;
+            continue;
+          }
+          const message = z
+            .object({
+              id,
+              threadId: id,
+              internalDate: z.string().regex(/^\d{1,16}$/),
+              labelIds: z.array(z.string().max(200)).max(100),
+              payload: z.object({
+                headers: z.array(mailHeader).max(200).default([]),
+              }),
+            })
+            .parse(response);
+          if (message.id !== pendingId) {
+            category = 'identity';
+            throw new Error();
+          }
+          consumed++;
+          if (!message.labelIds.includes('INBOX')) continue;
+          const header = (name: string) =>
+            message.payload.headers
+              .find((item) => item.name.toLowerCase() === name)
+              ?.value.replace(/[\u0000-\u001f]/g, ' ')
+              .slice(0, 1000) ?? '';
+          messages.push({
+            id: message.id,
+            threadId: message.threadId,
+            subject: header('subject'),
+            sender: header('from'),
+            receivedAt: new Date(Number(message.internalDate)).toISOString(),
+          });
+        }
+        signal.throwIfAborted();
+        state.pending = state.pending.slice(consumed);
+        if (!state.pending.length && state.finalHistoryId) {
+          state.historyId = state.finalHistoryId;
+          delete state.finalHistoryId;
+        }
+        return {
+          cursor: JSON.stringify(state),
+          hasMore: Boolean(state.pending.length || state.pageToken),
+          messages,
+        };
+      } catch (error) {
+        if (signal.aborted) throw new DOMException('Inbox check was cancelled.', 'AbortError');
+        const issue = error instanceof z.ZodError ? error.issues[0] : undefined;
+        const errorKind =
+          error instanceof Error
+            ? new Map([
+                ['APIConnectionError', 'connection'],
+                ['APIConnectionTimeoutError', 'connection_timeout'],
+                ['APIUserAbortError', 'request_aborted'],
+                ['ComposioRequestCancelledError', 'request_cancelled'],
+                ['ValidationError', 'validation'],
+                ['SyntaxError', 'invalid_json'],
+                ['TypeError', 'type'],
+              ]).get(error.constructor.name)
+            : undefined;
+        const causes: Record<string, unknown>[] = [];
+        let cause: unknown = error;
+        for (let depth = 0; depth < 3 && cause && typeof cause === 'object'; depth++) {
+          const current = cause as Record<string, unknown>;
+          causes.push(current);
+          cause = current.cause;
+        }
+        const httpStatus = [
+          status,
+          ...causes.flatMap((cause) => [cause.status, cause.statusCode]),
+        ].find(
+          (value): value is number =>
+            typeof value === 'number' && Number.isInteger(value) && value >= 100 && value <= 599,
+        );
+        const causeCode = causes
+          .map((cause) => cause.code)
+          .find(
+            (code): code is string =>
+              typeof code === 'string' &&
+              [
+                'ECONNRESET',
+                'ECONNREFUSED',
+                'EHOSTUNREACH',
+                'ENETUNREACH',
+                'ENOTFOUND',
+                'EAI_AGAIN',
+                'ETIMEDOUT',
+                'UND_ERR_CONNECT_TIMEOUT',
+                'UND_ERR_HEADERS_TIMEOUT',
+                'UND_ERR_BODY_TIMEOUT',
+                'UND_ERR_SOCKET',
+              ].includes(code),
+          );
+        const fields = [
+          'accountId',
+          'historyId',
+          'pending',
+          'pageToken',
+          'finalHistoryId',
+          'history',
+          'messagesAdded',
+          'message',
+          'id',
+          'threadId',
+          'internalDate',
+          'labelIds',
+          'payload',
+          'headers',
+          'name',
+          'value',
+        ];
+        console.warn(
+          JSON.stringify({
+            event: 'gmail_inbox_poll_failed',
+            timestamp: new Date().toISOString(),
+            phase,
+            category: issue
+              ? 'schema'
+              : error instanceof IntegrationInboxCursorExpired
+                ? 'expired'
+                : error instanceof RangeError
+                  ? 'date'
+                  : operation.aborted
+                    ? 'timeout'
+                    : category,
+            ...(httpStatus === undefined ? {} : { status: httpStatus }),
+            ...(errorKind ? { errorKind } : {}),
+            ...(causeCode ? { causeCode } : {}),
+            ...(issue
+              ? {
+                  issue: issue.code,
+                  field: issue.path
+                    .slice(0, 8)
+                    .map((part) =>
+                      typeof part === 'number'
+                        ? '[]'
+                        : typeof part === 'string' && fields.includes(part)
+                          ? part
+                          : 'unknown',
+                    )
+                    .join('.'),
+                }
+              : {}),
+          }),
+        );
+        if (error instanceof IntegrationInboxCursorExpired) throw error;
+        throw new Error('The Gmail inbox could not be checked.');
+      }
+    },
+    async createSession(ownerId, accounts, signal) {
+      signal?.throwIfAborted();
       return session(
-        await required().sessions.create(ownerId, {
-          toolkits,
-          connectedAccounts: accounts,
-          multiAccount: { enable: true, maxAccountsPerToolkit: 10, requireExplicitSelection: true },
-          ...(Object.keys(authConfigs).length ? { authConfigs } : {}),
-          manageConnections: false,
-          sandbox: { enable: false },
-          premiumUsage: false,
-        }),
+        await required().sessions.create(
+          ownerId,
+          {
+            toolkits,
+            connectedAccounts: accounts,
+            multiAccount: {
+              enable: true,
+              maxAccountsPerToolkit: 10,
+              requireExplicitSelection: true,
+            },
+            ...(Object.keys(authConfigs).length ? { authConfigs } : {}),
+            manageConnections: false,
+            sandbox: { enable: false },
+            premiumUsage: false,
+          },
+          { signal },
+        ),
       );
     },
-    async restoreSession(id) {
-      return session(await required().sessions.use(id));
+    async restoreSession(id, signal) {
+      signal?.throwIfAborted();
+      return session(await required().sessions.use(id, undefined, { signal }));
     },
     async deleteSession(id) {
       await required().sessions.delete(id, { signal: AbortSignal.timeout(5_000) });
     },
-    async readOnly(action) {
+    async readOnly(action, signal) {
+      signal?.throwIfAborted();
       if (!toolSlug.safeParse(action).success) return false;
-      let pending = readTools.get(action);
-      if (!pending) {
-        pending = required()
+      let current = readTools.get(action);
+      if (!current || current.controller.signal.aborted) {
+        const controller = new AbortController();
+        const promise = required()
           .tools.getRawComposioToolBySlug(action, undefined, {
-            signal: AbortSignal.timeout(10_000),
+            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
           })
           .then(
             ({ tags = [] }) =>
               tags.includes('readOnlyHint') && !tags.some((tag) => writeHints.includes(tag)),
           );
-        readTools.set(action, pending);
-        pending.catch(() => readTools.delete(action));
+        const created = { promise, controller, waiters: 0, settled: false };
+        readTools.set(action, created);
+        void promise.then(
+          () => {
+            created.settled = true;
+          },
+          () => {
+            created.settled = true;
+            if (readTools.get(action) === created) readTools.delete(action);
+          },
+        );
+        current = created;
       }
-      return pending.catch(() => false);
+      const lookup = current;
+      lookup.waiters++;
+      return new Promise((resolve, reject) => {
+        let finished = false;
+        const finish = (operation: () => void) => {
+          if (finished) return;
+          finished = true;
+          signal?.removeEventListener('abort', abort);
+          lookup.waiters--;
+          if (!lookup.waiters && !lookup.settled) {
+            lookup.controller.abort();
+            if (readTools.get(action) === lookup) readTools.delete(action);
+          }
+          operation();
+        };
+        const abort = () => finish(() => reject(signal?.reason));
+        signal?.addEventListener('abort', abort, { once: true });
+        lookup.promise.then(
+          (value) => finish(() => resolve(value)),
+          () => finish(() => resolve(false)),
+        );
+        if (signal?.aborted) abort();
+      });
     },
     async inspectAccount(id, ownerId) {
       const account = await required().connectedAccounts.get(id, {

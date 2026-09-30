@@ -1,7 +1,7 @@
 import { createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { posix } from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 import type { CredentialKeyStore } from '../ports/key-store.ts';
 import type {
@@ -192,6 +192,7 @@ export async function createDiscoveredConnections(
       signal?: AbortSignal,
     ) => Promise<{ exitCode: number; output: string }>;
     resumeConnection?: (turnId: string, service: string) => Promise<boolean>;
+    accountReplaced?: (connectionId: string, client: PoolClient) => Promise<void>;
     refresh?: () => void;
   },
 ) {
@@ -361,6 +362,7 @@ export async function createDiscoveredConnections(
         );
       }
       await options.grantVault.put(idToSave, secret, client);
+      if (pending.connection_id) await options.accountReplaced?.(idToSave, client);
       if (pending.oauth_state_hash) await options.grantVault.remove(pending.id, client);
       await client.query('COMMIT');
     } catch (cause) {
@@ -554,38 +556,79 @@ export async function createDiscoveredConnections(
       };
     }
   }
-  const refreshes = new Map<string, Promise<string>>();
-  async function tokenFor(row: AccountRow, path: AccessPath): Promise<string> {
+  const refreshes = new Map<
+    string,
+    {
+      promise: Promise<string>;
+      controller: AbortController;
+      waiters: number;
+      settled: boolean;
+    }
+  >();
+  async function tokenFor(
+    row: AccountRow,
+    path: AccessPath,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    signal?.throwIfAborted();
     const grant = await options.grantVault.read(row.id);
+    signal?.throwIfAborted();
     const secret = grant.value;
     if (path.auth !== 'oauth') return secret;
     const saved = JSON.parse(secret) as DiscoveredOAuthState;
     if (!saved.tokens?.access_token) throw error('Connect this account again.', 409);
     if (!saved.expiresAt || saved.expiresAt > Date.now() + 60_000) return saved.tokens.access_token;
-    const active = refreshes.get(row.id);
-    if (active) return active;
-    const pending = (async () => {
-      const next = await options.oauth.refresh(path.endpoint, saved);
-      if (!next.tokens?.access_token) throw new Error();
-      const changed = await options.grantVault.replace(row.id, grant.version, JSON.stringify(next));
-      if (!changed) {
-        const latest = JSON.parse(
-          (await options.grantVault.read(row.id)).value,
-        ) as DiscoveredOAuthState;
-        if (!latest.tokens?.access_token || (latest.expiresAt ?? 0) <= Date.now())
-          throw new Error();
-        return latest.tokens.access_token;
-      }
-      return next.tokens.access_token;
-    })();
-    refreshes.set(row.id, pending);
-    try {
-      return await pending;
-    } catch {
-      throw error('Connect this account again.', 409);
-    } finally {
-      refreshes.delete(row.id);
+    let current = refreshes.get(row.id);
+    if (!current || current.controller.signal.aborted) {
+      const controller = new AbortController();
+      const pending = (async () => {
+        const next = await options.oauth.refresh(path.endpoint, saved, controller.signal);
+        if (!next.tokens?.access_token) throw new Error();
+        const changed = await options.grantVault.replace(
+          row.id,
+          grant.version,
+          JSON.stringify(next),
+        );
+        if (!changed) {
+          const latest = JSON.parse(
+            (await options.grantVault.read(row.id)).value,
+          ) as DiscoveredOAuthState;
+          if (!latest.tokens?.access_token || (latest.expiresAt ?? 0) <= Date.now())
+            throw new Error();
+          return latest.tokens.access_token;
+        }
+        return next.tokens.access_token;
+      })();
+      const created = { promise: pending, controller, waiters: 0, settled: false };
+      refreshes.set(row.id, created);
+      void pending
+        .finally(() => {
+          created.settled = true;
+          if (refreshes.get(row.id) === created) refreshes.delete(row.id);
+        })
+        .catch(() => {});
+      current = created;
     }
+    const refresh = current;
+    refresh.waiters++;
+    return new Promise((resolve, reject) => {
+      let finished = false;
+      const finish = (operation: () => void) => {
+        if (finished) return;
+        finished = true;
+        signal?.removeEventListener('abort', abort);
+        refresh.waiters--;
+        if (!refresh.waiters && !refresh.settled) refresh.controller.abort();
+        operation();
+      };
+      const abort = () => finish(() => reject(signal?.reason));
+      signal?.addEventListener('abort', abort, { once: true });
+      refresh.promise.then(
+        (value) => finish(() => resolve(value)),
+        () => finish(() => reject(error('Connect this account again.', 409))),
+      );
+      if (signal?.aborted) abort();
+    });
   }
   async function disconnect(connectionId: string, service: string) {
     const client = await pool.connect();
@@ -637,11 +680,13 @@ export async function createDiscoveredConnections(
       }),
     });
   }
-  async function search(query: string) {
+  async function search(query: string, connectionId?: string, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     const rows = (
-      await pool.query<AccountRow>('SELECT * FROM discovered_connections WHERE owner_id=$1', [
-        owner,
-      ])
+      await pool.query<AccountRow>(
+        'SELECT * FROM discovered_connections WHERE owner_id=$1 AND ($2::uuid IS NULL OR id=$2)',
+        [owner, connectionId ?? null],
+      )
     ).rows;
     const accounts = await Promise.all(
       rows.map(async (row) => {
@@ -655,10 +700,11 @@ export async function createDiscoveredConnections(
                 ...(path.kind === 'cli' ? { testArgs: path.testArgs } : {}),
               };
             try {
-              const token = await tokenFor(row, path);
+              const token = await tokenFor(row, path, signal);
               const available = await options.transport.listTools(
                 path.endpoint,
                 headers(path, token),
+                signal,
               );
               return {
                 id: path.id,
@@ -685,6 +731,7 @@ export async function createDiscoveredConnections(
                   })),
               };
             } catch {
+              signal?.throwIfAborted();
               return { id: path.id, kind: path.kind, endpoint: path.endpoint, unavailable: true };
             }
           }),
@@ -711,7 +758,8 @@ export async function createDiscoveredConnections(
     if (JSON.stringify(args).length > 32_768) throw error('The app request is too large.');
     return { row, path };
   }
-  async function isRead(action: string, args: Record<string, unknown>) {
+  async function isRead(action: string, args: Record<string, unknown>, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     const { row, path } = await selected(args);
     if (action === 'CONNECTED_HTTP') {
       if (path.kind !== 'http') throw error('Choose an HTTP access path.');
@@ -726,11 +774,12 @@ export async function createDiscoveredConnections(
     if (action !== 'CONNECTED_MCP_CALL' || path.kind !== 'mcp')
       throw error('Choose an MCP access path.');
     const name = z.string().min(1).max(150).parse(args.tool);
-    const token = await tokenFor(row, path);
+    const token = await tokenFor(row, path, signal);
     let tools: DiscoveredTool[];
     try {
-      tools = await options.transport.listTools(path.endpoint, headers(path, token));
+      tools = await options.transport.listTools(path.endpoint, headers(path, token), signal);
     } catch (cause) {
+      signal?.throwIfAborted();
       throw error(
         `The connected MCP tool list is unavailable: ${String(redact(cause instanceof Error ? cause.message : String(cause), token))}`,
         502,
@@ -748,13 +797,16 @@ export async function createDiscoveredConnections(
     signal?: AbortSignal,
   ) {
     const { row, path } = await selected(args);
-    const token = await tokenFor(row, path);
+    signal?.throwIfAborted();
+    const token = await tokenFor(row, path, signal);
     const safeResult = (value: unknown) => redact(value, token);
-    const failed = (message: string, cause: unknown) =>
-      error(
+    const failed = (message: string, cause: unknown) => {
+      signal?.throwIfAborted();
+      return error(
         `${message}: ${String(redact(cause instanceof Error ? cause.message : String(cause), token))}`,
         502,
       );
+    };
     if (action === 'CONNECTED_HTTP') {
       if (path.kind !== 'http') throw error('Choose an HTTP access path.');
       const method = z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).parse(args.method);
@@ -766,6 +818,7 @@ export async function createDiscoveredConnections(
             headers(path, token),
             method,
             method === 'GET' ? undefined : args.body,
+            signal,
           ),
         );
       } catch (cause) {
@@ -804,9 +857,9 @@ export async function createDiscoveredConnections(
     const input = z.record(z.string(), z.unknown()).parse(args.input ?? {});
     let selectedTool: DiscoveredTool | undefined;
     try {
-      selectedTool = (await options.transport.listTools(path.endpoint, headers(path, token))).find(
-        (tool) => tool.name === name,
-      );
+      selectedTool = (
+        await options.transport.listTools(path.endpoint, headers(path, token), signal)
+      ).find((tool) => tool.name === name);
     } catch (cause) {
       throw failed('The connected MCP tool list is unavailable', cause);
     }
@@ -815,7 +868,7 @@ export async function createDiscoveredConnections(
       throw error('This tool now needs confirmation.', 409);
     try {
       return safeResult(
-        await options.transport.callTool(path.endpoint, headers(path, token), name, input),
+        await options.transport.callTool(path.endpoint, headers(path, token), name, input, signal),
       );
     } catch (cause) {
       throw failed('The connected MCP request failed', cause);
