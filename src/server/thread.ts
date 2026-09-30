@@ -89,6 +89,7 @@ export interface ThreadDependencies {
   finishObservationSegment?: (turnId: string) => Promise<void>;
   accountProfile?: () => Promise<RuntimeContext['account']>;
   memoryContext?: () => Promise<RuntimeContext['memory']>;
+  markUntrustedContext?: (turn: TurnRef) => Promise<void>;
   runTurn: (context: RuntimeContext) => Promise<RuntimeResult>;
   speech: Pick<SpeechService, 'synthesize'>;
   requestCredential: (
@@ -934,6 +935,7 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
       manage: fenced((action, args) =>
         dependencies.manage(ref, action, args, { sourceMessageId: loaded.sourceMessageId }),
       ),
+      markUntrustedContext: fenced(async () => dependencies.markUntrustedContext?.(ref)),
       downloadIntegrationFile:
         downloadIntegrationFile &&
         (async (action, args) =>

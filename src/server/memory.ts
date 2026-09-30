@@ -20,7 +20,28 @@ const entrySchema = z.object({
   text: z.string().min(1).max(300),
 });
 
+const saveInput = z
+  .object({
+    id: id.optional(),
+    kind,
+    text: z
+      .string()
+      .trim()
+      .min(1)
+      .max(300)
+      .refine((text) => !/[\r\n]/.test(text)),
+    replace: z.boolean().optional(),
+  })
+  .strict();
+
 type Entry = z.infer<typeof entrySchema>;
+
+function validate(raw: unknown) {
+  const input = saveInput.parse(raw);
+  if (secret.test(input.text))
+    throw new Error('Sign-in details and payment secrets cannot be remembered.');
+  return input;
+}
 
 // Invalid blocks are skipped so one bad entry cannot disable memory; the next write drops them.
 function parse(bytes?: Uint8Array): Entry[] {
@@ -72,6 +93,29 @@ export function createMemoryService(options: {
   ownerId: string;
   store: PrivateObjectStore;
 }) {
+  async function initialize() {
+    await options.pool.query(
+      'CREATE TABLE IF NOT EXISTS memory_untrusted_threads (owner_id text NOT NULL, thread_id uuid NOT NULL, marked_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (owner_id, thread_id))',
+    );
+  }
+
+  // A thread is marked before Pi first receives web, file, app or earlier-conversation content.
+  // Pi keeps that content in its session, so inferred saves need confirmation until the thread is reset.
+  async function markUntrusted(threadId: string) {
+    await options.pool.query(
+      'INSERT INTO memory_untrusted_threads(owner_id,thread_id) VALUES($1,$2) ON CONFLICT DO NOTHING',
+      [options.ownerId, threadId],
+    );
+  }
+
+  async function untrusted(threadId: string) {
+    const { rowCount } = await options.pool.query(
+      'SELECT 1 FROM memory_untrusted_threads WHERE owner_id=$1 AND thread_id=$2',
+      [options.ownerId, threadId],
+    );
+    return !!rowCount;
+  }
+
   async function read() {
     const object = await options.store.read(key, maxBytes);
     return { entries: parse(object?.bytes), version: object?.version ?? null };
@@ -90,30 +134,16 @@ export function createMemoryService(options: {
     return (await read()).entries.map(visible);
   }
 
+  // An approval is already bound to its requesting user message, so it skips the current-turn check.
   async function save(
     raw: unknown,
-    provenance: { sourceMessageId: string | null; turnId: string },
+    provenance: { sourceMessageId: string | null } & ({ turnId: string } | { approved: true }),
   ) {
-    const input = z
-      .object({
-        id: id.optional(),
-        kind,
-        text: z
-          .string()
-          .trim()
-          .min(1)
-          .max(300)
-          .refine((text) => !/[\r\n]/.test(text)),
-        replace: z.boolean().optional(),
-      })
-      .strict()
-      .parse(raw);
-    if (secret.test(input.text))
-      throw new Error('Sign-in details and payment secrets cannot be remembered.');
+    const input = validate(raw);
     const sourceMessageId = id.parse(provenance.sourceMessageId);
     const source = await options.pool.query(
-      "SELECT 1 FROM messages WHERE id=$1 AND owner_id=$2 AND turn_id=$3 AND role='user'",
-      [sourceMessageId, options.ownerId, provenance.turnId],
+      "SELECT 1 FROM messages WHERE id=$1 AND owner_id=$2 AND role='user' AND ($3::uuid IS NULL OR turn_id=$3)",
+      [sourceMessageId, options.ownerId, 'turnId' in provenance ? provenance.turnId : null],
     );
     if (!source.rowCount)
       throw new Error('The current owned user message is required as evidence.');
@@ -153,5 +183,5 @@ export function createMemoryService(options: {
     return { ok: true };
   }
 
-  return { context, list, save, forget };
+  return { initialize, markUntrusted, untrusted, validate, context, list, save, forget };
 }

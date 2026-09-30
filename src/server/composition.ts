@@ -465,6 +465,7 @@ export async function createApplication(
     consumers,
     stopConsumer: (id) => boss.offWork('scheduled-task', { id, wait: true }),
   });
+  await memory.initialize();
   await personal.initialize({ workers: options.workers });
   const triage = createTriage({
     consumers,
@@ -562,17 +563,19 @@ export async function createApplication(
   });
   const approvals = await createApprovals(
     (action, args, provenance) =>
-      action.startsWith('OTTO_')
-        ? personal.manage(action.slice('OTTO_'.length), args, provenance)
-        : providerUsage.withTurn(provenance.turnId, () =>
-            integrations.executeApproved(
-              ownerId,
-              action,
-              args,
-              { threadId: provenance.threadId, turnId: provenance.turnId },
-              provenance.signal,
+      action === 'OTTO_memory_save'
+        ? memory.save(args, { sourceMessageId: provenance.sourceMessageId, approved: true })
+        : action.startsWith('OTTO_')
+          ? personal.manage(action.slice('OTTO_'.length), args, provenance)
+          : providerUsage.withTurn(provenance.turnId, () =>
+              integrations.executeApproved(
+                ownerId,
+                action,
+                args,
+                { threadId: provenance.threadId, turnId: provenance.turnId },
+                provenance.signal,
+              ),
             ),
-          ),
     async (action, args) => {
       if (action.startsWith('OTTO_'))
         await personal.validateReview(action.slice('OTTO_'.length), args);
@@ -616,6 +619,7 @@ export async function createApplication(
       finishObservationSegment: inspector.finishSegment,
       accountProfile,
       memoryContext: memory.context,
+      markUntrustedContext: (turn) => memory.markUntrusted(turn.threadId),
       connections: integrations.manageConnections,
       browserConnection: (request, turn, signal) =>
         browserConnections.request(request, turn, signal),
@@ -637,6 +641,14 @@ export async function createApplication(
             `OTTO_${action}`,
             await personal.validateReview(action, args),
           );
+        // After outside content, an inferred note needs confirmation; an explicit "remember" request saves directly.
+        if (action === 'memory_save' && (await memory.untrusted(turn.threadId))) {
+          const input = memory.validate(args);
+          const result = await approvals.request(turn, 'OTTO_memory_save', input);
+          if (!(result && typeof result === 'object' && 'requiresConfirmation' in result))
+            await reply(turn, `Remembered: ${input.text}`);
+          return result;
+        }
         if (action === 'memory_save' || action === 'memory_forget') {
           const result = await withTurnLock(turn.turnId, () =>
             personal.manage(action, args, { ...provenance, turnId: turn.turnId }),

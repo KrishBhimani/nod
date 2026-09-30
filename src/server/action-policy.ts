@@ -21,6 +21,7 @@ const ordinaryActions: Record<string, Intent[]> = {
   NOTION_APPEND_BLOCK_CHILDREN: ['create', 'draft', 'update'],
   OTTO_profile_update: ['update', 'remember'],
   OTTO_notification_preferences_update: ['update', 'remember'],
+  OTTO_memory_save: ['remember'],
 };
 
 export function isReversiblePlanAction(action: string) {

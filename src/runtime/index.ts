@@ -28,7 +28,7 @@ const skillsDir = fileURLToPath(new URL('./skills', import.meta.url));
 const holdMs = 30 * 60_000;
 const imageBytes = 5 * 1024 * 1024;
 const parallelTools = new Set(['share_file', 'create_audio']);
-// Tools whose results never carry web, file or app content. Any other tool taints the turn for memory writes.
+// Tools whose results never carry web, file or app content. Any other tool marks the thread before it runs.
 const trustedResultTools = new Set([
   'send_message',
   'ask_user',
@@ -38,8 +38,6 @@ const trustedResultTools = new Set([
   'share_file',
   'create_audio',
 ]);
-const taintedMemoryRefusal =
-  'Memory cannot be saved after reading web pages, files, app data or earlier conversation in this turn. If it is still worth remembering, ask the user in your reply.';
 const readOnlyTools: Record<string, true | string[]> = {
   read: true,
   find: true,
@@ -218,7 +216,7 @@ export function createAgentRuntime(dependencies: {
       streamBlocked = false;
     };
 
-    let untrustedResults = false;
+    let untrustedMarked = false;
     const guard = (
       name: string,
       params: unknown,
@@ -248,12 +246,9 @@ export function createAgentRuntime(dependencies: {
         const personalAction = String((params as { action?: unknown })?.action);
         const memoryAction =
           name === 'manage_personal_context' && personalAction.startsWith('memory_');
-        const blockedMemory = memoryAction && personalAction === 'memory_save' && untrustedResults;
-        if (
+        const untrustedResult =
           !trustedResultTools.has(name) &&
-          !(name === 'manage_personal_context' && personalAction !== 'history_search')
-        )
-          untrustedResults = true;
+          !(name === 'manage_personal_context' && personalAction !== 'history_search');
         const observedInput = memoryAction
           ? { action: (params as { action?: unknown }).action, args: '[private memory omitted]' }
           : name === 'browser' &&
@@ -281,12 +276,14 @@ export function createAgentRuntime(dependencies: {
           signal.throwIfAborted();
           if (stopped || status !== 'succeeded')
             throw new Error('This execution segment has stopped.');
+          if (untrustedResult && !untrustedMarked) {
+            await context.markUntrustedContext?.();
+            untrustedMarked = true;
+          }
           await context.emit('tool_start', label);
-          const output = blockedMemory
-            ? { status: 'blocked', message: taintedMemoryRefusal }
-            : await (dependencies.withTool
-                ? dependencies.withTool(context.turnId, id, name, execute)
-                : execute());
+          const output = await (dependencies.withTool
+            ? dependencies.withTool(context.turnId, id, name, execute)
+            : execute());
           signal.throwIfAborted();
           if (!stopped) await context.emit('tool_complete', label);
           result = isToolResult(output) ? output : textResult(output);

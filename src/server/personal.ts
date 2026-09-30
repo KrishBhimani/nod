@@ -265,6 +265,10 @@ export function createPersonalService(dependencies: PersonalDependencies) {
       await schedules.validateUpdate(input.id, { enabled: false });
       return input;
     }
+    if (action === 'memory_save') {
+      if (!memory) throw new Error('Memory is unavailable.');
+      return memory.validate(args);
+    }
     throw Object.assign(new Error('This personal-data action is not available for review.'), {
       statusCode: 400,
     });

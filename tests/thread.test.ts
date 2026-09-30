@@ -1532,6 +1532,28 @@ test(
         factSource,
       );
       assert.equal((await memory.context()).length, 4);
+      const approved = await memory.save(
+        { kind: 'fact', text: 'Lives in Lisbon.' },
+        { sourceMessageId: factSource.sourceMessageId, approved: true },
+      );
+      assert.deepEqual(approved.sources, [factSource.sourceMessageId]);
+      await assert.rejects(
+        memory.save(
+          { kind: 'fact', text: 'Lives in Porto.' },
+          { sourceMessageId: other.sourceMessageId, approved: true },
+        ),
+        /current owned user message/,
+      );
+      await memory.initialize();
+      const threadId = randomUUID();
+      assert.equal(await memory.untrusted(threadId), false);
+      await memory.markUntrusted(threadId);
+      await memory.markUntrusted(threadId);
+      assert.equal(await memory.untrusted(threadId), true);
+      assert.equal(
+        await createMemoryService({ pool, ownerId: 'other-owner', store }).untrusted(threadId),
+        false,
+      );
       await memory.forget(saved.id);
       const path = join(root, 'memory', 'MEMORY.md');
       await writeFile(

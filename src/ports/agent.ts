@@ -89,6 +89,7 @@ export interface RuntimeContext {
   signal: AbortSignal;
   attachments: Array<{ path: string; mimeType: string }>;
   emit(type: string, summary: string): Promise<void>;
+  markUntrustedContext?(): Promise<void>;
   observe?(event: RuntimeObservation): Promise<void>;
   inspectPrompt?(snapshot: PromptSnapshot): Promise<void>;
   reply(text: string, streamId?: string, replyToMessageId?: string): Promise<void>;
