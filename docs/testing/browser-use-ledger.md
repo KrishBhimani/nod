@@ -35,7 +35,7 @@ This ledger records manual Pi runs with `gpt-6-sol` on 29 and 30 September 2026.
 
 ## Additional browser runs
 
-On 30 September, I froze 30 new prompts, checks, the `gpt-6-sol` model, a five-minute limit, and three repeat cases before the first run. I then ran two holdout tasks after the browser changes. The 32 prompts produced 44 runs. A pass means that the browser trace and the answer support the required result in the same run. A successful turn status alone does not count as a pass.
+On 30 September, I froze 30 new prompts, checks, the `gpt-6-sol` model, a five-minute limit, and three repeat cases before the first run. I froze two holdout tasks, eight stress tasks, and two browser-only checks before their runs. The 42 prompts produced 54 runs. A pass means that the browser trace and the answer support the required result in the same run. A successful turn status alone does not count as a pass.
 
 | ID  | Task                                                           | Browser result          | Evidence and limit                                                                                                                                                                                                                           |
 | --- | -------------------------------------------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -72,7 +72,18 @@ On 30 September, I froze 30 new prompts, checks, the `gpt-6-sol` model, a five-m
 | B55 | Drag a card on a different synthetic page.                     | Pass with recovery      | Two selectors failed. Pi used the current page structure, called native drag, and read “Dropped: BLUE.”                                                                                                                                      |
 | B56 | Upload and submit a different synthetic file.                  | Pass                    | Pi used native upload and submit. The result page showed the filename and confirmed the file marker.                                                                                                                                         |
 
-The drag and upload fixes add native agent-browser actions to Otto's browser tool. Upload reads only a file in the current task workspace, sends at most 12 MB to the isolated browser, and keeps a private temporary copy until the browser session closes. Browser task B46 and holdout B56 used this path. An old saved profile failed after a browser service restart in one B45 rerun. Saved public profile restart reliability remains unconfirmed.
+| B57 | Compare six product pages across six book categories. | Browser check failed | The answer was correct, but Pi used a workspace script for most pages. The trace shows only one product page in the browser. |
+| B58 | Put three Wikipedia biographies in birth-year order. | Pass | Pi opened all three articles and gave 1815, 1906, and 1912 in order. |
+| B59 | Compare two quote pages and their author pages. | Pass | Pi visited both quote pages and author pages and gave Einstein's and Neruda's birth places. |
+| B60 | Use Dynamic Controls, then open and return from a new window. | Pass | The trace shows four control changes, a new tab, and a switch back. The answer gave the final control states and both headings. |
+| B61 | Drag a card, upload a file, and submit it on one page. | Pass with recovery | Pi recovered from two invalid drag selectors, then used native drag and upload. The page showed the drop text, filename, and file marker. |
+| B62 | Download a PDF, then read MDN and Wikipedia. | Mixed-tool pass | Pi used a workspace HTTP request for the PDF and the browser for the two pages. The facts were correct, but this run did not check browser download. |
+| B63 | Match two current n8n roles against a synthetic veterinary CV. | Pass | Pi opened the Ashby board and two role pages. It gave a supported no-fit decision and direct links. It sent one chat progress message. |
+| B64 | Rank two current n8n roles for a synthetic product manager CV. | Pass | Pi opened both Product Management roles and application forms. It ranked Core Platform first and named CV gaps and location limits. |
+| B65 | Repeat the six-product comparison with browser-only evidence. | Pass | The trace shows browser navigation through all six categories and product pages. Pi gave six correct prices and links, and one chat progress message. The run took 145 seconds. |
+| B66 | Repeat the PDF and two-page task with browser download. | Pass | The trace shows native browser download, then MDN and Wikipedia navigation. Pi gave the three checked facts and links. |
+
+The drag and upload fixes add native agent-browser actions to Otto's browser tool. Upload reads only a file in the current task workspace, sends at most 12 MB to the isolated browser, and keeps a private temporary copy until the browser session closes. Browser tasks B46, B56, and B61 used this path. An old saved profile failed after a browser service restart in one B45 rerun. Saved public profile restart reliability remains unconfirmed.
 
 ## Findings
 
