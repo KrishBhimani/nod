@@ -113,7 +113,6 @@ export function MessageBubble({
   connectedAppIds,
   inspectorEnabled = false,
   grouped = false,
-  showTimestamp = true,
   streaming = false,
   onReply,
 }: {
@@ -121,7 +120,6 @@ export function MessageBubble({
   connectedAppIds?: ReadonlySet<string>;
   inspectorEnabled?: boolean;
   grouped?: boolean;
-  showTimestamp?: boolean;
   streaming?: boolean;
   onReply?(): void;
 }) {
@@ -318,15 +316,10 @@ export function MessageBubble({
       y: Math.max(8, Math.min(y, window.innerHeight - 230)),
     });
   }
-  const timestamp = showTimestamp && !streaming && (
-    <time dateTime={message.createdAt} title={formatFullDateTime(message.createdAt, dateFormat)}>
-      {formatTime(message.createdAt, dateFormat)}
-    </time>
-  );
   return (
     <article
       ref={articleElement}
-      className={`message message-${message.role}${streaming ? ' streaming-message' : ''}${grouped ? ' message-grouped' : ''}${!showTimestamp ? ' message-continuing' : ''}${selected ? ' message-selected' : ''}`}
+      className={`message message-${message.role}${streaming ? ' streaming-message' : ''}${grouped ? ' message-grouped' : ''}${selected ? ' message-selected' : ''}`}
       aria-label={streaming ? 'Otto is responding' : message.role === 'user' ? 'You' : 'Otto'}
       data-message-id={streaming ? undefined : message.id}
       onPointerUp={(event) => {
@@ -370,14 +363,10 @@ export function MessageBubble({
             />
           )}
           {streaming && <span className="stream-cursor" />}
-          {message.role === 'user' && timestamp && (
-            <div className="message-bubble-time">{timestamp}</div>
-          )}
         </div>
-        <div className="message-footer">
-          {((message.role === 'assistant' && timestamp) || reaction || agentReaction) && (
+        {(reaction || agentReaction) && (
+          <div className="message-footer">
             <div className="message-meta">
-              {message.role === 'assistant' && timestamp}
               {reaction && (
                 <button
                   className="selected-reaction"
@@ -400,12 +389,19 @@ export function MessageBubble({
                 </span>
               )}
             </div>
-          )}
-        </div>
+          </div>
+        )}
         {error && <Notice>{error}</Notice>}
       </div>
       {!streaming && (
         <div className="message-tools">
+          <time
+            className="message-time"
+            dateTime={message.createdAt}
+            title={formatFullDateTime(message.createdAt, dateFormat)}
+          >
+            {formatTime(message.createdAt, dateFormat)}
+          </time>
           <div className="message-actions" aria-label="Message actions">
             {onReply && (
               <Button
