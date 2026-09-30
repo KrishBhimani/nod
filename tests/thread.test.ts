@@ -1425,7 +1425,7 @@ test(
 
 test(
   'owner memory keeps evidence, revisions and every note across sessions',
-  { skip: !process.env.TEST_DATABASE_URL },
+  { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
   async () => {
     const schema = `test_memory_${randomUUID().replaceAll('-', '').slice(0, 16)}`;
     const root = await mkdtemp(join(tmpdir(), 'memory-test-'));
@@ -1544,8 +1544,15 @@ test(
         ),
         /current owned user message/,
       );
+      const existingThread = randomUUID();
+      await pool.query('CREATE TABLE threads (id uuid PRIMARY KEY, owner_id text NOT NULL)');
+      await pool.query('INSERT INTO threads(id,owner_id) VALUES($1,$2)', [existingThread, ownerId]);
+      await memory.initialize();
+      assert.equal(await memory.untrusted(existingThread), true);
       await memory.initialize();
       const threadId = randomUUID();
+      await pool.query('INSERT INTO threads(id,owner_id) VALUES($1,$2)', [threadId, ownerId]);
+      await memory.initialize();
       assert.equal(await memory.untrusted(threadId), false);
       await memory.markUntrusted(threadId);
       await memory.markUntrusted(threadId);

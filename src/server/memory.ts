@@ -8,8 +8,8 @@ const maxBytes = 64 * 1024;
 const maxEntries = 50;
 const id = z.uuid();
 const kind = z.enum(['fact', 'preference', 'pattern']);
-const secret =
-  /\b(?:password|passcode|passphrase|otp|pin|2fa|api[ _-]?key|secret|token|bearer|private[ _-]?key|security code|cvv|cvc|verification code|recovery code)\b|\bsk-[A-Za-z0-9_-]{12,}|\b(?:\d[ -]?){14,19}\b/i;
+export const personalSecret =
+  /\b(?:password|passcode|passphrase|otp|pin|2fa|api[ _-]?key|secret|token|bearer|private[ _-]?key|security code|cvv|cvc|verification code|recovery code|palavra[ _-]?passe|senha|código de verificação)\b|\bsk-[A-Za-z0-9_-]{12,}|\b(?:\d[ -]?){14,19}\b/i;
 const block =
   /^## ([0-9a-f-]{36})\nKind: (fact|preference|pattern)\nUpdated: (\d{4}-\d\d-\d\dT[^\n]+)\nSources: ([0-9a-f-, ]+)\n\n([^\n]+)$/;
 const entrySchema = z.object({
@@ -38,12 +38,12 @@ type Entry = z.infer<typeof entrySchema>;
 
 function validate(raw: unknown) {
   const input = saveInput.parse(raw);
-  if (secret.test(input.text))
+  if (personalSecret.test(input.text))
     throw new Error('Sign-in details and payment secrets cannot be remembered.');
   return input;
 }
 
-// Invalid blocks are skipped so one bad entry cannot disable memory; the next write drops them.
+// Invalid or secret-bearing blocks are skipped so one bad entry cannot disable or leak memory; the next write drops them.
 function parse(bytes?: Uint8Array): Entry[] {
   if (!bytes) return [];
   const body = new TextDecoder().decode(bytes).replace(/^# Memory\n/, '');
@@ -59,7 +59,8 @@ function parse(bytes?: Uint8Array): Entry[] {
         text: match[5],
       },
     );
-    if (entry.success && !entries.has(entry.data.id)) entries.set(entry.data.id, entry.data);
+    if (entry.success && !personalSecret.test(entry.data.text) && !entries.has(entry.data.id))
+      entries.set(entry.data.id, entry.data);
   }
   return [...entries.values()];
 }
@@ -93,10 +94,16 @@ export function createMemoryService(options: {
   ownerId: string;
   store: PrivateObjectStore;
 }) {
+  // Threads that predate the table may already hold outside content in their Pi sessions, so mark them all once.
   async function initialize() {
-    await options.pool.query(
-      'CREATE TABLE IF NOT EXISTS memory_untrusted_threads (owner_id text NOT NULL, thread_id uuid NOT NULL, marked_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (owner_id, thread_id))',
-    );
+    await options.pool.query(`DO $$ BEGIN
+      IF to_regclass('memory_untrusted_threads') IS NULL THEN
+        CREATE TABLE IF NOT EXISTS memory_untrusted_threads (owner_id text NOT NULL, thread_id uuid NOT NULL, marked_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (owner_id, thread_id));
+        IF to_regclass('threads') IS NOT NULL THEN
+          INSERT INTO memory_untrusted_threads(owner_id,thread_id) SELECT owner_id,id FROM threads ON CONFLICT DO NOTHING;
+        END IF;
+      END IF;
+    END $$`);
   }
 
   // A thread is marked before Pi first receives web, file, app or earlier-conversation content.

@@ -28,12 +28,11 @@ const skillsDir = fileURLToPath(new URL('./skills', import.meta.url));
 const holdMs = 30 * 60_000;
 const imageBytes = 5 * 1024 * 1024;
 const parallelTools = new Set(['share_file', 'create_audio']);
-// Tools whose results never carry web, file or app content. Any other tool marks the thread before it runs.
+// Tools whose results never carry web, file, app or credential content. Any other tool marks the thread before it runs.
 const trustedResultTools = new Set([
   'send_message',
   'ask_user',
   'react_to_message',
-  'get_credential',
   'manage_apps',
   'share_file',
   'create_audio',
@@ -389,6 +388,10 @@ export function createAgentRuntime(dependencies: {
       });
       signal.throwIfAborted();
       const resumed = session.resumed;
+      if (context.attachments.length) {
+        await context.markUntrustedContext?.();
+        untrustedMarked = true;
+      }
       const images: AgentImage[] = [];
       const omittedImages = new Set<string>();
       const root = resolve(context.workspacePath);

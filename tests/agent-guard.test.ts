@@ -163,6 +163,8 @@ test('saved memory reaches Pi but stays out of inspector records', async () => {
     },
   );
   assert.match(result.supplied.systemPrompt, /short synthetic reports/);
+  assert.ok(observations.length > 0);
+  assert.ok(snapshots.length > 0);
   assert.doesNotMatch(JSON.stringify(observations), /short synthetic reports/);
   assert.doesNotMatch(JSON.stringify(snapshots), /short synthetic reports/);
 });
@@ -194,6 +196,41 @@ test('the thread is marked once, before Pi first receives outside content', asyn
     },
   );
   assert.deepEqual(events, ['goal_list', 'marked', 'fetch_content', 'history_search']);
+});
+
+test('attachments and credential reads mark the thread', async () => {
+  const events: string[] = [];
+  await fixture(
+    async (tools) => {
+      events.push('prompt');
+      await call(tools, 'get_credential', { id: randomUUID(), origin: 'https://example.test' });
+    },
+    {
+      attachments: [{ path: '/tmp/synthetic.pdf', mimeType: 'application/pdf' }],
+      requestCredential: async () => ({
+        credential: { username: 'synthetic', password: 'synthetic-value' },
+      }),
+      markUntrustedContext: async () => {
+        events.push('marked');
+      },
+    },
+  );
+  assert.deepEqual(events, ['marked', 'prompt']);
+  const marks: string[] = [];
+  await fixture(
+    async (tools) => {
+      await call(tools, 'get_credential', { id: randomUUID(), origin: 'https://example.test' });
+    },
+    {
+      requestCredential: async () => ({
+        credential: { username: 'synthetic', password: 'synthetic-value' },
+      }),
+      markUntrustedContext: async () => {
+        marks.push('marked');
+      },
+    },
+  );
+  assert.deepEqual(marks, ['marked']);
 });
 
 test('earlier conversation marks the thread too', async () => {
