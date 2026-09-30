@@ -543,70 +543,70 @@
   background: var(--foreground);
   color: var(--background);
 }
-.chat-page .message-text {
+.chat-page .message .message-text {
   font-size: 15px;
   line-height: 1.47;
   font-kerning: normal;
   font-variant-ligatures: common-ligatures;
 }
-.chat-page .message-text p {
+.chat-page .message .message-text p {
   margin: 0 0 8px;
 }
-.chat-page .message-text > :first-child {
+.chat-page .message .message-text > :first-child {
   margin-top: 0;
 }
-.chat-page .message-text > :last-child {
+.chat-page .message .message-text > :last-child {
   margin-bottom: 0;
 }
-.chat-page .message-text ul,
-.chat-page .message-text ol {
+.chat-page .message .message-text ul,
+.chat-page .message .message-text ol {
   margin: 6px 0 8px;
   padding-left: 20px;
 }
-.chat-page .message-text li {
+.chat-page .message .message-text li {
   margin: 0;
   padding-left: 2px;
 }
-.chat-page .message-text li + li {
+.chat-page .message .message-text li + li {
   margin-top: 5px;
 }
-.chat-page .message-text li > ul,
-.chat-page .message-text li > ol {
+.chat-page .message .message-text li > ul,
+.chat-page .message .message-text li > ol {
   margin: 5px 0 0;
 }
-.chat-page .message-text li::marker {
+.chat-page .message .message-text li::marker {
   color: color-mix(in srgb, currentColor 55%, transparent);
 }
-.chat-page .message-text strong {
+.chat-page .message .message-text strong {
   font-weight: 700;
 }
-.chat-page .message-text h1,
-.chat-page .message-text h2,
-.chat-page .message-text h3,
-.chat-page .message-text h4 {
+.chat-page .message .message-text h1,
+.chat-page .message .message-text h2,
+.chat-page .message .message-text h3,
+.chat-page .message .message-text h4 {
   margin: 10px 0 4px;
   font-size: 15px;
   font-weight: 700;
 }
-.chat-page .message-text blockquote {
+.chat-page .message .message-text blockquote {
   margin: 8px 0;
   padding-left: 10px;
   border-left-color: color-mix(in srgb, currentColor 30%, transparent);
   color: inherit;
   opacity: 0.8;
 }
-.chat-page .message-text pre {
+.chat-page .message .message-text pre {
   margin: 8px 0;
   border-color: color-mix(in srgb, currentColor 14%, transparent);
   background: color-mix(in srgb, currentColor 7%, transparent);
 }
-.chat-page .message-text code {
+.chat-page .message .message-text code {
   background: color-mix(in srgb, currentColor 10%, transparent);
 }
-.chat-page .message-text pre code {
+.chat-page .message .message-text pre code {
   background: none;
 }
-.chat-page .message-text hr {
+.chat-page .message .message-text hr {
   margin: 10px 0;
   border-top-color: color-mix(in srgb, currentColor 18%, transparent);
 }
@@ -680,7 +680,7 @@
   border-radius: 2px;
 }
 @media (min-width: 1500px) {
-  .chat-page .message-text {
+  .chat-page .message .message-text {
     font-size: 16px;
   }
 }

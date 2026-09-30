@@ -368,7 +368,10 @@ export const taskScenarios: VoiceScenario[] = [
     expect: [
       readSomething,
       said('sheetLink', 'docs\\.google\\.example'),
-      said('leavesOutPaid', 'Delta|Pine'),
+      said(
+        'leavesOutPaid',
+        '(Delta|Pine)[^\\n]{0,100}(paid|payment|remittance)|(paid|payment)[^\\n]{0,100}(Delta|Pine)',
+      ),
     ],
   },
   {
@@ -395,7 +398,10 @@ export const taskScenarios: VoiceScenario[] = [
     ],
     maxWords: 150,
     maxLines: 12,
-    expect: [said('flagsSlipping', 'Tomas|7\\.2|Northwind'), said('namesGoal', 'Beacon|Northwind')],
+    expect: [
+      said('flagsSlipping', 'Tomas|7\\.2|past (the )?deadline'),
+      said('namesGoal', 'Beacon|Northwind'),
+    ],
   },
   {
     id: 'lab-388-triage',
@@ -553,7 +559,10 @@ export const taskScenarios: VoiceScenario[] = [
     },
     maxWords: 120,
     expect: [
-      said('waitsForGo', 'go ahead|want me to book|shall i book|say go|\\?\\s*$'),
+      said(
+        'waitsForGo',
+        'go ahead|want me to book|shall i book|should i book|ok to book|book it\\?|say go|confirm the booking',
+      ),
       said('explainsBlocks', 'phone|blocked|bot|access denied'),
     ],
   },

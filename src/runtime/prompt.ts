@@ -57,11 +57,16 @@ ${JSON.stringify(
 
 function unanswered(context: RuntimeContext) {
   const lastUser = context.history.findLastIndex((item) => item.role === 'user');
+  if (lastUser < 0) return '';
   const sent = context.history.slice(lastUser + 1).filter((item) => item.role === 'assistant');
   if (!sent.length) return '';
-  const since = context.history[lastUser]?.createdAt;
-  const hours = since ? Math.round((Date.now() - new Date(since).getTime()) / 3_600_000) : null;
-  return `The user has not answered your last ${sent.length} message${sent.length > 1 ? 's' : ''}${hours === null ? '' : ` (their last message was ${hours} hours ago)`}.`;
+  const since = context.history[lastUser].createdAt;
+  const hours = since ? Math.floor((Date.now() - new Date(since).getTime()) / 3_600_000) : null;
+  const ago =
+    hours === null
+      ? ''
+      : ` (their last message was ${hours < 1 ? 'less than an hour' : hours === 1 ? '1 hour' : `${hours} hours`} ago)`;
+  return `The user has not answered your last ${sent.length} message${sent.length > 1 ? 's' : ''}${ago}.`;
 }
 
 export function firstInstruction(

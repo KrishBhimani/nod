@@ -119,6 +119,8 @@ function score(scenario: VoiceScenario, timeline: Entry[]): Pick<Run, 'checks' |
   };
 }
 
+const webTools = new Set(['web_search', 'fetch_content', 'get_search_content', 'code_search']);
+const turns = new Map<string, VoiceScenario>();
 const browsers = new Map<string, { pages: Record<string, string>; url: string }>();
 const computer: Computer = {
   act: async (threadId, input) => {
@@ -185,10 +187,12 @@ async function runScenario(
   }));
   const directory = await mkdtemp(join(tmpdir(), 'otto-voice-'));
   const threadId = randomUUID();
+  const turnId = randomUUID();
+  turns.set(turnId, scenario);
   browsers.set(threadId, { pages: scenario.pages ?? {}, url: 'about:blank' });
   const context = {
     threadId,
-    turnId: randomUUID(),
+    turnId,
     prompt: scenario.prompt,
     background: scenario.background,
     channel: scenario.channel ?? 'web',
@@ -367,13 +371,14 @@ const runtime = createAgentRuntime({
   agent: createPiAgent({ provider, model, apiKey, sessionRoot }),
   computer,
   workspace,
-  webSearch: async (query) => {
-    await sleep(3000);
-    const results = scenarios
-      .flatMap((item) => Object.entries(item.search ?? {}))
-      .filter(([key]) => query.toLowerCase().includes(key))
-      .flatMap(([, value]) => value);
-    return { source: 'eval', results };
+  withTool: <T>(turnId: string, _toolCallId: string, name: string, action: () => T): T => {
+    if (!webTools.has(name)) return action();
+    const results = Object.values(turns.get(turnId)?.search ?? {}).flat();
+    return sleep(3000).then(() =>
+      name === 'web_search'
+        ? { source: 'eval', results }
+        : 'Full page content is not available in this evaluation. Use the search results.',
+    ) as T;
   },
 });
 const selected = (

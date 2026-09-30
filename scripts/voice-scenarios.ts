@@ -121,6 +121,7 @@ export const scenarios: VoiceScenario[] = [
     title: 'Vague ask, context already known',
     good: 'Uses the saved goal instead of asking what the launch is. Proposes one concrete move and asks at most one question.',
     prompt: 'help me with the launch',
+    work: true,
     goals: [launchGoal],
     apps: ['gmail', 'googlecalendar'],
     data: { GMAIL: inbox, GOOGLECALENDAR: calendar },
@@ -191,8 +192,13 @@ export const scenarios: VoiceScenario[] = [
     background: true,
     quiet: true,
     goals: [launchGoal],
-    apps: ['gmail'],
-    data: { GMAIL: inbox },
+    apps: ['gmail', 'googlecalendar'],
+    data: {
+      GMAIL: { messages: inbox.messages.slice(3, 5) },
+      GOOGLECALENDAR: {
+        events: [{ title: 'Webinar: AI agents in ops (invite)', start: 'in 5 weeks, 16:00' }],
+      },
+    },
     history: [
       { role: 'user', text: 'thanks', hoursAgo: 100 },
       {
