@@ -546,7 +546,6 @@
 .chat-page .message-text {
   font-size: 15px;
   line-height: 1.47;
-  letter-spacing: -0.003em;
   font-kerning: normal;
   font-variant-ligatures: common-ligatures;
 }
