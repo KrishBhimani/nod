@@ -103,12 +103,6 @@ export function createAgentRuntime(dependencies: {
     let modelIncomplete = false;
     let secureContinuation: string | undefined;
     let lastReply = '';
-    const startedAt = Date.now();
-    const sourceSites = new Set<string>();
-    let sourceChecks = 0;
-    let progressSent = false;
-    let automaticProgressSent = false;
-    let savedSessionOpened = false;
     let pendingReplies = Promise.resolve();
     const persistedStreams = new Set<string>();
     let streamId: string | undefined;
@@ -250,66 +244,13 @@ export function createAgentRuntime(dependencies: {
           if (stopped || status !== 'succeeded')
             throw new Error('This execution segment has stopped.');
           await context.emit('tool_start', label);
-          const output =
-            name === 'send_message' && automaticProgressSent
-              ? {
-                  status: 'already_sent',
-                  message:
-                    'A progress update is already in chat. Put new findings in the final answer.',
-                }
-              : await (dependencies.withTool
-                  ? dependencies.withTool(context.turnId, id, name, execute)
-                  : execute());
+          const output = await (dependencies.withTool
+            ? dependencies.withTool(context.turnId, id, name, execute)
+            : execute());
           signal.throwIfAborted();
           if (!stopped) await context.emit('tool_complete', label);
           result = isToolResult(output) ? output : textResult(output);
           await end({ status: 'succeeded', output });
-          if (name === 'send_message') progressSent = true;
-          if (['browser', 'browser_session', 'web_search', 'apps'].includes(name)) {
-            const action = (params as { action?: unknown }).action;
-            if (
-              name === 'web_search' ||
-              (name === 'browser' &&
-                ['open', 'snapshot', 'back', 'forward', 'reload'].includes(String(action))) ||
-              (name === 'browser_session' && action === 'use') ||
-              (name === 'apps' && typeof action === 'string' && /(?:GET|LIST|SEARCH)/.test(action))
-            )
-              sourceChecks += 1;
-            const url = (params as { url?: unknown }).url;
-            if (typeof url === 'string') {
-              try {
-                sourceSites.add(new URL(url).hostname.replace(/^www\./, ''));
-              } catch {}
-            }
-            if (
-              name === 'browser_session' &&
-              output &&
-              typeof output === 'object' &&
-              'status' in output &&
-              output.status === 'session_opened'
-            )
-              savedSessionOpened = true;
-            if (
-              !context.background &&
-              !progressSent &&
-              sourceChecks >= 3 &&
-              Date.now() - startedAt >= 45_000
-            ) {
-              progressSent = true;
-              const site = [...sourceSites][0];
-              const source = site
-                ? `I’ve opened ${site}${savedSessionOpened ? ' with the saved account session' : ''}`
-                : 'I’ve checked the first sources';
-              try {
-                await deliverReply(
-                  `${source} and am checking the results for this task. I’ll reply after I verify the remaining details.`,
-                );
-                automaticProgressSent = true;
-              } catch {
-                progressSent = false;
-              }
-            }
-          }
         } catch (error) {
           if (!stopped) await context.emit('tool_failed', label).catch(() => {});
           const browserFailure =

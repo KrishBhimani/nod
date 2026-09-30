@@ -267,8 +267,10 @@ export async function createDiscoveredConnections(
       if (existing.service !== parsed.service) throw error('The selected service changed.');
       name = existing.name;
     }
+    const id = randomUUID();
     const paths: AccessPath[] = [];
-    for (const path of parsed.paths) {
+    for (const [index, path] of parsed.paths.entries()) {
+      const pathId = index === 0 ? id : randomUUID();
       if (path.kind === 'cli') {
         if (!options.runCli) throw error('CLI connections are unavailable.', 503);
         if (!cliRead({ readOnly: true }, path.testArgs, path.testArgs))
@@ -279,18 +281,17 @@ export async function createDiscoveredConnections(
           )
         )
           throw error('Choose a service CLI, not a shell or interpreter.');
-        paths.push({ ...path, id: randomUUID() });
+        paths.push({ ...path, id: pathId });
         continue;
       }
       const checked = {
         ...path,
         endpoint: await options.transport.validateEndpoint(path.endpoint),
-        id: randomUUID(),
+        id: pathId,
       };
       if (checked.kind === 'http') target(checked, checked.testPath);
       paths.push(checked);
     }
-    const id = randomUUID();
     await pool.query(
       `INSERT INTO discovered_connection_proposals
        (id,owner_id,service,name,paths,connection_id,thread_id,turn_id,setup_url,setup_text)

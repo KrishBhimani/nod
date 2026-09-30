@@ -26,6 +26,7 @@ import { createDirectProvider } from '../src/providers/direct/integrations.ts';
 import { createDirectOAuth } from '../src/providers/direct/oauth.ts';
 import { createDiscoveredOAuth } from '../src/providers/discovered/oauth.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';
+import { createDiscoveredConnections } from '../src/server/discovered-connections.ts';
 import { createIntegrations, eventOverview } from '../src/server/integrations.ts';
 import { createProviderUsageStore } from '../src/server/provider-usage.ts';
 import {
@@ -2010,6 +2011,50 @@ test('a discovered MCP server can register, sign in and refresh without service 
   assert.equal(supplied.saved.clientInformation?.client_id, 'supplied-client');
   assert.equal(calls.filter((call) => call === 'POST /register').length, registered);
 });
+
+test(
+  'a discovered setup link identifies the saved access path',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async () => {
+    const schema = `test_discovery_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+    });
+    try {
+      const discovered = await createDiscoveredConnections(pool, {
+        ownerId: 'fixture-owner',
+        baseUrl: 'http://localhost:4310',
+        keyStore: {},
+        grantVault: {},
+        transport: {},
+        oauth: {},
+        runCli: async () => {
+          throw new Error('The CLI must not run during setup.');
+        },
+      } as unknown as Parameters<typeof createDiscoveredConnections>[1]);
+      const result = await discovered.propose({
+        service: 'fixture-app',
+        name: 'Fixture app',
+        paths: [
+          { kind: 'cli', command: 'fixturecli', envName: 'FIXTURE_API_KEY', testArgs: ['list'] },
+        ],
+      });
+      const id = new URL(result.url, 'http://localhost:4310').searchParams.get('connect');
+      const saved = await pool.query<{ paths: Array<{ id: string }> }>(
+        'SELECT paths FROM discovered_connection_proposals WHERE id=$1',
+        [id],
+      );
+      assert.equal(saved.rows[0].paths[0].id, id);
+    } finally {
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);
 
 test('Composio execution rejects failure envelopes without exposing provider details', async (t) => {
   const client = new Composio({
