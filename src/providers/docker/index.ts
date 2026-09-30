@@ -99,7 +99,7 @@ export function createDockerWorkspace(options: {
     workspaceRoot: options.workspaceRoot,
     status: `${options.container}; Linux · internet enabled`,
     instructions:
-      'This is your own Linux computer, not the user’s personal device. It uses normal Docker networking with no Otto egress firewall. Internet and other reachable destinations follow the host and Docker network configuration. Node, Python, pipx, git, curl, ripgrep, ffmpeg and poppler-utils (pdftotext, pdfinfo) are installed. Install trusted CLI tools with npm install -g <package> or pipx install <package>; /home/node persists across tasks and restarts. You are an unprivileged user and cannot use sudo. There is no graphical desktop or display, so native GUI applications cannot run here; use a supported CLI or the browser web app. Keep task outputs under this task workspace; do not ask the user to install your tools on their device.',
+      'This is your own Linux computer, not the user’s personal device. It uses normal Docker networking with no Otto egress firewall. Internet and other reachable destinations follow the host and Docker network configuration. Node, Python, pipx, git, curl, ripgrep, ffmpeg, yt-dlp and poppler-utils (pdftotext, pdfinfo) are installed. Install trusted CLI tools with npm install -g <package> or pipx install <package>; /home/node persists across tasks and restarts. You are an unprivileged user and cannot use sudo. There is no graphical desktop or display, so native GUI applications cannot run here; use a supported CLI or the browser web app. Keep task outputs under this task workspace; do not ask the user to install your tools on their device.',
     runCommand: (id, args, input) =>
       runWorkspaceCommand({
         container: options.container,
