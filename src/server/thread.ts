@@ -88,6 +88,8 @@ export interface ThreadDependencies {
   inspectPrompt?: (turnId: string, snapshot: PromptSnapshot) => Promise<void>;
   finishObservationSegment?: (turnId: string) => Promise<void>;
   accountProfile?: () => Promise<RuntimeContext['account']>;
+  memoryContext?: () => Promise<RuntimeContext['memory']>;
+  markUntrustedContext?: (turn: TurnRef) => Promise<void>;
   runTurn: (context: RuntimeContext) => Promise<RuntimeResult>;
   speech: Pick<SpeechService, 'synthesize'>;
   requestCredential: (
@@ -712,7 +714,7 @@ type StoredAttachment = { id?: string; name?: string; mimeType?: string };
 async function loadTurnContext(turn: any, dependencies: ThreadDependencies) {
   const threadId = turn.thread_id as string;
   const sourceMessageId: string | null = turn.message_id ?? null;
-  const [source, history, profile, goals, preferences, account] = await Promise.all([
+  const [source, history, profile, goals, preferences, account, memory] = await Promise.all([
     sourceMessageId
       ? pool.query(
           `SELECT s.attachments,r.id,r.role,left(r.text,6000) AS text,r.attachments AS reply_attachments
@@ -735,6 +737,7 @@ async function loadTurnContext(turn: any, dependencies: ThreadDependencies) {
     ),
     pool.query('SELECT time_zone,locale,hour_cycle FROM preferences WHERE owner_id=$1', [ownerId]),
     dependencies.accountProfile?.().catch(() => undefined),
+    dependencies.memoryContext?.().catch(() => []),
   ]);
   const message = source?.rows[0];
   const replyTo = message?.id
@@ -761,6 +764,7 @@ async function loadTurnContext(turn: any, dependencies: ThreadDependencies) {
       locale: preference?.locale || formattingLocale(timeZoneRegion(timeZone)),
       hourCycle: preference?.hour_cycle || defaultPreferences.hourCycle,
       ...(account ? { account } : {}),
+      memory: memory ?? [],
       personalContext: {
         profile: {
           name: String(stored.name ?? ''),
@@ -931,6 +935,7 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
       manage: fenced((action, args) =>
         dependencies.manage(ref, action, args, { sourceMessageId: loaded.sourceMessageId }),
       ),
+      markUntrustedContext: fenced(async () => dependencies.markUntrustedContext?.(ref)),
       downloadIntegrationFile:
         downloadIntegrationFile &&
         (async (action, args) =>

@@ -19,6 +19,7 @@ const labels: Record<string, string> = {
   OTTO_schedule_cancel: 'Pause this schedule',
   OTTO_profile_update: 'Save these preferences',
   OTTO_notification_preferences_update: 'Save these notification preferences',
+  OTTO_memory_save: 'Remember this',
   CONNECTED_HTTP: 'Call this connected API',
   CONNECTED_MCP_CALL: 'Use this connected tool',
   CONNECTED_CLI: 'Run this connected command',
@@ -170,6 +171,7 @@ export function actionConfirmation(
             : `Custom timing (${plain(args.cron)})`,
     );
   }
-  for (const key of ['body', 'text', 'content', 'prompt']) add('Message', text(args[key]));
+  for (const key of ['body', 'text', 'content', 'prompt'])
+    add(action === 'OTTO_memory_save' ? 'Note' : 'Message', text(args[key]));
   return `${label}${using}?${details.length ? `\n\n${details.join('\n\n')}` : ''}\n\nReply yes to confirm or no to leave it unchanged.`;
 }

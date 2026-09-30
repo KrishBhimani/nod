@@ -28,6 +28,9 @@ test('explicit requests authorize only the named operation and never draft, nega
     ['GMAIL_CREATE_EMAIL_DRAFT', 'Write an email draft to Alex.'],
     ['GMAIL_SEND_EMAIL', 'Send an email to Alex saying "Do not send this to anyone else."'],
     ['SLACK_SEND_MESSAGE', 'Send a Slack message saying “Do not publish this draft.”'],
+    ['OTTO_memory_save', 'Remember that I prefer short reports.'],
+    ['OTTO_memory_save', "Please remember I'm vegetarian."],
+    ['OTTO_memory_save', 'Lembra-te que prefiro resumos curtos.'],
   ]) {
     assert.equal(explicitlyRequestsAction(action!, text!), true, `${action}: ${text}`);
     assert.equal(forbidsTransmission(action!, text!), false, `${action}: ${text}`);
@@ -45,6 +48,10 @@ test('explicit requests authorize only the named operation and never draft, nega
     ['OTTO_goal_create', 'Review my goals.'],
     ['SLACK_POST_MESSAGE', 'Resume the schedule and post the update in Slack.'],
     ['GMAIL_SEND_EMAIL', 'Set a goal to draft an email to Alex.'],
+    ['OTTO_memory_save', 'Remember when we booked the museum?'],
+    ['OTTO_memory_save', 'Learn the API from this document.'],
+    ['OTTO_memory_save', 'Guarda o ficheiro.'],
+    ['OTTO_memory_save', 'Save this page as a PDF.'],
   ])
     assert.equal(explicitlyRequestsAction(action!, text!), false, `${action}: ${text}`);
 
