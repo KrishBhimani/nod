@@ -576,14 +576,17 @@ test('the bug report reads only the requested saved Pi session', async () => {
     const localRoot = join(f.directory, 'local');
     const localDirectory = join(localRoot, f.threadId);
     await mkdir(localDirectory, { recursive: true });
-    await writeFile(
-      join(localDirectory, 'session.jsonl'),
-      [checkpoint.manager.getHeader(), ...checkpoint.manager.getEntries()]
-        .map((entry) => JSON.stringify(entry))
-        .join('\n') + '\n',
-    );
+    const localManager = SessionManager.continueRecent(localDirectory, localDirectory);
+    localManager.appendMessage({
+      role: 'user',
+      content: 'Local fixture question',
+      timestamp: Date.now(),
+    });
+    dangling(localManager, []);
+    assert.equal(localManager.getSessionDir(), localDirectory);
+    assert.ok((await readdir(localDirectory)).some((name) => name.endsWith('.jsonl')));
     const local = await readPiSessionEntries({ threadId: f.threadId, sessionRoot: localRoot });
-    assert.match(JSON.stringify(local), /Saved fixture question/);
+    assert.match(JSON.stringify(local), /Local fixture question/);
   } finally {
     await f.close();
   }

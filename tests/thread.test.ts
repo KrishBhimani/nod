@@ -1368,20 +1368,16 @@ test(
           prompts: Array<{ turn_id: string }>;
           piSession: {
             available: boolean;
-            entries: Array<{ type: string; message?: unknown; summary?: string }>;
+            entries: Array<{ type: string; message?: unknown; summaryOmitted?: boolean }>;
           };
         }>();
         assert.equal(report.threadId, freshThread);
         assert.equal(reportedPiThread, freshThread);
         assert.equal(report.piSession.available, true);
-        assert.ok(
-          report.piSession.entries.some(
-            (entry) => entry.summary === 'The assistant chose the saved account.',
-          ),
-        );
+        assert.ok(report.piSession.entries.some((entry) => entry.summaryOmitted === true));
         assert.match(JSON.stringify(report.piSession), /inspect the next step/);
         assert.match(JSON.stringify(report.piSession), /credential-call/);
-        assert.match(JSON.stringify(report.piSession), /Saved fixture system instruction/);
+        assert.ok(!JSON.stringify(report.piSession).includes('Saved fixture system instruction'));
         assert.match(JSON.stringify(report.piSession), /Safe context update/);
         assert.ok(report.turns.some((turn) => turn.id === turnId));
         assert.ok(report.trace.some((record) => record.name === 'browser'));
@@ -1394,6 +1390,19 @@ test(
         assert.ok(!JSON.stringify(report).includes('opaque-fixture-signature'));
         assert.ok(!JSON.stringify(report).includes('private content'));
         assert.ok(!JSON.stringify(report).includes('Late old answer'));
+        savedPiEntries = [
+          {
+            type: 'compaction',
+            id: 'rebased-summary',
+            parentId: null,
+            timestamp: '2026-01-01T00:00:00.000Z',
+            summary: 'The old login was orphaned-fixture-password.',
+            details: { summary: 'orphaned-fixture-password' },
+            systemMessage: { content: 'orphaned-fixture-password' },
+          },
+        ];
+        const rebased = (await request('GET', '/api/conversation/bug-report')).json();
+        assert.ok(!JSON.stringify(rebased).includes('orphaned-fixture-password'));
       });
     } finally {
       for (const resolve of gates.values()) resolve();

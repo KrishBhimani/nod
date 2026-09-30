@@ -131,21 +131,12 @@ export function piSessionReport(entries: unknown[], secrets: string[] = []): unk
       return [
         redact({
           ...base,
-          summary: entry.summary,
+          summaryOmitted: true,
           tokensBefore: entry.tokensBefore,
           firstKeptEntryId: entry.firstKeptEntryId,
           fromId: entry.fromId,
           usage: entry.usage,
           fromHook: entry.fromHook,
-          details: entry.details,
-          systemMessage: record(entry.systemMessage)
-            ? {
-                content: content(record(entry.systemMessage)?.content),
-                sections: record(entry.systemMessage)?.sections,
-                toolsAdded: record(entry.systemMessage)?.toolsAdded,
-                toolsRemoved: record(entry.systemMessage)?.toolsRemoved,
-              }
-            : undefined,
         }),
       ];
     if (entry.type === 'custom_message')
@@ -297,7 +288,7 @@ export function registerBugReport(
       coverage: {
         toolAndPromptCaptureEnabled: options.captureEnabled(),
         traceRetentionDays: 7,
-        note: 'Values are masked and may be shortened. The Pi session includes saved readable thinking. Provider-opaque reasoning, attachment bytes, and expired traces are unavailable. A rebased session may include summaries in place of earlier entries.',
+        note: 'Values are masked and may be shortened. The Pi session includes saved readable thinking. Compaction summary text is omitted because it may retain saved login values. Provider-opaque reasoning, attachment bytes, and expired traces are unavailable.',
       },
       piSession: {
         available: sessionAvailable,

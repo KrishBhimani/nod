@@ -20,11 +20,12 @@ export function createInspectorRedactor(
   const values = [
     ...new Set(secrets.filter((value) => value.length >= (limits.minimumSecretLength ?? 8))),
   ].sort((a, b) => b.length - a.length);
+  const secretVariants = [...new Set(values.flatMap((value) => [value, encodeURIComponent(value)]))]
+    .sort((a, b) => b.length - a.length)
+    .map((value) => value.replace(/[.*+?^$()|[\]{}\\]/g, '\\$&'));
+  const secretPattern = secretVariants.length ? new RegExp(secretVariants.join('|'), 'g') : null;
   function text(value: string): string {
-    for (const secret of values) {
-      value = value.replaceAll(secret, hidden).replaceAll(encodeURIComponent(secret), hidden);
-    }
-    return value
+    return (secretPattern ? value.replace(secretPattern, hidden) : value)
       .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, hidden)
       .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9+/_.=:-]+/gi, hidden)
       .replace(
