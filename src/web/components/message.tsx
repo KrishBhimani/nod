@@ -28,13 +28,18 @@ const ReactionPicker = lazy(() => import('./emoji-picker'));
 export const MessageText = memo(function MessageText({
   text,
   previews = false,
+  connectedAppPaths,
 }: {
   text: string;
   previews?: boolean;
+  connectedAppPaths?: ReadonlySet<string>;
 }) {
   const content = useRef<HTMLDivElement>(null);
   const origin = typeof window === 'undefined' ? 'http://localhost:4310' : window.location.origin;
   const actions = messageSetupLinks(text, origin);
+  const connected = (href: string) =>
+    href.startsWith('/apps?connect=') &&
+    Boolean(connectedAppPaths?.has(href.slice('/apps?connect='.length)));
   return (
     <>
       <div className="message-text" ref={content}>
@@ -47,7 +52,13 @@ export const MessageText = memo(function MessageText({
               if (!link) return <span>{children}</span>;
               const setup = setupLink(link, messageLinkText(node?.children ?? []));
               if (setup && actions.some((action) => action.href === setup.href))
-                return <strong className="setup-phrase">{setup.label}</strong>;
+                return (
+                  <strong className="setup-phrase">
+                    {connected(setup.href)
+                      ? setup.label.replace(/^Connect /, 'Connected to ')
+                      : setup.label}
+                  </strong>
+                );
               return (
                 <a
                   href={link.href}
@@ -80,7 +91,7 @@ export const MessageText = memo(function MessageText({
         >
           {text}
         </Markdown>
-        <SetupActions actions={actions} />
+        <SetupActions actions={actions.filter((action) => !connected(action.href))} />
       </div>
       {previews && <MessageLinkPreviews content={content} text={text} />}
     </>
@@ -97,6 +108,7 @@ function ReactionGlyph({ value }: { value: string }) {
 
 export function MessageBubble({
   message,
+  connectedAppPaths,
   inspectorEnabled = false,
   grouped = false,
   showTimestamp = true,
@@ -104,6 +116,7 @@ export function MessageBubble({
   onReply,
 }: {
   message: Message;
+  connectedAppPaths?: ReadonlySet<string>;
   inspectorEnabled?: boolean;
   grouped?: boolean;
   showTimestamp?: boolean;
@@ -347,7 +360,13 @@ export function MessageBubble({
           {message.attachments.length > 0 && (
             <MessageAttachments attachments={message.attachments} />
           )}
-          {message.text && <MessageText text={message.text} previews={!streaming} />}
+          {message.text && (
+            <MessageText
+              text={message.text}
+              previews={!streaming}
+              connectedAppPaths={connectedAppPaths}
+            />
+          )}
           {streaming && <span className="stream-cursor" />}
           {message.role === 'user' && timestamp && (
             <div className="message-bubble-time">{timestamp}</div>

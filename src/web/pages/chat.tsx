@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ArrowUpRight } from 'lucide-react';
 import type {
   AppState,
@@ -95,6 +95,16 @@ export function Chat({
   initialFocusMessageId?: string;
 }) {
   const dateFormat = useDateFormat();
+  const { data: connections } = usePageData<Connection[]>('/api/apps');
+  const connectedAppPaths = useMemo(
+    () =>
+      new Set(
+        connections
+          ?.filter((connection) => connection.status === 'connected')
+          .flatMap((connection) => connection.accessPaths?.map((path) => path.id) ?? []) ?? [],
+      ),
+    [connections],
+  );
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -608,6 +618,7 @@ export function Chat({
                 )}
                 <MessageBubble
                   message={message}
+                  connectedAppPaths={connectedAppPaths}
                   streaming={streamIds.has(message.streamId ?? '')}
                   inspectorEnabled={state.configuration.inspectorEnabled}
                   grouped={messagesAreGrouped(visibleMessages[index - 1], message, dateFormat)}

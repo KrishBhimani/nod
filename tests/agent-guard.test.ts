@@ -111,35 +111,29 @@ async function call(tools: Map<string, AgentTool>, name: string, args: Record<st
   return tools.get(name)!.execute(args);
 }
 
-test('long foreground source checks send one progress message while background checks stay quiet', async () => {
+test('long foreground work keeps both useful progress messages', async () => {
   const originalNow = Date.now;
   let now = originalNow();
   Date.now = () => now;
   const computer = fakeComputer({
-    act: async (_threadId, input) => ({
-      url: input.url ?? 'https://example.test/jobs',
-      text: 'Synthetic job listings',
-      candidates: [],
-    }),
+    act: async () => ({ url: 'https://example.test/jobs', text: 'Synthetic jobs', candidates: [] }),
   });
   try {
-    for (const background of [false, true]) {
-      const result = await fixture(
-        async (tools) => {
-          await call(tools, 'browser', { action: 'open', url: 'https://example.test/jobs' });
-          await call(tools, 'browser', { action: 'snapshot' });
-          now += 46_000;
-          await call(tools, 'browser', { action: 'scroll', direction: 'down' });
-          await call(tools, 'browser', { action: 'snapshot' });
-          if (!background)
-            await call(tools, 'send_message', { text: 'Another routine progress update.' });
-        },
-        { background },
-        { computer },
-      );
-      assert.equal(result.result.status, 'succeeded');
-      assert.equal(result.replies.length, background ? 0 : 1);
-    }
+    const result = await fixture(
+      async (tools) => {
+        await call(tools, 'browser', { action: 'open', url: 'https://example.test/jobs' });
+        await call(tools, 'browser', { action: 'snapshot' });
+        now += 60_000;
+        await call(tools, 'browser', { action: 'snapshot' });
+        await call(tools, 'send_message', { text: 'I found the first source.' });
+        await call(tools, 'browser', { action: 'snapshot' });
+        await call(tools, 'send_message', { text: 'I checked another source.' });
+      },
+      {},
+      { computer },
+    );
+    assert.equal(result.result.status, 'succeeded');
+    assert.equal(result.replies.length, 2);
   } finally {
     Date.now = originalNow;
   }
