@@ -273,7 +273,8 @@ test('native app setup has one chat button and hides after connection', () => {
   const after = renderToStaticMarkup(
     createElement(MessageText, { text, connectedAppIds: new Set(['slack']) }),
   );
-  assert.match(after, /Connected to Slack/);
+  assert.match(after, /Connect Slack/);
+  assert.doesNotMatch(after, /Connected to Slack/);
   assert.doesNotMatch(after, /data-setup="app"/);
 });
 

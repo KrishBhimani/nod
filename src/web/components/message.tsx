@@ -60,13 +60,7 @@ export const MessageText = memo(function MessageText({
               if (!link) return <span>{children}</span>;
               const setup = setupLink(link, messageLinkText(node?.children ?? []));
               if (setup && actions.some((action) => action.href === setup.href))
-                return (
-                  <strong className="setup-phrase">
-                    {connected(setup.href, setup.label)
-                      ? setup.label.replace(/^Connect /, 'Connected to ')
-                      : setup.label}
-                  </strong>
-                );
+                return <strong className="setup-phrase">{setup.label}</strong>;
               return (
                 <a
                   href={link.href}

@@ -250,13 +250,11 @@ export function Chat({
         ? integrationServices[slug as keyof typeof integrationServices].name
         : 'App';
     setConnectionNotice(
-      outcome === 'continued'
-        ? `${name} connected. Otto is continuing your request.`
-        : outcome === 'connected'
-          ? `${name} connected.`
-          : outcome === 'cancelled'
-            ? `${name} connection cancelled. Try again in chat.`
-            : `${name} could not connect. Try again in chat.`,
+      outcome === 'continued' || outcome === 'connected'
+        ? ''
+        : outcome === 'cancelled'
+          ? `${name} connection cancelled. Try again in chat.`
+          : `${name} could not connect. Try again in chat.`,
     );
     url.searchParams.delete('connection');
     url.searchParams.delete('service');

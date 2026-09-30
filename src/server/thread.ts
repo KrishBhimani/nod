@@ -560,7 +560,7 @@ export function resumeAfterConnection(turnId: string, service: string) {
   return resumeTurn(
     turnId,
     `connection:${turnId}`,
-    `The ${service} connection completed. Continue the request you were working on with this account. Check the connected account and its tools before acting. Do not repeat completed external actions.`,
+    `The ${service} connection completed. Acknowledge it briefly and continue the original request. If the request only asked to connect, confirm the account with manage_apps list. Do not run a separate authentication test or repeat completed external actions.`,
     true,
   );
 }
