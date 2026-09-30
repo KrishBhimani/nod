@@ -82,7 +82,7 @@ test('notification summaries exclude message bodies, tokens, and unbounded provi
 });
 
 test(
-  'integration policy accepts verified events, rejects cross-account events, deduplicates, and gates writes',
+  'integration accounts stay owner-private while event policy verifies, deduplicates, and gates writes',
   { skip: !process.env.TEST_DATABASE_URL },
   async (t) => {
     const schema = `test_composio_${randomUUID().replaceAll('-', '')}`;
