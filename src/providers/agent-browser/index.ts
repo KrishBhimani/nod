@@ -618,7 +618,7 @@ export function createAgentBrowserComputer(options: {
   }
 
   async function maskFields(state: BrowserState, signal?: AbortSignal): Promise<string[]> {
-    const origin = new URL(await currentUrl(state, signal)).origin;
+    const origin = state.saved.allowedOrigin ?? new URL(await currentUrl(state, signal)).origin;
     const secrets = state.secretsByOrigin.get(origin) ?? new Set<string>();
     const result = await evaluate(
       state,

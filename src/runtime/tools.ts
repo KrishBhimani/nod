@@ -143,7 +143,7 @@ export const toolDefinitions = {
   ),
   browser_session: defineTool(
     'browser_session',
-    'Browser profiles for website accounts. connect opens a new private profile; use opens an existing profile; save checks and keeps the current signed-in profile.',
+    'Browser profiles for website accounts. connect opens a new private profile; use opens an existing profile without verifying sign-in. Inspect the current page to determine the outcome. save with signedIn:true records that you observed a successful sign-in on this origin.',
     Type.Union([
       Type.Object({
         action: Type.Literal('connect'),
@@ -151,9 +151,15 @@ export const toolDefinitions = {
         label: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
       }),
       Type.Object({
-        action: literals(['use', 'save']),
+        action: Type.Literal('use'),
         url: Type.String({ minLength: 1, maxLength: 2048 }),
         connectionId: uuid,
+      }),
+      Type.Object({
+        action: Type.Literal('save'),
+        url: Type.String({ minLength: 1, maxLength: 2048 }),
+        connectionId: uuid,
+        signedIn: Type.Literal(true),
       }),
     ]),
   ),

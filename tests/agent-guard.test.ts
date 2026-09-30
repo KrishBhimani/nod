@@ -293,7 +293,7 @@ test('secure credential pause prevents subsequent tools in the same execution se
     let requested = false;
     const result = await fixture(
       async (tools) => {
-        await call(tools, 'sign_in', input);
+        await call(tools, 'sign_in', { ...input });
         await assert.rejects(
           call(tools, 'manage_personal_context', {
             action: 'goal_create',
@@ -334,7 +334,7 @@ test('a chosen saved login reaches the credential broker without pausing the tur
   let requested = false;
   const result = await fixture(
     async (tools) => {
-      await call(tools, 'sign_in', input);
+      await call(tools, 'sign_in', { ...input });
     },
     {
       requestCredential: async (request) => {

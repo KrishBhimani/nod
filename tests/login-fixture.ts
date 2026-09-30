@@ -111,6 +111,7 @@ export function stagedLoginBrowser() {
     if (command[0] === 'close') {
       page.closed = true;
       page.dom.window.close();
+      pages.delete(id);
     }
     return { stdout: JSON.stringify({ success: true, data }), stderr: '', exitCode: 0 };
   };

@@ -159,6 +159,53 @@ test('entry stops after page mutation and clears only the captured original node
   }
 });
 
+test('aborted entry clears controlled state without changing replacement or foreign nodes', () => {
+  for (const behavior of ['replace', 'adopt']) {
+    const f = page();
+    const foreign = new JSDOM('<body></body>', { url: 'https://other.example' });
+    const replacement = f.password.cloneNode() as HTMLInputElement;
+    replacement.value = 'replacement-user-value';
+    const state = { input: '', change: '', replacementEvents: 0, foreignEvents: 0, otherEvents: 0 };
+    try {
+      f.username.addEventListener('input', () => {
+        state.input = f.username.value;
+      });
+      f.username.addEventListener('change', () => {
+        state.change = f.username.value;
+        if (!f.username.value) return;
+        if (behavior === 'replace') f.password.replaceWith(replacement);
+        else {
+          foreign.window.document.body.append(foreign.window.document.adoptNode(f.password));
+          f.password.value = 'foreign-user-value';
+          f.password.addEventListener('input', () => state.foreignEvents++);
+          f.password.addEventListener('change', () => state.foreignEvents++);
+        }
+      });
+      replacement.addEventListener('input', () => state.replacementEvents++);
+      replacement.addEventListener('change', () => state.replacementEvents++);
+      f.other.addEventListener('input', () => state.otherEvents++);
+      const result = f.dom.window.eval(credentialEntryScript('https://example.com', f.fields)) as {
+        ok: boolean;
+      };
+      assert.equal(result.ok, false);
+      assert.equal(f.username.value, '');
+      assert.deepEqual(state, {
+        input: '',
+        change: '',
+        replacementEvents: 0,
+        foreignEvents: 0,
+        otherEvents: 0,
+      });
+      assert.equal(replacement.value, 'replacement-user-value');
+      if (behavior === 'adopt') assert.equal(f.password.value, 'foreign-user-value');
+      assert.equal(f.other.value, 'unrelated-user-value');
+    } finally {
+      f.dom.window.close();
+      foreign.window.close();
+    }
+  }
+});
+
 test('secure entry rejects fields hidden by an ancestor', () => {
   for (const attribute of ['hidden', 'aria-hidden', 'aria-disabled', 'inert']) {
     const f = page();

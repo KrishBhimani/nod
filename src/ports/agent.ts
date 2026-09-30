@@ -40,7 +40,7 @@ export type RuntimeObservation =
 export type BrowserConnectionRequest =
   | { action: 'connect'; url: string; connectionId?: string; label?: string }
   | { action: 'use'; url: string; connectionId: string }
-  | { action: 'save'; url: string; connectionId: string };
+  | { action: 'save'; url: string; connectionId: string; signedIn: true };
 
 interface MessageAttachment {
   name: string;

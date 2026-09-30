@@ -63,9 +63,17 @@ export function credentialEntryScript(origin: string, fields: CredentialField[])
       const fresh=resolve(field.selector);
       return fresh.length!==nodes.length||fresh.some((e,i)=>e!==nodes[i]);
     });
-    const nodes=targets.flatMap(target=>target.nodes);
+    const nodes=targets.flatMap(target=>target.nodes),entryDocument=document;
     const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
-    const clear=()=>{for(const e of nodes) try {setter.call(e,'');} catch {}};
+    const clear=()=>{
+      for(const e of nodes) {
+        if(e.ownerDocument!==entryDocument) continue;
+        try {setter.call(e,'');} catch {continue;}
+        for(const type of ['input','change']) if(e.ownerDocument===entryDocument) {
+          try {e.dispatchEvent(new Event(type,{bubbles:true}));} catch {}
+        }
+      }
+    };
     try {
       if(changed()||targets.some(target=>invalid(target,true))||new Set(nodes).size!==nodes.length||!sameForm(nodes)) return {ok:false};
       for(const e of nodes) {

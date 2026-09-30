@@ -1257,6 +1257,52 @@ test('browser references bind selected nodes and reject later replacement withou
   }
 });
 
+test('profile origin remains authoritative when the page navigates after its initial check', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'otto-profile-origin-'));
+  const fixture = stagedLoginBrowser();
+  const profileId = randomUUID();
+  let race = false;
+  let foreignReads = 0;
+  const computer = createBrowserFixture({
+    dataRoot: directory,
+    run: async (executable, args, options) => {
+      const result = await fixture.run(executable, args, options);
+      const command = args.slice(args.indexOf('--idle-timeout') + 2);
+      if (race && command[0] === 'get' && command[1] === 'url') {
+        race = false;
+        const page = fixture.pages.get(profileId)!;
+        page.location = { origin: 'https://8.8.8.8', href: 'https://8.8.8.8/login' };
+      }
+      return result;
+    },
+  });
+  try {
+    await computer.bindProfile!('fixture', profileId, 'https://1.1.1.1');
+    await computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    const page = fixture.pages.get(profileId)!;
+    Object.defineProperty(page.input, 'value', {
+      get: () => {
+        if (page.location.origin === 'https://8.8.8.8') foreignReads++;
+        return 'synthetic-foreign-value';
+      },
+    });
+    for (const action of ['snapshot', 'screenshot'] as const) {
+      page.location = { origin: 'https://1.1.1.1', href: 'https://1.1.1.1/login' };
+      race = true;
+      await assert.rejects(
+        action === 'snapshot'
+          ? computer.act('fixture', { action })
+          : computer.screenshot('fixture'),
+        (error) => error instanceof BrowserActionError && error.code === 'browser_origin_changed',
+      );
+      assert.equal(foreignReads, 0);
+    }
+  } finally {
+    await computer.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('origin changes never send fresh or previous credentials through page masking', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'otto-login-origin-'));
   const fixture = stagedLoginBrowser();
@@ -1548,6 +1594,44 @@ test('split-code observations hide each private input value and retain unrelated
   } finally {
     await computer.dispose();
     dom.window.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('closing and reopening a browser creates a usable page without reviving old field bindings', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'otto-login-reopen-'));
+  const fixture = stagedLoginBrowser();
+  const computer = createBrowserFixture({ dataRoot: directory, run: fixture.run });
+  try {
+    await computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    const first = fixture.pages.get('fixture')!;
+    const selected = await computer.inspectLogin('fixture');
+    await computer.close('fixture');
+    assert.equal(first.closed, true);
+    await computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    const next = fixture.pages.get('fixture')!;
+    assert.equal(next === first, false);
+    await assert.rejects(
+      computer.injectCredentials({
+        threadId: 'fixture',
+        origin: selected.origin,
+        kind: 'identifier',
+        username: 'synthetic-reopened-account',
+        usernameSelector: selected.fields[0].selector,
+      }),
+      /Secure entry could not be confirmed/,
+    );
+    const fresh = await computer.inspectLogin('fixture');
+    await computer.injectCredentials({
+      threadId: 'fixture',
+      origin: fresh.origin,
+      kind: 'identifier',
+      username: 'synthetic-reopened-account',
+      usernameSelector: fresh.fields[0].selector,
+    });
+    assert.equal(next.input.value, 'synthetic-reopened-account');
+  } finally {
+    await computer.dispose();
     await rm(directory, { recursive: true, force: true });
   }
 });
