@@ -141,6 +141,10 @@ export function createMemoryService(options: {
     return (await read()).entries.map(visible);
   }
 
+  async function cites(messageId: string | null) {
+    return (await read()).entries.some((entry) => !!messageId && entry.sources.includes(messageId));
+  }
+
   // An approval is already bound to its requesting user message, so it skips the current-turn check.
   async function save(
     raw: unknown,
@@ -190,5 +194,5 @@ export function createMemoryService(options: {
     return { ok: true };
   }
 
-  return { initialize, markUntrusted, untrusted, validate, context, list, save, forget };
+  return { initialize, markUntrusted, untrusted, validate, context, list, cites, save, forget };
 }

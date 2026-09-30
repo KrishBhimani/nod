@@ -152,6 +152,7 @@ export async function createApprovals(
     action: string,
     args: Record<string, unknown>,
     signal?: AbortSignal,
+    options: { confirm?: boolean } = {},
   ) {
     const encoded = JSON.stringify(args);
     if (!encoded || encoded.length > 32768) throw new Error('The action is too large.');
@@ -239,17 +240,7 @@ export async function createApprovals(
           return { cached: true as const, result: previous.result };
         throw conflict('This exact action already has a pending or uncertain outcome.');
       }
-      // One explicit "remember" request allows one direct note; any other note from it needs confirmation.
-      const spentRequest =
-        action === 'OTTO_memory_save' &&
-        explicit &&
-        !!(
-          await client.query(
-            "SELECT 1 FROM approvals WHERE owner_id=$1 AND source_message_id=$2 AND action='OTTO_memory_save' AND confirmation_message_id IS NULL",
-            [ownerId, authorMessageId],
-          )
-        ).rowCount;
-      const direct = isReversiblePlanAction(action) || (explicit && !spentRequest);
+      const direct = !options.confirm && (isReversiblePlanAction(action) || explicit);
       const id = randomUUID();
       let targetTitle: string | undefined = verifiedTarget;
       if (!direct && typeof snapshot.id === 'string') {

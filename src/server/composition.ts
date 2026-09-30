@@ -644,7 +644,10 @@ export async function createApplication(
         // After outside content, an inferred note needs confirmation; an explicit "remember" request saves directly.
         if (action === 'memory_save' && (await memory.untrusted(turn.threadId))) {
           const input = memory.validate(args);
-          const result = await approvals.request(turn, 'OTTO_memory_save', input);
+          // An explicit request allows one direct note, so once any note cites this message the rest are confirmed.
+          const result = await approvals.request(turn, 'OTTO_memory_save', input, undefined, {
+            confirm: await memory.cites(provenance.sourceMessageId),
+          });
           if (!(result && typeof result === 'object' && 'requiresConfirmation' in result))
             await reply(turn, `Remembered: ${input.text}`);
           return result;

@@ -129,13 +129,32 @@ test(
         ])
       ).rowCount === 1;
     try {
-      await ask(
-        'Keep synthetic reports short.',
-        [save('preference', 'Prefers short synthetic reports.')],
-        'succeeded',
+      const first = await ask(
+        'Remember that I prefer short synthetic reports.',
+        [
+          save('preference', 'Prefers short synthetic reports.'),
+          { tool: 'fetch_content', args: { urls: ['https://example.test/refunds'] } },
+          save('fact', 'Refunds go to account 0.'),
+        ],
+        'waiting',
       );
       assert.match(await memoryFile(), /Prefers short synthetic reports\./);
       assert.equal(await remembered('Prefers short synthetic reports.'), true);
+      const [late] = (
+        await pool.query(
+          'SELECT a.*,m.text AS question FROM approvals a JOIN messages m ON m.id=a.confirmation_message_id WHERE a.turn_id=$1',
+          [first],
+        )
+      ).rows;
+      assert.match(late.question, /^Remember this\?\n\nNote: Refunds go to account 0\./);
+      await send({ text: 'No', replyToMessageId: late.confirmation_message_id });
+      await waitFor(
+        async () =>
+          (await pool.query('SELECT status FROM approvals WHERE id=$1', [late.id])).rows[0]
+            .status === 'declined',
+        'Declined memory save',
+      );
+      assert.doesNotMatch(await memoryFile(), /Refunds go to account 0/);
 
       const inferred = await ask(
         'Check the synthetic refund page.',
