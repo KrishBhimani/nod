@@ -88,7 +88,7 @@ export const toolDefinitions = {
   ),
   browser: defineTool(
     'browser',
-    'Control your private agent-browser session. open {url}; snapshot (text, controls, scrollable areas; selector/offset/controlOffset page through more); click {selector}; fill {selector, text} (never secrets); select {selector, text} by visible label or value; check/uncheck/hover {selector}; drag {selector, targetSelector}; upload {selector, path} from the task workspace; back/forward/reload; tab_list and tab_switch {tabId}; press {key}; scroll {direction, selector?}; screenshot (image for you); share_screenshot {name?} (send the image to the user); download {url? | selector?, name?} (send a file to the user and copy it into the workspace; with neither, the open PDF or the last download). waitMs (up to 15000) waits for slow pages.',
+    'Control your private agent-browser session. open {url}; snapshot (text, controls, scrollable areas; selector/offset/controlOffset page through more); click {selector}; fill {selector, text}; select {selector, text} by visible label or value; check/uncheck/hover {selector}; drag {selector, targetSelector}; upload {selector, path} from the task workspace; back/forward/reload; tab_list and tab_switch {tabId}; press {key}; scroll {direction, selector?}; screenshot (image for you); share_screenshot {name?} (send the image to the user); download {url? | selector?, name?} (send a file to the user and copy it into the workspace; with neither, the open PDF or the last download). waitMs (up to 15000) waits for slow pages.',
     Type.Object({
       action: literals([
         'open',
@@ -128,16 +128,22 @@ export const toolDefinitions = {
       name: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
     }),
   ),
-  sign_in: defineTool(
-    'sign_in',
-    'Ask the user for website credentials through a secure form. Use field references from the latest browser snapshot for the current page. The values stay out of the model.',
-    Type.Object({
-      origin: Type.String({ minLength: 1, maxLength: 2048 }),
-      label: Type.String({ minLength: 1, maxLength: 100 }),
-      kind: literals(['identifier', 'password', 'otp']),
-      usernameSelector: Type.Optional(Type.String()),
-      passwordSelector: Type.Optional(Type.String()),
-    }),
+  get_credential: defineTool(
+    'get_credential',
+    'Get a saved website login from Vault by its ID and exact origin. The result includes the username and password. Without an ID, Vault tries saved browser entry or opens a secure form. Use field references from the latest browser snapshot.',
+    Type.Union([
+      Type.Object({
+        id: uuid,
+        origin: Type.String({ minLength: 1, maxLength: 2048 }),
+      }),
+      Type.Object({
+        origin: Type.String({ minLength: 1, maxLength: 2048 }),
+        label: Type.String({ minLength: 1, maxLength: 100 }),
+        kind: literals(['identifier', 'password', 'otp']),
+        usernameSelector: Type.Optional(Type.String()),
+        passwordSelector: Type.Optional(Type.String()),
+      }),
+    ]),
   ),
   browser_session: defineTool(
     'browser_session',
@@ -223,16 +229,6 @@ export const toolDefinitions = {
       path: Type.String(),
       name: Type.Optional(Type.String({ maxLength: 200 })),
     }),
-  ),
-  web_search: defineTool(
-    'web_search',
-    'Search the public web for current sources.',
-    Type.Object({ query: Type.String({ minLength: 1, maxLength: 500 }) }),
-  ),
-  web_fetch: defineTool(
-    'web_fetch',
-    'Read one public web page as text. Use the browser for pages that need a saved account session.',
-    Type.Object({ url: Type.String({ minLength: 1, maxLength: 2048 }) }),
   ),
   create_audio: defineTool(
     'create_audio',
@@ -338,8 +334,10 @@ export function ottoTools(turn: Turn): OttoTool[] {
       }
       return computer.act(threadId, { action, ...rest } as BrowserAction, signal);
     }),
-    bind(toolDefinitions.sign_in, async (input) => {
+    bind(toolDefinitions.get_credential, async (input) => {
       const result = await context.requestCredential(input);
+      if (result.credential) return result.credential;
+      if (!('kind' in input)) throw new Error('This saved login is unavailable.');
       if (result.filled) return 'Saved login entered.';
       if (!result.url) throw new Error('The secure sign-in request could not be created.');
       await turn.reply(vaultInvitation(result.invitation ?? input, result.url));
@@ -387,22 +385,9 @@ export function ottoTools(turn: Turn): OttoTool[] {
       return context.createAudio(p.text);
     }),
   ];
-  const search = turn.webSearch;
-  if (search) tools.push(bind(toolDefinitions.web_search, (p) => search(p.query, signal)));
-  const fetch = turn.webFetch;
-  if (fetch) tools.push(bind(toolDefinitions.web_fetch, (p) => fetch(p.url, signal)));
   return tools;
 }
 
-export function inspectToolCatalog(
-  includeWebSearch = false,
-  includeWebFetch = false,
-): AgentToolMetadata[] {
-  return Object.values(toolDefinitions)
-    .filter(
-      (tool) =>
-        (includeWebSearch || tool.name !== 'web_search') &&
-        (includeWebFetch || tool.name !== 'web_fetch'),
-    )
-    .map((tool) => structuredClone(tool));
+export function inspectToolCatalog(): AgentToolMetadata[] {
+  return Object.values(toolDefinitions).map((tool) => structuredClone(tool));
 }

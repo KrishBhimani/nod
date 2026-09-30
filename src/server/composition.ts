@@ -41,7 +41,6 @@ import { createOpenAIRelevanceClassifier } from '../providers/openai/relevance.t
 import { createOpenAISpeechProvider } from '../providers/openai/speech.ts';
 import { createPiAgent } from '../providers/pi/index.ts';
 import { createPublicLinkPreviewProvider } from '../providers/public-web/link-preview.ts';
-import { createWebFetch, createWebSearch } from '../providers/public-web/search.ts';
 import { createAgentRuntime } from '../runtime/index.ts';
 import { createApp } from './app.ts';
 import { createWorkAdmission, createWorkConsumers } from './work-admission.ts';
@@ -93,7 +92,7 @@ import {
   stopThreadWorkers,
 } from './thread.ts';
 import { createTriage } from './triage.ts';
-import { createVault } from './vault.ts';
+import { createVault, credentialOrigin } from './vault.ts';
 import { createBrowserConnections } from './browser-connections.ts';
 import { createProviderUsageStore } from './provider-usage.ts';
 import { createLinkPreviews } from './link-previews.ts';
@@ -439,23 +438,11 @@ export async function createApplication(
   const speechProvider = meterSpeech(adapters.speech, providerUsage);
   const integrationProvider = meterIntegrations(adapters.integrations, providerUsage);
   const classify = meterRelevance(adapters.relevance, providerUsage);
-  const webSearch = createWebSearch();
-  const webFetch = createWebFetch();
   const runtime = createAgentRuntime({
     agent: meterAgent(adapters.agent, providerUsage),
     withTool: providerUsage.withTool,
     computer,
     workspace,
-    webSearch: (query, signal) =>
-      providerUsage.track(
-        { provider: 'pi-web-access', category: 'browser', operation: 'search' },
-        () => webSearch(query, signal),
-      ),
-    webFetch: (url, signal) =>
-      providerUsage.track(
-        { provider: 'pi-web-access', category: 'browser', operation: 'fetch' },
-        () => webFetch(url, signal),
-      ),
   });
   const speech = createSpeech(speechProvider);
   const personal = createPersonalService({
@@ -641,6 +628,12 @@ export async function createApplication(
         return personal.manage(action, args, { ...provenance, turnId: turn.turnId });
       },
       requestCredential: async (turn, input) => {
+        if (!('kind' in input)) {
+          const { entry, secret } = await vault.readCredential(input.id);
+          if (entry.origin !== credentialOrigin(input.origin))
+            throw new Error('This saved login does not match the requested website.');
+          return { credential: secret };
+        }
         if (input.kind === 'otp' && (await vault.fillEmailCode(turn, ownerId, input)))
           return { filled: true };
         if (input.kind !== 'otp') {

@@ -14,7 +14,6 @@ import type {
 import { createAgentRuntime } from '../src/runtime/index.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 import type { Computer, Workspace } from '../src/ports/computer.ts';
-import type { WebFetch } from '../src/ports/web-search.ts';
 
 async function fixture(
   run: (
@@ -27,7 +26,6 @@ async function fixture(
     observationTimeoutMs?: number;
     computer?: Computer;
     workspace?: Workspace;
-    webFetch?: WebFetch;
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'otto-session-'));
@@ -279,7 +277,7 @@ test('secure credential pause prevents subsequent tools in the same execution se
   let managed = false;
   const result = await fixture(
     async (tools) => {
-      await call(tools, 'sign_in', {
+      await call(tools, 'get_credential', {
         origin: 'https://example.com',
         label: 'Example',
         kind: 'password',
@@ -306,6 +304,33 @@ test('secure credential pause prevents subsequent tools in the same execution se
   assert.equal(result.replies.length, 1);
 });
 
+test('Pi can get an owned Vault login without putting its value in runtime observations', async () => {
+  const secret = 'synthetic-vault-password';
+  const observations: unknown[] = [];
+  const id = randomUUID();
+  await fixture(
+    async (tools) => {
+      assert.deepEqual(
+        await call(tools, 'get_credential', { id, origin: 'https://example.test' }),
+        {
+          content: [
+            { type: 'text', text: JSON.stringify({ username: 'fixture', password: secret }) },
+          ],
+          details: {},
+        },
+      );
+      await call(tools, 'browser', { action: 'fill', selector: '#password', text: secret });
+    },
+    {
+      observe: async (event) => {
+        observations.push(event);
+      },
+      requestCredential: async () => ({ credential: { username: 'fixture', password: secret } }),
+    },
+  );
+  assert.equal(JSON.stringify(observations).includes(secret), false);
+});
+
 const refusal = 'This turn can only read. Use app reads, and browser open, snapshot or scroll.';
 
 const refused: Array<[string, Record<string, unknown>]> = [
@@ -322,7 +347,7 @@ const refused: Array<[string, Record<string, unknown>]> = [
   ['manage_apps', { action: 'connect', service: 'gmail' }],
   ['manage_personal_context', { action: 'schedule_create', args: { title: 'Synthetic' } }],
   [
-    'sign_in',
+    'get_credential',
     { action: 'request', origin: 'https://mail.example.test', label: 'Sign in', kind: 'password' },
   ],
   ['ask_user', { question: 'Which email should I answer?' }],
@@ -330,7 +355,6 @@ const refused: Array<[string, Record<string, unknown>]> = [
 
 test('a read-only turn refuses every outside action with a fixed error and still posts its findings', async () => {
   let sideEffects = 0;
-  let fetched = 0;
   const result = await fixture(
     async (tools, _emit, options) => {
       for (const [name, args] of refused)
@@ -345,7 +369,13 @@ test('a read-only turn refuses every outside action with a fixed error and still
           name,
         );
       await call(tools, 'apps', { action: 'GMAIL_FETCH_EMAILS', args: {} });
-      await call(tools, 'web_fetch', { url: 'https://example.test/source' });
+      await options.runTool(
+        'fetch_content',
+        { urls: ['https://example.test/source'] },
+        async () => ({
+          content: [{ type: 'text', text: 'Synthetic source' }],
+        }),
+      );
       await call(tools, 'send_message', { text: 'You have two threads to answer.' });
     },
     {
@@ -365,10 +395,6 @@ test('a read-only turn refuses every outside action with a fixed error and still
       },
     },
     {
-      webFetch: async () => {
-        fetched++;
-        return { url: 'https://example.test/source', title: 'Source', content: 'Synthetic' };
-      },
       computer: fakeComputer({
         act: async () => {
           sideEffects++;
@@ -378,7 +404,6 @@ test('a read-only turn refuses every outside action with a fixed error and still
     },
   );
   assert.equal(sideEffects, 0);
-  assert.equal(fetched, 1);
   assert.deepEqual(result.replies, ['You have two threads to answer.']);
   assert.deepEqual(result.result, { status: 'succeeded' });
 });

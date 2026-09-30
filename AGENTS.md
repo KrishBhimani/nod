@@ -14,16 +14,16 @@ Setup and commands are in [README](README.md); how the system works is in [archi
 
 - One thread per owner: a persistent Pi session, a sandbox workspace and a browser computer, all keyed by the thread ID and shared by web, Telegram and WhatsApp.
 - Every user message, schedule fire, event wake and resume is a turn. Turns run one at a time; every write from a turn goes through `withTurnLock`. Nothing is retried automatically.
-- Pi-native tools (read, bash, edit, write, find, ls) run inside the sandbox through `WorkspaceSession.exec`; nothing runs or reads files on the host.
-- Provider keys never enter the sandbox or the browser. Tools that need them (`web_search`, `create_audio`, apps) run server-side.
+- Pi-native tools (read, bash, edit, write, find, ls) run inside the sandbox through `WorkspaceSession.exec`. The pinned Pi web extension runs in the server process with its process permissions.
+- Provider keys never enter the sandbox or the browser. The Pi web extension, `create_audio` and apps run server-side.
 - `src/server/composition.ts` is the only place that selects providers and runtime implementations. Capabilities are ports in `src/ports`; vendor SDKs stay in `src/providers`; product policy stays in `src/server`; `src/web` imports only web and shared code.
 - Hosted mode: a gateway authenticates Google sessions and routes to one immutable-owner tenant runtime per user. Never change the owner per request.
 
 ## Safety invariants
 
 - Approvals: unknown, destructive or ambiguous outside actions need an owned yes/no confirmation bound to the exact action, account and arguments. Confirmed actions run once; interrupted ones become uncertain and are never re-run.
-- Vault and sign-in: credentials go only through secure forms and the trusted browser broker, bound to owner, turn, exact origin and expiry. Values never reach the model, chat, transcripts or logs.
-- Credential guard: the runtime withholds messages that ask the user for passwords, codes or API keys and redirects the model to `sign_in`.
+- Vault and sign-in: `get_credential` can return one saved login to Pi by owned ID and exact origin. The value enters the Pi model context and saved session. Omit it from separate tool observations and user messages. New credentials go through secure forms and the trusted browser broker, bound to owner, turn, exact origin and expiry.
+- Credential guard: the runtime withholds messages that ask the user for passwords, codes or API keys and redirects the model to `get_credential`.
 - The onboarding welcome turn is read-only.
 - Owner and tenant isolation: every query and route is owner-scoped; tenants get their own SQL role and schemas and never receive control or auth credentials.
 - Internal gateway-to-tenant requests use signed HMAC envelopes binding owner, environment, generation, method, target, body, nonce and expiry. Keep replay and expiry checks.

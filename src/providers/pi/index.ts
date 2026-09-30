@@ -2,10 +2,11 @@ import { existsSync, statSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import {
   createAgentSession,
-  createExtensionRuntime,
+  DefaultResourceLoader,
   ModelRuntime,
   SessionManager,
   SettingsManager,
@@ -36,9 +37,13 @@ function isFinalAnswer(signature: string | undefined) {
   }
 }
 
-function resources(systemPrompt: string, skills: Skill[]): ResourceLoader {
+function resources(
+  systemPrompt: string,
+  skills: Skill[],
+  extensions: ReturnType<ResourceLoader['getExtensions']>,
+): ResourceLoader {
   return {
-    getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
+    getExtensions: () => extensions,
     getSkills: () => ({ skills, diagnostics: [] }),
     getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }),
@@ -137,6 +142,36 @@ export function createPiAgent(options: {
         })),
       ];
       const skills = await stageResources(input.workspace, input.skillsDir);
+      const extensionLoader = new DefaultResourceLoader({
+        cwd: input.workspace.path,
+        agentDir: directory,
+        additionalExtensionPaths: [
+          fileURLToPath(import.meta.resolve('pi-web-access/dist/index.js')),
+        ],
+        noExtensions: true,
+        noSkills: true,
+        noPromptTemplates: true,
+        noThemes: true,
+        noContextFiles: true,
+      });
+      await extensionLoader.reload();
+      const extensions = extensionLoader.getExtensions();
+      if (extensions.errors.length) throw new Error('The Pi web extension could not be loaded.');
+      for (const extension of extensions.extensions)
+        for (const [name, registered] of extension.tools)
+          extension.tools.set(name, {
+            ...registered,
+            definition: {
+              ...registered.definition,
+              execute: async (id, params, signal, onUpdate, context) => {
+                await checkpoint();
+                const result = await input.runTool(name, params, () =>
+                  registered.definition.execute(id, params, signal, onUpdate, context),
+                );
+                return { ...result, details: result.details ?? {} };
+              },
+            },
+          });
       const resumed = manager.buildSessionContext().messages.length > 0;
       const { session } = await (options.createSession ?? createAgentSession)({
         cwd: input.workspace.path,
@@ -144,10 +179,13 @@ export function createPiAgent(options: {
         modelRuntime: runtime,
         model,
         thinkingLevel: 'high',
-        tools: tools.map((tool) => tool.name),
+        tools: [
+          ...tools.map((tool) => tool.name),
+          ...extensions.extensions.flatMap((extension) => [...extension.tools.keys()]),
+        ],
         customTools: tools,
         noTools: 'builtin',
-        resourceLoader: resources(input.systemPrompt, skills),
+        resourceLoader: resources(input.systemPrompt, skills, extensions),
         sessionManager: manager,
         settingsManager: SettingsManager.inMemory({
           compaction: { enabled: true },

@@ -15,7 +15,6 @@ import type {
 import type { Computer, Workspace } from '../ports/computer.ts';
 import { BrowserActionError } from '../ports/computer.ts';
 import { threadIdentity } from '../ports/thread-identity.ts';
-import type { WebFetch, WebSearch } from '../ports/web-search.ts';
 import { browserErrorMessage } from '../shared/browser-errors.ts';
 import { requestsPrivateInput } from './communication.ts';
 import { createObservationQueue } from './observations.ts';
@@ -27,7 +26,7 @@ import { privateInputNotice, type Turn } from './turn.ts';
 const skillsDir = fileURLToPath(new URL('./skills', import.meta.url));
 const holdMs = 30 * 60_000;
 const imageBytes = 5 * 1024 * 1024;
-const parallelTools = new Set(['web_search', 'web_fetch', 'share_file', 'create_audio']);
+const parallelTools = new Set(['share_file', 'create_audio']);
 const readOnlyTools: Record<string, true | string[]> = {
   read: true,
   find: true,
@@ -35,7 +34,9 @@ const readOnlyTools: Record<string, true | string[]> = {
   send_message: true,
   apps: true,
   web_search: true,
-  web_fetch: true,
+  fetch_content: true,
+  source_check: true,
+  get_search_content: true,
   browser: ['open', 'snapshot', 'scroll', 'screenshot'],
   manage_apps: ['list'],
   manage_personal_context: [
@@ -73,8 +74,6 @@ export function createAgentRuntime(dependencies: {
   agent: Agent;
   computer: Computer;
   workspace: Workspace;
-  webSearch?: WebSearch;
-  webFetch?: WebFetch;
   observationTimeoutMs?: number;
   withTool?<T>(turnId: string, toolCallId: string, toolName: string, action: () => T): T;
 }) {
@@ -230,11 +229,18 @@ export function createAgentRuntime(dependencies: {
             finishedAt: new Date().toISOString(),
             durationMs: performance.now() - started,
           });
+        const observedInput =
+          name === 'browser' &&
+          params &&
+          typeof params === 'object' &&
+          (params as { action?: unknown }).action === 'fill'
+            ? { ...params, text: '[redacted]' }
+            : params;
         await observe({
           type: 'tool_start',
           id,
           name,
-          input: params,
+          input: observedInput,
           startedAt: new Date().toISOString(),
         });
         let result: AgentToolResult;
@@ -252,7 +258,7 @@ export function createAgentRuntime(dependencies: {
           signal.throwIfAborted();
           if (!stopped) await context.emit('tool_complete', label);
           result = isToolResult(output) ? output : textResult(output);
-          await end({ status: 'succeeded', output });
+          await end({ status: 'succeeded', ...(name === 'get_credential' ? {} : { output }) });
         } catch (error) {
           if (!stopped) await context.emit('tool_failed', label).catch(() => {});
           const browserFailure =
@@ -292,8 +298,6 @@ export function createAgentRuntime(dependencies: {
       const turn: Turn = {
         context,
         computer,
-        webSearch: dependencies.webSearch,
-        webFetch: dependencies.webFetch,
         reply,
         pause,
         confirm,
@@ -436,7 +440,7 @@ export function createAgentRuntime(dependencies: {
     waitForThread: (threadId: string) => activeThreads.get(threadId)?.done ?? Promise.resolve(),
     inspectTools: () => [
       ...(agent.nativeTools ?? []).map((tool) => structuredClone(tool)),
-      ...inspectToolCatalog(Boolean(dependencies.webSearch), Boolean(dependencies.webFetch)),
+      ...inspectToolCatalog(),
     ],
     status: () => ({
       browser: computer.status(),
