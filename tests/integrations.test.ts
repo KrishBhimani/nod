@@ -106,15 +106,38 @@ test(
       }),
     };
     const provider = fakeProvider(session);
+    const discoveredBrowserId = randomUUID();
+    const pendingBrowserId = randomUUID();
     const integrations = await createIntegrations(pool, {
       ownerId: 'local-development',
       provider,
       baseUrl: 'http://localhost:4310',
+      browserConnections: async () =>
+        [
+          { id: discoveredBrowserId, state: undefined },
+          { id: pendingBrowserId, state: 'pending' as const },
+        ].map(({ id, state }) => ({
+          slug: 'browser-example-test',
+          name: 'example.test',
+          status: 'disconnected' as const,
+          connectionId: id,
+          triggersEnabled: false,
+          accessPaths: [{ id, kind: 'browser' as const, endpoint: 'https://example.test' }],
+          ...(state ? { browserState: state } : {}),
+        })),
       wake: async (prompt, id) => {
         delivered.push(id);
         assert.equal(prompt.includes('provider-secret'), false);
       },
     });
+    const browserPaths = await integrations.manageConnections('list');
+    assert.ok(Array.isArray(browserPaths));
+    assert.deepEqual(
+      browserPaths
+        .filter((connection) => connection.accessPaths?.some((path) => path.kind === 'browser'))
+        .map((connection) => connection.connectionId),
+      [discoveredBrowserId, pendingBrowserId],
+    );
     integrations.registerRoutes(app);
     const event = {
       id: 'event-fixture-1',

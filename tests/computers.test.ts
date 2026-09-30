@@ -396,7 +396,6 @@ async function e2bFixture() {
           };
         },
         screenshot: async () => Buffer.from('masked image'),
-        signInScreenshot: async () => Buffer.from('private image'),
         injectCredentials: async (input) => {
           calls.push({ method: 'credentials', input });
           return { status: 'submitted' };
@@ -407,7 +406,6 @@ async function e2bFixture() {
           fields: [],
           methods: [],
         }),
-        selectLoginMethod: async () => {},
         hold: async () => {},
         close: async () => {},
         dispose: async () => {
@@ -588,7 +586,6 @@ test('E2B shares one owned sandbox across private browser and supervised workspa
       password: 'synthetic private value',
     });
     assert.equal((await first.computer.screenshot('task-one'))?.toString(), 'masked image');
-    assert.equal((await first.computer.signInScreenshot!('task-one'))?.toString(), 'private image');
     const workspace = first.workspace.open({
       threadId: 'task-one',
       workspacePath: join(f.root, 'workspaces/task-one'),
@@ -969,7 +966,6 @@ async function cloudflareFixture() {
           fields: [],
           methods: [],
         }),
-        selectLoginMethod: async () => {},
         hold: async () => {},
         close: async () => {},
         dispose: async () => {

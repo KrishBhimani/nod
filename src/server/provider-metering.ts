@@ -59,42 +59,6 @@ export function meterComputer(computer: Computer, usage: ProviderUsageStore): Co
       usage.track({ ...base, operation: 'inspect_login' }, () => computer.inspectLogin(id)),
     injectCredentials: (input) =>
       usage.track({ ...base, operation: 'secure_entry' }, () => computer.injectCredentials(input)),
-    selectLoginMethod: (id, origin, method) =>
-      usage.track({ ...base, operation: 'select_login_method' }, () =>
-        computer.selectLoginMethod(id, origin, method),
-      ),
-    ...(computer.takeControl
-      ? {
-          takeControl: (id: string) =>
-            usage.track({ ...base, operation: 'take_control' }, () => computer.takeControl!(id)),
-        }
-      : {}),
-    ...(computer.control
-      ? {
-          control: (id: string, input: Parameters<NonNullable<Computer['control']>>[1]) =>
-            usage.track({ ...base, operation: 'manual_input' }, () => computer.control!(id, input)),
-        }
-      : {}),
-    ...(computer.openSignIn
-      ? {
-          openSignIn: (id: string) =>
-            usage.track({ ...base, operation: 'open_sign_in' }, () => computer.openSignIn!(id)),
-        }
-      : {}),
-    ...(computer.finishSignIn
-      ? {
-          finishSignIn: (id: string) =>
-            usage.track({ ...base, operation: 'finish_sign_in' }, () => computer.finishSignIn!(id)),
-        }
-      : {}),
-    ...(computer.releaseControl
-      ? {
-          releaseControl: (id: string) =>
-            usage.track({ ...base, operation: 'release_control' }, () =>
-              computer.releaseControl!(id),
-            ),
-        }
-      : {}),
   };
 }
 

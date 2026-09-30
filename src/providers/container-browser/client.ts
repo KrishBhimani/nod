@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { BrowserActionError, browserDownloadBytes, type Computer } from '../../ports/computer.ts';
+import {
+  BrowserActionError,
+  browserDownloadBytes,
+  browserUploadBytes,
+  type Computer,
+} from '../../ports/computer.ts';
 import { threadIdentity } from '../../ports/thread-identity.ts';
 import type { CommandProcess } from '../command-process.ts';
 import { loginInspectionSchema } from '../agent-browser/login.ts';
@@ -14,6 +19,16 @@ import {
   type BrowserMetadata,
   type BrowserResponse,
 } from './protocol.ts';
+
+const observationSchema = z
+  .object({
+    text: z.string().max(256 * 1024),
+    url: z.string().max(8192),
+    candidates: z
+      .array(z.object({ id: z.string().max(500), label: z.string().max(350) }).strict())
+      .max(100),
+  })
+  .strict();
 
 export function createBridgeComputer(options: {
   namespace: string;
@@ -42,6 +57,7 @@ export function createBridgeComputer(options: {
     if (
       (input.method === 'act' ||
         input.method === 'download' ||
+        input.method === 'upload' ||
         (input.method === 'close' && input.threadId === currentSession?.threadId)) &&
       order >= activitySequence
     ) {
@@ -89,7 +105,7 @@ export function createBridgeComputer(options: {
           new Error('The workspace browser is unavailable. Start its container and try again.'),
         );
       }
-      if (input.method === 'act' || input.method === 'download') {
+      if (input.method === 'act' || input.method === 'download' || input.method === 'upload') {
         activitySequence = order;
         currentSession = { threadId: input.threadId, lastActivityAt: new Date().toISOString() };
       }
@@ -162,6 +178,8 @@ export function createBridgeComputer(options: {
           return reject(new BrowserActionError('browser_navigation_failed'));
         if (response.error === 'click_intercepted')
           return reject(new BrowserActionError('browser_click_intercepted'));
+        if (response.error === 'action')
+          return reject(new BrowserActionError('browser_action_failed'));
         if (response.error === 'locked') {
           const error = new Error('Browser observations are paused during credential entry.');
           return reject(Object.assign(error, { statusCode: 423 }));
@@ -176,12 +194,8 @@ export function createBridgeComputer(options: {
     return result;
   }
 
-  async function image(
-    method: 'screenshot' | 'signInScreenshot',
-    id: string,
-    signal?: AbortSignal,
-  ) {
-    const value = await call({ method, threadId: threadIdentity(id) }, signal);
+  async function image(id: string, signal?: AbortSignal) {
+    const value = await call({ method: 'screenshot', threadId: threadIdentity(id) }, signal);
     if (value === null) return null;
     if (
       typeof value !== 'string' ||
@@ -214,17 +228,28 @@ export function createBridgeComputer(options: {
     screenStatus: (id) => screens.get(threadIdentity(id))?.value ?? { state: 'unavailable' },
     status: () => (uncertain ? 'Workspace browser needs a restart.' : status),
     act: async (id, input, signal) =>
-      z
-        .object({
-          text: z.string().max(256 * 1024),
-          url: z.string().max(8192),
-          candidates: z
-            .array(z.object({ id: z.string().max(500), label: z.string().max(350) }).strict())
-            .max(100),
-        })
-        .strict()
-        .parse(await call({ method: 'act', threadId: threadIdentity(id), input }, signal)),
-    screenshot: (id, signal) => image('screenshot', id, signal),
+      observationSchema.parse(
+        await call({ method: 'act', threadId: threadIdentity(id), input }, signal),
+      ),
+    screenshot: image,
+    upload: async (id, input, signal) => {
+      if (!input.bytes.length || input.bytes.length > browserUploadBytes)
+        throw new Error('The browser file is too large.');
+      return observationSchema.parse(
+        await call(
+          {
+            method: 'upload',
+            threadId: threadIdentity(id),
+            input: {
+              selector: input.selector,
+              name: input.name,
+              data: Buffer.from(input.bytes).toString('base64'),
+            },
+          },
+          signal,
+        ),
+      );
+    },
     async download(id, input, signal) {
       const result = z
         .object({
@@ -255,32 +280,10 @@ export function createBridgeComputer(options: {
         throw new Error('The browser file is unavailable.');
       return { bytes, name: result.name, mimeType: result.mimeType };
     },
-    signInScreenshot: (id, signal) => image('signInScreenshot', id, signal),
-    takeControl: async (id) => {
-      await call({ method: 'takeControl', threadId: threadIdentity(id) });
-    },
-    openSignIn: async (id) => {
-      await call({ method: 'openSignIn', threadId: threadIdentity(id) });
-    },
-    finishSignIn: async (id) => {
-      await call({ method: 'finishSignIn', threadId: threadIdentity(id) });
-    },
-    control: async (id, input) => {
-      await call({ method: 'control', threadId: threadIdentity(id), input });
-    },
-    signInControl: async (id, input) => {
-      await call({ method: 'signInControl', threadId: threadIdentity(id), input });
-    },
-    releaseControl: async (id) => {
-      await call({ method: 'releaseControl', threadId: threadIdentity(id) });
-    },
     inspectLogin: async (id) =>
       loginInspectionSchema.parse(
         await call({ method: 'inspectLogin', threadId: threadIdentity(id) }),
       ),
-    selectLoginMethod: async (id, origin, methodId) => {
-      await call({ method: 'selectLoginMethod', threadId: threadIdentity(id), origin, methodId });
-    },
     injectCredentials: async (input) => {
       const {
         threadId: id,
@@ -291,7 +294,6 @@ export function createBridgeComputer(options: {
         code,
         usernameSelector,
         passwordSelector,
-        submitSelector,
       } = input;
       return (
         z
@@ -310,7 +312,6 @@ export function createBridgeComputer(options: {
                 code,
                 usernameSelector,
                 passwordSelector,
-                submitSelector,
               },
             }),
           ) ?? undefined

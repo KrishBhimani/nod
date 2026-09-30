@@ -93,7 +93,6 @@ const requestInput = z
     kind: z.enum(['identifier', 'password', 'otp']),
     usernameSelector: z.string().min(1).max(2048).optional(),
     passwordSelector: z.string().min(1).max(2048).optional(),
-    submitSelector: z.string().min(1).max(2048).optional(),
   })
   .strict();
 type CredentialInput = z.infer<typeof requestInput>;
@@ -111,7 +110,6 @@ type VaultOptions = {
   keyStore: CredentialKeyStore;
   inspect?(threadId: string): Promise<LoginInspection>;
   hold?(threadId: string, until: number | null): Promise<void>;
-  selectMethod?(threadId: string, origin: string, methodId: string): Promise<void>;
   emailCode?(input: EmailCodeRequest, signal: AbortSignal): Promise<PrivateEmailCode | undefined>;
   icon?(origin: string): Promise<SiteIcon | null>;
 };
@@ -182,7 +180,7 @@ class VaultError extends Error {
 function assertSupportedBrowser(inspection: LoginInspection) {
   if (inspection.issue === 'browser_not_supported')
     throw new VaultError(
-      'This provider has blocked sign-in in the automated browser. Choose "Take control" under browser controls, then "Resume agent" after finishing there.',
+      'This website blocked sign-in in the browser. Try again after the website allows access.',
       409,
     );
 }
@@ -801,75 +799,80 @@ export async function createVault(pool: Pool, options: VaultOptions) {
   async function inspectRequest(threadId: string, raw: CredentialInput) {
     const input = requestInput.parse(raw);
     const origin = credentialOrigin(input.origin);
-    if (!options.inspect) {
-      const fields: LoginInspection['fields'] = [];
-      if (input.usernameSelector || input.kind === 'identifier')
-        fields.push({
-          kind: 'identifier',
-          selector: input.usernameSelector ?? '',
-          label: 'Email, phone number or username',
-        });
-      if (input.kind !== 'identifier')
-        fields.push({
-          kind: input.kind,
-          selector: input.passwordSelector ?? '',
-          label: input.kind === 'otp' ? 'Verification code' : 'Password',
-        });
-      return {
-        input: { ...input, origin },
-        inspection: {
-          origin,
-          url: origin,
-          fields,
-          methods: [
-            {
-              id: 'credentials',
-              kind: 'credentials' as const,
-              label: 'Use the secure form',
-              supported: true,
-            },
-          ],
-          submitSelector: input.submitSelector,
-        },
-      };
-    }
-    const inspection = await options.inspect(threadId);
-    if (inspection.origin !== origin)
+    const observed = await options.inspect?.(threadId);
+    if (observed && observed.origin !== origin)
       throw new VaultError(
         'The login page origin changed. Request a new secure sign-in step.',
         409,
       );
-    assertSupportedBrowser(inspection);
-    if (inspection.fields.length === 0 && inspection.methods.length === 0)
-      throw new VaultError(
-        'There is no sign-in step on the current page. Inspect the browser before continuing.',
-        409,
-      );
-    const kind =
-      (['otp', 'password', 'identifier'] as const).find((value) =>
-        inspection.fields.some((field) => field.kind === value),
-      ) ?? input.kind;
-    const target = inspection.fields.filter((field) => field.kind === kind);
-    const username = inspection.fields.filter((field) => field.kind === 'identifier');
+    if (observed) assertSupportedBrowser(observed);
+    const kind = input.kind;
+    const detected = observed?.fields.filter((field) => field.kind === kind) ?? [];
+    if (
+      observed &&
+      (!observed.methods.some((method) => method.id === 'credentials' && method.supported) ||
+        detected.length !== 1)
+    )
+      throw new VaultError('The current page does not support this credential step.', 409);
+    const target =
+      (kind === 'identifier' ? input.usernameSelector : input.passwordSelector) ??
+      (detected.length === 1 ? detected[0].selector : undefined);
+    if (!target)
+      throw new VaultError('Choose a visible sign-in field from the current browser page.', 409);
+    if (
+      kind === 'password' &&
+      input.usernameSelector &&
+      /^@e\d+$/.test(target) !== /^@e\d+$/.test(input.usernameSelector)
+    )
+      throw new VaultError('Choose both sign-in fields from the same browser view.', 409);
+    if (
+      observed &&
+      ((!/^@e\d+$/.test(target) && target !== detected[0].selector) ||
+        (kind === 'password' &&
+          input.usernameSelector &&
+          !/^@e\d+$/.test(input.usernameSelector) &&
+          !observed.fields.some(
+            (field) => field.kind === 'identifier' && field.selector === input.usernameSelector,
+          )))
+    )
+      throw new VaultError('The login field changed. Request a fresh secure form.', 409);
     const resolved: CredentialInput = {
       origin,
       label: input.label,
       kind,
-      usernameSelector: username.length === 1 ? username[0].selector : undefined,
-      passwordSelector:
-        kind !== 'identifier' && target.length === 1 ? target[0].selector : undefined,
-      submitSelector: inspection.submitSelector,
+      ...(kind === 'identifier'
+        ? { usernameSelector: target }
+        : {
+            passwordSelector: target,
+            ...(input.usernameSelector ? { usernameSelector: input.usernameSelector } : {}),
+          }),
     };
+    const fields: LoginInspection['fields'] = [
+      ...(kind === 'password' && input.usernameSelector
+        ? [{ kind: 'identifier' as const, selector: input.usernameSelector, label: 'Username' }]
+        : []),
+      {
+        kind,
+        selector: target,
+        label:
+          kind === 'identifier' ? 'Username' : kind === 'otp' ? 'Verification code' : 'Password',
+      },
+    ];
     return {
       input: resolved,
       inspection: {
-        ...inspection,
-        url: origin,
-        fields: inspection.fields.map((field) =>
-          field.kind === 'identifier'
-            ? { ...field, label: safeIdentifierLabel(field.label) || 'Username' }
-            : field,
-        ),
+        origin,
+        url: observed?.url ?? origin,
+        fields,
+        methods: observed?.methods ?? [
+          {
+            id: 'credentials',
+            kind: 'credentials' as const,
+            label: 'Secure entry',
+            supported: true,
+          },
+        ],
+        ...(kind === 'otp' && observed?.emailCode ? { emailCode: observed.emailCode } : {}),
       },
     };
   }
@@ -1321,30 +1324,6 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       });
       if (submission?.status === 'rejected')
         return { retry: await inspectRequest(row.thread_id, row.selectors) };
-    });
-  }
-
-  async function selectMethod(token: string, raw: unknown) {
-    const { methodId } = z
-      .object({ methodId: z.string().min(1).max(100) })
-      .strict()
-      .parse(raw);
-    return consume(token, async (row) => {
-      if (!options.selectMethod || !options.inspect)
-        throw new VaultError('Sign-in method selection is not available.', 409);
-      const inspection = await options.inspect(row.thread_id);
-      assertSupportedBrowser(inspection);
-      const method = inspection.methods.find((item) => item.id === methodId);
-      if (
-        inspection.origin !== row.origin ||
-        !method?.supported ||
-        !(['oauth', 'credentials'].includes(method.kind) && method.id !== 'credentials')
-      )
-        throw new VaultError(
-          'This sign-in method is no longer available on the current page.',
-          409,
-        );
-      await options.selectMethod(row.thread_id, row.origin, methodId);
     });
   }
 
@@ -1932,10 +1911,6 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       scope.post<{ Params: { id: string } }>(
         '/api/credential-requests/:id/retry',
         async (request) => retry(request.params.id),
-      );
-      scope.post<{ Params: { id: string } }>(
-        '/api/credential-requests/:id/method',
-        async (request) => selectMethod(request.params.id, request.body),
       );
       scope.post<{ Params: { id: string } }>(
         '/api/credential-requests/:id/saved',

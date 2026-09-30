@@ -1,9 +1,13 @@
-import { chmod, lstat, mkdir, unlink } from 'node:fs/promises';
+import { chmod, lstat, mkdir, rm, unlink } from 'node:fs/promises';
 import { createServer, connect, type Socket } from 'node:net';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Computer } from '../../ports/computer.ts';
-import { BrowserActionError, browserDownloadBytes } from '../../ports/computer.ts';
+import {
+  BrowserActionError,
+  browserDownloadBytes,
+  browserUploadBytes,
+} from '../../ports/computer.ts';
 import { createAgentBrowserComputer } from '../agent-browser/index.ts';
 import { containerBrowserOptions } from './config.ts';
 import {
@@ -83,33 +87,22 @@ async function dispatch(computer: Computer, request: BrowserRequest, signal: Abo
         throw new Error();
       return { data: file.bytes.toString('base64'), name: file.name, mimeType: file.mimeType };
     }
-    case 'screenshot':
-    case 'signInScreenshot': {
-      const method =
-        request.method === 'screenshot' ? computer.screenshot : computer.signInScreenshot;
-      if (!method) throw new Error();
-      const image = await method.call(computer, request.threadId, signal);
+    case 'upload': {
+      if (!computer.upload) throw new Error();
+      const { data, ...input } = request.input;
+      if (data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new Error();
+      const bytes = Buffer.from(data, 'base64');
+      if (!bytes.length || bytes.length > browserUploadBytes || bytes.toString('base64') !== data)
+        throw new Error();
+      return computer.upload(request.threadId, { ...input, bytes }, signal);
+    }
+    case 'screenshot': {
+      const image = await computer.screenshot(request.threadId, signal);
       if (image && image.length > imageBytes) throw new Error();
       return image?.toString('base64') ?? null;
     }
-    case 'takeControl':
-    case 'openSignIn':
-    case 'finishSignIn':
-    case 'releaseControl': {
-      const method = computer[request.method];
-      if (!method) throw new Error();
-      return method.call(computer, request.threadId);
-    }
-    case 'control':
-    case 'signInControl': {
-      const method = computer[request.method];
-      if (!method) throw new Error();
-      return method.call(computer, request.threadId, request.input);
-    }
     case 'inspectLogin':
       return computer.inspectLogin(request.threadId);
-    case 'selectLoginMethod':
-      return computer.selectLoginMethod(request.threadId, request.origin, request.methodId);
     case 'injectCredentials':
       return computer.injectCredentials(request.input);
     case 'hold':
@@ -213,7 +206,9 @@ export async function startContainerBrowserWorker(
     return true;
   }
   await prepareSocket(path);
+  let ready = false;
   const server = createServer((socket) => {
+    if (!ready) return socket.destroy();
     socket.setEncoding('utf8');
     connections.add(socket);
     let incoming = '';
@@ -276,9 +271,11 @@ export async function startContainerBrowserWorker(
               ? 'click_intercepted'
               : error instanceof BrowserActionError && error.code === 'browser_navigation_failed'
                 ? 'navigation'
-                : error instanceof Error && 'statusCode' in error && error.statusCode === 423
-                  ? 'locked'
-                  : 'unavailable',
+                : error instanceof BrowserActionError && error.code === 'browser_action_failed'
+                  ? 'action'
+                  : error instanceof Error && 'statusCode' in error && error.statusCode === 423
+                    ? 'locked'
+                    : 'unavailable',
           metadata: metadata(await entry?.computer.catch(() => undefined), input),
         };
       } finally {
@@ -325,7 +322,15 @@ export async function startContainerBrowserWorker(
     server.once('error', reject);
     server.listen(path, resolve);
   });
-  await chmod(path, 0o600);
+  try {
+    await rm('/tmp/otto-browser-uploads', { recursive: true, force: true });
+    await chmod(path, 0o600);
+  } catch (error) {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await unlink(path).catch(() => {});
+    throw error;
+  }
+  ready = true;
   return {
     async close() {
       if (closing) return;

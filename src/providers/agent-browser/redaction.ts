@@ -1,21 +1,3 @@
-export { browserInputSchema as manualInputSchema } from '../../shared/browser-input.ts';
-
-export const protectFocusedField = `(() => {
-  const visible=e=>e&&e.isConnected&&e.getClientRects().length>0&&getComputedStyle(e).visibility!=='hidden'&&getComputedStyle(e).display!=='none'&&!e.closest('[hidden],[aria-hidden="true"],[inert],[aria-disabled="true"]');
-  let e=document.activeElement,depth=0;
-  while(e?.matches('iframe,frame')) {
-    if(!visible(e)) return false;
-    if(++depth>8) return 'unsupported_frame';
-    try { if(!e.contentDocument) return 'unsupported_frame'; e=e.contentDocument.activeElement; } catch { return 'unsupported_frame'; }
-  }
-  if(!visible(e) || e.disabled || e.readOnly || !(e.matches('input,textarea') && !['file','hidden','button','submit','reset','checkbox','radio','range','color','image'].includes(e.type) || e.isContentEditable)) return false;
-  e.setAttribute('data-otto-manual-field','true');
-  e.style.setProperty('color','transparent','important');
-  e.style.setProperty('text-shadow','none','important');
-  e.style.setProperty('-webkit-text-security','disc','important');
-  return true;
-})()`;
-
 export function maskPageScript(selectors: string[], secrets: string[]): string {
   return `(() => {
     const selectors=${JSON.stringify(selectors)},secrets=${JSON.stringify(secrets)},documents=[document],nodes=new Set(),unreadableFrames=[];

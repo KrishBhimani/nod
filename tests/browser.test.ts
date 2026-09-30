@@ -6,7 +6,6 @@ import type {
 } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { createServer as createHttpServer } from 'node:http';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { connect, createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -23,7 +22,6 @@ import type {
   RuntimeObservation,
 } from '../src/ports/agent.ts';
 import { BrowserActionError, type BrowserAction, type Computer } from '../src/ports/computer.ts';
-import { createSignInDesktop } from '../src/providers/agent-browser/desktop.ts';
 import {
   browserSessionId,
   createAgentBrowserComputer,
@@ -31,12 +29,11 @@ import {
   redactBrowserUrl,
 } from '../src/providers/agent-browser/index.ts';
 import {
-  credentialSubmitScript,
   loginInspectionSchema,
   loginInspectionScript,
 } from '../src/providers/agent-browser/login.ts';
 import { credentialFields, credentialScript } from '../src/providers/agent-browser/credentials.ts';
-import { maskPageScript, protectFocusedField } from '../src/providers/agent-browser/manual.ts';
+import { maskPageScript } from '../src/providers/agent-browser/redaction.ts';
 import { existingDaemonCommand } from '../src/providers/agent-browser/screens.ts';
 import { runBrowserBridge } from '../src/providers/container-browser/bridge.ts';
 import {
@@ -240,7 +237,6 @@ function syntheticComputer(): Computer & { canCheckpoint?: () => boolean } {
       fields: [],
       methods: [],
     }),
-    selectLoginMethod: async () => {},
     hold: async () => {},
     close: async () => {},
     dispose: async () => {},
@@ -342,52 +338,22 @@ test('quiesce refuses a pending request without aborting or querying its browser
 async function browserFixture() {
   const directory = await mkdtemp('/tmp/sk-checkpoint-browser-');
   const browser = stagedLoginBrowser();
-  const commands: string[][] = [];
   let before = async (_command: string[]) => {};
-  let starting = async () => {};
-  let nativeClosed = true;
   const computer = createBrowserFixture({
     dataRoot: directory,
-    manualTimeoutMs: 60_000,
     run: async (executable, args, options) => {
-      const command = args.slice(args.indexOf('--idle-timeout') + 2);
-      commands.push(command);
-      await before(command);
+      await before(args.slice(args.indexOf('--idle-timeout') + 2));
       return browser.run(executable, args, options);
-    },
-    resolveSignInBrowser: async () => '/fixture/chromium',
-    signInLauncher: {
-      async start() {
-        await starting();
-        nativeClosed = false;
-        const exited = deferred();
-        return {
-          get closed() {
-            return nativeClosed;
-          },
-          exited: exited.promise,
-          async close() {
-            nativeClosed = true;
-            exited.resolve();
-          },
-        };
-      },
     },
   });
   return {
     computer,
-    commands,
-    directory,
     open: () => computer.act('task', { action: 'open', url: 'https://1.1.1.1/login' }),
     before(value: typeof before) {
       before = value;
     },
-    starting(value: typeof starting) {
-      starting = value;
-    },
     async close() {
       before = async () => {};
-      starting = async () => {};
       await computer.dispose();
       await rm(directory, { recursive: true, force: true });
     },
@@ -400,6 +366,7 @@ test('checkpoint status blocks credential injection until the private call finis
   const release = deferred();
   try {
     await f.open();
+    const selector = (await f.computer.inspectLogin('task')).fields[0].selector;
     f.before(async (command) => {
       if (command[0] === 'eval') {
         entered.resolve();
@@ -411,7 +378,7 @@ test('checkpoint status blocks credential injection until the private call finis
       origin: 'https://1.1.1.1',
       kind: 'identifier',
       username: 'synthetic@example.test',
-      usernameSelector: 'input',
+      usernameSelector: selector,
     });
     assert.equal(f.computer.canCheckpoint(), false);
     await entered.promise;
@@ -570,116 +537,6 @@ test('a timed out snapshot is not resent and its queue remains fenced until clos
   }
 });
 
-{
-  const failedClose = true;
-  test('interrupted credential feedback preserves an unconfirmed close fence without replay or cleanup commands', async () => {
-    const f = await transportFixture();
-    const releaseFeedback = deferred();
-    try {
-      await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
-      const login = await f.computer.inspectLogin('fixture');
-      let feedbackCalls = 0;
-      f.before(async (action, command) => {
-        if (
-          action === 'evaluate' &&
-          typeof command.script === 'string' &&
-          command.script.includes('mark=false;')
-        ) {
-          feedbackCalls++;
-          await releaseFeedback.promise;
-        }
-        if (action === 'close') {
-          releaseFeedback.resolve();
-          if (failedClose) f.fail('close');
-        }
-      });
-      await assert.rejects(
-        f.computer.injectCredentials({
-          threadId: 'fixture',
-          origin: login.origin,
-          kind: 'identifier',
-          username: 'private-credential-fixture@example.test',
-          usernameSelector: login.fields[0].selector,
-          submitSelector: login.submitSelector,
-        }),
-        (error: unknown) => {
-          assert.ok(error instanceof Error);
-          assert.equal(
-            error.message,
-            'Secure entry could not be confirmed. Check the login page before continuing.',
-          );
-          return true;
-        },
-      );
-      assert.equal(feedbackCalls, 1);
-      const closed = f.actions.indexOf('close');
-      assert.notEqual(closed, -1);
-      assert.deepEqual(f.actions.slice(closed), ['close']);
-      await assert.rejects(f.computer.act('fixture', { action: 'snapshot' }), /expired/);
-      assert.deepEqual(f.actions.slice(closed), ['close']);
-      assert.deepEqual(f.launches, ['open', 'info']);
-    } finally {
-      releaseFeedback.resolve();
-      f.fail();
-      await f.cleanup();
-    }
-  });
-}
-
-test('closing during successful credential feedback cannot report submission or clear credentials', async () => {
-  const f = await transportFixture();
-  const feedbackStarted = deferred();
-  const releaseFeedback = deferred();
-  try {
-    await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
-    const login = await f.computer.inspectLogin('fixture');
-    let feedbackIndex = -1;
-    let clearingCommands = 0;
-    f.before(async (action, command) => {
-      if (
-        action === 'evaluate' &&
-        typeof command.script === 'string' &&
-        command.script.includes("e.value=''")
-      )
-        clearingCommands++;
-      if (
-        action === 'evaluate' &&
-        typeof command.script === 'string' &&
-        command.script.includes('mark=false;')
-      ) {
-        feedbackIndex = f.actions.length - 1;
-        feedbackStarted.resolve();
-        await releaseFeedback.promise;
-      }
-    });
-    const rejected = assert.rejects(
-      f.computer.injectCredentials({
-        threadId: 'fixture',
-        origin: login.origin,
-        kind: 'identifier',
-        username: 'private-credential-fixture@example.test',
-        usernameSelector: login.fields[0].selector,
-        submitSelector: login.submitSelector,
-      }),
-      /Secure entry could not be confirmed/,
-    );
-    await feedbackStarted.promise;
-    const closed = f.computer.close('fixture');
-    releaseFeedback.resolve();
-    await Promise.all([rejected, closed]);
-    assert.notEqual(feedbackIndex, -1);
-    assert.equal(clearingCommands, 0);
-    assert.equal(f.actions.filter((action) => action === 'close').length, 1);
-    assert.equal(f.actions.at(-1), 'close');
-    const completedActions = f.actions.length;
-    await assert.rejects(f.computer.act('fixture', { action: 'snapshot' }), /Open a website first/);
-    assert.equal(f.actions.length, completedActions);
-  } finally {
-    releaseFeedback.resolve();
-    await f.cleanup();
-  }
-});
-
 test('failed interruption cleanup blocks later actions until an explicit close succeeds', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'otto-browser-drain-failure-'));
   const fixture = stagedLoginBrowser();
@@ -721,129 +578,6 @@ test('failed interruption cleanup blocks later actions until an explicit close s
     await rm(directory, { recursive: true, force: true });
   }
 });
-
-test(
-  'native interrupted credential feedback refuses submission and a fresh browser remains usable',
-  { skip: !process.env.OTTO_TEST_BROWSER_EXECUTABLE, timeout: 60_000 },
-  async () => {
-    let submissions = 0;
-    const server = createHttpServer((request, response) => {
-      if (request.url === '/submitted') {
-        submissions++;
-        response.writeHead(204).end();
-        return;
-      }
-      response.writeHead(200, { 'content-type': 'text/html' });
-      response.end(`<html><title>Synthetic login</title><body>
-        <form onsubmit="event.preventDefault();fetch('/submitted',{method:'POST'});document.querySelector('#status').textContent='Entry received'">
-          <label for="password">Password</label><input id="password" type="password">
-          <button id="submit">Sign in</button>
-        </form>
-        <p id="status">Waiting</p>
-        <button type="button" onclick="document.querySelector('#status').textContent='Fresh action completed'">Fresh action</button>
-        </body></html>`);
-    });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const address = server.address();
-    assert.ok(address && typeof address !== 'string');
-    const origin = `http://127.0.0.1:${address.port}`;
-    const root = await mkdtemp(join(tmpdir(), 'otto-credential-transition-'));
-    let interrupted = 0;
-    let feedbackCalls = 0;
-    let closeCalls = 0;
-    let clicks = 0;
-    const computer = createAgentBrowserComputer({
-      dataRoot: root,
-      browserExecutable: process.env.OTTO_TEST_BROWSER_EXECUTABLE,
-      headless: true,
-      daemonCommand: async (path, command, signal, timeoutMs, maxBytes) => {
-        if (command.action === 'close') closeCalls++;
-        if (command.action === 'click') clicks++;
-        if (
-          command.action === 'evaluate' &&
-          typeof command.script === 'string' &&
-          command.script.includes('mark=false;') &&
-          command.script.includes('data-otto-entry-attempt')
-        ) {
-          feedbackCalls++;
-          try {
-            return await existingDaemonCommand(
-              path,
-              {
-                ...command,
-                script: `new Promise(resolve => setTimeout(() => resolve(${command.script}), 3000))`,
-              },
-              signal,
-              timeoutMs,
-              maxBytes,
-            );
-          } catch (error) {
-            if (signal?.aborted) interrupted++;
-            throw error;
-          }
-        }
-        return existingDaemonCommand(path, command, signal, timeoutMs, maxBytes);
-      },
-    });
-    try {
-      await computer.act('credential-transition', { action: 'open', url: origin });
-      const submission = await computer
-        .injectCredentials({
-          threadId: 'credential-transition',
-          origin,
-          kind: 'password',
-          password: 'synthetic-credential-must-stay-private',
-          passwordSelector: '#password',
-          submitSelector: '#submit',
-        })
-        .then(
-          (value) => ({ value, error: undefined }),
-          (error: unknown) => ({ value: undefined, error }),
-        );
-      assert.equal(feedbackCalls, 1);
-      assert.equal(interrupted, 1);
-      assert.equal(closeCalls, 1);
-      assert.equal(submissions, 1);
-      await assert.rejects(
-        computer.act('credential-transition', { action: 'snapshot' }),
-        /The browser session has expired/,
-      );
-      assert.equal(clicks, 0);
-      const fresh = await computer.act('credential-fresh-retry', {
-        action: 'open',
-        url: origin,
-      });
-      const button = fresh.candidates.find((candidate) => candidate.label.includes('Fresh action'));
-      assert.ok(button);
-      const clicked = await computer.act('credential-fresh-retry', {
-        action: 'click',
-        selector: button.id,
-      });
-      assert.match(clicked.text, /Fresh action completed/);
-      assert.equal(clicks, 1);
-      assert.equal(submissions, 1);
-      assert.equal(clicked.text.includes('synthetic-credential-must-stay-private'), false);
-      assert.equal(submission.value, undefined);
-      assert.ok(submission.error instanceof Error);
-      assert.equal(
-        submission.error.message,
-        'Secure entry could not be confirmed. Check the login page before continuing.',
-      );
-    } finally {
-      try {
-        await computer.dispose();
-      } finally {
-        server.closeAllConnections();
-        await new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve())),
-        );
-        await rm(root, { recursive: true, force: true });
-      }
-    }
-  },
-);
-
-// Uncertain browser results stop the turn
 
 type Execute = (id: string, input: BrowserAction) => Promise<AgentToolResult>;
 
@@ -969,23 +703,6 @@ function workerComputer() {
       return act(id, input, signal);
     },
     screenshot: async () => Buffer.from('masked synthetic image'),
-    signInScreenshot: async () => Buffer.from('owner-only synthetic sign-in image'),
-    takeControl: async () => {
-      calls.push({ method: 'takeControl' });
-    },
-    openSignIn: async () => {
-      calls.push({ method: 'openSignIn' });
-    },
-    finishSignIn: async () => {
-      calls.push({ method: 'finishSignIn' });
-    },
-    control: async (_id, input) => {
-      calls.push({ method: 'control', input });
-    },
-    signInControl: async (_id, input) => {
-      calls.push({ method: 'signInControl', input });
-    },
-    releaseControl: async () => {},
     injectCredentials: async (input) => {
       calls.push({ method: 'injectCredentials', input });
       return { status: 'submitted' };
@@ -996,7 +713,6 @@ function workerComputer() {
       fields: [],
       methods: [],
     }),
-    selectLoginMethod: async () => {},
     hold: async () => {},
     close: async () => {
       calls.push({ method: 'close' });
@@ -1089,7 +805,6 @@ test('Vault broker metadata stays local while identifier, password and OTP input
       kind: 'identifier',
       username: 'synthetic@example.test',
       usernameSelector: '#username',
-      submitSelector: '#continue',
     },
     {
       threadId: 'task',
@@ -1100,7 +815,6 @@ test('Vault broker metadata stays local while identifier, password and OTP input
       password: 'Synthetic-only-value',
       usernameSelector: '#username',
       passwordSelector: '#password',
-      submitSelector: '#continue',
     },
     {
       threadId: 'task',
@@ -1109,7 +823,6 @@ test('Vault broker metadata stays local while identifier, password and OTP input
       kind: 'otp',
       code: '123456',
       passwordSelector: '#code',
-      submitSelector: '#verify',
     },
   ];
   try {
@@ -1215,7 +928,7 @@ test('an unacknowledged cancellation fences new actions until namespace cleanup 
     await entered.promise;
     controller.abort();
     await cancelled;
-    await assert.rejects(computer.takeControl!('task'), /unavailable/);
+    await assert.rejects(computer.act('task', { action: 'snapshot' }), /unavailable/);
     assert.match(computer.status(), /needs a restart/);
     drain.resolve();
     await computer.dispose();
@@ -1329,16 +1042,9 @@ test('sign-in inspection preserves tab and nested radio choices and selects only
             },
           ],
         );
-        const method = inspection.methods.find((item) => item.label === 'Chave Móvel Digital')!;
-        assert.equal(method.supported, true);
-        const submitted = (await dom.window.eval(
-          credentialSubmitScript(dom.window.location.origin, method.selector!),
-        )) as { ok: boolean };
-        assert.equal(submitted.ok, true);
-        assert.equal(inspect().methods.find((item) => item.id === method.id)?.selected, true);
         assert.equal(
-          inspect().methods.find((item) => item.label === 'Cartão de Cidadão')?.selected,
-          false,
+          inspection.methods.find((item) => item.label === 'Chave Móvel Digital')?.supported,
+          true,
         );
         assert.equal(inspection.methods.find((item) => item.id === 'continue')?.group, undefined);
         assert.equal(inspection.methods.find((item) => item.id === 'continue')?.supported, true);
@@ -1375,7 +1081,6 @@ test('sign-in inspection recognizes semantic identifiers and PIN labels without 
           { kind: 'password', label: 'PIN de autenticação' },
         ],
       );
-      assert.ok(inspection.submitSelector);
       assert.equal(
         inspection.methods.find((method) => method.id === 'credentials')?.supported,
         true,
@@ -1424,7 +1129,6 @@ test('sign-in inspection recognizes semantic identifiers and PIN labels without 
         { kind: 'password', label: 'Inserir PIN' },
       ],
     );
-    assert.ok(inspection.submitSelector);
     assert.doesNotMatch(JSON.stringify(inspection), /private-phone|private-pin|Portugal/);
   } finally {
     mobile.window.close();
@@ -1500,7 +1204,7 @@ test('sign-in inspection recognizes semantic identifiers and PIN labels without 
   }
 });
 
-test('sign-in recognizes focus-unlocked mobile fields despite conflicting OTP autocomplete and securely enters them', () => {
+test('secure entry locates a focus-unlocked mobile field and PIN', () => {
   const dom = new JSDOM(
     '<h1>Autenticação</h1><form><div class="row"><div class="col-md-12"><span id="MainContent_lblMobile">Número de telemóvel</span><br><div class="wrapperModal"><div class="intl-tel-input pretty inside"><input id="inputMobile" name="inputMobile" type="text" inputmode="numeric" autocomplete="one-time-code" readonly onfocus="this.removeAttribute(\'readonly\');"></div></div></div></div><div class="row"><div class="col-md-12"><span id="MainContent_lblPin" class="lblMobileTxtModal">Inserir PIN</span><br><div class="wrapperModal"><input name="ctl00$MainContent$txtPin" type="password" maxlength="8" id="MainContent_txtPin" inputmode="numeric" size="8" class="wrapperModalInput"><img alt="Show Password"></div></div></div><button type="submit">Autenticar</button></form>',
     { url: 'https://identity.example.test/login', runScripts: 'outside-only' },
@@ -1529,12 +1233,6 @@ test('sign-in recognizes focus-unlocked mobile fields despite conflicting OTP au
       ],
     );
     assert.equal(mobile.readOnly, true);
-    assert.ok(inspection.submitSelector);
-    let submitted = false;
-    dom.window.document.querySelector('form')!.onsubmit = (event) => {
-      event.preventDefault();
-      submitted = true;
-    };
     const fields = credentialFields({
       threadId: 'mobile-fixture',
       origin: dom.window.location.origin,
@@ -1544,23 +1242,24 @@ test('sign-in recognizes focus-unlocked mobile fields despite conflicting OTP au
       usernameSelector: inspection.fields.find((field) => field.kind === 'identifier')!.selector,
       passwordSelector: inspection.fields.find((field) => field.kind === 'password')!.selector,
     });
-    const result = dom.window.eval(
-      credentialScript(dom.window.location.origin, fields, inspection.submitSelector),
-    ) as { ok: boolean };
+    const result = dom.window.eval(credentialScript(dom.window.location.origin, fields)) as {
+      ok: boolean;
+    };
     assert.equal(result.ok, true);
     assert.equal(mobile.readOnly, false);
-    assert.equal(mobile.value, '900000000');
-    assert.equal(pin.value, '12345678');
+    assert.equal(mobile.value, '');
+    assert.equal(pin.value, '');
+    assert.ok(mobile.hasAttribute('data-otto-entry-target'));
+    assert.ok(pin.hasAttribute('data-otto-entry-target'));
     assert.equal(mobile.style.color, 'transparent');
     assert.equal(pin.style.color, 'transparent');
-    assert.equal(submitted, true);
     assert.doesNotMatch(JSON.stringify(result), /900000000|12345678/);
   } finally {
     dom.window.close();
   }
 });
 
-test('sign-in preserves a fixed readonly identifier while securely entering a staged password', () => {
+test('secure entry leaves a fixed account field in place for a password step', () => {
   const dom = new JSDOM(
     '<h1>Sign in</h1><form><label for="account">Email</label><input id="account" type="email" readonly value="owner@example.test"><label for="password">Password</label><input id="password" type="password"><button type="submit">Continue</button></form>',
     { url: 'https://identity.example.test/login', runScripts: 'outside-only' },
@@ -1578,29 +1277,18 @@ test('sign-in preserves a fixed readonly identifier while securely entering a st
       inspection.fields.map((field) => field.kind),
       ['password'],
     );
-    let submitted = false;
-    dom.window.document.querySelector('form')!.onsubmit = (event) => {
-      event.preventDefault();
-      submitted = true;
-    };
     const result = dom.window.eval(
-      credentialScript(
-        dom.window.location.origin,
-        [{ selector: inspection.fields[0].selector, value: 'synthetic-password', password: true }],
-        inspection.submitSelector,
-      ),
+      credentialScript(dom.window.location.origin, [
+        { selector: inspection.fields[0].selector, value: 'synthetic-password', password: true },
+      ]),
     ) as { ok: boolean };
     assert.equal(result.ok, true);
-    assert.equal(submitted, true);
     assert.equal(
       dom.window.document.querySelector<HTMLInputElement>('#account')!.value,
       'owner@example.test',
     );
     assert.equal(dom.window.document.querySelector<HTMLInputElement>('#account')!.readOnly, true);
-    assert.equal(
-      dom.window.document.querySelector<HTMLInputElement>('#password')!.value,
-      'synthetic-password',
-    );
+    assert.equal(dom.window.document.querySelector<HTMLInputElement>('#password')!.value, '');
   } finally {
     dom.window.close();
   }
@@ -1618,10 +1306,6 @@ test('secure entry rejects persistent readonly fields and focus-time target or o
       const mobile = dom.window.document.querySelector<HTMLInputElement>('#mobile')!;
       const pin = dom.window.document.querySelector<HTMLInputElement>('#pin')!;
       let focused = false;
-      let submitted = false;
-      dom.window.document.querySelector<HTMLButtonElement>('#submit')!.onclick = () => {
-        submitted = true;
-      };
       mobile.onfocus = () => {
         focused = true;
         if (behavior === 'locked') return;
@@ -1632,25 +1316,33 @@ test('secure entry rejects persistent readonly fields and focus-time target or o
         if (behavior === 'origin') dom.reconfigure({ url: 'https://other.example.test/login' });
       };
       const result = dom.window.eval(
-        credentialScript(
-          dom.window.location.origin,
-          [
-            { selector: '#mobile', value: '900000000', password: false },
-            { selector: '#pin', value: '12345678', password: true },
-          ],
-          '#submit',
-        ),
+        credentialScript(dom.window.location.origin, [
+          { selector: '#mobile', value: '900000000', password: false },
+          { selector: '#pin', value: '12345678', password: true },
+        ]),
       ) as { ok: boolean };
       assert.equal(focused, true);
       assert.equal(result.ok, false);
       assert.equal(mobile.value, '');
       assert.equal(pin.value, '');
       assert.equal(dom.window.document.querySelector<HTMLInputElement>('#mobile')?.value, '');
-      assert.equal(submitted, false);
     } finally {
       dom.window.close();
     }
   }
+});
+
+test('a localized code field remains actionable without a form', () => {
+  const challenge = new LoginDom();
+  challenge.body.append(
+    element('input', { type: 'tel', name: 'pin', 'aria-label': 'Introduce el código aquí' }),
+    element('button', { type: 'submit' }, 'Enviar'),
+  );
+  const second = loginInspectionSchema.parse(challenge.evaluate(loginInspectionScript()));
+  assert.deepEqual(
+    second.fields.map((field) => field.kind),
+    ['otp'],
+  );
 });
 
 test('browser observations redact OAuth callback values, API credentials and signed URL query values', () => {
@@ -1703,7 +1395,7 @@ test('browser observations redact manually typed secrets in encoded paths and un
   assert.doesNotThrow(() => redactBrowserText('fixture', ['\ud800']));
 });
 
-test('staged identifier, password and OTP entry waits for Next and keeps secrets out of observations', async () => {
+test('Pi can submit each staged sign-in step without exposing entered values', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'otto-staged-login-'));
   const fixture = stagedLoginBrowser();
   const computer = createBrowserFixture({ dataRoot: directory, run: fixture.run });
@@ -1734,11 +1426,11 @@ test('staged identifier, password and OTP entry waits for Next and keeps secrets
       kind: 'identifier',
       username: 'synthetic-account@example.test',
       usernameSelector: first.fields[0].selector,
-      submitSelector: first.submitSelector,
     });
     await delay(1);
     await assert.rejects(computer.screenshot('login'), /paused/);
     await identifier;
+    await computer.act('login', { action: 'click', selector: 'button' });
     const password = await computer.inspectLogin('login');
     assert.deepEqual(
       password.fields.map((field) => field.kind),
@@ -1750,8 +1442,11 @@ test('staged identifier, password and OTP entry waits for Next and keeps secrets
       kind: 'password',
       password: 'synthetic-password',
       passwordSelector: password.fields[0].selector,
-      submitSelector: password.submitSelector,
     });
+    await computer.act('login', { action: 'click', selector: 'button' });
+    const challenge = fixture.pages.get('login')?.input;
+    assert.ok(challenge);
+    assert.equal(fixture.pages.get('login')?.stage, 'otp');
     const otp = await computer.inspectLogin('login');
     assert.deepEqual(
       otp.fields.map((field) => field.kind),
@@ -1763,8 +1458,8 @@ test('staged identifier, password and OTP entry waits for Next and keeps secrets
       kind: 'otp',
       code: '739204',
       passwordSelector: otp.fields[0].selector,
-      submitSelector: otp.submitSelector,
     });
+    await computer.act('login', { action: 'click', selector: 'button' });
     assert.equal(fixture.pages.get('login')?.stage, 'complete');
     const observation = await computer.act('login', { action: 'snapshot' });
     const screen = await computer.screenshot('login');
@@ -1775,6 +1470,60 @@ test('staged identifier, password and OTP entry waits for Next and keeps secrets
   } finally {
     await computer.dispose();
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('browser references can fill only the current inspected sign-in field', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'otto-login-ref-'));
+  const fixture = stagedLoginBrowser();
+  const computer = createBrowserFixture({ dataRoot: directory, run: fixture.run });
+  try {
+    await computer.act('login', { action: 'open', url: 'https://1.1.1.1/login' });
+    await assert.rejects(
+      computer.injectCredentials({
+        threadId: 'login',
+        origin: 'https://1.1.1.1',
+        kind: 'identifier',
+        username: 'synthetic-account@example.test',
+        usernameSelector: '@e2',
+      }),
+      /Secure entry could not be confirmed/,
+    );
+    assert.equal(fixture.pages.get('login')?.search.value, '');
+    await computer.injectCredentials({
+      threadId: 'login',
+      origin: 'https://1.1.1.1',
+      kind: 'identifier',
+      username: 'synthetic-account@example.test',
+      usernameSelector: '@e1',
+    });
+    assert.equal(fixture.pages.get('login')?.input.value, 'synthetic-account@example.test');
+  } finally {
+    await computer.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a signed-in job search box is not a sign-in field', () => {
+  const dom = new JSDOM(
+    '<main><h1>Jobs</h1><input aria-label="Search" placeholder="Search jobs"></main><footer>Sign in</footer>',
+    { url: 'https://www.example.com/company/jobs/', runScripts: 'outside-only' },
+  );
+  dom.window.HTMLElement.prototype.getClientRects = function () {
+    const rect = new dom.window.DOMRect(0, 0, 30, 30);
+    return Object.assign([rect], { item: (index: number) => (index === 0 ? rect : null) });
+  };
+  Object.defineProperty(dom.window.HTMLElement.prototype, 'innerText', {
+    get() {
+      return this.textContent;
+    },
+  });
+  try {
+    const inspection = loginInspectionSchema.parse(dom.window.eval(loginInspectionScript()));
+    assert.equal(inspection.fields.length, 0);
+    assert.equal(inspection.methods.length, 0);
+  } finally {
+    dom.window.close();
   }
 });
 
@@ -1807,7 +1556,13 @@ test('split-code observations hide each private input value and retain unrelated
       const command = args.slice(args.indexOf('--idle-timeout') + 2);
       let data: Record<string, unknown> = {};
       if (command[0] === 'get' && command[1] === 'url') data = { url: dom.window.location.href };
+      if (command[0] === 'get' && command[1] === 'attr')
+        data = { value: inputs[0].getAttribute(command[3]) };
       if (command[0] === 'eval') data = { result: await dom.window.eval(options?.input ?? '') };
+      if (command[0] === 'fill') {
+        const target = dom.window.document.querySelector<HTMLInputElement>(command[1]);
+        if (target) target.value = command[2];
+      }
       if (command[0] === 'snapshot') {
         const snapshot = [
           ...inputs.map(
@@ -1840,7 +1595,7 @@ test('split-code observations hide each private input value and retain unrelated
       origin: dom.window.location.origin,
       kind: 'otp',
       code: '483729',
-      passwordSelector: otp.selector,
+      passwordSelector: '@e1',
     });
     const observation = await computer.act('fixture', { action: 'snapshot' });
     assert.match(snapshots.at(-1)!, /textbox "Digit 1" \[ref=e1\]: 4/);
@@ -1882,7 +1637,6 @@ test('a restarted credential session serves only its cached masked image without
       kind: 'identifier',
       username: 'synthetic-secret@example.test',
       usernameSelector: inspection.fields[0].selector,
-      submitSelector: inspection.submitSelector,
     });
     const masked = await original.screenshot('fixture');
     assert.equal(masked?.includes(Buffer.from('synthetic-secret@example.test')), false);
@@ -1898,156 +1652,6 @@ test('a restarted credential session serves only its cached masked image without
     await rm(directory, { recursive: true, force: true });
   }
 });
-
-function frameFixture() {
-  const page = new JSDOM('<iframe></iframe>', {
-    url: 'https://example.test/',
-    runScripts: 'outside-only',
-  });
-  const frame = page.window.document.querySelector('iframe')!;
-  const document = frame.contentDocument!;
-  document.body.innerHTML = '<input><p></p>';
-  page.window.HTMLElement.prototype.getClientRects = () =>
-    [{ x: 0, y: 0, width: 200, height: 30 }] as unknown as DOMRectList;
-  const input = document.querySelector('input')!;
-  input.getClientRects = () => [{ x: 0, y: 0, width: 200, height: 30 }] as unknown as DOMRectList;
-  input.focus();
-  return { page, frame, input, document };
-}
-
-test('same-origin iframe typing protects the real focused field and reflected text', () => {
-  const f = frameFixture();
-  try {
-    assert.equal(f.page.window.eval(protectFocusedField), true);
-    assert.equal(f.input.getAttribute('data-otto-manual-field'), 'true');
-    const value = 'synthetic private typed text';
-    f.input.value = value;
-    f.document.querySelector('p')!.textContent = value;
-    const result = f.page.window.eval(
-      maskPageScript(['[data-otto-manual-field="true"]'], [value]),
-    ) as { masked: boolean; values: string[] };
-    assert.equal(result.masked, true);
-    assert.ok(result.values.includes(value));
-    assert.equal(f.input.style.getPropertyValue('color'), 'transparent');
-    assert.equal(f.document.querySelector('p')!.style.getPropertyValue('color'), 'transparent');
-  } finally {
-    f.page.window.close();
-  }
-});
-
-test('hidden and inaccessible iframe fields stay blocked with a native sign-in fallback', () => {
-  const f = frameFixture();
-  try {
-    f.frame.setAttribute('inert', '');
-    assert.equal(f.page.window.eval(protectFocusedField), false);
-    f.frame.removeAttribute('inert');
-    Object.defineProperty(f.frame, 'contentDocument', { get: () => null });
-    assert.equal(f.page.window.eval(protectFocusedField), 'unsupported_frame');
-    f.page.window.eval(maskPageScript([], ['synthetic value']));
-    assert.equal(f.frame.style.getPropertyValue('visibility'), 'hidden');
-  } finally {
-    f.page.window.close();
-  }
-});
-
-function desktopFixture() {
-  const png = Buffer.alloc(24);
-  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(png);
-  png.writeUInt32BE(1280, 16);
-  png.writeUInt32BE(800, 20);
-  const calls: Array<{
-    command: string;
-    args: string[];
-    options: SpawnOptions;
-    input: string;
-    signals: Array<NodeJS.Signals | number | undefined>;
-    finish(code?: number): void;
-  }> = [];
-  let hold = '';
-  let badCapture = false;
-  let failServer = false;
-  return {
-    calls,
-    png,
-    hold(command: string) {
-      hold = command;
-    },
-    badCapture() {
-      badCapture = true;
-    },
-    failServer() {
-      failServer = true;
-    },
-    spawn(command: string, args: string[], options: SpawnOptions) {
-      const child = new EventEmitter();
-      const stdout = new PassThrough();
-      const stdin = new PassThrough();
-      let finished = false;
-      const call = {
-        command,
-        args,
-        options,
-        input: '',
-        signals: [] as Array<NodeJS.Signals | number | undefined>,
-        finish(code = 0) {
-          if (finished) return;
-          finished = true;
-          if (command.endsWith('/ffmpeg')) stdout.write(badCapture ? Buffer.from('invalid') : png);
-          if (args[0] === 'getdisplaygeometry') stdout.write('1280 800\n');
-          child.emit('close', code, null);
-        },
-      };
-      calls.push(call);
-      stdin.on('data', (chunk) => {
-        call.input += chunk.toString();
-      });
-      stdin.once('finish', () => {
-        if (command !== hold) queueMicrotask(() => call.finish());
-      });
-      if (command.endsWith('/Xvfb') && failServer) queueMicrotask(() => call.finish(1));
-      return Object.assign(child, {
-        stdout,
-        stdin,
-        kill(signal?: NodeJS.Signals | number) {
-          call.signals.push(signal);
-          queueMicrotask(() => call.finish());
-          return true;
-        },
-      }) as unknown as ChildProcess;
-    },
-  };
-}
-
-test('native sign-in typing sends credentials only through stdin and rejects malformed input', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'sk-desktop-'));
-  const f = desktopFixture();
-  const desktop = await createSignInDesktop({ spawn: f.spawn })(root);
-  try {
-    const secret = 'synthetic password --shell $(not-code)';
-    await desktop.control({ action: 'type', text: secret });
-    const typing = f.calls.at(-1)!;
-    assert.equal(typing.command, '/usr/bin/xdotool');
-    assert.deepEqual(typing.args, ['type', '--clearmodifiers', '--delay', '0', '--file', '-']);
-    assert.equal(typing.input, secret);
-    assert.equal(JSON.stringify(typing.args).includes(secret), false);
-    assert.equal(JSON.stringify(typing.options).includes(secret), false);
-    const count = f.calls.length;
-    await assert.rejects(desktop.control({ action: 'click', x: -1, y: 0 }));
-    await assert.rejects(desktop.control({ action: 'type', text: 'bad\0value' }));
-    await assert.rejects(desktop.control({ action: 'type', text: 'x'.repeat(8193) }));
-    await assert.rejects(desktop.control({ action: 'press', key: 'a' }));
-    await assert.rejects(
-      desktop.control({ action: 'press', key: 'a', modifiers: ['Control', 'Control'] }),
-    );
-    await assert.rejects(desktop.control({ action: 'wheel', deltaX: 0, deltaY: 2001 }));
-    assert.equal(f.calls.length, count);
-  } finally {
-    await desktop.close();
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-// Inspector secret redaction
 
 test('inspector masks nested credentials, headers and encoded JSON before persistence', () => {
   const secret = 'fixture-provider-secret-with/slash';

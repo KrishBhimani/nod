@@ -13,7 +13,7 @@ import type {
 } from '../src/ports/agent.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
-import type { Computer, LoginInspection, Workspace } from '../src/ports/computer.ts';
+import type { Computer, Workspace } from '../src/ports/computer.ts';
 
 async function fixture(
   run: (
@@ -110,6 +110,40 @@ async function fixture(
 async function call(tools: Map<string, AgentTool>, name: string, args: Record<string, unknown>) {
   return tools.get(name)!.execute(args);
 }
+
+test('long foreground source checks send one progress message while background checks stay quiet', async () => {
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  const computer = fakeComputer({
+    act: async (_threadId, input) => ({
+      url: input.url ?? 'https://example.test/jobs',
+      text: 'Synthetic job listings',
+      candidates: [],
+    }),
+  });
+  try {
+    for (const background of [false, true]) {
+      const result = await fixture(
+        async (tools) => {
+          await call(tools, 'browser', { action: 'open', url: 'https://example.test/jobs' });
+          await call(tools, 'browser', { action: 'snapshot' });
+          now += 46_000;
+          await call(tools, 'browser', { action: 'scroll', direction: 'down' });
+          await call(tools, 'browser', { action: 'snapshot' });
+          if (!background)
+            await call(tools, 'send_message', { text: 'Another routine progress update.' });
+        },
+        { background },
+        { computer },
+      );
+      assert.equal(result.result.status, 'succeeded');
+      assert.equal(result.replies.length, background ? 0 : 1);
+    }
+  } finally {
+    Date.now = originalNow;
+  }
+});
 
 test('chat login solicitations are withheld without inspecting or opening Vault', async () => {
   for (const method of ['ask_user', 'send_message', 'final']) {
@@ -250,7 +284,6 @@ test('secure credential pause prevents subsequent tools in the same execution se
   const result = await fixture(
     async (tools) => {
       await call(tools, 'sign_in', {
-        action: 'request',
         origin: 'https://example.com',
         label: 'Example',
         kind: 'password',
@@ -277,414 +310,16 @@ test('secure credential pause prevents subsequent tools in the same execution se
   assert.equal(result.replies.length, 1);
 });
 
-const loginChoices: LoginInspection = {
-  origin: 'https://example.com',
-  url: 'https://example.com/login',
-  fields: [{ kind: 'identifier', selector: '#email', label: 'Email' }],
-  methods: [
-    { id: 'credentials', kind: 'credentials', label: 'Email', supported: true },
-    { id: 'oauth-google', kind: 'oauth', label: 'Google', supported: true, selector: '#google' },
-    { id: 'oauth-apple', kind: 'oauth', label: 'Apple', supported: true, selector: '#apple' },
-    { id: 'passkey', kind: 'passkey', label: 'Passkey', supported: false },
-  ],
-};
-
-test('method selection rejects changed origins, unavailable options and blocked pages before clicking', async () => {
-  let selections = 0;
-  let login = loginChoices;
-  await fixture(
-    async (tools) => {
-      for (const args of [
-        { origin: 'https://wrong.example.test', methodId: 'oauth-google' },
-        { origin: loginChoices.origin + '/login', methodId: 'oauth-google' },
-        { origin: loginChoices.origin, methodId: 'unknown' },
-      ]) {
-        await assert.rejects(
-          call(tools, 'sign_in', { action: 'select_method', ...args }),
-          /The action failed/,
-        );
-      }
-      login = { ...loginChoices, issue: 'browser_not_supported' };
-      await assert.rejects(
-        call(tools, 'sign_in', {
-          action: 'select_method',
-          origin: loginChoices.origin,
-          methodId: 'oauth-google',
-        }),
-        /The action failed/,
-      );
-    },
-    {},
-    {
-      computer: fakeComputer({
-        inspectLogin: async () => login,
-        selectLoginMethod: async () => {
-          selections++;
-        },
-      }),
-    },
-  );
-  assert.equal(selections, 0);
-});
-
-test('manual sign-in alternatives remain a user choice without browser or Vault actions', async () => {
-  let selections = 0;
-  let requests = 0;
-  const login: LoginInspection = {
-    origin: 'https://example.com',
-    url: 'https://example.com/login',
-    fields: [],
-    methods: [
-      {
-        id: 'password',
-        kind: 'credentials',
-        label: 'Password',
-        supported: true,
-        selector: '#password',
-      },
-      { id: 'passkey', kind: 'passkey', label: 'Passkey', supported: false },
-    ],
-  };
-  await fixture(
-    async (tools) => {
-      const result = await call(tools, 'sign_in', {
-        action: 'request',
-        origin: login.origin,
-        label: 'Example',
-        kind: 'password',
-      });
-      const choice = JSON.parse((result.content[0] as { text: string }).text);
-      assert.equal(choice.outcome, 'choose_sign_in_method');
-      assert.deepEqual(
-        choice.methods.map((method: { id: string }) => method.id),
-        ['password', 'passkey'],
-      );
-      const selected = await call(tools, 'sign_in', {
-        action: 'select_method',
-        origin: login.origin,
-        methodId: 'passkey',
-      });
-      assert.equal(
-        JSON.parse((selected.content[0] as { text: string }).text).outcome,
-        'manual_sign_in_required',
-      );
-    },
-    {
-      requestCredential: async () => {
-        requests++;
-        return { filled: true };
-      },
-    },
-    {
-      computer: fakeComputer({
-        inspectLogin: async () => login,
-        selectLoginMethod: async () => {
-          selections++;
-        },
-      }),
-    },
-  );
-  assert.equal(selections, 0);
-  assert.equal(requests, 0);
-});
-
-test('nested sign-in groups preserve the chosen method and ask about the next group before Vault', async () => {
-  const origin = 'https://identity.example.test';
-  const method = (id: string, label: string, group: string, selected = false) => ({
-    id,
-    label,
-    group,
-    selected,
-    kind: 'credentials' as const,
-    supported: true,
-    selector: `#${id}`,
-  });
-  const outer = [
-    method('card', 'Cartão de Cidadão', 'Authentication', true),
-    method('cmd', 'Chave Móvel Digital', 'Authentication'),
-  ];
-  const inner = [
-    method('phone', 'Telemóvel', 'Chave Móvel Digital', true),
-    method('qr', 'Código QR', 'Chave Móvel Digital'),
-  ];
-  const next = {
-    id: 'continue',
-    label: 'Continuar',
-    kind: 'credentials' as const,
-    supported: true,
-    selector: '#continue',
-  };
-  let login: LoginInspection = {
-    origin,
-    url: origin + '/login',
-    fields: [],
-    methods: [...outer, next],
-  };
-  const selections: string[] = [];
-  const requests: unknown[] = [];
-  await fixture(
-    async (tools) => {
-      const request = { action: 'request', origin, label: 'Identity fixture', kind: 'password' };
-      const choice = async () =>
-        JSON.parse(((await call(tools, 'sign_in', request)).content[0] as { text: string }).text);
-      const first = await choice();
-      assert.equal(first.outcome, 'choose_sign_in_method');
-      assert.deepEqual(
-        first.methods.map((item: { id: string }) => item.id),
-        ['card', 'cmd'],
-      );
-      await call(tools, 'sign_in', { action: 'select_method', origin, methodId: 'cmd' });
-      const second = await choice();
-      assert.equal(second.outcome, 'choose_sign_in_method');
-      assert.deepEqual(
-        second.methods.map((item: { id: string }) => item.id),
-        ['phone', 'qr'],
-      );
-      assert.equal(requests.length, 0);
-      await call(tools, 'sign_in', { action: 'select_method', origin, methodId: 'phone' });
-      assert.equal((await choice()).outcome, 'login_method_selected');
-      await call(tools, 'sign_in', request);
-      assert.equal(requests.length, 1);
-      login = { ...login, fields: [], methods: [...outer, ...inner, next] };
-      assert.equal((await choice()).outcome, 'login_method_selected');
-      assert.equal(login.methods.find((item) => item.id === 'cmd')?.selected, true);
-      assert.equal(requests.length, 1);
-      assert.equal((await choice()).outcome, 'login_method_selected');
-      await call(tools, 'sign_in', request);
-    },
-    {
-      prompt: 'Use Chave Móvel Digital.',
-      requestCredential: async (input) => {
-        requests.push(input);
-        return { filled: true };
-      },
-    },
-    {
-      computer: fakeComputer({
-        inspectLogin: async () => login,
-        selectLoginMethod: async (_thread, selectedOrigin, id) => {
-          assert.equal(selectedOrigin, origin);
-          selections.push(id);
-          if (id === 'cmd')
-            login = {
-              ...login,
-              methods: [
-                ...outer.map((item) => ({ ...item, selected: item.id === id })),
-                ...inner,
-                next,
-              ],
-            };
-          else if (id === 'continue')
-            login = {
-              ...login,
-              fields: [
-                { kind: 'identifier', label: 'Telemóvel', selector: '#phone' },
-                { kind: 'password', label: 'PIN', selector: '#pin' },
-              ],
-              methods: [
-                {
-                  id: 'credentials',
-                  label: 'Telemóvel e PIN',
-                  kind: 'credentials',
-                  supported: true,
-                },
-              ],
-            };
-        },
-      }),
-    },
-  );
-  assert.deepEqual(selections, ['cmd', 'continue', 'cmd', 'continue']);
-  assert.equal(requests.length, 2);
-  assert.equal((requests[0] as { origin: string }).origin, origin);
-});
-
-test('sign-in requests reject stale origins before selecting or using saved credentials', async () => {
-  let requests = 0;
-  await fixture(
-    async (tools) => {
-      await assert.rejects(
-        call(tools, 'sign_in', {
-          action: 'request',
-          origin: 'https://other.example.test',
-          label: 'Example',
-          kind: 'password',
-        }),
-        /The action failed/,
-      );
-    },
-    {
-      requestCredential: async () => {
-        requests++;
-        return { filled: true };
-      },
-    },
-  );
-  assert.equal(requests, 0);
-});
-
-test('an OTP step uses the secure chat challenge instead of browser takeover', async () => {
-  let requests = 0;
-  const result = await fixture(
-    async (tools) => {
-      await call(tools, 'sign_in', {
-        action: 'request',
-        origin: 'https://example.com',
-        label: 'Example',
-        kind: 'password',
-        passwordSelector: '#otp',
-      });
-    },
-    {
-      requestCredential: async (input) => {
-        requests++;
-        assert.equal(input.kind, 'otp');
-        return { invitation: { origin: input.origin, kind: 'otp' } };
-      },
-    },
-    {
-      computer: fakeComputer({
-        inspectLogin: async () => ({
-          origin: 'https://example.com',
-          url: 'https://example.com/verify',
-          fields: [{ kind: 'otp', selector: '#otp', label: 'Verification code' }],
-          methods: [
-            { id: 'credentials', kind: 'credentials', label: 'Verification code', supported: true },
-          ],
-        }),
-      }),
-    },
-  );
-  assert.equal(requests, 1);
-  assert.equal(result.result.status, 'waiting_credentials');
-  assert.equal(result.replies.length, 1);
-});
-
-test('visible OTP fields cannot bypass unresolved sign-in groups', async () => {
-  let requests = 0;
-  let selected = 'sms';
-  const origin = 'https://example.com';
-  const result = await fixture(
-    async (tools) => {
-      const request = { action: 'request', origin, label: 'Example', kind: 'otp' };
-      const choice = await call(tools, 'sign_in', request);
-      assert.equal(
-        JSON.parse((choice.content[0] as { text: string }).text).outcome,
-        'choose_sign_in_method',
-      );
-      assert.equal(requests, 0);
-      await call(tools, 'sign_in', { action: 'select_method', origin, methodId: 'email' });
-      await call(tools, 'sign_in', request);
-    },
-    {
-      requestCredential: async (input) => {
-        assert.equal(selected, 'email');
-        assert.equal(input.kind, 'otp');
-        requests++;
-        return { invitation: { origin: input.origin, kind: 'otp' } };
-      },
-    },
-    {
-      computer: fakeComputer({
-        inspectLogin: async () => ({
-          origin,
-          url: origin + '/verify',
-          fields: [{ kind: 'otp', selector: '#otp', label: 'Verification code' }],
-          methods: [
-            { id: 'credentials', kind: 'credentials', label: 'Verification code', supported: true },
-            ...['sms', 'email'].map((id) => ({
-              id,
-              kind: 'credentials' as const,
-              group: 'Verification method',
-              label: id,
-              selector: `#${id}`,
-              selected: selected === id,
-              supported: true,
-            })),
-          ],
-        }),
-        selectLoginMethod: async (_thread, selectedOrigin, id) => {
-          assert.equal(selectedOrigin, origin);
-          selected = id;
-        },
-      }),
-    },
-  );
-  assert.equal(requests, 1);
-  assert.equal(result.result.status, 'waiting_credentials');
-});
-
-test('cancellation during method inspection prevents provider selection', async () => {
-  const controller = new AbortController();
-  let selections = 0;
-  await assert.rejects(
-    fixture(
-      async (tools) => {
-        await call(tools, 'sign_in', {
-          action: 'select_method',
-          origin: loginChoices.origin,
-          methodId: 'oauth-google',
-        });
-      },
-      { signal: controller.signal },
-      {
-        computer: fakeComputer({
-          inspectLogin: async () => {
-            controller.abort();
-            return loginChoices;
-          },
-          selectLoginMethod: async () => {
-            selections++;
-          },
-        }),
-      },
-    ),
-    /cancelled/,
-  );
-  assert.equal(selections, 0);
-});
-
-test('a sole OAuth method already chosen is not clicked again on the next request', async () => {
-  let selections = 0;
-  const sole: LoginInspection = {
-    origin: 'https://example.com',
-    url: 'https://example.com/login',
-    fields: [],
-    methods: [
-      { id: 'oauth-google', kind: 'oauth', label: 'Google', supported: true, selector: '#google' },
-    ],
-  };
-  await fixture(
-    async (tools) => {
-      const request = {
-        action: 'request',
-        origin: sole.origin,
-        label: 'Example',
-        kind: 'password',
-      };
-      assert.match(JSON.stringify(await call(tools, 'sign_in', request)), /login_method_selected/);
-      await call(tools, 'sign_in', request);
-    },
-    {},
-    {
-      computer: fakeComputer({
-        inspectLogin: async () => sole,
-        selectLoginMethod: async () => {
-          selections++;
-        },
-      }),
-    },
-  );
-  assert.equal(selections, 1);
-});
-
 const refusal = 'This turn can only read. Use app reads, and browser open, snapshot or scroll.';
 
 const refused: Array<[string, Record<string, unknown>]> = [
   ['browser', { action: 'click', selector: '@send' }],
   ['browser', { action: 'fill', selector: '@reply', text: 'Synthetic reply' }],
   ['browser', { action: 'share_screenshot' }],
-  ['browser_session', { action: 'connect', url: 'https://mail.example.test/' }],
+  [
+    'browser_session',
+    { action: 'use', url: 'https://mail.example.test/', connectionId: randomUUID() },
+  ],
   ['bash', { command: 'curl https://example.test' }],
   ['write', { path: 'notes.txt', content: 'Synthetic note' }],
   ['share_file', { path: 'notes.txt' }],

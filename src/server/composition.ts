@@ -84,11 +84,9 @@ import {
   createUserMessageService,
   enqueueTurn,
   initializeThreads,
-  pauseForControl,
   restartOnboarding,
   resumeAfterConnection,
   resumeAfterCredentials,
-  resumeFromControl,
   retryCredentials,
   startOnboarding,
   startThreadWorkers,
@@ -96,7 +94,6 @@ import {
 } from './thread.ts';
 import { createTriage } from './triage.ts';
 import { createVault } from './vault.ts';
-import { createTakeover } from './takeover.ts';
 import { createBrowserConnections } from './browser-connections.ts';
 import { createProviderUsageStore } from './provider-usage.ts';
 import { createLinkPreviews } from './link-previews.ts';
@@ -370,7 +367,7 @@ export async function createApplication(
         provider: 'agent-browser',
         category: 'browser',
         status: 'recorded',
-        note: 'Local browser operations, screen captures and secure/manual steps. Hosting and visited-site charges are not measured.',
+        note: 'Local browser operations, screen captures and secure entry. Hosting and visited-site charges are not measured.',
       },
       {
         provider: 'pi-web-access',
@@ -536,7 +533,6 @@ export async function createApplication(
     inject: computer.injectCredentials,
     inspect: computer.inspectLogin,
     hold: computer.hold,
-    selectMethod: computer.selectLoginMethod,
     emailCode: (input, signal) => integrations.emailCode(ownerId, input, signal),
     ...(adapters.linkPreviews?.icon
       ? {
@@ -552,9 +548,6 @@ export async function createApplication(
   browserConnections = await createBrowserConnections(pool, {
     ownerId,
     computer,
-    resume: resumeAfterConnection,
-    saveLogin: async (origin, label, username, password) =>
-      (await vault.saveLogin({ origin, label, username, password })).id,
     refresh,
   });
   const chatVerification = await createChatVerification(pool, {
@@ -761,19 +754,9 @@ export async function createApplication(
     }).registerRoutes(app);
   }
   vault.registerRoutes(app);
-  browserConnections.registerRoutes(app);
   integrations.registerRoutes(app);
   personal.registerRoutes(app);
   triage.registerRoutes(app);
-  createTakeover({
-    pool,
-    ownerId,
-    computer,
-    enabled: () => configuration().inspectorEnabled,
-    pause: pauseForControl,
-    resume: resumeFromControl,
-    waitForThread: runtime.waitForThread,
-  }).registerRoutes(app);
   let channels: Awaited<ReturnType<typeof createChannels>> | undefined;
   let channelSettings: Awaited<ReturnType<typeof createChannelSettings>> | undefined;
   if (options.channels !== false && (adapters.messaging || adapters.messagingSetup)) {

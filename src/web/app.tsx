@@ -15,7 +15,6 @@ import { ChatSkeleton, Splash } from './components/startup';
 import { Sidebar } from './components/sidebar';
 import { navigationItems } from './lib/navigation';
 import { BrowserWindow } from './pages/browser';
-import { BrowserConnection } from './pages/browser-connection';
 import { readUiPreference, writeUiPreference } from './lib/ui-preferences';
 import type { AccountPreferences, AccountUpdate, SessionResponse } from '../shared/account';
 import { useSession } from './hooks/use-session';
@@ -291,21 +290,29 @@ function Workspace({
 function AccountApp({ path, setPath }: { path: string; setPath(path: string): void }) {
   const sessionState = useSession();
   const { session } = sessionState;
+  const legacyBrowserLink = /^\/browser-connect\/[A-Za-z0-9_-]{43}\/?$/.test(path);
   useEffect(() => {
     if (sessionState.loading || !session?.user || !session.settings) return;
-    const secure =
-      /^\/(?:vault|credentials|browser-connect)\/[^/]+\/?$/.test(path) || path === '/browser';
+    const secure = /^\/(?:vault|credentials)\/[^/]+\/?$/.test(path) || path === '/browser';
     const next =
       !session.settings.onboardingCompleted && !secure
         ? '/onboarding'
-        : path === '/login' || path === '/onboarding'
-          ? '/'
-          : null;
+        : legacyBrowserLink
+          ? '/apps'
+          : path === '/login' || path === '/onboarding'
+            ? '/'
+            : null;
     if (next && next !== path) {
       window.history.replaceState(null, '', next);
       setPath(next);
     }
-  }, [sessionState.loading, session?.user?.id, session?.settings?.onboardingCompleted, path]);
+  }, [
+    sessionState.loading,
+    session?.user?.id,
+    session?.settings?.onboardingCompleted,
+    path,
+    legacyBrowserLink,
+  ]);
   if (sessionState.signingOut)
     return (
       <main className="initial-loading">
@@ -365,11 +372,6 @@ function AccountApp({ path, setPath }: { path: string; setPath(path: string): vo
   }
   const match = /^\/(?:vault|credentials)\/([^/]+)\/?$/.exec(path);
   if (match) return <Credentials key={`${key}:${match[1]}`} id={match[1]} />;
-  const browserConnection = /^\/browser-connect\/([A-Za-z0-9_-]{43})\/?$/.exec(path);
-  if (browserConnection)
-    return (
-      <BrowserConnection key={`${key}:${browserConnection[1]}`} token={browserConnection[1]} />
-    );
   if (!session.settings.onboardingCompleted)
     return (
       <Onboarding
@@ -383,7 +385,7 @@ function AccountApp({ path, setPath }: { path: string; setPath(path: string): vo
   return (
     <Workspace
       key={key}
-      path={path === '/login' || path === '/onboarding' ? '/' : path}
+      path={legacyBrowserLink ? '/apps' : path === '/login' || path === '/onboarding' ? '/' : path}
       session={session}
       saving={sessionState.mutating}
       onAccountUpdate={sessionState.update}

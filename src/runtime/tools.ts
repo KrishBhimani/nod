@@ -3,10 +3,11 @@ import { Value } from '@sinclair/typebox/value';
 import type { AgentToolMetadata } from '../ports/agent.ts';
 import type { BrowserAction } from '../ports/computer.ts';
 import { browserDownloadBytes } from '../ports/computer.ts';
+import { browserUploadBytes } from '../ports/computer.ts';
+import { basename } from 'node:path';
 import { isMessageReaction } from '../shared/emoji.ts';
 import { integrationDownloadActions } from '../shared/integrations.ts';
-import { requestsPrivateInput } from './communication.ts';
-import { createSignIn } from './sign-in.ts';
+import { requestsPrivateInput, vaultInvitation } from './communication.ts';
 import { privateInputNotice, type Turn } from './turn.ts';
 
 export const personalActions = [
@@ -87,7 +88,7 @@ export const toolDefinitions = {
   ),
   browser: defineTool(
     'browser',
-    'Control your private browser. open {url}; snapshot (text, controls, scrollable areas; selector/offset/controlOffset page through more); click {selector}; fill {selector, text} (never secrets); press {key}; scroll {direction, selector?}; screenshot (image for you); share_screenshot {name?} (send the image to the user); download {url? | selector?, name?} (send a file to the user and copy it into the workspace; with neither, the open PDF or the last download). waitMs (up to 15000) waits for slow pages.',
+    'Control your private agent-browser session. open {url}; snapshot (text, controls, scrollable areas; selector/offset/controlOffset page through more); click {selector}; fill {selector, text} (never secrets); select {selector, text} by visible label or value; check/uncheck/hover {selector}; drag {selector, targetSelector}; upload {selector, path} from the task workspace; back/forward/reload; tab_list and tab_switch {tabId}; press {key}; scroll {direction, selector?}; screenshot (image for you); share_screenshot {name?} (send the image to the user); download {url? | selector?, name?} (send a file to the user and copy it into the workspace; with neither, the open PDF or the last download). waitMs (up to 15000) waits for slow pages.',
     Type.Object({
       action: literals([
         'open',
@@ -96,12 +97,26 @@ export const toolDefinitions = {
         'fill',
         'press',
         'scroll',
+        'select',
+        'check',
+        'uncheck',
+        'hover',
+        'drag',
+        'upload',
+        'back',
+        'forward',
+        'reload',
+        'tab_list',
+        'tab_switch',
         'screenshot',
         'share_screenshot',
         'download',
       ]),
       url: Type.Optional(Type.String({ maxLength: 8192 })),
+      tabId: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
       selector: Type.Optional(Type.String()),
+      targetSelector: Type.Optional(Type.String()),
+      path: Type.Optional(Type.String()),
       text: Type.Optional(Type.String({ maxLength: 8000 })),
       key: Type.Optional(
         literals(['Enter', 'Escape', 'Tab', 'ArrowDown', 'ArrowUp', 'PageDown', 'PageUp']),
@@ -115,30 +130,26 @@ export const toolDefinitions = {
   ),
   sign_in: defineTool(
     'sign_in',
-    'Sign in on the current browser page without seeing secrets. inspect lists fields and methods; select_method {origin, methodId} picks the method the user chose; request {origin, label, kind, selectors} asks the user privately through Vault and pauses.',
+    'Ask the user for website credentials through a secure form. Use field references from the latest browser snapshot for the current page. The values stay out of the model.',
     Type.Object({
-      action: literals(['inspect', 'select_method', 'request']),
-      origin: Type.Optional(Type.String({ minLength: 1, maxLength: 2048 })),
-      methodId: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
-      label: Type.Optional(Type.String({ maxLength: 100 })),
-      kind: Type.Optional(literals(['identifier', 'password', 'otp'])),
+      origin: Type.String({ minLength: 1, maxLength: 2048 }),
+      label: Type.String({ minLength: 1, maxLength: 100 }),
+      kind: literals(['identifier', 'password', 'otp']),
       usernameSelector: Type.Optional(Type.String()),
       passwordSelector: Type.Optional(Type.String()),
-      submitSelector: Type.Optional(Type.String()),
     }),
   ),
   browser_session: defineTool(
     'browser_session',
-    'Saved website sessions. connect {url, label?, connectionId?} gives the user a private sign-in link and pauses; use {url, connectionId} reuses a saved browser_session on that site.',
+    'Browser profiles for website accounts. connect opens a new private profile; use opens an existing profile; save checks and keeps the current signed-in profile.',
     Type.Union([
       Type.Object({
         action: Type.Literal('connect'),
         url: Type.String({ minLength: 1, maxLength: 2048 }),
-        connectionId: Type.Optional(uuid),
         label: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
       }),
       Type.Object({
-        action: Type.Literal('use'),
+        action: literals(['use', 'save']),
         url: Type.String({ minLength: 1, maxLength: 2048 }),
         connectionId: uuid,
       }),
@@ -242,7 +253,6 @@ function bind<P extends TSchema>(
 export function ottoTools(turn: Turn): OttoTool[] {
   const { context, computer, pause, confirm } = turn;
   const { threadId, signal } = context;
-  const signIn = createSignIn(turn);
   const screenshot = async () => {
     const bytes = await computer.screenshot(threadId, signal);
     signal.throwIfAborted();
@@ -310,31 +320,35 @@ export function ottoTools(turn: Turn): OttoTool[] {
           throw new Error('Browser file delivery exceeds the download limit.');
         return context.publishBrowserFile(file);
       }
+      if (action === 'upload') {
+        if (!computer.upload || !context.readWorkspaceFile)
+          throw new Error('Browser file upload is unavailable.');
+        if (!rest.selector || !rest.path) throw new Error('Choose a file and upload field.');
+        const bytes = await context.readWorkspaceFile(rest.path, browserUploadBytes);
+        return computer.upload(
+          threadId,
+          { selector: rest.selector, name: basename(rest.path), bytes },
+          signal,
+        );
+      }
       return computer.act(threadId, { action, ...rest } as BrowserAction, signal);
     }),
-    bind(
-      toolDefinitions.sign_in,
-      async ({ action, origin, methodId, label, kind, ...selectors }) => {
-        if (action === 'inspect') return signIn.inspect();
-        if (action === 'select_method')
-          return origin && methodId
-            ? signIn.selectMethod(origin, methodId)
-            : 'select_method needs origin and methodId from a fresh inspect.';
-        return origin && label !== undefined && kind
-          ? signIn.request({ origin, label, kind, ...selectors })
-          : 'request needs origin, label and kind from a fresh inspect.';
-      },
-    ),
+    bind(toolDefinitions.sign_in, async (input) => {
+      const result = await context.requestCredential(input);
+      if (result.filled) return 'Saved login entered.';
+      if (!result.url) throw new Error('The secure sign-in request could not be created.');
+      await turn.reply(vaultInvitation(result.invitation ?? input, result.url));
+      await pause('credentials', undefined, { post: false });
+      return 'Waiting for secure input.';
+    }),
     bind(toolDefinitions.browser_session, async (p) => {
       if (!context.browserConnection) throw new Error('Browser connections are unavailable.');
-      const result = (await context.browserConnection(p)) as { status?: unknown; url?: unknown };
-      if (result.status === 'rejected') return result;
-      if (p.action === 'use' && result.status !== 'needs_sign_in') return result;
-      return link(result.url, (url) =>
-        p.action === 'use'
-          ? `This website needs you to sign in again. [Continue sign-in](${url}) and I will continue the task.`
-          : `I opened the website in Otto’s private browser. [Connect website](${url}) to sign in, then I will continue the task.`,
-      );
+      const result = (await context.browserConnection(p)) as Record<string, unknown>;
+      if (p.action === 'connect' || result.status === 'needs_sign_in') {
+        const { url: _url, ...safe } = result;
+        return safe;
+      }
+      return result;
     }),
     bind(toolDefinitions.apps, async (p) => {
       if (!(integrationDownloadActions as readonly string[]).includes(p.action))

@@ -314,12 +314,6 @@ test(
       await thread.resumeAfterCredentials(turnId);
       return resumed(`credentials:${turnId}`);
     };
-    const afterControl = async (turnId: string) => {
-      await thread.pauseForControl();
-      assert.equal(await turnStatus(turnId), 'cancelled');
-      await thread.resumeFromControl();
-      return resumed(`control:${turnId}`);
-    };
     const afterConnection = async (turnId: string) => {
       await finish(turnId);
       assert.equal(await thread.resumeAfterConnection(turnId, 'googlesheets'), true);
@@ -679,39 +673,37 @@ test(
       );
 
       await t.test(
-        'verified secure and manual resumes retain ordinary requested work without repeating completed writes',
+        'a secure resume retains requested work without repeating completed writes',
         async () => {
-          for (const mode of ['credentials', 'manual_control'] as const) {
-            const origin = await begin('Send the email to Alex.');
-            const args = {
-              connectionId: 'owned-gmail',
-              to: 'alex@example.com',
-              body: 'Synthetic resume.',
-            };
-            const before = calls.length;
-            const resume = mode === 'credentials' ? afterCredentials : afterControl;
-            const resumedTurn = await resume(origin.turnId);
-            assert.equal((await row(resumedTurn.turnId)).source, 'resume');
-            const first = await approvals.request(resumedTurn, 'GMAIL_SEND_EMAIL', args);
-            assert.equal(calls.length, before + 1);
-            assert.equal(
-              calls.at(-1)?.context.sourceMessageId,
-              (await row(origin.turnId)).message_id,
-            );
-            const again = await resume(resumedTurn.turnId);
-            assert.deepEqual(await approvals.request(again, 'GMAIL_SEND_EMAIL', args), first);
-            assert.equal(calls.length, before + 1);
-            await assert.rejects(
-              approvals.request(again, 'OTTO_profile_update', { preferences: 'Synthetic fact' }),
-              /direct request/,
-            );
-            await assert.rejects(
-              approvals.request(again, 'GMAIL_DELETE_MESSAGE', {
-                message_id: 'different-operation',
-              }),
-              /direct request/,
-            );
-          }
+          const origin = await begin('Send the email to Alex.');
+          const args = {
+            connectionId: 'owned-gmail',
+            to: 'alex@example.com',
+            body: 'Synthetic resume.',
+          };
+          const before = calls.length;
+          const resume = afterCredentials;
+          const resumedTurn = await resume(origin.turnId);
+          assert.equal((await row(resumedTurn.turnId)).source, 'resume');
+          const first = await approvals.request(resumedTurn, 'GMAIL_SEND_EMAIL', args);
+          assert.equal(calls.length, before + 1);
+          assert.equal(
+            calls.at(-1)?.context.sourceMessageId,
+            (await row(origin.turnId)).message_id,
+          );
+          const again = await resume(resumedTurn.turnId);
+          assert.deepEqual(await approvals.request(again, 'GMAIL_SEND_EMAIL', args), first);
+          assert.equal(calls.length, before + 1);
+          await assert.rejects(
+            approvals.request(again, 'OTTO_profile_update', { preferences: 'Synthetic fact' }),
+            /direct request/,
+          );
+          await assert.rejects(
+            approvals.request(again, 'GMAIL_DELETE_MESSAGE', {
+              message_id: 'different-operation',
+            }),
+            /direct request/,
+          );
         },
       );
 
@@ -727,21 +719,14 @@ test(
           approvals.request(draft, 'GMAIL_SEND_EMAIL', {}),
           /direct request|Keep it unsent/,
         );
-        await begin('Send the email to Alex.');
-        await db.pool.query(
-          "UPDATE turns SET status='succeeded',finished_at=now() WHERE status IN ('queued','running')",
-        );
-        await thread.pauseForControl();
-        await thread.resumeFromControl();
         const generic = await running(
-          (
-            await db.pool.query(
-              "SELECT id FROM turns WHERE source='resume' AND source_id IS NULL AND status='queued'",
-            )
-          ).rows[0].id,
+          await thread.enqueueTurn('Synthetic unrelated continuation', { source: 'resume' }),
         );
         await assert.rejects(approvals.request(generic, 'GMAIL_SEND_EMAIL', {}), /direct request/);
         assert.equal(await proposal(generic.turnId), undefined);
+        await db.pool.query(
+          "UPDATE turns SET status='succeeded',finished_at=now() WHERE status IN ('queued','running')",
+        );
       });
 
       await t.test(

@@ -18,7 +18,6 @@ import './pages/inspector.css';
 import './pages/sign-in.css';
 import './pages/privacy.css';
 import './pages/onboarding.css';
-import './pages/browser-connection.css';
 import './components/account-settings.css';
 import './components/time-zone-picker.css';
 

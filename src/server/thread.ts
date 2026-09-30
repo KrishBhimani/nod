@@ -565,51 +565,6 @@ export function resumeAfterConnection(turnId: string, service: string) {
   );
 }
 
-const controlResumePrompt =
-  'The user finished manual browser control. Inspect the current page and continue the prior request. Do not repeat completed external actions or ask for login details in chat.';
-
-export async function pauseForControl(): Promise<{ threadId: string }> {
-  const result = await transaction(async (client) => {
-    const thread = await lockThread(client);
-    const current = await client.query(
-      "UPDATE turns SET status='cancelled',finished_at=now(),error='Paused for browser control.' WHERE thread_id=$1 AND status='running' RETURNING id,channel",
-      [thread.id],
-    );
-    for (const turn of current.rows)
-      await client.query(
-        `INSERT INTO turns(id,owner_id,thread_id,source,source_id,prompt,channel,background)
-         VALUES($1,$2,$3,'resume',$4,$5,$6,false) ON CONFLICT (owner_id,source_id) WHERE source_id IS NOT NULL DO NOTHING`,
-        [randomUUID(), ownerId, thread.id, `control:${turn.id}`, controlResumePrompt, turn.channel],
-      );
-    await client.query("UPDATE threads SET status='manual_control',updated_at=now() WHERE id=$1", [
-      thread.id,
-    ]);
-    return { threadId: thread.id, stopped: current.rows.map((row) => row.id as string) };
-  });
-  abortTurns(result.stopped);
-  refresh();
-  return { threadId: result.threadId };
-}
-
-export async function resumeFromControl() {
-  await transaction(async (client) => {
-    const thread = await lockThread(client);
-    const updated = await client.query(
-      "UPDATE threads SET status='idle',updated_at=now() WHERE id=$1 AND status='manual_control' RETURNING id",
-      [thread.id],
-    );
-    if (!updated.rowCount) throw turnStopped();
-    const queued = await client.query(
-      "SELECT 1 FROM turns WHERE thread_id=$1 AND status='queued' AND source_id LIKE 'control:%' LIMIT 1",
-      [thread.id],
-    );
-    if (queued.rowCount) await sendDrain(client, thread.id);
-    else await enqueueTurn(controlResumePrompt, { source: 'resume', background: false, client });
-  });
-  refresh();
-  return { ok: true };
-}
-
 export async function initializeThreads() {
   stopping = false;
   boss.on('error', () =>
@@ -669,6 +624,14 @@ async function interruptTurn(turnId: string) {
 }
 
 export async function startThreadWorkers(dependencies: ThreadDependencies) {
+  await pool.query(
+    "UPDATE turns u SET status='cancelled',finished_at=now(),error='Browser control ended during upgrade.' FROM threads th WHERE u.thread_id=th.id AND u.owner_id=th.owner_id AND u.owner_id=$1 AND u.status='queued' AND u.source_id LIKE 'control:%' AND th.status='manual_control'",
+    [ownerId],
+  );
+  await pool.query(
+    "UPDATE threads SET status='idle' WHERE owner_id=$1 AND status='manual_control'",
+    [ownerId],
+  );
   const interrupted = await pool.query(
     "SELECT id FROM turns WHERE owner_id=$1 AND status='running'",
     [ownerId],
@@ -983,6 +946,9 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
         await post(`Created ${artifact.name}.`, [artifact]);
         return artifact;
       },
+      readWorkspaceFile:
+        dependencies.readArtifact &&
+        fenced((path, maxBytes) => dependencies.readArtifact!(threadId, path, maxBytes)),
       publishScreenshot: (bytes, name) => {
         const fileName =
           name && /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\.png$/.test(name) ? name : 'screenshot.png';

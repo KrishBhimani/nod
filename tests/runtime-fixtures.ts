@@ -12,7 +12,6 @@ export function fakeComputer(overrides: Partial<Computer> = {}): Computer {
       methods: [],
     }),
     hold: async () => {},
-    selectLoginMethod: async () => {},
     close: async () => {},
     dispose: async () => {},
     status: () => 'fixture computer',

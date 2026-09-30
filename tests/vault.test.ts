@@ -884,7 +884,6 @@ test(
           { kind: stages.get(threadId) ?? 'identifier', selector: '#login', label: 'Login' },
         ],
         methods: [{ id: 'credentials', kind: 'credentials', label: 'Login', supported: true }],
-        submitSelector: '#submit',
       }),
       inject: async (input: CredentialInjection) => {
         injections.push(input);
@@ -1214,7 +1213,7 @@ async function seedNamedTurns(pool: pg.Pool, names: string[], owner = 'local-dev
 }
 
 test(
-  'Vault rejects a freshly blocked browser before creating, refreshing, filling or selecting a sign-in step',
+  'Vault rejects a freshly blocked browser before creating, refreshing or filling a sign-in step',
   { skip: !process.env.TEST_DATABASE_URL },
   async () => {
     const schema = `test_browser_block_${randomUUID().replaceAll('-', '')}`;
@@ -1226,13 +1225,13 @@ test(
     });
     const app = Fastify();
     let blocked = false;
+    let credentialsSupported = true;
     let injections = 0;
-    let selections = 0;
     let resumes = 0;
     const origin = 'https://accounts.example.com';
     const input = { origin, label: 'Synthetic sign-in', kind: 'password' as const };
     try {
-      const turns = await seedNamedTurns(pool, ['new', 'refresh', 'submit', 'method', 'saved']);
+      const turns = await seedNamedTurns(pool, ['new', 'refresh', 'submit', 'saved']);
       const key = randomBytes(32);
       const vault = await createVault(pool, {
         keyStore: { id: 'fixture', configured: true, getKey: async () => key },
@@ -1240,17 +1239,22 @@ test(
           origin,
           url: `${origin}/login`,
           ...(blocked ? { issue: 'browser_not_supported' as const } : {}),
-          fields: [{ kind: 'password', selector: '#password', label: 'Password' }],
+          fields: [
+            { kind: 'identifier', selector: '#username', label: 'Username' },
+            { kind: 'password', selector: '#password', label: 'Password' },
+          ],
           methods: [
-            { id: 'credentials', kind: 'credentials', label: 'Secure form', supported: true },
+            {
+              id: 'credentials',
+              kind: 'credentials',
+              label: 'Secure form',
+              supported: credentialsSupported,
+            },
             { id: 'oauth-google', kind: 'oauth', label: 'Google', supported: true },
           ],
         }),
         inject: async () => {
           injections++;
-        },
-        selectMethod: async () => {
-          selections++;
         },
         retry: async () => {},
         resume: async () => {
@@ -1272,8 +1276,7 @@ test(
       blocked = true;
       const isBlocked = (error: unknown) => {
         assert.equal((error as { statusCode: number }).statusCode, 409);
-        assert.match((error as Error).message, /Take control/);
-        assert.match((error as Error).message, /Resume agent/);
+        assert.match((error as Error).message, /blocked sign-in/);
         return true;
       };
       await assert.rejects(vault.request(turns.new, 'local-development', input), isBlocked);
@@ -1284,7 +1287,6 @@ test(
       for (const [id, suffix, payload] of [
         ['refresh', '/refresh', {}],
         ['submit', '', { password: 'fixture-password' }],
-        ['method', '/method', { methodId: 'oauth-google' }],
       ] as const) {
         blocked = false;
         const request = await vault.request(turns[id], 'local-development', input);
@@ -1299,11 +1301,31 @@ test(
           payload,
         });
         assert.equal(response.statusCode, 409);
-        assert.match(response.json().error, /Take control/);
-        assert.match(response.json().error, /Resume agent/);
+        assert.match(response.json().error, /blocked sign-in/);
       }
+      blocked = false;
+      credentialsSupported = false;
+      await assert.rejects(
+        vault.request(turns.new, 'local-development', input),
+        /does not support this credential step/,
+      );
+      credentialsSupported = true;
+      await assert.rejects(
+        vault.request(turns.new, 'local-development', {
+          ...input,
+          passwordSelector: '#other-field',
+        }),
+        /login field changed/,
+      );
+      await assert.rejects(
+        vault.request(turns.new, 'local-development', {
+          ...input,
+          usernameSelector: '#username',
+          passwordSelector: '@e2',
+        }),
+        /same browser view/,
+      );
       assert.equal(injections, 0);
-      assert.equal(selections, 0);
       assert.equal(resumes, 0);
       assert.equal(
         (await pool.query('SELECT 1 FROM credential_requests WHERE turn_id=$1', [turns.new.turnId]))
@@ -1732,7 +1754,6 @@ test(
           url: observedOrigin + '/login',
           fields: [{ kind: stages.get(id) ?? 'identifier', selector: '#observed', label: 'Email' }],
           methods: [{ id: 'credentials', kind: 'credentials', label: 'Sign in', supported: true }],
-          submitSelector: '#continue',
         }),
         inject: async (input: CredentialInjection) => {
           injections.push(input);
@@ -2213,7 +2234,6 @@ function inspection(kind: 'password' | 'otp'): LoginInspection {
     url: `${origin}/login`,
     fields: [{ kind, selector: `#${kind}`, label: kind }],
     methods: [{ id: 'credentials', kind: 'credentials', label: 'Sign in', supported: true }],
-    submitSelector: '#submit',
     ...(kind === 'otp' ? { emailCode: { recipient: username, length: 6 } } : {}),
   };
 }

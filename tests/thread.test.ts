@@ -444,13 +444,19 @@ test(
           ]);
           const foreground = randomUUID();
           const background = randomUUID();
+          const legacyControl = randomUUID();
           await db.pool.query(
             "INSERT INTO turns(id,owner_id,thread_id,source,prompt,status,background,started_at) VALUES($1,'local-development',$3,'user','Do not repeat','running',false,now()),($2,'local-development',$3,'schedule','Do not repeat quietly','running',true,now())",
             [foreground, background, threadId],
           );
-          await db.pool.query("UPDATE threads SET status='running' WHERE id=$1", [threadId]);
+          await db.pool.query(
+            "INSERT INTO turns(id,owner_id,thread_id,source,source_id,prompt,status,background) VALUES($1,'local-development',$2,'resume',$3,'Old browser control','queued',false)",
+            [legacyControl, threadId, `control:${foreground}`],
+          );
+          await db.pool.query("UPDATE threads SET status='manual_control' WHERE id=$1", [threadId]);
           await thread.startThreadWorkers(dependencies);
           await waitFor(async () => (await turnStatus(missingJob)) === 'succeeded');
+          assert.equal(await turnStatus(legacyControl), 'cancelled');
           assert.equal(
             (
               await db.pool.query(
@@ -478,8 +484,8 @@ test(
           assert.equal(
             (
               await db.pool.query(
-                "SELECT id FROM turns WHERE thread_id=$1 AND source='resume' AND created_at > (SELECT created_at FROM turns WHERE id=$2)",
-                [threadId, foreground],
+                "SELECT id FROM turns WHERE thread_id=$1 AND source='resume' AND id<>$3 AND created_at > (SELECT created_at FROM turns WHERE id=$2)",
+                [threadId, foreground, legacyControl],
               )
             ).rowCount,
             0,

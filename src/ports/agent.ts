@@ -39,7 +39,8 @@ export type RuntimeObservation =
 
 export type BrowserConnectionRequest =
   | { action: 'connect'; url: string; connectionId?: string; label?: string }
-  | { action: 'use'; url: string; connectionId: string };
+  | { action: 'use'; url: string; connectionId: string }
+  | { action: 'save'; url: string; connectionId: string };
 
 interface MessageAttachment {
   name: string;
@@ -103,6 +104,7 @@ export interface RuntimeContext {
   waitForUser?(question: string): Promise<void>;
   delta(text: string, streamId?: string, done?: boolean): void;
   publish(path: string, name?: string): Promise<Artifact>;
+  readWorkspaceFile?(path: string, maxBytes: number): Promise<Uint8Array>;
   publishScreenshot?(bytes: Uint8Array, name?: string): Promise<Artifact>;
   publishBrowserFile?(file: {
     bytes: Uint8Array;
@@ -116,7 +118,6 @@ export interface RuntimeContext {
     kind: CredentialKind;
     usernameSelector?: string;
     passwordSelector?: string;
-    submitSelector?: string;
   }): Promise<{ url?: string; filled?: boolean; invitation?: CredentialInvitation }>;
   integration(action: string, args: Record<string, unknown>): Promise<unknown>;
   downloadIntegrationFile?(

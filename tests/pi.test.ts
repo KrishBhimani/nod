@@ -272,10 +272,9 @@ test('real Pi sessions persist a credential pause and resume without replaying c
       1,
     );
     assert.equal(prompts[1].includes('runtime-fixture-key'), false);
-    assert.deepEqual(replies, [
-      'https://example.com needs you to sign in. [Enter login details](/credentials/fixture) and I will continue the task.',
-      'Resumed successfully.',
-    ]);
+    assert.equal(replies.length, 2);
+    assert.match(replies[0], /https:\/\/example\.com.*\/credentials\/fixture/);
+    assert.equal(replies[1], 'Resumed successfully.');
   } finally {
     await runtime.dispose();
     await rm(directory, { recursive: true, force: true });
@@ -923,7 +922,9 @@ function browserFixture() {
               scrollAreas: [],
               scrollAreasTotal: 0,
             }
-          : { ok: true },
+          : options?.input?.includes('data-otto-entry-target')
+            ? { ok: true, counts: [1] }
+            : { ok: true },
       };
     if (command[0] === 'snapshot')
       data = {
