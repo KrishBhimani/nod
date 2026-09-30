@@ -3,6 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { Type, type TObject } from '@sinclair/typebox';
 import { InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import {
   createAgentSession,
@@ -158,20 +159,34 @@ export function createPiAgent(options: {
       const extensions = extensionLoader.getExtensions();
       if (extensions.errors.length) throw new Error('The Pi web extension could not be loaded.');
       for (const extension of extensions.extensions)
-        for (const [name, registered] of extension.tools)
+        for (const [name, registered] of extension.tools) {
+          const search = name === 'web_search';
           extension.tools.set(name, {
             ...registered,
             definition: {
               ...registered.definition,
+              ...(search
+                ? {
+                    description:
+                      'Search the public web through the configured Pi provider. Use queries with 2-4 varied angles for broad research. Return source-linked results without a curator or a separate summary. Use includeContent only when full source text is needed.',
+                    parameters: Type.Omit(registered.definition.parameters as TObject, [
+                      'workflow',
+                    ]),
+                  }
+                : {}),
               execute: async (id, params, signal, onUpdate, context) => {
                 await checkpoint();
-                const result = await input.runTool(name, params, () =>
-                  registered.definition.execute(id, params, signal, onUpdate, context),
+                const args = search
+                  ? { ...(params as Record<string, unknown>), workflow: 'none' }
+                  : params;
+                const result = await input.runTool(name, args, () =>
+                  registered.definition.execute(id, args, signal, onUpdate, context),
                 );
                 return { ...result, details: result.details ?? {} };
               },
             },
           });
+        }
       const resumed = manager.buildSessionContext().messages.length > 0;
       const { session } = await (options.createSession ?? createAgentSession)({
         cwd: input.workspace.path,

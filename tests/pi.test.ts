@@ -328,8 +328,9 @@ test('Pi sessions use native tools on the sandbox workspace plus Otto tools', as
       turnId: randomUUID(),
       systemPrompt: 'fixture',
       workspace,
-      runTool: async (name, _params, run) => {
+      runTool: async (name, params, run) => {
         ran.push(name);
+        if (name === 'web_search') assert.equal((params as { workflow?: string }).workflow, 'none');
         return run();
       },
       tools: [
@@ -372,6 +373,21 @@ test('Pi sessions use native tools on the sandbox workspace plus Otto tools', as
     );
     assert.match(JSON.stringify(missing.content), /No stored results/);
     assert.deepEqual(ran, ['ls', 'get_search_content']);
+    const webSearch = extension.tools.get('web_search')!;
+    assert.equal(
+      'workflow' in
+        (webSearch.definition.parameters as { properties: Record<string, unknown> }).properties,
+      false,
+    );
+    const direct = await webSearch.definition.execute(
+      'call',
+      { workflow: 'summary-review' },
+      undefined,
+      undefined,
+      undefined as never,
+    );
+    assert.match(JSON.stringify(direct.content), /No query provided/);
+    assert.deepEqual(ran, ['ls', 'get_search_content', 'web_search']);
     await session.dispose();
   } finally {
     await agent.dispose();
