@@ -28,6 +28,7 @@ import { createDiscoveredOAuth } from '../src/providers/discovered/oauth.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';
 import { createDiscoveredConnections } from '../src/server/discovered-connections.ts';
 import { createIntegrations, eventOverview } from '../src/server/integrations.ts';
+import { createErrorRedactor } from '../src/server/inspector-redaction.ts';
 import { createProviderUsageStore } from '../src/server/provider-usage.ts';
 import {
   meterAgent,
@@ -1183,7 +1184,12 @@ async function searchFixture(
     }),
     dispose() {},
   };
-  runtime = createAgentRuntime({ agent, computer: fakeComputer(), workspace: fakeWorkspace() });
+  runtime = createAgentRuntime({
+    agent,
+    computer: fakeComputer(),
+    workspace: fakeWorkspace(),
+    redactError: createErrorRedactor(['fixture-provider-key-value']),
+  });
   const context: RuntimeContext = {
     threadId,
     turnId,
@@ -1265,7 +1271,7 @@ test(
 );
 
 test(
-  'a failed app execution stops the turn and reaches the harness with the provider error',
+  'a failed app execution stops the turn and reaches the harness with a redacted provider error',
   { skip: !process.env.TEST_DATABASE_URL },
   async (t) => {
     const f = await searchFixture(
@@ -1276,14 +1282,22 @@ test(
       },
       {
         execute: async () => {
-          throw new Error('private-provider-diagnostic');
+          throw new Error(
+            'private-provider-diagnostic fixture-provider-key-value Bearer fixture.bearer-token https://files.example/f?X-Amz-Signature=fixture-signature',
+          );
         },
       },
     );
-    await assert.rejects(f.run(), /The app request failed: private-provider-diagnostic/);
+    const leaked = /fixture-provider-key-value|fixture\.bearer-token|fixture-signature/;
+    await assert.rejects(f.run(), (error: Error) => {
+      assert.match(error.message, /The app request failed: private-provider-diagnostic/);
+      assert.doesNotMatch(error.message, leaked);
+      return true;
+    });
     assert.equal(f.calls.length, 1);
     assert.deepEqual(f.modelResults, []);
     assert.match(JSON.stringify(f.observations), /private-provider-diagnostic/);
+    assert.doesNotMatch(JSON.stringify(f.observations), leaked);
   },
 );
 

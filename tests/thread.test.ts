@@ -687,6 +687,19 @@ test(
             await readFile(join(root, 'workspaces', id, result.workspaceFile), 'utf8'),
             full,
           );
+          dependencies.writeArtifact = async () => {
+            throw new Error('Fixture workspace unavailable');
+          };
+          try {
+            const unsaved = await thread.submitUserMessage('large-app-result-fixture');
+            await waitFor(settled(unsaved.turnId));
+          } finally {
+            dependencies.writeArtifact = undefined;
+          }
+          const fallback = appResults.get('large-app-result-fixture') as Record<string, unknown>;
+          assert.equal(fallback.workspaceFile, undefined);
+          assert.equal(fallback.preview, result.preview);
+          assert.match(String(fallback.message), /Fixture workspace unavailable/);
         },
       );
 

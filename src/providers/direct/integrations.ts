@@ -16,7 +16,7 @@ const linearTools = {
   LINEAR_GET_STATUS_UPDATES: 'get_status_updates',
 } as const;
 
-function toolFailure(label: string, result: Record<string, unknown>) {
+function toolFailure(label: string, result: Record<string, unknown>, token: string) {
   const blocks = Array.isArray(result.content)
     ? (result.content as Array<{ type: string; text?: string }>)
     : [];
@@ -24,7 +24,7 @@ function toolFailure(label: string, result: Record<string, unknown>) {
     .map((block) => block.text ?? '')
     .join('\n')
     .trim();
-  return `${label}: ${(text || JSON.stringify(result.content ?? null)).slice(0, 4000)}`;
+  return `${label}: ${(text || JSON.stringify(result.content ?? null)).replaceAll(token, '[redacted]').slice(0, 4000)}`;
 }
 export function createDirectProvider(options: {
   pool: Pool;
@@ -72,7 +72,9 @@ export function createDirectProvider(options: {
             throw new Error('The Notion search access check is unavailable.');
           const access = await client.callTool({ name: 'notion-get-tool-access', arguments: {} });
           if (access.isError)
-            throw new Error(toolFailure('The Notion search access check failed', access));
+            throw new Error(
+              toolFailure('The Notion search access check failed', access, account.accessToken),
+            );
           const blocks = Array.isArray(access.content)
             ? (access.content as Array<{ type: string; text?: string }>)
             : [];
@@ -102,7 +104,8 @@ export function createDirectProvider(options: {
           ? { id: args.id ?? args.page_id ?? args.pageId }
           : { query: args.query ?? args.search_query ?? args.searchQuery };
         const result = await client.callTool({ name: selected.name, arguments: input });
-        if (result.isError) throw new Error(toolFailure('The Notion read failed', result));
+        if (result.isError)
+          throw new Error(toolFailure('The Notion read failed', result, account.accessToken));
         return result;
       });
     }
@@ -113,7 +116,8 @@ export function createDirectProvider(options: {
         if (!(await client.listTools()).tools.some((tool) => tool.name === toolName))
           throw new Error('The Linear read tool is unavailable.');
         const result = await client.callTool({ name: toolName, arguments: args });
-        if (result.isError) throw new Error(toolFailure('The Linear read failed', result));
+        if (result.isError)
+          throw new Error(toolFailure('The Linear read failed', result, account.accessToken));
         return result;
       });
     }
