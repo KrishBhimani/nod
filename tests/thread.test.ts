@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -1424,7 +1424,7 @@ test(
 );
 
 test(
-  'owner memory keeps evidence, revisions and relevant notes across sessions',
+  'owner memory keeps evidence, revisions and every note across sessions',
   { skip: !process.env.TEST_DATABASE_URL },
   async () => {
     const schema = `test_memory_${randomUUID().replaceAll('-', '').slice(0, 16)}`;
@@ -1459,10 +1459,9 @@ test(
         first,
       );
       assert.equal(saved.status, 'stated');
-      assert.deepEqual(
-        (await memory.select('How should I write the progress report?')).map((item) => item.id),
-        [saved.id],
-      );
+      assert.deepEqual(await memory.context(), [
+        { id: saved.id, kind: 'preference', text: saved.text, status: 'stated' },
+      ]);
       const reopened = createMemoryService({ pool, ownerId, store });
       assert.equal((await reopened.list())[0].text, saved.text);
       const correction = await source('Make progress reports detailed from now on.');
@@ -1476,7 +1475,7 @@ test(
         correction,
       );
       assert.deepEqual(revised.sources, [correction.sourceMessageId]);
-      assert.equal((await memory.search('detailed'))[0].text, revised.text);
+      assert.equal((await memory.context())[0].text, revised.text);
       await assert.rejects(
         memory.save(
           { kind: 'fact', text: 'Prefers a private account.' },
@@ -1495,10 +1494,14 @@ test(
         ),
         /current owned user message/,
       );
-      const secret = await source('Keep this password private.');
+      const secret = await source('I prefer email updates. Also reset my password on the store.');
       await assert.rejects(
-        memory.save({ kind: 'fact', text: 'Keep private information private.' }, secret),
+        memory.save({ kind: 'fact', text: 'Store password is hunter2.' }, secret),
         /cannot be remembered/,
+      );
+      const email = await memory.save(
+        { kind: 'preference', text: 'Prefers email updates.' },
+        secret,
       );
       const patternA = await source('Please show the design first.');
       const pattern = await memory.save(
@@ -1528,13 +1531,21 @@ test(
         },
         factSource,
       );
-      assert.deepEqual(await memory.search('What is the weather?'), []);
+      assert.equal((await memory.context()).length, 4);
       await memory.forget(saved.id);
+      const path = join(root, 'memory', 'MEMORY.md');
+      await writeFile(
+        path,
+        `${await readFile(path, 'utf8')}\n## not-an-id\nKind: fact\n\nBroken entry.\n`,
+      );
+      assert.deepEqual((await memory.context()).map((entry) => entry.id).includes(email.id), true);
+      await memory.save({ id: email.id, kind: 'preference', text: email.text }, patternB);
       assert.equal(
         (await reopened.list()).some((entry) => entry.id === saved.id),
         false,
       );
-      const file = await readFile(join(root, 'memory', 'MEMORY.md'), 'utf8');
+      const file = await readFile(path, 'utf8');
+      assert.doesNotMatch(file, /Broken entry/);
       assert.match(file, /# Memory/);
       assert.match(file, /Often asks to see a design first/);
       assert.doesNotMatch(file, /Keep progress reports short/);

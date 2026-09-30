@@ -265,12 +265,6 @@ export function createPersonalService(dependencies: PersonalDependencies) {
       await schedules.validateUpdate(input.id, { enabled: false });
       return input;
     }
-    if (action === 'memory_forget') {
-      const input = z.object({ id: z.uuid() }).strict().parse(args);
-      if (!(await memory?.list())?.some((entry) => entry.id === input.id))
-        throw Object.assign(new Error('The memory entry was not found.'), { statusCode: 404 });
-      return input;
-    }
     throw Object.assign(new Error('This personal-data action is not available for review.'), {
       statusCode: 400,
     });
@@ -307,8 +301,6 @@ export function createPersonalService(dependencies: PersonalDependencies) {
     if (action === 'schedule_cancel')
       return schedules.update(String(args.id || ''), { enabled: false }, provenance);
     if (action === 'memory_list') return memory?.list() ?? [];
-    if (action === 'memory_search')
-      return memory?.search(z.string().min(1).max(200).parse(args.query)) ?? [];
     if (action === 'memory_save') {
       if (!memory) throw new Error('Memory is unavailable.');
       return memory.save(args, {

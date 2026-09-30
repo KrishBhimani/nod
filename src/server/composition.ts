@@ -86,6 +86,7 @@ import {
   createUserMessageService,
   enqueueTurn,
   initializeThreads,
+  reply,
   restartOnboarding,
   resumeAfterConnection,
   resumeAfterCredentials,
@@ -562,11 +563,7 @@ export async function createApplication(
   const approvals = await createApprovals(
     (action, args, provenance) =>
       action.startsWith('OTTO_')
-        ? action === 'OTTO_memory_forget'
-          ? withTurnLock(provenance.turnId, () =>
-              personal.manage('memory_forget', args, provenance),
-            )
-          : personal.manage(action.slice('OTTO_'.length), args, provenance)
+        ? personal.manage(action.slice('OTTO_'.length), args, provenance)
         : providerUsage.withTurn(provenance.turnId, () =>
             integrations.executeApproved(
               ownerId,
@@ -582,10 +579,7 @@ export async function createApplication(
       else await integrations.validateApproval(ownerId, action, args);
     },
     (action, args) => integrations.describeApproval(ownerId, action, args),
-    (action, args) =>
-      action === 'OTTO_memory_forget'
-        ? memory.list().then((entries) => entries.find((entry) => entry.id === args.id)?.text)
-        : integrations.describeTarget(ownerId, action, args),
+    (action, args) => integrations.describeTarget(ownerId, action, args),
   );
   const reactions = createAgentReactionService({ pool, ownerId, refresh });
   const localAccounts = runtimeMode === 'local' ? createAccountStore(pool) : null;
@@ -621,7 +615,7 @@ export async function createApplication(
       inspectPrompt: promptInspector.record,
       finishObservationSegment: inspector.finishSegment,
       accountProfile,
-      memorySelect: memory.select,
+      memoryContext: memory.context,
       connections: integrations.manageConnections,
       browserConnection: (request, turn, signal) =>
         browserConnections.request(request, turn, signal),
@@ -636,7 +630,6 @@ export async function createApplication(
             'schedule_create',
             'schedule_update',
             'schedule_cancel',
-            'memory_forget',
           ].includes(action)
         )
           return approvals.request(
@@ -644,10 +637,14 @@ export async function createApplication(
             `OTTO_${action}`,
             await personal.validateReview(action, args),
           );
-        if (action === 'memory_save')
-          return withTurnLock(turn.turnId, () =>
+        if (action === 'memory_save' || action === 'memory_forget') {
+          const result = await withTurnLock(turn.turnId, () =>
             personal.manage(action, args, { ...provenance, turnId: turn.turnId }),
           );
+          if (action === 'memory_save')
+            await reply(turn, `Remembered: ${(result as { text: string }).text}`);
+          return result;
+        }
         return personal.manage(action, args, { ...provenance, turnId: turn.turnId });
       },
       requestCredential: async (turn, input) => {

@@ -5,52 +5,42 @@ import type { PrivateObjectStore } from '../ports/object-storage.ts';
 
 const key = 'memory/MEMORY.md';
 const maxBytes = 64 * 1024;
+const maxEntries = 50;
 const id = z.uuid();
 const kind = z.enum(['fact', 'preference', 'pattern']);
 const secret =
   /\b(?:password|passcode|passphrase|otp|pin|2fa|api[ _-]?key|secret|token|bearer|private[ _-]?key|security code|cvv|cvc|verification code|recovery code)\b|\bsk-[A-Za-z0-9_-]{12,}|\b(?:\d[ -]?){14,19}\b/i;
-const ignored = new Set(
-  'about after and are before can for from has have how its now our please should that the their them this user what when where which who with you your'.split(
-    ' ',
-  ),
-);
+const block =
+  /^## ([0-9a-f-]{36})\nKind: (fact|preference|pattern)\nUpdated: (\d{4}-\d\d-\d\dT[^\n]+)\nSources: ([0-9a-f-, ]+)\n\n([^\n]+)$/;
+const entrySchema = z.object({
+  id,
+  kind,
+  updated: z.iso.datetime({ offset: true }),
+  sources: z.array(id).min(1).max(5),
+  text: z.string().min(1).max(300),
+});
 
-type Entry = {
-  id: string;
-  kind: z.infer<typeof kind>;
-  text: string;
-  sources: string[];
-  updated: string;
-};
+type Entry = z.infer<typeof entrySchema>;
 
+// Invalid blocks are skipped so one bad entry cannot disable memory; the next write drops them.
 function parse(bytes?: Uint8Array): Entry[] {
   if (!bytes) return [];
-  const document = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-  if (!document.startsWith('# Memory\n')) throw new Error('The memory file is invalid.');
-  const body = document.slice('# Memory\n'.length).trim();
-  if (!body) return [];
-  const blocks = body.split(/\n(?=## )/);
-  const entries = blocks.map((block) => {
-    const match =
-      /^## ([0-9a-f-]{36})\nKind: (fact|preference|pattern)\nUpdated: (\d{4}-\d\d-\d\dT[^\n]+)\nSources: ([0-9a-f-, ]+)\n\n([^\n]+)$/.exec(
-        block.trim(),
-      );
-    if (!match) throw new Error('The memory file is invalid.');
-    const sources = match[4].split(', ');
-    const entry = {
-      id: id.parse(match[1]),
-      kind: kind.parse(match[2]),
-      updated: z.iso.datetime({ offset: true }).parse(match[3]),
-      sources: sources.map((source) => id.parse(source)),
-      text: z.string().min(1).max(300).parse(match[5]),
-    };
-    if (sources.length > 5 || secret.test(entry.text))
-      throw new Error('The memory file is invalid.');
-    return entry;
-  });
-  if (entries.length > 120 || new Set(entries.map((entry) => entry.id)).size !== entries.length)
-    throw new Error('The memory file is invalid.');
-  return entries;
+  const body = new TextDecoder().decode(bytes).replace(/^# Memory\n/, '');
+  const entries = new Map<string, Entry>();
+  for (const part of body.split(/\n(?=## )/)) {
+    const match = block.exec(part.trim());
+    const entry = entrySchema.safeParse(
+      match && {
+        id: match[1],
+        kind: match[2],
+        updated: match[3],
+        sources: match[4].split(', '),
+        text: match[5],
+      },
+    );
+    if (entry.success && !entries.has(entry.data.id)) entries.set(entry.data.id, entry.data);
+  }
+  return [...entries.values()];
 }
 
 function render(entries: Entry[]) {
@@ -63,28 +53,6 @@ function render(entries: Entry[]) {
   const bytes = new TextEncoder().encode(`# Memory\n${body ? `\n${body}\n` : ''}`);
   if (bytes.length > maxBytes) throw new Error('The memory file is full.');
   return bytes;
-}
-
-function terms(value: string) {
-  return new Set(
-    (value.toLocaleLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []).filter(
-      (term) => !ignored.has(term),
-    ),
-  );
-}
-
-function ranked(entries: Entry[], query: string, includePreferences = false) {
-  const requested = terms(query);
-  return entries
-    .map((entry) => {
-      const found = terms(entry.text);
-      let score = includePreferences && entry.kind === 'preference' ? 1 : 0;
-      for (const term of requested) if (found.has(term)) score += 3;
-      return { entry, score };
-    })
-    .filter(({ score }) => score > 0)
-    .sort((a, b) => b.score - a.score || b.entry.updated.localeCompare(a.entry.updated))
-    .map(({ entry }) => entry);
 }
 
 function visible(entry: Entry) {
@@ -109,17 +77,13 @@ export function createMemoryService(options: {
     return { entries: parse(object?.bytes), version: object?.version ?? null };
   }
 
-  async function select(query: string) {
+  async function context() {
     const { entries } = await read();
-    return ranked(entries, query, true)
-      .slice(0, 6)
+    return entries
+      .toSorted((a, b) => b.updated.localeCompare(a.updated))
+      .slice(0, maxEntries)
       .map((entry) => visible(entry))
       .map(({ id, kind, text, status }) => ({ id, kind, text, status }));
-  }
-
-  async function search(query: string) {
-    const { entries } = await read();
-    return ranked(entries, query).slice(0, 10).map(visible);
   }
 
   async function list() {
@@ -148,13 +112,11 @@ export function createMemoryService(options: {
       throw new Error('Sign-in details and payment secrets cannot be remembered.');
     const sourceMessageId = id.parse(provenance.sourceMessageId);
     const source = await options.pool.query(
-      "SELECT text FROM messages WHERE id=$1 AND owner_id=$2 AND turn_id=$3 AND role='user'",
+      "SELECT 1 FROM messages WHERE id=$1 AND owner_id=$2 AND turn_id=$3 AND role='user'",
       [sourceMessageId, options.ownerId, provenance.turnId],
     );
-    const sourceText = String(source.rows[0]?.text ?? '').trim();
-    if (!sourceText) throw new Error('The current owned user message is required as evidence.');
-    if (secret.test(sourceText))
-      throw new Error('Sign-in details and payment secrets cannot be remembered.');
+    if (!source.rowCount)
+      throw new Error('The current owned user message is required as evidence.');
     const current = await read();
     const existing = input.id
       ? current.entries.find((entry) => entry.id === input.id)
@@ -176,7 +138,7 @@ export function createMemoryService(options: {
     const entries = existing
       ? current.entries.map((item) => (item.id === existing.id ? entry : item))
       : [...current.entries, entry];
-    if (entries.length > 120) throw new Error('The memory file is full.');
+    if (!existing && entries.length > maxEntries) throw new Error('The memory file is full.');
     await options.store.write(key, render(entries), { expectedVersion: current.version });
     return visible(entry);
   }
@@ -191,5 +153,5 @@ export function createMemoryService(options: {
     return { ok: true };
   }
 
-  return { select, search, list, save, forget };
+  return { context, list, save, forget };
 }

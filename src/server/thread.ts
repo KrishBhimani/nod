@@ -88,7 +88,7 @@ export interface ThreadDependencies {
   inspectPrompt?: (turnId: string, snapshot: PromptSnapshot) => Promise<void>;
   finishObservationSegment?: (turnId: string) => Promise<void>;
   accountProfile?: () => Promise<RuntimeContext['account']>;
-  memorySelect?: (query: string) => Promise<RuntimeContext['memory']>;
+  memoryContext?: () => Promise<RuntimeContext['memory']>;
   runTurn: (context: RuntimeContext) => Promise<RuntimeResult>;
   speech: Pick<SpeechService, 'synthesize'>;
   requestCredential: (
@@ -736,7 +736,7 @@ async function loadTurnContext(turn: any, dependencies: ThreadDependencies) {
     ),
     pool.query('SELECT time_zone,locale,hour_cycle FROM preferences WHERE owner_id=$1', [ownerId]),
     dependencies.accountProfile?.().catch(() => undefined),
-    dependencies.memorySelect?.(String(turn.prompt)).catch(() => []),
+    dependencies.memoryContext?.().catch(() => []),
   ]);
   const message = source?.rows[0];
   const replyTo = message?.id
