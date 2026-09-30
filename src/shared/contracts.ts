@@ -117,6 +117,7 @@ export interface Connection {
   connectionId?: string;
   accountName?: string;
   accountEmail?: string;
+  savedLogin?: boolean;
   triggersActive?: boolean;
   triggerStatus?: 'active' | 'pending' | 'unavailable' | 'disabled';
   triggersEnabled: boolean;

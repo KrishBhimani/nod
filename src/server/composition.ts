@@ -634,7 +634,13 @@ export async function createApplication(
           );
         return personal.manage(action, args, { ...provenance, turnId: turn.turnId });
       },
-      requestCredential: async (turn, input) => {
+      requestCredential: async (turn, { savedLoginId, ...input }) => {
+        if (savedLoginId !== undefined) {
+          if (input.kind === 'otp')
+            throw new Error('Saved logins cannot supply verification codes.');
+          await vault.fillSaved(turn, ownerId, savedLoginId, input);
+          return { filled: true };
+        }
         if (input.kind === 'otp' && (await vault.fillEmailCode(turn, ownerId, input)))
           return { filled: true };
         if (input.kind !== 'otp') {

@@ -304,6 +304,34 @@ test('secure credential pause prevents subsequent tools in the same execution se
   assert.equal(result.replies.length, 1);
 });
 
+test('a chosen saved login reaches the credential broker without pausing the turn', async () => {
+  const input = {
+    origin: 'https://example.com',
+    label: 'Example',
+    kind: 'password' as const,
+    usernameSelector: '@account',
+    passwordSelector: '@password',
+    savedLoginId: randomUUID(),
+  };
+  let requested = false;
+  const result = await fixture(
+    async (tools) => {
+      await call(tools, 'sign_in', input);
+    },
+    {
+      requestCredential: async (request) => {
+        assert.deepEqual(request, input);
+        requested = true;
+        return { filled: true };
+      },
+    },
+  );
+  assert.equal(requested, true);
+  assert.equal(result.result.status, 'succeeded');
+  assert.equal(result.aborted, false);
+  assert.deepEqual(result.replies, []);
+});
+
 const refusal = 'This turn can only read. Use app reads, and browser open, snapshot or scroll.';
 
 const refused: Array<[string, Record<string, unknown>]> = [

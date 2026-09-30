@@ -419,6 +419,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
   }
 
   async function list(ownerId = configuredOwner): Promise<Connection[]> {
+    assertOwner(ownerId);
     const [rows, browserAccounts, discovered, browserConnections] = await Promise.all([
       connectionRows(ownerId),
       options.browserAccounts?.() ?? [],
@@ -490,6 +491,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
           status: 'connected',
           connectionId: entry.id,
           accountName: entry.label,
+          savedLogin: true,
           triggersEnabled: false,
           supportsTriggers: false,
           accessPaths: [{ id: entry.id, kind: 'browser', endpoint: entry.origin }],
