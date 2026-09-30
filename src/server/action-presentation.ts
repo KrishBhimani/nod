@@ -19,6 +19,7 @@ const labels: Record<string, string> = {
   OTTO_schedule_cancel: 'Pause this schedule',
   OTTO_profile_update: 'Save these preferences',
   OTTO_notification_preferences_update: 'Save these notification preferences',
+  OTTO_memory_forget: 'Forget this memory',
   CONNECTED_HTTP: 'Call this connected API',
   CONNECTED_MCP_CALL: 'Use this connected tool',
   CONNECTED_CLI: 'Run this connected command',

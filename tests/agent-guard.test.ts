@@ -139,6 +139,34 @@ test('long foreground work keeps both useful progress messages', async () => {
   }
 });
 
+test('saved memory reaches Pi but stays out of inspector records', async () => {
+  const note = 'Prefers short synthetic reports.';
+  const observations: unknown[] = [];
+  const snapshots: unknown[] = [];
+  const result = await fixture(
+    async (tools) => {
+      const found = await call(tools, 'manage_personal_context', {
+        action: 'memory_list',
+        args: {},
+      });
+      assert.match(JSON.stringify(found), /short synthetic reports/);
+    },
+    {
+      memory: [{ id: randomUUID(), kind: 'preference', text: note, status: 'stated' }],
+      manage: async () => [{ text: note }],
+      observe: async (event) => {
+        observations.push(event);
+      },
+      inspectPrompt: async (snapshot) => {
+        snapshots.push(snapshot);
+      },
+    },
+  );
+  assert.match(result.supplied.systemPrompt, /short synthetic reports/);
+  assert.doesNotMatch(JSON.stringify(observations), /short synthetic reports/);
+  assert.doesNotMatch(JSON.stringify(snapshots), /short synthetic reports/);
+});
+
 test('chat login solicitations are withheld without inspecting or opening Vault', async () => {
   for (const method of ['ask_user', 'send_message', 'final']) {
     let requests = 0;

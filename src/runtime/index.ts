@@ -45,6 +45,8 @@ const readOnlyTools: Record<string, true | string[]> = {
     'profile_get',
     'notification_preferences_get',
     'history_search',
+    'memory_list',
+    'memory_search',
     'schedule_list',
     'goal_list',
   ],
@@ -231,11 +233,15 @@ export function createAgentRuntime(dependencies: {
             finishedAt: new Date().toISOString(),
             durationMs: performance.now() - started,
           });
-        const observedInput =
-          name === 'browser' &&
-          params &&
-          typeof params === 'object' &&
-          (params as { action?: unknown }).action === 'fill'
+        const memoryAction =
+          name === 'manage_personal_context' &&
+          String((params as { action?: unknown })?.action).startsWith('memory_');
+        const observedInput = memoryAction
+          ? { action: (params as { action?: unknown }).action, args: '[private memory omitted]' }
+          : name === 'browser' &&
+              params &&
+              typeof params === 'object' &&
+              (params as { action?: unknown }).action === 'fill'
             ? { ...params, text: '[redacted]' }
             : name === 'browser_flow' && params && typeof params === 'object'
               ? (params as { action?: unknown }).action === 'save'
@@ -266,7 +272,9 @@ export function createAgentRuntime(dependencies: {
           result = isToolResult(output) ? output : textResult(output);
           await end({
             status: 'succeeded',
-            ...(['get_credential', 'browser_flow'].includes(name) ? {} : { output }),
+            ...(['get_credential', 'browser_flow'].includes(name) || memoryAction
+              ? {}
+              : { output }),
           });
         } catch (error) {
           if (!stopped) await context.emit('tool_failed', label).catch(() => {});
@@ -328,6 +336,7 @@ export function createAgentRuntime(dependencies: {
         }),
       );
       const system = systemPrompt(context, workspace);
+      const inspectedSystem = systemPrompt({ ...context, memory: [] }, workspace);
       session = await agent.open({
         threadId,
         turnId: context.turnId,
@@ -402,7 +411,7 @@ export function createAgentRuntime(dependencies: {
           .then(() =>
             context.inspectPrompt?.({
               id: randomUUID(),
-              system,
+              system: inspectedSystem,
               instruction: currentInstruction,
               resumed: resumed || reason === 'secure_resume',
               imageCount: images.length,

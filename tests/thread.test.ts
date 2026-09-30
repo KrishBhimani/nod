@@ -12,6 +12,8 @@ import { createPreferencesStore } from '../src/server/preferences.ts';
 import type { ThreadDependencies } from '../src/server/thread.ts';
 import type { SubmitMessageResponse } from '../src/shared/contracts.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
+import { createMemoryService } from '../src/server/memory.ts';
+import { createFilesystemObjectStore } from '../src/providers/object-storage/filesystem.ts';
 
 test(
   'one thread runs every turn in order on the same session and workspace',
@@ -1414,6 +1416,130 @@ test(
       await promptInspector.close();
       await db.pool.end();
       await admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`);
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'owner memory keeps evidence, revisions and relevant notes across sessions',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async () => {
+    const schema = `test_memory_${randomUUID().replaceAll('-', '').slice(0, 16)}`;
+    const root = await mkdtemp(join(tmpdir(), 'memory-test-'));
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const url = new URL(process.env.TEST_DATABASE_URL!);
+    url.searchParams.set('options', `-c search_path=${schema}`);
+    const pool = new pg.Pool({ connectionString: url.href });
+    try {
+      await pool.query(
+        'CREATE TABLE messages (id uuid PRIMARY KEY, owner_id text NOT NULL, role text NOT NULL, text text NOT NULL, turn_id uuid NOT NULL)',
+      );
+      const ownerId = 'memory-fixture-owner';
+      const store = createFilesystemObjectStore(root);
+      const memory = createMemoryService({ pool, ownerId, store });
+      const source = async (message: string, owner = ownerId) => {
+        const messageId = randomUUID();
+        const turnId = randomUUID();
+        await pool.query(
+          "INSERT INTO messages(id,owner_id,role,text,turn_id) VALUES($1,$2,'user',$3,$4)",
+          [messageId, owner, message, turnId],
+        );
+        return { sourceMessageId: messageId, turnId };
+      };
+      const first = await source('Keep progress reports short.');
+      const saved = await memory.save(
+        {
+          kind: 'preference',
+          text: 'Prefers short progress reports.',
+        },
+        first,
+      );
+      assert.equal(saved.status, 'stated');
+      assert.deepEqual(
+        (await memory.select('How should I write the progress report?')).map((item) => item.id),
+        [saved.id],
+      );
+      const reopened = createMemoryService({ pool, ownerId, store });
+      assert.equal((await reopened.list())[0].text, saved.text);
+      const correction = await source('Make progress reports detailed from now on.');
+      const revised = await reopened.save(
+        {
+          id: saved.id,
+          kind: 'preference',
+          text: 'Prefers detailed progress reports.',
+          replace: true,
+        },
+        correction,
+      );
+      assert.deepEqual(revised.sources, [correction.sourceMessageId]);
+      assert.equal((await memory.search('detailed'))[0].text, revised.text);
+      await assert.rejects(
+        memory.save(
+          { kind: 'fact', text: 'Prefers a private account.' },
+          { ...correction, turnId: randomUUID() },
+        ),
+        /current owned user message/,
+      );
+      const other = await source('A different owner likes long notes.', 'other-owner');
+      await assert.rejects(
+        memory.save(
+          {
+            kind: 'preference',
+            text: 'Likes long notes.',
+          },
+          other,
+        ),
+        /current owned user message/,
+      );
+      const secret = await source('Keep this password private.');
+      await assert.rejects(
+        memory.save({ kind: 'fact', text: 'Keep private information private.' }, secret),
+        /cannot be remembered/,
+      );
+      const patternA = await source('Please show the design first.');
+      const pattern = await memory.save(
+        {
+          kind: 'pattern',
+          text: 'Often asks to see a design first.',
+        },
+        patternA,
+      );
+      assert.equal(pattern.status, 'tentative');
+      const patternB = await source('Show the design before you build it.');
+      const observed = await memory.save(
+        {
+          id: pattern.id,
+          kind: 'pattern',
+          text: pattern.text,
+        },
+        patternB,
+      );
+      assert.equal(observed.status, 'observed');
+      assert.equal(observed.sources.length, 2);
+      const factSource = await source('The museum opens on Tuesday.');
+      await memory.save(
+        {
+          kind: 'fact',
+          text: 'The museum opens on Tuesday.',
+        },
+        factSource,
+      );
+      assert.deepEqual(await memory.search('What is the weather?'), []);
+      await memory.forget(saved.id);
+      assert.equal(
+        (await reopened.list()).some((entry) => entry.id === saved.id),
+        false,
+      );
+      const file = await readFile(join(root, 'memory', 'MEMORY.md'), 'utf8');
+      assert.match(file, /# Memory/);
+      assert.match(file, /Often asks to see a design first/);
+      assert.doesNotMatch(file, /Keep progress reports short/);
+    } finally {
+      await pool.end();
       await admin.query(`DROP SCHEMA ${schema} CASCADE`);
       await admin.end();
       await rm(root, { recursive: true, force: true });

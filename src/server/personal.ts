@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
 import { createPreferencesStore } from './preferences.ts';
+import type { createMemoryService } from './memory.ts';
 import { activeThreadSql } from './thread.ts';
 import { createSchedules, type ScheduleDependencies } from './schedules.ts';
 
@@ -38,12 +39,15 @@ const declinedPersonalAnswer =
   /^(?:no(?: thanks)?\b|skip\b|pass\b|not now\b|none\b|n\/a\b|(?:i(?:'d| would) rather not|i (?:do not|don't|don’t) want to|prefer not to|let(?:'s| us) not)(?:\b|$)|(?:do not|don't|don’t) (?:save|store|remember|ask)|não\b|prefiro não\b|saltar\b)/i;
 const goalColumns =
   'id,title,description,progress,status,next_action AS "nextAction",target_date AS "targetDate",updated_at AS "updatedAt"';
-type PersonalDependencies = ScheduleDependencies;
+type PersonalDependencies = ScheduleDependencies & {
+  memory?: ReturnType<typeof createMemoryService>;
+};
 
 export function createPersonalService(dependencies: PersonalDependencies) {
   const { pool, ownerId, refresh } = dependencies;
   const preferences = createPreferencesStore(pool, ownerId);
   const schedules = createSchedules(dependencies);
+  const memory = dependencies.memory;
 
   async function initialize(options: { workers?: boolean } = {}) {
     await pool.query(`
@@ -261,6 +265,12 @@ export function createPersonalService(dependencies: PersonalDependencies) {
       await schedules.validateUpdate(input.id, { enabled: false });
       return input;
     }
+    if (action === 'memory_forget') {
+      const input = z.object({ id: z.uuid() }).strict().parse(args);
+      if (!(await memory?.list())?.some((entry) => entry.id === input.id))
+        throw Object.assign(new Error('The memory entry was not found.'), { statusCode: 404 });
+      return input;
+    }
     throw Object.assign(new Error('This personal-data action is not available for review.'), {
       statusCode: 400,
     });
@@ -296,6 +306,20 @@ export function createPersonalService(dependencies: PersonalDependencies) {
     }
     if (action === 'schedule_cancel')
       return schedules.update(String(args.id || ''), { enabled: false }, provenance);
+    if (action === 'memory_list') return memory?.list() ?? [];
+    if (action === 'memory_search')
+      return memory?.search(z.string().min(1).max(200).parse(args.query)) ?? [];
+    if (action === 'memory_save') {
+      if (!memory) throw new Error('Memory is unavailable.');
+      return memory.save(args, {
+        sourceMessageId: provenance?.sourceMessageId ?? null,
+        turnId: z.uuid().parse(provenance?.turnId),
+      });
+    }
+    if (action === 'memory_forget') {
+      if (!memory) throw new Error('Memory is unavailable.');
+      return memory.forget(args.id);
+    }
     if (action === 'history_search') {
       const query = z.string().min(1).max(200).parse(args.query);
       const turns = await pool.query(

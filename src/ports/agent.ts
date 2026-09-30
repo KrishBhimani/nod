@@ -84,6 +84,7 @@ export interface RuntimeContext {
       targetDate: string | null;
     }>;
   };
+  memory?: Array<{ id: string; kind: string; text: string; status: string }>;
   workspacePath: string;
   signal: AbortSignal;
   attachments: Array<{ path: string; mimeType: string }>;
