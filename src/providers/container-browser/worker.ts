@@ -151,7 +151,6 @@ export async function startContainerBrowserWorker(
     maxPendingPerNamespace?: number;
   } = {},
 ) {
-  await rm('/tmp/otto-browser-uploads', { recursive: true, force: true });
   const path = options.socketPath ?? browserSocketPath;
   const dataRoot = options.dataRoot ?? '/data';
   const createComputer =
@@ -207,7 +206,9 @@ export async function startContainerBrowserWorker(
     return true;
   }
   await prepareSocket(path);
+  let ready = false;
   const server = createServer((socket) => {
+    if (!ready) return socket.destroy();
     socket.setEncoding('utf8');
     connections.add(socket);
     let incoming = '';
@@ -321,7 +322,15 @@ export async function startContainerBrowserWorker(
     server.once('error', reject);
     server.listen(path, resolve);
   });
-  await chmod(path, 0o600);
+  try {
+    await rm('/tmp/otto-browser-uploads', { recursive: true, force: true });
+    await chmod(path, 0o600);
+  } catch (error) {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await unlink(path).catch(() => {});
+    throw error;
+  }
+  ready = true;
   return {
     async close() {
       if (closing) return;
