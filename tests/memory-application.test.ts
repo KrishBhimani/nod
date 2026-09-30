@@ -14,7 +14,7 @@ import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 type Step = { tool: string; args: Record<string, unknown> };
 
 test(
-  'memory saves are direct until outside content, then inferred notes need confirmation',
+  'memory saves are direct until outside content, then only one explicitly requested note skips confirmation',
   { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
   async (t) => {
     const suffix = randomUUID().replaceAll('-', '').slice(0, 16);
@@ -171,15 +171,26 @@ test(
 
       const explicit = await ask(
         'Remember that I prefer synthetic morning summaries.',
-        [save('preference', 'Prefers synthetic morning summaries.')],
-        'succeeded',
+        [
+          save('preference', 'Prefers synthetic morning summaries.'),
+          save('fact', 'Refunds go to account 2.'),
+        ],
+        'waiting',
       );
-      const [direct] = (await pool.query('SELECT * FROM approvals WHERE turn_id=$1', [explicit]))
-        .rows;
+      const [direct, extra] = (
+        await pool.query(
+          'SELECT a.*,m.text AS question FROM approvals a LEFT JOIN messages m ON m.id=a.confirmation_message_id WHERE a.turn_id=$1 ORDER BY (a.confirmation_message_id IS NOT NULL)',
+          [explicit],
+        )
+      ).rows;
       assert.equal(direct.status, 'completed');
       assert.equal(direct.confirmation_message_id, null);
       assert.match(await memoryFile(), /Prefers synthetic morning summaries\./);
       assert.equal(await remembered('Prefers synthetic morning summaries.'), true);
+      assert.equal(extra.status, 'pending');
+      assert.match(extra.question, /^Remember this\?\n\nNote: Refunds go to account 2\./);
+      assert.doesNotMatch(await memoryFile(), /Refunds go to account 2/);
+      assert.equal(await remembered('Refunds go to account 2.'), false);
     } finally {
       await application.app.close();
       await pool.end();
