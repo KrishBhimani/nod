@@ -40,6 +40,7 @@ import { createKeychainKeyStore } from '../providers/keychain/key-store.ts';
 import { createOpenAIRelevanceClassifier } from '../providers/openai/relevance.ts';
 import { createOpenAISpeechProvider } from '../providers/openai/speech.ts';
 import { createPiAgent } from '../providers/pi/index.ts';
+import { readPiSessionEntries } from '../providers/pi/checkpoint.ts';
 import { createPublicLinkPreviewProvider } from '../providers/public-web/link-preview.ts';
 import { createAgentRuntime } from '../runtime/index.ts';
 import { createApp } from './app.ts';
@@ -726,6 +727,12 @@ export async function createApplication(
     secrets: inspectorSecrets,
     provider: adapters.model.provider,
     model: adapters.model.name,
+    sessionEntries: (threadId) =>
+      readPiSessionEntries({
+        threadId,
+        sessionRoot: join(dataRoot, 'sessions'),
+        objectStore: adapters.objectStore,
+      }),
   });
   if (localAccounts) {
     registerPrivacyNotice(app, privacyNotice);

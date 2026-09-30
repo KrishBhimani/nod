@@ -3,6 +3,198 @@ import type { Pool } from 'pg';
 import { activeThread } from './thread.ts';
 import { createInspectorRedactor } from './inspector-redaction.ts';
 
+type RecordValue = Record<string, unknown>;
+
+function record(value: unknown): RecordValue | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as RecordValue)
+    : undefined;
+}
+
+function content(value: unknown): unknown {
+  if (typeof value === 'string') return value;
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): unknown[] => {
+    const block = record(item);
+    if (block?.type === 'text') return [{ type: 'text', text: block.text }];
+    if (block?.type === 'thinking')
+      return [{ type: 'thinking', thinking: block.thinking, redacted: block.redacted }];
+    if (block?.type === 'toolCall')
+      return [
+        {
+          type: 'toolCall',
+          id: block.id,
+          name: block.name,
+          namespace: block.namespace,
+          arguments: block.arguments,
+        },
+      ];
+    if (block?.type === 'image')
+      return [{ type: 'image', mimeType: block.mimeType, data: '[binary omitted]' }];
+    return [];
+  });
+}
+
+function savedCredentialValues(entries: unknown[]): string[] {
+  const values: string[] = [];
+  for (const entry of entries) {
+    const message = record(record(entry)?.message);
+    if (message?.role !== 'toolResult' || message.toolName !== 'get_credential') continue;
+    for (const part of Array.isArray(message.content) ? message.content : []) {
+      const block = record(part);
+      if (block?.type !== 'text' || typeof block.text !== 'string') continue;
+      try {
+        const credential = record(JSON.parse(block.text));
+        for (const key of ['username', 'password']) {
+          const value = credential?.[key];
+          if (typeof value === 'string' && value) values.push(value);
+        }
+      } catch {}
+    }
+  }
+  return values;
+}
+
+export function piSessionReport(entries: unknown[], secrets: string[] = []): unknown[] {
+  const redact = createInspectorRedactor([...secrets, ...savedCredentialValues(entries)], {
+    string: 64_000,
+    payload: 160_000,
+    minimumSecretLength: 1,
+  });
+  const credentialResults = new Set(
+    entries.flatMap((value) => {
+      const entry = record(value);
+      const message = record(entry?.message);
+      return entry?.type === 'message' &&
+        message?.role === 'toolResult' &&
+        message.toolName === 'get_credential' &&
+        typeof entry.id === 'string'
+        ? [entry.id]
+        : [];
+    }),
+  );
+  return entries.flatMap((value) => {
+    const entry = record(value);
+    if (!entry || typeof entry.type !== 'string') return [];
+    const base = {
+      type: entry.type,
+      id: entry.id,
+      parentId: entry.parentId,
+      timestamp: entry.timestamp,
+    };
+    const message = record(entry.message);
+    if (entry.type === 'message' && message) {
+      const common = { role: message.role, timestamp: message.timestamp };
+      if (message.role === 'toolResult')
+        return [
+          redact({
+            ...base,
+            message: {
+              ...common,
+              toolCallId: message.toolCallId,
+              toolName: message.toolName,
+              isError: message.isError,
+              usage: message.usage,
+              content:
+                message.toolName === 'get_credential' ? '[redacted]' : content(message.content),
+              details: message.toolName === 'get_credential' ? '[redacted]' : message.details,
+            },
+          }),
+        ];
+      if (message.role === 'assistant')
+        return [
+          redact({
+            ...base,
+            message: {
+              ...common,
+              api: message.api,
+              provider: message.provider,
+              model: message.model,
+              responseModel: message.responseModel,
+              responseId: message.responseId,
+              providerThinkingLevel: message.providerThinkingLevel,
+              stopReason: message.stopReason,
+              rawStopReason: message.rawStopReason,
+              endTurn: message.endTurn,
+              errorMessage: message.errorMessage,
+              diagnostics: message.diagnostics,
+              usage: message.usage,
+              content: content(message.content),
+            },
+          }),
+        ];
+      if (message.role === 'user' || message.role === 'system')
+        return [redact({ ...base, message: { ...common, content: content(message.content) } })];
+      return [];
+    }
+    if (entry.type === 'compaction' || entry.type === 'branch_summary')
+      return [
+        redact({
+          ...base,
+          summary: entry.summary,
+          tokensBefore: entry.tokensBefore,
+          firstKeptEntryId: entry.firstKeptEntryId,
+          fromId: entry.fromId,
+          usage: entry.usage,
+          fromHook: entry.fromHook,
+          details: entry.details,
+          systemMessage: record(entry.systemMessage)
+            ? {
+                content: content(record(entry.systemMessage)?.content),
+                sections: record(entry.systemMessage)?.sections,
+                toolsAdded: record(entry.systemMessage)?.toolsAdded,
+                toolsRemoved: record(entry.systemMessage)?.toolsRemoved,
+              }
+            : undefined,
+        }),
+      ];
+    if (entry.type === 'custom_message')
+      return [
+        redact({
+          ...base,
+          customType: entry.customType,
+          display: entry.display,
+          content: content(entry.content),
+          details: entry.details,
+        }),
+      ];
+    if (entry.type === 'context_edit')
+      return [
+        redact({
+          ...base,
+          targetId: entry.targetId,
+          replacement: credentialResults.has(String(entry.targetId))
+            ? '[redacted]'
+            : entry.replacement === null
+              ? null
+              : content(record(entry.replacement)?.content),
+        }),
+      ];
+    if (entry.type === 'custom')
+      return [redact({ ...base, customType: entry.customType, data: entry.data })];
+    if (
+      entry.type === 'model_change' ||
+      entry.type === 'thinking_level_change' ||
+      entry.type === 'usage'
+    )
+      return [
+        redact({
+          ...base,
+          provider: entry.provider,
+          model: entry.model,
+          modelId: entry.modelId,
+          thinkingLevel: entry.thinkingLevel,
+          kind: entry.kind,
+          usage: entry.usage,
+          note: entry.note,
+        }),
+      ];
+    if (entry.type === 'label' || entry.type === 'session_info')
+      return [redact({ ...base, targetId: entry.targetId, label: entry.label, name: entry.name })];
+    return [];
+  });
+}
+
 export function registerBugReport(
   app: FastifyInstance,
   options: {
@@ -12,11 +204,27 @@ export function registerBugReport(
     secrets?: string[];
     provider?: string;
     model?: string;
+    sessionEntries?: (threadId: string) => Promise<unknown[]>;
   },
 ) {
-  const redact = createInspectorRedactor(options.secrets, { string: 64_000, payload: 160_000 });
   app.get('/api/conversation/bug-report', async (_request, reply) => {
     const thread = await activeThread(options.pool, options.ownerId);
+    let sessionEntries: unknown[] = [];
+    let sessionAvailable = true;
+    try {
+      sessionEntries = (await options.sessionEntries?.(thread.id)) ?? [];
+    } catch {
+      sessionAvailable = false;
+    }
+    const sessionSecrets = [
+      ...(options.secrets ?? []).filter((value) => value.length >= 8),
+      ...savedCredentialValues(sessionEntries),
+    ];
+    const redact = createInspectorRedactor(sessionSecrets, {
+      string: 64_000,
+      payload: 160_000,
+      minimumSecretLength: 1,
+    });
     const values = [options.ownerId, thread.id];
     const [
       messages,
@@ -89,7 +297,11 @@ export function registerBugReport(
       coverage: {
         toolAndPromptCaptureEnabled: options.captureEnabled(),
         traceRetentionDays: 7,
-        note: 'Values are masked and may be shortened. Private Pi session contents, hidden model reasoning, attachment bytes, and expired traces are unavailable.',
+        note: 'Values are masked and may be shortened. The Pi session includes saved readable thinking. Provider-opaque reasoning, attachment bytes, and expired traces are unavailable. A rebased session may include summaries in place of earlier entries.',
+      },
+      piSession: {
+        available: sessionAvailable,
+        entries: piSessionReport(sessionEntries, sessionSecrets),
       },
       messages: messages.rows.map(redact),
       turns: turns.rows.map(redact),

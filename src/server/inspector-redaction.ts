@@ -13,13 +13,13 @@ const secretAssignment = new RegExp(
 
 export function createInspectorRedactor(
   secrets: string[] = [],
-  limits: { string?: number; payload?: number } = {},
+  limits: { string?: number; payload?: number; minimumSecretLength?: number } = {},
 ) {
   const stringLimit = Math.min(64_000, Math.max(100, limits.string ?? 8000));
   const payloadLimit = Math.min(160_000, Math.max(1000, limits.payload ?? inspectorPayloadLimit));
-  const values = [...new Set(secrets.filter((value) => value.length >= 8))].sort(
-    (a, b) => b.length - a.length,
-  );
+  const values = [
+    ...new Set(secrets.filter((value) => value.length >= (limits.minimumSecretLength ?? 8))),
+  ].sort((a, b) => b.length - a.length);
   function text(value: string): string {
     for (const secret of values) {
       value = value.replaceAll(secret, hidden).replaceAll(encodeURIComponent(secret), hidden);

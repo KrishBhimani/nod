@@ -94,7 +94,17 @@ test(
       onboard: (_timeZone, threadId) => thread.restartOnboarding(threadId),
       startOnboarding: thread.startOnboarding,
     });
-    registerBugReport(app, { pool: db.pool, ownerId, captureEnabled: () => true });
+    let savedPiEntries: unknown[] = [];
+    let reportedPiThread = '';
+    registerBugReport(app, {
+      pool: db.pool,
+      ownerId,
+      captureEnabled: () => true,
+      sessionEntries: async (threadId) => {
+        reportedPiThread = threadId;
+        return savedPiEntries;
+      },
+    });
     personal.registerRoutes(app);
     vault.registerRoutes(app);
     createAccountSession({
@@ -1250,6 +1260,78 @@ test(
         },
       );
       await t.test('bug report includes the active thread and masks saved secrets', async () => {
+        savedPiEntries = [
+          {
+            type: 'message',
+            id: 'pi-assistant',
+            parentId: null,
+            timestamp: '2026-01-01T00:00:00.000Z',
+            message: {
+              role: 'assistant',
+              model: 'fixture',
+              content: [
+                {
+                  type: 'thinking',
+                  thinking:
+                    'The page gave me fixture-login-value, so I should inspect the next step.',
+                  thinkingSignature: 'opaque-fixture-signature',
+                },
+                {
+                  type: 'toolCall',
+                  id: 'credential-call',
+                  name: 'get_credential',
+                  arguments: { id: 'fixture-account', origin: 'https://example.test' },
+                },
+              ],
+            },
+          },
+          {
+            type: 'message',
+            id: 'pi-result',
+            parentId: 'pi-assistant',
+            timestamp: '2026-01-01T00:00:01.000Z',
+            message: {
+              role: 'toolResult',
+              toolCallId: 'credential-call',
+              toolName: 'get_credential',
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    username: 'fixture-login-user',
+                    password: 'fixture-login-value',
+                  }),
+                },
+              ],
+              details: { password: 'fixture-login-value' },
+            },
+          },
+          {
+            type: 'compaction',
+            id: 'pi-compaction',
+            parentId: 'pi-result',
+            timestamp: '2026-01-01T00:00:02.000Z',
+            summary: 'The assistant chose the saved account.',
+            tokensBefore: 1000,
+            systemMessage: { content: 'Saved fixture system instruction' },
+          },
+          {
+            type: 'context_edit',
+            id: 'pi-credential-edit',
+            parentId: 'pi-compaction',
+            timestamp: '2026-01-01T00:00:03.000Z',
+            targetId: 'pi-result',
+            replacement: { content: 'fixture-login-value' },
+          },
+          {
+            type: 'context_edit',
+            id: 'pi-safe-edit',
+            parentId: 'pi-credential-edit',
+            timestamp: '2026-01-01T00:00:04.000Z',
+            targetId: 'pi-assistant',
+            replacement: { content: 'Safe context update' },
+          },
+        ];
         const turnId = randomUUID();
         await db.pool.query(
           "INSERT INTO turns(id,owner_id,thread_id,source,prompt,status) VALUES($1,$2,$3,'user','Inspect this action','succeeded')",
@@ -1284,14 +1366,32 @@ test(
           turns: Array<{ id: string }>;
           trace: Array<{ name: string; input: { token: string } }>;
           prompts: Array<{ turn_id: string }>;
+          piSession: {
+            available: boolean;
+            entries: Array<{ type: string; message?: unknown; summary?: string }>;
+          };
         }>();
         assert.equal(report.threadId, freshThread);
+        assert.equal(reportedPiThread, freshThread);
+        assert.equal(report.piSession.available, true);
+        assert.ok(
+          report.piSession.entries.some(
+            (entry) => entry.summary === 'The assistant chose the saved account.',
+          ),
+        );
+        assert.match(JSON.stringify(report.piSession), /inspect the next step/);
+        assert.match(JSON.stringify(report.piSession), /credential-call/);
+        assert.match(JSON.stringify(report.piSession), /Saved fixture system instruction/);
+        assert.match(JSON.stringify(report.piSession), /Safe context update/);
         assert.ok(report.turns.some((turn) => turn.id === turnId));
         assert.ok(report.trace.some((record) => record.name === 'browser'));
         assert.ok(report.prompts.some((prompt) => prompt.turn_id === turnId));
         assert.ok(report.messages.length > 60);
         assert.ok(!JSON.stringify(report).includes('fixture-secret'));
         assert.ok(!JSON.stringify(report).includes('fixture-token'));
+        assert.ok(!JSON.stringify(report).includes('fixture-login-value'));
+        assert.ok(!JSON.stringify(report).includes('fixture-login-user'));
+        assert.ok(!JSON.stringify(report).includes('opaque-fixture-signature'));
         assert.ok(!JSON.stringify(report).includes('private content'));
         assert.ok(!JSON.stringify(report).includes('Late old answer'));
       });
