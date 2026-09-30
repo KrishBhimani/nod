@@ -410,6 +410,7 @@ async function transportFixture(respectTimeouts = false) {
   const launches: string[] = [];
   const sockets = new Set<Socket>();
   let before = async (_action: string, _command: Record<string, unknown>) => {};
+  let after = async (_action: string, _command: Record<string, unknown>, _socket: Socket) => {};
   let failedAction: string | undefined;
   let failedMessage = 'Navigation failed: net::ERR_HTTP_RESPONSE_CODE_FAILURE PRIVATE-UPSTREAM';
   const switches: string[] = [];
@@ -445,6 +446,7 @@ async function transportFixture(respectTimeouts = false) {
       if (command.action === 'snapshot') data = { snapshot: page.text() };
       if (command.action === 'navigate') page.location.href = command.url;
       if (command.action === 'screenshot') await writeFile(command.path, page.screen());
+      await after(command.action, command, socket);
       if (!socket.destroyed) socket.end(JSON.stringify({ success: true, data }) + '\n');
     });
   });
@@ -497,8 +499,12 @@ async function transportFixture(respectTimeouts = false) {
     before(value: typeof before) {
       before = value;
     },
+    after(value: typeof after) {
+      after = value;
+    },
     async cleanup() {
       before = async () => {};
+      after = async () => {};
       await computer.dispose().catch(() => {});
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -506,6 +512,164 @@ async function transportFixture(respectTimeouts = false) {
     },
   };
 }
+
+test('failed private entry clears its actual writes even when the response is lost', async () => {
+  for (const behavior of ['lost', 'replacement', 'delayed']) {
+    const f = await transportFixture();
+    const release = deferred();
+    const executed = deferred();
+    let entries = 0;
+    const followups: string[] = [];
+    try {
+      await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+      const field = (await f.computer.inspectLogin('fixture')).fields[0];
+      const original = f.page().input;
+      const replacement = original.cloneNode() as HTMLInputElement;
+      replacement.value = 'replacement-user-value';
+      const state = { input: '', change: '' };
+      original.addEventListener('input', () => {
+        state.input = original.value;
+      });
+      original.addEventListener('change', () => {
+        state.change = original.value;
+      });
+      const isEntry = (command: Record<string, unknown>) =>
+        command.action === 'evaluate' && String(command.script).includes('const origin=');
+      f.before(async (_action, command) => {
+        if (isEntry(command)) {
+          entries++;
+          if (behavior === 'delayed') await release.promise;
+        } else if (entries && command.action === 'evaluate') {
+          followups.push(String(command.script));
+        }
+      });
+      f.after(async (_action, command, socket) => {
+        if (!isEntry(command)) return;
+        if (behavior === 'replacement') original.replaceWith(replacement);
+        socket.destroy();
+        executed.resolve();
+      });
+      await assert.rejects(
+        f.computer.injectCredentials({
+          threadId: 'fixture',
+          origin: 'https://1.1.1.1',
+          kind: 'identifier',
+          username: 'synthetic-lost-response',
+          usernameSelector: field.selector,
+        }),
+        /Secure entry could not be confirmed/,
+      );
+      release.resolve();
+      await executed.promise;
+      assert.equal(original.value, '', behavior);
+      assert.deepEqual(state, { input: '', change: '' }, behavior);
+      assert.equal(replacement.value, 'replacement-user-value', behavior);
+      assert.equal(f.page().search.value, '', behavior);
+      assert.equal(entries, 1, behavior);
+      assert.ok(followups.length, behavior);
+      assert.equal(
+        followups.some((script) => script.includes('synthetic-lost-response')),
+        false,
+      );
+    } finally {
+      release.resolve();
+      await f.cleanup();
+    }
+  }
+});
+
+test('confirmed private entry stays successful when finalization loses its response', async () => {
+  const f = await transportFixture();
+  let entered = false;
+  let followups = 0;
+  try {
+    await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    const field = (await f.computer.inspectLogin('fixture')).fields[0];
+    f.after(async (action, command, socket) => {
+      if (action !== 'evaluate') return;
+      if (String(command.script).includes('const origin=')) entered = true;
+      else if (entered) {
+        followups++;
+        assert.equal(String(command.script).includes('synthetic-confirmed'), false);
+        socket.destroy();
+      }
+    });
+    assert.deepEqual(
+      await f.computer.injectCredentials({
+        threadId: 'fixture',
+        origin: 'https://1.1.1.1',
+        kind: 'identifier',
+        username: 'synthetic-confirmed',
+        usernameSelector: field.selector,
+      }),
+      { status: 'submitted' },
+    );
+    assert.equal(f.page().input.value, 'synthetic-confirmed');
+    assert.equal(followups, 1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('unacknowledged credential cleanup fences later actions until browser close succeeds', async () => {
+  for (const delayedEntry of [false, true]) {
+    const f = await transportFixture();
+    const releaseEntry = deferred();
+    const releaseCleanup = deferred();
+    const cleanupFinished = deferred();
+    const entryFinished = deferred();
+    let entered = false;
+    const isEntry = (command: Record<string, unknown>) =>
+      command.action === 'evaluate' && String(command.script).includes('const origin=');
+    try {
+      await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+      const field = (await f.computer.inspectLogin('fixture')).fields[0];
+      const input = {
+        threadId: 'fixture',
+        origin: 'https://1.1.1.1',
+        kind: 'identifier' as const,
+        username: 'synthetic-delayed-entry',
+        usernameSelector: field.selector,
+      };
+      f.before(async (action, command) => {
+        if (isEntry(command)) {
+          entered = true;
+          if (delayedEntry) await releaseEntry.promise;
+        } else if (entered && action === 'evaluate') await releaseCleanup.promise;
+      });
+      f.after(async (action, command, socket) => {
+        if (isEntry(command)) {
+          socket.destroy();
+          entryFinished.resolve();
+        } else if (entered && action === 'evaluate') cleanupFinished.resolve();
+      });
+      f.fail('close');
+      await assert.rejects(
+        f.computer.injectCredentials(input),
+        /Secure entry could not be confirmed/,
+      );
+      const count = f.actions.length;
+      assert.equal(f.actions.filter((action) => action === 'close').length, 1);
+      await assert.rejects(f.computer.injectCredentials(input), /expired/);
+      await assert.rejects(f.computer.act('fixture', { action: 'snapshot' }), /expired/);
+      assert.equal(f.actions.length, count);
+      releaseCleanup.resolve();
+      await cleanupFinished.promise;
+      releaseEntry.resolve();
+      await entryFinished.promise;
+      assert.equal(f.page().input.value, '');
+      f.before(async () => {});
+      f.after(async () => {});
+      f.fail();
+      await f.computer.close('fixture');
+      assert.equal(f.actions.filter((action) => action === 'close').length, 2);
+    } finally {
+      releaseCleanup.resolve();
+      releaseEntry.resolve();
+      await f.cleanup();
+    }
+  }
+});
 
 test('a timed out snapshot is not resent and its queue remains fenced until close is acknowledged', async () => {
   const f = await transportFixture();
@@ -1007,7 +1171,9 @@ test('selected unfamiliar fields bind their actual nodes independently of labels
     });
     assert.equal(
       (
-        dom.window.eval(credentialEntryScript(dom.window.location.origin, fields)) as {
+        dom.window.eval(
+          credentialEntryScript(dom.window.location.origin, fields, 'fixture-attempt'),
+        ) as {
           ok: boolean;
         }
       ).ok,

@@ -2462,13 +2462,14 @@ async function seedCodeTurns(pool: pg.Pool) {
   const start = async (name: string, resumeOf?: string) => {
     const turn = { threadId, turnId: randomUUID() };
     await pool.query(
-      'INSERT INTO turns(id,owner_id,thread_id,source,source_id,started_at) VALUES($1,$2,$3,$4,$5,clock_timestamp())',
+      'INSERT INTO turns(id,owner_id,thread_id,source,source_id,started_at) VALUES($1,$2,$3,$4,$5,$6)',
       [
         turn.turnId,
         owner,
         turn.threadId,
         resumeOf ? 'resume' : 'user',
         resumeOf ? `credentials:${resumeOf}` : null,
+        new Date(),
       ],
     );
     tasks.set(name, turn);
@@ -2729,14 +2730,20 @@ test(
       assert.equal(await fill(id), false, id);
       assert.equal(read, before, id);
     }
-    const stale = await turns.start('stale-direct-email');
-    pages.set(stale.threadId, inspection('otp'));
-    await pool.query("UPDATE turns SET started_at=now()-interval '6 minutes' WHERE id=$1", [
-      stale.turnId,
-    ]);
-    const readsBeforeStale = read;
-    assert.equal(await fill('stale-direct-email'), false);
-    assert.equal(read, readsBeforeStale);
+    for (const [id, offset] of [
+      ['stale-direct-email', -6 * 60_000],
+      ['future-direct-email', 60_000],
+    ] as const) {
+      const turn = await turns.start(id);
+      pages.set(turn.threadId, inspection('otp'));
+      await pool.query('UPDATE turns SET started_at=$2 WHERE id=$1', [
+        turn.turnId,
+        new Date(Date.now() + offset),
+      ]);
+      const before: number = read;
+      assert.equal(await fill(id), false, id);
+      assert.equal(read, before, id);
+    }
     for (const [id, change] of [
       [
         'cancelled-direct-email',

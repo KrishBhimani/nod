@@ -18,7 +18,7 @@ import { BrowserActionError, browserUploadBytes } from '../../ports/computer.ts'
 import { threadIdentity } from '../../ports/thread-identity.ts';
 import { runProcess, serviceEnvironment } from '../process.ts';
 import { createBrowserProxy, browserUrl } from './network.ts';
-import { credentialFields, credentialEntryScript } from './credentials.ts';
+import { credentialFields, credentialEntryScript, credentialAttemptScript } from './credentials.ts';
 import {
   loginInspectionSchema,
   loginInspectionScript,
@@ -1116,6 +1116,8 @@ export function createAgentBrowserComputer(options: {
     markActivity(input.threadId);
     try {
       return await serialize(state, async () => {
+        const attemptId = randomUUID();
+        let socket: string | undefined;
         try {
           await saveState(state);
           const kind = input.kind ?? 'password';
@@ -1137,7 +1139,7 @@ export function createAgentBrowserComputer(options: {
             field.selector = match.selector;
             state.protectedSelectors.add(match.selector);
           }
-          const socket = await daemonSocket(state);
+          socket = await daemonSocket(state);
           const secrets = state.secretsByOrigin.get(input.origin) ?? new Set<string>();
           for (const field of fields) {
             state.secrets.add(field.value);
@@ -1147,15 +1149,44 @@ export function createAgentBrowserComputer(options: {
           await saveState(state);
           const response = await requestDaemon(socket, {
             action: 'evaluate',
-            script: credentialEntryScript(input.origin, fields),
+            script: credentialEntryScript(input.origin, fields, attemptId),
           });
           const result = response.result;
           if (!result || typeof result !== 'object' || !('ok' in result) || result.ok !== true)
             throw new Error('The login fields changed.');
           if (!state.started || state.closed || state.closing)
             throw new Error('The browser session is unavailable.');
+          try {
+            await requestDaemon(
+              socket,
+              {
+                action: 'evaluate',
+                script: credentialAttemptScript(input.origin, attemptId, 'finish'),
+              },
+              undefined,
+              5_000,
+            );
+          } catch {}
           return { status: 'submitted' as const };
         } catch {
+          if (socket) {
+            try {
+              const cleanup = await requestDaemon(
+                socket,
+                {
+                  action: 'evaluate',
+                  script: credentialAttemptScript(input.origin, attemptId, 'clear'),
+                },
+                undefined,
+                5_000,
+              );
+              if (cleanup.result !== true) throw new Error('Secure entry cleanup failed.');
+            } catch {
+              await drainInterruptedCommand(state, 'credentials', async () => {
+                throw new Error('Secure entry cleanup could not be confirmed.');
+              }).catch(() => {});
+            }
+          }
           throw new Error(
             'Secure entry could not be confirmed. Check the login page before continuing.',
           );

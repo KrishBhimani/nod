@@ -4,6 +4,7 @@ import { JSDOM } from 'jsdom';
 import {
   credentialFields,
   credentialEntryScript,
+  credentialAttemptScript,
 } from '../src/providers/agent-browser/credentials.ts';
 import {
   loginInspectionSchema,
@@ -79,7 +80,9 @@ test('credential entry verifies the bound nodes, origin and every target before 
             f.dom.reconfigure({ url: 'https://other.example/login' });
           if (behavior === 'focus-type') f.password.type = 'text';
         });
-      const result = f.dom.window.eval(credentialEntryScript('https://example.com', f.fields)) as {
+      const result = f.dom.window.eval(
+        credentialEntryScript('https://example.com', f.fields, 'fixture-attempt'),
+      ) as {
         ok: boolean;
       };
       assert.equal(result.ok, false, behavior);
@@ -100,33 +103,63 @@ test('credential entry verifies the bound nodes, origin and every target before 
 });
 
 test('secure entry focuses normally, masks values and dispatches native input events without submitting', () => {
-  const f = page();
-  let submitted = false;
-  const events: string[] = [];
-  try {
-    f.username.readOnly = true;
-    f.username.addEventListener('focus', () => {
-      f.username.readOnly = false;
-    });
-    f.username.addEventListener('input', () => events.push('username'));
-    f.password.addEventListener('input', () => events.push('password'));
-    f.password.form!.addEventListener('submit', (event) => {
-      event.preventDefault();
-      submitted = true;
-    });
-    assert.equal(f.password.value, '');
-    const result = f.dom.window.eval(credentialEntryScript('https://example.com', f.fields)) as {
-      ok: boolean;
-    };
-    assert.equal(result.ok, true);
-    assert.equal(f.username.value, 'synthetic-user');
-    assert.equal(f.password.value, 'synthetic-secret');
-    assert.equal(f.password.style.color, 'transparent');
-    assert.equal(JSON.stringify(result).includes('synthetic'), false);
-    assert.deepEqual(events, ['username', 'password']);
-    assert.equal(submitted, false);
-  } finally {
-    f.dom.window.close();
+  for (const formless of [false, true]) {
+    const f = page();
+    let submitted = false;
+    const events: string[] = [];
+    try {
+      if (formless) {
+        const form = f.username.form!;
+        const accountContainer = f.dom.window.document.createElement('section');
+        const passwordContainer = f.dom.window.document.createElement('section');
+        accountContainer.append(f.username);
+        passwordContainer.append(f.password);
+        form.replaceWith(accountContainer, passwordContainer);
+        f.other.parentElement!.replaceWith(f.other);
+        assert.equal(f.username.form, null);
+        assert.equal(f.password.form, null);
+        assert.equal(f.other.form, null);
+      }
+      const inspection = loginInspectionSchema.parse(
+        f.dom.window.eval(
+          loginInspectionScript({
+            origin: 'https://example.com',
+            kind: 'password',
+            usernameSelector: '#user',
+            passwordSelector: '#password',
+          }),
+        ),
+      );
+      assert.equal(inspection.fields.length, 2);
+      assert.equal(f.dom.window.document.querySelector(inspection.fields[0].selector), f.username);
+      assert.equal(f.dom.window.document.querySelector(inspection.fields[1].selector), f.password);
+      f.username.readOnly = true;
+      f.username.addEventListener('focus', () => {
+        f.username.readOnly = false;
+      });
+      f.username.addEventListener('input', () => events.push('username'));
+      f.password.addEventListener('input', () => events.push('password'));
+      f.dom.window.document.addEventListener('submit', (event) => {
+        event.preventDefault();
+        submitted = true;
+      });
+      assert.equal(f.password.value, '');
+      const result = f.dom.window.eval(
+        credentialEntryScript('https://example.com', f.fields, 'fixture-attempt'),
+      ) as {
+        ok: boolean;
+      };
+      assert.equal(result.ok, true);
+      assert.equal(f.username.value, 'synthetic-user');
+      assert.equal(f.password.value, 'synthetic-secret');
+      assert.equal(f.other.value, 'unrelated-user-value');
+      assert.equal(f.password.style.color, 'transparent');
+      assert.equal(JSON.stringify(result).includes('synthetic'), false);
+      assert.deepEqual(events, ['username', 'password']);
+      assert.equal(submitted, false);
+    } finally {
+      f.dom.window.close();
+    }
   }
 });
 
@@ -145,7 +178,9 @@ test('entry stops after page mutation and clears only the captured original node
           f.password.replaceWith(replacement);
           throw new Error('Synthetic page failure');
         };
-      const result = f.dom.window.eval(credentialEntryScript('https://example.com', f.fields)) as {
+      const result = f.dom.window.eval(
+        credentialEntryScript('https://example.com', f.fields, 'fixture-attempt'),
+      ) as {
         ok: boolean;
       };
       assert.equal(result.ok, false);
@@ -184,7 +219,9 @@ test('aborted entry clears controlled state without changing replacement or fore
       replacement.addEventListener('input', () => state.replacementEvents++);
       replacement.addEventListener('change', () => state.replacementEvents++);
       f.other.addEventListener('input', () => state.otherEvents++);
-      const result = f.dom.window.eval(credentialEntryScript('https://example.com', f.fields)) as {
+      const result = f.dom.window.eval(
+        credentialEntryScript('https://example.com', f.fields, 'fixture-attempt'),
+      ) as {
         ok: boolean;
       };
       assert.equal(result.ok, false);
@@ -213,7 +250,9 @@ test('secure entry rejects fields hidden by an ancestor', () => {
       f.password.parentElement!.setAttribute(attribute, 'true');
       assert.equal(
         (
-          f.dom.window.eval(credentialEntryScript('https://example.com', f.fields)) as {
+          f.dom.window.eval(
+            credentialEntryScript('https://example.com', f.fields, 'fixture-attempt'),
+          ) as {
             ok: boolean;
           }
         ).ok,
@@ -223,5 +262,91 @@ test('secure entry rejects fields hidden by an ancestor', () => {
     } finally {
       f.dom.window.close();
     }
+  }
+});
+
+test('aborted entry preserves a selected prefill that it never wrote', () => {
+  const f = page();
+  let passwordEvents = 0;
+  try {
+    f.password.value = 'prefilled-user-value';
+    f.password.addEventListener('input', () => passwordEvents++);
+    f.password.addEventListener('change', () => passwordEvents++);
+    f.username.addEventListener('input', () => {
+      f.password.disabled = true;
+    });
+    const result = f.dom.window.eval(
+      credentialEntryScript('https://example.com', f.fields, 'fixture-attempt'),
+    ) as {
+      ok: boolean;
+    };
+    assert.equal(result.ok, false);
+    assert.equal(f.username.value, '');
+    assert.equal(f.password.value, 'prefilled-user-value');
+    assert.equal(passwordEvents, 0);
+    assert.equal(f.other.value, 'unrelated-user-value');
+  } finally {
+    f.dom.window.close();
+  }
+});
+
+test('completed and cancelled entry attempts cannot clear later writes', () => {
+  for (const action of ['finish', 'clear'] as const) {
+    const f = page();
+    try {
+      const execute = (attempt: string) =>
+        f.dom.window.eval(credentialEntryScript('https://example.com', f.fields, attempt)) as {
+          ok: boolean;
+        };
+      assert.equal(execute('first').ok, true);
+      assert.equal(
+        f.dom.window.eval(credentialAttemptScript('https://example.com', 'first', action)),
+        true,
+      );
+      assert.equal(execute('second').ok, true);
+      f.dom.window.eval(credentialAttemptScript('https://example.com', 'first', 'clear'));
+      assert.equal(f.username.value, 'synthetic-user');
+      assert.equal(f.password.value, 'synthetic-secret');
+      f.dom.window.eval(credentialAttemptScript('https://example.com', 'second', 'clear'));
+      assert.equal(f.username.value, '');
+      assert.equal(f.password.value, '');
+      assert.equal(f.other.value, 'unrelated-user-value');
+    } finally {
+      f.dom.window.close();
+    }
+  }
+});
+
+test('attempt cleanup checks the origin and never clears replacements or adopted nodes', () => {
+  const f = page();
+  const foreign = new JSDOM('<body></body>', { url: 'https://other.example' });
+  let foreignEvents = 0;
+  try {
+    const result = f.dom.window.eval(
+      credentialEntryScript('https://example.com', f.fields, 'fixture-attempt'),
+    ) as { ok: boolean };
+    assert.equal(result.ok, true);
+    const cleanup = credentialAttemptScript('https://example.com', 'fixture-attempt', 'clear');
+    f.dom.reconfigure({ url: 'https://other.example' });
+    assert.equal(f.dom.window.eval(cleanup), false);
+    assert.equal(f.username.value, 'synthetic-user');
+    assert.equal(f.password.value, 'synthetic-secret');
+    f.dom.reconfigure({ url: 'https://example.com/login' });
+    const replacement = f.username.cloneNode() as HTMLInputElement;
+    replacement.value = 'replacement-user-value';
+    f.username.replaceWith(replacement);
+    foreign.window.document.body.append(foreign.window.document.adoptNode(f.password));
+    f.password.value = 'foreign-user-value';
+    f.password.addEventListener('input', () => foreignEvents++);
+    f.password.addEventListener('change', () => foreignEvents++);
+    assert.equal(f.dom.window.eval(cleanup), true);
+    assert.equal(f.username.value, '');
+    assert.equal(replacement.value, 'replacement-user-value');
+    assert.equal(f.password.value, 'foreign-user-value');
+    assert.equal(foreignEvents, 0);
+    assert.equal(f.other.value, 'unrelated-user-value');
+  } finally {
+    f.dom.window.close();
+    foreign.window.close();
   }
 });
