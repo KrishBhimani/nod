@@ -31,6 +31,7 @@ import { createIntegrations, eventOverview } from '../src/server/integrations.ts
 import { createProviderUsageStore } from '../src/server/provider-usage.ts';
 import {
   meterAgent,
+  meterComputer,
   meterIntegrations,
   meterRelevance,
   meterSpeech,
@@ -81,7 +82,7 @@ test('notification summaries exclude message bodies, tokens, and unbounded provi
 });
 
 test(
-  'integration policy accepts verified events, rejects cross-account events, deduplicates, and gates writes',
+  'integration accounts stay owner-private while event policy verifies, deduplicates, and gates writes',
   { skip: !process.env.TEST_DATABASE_URL },
   async (t) => {
     const schema = `test_composio_${randomUUID().replaceAll('-', '')}`;
@@ -2644,6 +2645,28 @@ test('metering covers capabilities without recording prompts, arguments, output 
   await (
     await meterIntegrations(integration, usage).restoreSession('private-session')
   ).execute('ACTION', { secret: 'private-credential' }, 'private-account');
+  const target = {
+    origin: 'https://private.example',
+    kind: 'otp' as const,
+    passwordSelector: '@e19',
+    emailCode: true,
+  };
+  await meterComputer(
+    {
+      ...fakeComputer(),
+      inspectLogin: async (threadId, selected) => {
+        assert.equal(threadId, 'private-thread');
+        assert.deepEqual(selected, target);
+        return {
+          origin: 'https://private.example',
+          url: 'https://private.example/verification',
+          fields: [],
+          methods: [],
+        };
+      },
+    },
+    usage,
+  ).inspectLogin('private-thread', target);
   await usage.flush();
   assert.deepEqual(
     rows.map((row) => row[5]).sort(),
@@ -2655,6 +2678,7 @@ test('metering covers capabilities without recording prompts, arguments, output 
       'classify',
       'restore_session',
       'execute',
+      'inspect_login',
     ].sort(),
   );
   assert.doesNotMatch(JSON.stringify(rows), /private|secret\.example/);

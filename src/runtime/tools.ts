@@ -130,19 +130,20 @@ export const toolDefinitions = {
   ),
   sign_in: defineTool(
     'sign_in',
-    'Enter website credentials privately using an applicable saved Vault login or a secure user form. Interpret the current page, choose its sign-in method with browser actions, then provide the exact current origin and needed field references from a fresh snapshot. For a uniquely applicable or user-chosen saved login, pass its manage_apps connectionId as savedLoginId. For OTP, use passwordSelector for the code field; never pass savedLoginId for OTP. Values stay out of the model. After filling, submit with browser and inspect the result.',
+    'Enter website credentials privately using an applicable saved Vault login or a secure user form. Interpret the current page, choose its sign-in method with browser actions, then provide the exact current origin and needed field references from a fresh snapshot. For a uniquely applicable or user-chosen saved login, pass its manage_apps connectionId as savedLoginId. For OTP, use passwordSelector for the code field and set emailCode:true only when the page says the code was sent by email; never pass savedLoginId for OTP. Values stay out of the model. After filling, submit with browser and inspect the result.',
     Type.Object({
       origin: Type.String({ minLength: 1, maxLength: 2048 }),
       label: Type.String({ minLength: 1, maxLength: 100 }),
       kind: literals(['identifier', 'password', 'otp']),
       usernameSelector: Type.Optional(Type.String()),
       passwordSelector: Type.Optional(Type.String()),
+      emailCode: Type.Optional(Type.Boolean()),
       savedLoginId: Type.Optional(uuid),
     }),
   ),
   browser_session: defineTool(
     'browser_session',
-    'Browser profiles for website accounts. connect opens a new private profile; use opens an existing profile; save checks and keeps the current signed-in profile.',
+    'Browser profiles for website accounts. connect opens a new private profile; use opens an existing profile without verifying sign-in. Inspect the current page to determine the outcome. save with signedIn:true records that you observed a successful sign-in on this origin.',
     Type.Union([
       Type.Object({
         action: Type.Literal('connect'),
@@ -150,9 +151,15 @@ export const toolDefinitions = {
         label: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
       }),
       Type.Object({
-        action: literals(['use', 'save']),
+        action: Type.Literal('use'),
         url: Type.String({ minLength: 1, maxLength: 2048 }),
         connectionId: uuid,
+      }),
+      Type.Object({
+        action: Type.Literal('save'),
+        url: Type.String({ minLength: 1, maxLength: 2048 }),
+        connectionId: uuid,
+        signedIn: Type.Literal(true),
       }),
     ]),
   ),

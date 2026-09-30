@@ -274,34 +274,52 @@ test('sign-in method questions remain available without requesting credential va
 });
 
 test('secure credential pause prevents subsequent tools in the same execution segment', async () => {
-  let managed = false;
-  const result = await fixture(
-    async (tools) => {
-      await call(tools, 'sign_in', {
-        origin: 'https://example.com',
-        label: 'Example',
-        kind: 'password',
-        passwordSelector: '#password',
-      });
-      await assert.rejects(
-        call(tools, 'manage_personal_context', {
-          action: 'goal_create',
-          args: { title: 'must not run' },
-        }),
-        /stopped/,
-      );
+  for (const input of [
+    {
+      origin: 'https://example.com',
+      label: 'Example',
+      kind: 'password' as const,
+      passwordSelector: '@password',
     },
     {
-      manage: async () => {
-        managed = true;
-        return {};
-      },
+      origin: 'https://example.com',
+      label: 'Example',
+      kind: 'otp' as const,
+      passwordSelector: '@verification',
+      emailCode: true,
     },
-  );
-  assert.equal(result.result.status, 'waiting_credentials');
-  assert.equal(result.aborted, true);
-  assert.equal(managed, false);
-  assert.equal(result.replies.length, 1);
+  ]) {
+    let managed = false;
+    let requested = false;
+    const result = await fixture(
+      async (tools) => {
+        await call(tools, 'sign_in', { ...input });
+        await assert.rejects(
+          call(tools, 'manage_personal_context', {
+            action: 'goal_create',
+            args: { title: 'must not run' },
+          }),
+          /stopped/,
+        );
+      },
+      {
+        requestCredential: async (request) => {
+          assert.deepEqual(request, input);
+          requested = true;
+          return { url: '/credentials/fixture' };
+        },
+        manage: async () => {
+          managed = true;
+          return {};
+        },
+      },
+    );
+    assert.equal(result.result.status, 'waiting_credentials');
+    assert.equal(result.aborted, true);
+    assert.equal(requested, true);
+    assert.equal(managed, false);
+    assert.equal(result.replies.length, 1);
+  }
 });
 
 test('a chosen saved login reaches the credential broker without pausing the turn', async () => {
@@ -316,7 +334,7 @@ test('a chosen saved login reaches the credential broker without pausing the tur
   let requested = false;
   const result = await fixture(
     async (tools) => {
-      await call(tools, 'sign_in', input);
+      await call(tools, 'sign_in', { ...input });
     },
     {
       requestCredential: async (request) => {
