@@ -88,7 +88,7 @@ export const toolDefinitions = {
   ),
   browser: defineTool(
     'browser',
-    'Control your private agent-browser session. open {url}; snapshot (text, controls, scrollable areas; selector/offset/controlOffset page through more); click {selector}; fill {selector, text}; select {selector, text} by visible label or value; check/uncheck/hover {selector}; drag {selector, targetSelector}; upload {selector, path} from the task workspace; back/forward/reload; tab_list and tab_switch {tabId}; press {key}; scroll {direction, selector?}; screenshot (image for you); share_screenshot {name?} (send the image to the user); download {url? | selector?, name?} (send a file to the user and copy it into the workspace; with neither, the open PDF or the last download). waitMs (up to 15000) waits for slow pages.',
+    'Control your private agent-browser session. open {url}; snapshot (text, controls, scrollable areas; selector/offset/controlOffset page through more); click {selector}; fill {selector, text} (never secrets); select {selector, text} by visible label or value; check/uncheck/hover {selector}; drag {selector, targetSelector}; upload {selector, path} from the task workspace; back/forward/reload; tab_list and tab_switch {tabId}; press {key}; scroll {direction, selector?}; screenshot (image for you); share_screenshot {name?} (send the image to the user); download {url? | selector?, name?} (send a file to the user and copy it into the workspace; with neither, the open PDF or the last download). waitMs (up to 15000) waits for slow pages.',
     Type.Object({
       action: literals([
         'open',
@@ -130,7 +130,7 @@ export const toolDefinitions = {
   ),
   get_credential: defineTool(
     'get_credential',
-    'Get a saved website login from Vault by its ID and exact origin. The result includes the username and password. Without an ID, Vault tries saved browser entry or opens a secure form. Use field references from the latest browser snapshot.',
+    'Get a saved website login from Vault by its ID and exact origin. The result includes the username and password. To fill a protected browser field, omit the ID and give field references from the latest browser snapshot. Vault then tries a saved login or opens a secure form.',
     Type.Union([
       Type.Object({
         id: uuid,

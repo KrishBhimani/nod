@@ -319,7 +319,11 @@ test('Pi can get an owned Vault login without putting its value in runtime obser
           details: {},
         },
       );
-      await call(tools, 'browser', { action: 'fill', selector: '#password', text: secret });
+      await call(tools, 'browser', {
+        action: 'fill',
+        selector: '#search',
+        text: 'private fixture text',
+      });
     },
     {
       observe: async (event) => {
@@ -329,6 +333,7 @@ test('Pi can get an owned Vault login without putting its value in runtime obser
     },
   );
   assert.equal(JSON.stringify(observations).includes(secret), false);
+  assert.equal(JSON.stringify(observations).includes('private fixture text'), false);
 });
 
 const refusal = 'This turn can only read. Use app reads, and browser open, snapshot or scroll.';

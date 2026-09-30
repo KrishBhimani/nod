@@ -5,7 +5,7 @@ Setup and commands are in [README](README.md); how the system works is in [archi
 ## Rules
 
 - Do not push, deploy or publish without explicit authorization.
-- Keep keys, credentials and private user content out of Git, logs, prompts, test fixtures and client configuration.
+- Keep keys, credentials and private user content out of Git, logs, prompts, test fixtures and client configuration. The only prompt exception is `get_credential`, which can return one saved website login to Pi by owned ID and exact origin.
 - No code comments or JSDoc.
 - Prefer deleting to patching ceremony. Breaking changes are fine; keep the code small.
 - Use synthetic data and disposable database schemas. Never reset the normal local database, and never call a live model, connected account or real recipient from a test.
