@@ -102,7 +102,7 @@ async function dispatch(computer: Computer, request: BrowserRequest, signal: Abo
       return image?.toString('base64') ?? null;
     }
     case 'inspectLogin':
-      return computer.inspectLogin(request.threadId);
+      return computer.inspectLogin(request.threadId, request.target);
     case 'injectCredentials':
       return computer.injectCredentials(request.input);
     case 'hold':

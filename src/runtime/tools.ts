@@ -130,13 +130,14 @@ export const toolDefinitions = {
   ),
   sign_in: defineTool(
     'sign_in',
-    'Enter website credentials privately using an applicable saved Vault login or a secure user form. Interpret the current page, choose its sign-in method with browser actions, then provide the exact current origin and needed field references from a fresh snapshot. For a uniquely applicable or user-chosen saved login, pass its manage_apps connectionId as savedLoginId. For OTP, use passwordSelector for the code field; never pass savedLoginId for OTP. Values stay out of the model. After filling, submit with browser and inspect the result.',
+    'Enter website credentials privately using an applicable saved Vault login or a secure user form. Interpret the current page, choose its sign-in method with browser actions, then provide the exact current origin and needed field references from a fresh snapshot. For a uniquely applicable or user-chosen saved login, pass its manage_apps connectionId as savedLoginId. For OTP, use passwordSelector for the code field and set emailCode:true only when the page says the code was sent by email; never pass savedLoginId for OTP. Values stay out of the model. After filling, submit with browser and inspect the result.',
     Type.Object({
       origin: Type.String({ minLength: 1, maxLength: 2048 }),
       label: Type.String({ minLength: 1, maxLength: 100 }),
       kind: literals(['identifier', 'password', 'otp']),
       usernameSelector: Type.Optional(Type.String()),
       passwordSelector: Type.Optional(Type.String()),
+      emailCode: Type.Optional(Type.Boolean()),
       savedLoginId: Type.Optional(uuid),
     }),
   ),

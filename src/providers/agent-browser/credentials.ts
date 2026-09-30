@@ -1,4 +1,5 @@
 import type { CredentialInput } from '../../ports/computer.ts';
+import { loginTargetScript } from './login.ts';
 
 export interface CredentialField {
   selector: string;
@@ -44,47 +45,48 @@ export function credentialFields(input: CredentialInput): CredentialField[] {
   return fields;
 }
 
-export function credentialScript(origin: string, fields: CredentialField[], marker = ''): string {
-  const safeFields = fields.map(({ value, ...field }) => ({
+export function credentialEntryScript(origin: string, fields: CredentialField[]): string {
+  const entries = fields.map(({ value, ...field }) => ({
     ...field,
     length: value.length,
     numeric: /^\d+$/.test(value),
+    value,
   }));
   return `(() => {
-    const origin=${JSON.stringify(origin)}, fields=${JSON.stringify(safeFields)}, marker=${JSON.stringify(marker)};
-    if(location.origin!==origin) return {ok:false};
-    const visible=e=>e && e.isConnected && e.getClientRects().length>0 && getComputedStyle(e).visibility!=='hidden' && getComputedStyle(e).display!=='none' && !e.closest('[hidden],[aria-hidden="true"],[inert]');
-    const available=e=>visible(e) && !e.disabled && !e.closest('[aria-disabled="true"]');
-    const usable=e=>available(e) && !e.readOnly;
-    const targets=fields.map(field=>({field,nodes:[...document.querySelectorAll(field.selector)]}));
-    const split=({field,nodes},allowReadonly)=>field.code&&nodes.length>=4&&nodes.length<=8&&nodes.length===field.length&&field.numeric&&nodes.every(e=>e.maxLength===1&&['text','tel','number'].includes(e.type)&&e.parentElement===nodes[0].parentElement)&&[...nodes[0].parentElement.querySelectorAll('input')].filter(allowReadonly?available:usable).length===nodes.length;
-    const invalid=(target,allowReadonly=false)=>{
-      const {field,nodes}=target;
-      return (nodes.length!==1&&!split(target,allowReadonly))||nodes.some(e=>!e.matches('input')||!(allowReadonly?available(e):usable(e))||(field.password&&e.type!=='password')||(!field.password&&e.type==='password')||(field.code&&nodes.length===1&&e.maxLength>0&&e.maxLength<field.length));
-    };
+    if(location.origin!==${JSON.stringify(origin)}) return {ok:false};
+    ${loginTargetScript}
+    const origin=${JSON.stringify(origin)},fields=${JSON.stringify(entries)};
+    const targets=fields.map(field=>({field,nodes:resolve(field.selector)}));
+    const kind=field=>field.password?'password':field.code?'otp':'identifier';
+    const invalid=({field,nodes},readonly)=>!valid(nodes,kind(field))||nodes.some(e=>!readonly&&e.readOnly)||(nodes.length>1&&(!field.numeric||nodes.length!==field.length))||(field.code&&nodes.length===1&&nodes[0].maxLength>0&&nodes[0].maxLength<field.length);
     const changed=()=>location.origin!==origin||targets.some(({field,nodes})=>{
-      const fresh=[...document.querySelectorAll(field.selector)];
-      return fresh.length!==nodes.length||fresh.some((e,index)=>e!==nodes[index]);
+      const fresh=resolve(field.selector);
+      return fresh.length!==nodes.length||fresh.some((e,i)=>e!==nodes[i]);
     });
-    if(targets.some(target=>invalid(target,true))) return {ok:false};
-    for(const {nodes} of targets) for(const e of nodes) if(e.readOnly) {
-      if(changed()||targets.some(target=>invalid(target,true))) return {ok:false};
-      e.focus({preventScroll:true});
-      if(changed()) return {ok:false};
-    }
-    if(changed()||targets.some(target=>invalid(target))) return {ok:false};
-    for(const [fieldIndex,{field,nodes}] of targets.entries()) {
-      if(location.origin!==origin) return {ok:false};
-      for(let index=0;index<nodes.length;index++) {
-        const fresh=[...document.querySelectorAll(field.selector)];
-        if(location.origin!==origin||fresh.length!==nodes.length||fresh.some((e,index)=>e!==nodes[index])||invalid({field,nodes:fresh})) return {ok:false};
-        const e=nodes[index];
+    const nodes=targets.flatMap(target=>target.nodes);
+    const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+    const clear=()=>{for(const e of nodes) try {setter.call(e,'');} catch {}};
+    try {
+      if(changed()||targets.some(target=>invalid(target,true))||new Set(nodes).size!==nodes.length||!sameForm(nodes)) return {ok:false};
+      for(const e of nodes) {
+        e.focus({preventScroll:true});
+        if(changed()||targets.some(target=>invalid(target,true))) return {ok:false};
+      }
+      if(changed()||targets.some(target=>invalid(target,false))) return {ok:false};
+      for(const e of nodes) {
         e.style.setProperty('color','transparent','important');
         e.style.setProperty('text-shadow','none','important');
         e.style.setProperty('-webkit-text-security','disc','important');
-        e.setAttribute('data-otto-entry-target',marker+'-'+fieldIndex+'-'+index);
       }
-    }
-    return {ok:true,counts:targets.map(target=>target.nodes.length)};
+      for(const {field,nodes:parts} of targets) for(const [index,e] of parts.entries()) {
+        if(changed()||targets.some(target=>invalid(target,false))) {clear();return {ok:false};}
+        setter.call(e,parts.length===1?field.value:field.value[index]);
+        e.dispatchEvent(new Event('input',{bubbles:true}));
+        if(changed()||targets.some(target=>invalid(target,false))) {clear();return {ok:false};}
+        e.dispatchEvent(new Event('change',{bubbles:true}));
+        if(changed()||targets.some(target=>invalid(target,false))) {clear();return {ok:false};}
+      }
+      return {ok:true,counts:targets.map(target=>target.nodes.length)};
+    } catch { clear();return {ok:false}; }
   })()`;
 }

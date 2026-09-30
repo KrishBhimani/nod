@@ -1,10 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-
-const currentContextScript = `e=>{
-  const form=e.tagName==='A'?null:e.form||e.closest('form');
-  const target=(e.getAttribute('formtarget')??e.getAttribute('target')??form?.getAttribute('target')??document.querySelector?.('base[target]')?.getAttribute('target')??'').trim().toLowerCase();
-  return !target||target==='_self';
-}`;
+import type { LoginTarget } from '../../ports/computer.ts';
 
 export const loginInspectionSchema = z.object({
   origin: z.string().max(2048),
@@ -42,182 +38,128 @@ export const loginInspectionSchema = z.object({
     .optional(),
 });
 
-export function loginInspectionScript(): string {
+export const loginTargetScript = `
+  const root=document.documentElement;
+  const registry=root.__ottoLoginTargets??=new Map();
+  const visible=e=>e && e.isConnected && e.getClientRects().length>0 && getComputedStyle(e).visibility!=='hidden' && getComputedStyle(e).display!=='none' && !e.closest('[hidden],[aria-hidden="true"],[inert]');
+  const available=e=>visible(e)&&!e.matches(':disabled')&&!e.closest('[aria-disabled="true"]');
+  const input=e=>e?.matches('input')&&['text','email','tel','password','number','search'].includes(e.type);
+  const form=e=>e.form||e.closest('form');
+  const sameForm=nodes=>nodes.every(e=>form(e)===form(nodes[0]));
+  const canonical=selector=>/^input\\[data-otto-login-target="([a-zA-Z0-9_-]+)"\\]$/.exec(selector||'')?.[1];
+  const resolve=selector=>{
+    if(!selector||typeof selector!=='string'||selector.length>500) return [];
+    let nodes;
+    try { nodes=[...document.querySelectorAll(selector)]; } catch { return []; }
+    const token=canonical(selector)||/^input\\[data-otto-login-node="([a-zA-Z0-9_-]+)"\\]$/.exec(selector)?.[1];
+    if(/data-otto-login-(?:target|node)/.test(selector)&&!token) return [];
+    if(token) {
+      const captured=registry.get(token);
+      if(!captured||nodes.length!==captured.length||nodes.some((e,i)=>e!==captured[i])) return [];
+    }
+    return nodes;
+  };
+  const split=nodes=>nodes.length>=4&&nodes.length<=8&&nodes.every(e=>input(e)&&available(e)&&e.maxLength===1&&['text','tel','number'].includes(e.type)&&e.parentElement===nodes[0].parentElement)&&[...nodes[0].parentElement.querySelectorAll('input')].filter(available).length===nodes.length;
+  const valid=(nodes,kind)=>nodes.length>0&&(nodes.length===1||(kind==='otp'&&split(nodes)))&&nodes.every(e=>input(e)&&available(e)&&(kind==='password'?e.type==='password':e.type!=='password'))&&sameForm(nodes);
+  const bind=(nodes,marker)=>{
+    const existing=nodes[0]?.getAttribute('data-otto-login-target');
+    const previous=existing&&registry.get(existing);
+    const token=previous&&previous.length===nodes.length&&previous.every((e,i)=>e===nodes[i])?existing:marker;
+    registry.set(token,nodes);
+    for(const e of nodes) e.setAttribute('data-otto-login-target',token);
+    return 'input[data-otto-login-target="'+token+'"]';
+  };
+`;
+
+export function loginInspectionScript(target?: LoginTarget, marker = randomUUID()): string {
   return `(() => {
-    const visible=e=>e && e.isConnected && e.getClientRects().length>0 && getComputedStyle(e).visibility!=='hidden' && getComputedStyle(e).display!=='none' && !e.closest('[hidden],[aria-hidden="true"],[inert]');
-    const enabled=e=>!e.disabled && !e.closest('[aria-disabled="true"]');
-    const inside=(scope,e)=>scope===document||scope.contains(e);
-    const marked=document.querySelectorAll('[data-otto-login-field],[data-otto-login-method],[data-otto-login-submit]');
-    for(const e of marked) for(const name of ['data-otto-login-field','data-otto-login-method','data-otto-login-submit']) e.removeAttribute(name);
-    const dialogs=[...document.querySelectorAll('dialog[open],[role="dialog"],[aria-modal="true"]')].filter(visible);
-    const front=dialogs.filter(e=>!dialogs.some(other=>other!==e&&e.contains(other)));
-    const focused=front.filter(e=>e.contains(document.activeElement));
-    const ambiguousDialogs=front.length>1&&focused.length!==1;
-    const scope=focused.length===1?focused[0]:front.length===1?front[0]:document;
-    const textRoot=scope===document?document.body:scope;
-    const walker=textRoot&&document.createTreeWalker(textRoot,NodeFilter.SHOW_TEXT);
-    let visibleText='',visited=0;
-    while(walker&&visited++<10000&&visibleText.length<20000&&walker.nextNode()) {
-      const node=walker.currentNode,parent=node.parentElement;
-      if(visible(parent)&&!parent.closest('script,style,noscript,textarea')) visibleText+=' '+(node.textContent||'').slice(0,20000-visibleText.length);
-    }
-    const pageText=visibleText.replace(/\\s+/g,' ').trim();
-    const browserWarning=/this browser or app may not be secure/i.test(pageText);
-    const rejectedSignIn=/(?:could not|couldn't|couldn’t|cannot|can't|can’t|unable to) sign (?:you )?in/i.test(pageText);
-    const unsupportedBrowser=/(?:this|your) browser(?: or app)? (?:is not|isn't|isn’t|is no longer) supported|(?:try |using |use |a )(?:supported|different|another) browser/i.test(pageText);
-    if(!ambiguousDialogs&&(browserWarning||(rejectedSignIn&&unsupportedBrowser))) return {origin:location.origin,url:location.href,issue:'browser_not_supported',fields:[],methods:[]};
-    const candidates=[...document.querySelectorAll('input')].filter(e=>inside(scope,e)&&visible(e)&&enabled(e)&&(!e.readOnly||e.getAttribute('onfocus')?.trim())&&['text','email','tel','password','number'].includes(e.type));
-    const labelText=e=>e?.innerText||e?.textContent||'';
-    const normalized=text=>text.normalize('NFD').replace(/\\p{M}/gu,'').toLowerCase();
-    const inputValues=[...document.querySelectorAll('input,textarea')].filter(e=>!['button','submit','reset','radio','checkbox','hidden'].includes(e.type)).map(e=>normalized(e.value||'')).filter(Boolean);
-    const safeLabel=text=>{
-      const label=(text||'').replace(/\\s+/g,' ').trim();
-      return label&&!inputValues.some(value=>normalized(label).includes(value))?label:undefined;
-    };
-    const nearbyLabel=e=>{
-      if(e.tagName!=='INPUT') return undefined;
-      let container=e.parentElement;
-      for(let depth=0;container&&depth<3;depth++,container=container.parentElement) {
-        if(['BODY','FORM','HTML'].includes(container.tagName)||candidates.filter(input=>container.contains(input)).length!==1) break;
-        const walker=document.createTreeWalker(container,NodeFilter.SHOW_TEXT);
-        const labels=new Set();
-        let visited=0;
-        while(visited++<100&&walker.nextNode()) {
-          const node=walker.currentNode,parent=node.parentElement;
-          if(!visible(parent)||parent.closest('script,style,noscript,textarea,button,select,option')) continue;
-          const text=(node.textContent||'').replace(/\\s+/g,' ').trim();
-          if(!text||text.length>100||candidates.some(input=>input.value&&text.includes(input.value))) continue;
-          if(/^(?:(?:o seu|seu|your|inserir|introduza|enter(?: your)?) )?(?:(?:numero (?:de )?)?(?:telemovel|telefone)|phone(?: number)?|e.?mail(?: address)?|username|nome de utilizador|palavra.passe|password|pin(?: de autenticacao)?|nif|eori|codigo (?:de )?(?:seguranca|confirmacao|verificacao|autenticacao|sms))(?: *[:*])?$/.test(normalized(text))) labels.add(text);
+    ${loginTargetScript}
+    const target=${JSON.stringify(target ?? null)},marker=${JSON.stringify(marker)};
+    const result={origin:location.origin,url:location.href,fields:[],methods:[]};
+    if(target&&target.origin!==location.origin) return result;
+    const labels={identifier:'Account',password:'Password',otp:'Verification code'};
+    const selected=[];
+    if(target) {
+      const requests=target.kind==='identifier'?[{kind:'identifier',selector:target.usernameSelector}]:[...(target.kind==='password'&&target.usernameSelector?[{kind:'identifier',selector:target.usernameSelector}]:[]),{kind:target.kind,selector:target.passwordSelector}];
+      for(const request of requests) {
+        let nodes=resolve(request.selector);
+        if(request.kind==='otp'&&nodes.length===1&&nodes[0].maxLength===1&&!canonical(request.selector)) {
+          const siblings=[...nodes[0].parentElement.querySelectorAll('input')].filter(available);
+          if(split(siblings)) nodes=siblings;
         }
-        if(labels.size===1) return [...labels][0];
-        if(labels.size>1) return undefined;
+        if(!valid(nodes,request.kind)) return result;
+        selected.push({...request,nodes});
       }
-      return undefined;
-    };
-    const rawObservedLabel=e=>[...[...(e.labels||[])].filter(visible).map(labelText),...(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById?.(id)).filter(visible).map(labelText),e.getAttribute('aria-label'),e.getAttribute('placeholder'),nearbyLabel(e)].map(text=>(text||'').replace(/\\s+/g,' ').trim()).find(Boolean);
-    const observedLabel=e=>safeLabel(rawObservedLabel(e));
-    const hint=e=>normalized([e.id,e.name,e.autocomplete,e.getAttribute('inputmode'),rawObservedLabel(e)].join(' '));
-    const identifierLabel=e=>{
-      const label=observedLabel(e);
-      return label&&identifierLabelHint(normalized(label))?label.slice(0,80):e.type==='email'||/email/.test(hint(e))?'Email':e.type==='tel'||/phone/.test(hint(e))?'Phone':'Username';
-    };
-    const otpHint=text=>/one-time-code|verification.?code|authentication.?code|security.?code|authenticator|(?:^|[^a-z])(?:otp|totp)(?:[^a-z]|$)|codigo.{0,20}(?:verificacao|seguranca|confirmacao|autenticacao|sms|temporario|aqui)|introdu(?:c[ea]|z[ae]).{0,32}codigo|(?:pin|codigo).{0,20}(?:uso unico|utilizacao unica|temporario)/.test(text);
-    const secretHint=text=>/password|passphrase|passcode|palavra.passe|senha|(?:^|[^a-z])pin(?:[^a-z]|$)/.test(text);
-    const identifierLabelHint=text=>/^(?:(?:o seu|seu|your|inserir|introduza|enter(?: your)?) )?(?:(?:numero (?:de )?)?(?:telemovel|telefone)|(?:mobile )?phone(?: number)?|e.?mail(?: address)?|username|nome de utilizador|nif|eori)(?: *[:*])?$/.test(text);
-    const kindOf=e=>e.type!=='password'&&identifierLabelHint(normalized(observedLabel(e)||''))?'identifier':otpHint(hint(e))?'otp':e.type==='password'?'password':secretHint(hint(e))?null:['email','tel'].includes(e.type)||/username|user.?name|identifier|phone|email|telemovel|telefone|utilizador|contribuinte|tax.?id|document.?number|numero.{0,20}(?:fiscal|documento|identificacao)|(?:^|[^a-z])(?:nif|eori|tel)(?:[^a-z]|$)/.test(hint(e))?'identifier':null;
-    const forms=[...document.querySelectorAll('form')].filter(e=>inside(scope,e)&&visible(e)&&candidates.some(input=>e.contains(input)));
-    const activeForms=forms.filter(e=>e.contains(document.activeElement));
-    const ambiguousForms=forms.length>1&&activeForms.length!==1;
-    const fieldScope=activeForms.length===1?activeForms[0]:forms.length===1?forms[0]:scope;
-    const inputs=candidates.filter(e=>inside(fieldScope,e));
-    const fields=[];
-    const labels={identifier:'Email, phone number or username',password:'Password',otp:'Verification code'};
-    const secretLabel=e=>{
-      const label=observedLabel(e);
-      return label&&/^(?:(?:o seu|seu|your|inserir|introduza|enter(?: your| the)?) )?(?:password|passphrase|passcode|palavra.passe|senha|pin(?: de autenticacao)?|(?:verification|authentication|security|one.time|sms|email) code|otp|totp|codigo (?:de (?:seguranca|confirmacao|verificacao|autenticacao)|recebido (?:por|via) (?:sms|e.?mail)))(?: *[:*])?$/.test(normalized(label))?label:undefined;
-    };
-    const digitGroup=inputs.length>=4&&inputs.length<=8&&inputs.every(e=>e.maxLength===1&&['text','tel','number'].includes(e.type)&&e.parentElement===inputs[0].parentElement)&&inputs.some(e=>/one-time-code|otp|totp|verification|verifica|authenticat|autentica|security.?code/.test([hint(e),e.className,e.parentElement?.id,e.parentElement?.className].join(' ').toLowerCase()));
-    if(digitGroup) {
-      for(const e of inputs) e.setAttribute('data-otto-login-field','otp-0');
-      fields.push({kind:'otp',selector:'[data-otto-login-field="otp-0"]',label:labels.otp});
+      const nodes=selected.flatMap(field=>field.nodes);
+      if(new Set(nodes).size!==nodes.length||!sameForm(nodes)) return result;
+    } else {
+      const seen=new Set();
+      for(const e of document.querySelectorAll('input')) {
+        if(seen.has(e)||!input(e)||!available(e)||e.readOnly) continue;
+        const autocomplete=(e.autocomplete||'').split(/\\s+/).at(-1);
+        const kind=e.type==='password'?'password':autocomplete==='one-time-code'?'otp':autocomplete==='username'?'identifier':null;
+        if(kind) {
+          const siblings=kind==='otp'&&e.maxLength===1?[...e.parentElement.querySelectorAll('input')].filter(available):[];
+          const nodes=split(siblings)?siblings:[e];
+          nodes.forEach(node=>seen.add(node));
+          selected.push({kind,nodes});
+        }
+      }
+      if(selected.length>20) return result;
     }
-    for(const e of inputs) {
-      if(digitGroup) break;
-      let kind=kindOf(e);
-      if(!kind&&!secretHint(hint(e))&&inputs.length===1&&/log.?in|sign.?in|account|autenticacao|iniciar sessao/.test(normalized(fieldScope.innerText||scope.innerText||document.body?.innerText||''))&&['text','tel'].includes(e.type)&&!/search|filter|location|job/.test(hint(e))) kind='identifier';
-      if(!kind) continue;
-      const marker=kind+'-'+fields.filter(f=>f.kind===kind).length;
-      e.setAttribute('data-otto-login-field',marker);
-      fields.push({kind,selector:'[data-otto-login-field="'+marker+'"]',label:kind==='identifier'?identifierLabel(e):(secretLabel(e)||labels[kind]).slice(0,80)});
+    for(const [index,field] of selected.entries()) {
+      const selector=bind(field.nodes,marker+'-'+index);
+      for(const e of field.nodes) e.setAttribute('data-otto-login-field',field.kind+'-'+index);
+      result.fields.push({kind:field.kind,selector,label:labels[field.kind]});
     }
-    const unsupportedSecrets=inputs.filter(e=>e.type!=='password'&&secretHint(hint(e))&&!otpHint(hint(e)));
-    for(const [index,e] of unsupportedSecrets.entries()) e.setAttribute('data-otto-login-field','password-unsupported-'+index);
-    const candidatesByMethod=new Map();
-    const controls=[...document.querySelectorAll('button,a,[role="button"],input[type="submit"],input[type="radio"],[role="radio"],[role="tab"]')].filter(e=>inside(scope,e)&&visible(e));
-    let submit;
-    const currentContext=${currentContextScript};
-    const authentication=text=>/log.?in|sign.?in|authentication|autenticacao|iniciar sessao|identidade/.test(normalized(text));
-    const controlLabel=e=>(safeLabel(observedLabel(e)||e.innerText||(e.tagName==='INPUT'&&['submit','button'].includes(e.type)?e.getAttribute('value'):'')||[...(e.querySelectorAll?.('img[alt]')||[])].filter(visible).map(image=>image.getAttribute('alt')).join(' '))||'').slice(0,100);
-    const groupOf=e=>{
-      const container=e.closest('fieldset,[role="radiogroup"],[role="tablist"]');
-      if(!container) return undefined;
-      const legend=[...container.children].find(child=>child.tagName==='LEGEND');
-      return safeLabel(observedLabel(container)||labelText(legend))?.slice(0,100);
-    };
-    const methodId=(label,group)=>{
-      let hash=2166136261;
-      for(const character of (group||'')+'|'+label) hash=Math.imul(hash^character.charCodeAt(0),16777619);
-      return 'choice-'+(hash>>>0).toString(16);
-    };
-    const add=(id,method,e)=>{
-      const current=candidatesByMethod.get(id);
-      if(current?.ambiguous) return;
-      if(current&&id.startsWith('choice-')&&current.element!==e&&!current.element.contains(e)&&!e.contains(current.element)) {
-        current.method.supported=false;
-        current.ambiguous=true;
-        return;
-      }
-      const supported=!ambiguousDialogs&&currentContext(e)&&enabled(e);
-      const native=['BUTTON','A','INPUT'].includes(e.tagName);
-      const nestedNative=current&&native&&!current.native&&current.element?.contains(e);
-      if(!current||nestedNative||(supported&&!current.method.supported)||(supported===current.method.supported&&native&&!current.native)) candidatesByMethod.set(id,{method:{id,...method,supported},element:e,native});
-    };
-    for(const e of controls) {
-      const label=controlLabel(e);
-      if(!label) continue;
-      const group=groupOf(e);
-      const choice=['tab','radio'].includes(e.getAttribute('role'))||e.type==='radio';
-      const semantic=/chave movel digital|cartao de cidadao|codigo qr|qr code|telemovel|(?:^|[^a-z])(?:cc|cmd|nif|eori|sso)(?:[^a-z]|$)/.test(normalized(label));
-      if(choice&&(authentication(group||'')||(authentication(pageText)&&semantic))) {
-        const selected=e.type==='radio'?e.checked:e.getAttribute('aria-selected')==='true'||e.getAttribute('aria-checked')==='true';
-        add(methodId(label,group),{label,kind:'credentials',...(group?{group}:{}),selected},e);
-        continue;
-      }
-      const factor=/authenticator|authentication app/i.test(label)?{id:'authenticator',label:'Use an authenticator app'}:/backup.code|recovery.code/i.test(label)?{id:'backup',label:'Use a backup code'}:/sms|text message|send.*phone|phone.*code/i.test(label)?{id:'sms',label:'Get a code by text message'}:/email.*code|code.*email/i.test(label)?{id:'email',label:'Get a code by email'}:null;
-      const provider=['Google','Apple','Microsoft','GitHub','Facebook'].find(name=>new RegExp('\\\\b'+name+'\\\\b','i').test(label));
-      if(provider&&/sign|log|continue|connect|use|with/i.test(label)) {
-        add('oauth-'+provider.toLowerCase(),{label:'Continue with '+provider,kind:'oauth'},e);
-      } else if(/passkey|security key|webauthn/i.test(label)) {
-        if(!candidatesByMethod.has('passkey')) candidatesByMethod.set('passkey',{method:{id:'passkey',label:'Use a passkey or security key',kind:'passkey',supported:false,reason:'Device passkeys and hardware security keys are not supported in this browser.'}});
-      } else if(factor) {
-        add('verification-'+factor.id,{label:factor.label,kind:'credentials'},e);
-      } else if(!choice&&!fields.length&&authentication(pageText)&&(semantic||authentication(label))) {
-        add(methodId(label,group),{label,kind:'credentials',...(group?{group}:{})},e);
-      } else if(!submit&&!choice&&inside(fieldScope,e)&&(/^(next|continue|log in|sign in|login|verify|submit|confirm|entrar|iniciar sess[aã]o|continuar|seguinte|verificar|confirmar|autenticar)(\\s|$)/i.test(label)||e.type==='submit')) {
-        submit=e;
-      }
-    }
-    if(!fields.length&&submit&&candidatesByMethod.size) add('continue',{label:controlLabel(submit),kind:'credentials'},submit);
-    const methods=[...candidatesByMethod.values()].map(({method,element})=>{
-      if(!element) return method;
-      element.setAttribute('data-otto-login-method',method.id);
-      return {...method,selector:'[data-otto-login-method="'+method.id+'"]',reason:method.supported?(method.kind==='oauth'?'Opens this website’s sign-in flow. Further secure steps may be required.':/cartao de cidadao|codigo qr|qr code/.test(normalized(method.label))?'Selects this sign-in option. The user may need to finish with a card reader or their own device.':'Continues this sign-in step on the website. Secrets stay in the secure credential flow.'):'This option is unavailable, ambiguous, or requires a separate window.'};
-    });
-    const unambiguous=!ambiguousDialogs&&!ambiguousForms&&!unsupportedSecrets.length&&(!submit||currentContext(submit))&&['identifier','password','otp'].every(kind=>fields.filter(field=>field.kind===kind).length<=1);
-    if(fields.length) methods.unshift({id:'credentials',label:(fields.find(field=>field.kind==='identifier')||fields.find(field=>field.kind==='otp')||fields[0]).label,kind:'credentials',supported:unambiguous,reason:unambiguous?undefined:'More than one credential field or active form matches this step. Inspect the active form again.'});
-    if(unsupportedSecrets.length) methods.push({id:'private-entry',label:secretLabel(unsupportedSecrets[0])||'Private sign-in',kind:'manual',supported:false,reason:'Otto could not identify this private field.'});
-    let emailCode;
-    if(unambiguous&&fields.length===1&&fields[0].kind==='otp') {
-      const root=fieldScope===document?document.body:fieldScope;
-      const nodes=root&&document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
-      let text='',count=0;
-      while(nodes&&count++<1000&&text.length<4000&&nodes.nextNode()) {
-        const node=nodes.currentNode,parent=node.parentElement;
+    if(target?.kind==='otp'&&target.emailCode&&selected.length===1) {
+      const nodes=selected[0].nodes;
+      const scope=form(nodes[0])||document.body;
+      const walker=scope&&document.createTreeWalker(scope,NodeFilter.SHOW_TEXT);
+      let text='',visited=0;
+      while(walker&&visited++<1000&&text.length<4000&&walker.nextNode()) {
+        const node=walker.currentNode,parent=node.parentElement;
         if(visible(parent)&&!parent.closest('script,style,noscript,textarea')) text+=' '+(node.textContent||'').slice(0,4000-text.length);
       }
-      text=text.replace(/\\s+/g,' ');
-      const recipients=[...new Set(text.match(/[a-z0-9._%+*•-]+@[a-z0-9.*•-]+\\.[a-z*•]{2,}/gi)||[])];
-      const delivery=normalized(text);
-      const sent=/(?:code|codigo).{0,100}(?:sent|enviad[oa]|enviamos|emailed)|(?:sent|enviad[oa]|enviamos|emailed).{0,100}(?:code|codigo)/.test(delivery);
-      const emailDelivery=/e.?mail|correio eletronico|caixa de entrada/.test(delivery);
-      const smsDelivery=/sms|text message|mensagem de texto/.test(delivery);
-      const recipient=recipients[0];
-      const masked=recipient&&/[*•]/.test(recipient);
-      if(sent&&!smsDelivery&&recipients.length<=1&&(!recipient?emailDelivery:recipient.length<=320&&(!masked||emailDelivery))) {
-        const length=digitGroup?inputs.length:inputs[0]?.maxLength;
-        emailCode={...(recipient?masked?{recipientHint:recipient}:{recipient}:{}),...(length>=4&&length<=8?{length}:{})};
+      const recipients=[...new Set((text.match(/[a-z0-9._%+*•-]+@[a-z0-9.*•-]+\\.[a-z*•]{2,}/gi)||[]).map(value=>value.toLowerCase()))];
+      if(recipients.length<=1) {
+        const recipient=recipients[0];
+        const length=nodes.length>1?nodes.length:nodes[0].maxLength;
+        result.emailCode={...(recipient&&recipient.length<=320?(/[*•]/.test(recipient)?{recipientHint:recipient}:{recipient}):{}),...(length>=4&&length<=8?{length}:{})};
       }
     }
-    return {origin:location.origin,url:location.href,fields,methods,...(emailCode?{emailCode}:{})};
+    return result;
   })()`;
 }
+
+export function loginReferenceScript(marker: string): string {
+  return `(() => {
+    ${loginTargetScript}
+    const inputs=[...document.querySelectorAll('input')];
+    let index=0;
+    for(const e of inputs) if(input(e)&&available(e)) {
+      const old=e.getAttribute('data-otto-login-node');
+      const token=old&&registry.get(old)?.[0]===e?old:${JSON.stringify(marker)}+'-'+index++;
+      registry.set(token,[e]);
+      e.setAttribute('data-otto-login-node',token);
+    }
+    const sources=[...new Set(inputs.flatMap(e=>[e,...(e.labels||[]),...(e.getAttribute('aria-labelledby')||'').split(/\\s+/).map(id=>document.getElementById(id)),...(e.getAttribute('aria-describedby')||'').split(/\\s+/).map(id=>document.getElementById(id))]).filter(Boolean))];
+    root.__ottoLoginObserver?.disconnect();
+    root.__ottoLoginChanges=records=>{
+      if(records.some(record=>record.type==='childList'||['id','for','role'].includes(record.attributeName)||record.target.matches?.('input,textarea,select,button,label')||sources.some(source=>source===record.target||source.contains(record.target)||record.target.contains?.(source)))) root.__ottoLoginChanged=true;
+    };
+    root.__ottoLoginChanged=false;
+    const observer=root.__ottoLoginObserver=new MutationObserver(root.__ottoLoginChanges);
+    observer.observe(root,{subtree:true,childList:true,attributes:true,characterData:true});
+    return true;
+  })()`;
+}
+
+export const loginReferencesStableScript = `(() => {
+  const root=document.documentElement,observer=root.__ottoLoginObserver;
+  if(!observer) return false;
+  root.__ottoLoginChanges(observer.takeRecords());
+  const changed=root.__ottoLoginChanged;
+  observer.disconnect();
+  return !changed;
+})()`;

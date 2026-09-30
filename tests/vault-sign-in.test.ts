@@ -1,131 +1,180 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { runInNewContext } from 'node:vm';
 import { JSDOM } from 'jsdom';
-import { credentialFields, credentialScript } from '../src/providers/agent-browser/credentials.ts';
+import {
+  credentialFields,
+  credentialEntryScript,
+} from '../src/providers/agent-browser/credentials.ts';
+import {
+  loginInspectionSchema,
+  loginInspectionScript,
+} from '../src/providers/agent-browser/login.ts';
 
-class Input {
-  isConnected = true;
-  disabled = false;
-  readOnly = false;
-  type = 'text';
-  visible = true;
-  stored = '';
-  masks: string[] = [];
-  clicked = false;
-  attributes = new Map<string, string>();
-  style = {
-    setProperty: (name: string) => {
-      this.masks.push(name);
-    },
-  };
-  get value() {
-    return this.stored;
-  }
-  set value(value: string) {
-    this.stored = value;
-  }
-  getClientRects() {
-    return this.visible ? [{}] : [];
-  }
-  matches(value: string) {
-    return value === 'input';
-  }
-  closest() {
-    return null;
-  }
-  setAttribute(name: string, value: string) {
-    this.attributes.set(name, value);
-  }
-  click() {
-    this.clicked = true;
-  }
-}
-
-function page(
-  options: {
-    origin?: string;
-    passwordType?: string;
-    hidden?: boolean;
-    duplicates?: boolean;
-  } = {},
-) {
-  const location = { origin: options.origin ?? 'https://example.com' };
-  const username = new Input();
-  const password = new Input();
-  password.type = options.passwordType ?? 'password';
-  password.visible = !options.hidden;
-  const submit = new Input();
+function page() {
+  const dom = new JSDOM(
+    '<form><input id="user"><input id="password" type="password"><button type="submit">Continue</button></form><form><input id="other" value="unrelated-user-value"></form>',
+    { url: 'https://example.com/login', runScripts: 'outside-only' },
+  );
+  dom.window.HTMLElement.prototype.getClientRects = () => [{}] as unknown as DOMRectList;
+  const username = dom.window.document.querySelector<HTMLInputElement>('#user')!;
+  const password = dom.window.document.querySelector<HTMLInputElement>('#password')!;
+  const other = dom.window.document.querySelector<HTMLInputElement>('#other')!;
+  const inspection = loginInspectionSchema.parse(
+    dom.window.eval(
+      loginInspectionScript({
+        origin: dom.window.location.origin,
+        kind: 'password',
+        usernameSelector: '#user',
+        passwordSelector: '#password',
+      }),
+    ),
+  );
   const fields = credentialFields({
     threadId: 'fixture',
-    origin: 'https://example.com',
+    origin: dom.window.location.origin,
     kind: 'password',
-    username: 'fixture-user',
-    password: 'fixture-secret',
-    usernameSelector: '#user',
-    passwordSelector: '#pass',
+    username: 'synthetic-user',
+    password: 'synthetic-secret',
+    usernameSelector: inspection.fields[0].selector,
+    passwordSelector: inspection.fields[1].selector,
   });
-  const nodes = new Map([
-    ['#user', [username]],
-    ['#pass', options.duplicates ? [password, new Input()] : [password]],
-    ['#submit', [submit]],
-  ]);
-  const script = credentialScript('https://example.com', fields, 'fixture');
-  const result = runInNewContext(script, {
-    location,
-    document: { querySelectorAll: (selector: string) => nodes.get(selector) ?? [] },
-    HTMLInputElement: Input,
-    getComputedStyle: () => ({ visibility: 'visible', display: 'block' }),
-    Event: class {},
-  });
-  return { result: JSON.parse(JSON.stringify(result)), username, password, submit, script };
+  return { dom, username, password, other, fields };
 }
 
-test('credential entry verifies origin and every target before filling any values', () => {
-  for (const options of [
-    { origin: 'https://other.example' },
-    { passwordType: 'text' },
-    { hidden: true },
-    { duplicates: true },
+test('credential entry verifies the bound nodes, origin and every target before any values', () => {
+  for (const behavior of [
+    'origin',
+    'type',
+    'hidden',
+    'disabled',
+    'fieldset',
+    'duplicate',
+    'replacement',
+    'form',
+    'readonly',
+    'focus-replacement',
+    'focus-origin',
+    'focus-type',
   ]) {
-    const { result, username, password, submit } = page(options);
-    assert.deepEqual(result, { ok: false });
-    assert.equal(username.value, '');
-    assert.equal(password.value, '');
-    assert.equal(submit.clicked, false);
+    const f = page();
+    try {
+      if (behavior === 'origin') f.dom.reconfigure({ url: 'https://other.example/login' });
+      if (behavior === 'type') f.password.type = 'text';
+      if (behavior === 'hidden') f.password.parentElement!.hidden = true;
+      if (behavior === 'disabled') f.password.disabled = true;
+      if (behavior === 'fieldset') {
+        const fieldset = f.dom.window.document.createElement('fieldset');
+        fieldset.disabled = true;
+        f.password.before(fieldset);
+        fieldset.append(f.password);
+      }
+      if (behavior === 'duplicate') f.password.after(f.password.cloneNode());
+      if (behavior === 'replacement') f.password.replaceWith(f.password.cloneNode());
+      if (behavior === 'form') f.other.parentElement!.append(f.password);
+      if (behavior === 'readonly') f.username.readOnly = true;
+      if (behavior.startsWith('focus-'))
+        f.username.addEventListener('focus', () => {
+          if (behavior === 'focus-replacement') f.password.replaceWith(f.password.cloneNode());
+          if (behavior === 'focus-origin')
+            f.dom.reconfigure({ url: 'https://other.example/login' });
+          if (behavior === 'focus-type') f.password.type = 'text';
+        });
+      const result = f.dom.window.eval(credentialEntryScript('https://example.com', f.fields)) as {
+        ok: boolean;
+      };
+      assert.equal(result.ok, false, behavior);
+      assert.equal(f.username.value, '', behavior);
+      assert.equal(f.password.value, '', behavior);
+      assert.equal(f.other.value, 'unrelated-user-value', behavior);
+      assert.equal(
+        [...f.dom.window.document.querySelectorAll('input')].some((e) =>
+          e.value.includes('synthetic-'),
+        ),
+        false,
+        behavior,
+      );
+    } finally {
+      f.dom.window.close();
+    }
   }
 });
 
-test('credential entry masks and marks fields without writing private values', () => {
-  const success = page();
-  assert.deepEqual(success.result, { ok: true, counts: [1, 1] });
-  assert.equal(success.username.value, '');
-  assert.equal(success.password.value, '');
-  assert.equal(success.password.masks.includes('-webkit-text-security'), true);
-  assert.equal(success.username.attributes.get('data-otto-entry-target'), 'fixture-0-0');
-  assert.equal(success.password.attributes.get('data-otto-entry-target'), 'fixture-1-0');
-  assert.equal(success.submit.clicked, false);
-  assert.equal(success.script.includes('fixture-secret'), false);
+test('secure entry focuses normally, masks values and dispatches native input events without submitting', () => {
+  const f = page();
+  let submitted = false;
+  const events: string[] = [];
+  try {
+    f.username.readOnly = true;
+    f.username.addEventListener('focus', () => {
+      f.username.readOnly = false;
+    });
+    f.username.addEventListener('input', () => events.push('username'));
+    f.password.addEventListener('input', () => events.push('password'));
+    f.password.form!.addEventListener('submit', (event) => {
+      event.preventDefault();
+      submitted = true;
+    });
+    assert.equal(f.password.value, '');
+    const result = f.dom.window.eval(credentialEntryScript('https://example.com', f.fields)) as {
+      ok: boolean;
+    };
+    assert.equal(result.ok, true);
+    assert.equal(f.username.value, 'synthetic-user');
+    assert.equal(f.password.value, 'synthetic-secret');
+    assert.equal(f.password.style.color, 'transparent');
+    assert.equal(JSON.stringify(result).includes('synthetic'), false);
+    assert.deepEqual(events, ['username', 'password']);
+    assert.equal(submitted, false);
+  } finally {
+    f.dom.window.close();
+  }
+});
+
+test('entry stops after page mutation and clears only the captured original nodes', () => {
+  for (const behavior of ['replace', 'origin', 'throw']) {
+    const f = page();
+    try {
+      const replacement = f.password.cloneNode() as HTMLInputElement;
+      replacement.value = 'replacement-user-value';
+      f.username.addEventListener('input', () => {
+        f.password.replaceWith(replacement);
+        if (behavior === 'origin') f.dom.reconfigure({ url: 'https://other.example/login' });
+      });
+      if (behavior === 'throw')
+        f.username.dispatchEvent = () => {
+          f.password.replaceWith(replacement);
+          throw new Error('Synthetic page failure');
+        };
+      const result = f.dom.window.eval(credentialEntryScript('https://example.com', f.fields)) as {
+        ok: boolean;
+      };
+      assert.equal(result.ok, false);
+      assert.equal(f.username.value, '');
+      assert.equal(f.password.value, '');
+      assert.equal(replacement.value, 'replacement-user-value');
+      assert.equal(f.other.value, 'unrelated-user-value');
+    } finally {
+      f.dom.window.close();
+    }
+  }
 });
 
 test('secure entry rejects fields hidden by an ancestor', () => {
-  for (const attribute of ['hidden', 'aria-hidden="true"', 'aria-disabled="true"', 'inert']) {
-    const dom = new JSDOM(`<div ${attribute}><input id="password" type="password"></div>`, {
-      url: 'https://example.com/login',
-      runScripts: 'outside-only',
-    });
-    dom.window.HTMLElement.prototype.getClientRects = () =>
-      [{ x: 0, y: 0, width: 200, height: 30 }] as unknown as DOMRectList;
+  for (const attribute of ['hidden', 'aria-hidden', 'aria-disabled', 'inert']) {
+    const f = page();
     try {
-      const result = dom.window.eval(
-        credentialScript('https://example.com', [
-          { selector: '#password', value: 'synthetic-secret', password: true },
-        ]),
-      ) as { ok: boolean };
-      assert.equal(result.ok, false);
-      assert.equal(dom.window.document.querySelector('input')!.value, '');
+      f.password.parentElement!.setAttribute(attribute, 'true');
+      assert.equal(
+        (
+          f.dom.window.eval(credentialEntryScript('https://example.com', f.fields)) as {
+            ok: boolean;
+          }
+        ).ok,
+        false,
+      );
+      assert.equal(f.password.value, '');
     } finally {
-      dom.window.close();
+      f.dom.window.close();
     }
   }
 });

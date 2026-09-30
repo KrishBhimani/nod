@@ -3,9 +3,14 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { Composio } from '@composio/core';
 import Fastify, { type FastifyInstance } from 'fastify';
+import { JSDOM } from 'jsdom';
 import pg from 'pg';
-import type { CredentialKind, LoginInspection } from '../src/ports/computer.ts';
+import type { CredentialKind, LoginInspection, LoginTarget } from '../src/ports/computer.ts';
 import type { IntegrationProvider, VerificationEmail } from '../src/ports/integrations.ts';
+import {
+  loginInspectionSchema,
+  loginInspectionScript,
+} from '../src/providers/agent-browser/login.ts';
 import { readVerificationEmails } from '../src/providers/composio/verification-email.ts';
 import { registerLocalAccess } from '../src/server/access.ts';
 import { verificationCode, verificationSenderDomain } from '../src/server/email-code.ts';
@@ -1213,6 +1218,230 @@ async function seedNamedTurns(pool: pg.Pool, names: string[], owner = 'local-dev
 }
 
 test(
+  'Vault preserves model-selected page fields across restart and rejects replaced targets',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async (t) => {
+    const schema = `test_vault_targets_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+    });
+    const turns = await seedTurns(pool);
+    const origin = 'https://accounts.example.test';
+    const key = randomBytes(32);
+    const injections: CredentialInjection[] = [];
+    let replaceDuringLookup = false;
+    let lookups = 0;
+    let app = Fastify();
+    let dom: JSDOM;
+    const page = () => {
+      dom?.window.close();
+      dom = new JSDOM(
+        '<form><label>利用者<input id="handle" autocomplete="one-time-code"></label><label>秘密<input id="entry" type="password"></label><label>確認<input id="pin" maxlength="6"></label><p>送信先 owner@example.test</p><input id="unrelated-password" type="password"><input id="unrelated-email" type="email"><button>進む</button></form>',
+        { url: `${origin}/login`, runScripts: 'outside-only' },
+      );
+      dom.window.HTMLElement.prototype.getClientRects = () =>
+        [{ x: 0, y: 0, width: 200, height: 30 }] as unknown as DOMRectList;
+    };
+    const options = {
+      keyStore: { id: 'fixture', configured: true, getKey: async () => key },
+      inspect: async (_threadId: string, target?: LoginTarget) =>
+        loginInspectionSchema.parse(dom.window.eval(loginInspectionScript(target))),
+      inject: async (input: CredentialInjection) => {
+        injections.push(input);
+        return { status: 'submitted' as const };
+      },
+      emailCode: async (request: { recipient: string; origin: string; length?: number }) => {
+        lookups++;
+        assert.equal(request.recipient, 'owner@example.test');
+        assert.equal(request.origin, origin);
+        assert.equal(request.length, 6);
+        if (replaceDuringLookup) {
+          const target = dom.window.document.querySelector('#pin')!;
+          target.replaceWith(target.cloneNode());
+        }
+        return { code: '001234', current: async () => true };
+      },
+      retry: async () => {},
+      resume: async () => {},
+    };
+    let vault = await createVault(pool, options);
+    vault.registerRoutes(app);
+    const stored = async (turnId: string) =>
+      (
+        await pool.query(
+          'SELECT id,selectors,inspection FROM credential_requests WHERE turn_id=$1',
+          [turnId],
+        )
+      ).rows[0];
+    try {
+      for (const kind of ['identifier', 'password', 'otp'] as const) {
+        await t.test(`${kind} uses the selected field and rehydrates its binding`, async () => {
+          page();
+          const turn = await turns.turn();
+          const raw = {
+            origin,
+            label: 'Synthetic sign-in',
+            kind,
+            ...(kind === 'identifier' || kind === 'password'
+              ? { usernameSelector: '#handle' }
+              : {}),
+            ...(kind !== 'identifier'
+              ? { passwordSelector: kind === 'otp' ? '#pin' : '#entry' }
+              : {}),
+            ...(kind === 'otp' ? { emailCode: true } : {}),
+          };
+          const request = await vault.request(turn, 'local-development', raw);
+          await turns.wait(turn);
+          const before = await stored(turn.turnId);
+          const selectedKey = kind === 'identifier' ? 'usernameSelector' : 'passwordSelector';
+          assert.notEqual(before.selectors[selectedKey], raw[selectedKey]);
+          assert.equal(
+            dom.window.document.querySelector(before.selectors[selectedKey]),
+            dom.window.document.querySelector(raw[selectedKey]!),
+          );
+          if (kind === 'password')
+            assert.equal(
+              dom.window.document.querySelector(before.selectors.usernameSelector),
+              dom.window.document.querySelector('#handle'),
+            );
+          assert.equal(JSON.stringify(before.inspection).includes('owner@example.test'), false);
+          await app.close();
+          app = Fastify();
+          vault = await createVault(pool, options);
+          vault.registerRoutes(app);
+          const url = request.url.replace('/vault/', '/api/credential-requests/');
+          const refreshed = await app.inject({ method: 'POST', url: `${url}/refresh` });
+          assert.equal(refreshed.statusCode, 200, refreshed.body);
+          assert.deepEqual((await stored(turn.turnId)).selectors, before.selectors);
+          if (kind === 'otp') {
+            assert.equal(before.selectors.emailCode, true);
+            assert.deepEqual(
+              await vault.submitChatCode('local-development', turn.turnId, '001234', before.id),
+              { status: 'submitted' },
+            );
+          } else {
+            const response = await app.inject({
+              method: 'POST',
+              url,
+              payload: {
+                username: 'synthetic-member',
+                ...(kind === 'password'
+                  ? { label: 'Fixture login', password: 'synthetic-password' }
+                  : {}),
+              },
+            });
+            assert.equal(response.statusCode, 200, response.body);
+          }
+          assert.equal(injections.at(-1)?.kind, kind);
+          assert.equal(injections.at(-1)?.[selectedKey], before.selectors[selectedKey]);
+          assert.equal(
+            dom.window.document.querySelector<HTMLInputElement>('#unrelated-password')!.value,
+            '',
+          );
+        });
+      }
+      for (const mutation of ['replace', 'hide', 'disable', 'origin'] as const) {
+        await t.test(`${mutation} prevents refresh and private submission`, async () => {
+          page();
+          const turn = await turns.turn();
+          const request = await vault.request(turn, 'local-development', {
+            origin,
+            label: 'Synthetic sign-in',
+            kind: 'password',
+            passwordSelector: '#entry',
+          });
+          await turns.wait(turn);
+          const target = dom.window.document.querySelector<HTMLInputElement>('#entry')!;
+          if (mutation === 'replace') target.replaceWith(target.cloneNode());
+          if (mutation === 'hide') target.hidden = true;
+          if (mutation === 'disable') target.disabled = true;
+          if (mutation === 'origin') dom.reconfigure({ url: 'https://other.example.test/login' });
+          const count = injections.length;
+          const url = request.url.replace('/vault/', '/api/credential-requests/');
+          assert.equal(
+            (await app.inject({ method: 'POST', url: `${url}/refresh` })).statusCode,
+            409,
+          );
+          assert.equal(
+            (
+              await app.inject({
+                method: 'POST',
+                url,
+                payload: { label: 'Fixture', password: 'synthetic-password' },
+              })
+            ).statusCode,
+            409,
+          );
+          assert.equal(injections.length, count);
+        });
+      }
+      await t.test(
+        'missing, ambiguous and overlapping field selections never request credentials',
+        async () => {
+          page();
+          const turn = await turns.turn();
+          const before = injections.length;
+          for (const selectors of [
+            {},
+            { passwordSelector: '#missing' },
+            { passwordSelector: '#entry,#unrelated-password' },
+            { usernameSelector: '#entry', passwordSelector: '#entry' },
+          ]) {
+            await assert.rejects(
+              vault.request(turn, 'local-development', {
+                origin,
+                label: 'Synthetic sign-in',
+                kind: 'password',
+                ...selectors,
+              }),
+              /login field changed|visible sign-in field/,
+            );
+          }
+          assert.equal(await stored(turn.turnId), undefined);
+          assert.equal(injections.length, before);
+        },
+      );
+      for (const replaced of [false, true]) {
+        await t.test(
+          `email lookup revalidates the selected node after lookup: ${replaced}`,
+          async () => {
+            page();
+            replaceDuringLookup = replaced;
+            const turn = await turns.turn();
+            await pool.query('UPDATE turns SET started_at=clock_timestamp() WHERE id=$1', [
+              turn.turnId,
+            ]);
+            const before = injections.length;
+            const reads = lookups;
+            assert.equal(
+              await vault.fillEmailCode(turn, 'local-development', {
+                origin,
+                label: 'Synthetic verification',
+                kind: 'otp',
+                passwordSelector: '#pin',
+                emailCode: true,
+              }),
+              !replaced,
+            );
+            assert.equal(lookups, reads + 1);
+            assert.equal(injections.length, before + (replaced ? 0 : 1));
+          },
+        );
+      }
+    } finally {
+      dom!.window.close();
+      await app.close();
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);
+
+test(
   'Vault rejects a freshly blocked browser before creating, refreshing or filling a sign-in step',
   { skip: !process.env.TEST_DATABASE_URL },
   async () => {
@@ -1225,7 +1454,6 @@ test(
     });
     const app = Fastify();
     let blocked = false;
-    let credentialsSupported = true;
     let injections = 0;
     let resumes = 0;
     const origin = 'https://accounts.example.com';
@@ -1248,7 +1476,7 @@ test(
               id: 'credentials',
               kind: 'credentials',
               label: 'Secure form',
-              supported: credentialsSupported,
+              supported: true,
             },
             { id: 'oauth-google', kind: 'oauth', label: 'Google', supported: true },
           ],
@@ -1303,28 +1531,6 @@ test(
         assert.equal(response.statusCode, 409);
         assert.match(response.json().error, /blocked sign-in/);
       }
-      blocked = false;
-      credentialsSupported = false;
-      await assert.rejects(
-        vault.request(turns.new, 'local-development', input),
-        /does not support this credential step/,
-      );
-      credentialsSupported = true;
-      await assert.rejects(
-        vault.request(turns.new, 'local-development', {
-          ...input,
-          passwordSelector: '#other-field',
-        }),
-        /login field changed/,
-      );
-      await assert.rejects(
-        vault.request(turns.new, 'local-development', {
-          ...input,
-          usernameSelector: '#username',
-          passwordSelector: '@e2',
-        }),
-        /same browser view/,
-      );
       assert.equal(injections, 0);
       assert.equal(resumes, 0);
       assert.equal(
@@ -2227,7 +2433,7 @@ const origin = 'https://app20.toconline.pt';
 const username = 'owner@example.com';
 const code = '381742';
 const input = { origin, label: 'Fixture login', kind: 'password' as const };
-const otpInput = { ...input, kind: 'otp' as const };
+const otpInput = { ...input, kind: 'otp' as const, emailCode: true };
 function inspection(kind: 'password' | 'otp'): LoginInspection {
   return {
     origin,
@@ -2374,6 +2580,13 @@ test(
     const fill = (id: string) => vault.fillEmailCode(task(id), owner, otpInput);
     const root = (id: string) => task(id).turnId;
     await start('success');
+    assert.equal(
+      await vault.fillEmailCode(task('success'), owner, { ...otpInput, emailCode: false }),
+      false,
+    );
+    const { emailCode: _emailCode, ...unobservedOtp } = otpInput;
+    assert.equal(await vault.fillEmailCode(task('success'), owner, unobservedOtp), false);
+    assert.equal(read, 0);
     assert.equal(await fill('success'), true);
     assert.equal(await fill('success'), false);
     assert.equal(read, 1);
@@ -2755,8 +2968,13 @@ test(
       { parent: 'waiting', reason: 'credentials', status: 'running', source: 'resume' },
     ]);
     const persisted = JSON.stringify((await pool.query('SELECT * FROM credential_requests')).rows);
-    for (const secret of [code, username, 'emailCode'])
+    for (const secret of [code, username, 'recipient'])
       assert.equal(persisted.includes(secret), false);
+    assert.ok(
+      (await pool.query('SELECT selectors FROM credential_requests')).rows.every(
+        (row) => row.selectors.emailCode === true,
+      ),
+    );
   },
 );
 

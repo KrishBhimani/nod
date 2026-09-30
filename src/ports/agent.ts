@@ -118,6 +118,7 @@ export interface RuntimeContext {
     kind: CredentialKind;
     usernameSelector?: string;
     passwordSelector?: string;
+    emailCode?: boolean;
     savedLoginId?: string;
   }): Promise<{ url?: string; filled?: boolean; invitation?: CredentialInvitation }>;
   integration(action: string, args: Record<string, unknown>): Promise<unknown>;

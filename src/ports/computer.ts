@@ -63,6 +63,13 @@ export interface BrowserUploadInput {
   bytes: Uint8Array;
 }
 export type CredentialKind = 'identifier' | 'password' | 'otp';
+export interface LoginTarget {
+  origin: string;
+  kind: CredentialKind;
+  usernameSelector?: string;
+  passwordSelector?: string;
+  emailCode?: boolean;
+}
 export interface LoginField {
   kind: CredentialKind;
   selector: string;
@@ -120,7 +127,7 @@ export interface Computer {
     capturedAt?: string;
   };
   injectCredentials(input: CredentialInput): Promise<CredentialSubmission | void>;
-  inspectLogin(threadId: string): Promise<LoginInspection>;
+  inspectLogin(threadId: string, target?: LoginTarget): Promise<LoginInspection>;
   hold(threadId: string, until: number | null): Promise<void>;
   close(threadId: string): Promise<void>;
   dispose(): Promise<void>;

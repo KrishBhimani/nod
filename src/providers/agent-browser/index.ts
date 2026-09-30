@@ -12,13 +12,19 @@ import type {
   CredentialInput,
   CredentialSubmission,
   LoginInspection,
+  LoginTarget,
 } from '../../ports/computer.ts';
 import { BrowserActionError, browserUploadBytes } from '../../ports/computer.ts';
 import { threadIdentity } from '../../ports/thread-identity.ts';
 import { runProcess, serviceEnvironment } from '../process.ts';
 import { createBrowserProxy, browserUrl } from './network.ts';
-import { credentialFields, credentialScript } from './credentials.ts';
-import { loginInspectionSchema, loginInspectionScript } from './login.ts';
+import { credentialFields, credentialEntryScript } from './credentials.ts';
+import {
+  loginInspectionSchema,
+  loginInspectionScript,
+  loginReferenceScript,
+  loginReferencesStableScript,
+} from './login.ts';
 import { maskPageScript, maskSnapshotInputValues } from './redaction.ts';
 import {
   createScreenStore,
@@ -41,7 +47,9 @@ interface BrowserState {
   queue: Promise<unknown>;
   injecting: boolean;
   secrets: Set<string>;
+  secretsByOrigin: Map<string, Set<string>>;
   protectedSelectors: Set<string>;
+  loginRefs: Map<string, string>;
   uploads: Set<string>;
   started: boolean;
   lastUsed: number;
@@ -185,7 +193,9 @@ export function createAgentBrowserComputer(options: {
         queue: Promise.resolve(),
         injecting: false,
         secrets: new Set(),
+        secretsByOrigin: new Map(),
         protectedSelectors: new Set(),
+        loginRefs: new Map(),
         uploads: new Set(),
         started: false,
         lastUsed: Date.now(),
@@ -608,11 +618,15 @@ export function createAgentBrowserComputer(options: {
   }
 
   async function maskFields(state: BrowserState, signal?: AbortSignal): Promise<string[]> {
+    const origin = new URL(await currentUrl(state, signal)).origin;
+    const secrets = state.secretsByOrigin.get(origin) ?? new Set<string>();
     const result = await evaluate(
       state,
-      maskPageScript([...state.protectedSelectors], [...state.secrets]),
+      `(() => { if(location.origin!==${JSON.stringify(origin)}) return {originChanged:true}; return ${maskPageScript([...state.protectedSelectors], [...secrets])}; })()`,
       signal,
     );
+    if (result && typeof result === 'object' && 'originChanged' in result)
+      throw new BrowserActionError('browser_origin_changed');
     if (
       result &&
       typeof result === 'object' &&
@@ -622,9 +636,13 @@ export function createAgentBrowserComputer(options: {
       for (const value of result.values) {
         if (typeof value !== 'string' || value.length > 8192)
           throw new Error('This protected field cannot be observed.');
-        if (value) state.secrets.add(value);
+        if (value) {
+          state.secrets.add(value);
+          secrets.add(value);
+        }
       }
     }
+    state.secretsByOrigin.set(origin, secrets);
     const inputValues =
       result && typeof result === 'object' && 'inputValues' in result ? result.inputValues : [];
     if (
@@ -693,11 +711,27 @@ export function createAgentBrowserComputer(options: {
         url: redactBrowserUrl(url, state.secrets, Boolean(state.saved.allowedOrigin)),
         candidates: [],
       };
+    state.loginRefs.clear();
+    await evaluate(state, loginReferenceScript(randomUUID()), signal);
     const data = await command(
       state,
       scope ? ['snapshot', '-c', '-s', scope] : ['snapshot', '-c'],
       { signal, maxBytes: 1024 * 1024 },
     );
+    const snapshot = String(data.snapshot ?? data.text ?? JSON.stringify(data));
+    const references = [
+      ...snapshot.matchAll(/(?:textbox|searchbox|spinbutton|combobox)[^\n]*?\[ref=(e\d+)\]/g),
+    ].map((match) => `@${match[1]}`);
+    if (references.length <= 80) {
+      for (const ref of references) {
+        const attribute = await command(state, ['get', 'attr', ref, 'data-otto-login-node'], {
+          signal,
+        }).catch(() => null);
+        if (typeof attribute?.value === 'string' && /^[a-zA-Z0-9_-]+$/.test(attribute.value))
+          state.loginRefs.set(ref, `input[data-otto-login-node="${attribute.value}"]`);
+      }
+    }
+    if (!(await evaluate(state, loginReferencesStableScript, signal))) state.loginRefs.clear();
     const fullStructure = maskSnapshotInputValues(
       redactBrowserText(String(data.snapshot ?? data.text ?? JSON.stringify(data)), state.secrets),
       inputValues,
@@ -1078,129 +1112,50 @@ export function createAgentBrowserComputer(options: {
     const url = browserUrl(input.origin);
     if (url.origin !== input.origin) throw new Error('An exact login origin is required.');
     const fields = credentialFields(input);
-    for (const field of fields) {
-      state.secrets.add(field.value);
-      state.protectedSelectors.add(field.selector);
-    }
     state.injecting = true;
     markActivity(input.threadId);
     try {
       return await serialize(state, async () => {
         try {
           await saveState(state);
-          if (new URL(await currentUrl(state)).origin !== input.origin)
-            throw new Error('The login page origin changed. Request credentials again.');
-          const attempt = randomUUID();
+          const kind = input.kind ?? 'password';
+          const inspection = await inspectPage(state, {
+            origin: input.origin,
+            kind,
+            usernameSelector: input.usernameSelector,
+            passwordSelector: input.passwordSelector,
+          });
+          if (inspection.fields.length !== fields.length)
+            throw new Error('The login fields changed.');
+          for (const field of fields) {
+            const match = inspection.fields.find(
+              (candidate) =>
+                candidate.kind ===
+                (field.password ? 'password' : field.code ? 'otp' : 'identifier'),
+            );
+            if (!match) throw new Error('The login field changed.');
+            field.selector = match.selector;
+            state.protectedSelectors.add(match.selector);
+          }
           const socket = await daemonSocket(state);
-          if (fields.every((field) => /^@e\d+$/.test(field.selector))) {
-            const inspection = await inspectPage(state);
-            if (
-              !inspection.methods.some((method) => method.id === 'credentials' && method.supported)
-            )
-              throw new Error('The current page does not support this credential step.');
-            for (const field of fields) {
-              const marker = await requestDaemon(socket, {
-                action: 'getattribute',
-                selector: field.selector,
-                attribute: 'data-otto-login-field',
-              });
-              const kind = field.password ? 'password' : field.code ? 'otp' : 'identifier';
-              const target = inspection.fields.find(
-                (candidate) =>
-                  candidate.kind === kind &&
-                  candidate.selector === `[data-otto-login-field="${marker.value}"]`,
-              );
-              if (!target) throw new Error('The login field changed. Request credentials again.');
-              const count = await evaluate(
-                state,
-                `document.querySelectorAll(${JSON.stringify(target.selector)}).length`,
-              );
-              if (count !== 1) {
-                if (!field.code || count !== field.value.length || !/^\d+$/.test(field.value))
-                  throw new Error('The login field changed. Request credentials again.');
-                field.selector = target.selector;
-                state.protectedSelectors.add(target.selector);
-                continue;
-              }
-              const type = await requestDaemon(socket, {
-                action: 'getattribute',
-                selector: field.selector,
-                attribute: 'type',
-              });
-              if (
-                (field.password && type.value !== 'password') ||
-                (!field.password &&
-                  typeof type.value === 'string' &&
-                  !['text', 'email', 'tel', 'number', 'search', ''].includes(type.value))
-              )
-                throw new Error('The login field changed. Request credentials again.');
-            }
-            if (fields.every((field) => /^@e\d+$/.test(field.selector))) {
-              for (const field of fields) {
-                if (new URL(await currentUrl(state)).origin !== input.origin)
-                  throw new Error('The login page origin changed. Request credentials again.');
-                await requestDaemon(socket, { action: 'click', selector: field.selector });
-                if (new URL(await currentUrl(state)).origin !== input.origin)
-                  throw new Error('The login page origin changed. Request credentials again.');
-                await requestDaemon(socket, {
-                  action: 'fill',
-                  selector: field.selector,
-                  value: field.value,
-                });
-              }
-              return { status: 'submitted' as const };
-            }
+          const secrets = state.secretsByOrigin.get(input.origin) ?? new Set<string>();
+          for (const field of fields) {
+            state.secrets.add(field.value);
+            secrets.add(field.value);
           }
-          if (fields.some((field) => /^@e\d+$/.test(field.selector)))
-            throw new Error('Select all sign-in fields from the current browser snapshot.');
-          const result = await evaluate(state, credentialScript(input.origin, fields, attempt));
-          if (
-            !result ||
-            typeof result !== 'object' ||
-            !('ok' in result) ||
-            !result.ok ||
-            !('counts' in result) ||
-            !Array.isArray(result.counts) ||
-            result.counts.length !== fields.length
-          )
-            throw new Error('The login fields changed. Request credentials again.');
-          for (const [fieldIndex, field] of fields.entries()) {
-            const count = result.counts[fieldIndex];
-            if (count !== 1 && (!field.code || count !== field.value.length))
-              throw new Error('The login fields changed. Request credentials again.');
-            for (let index = 0; index < count; index++) {
-              if (new URL(await currentUrl(state)).origin !== input.origin)
-                throw new Error('The login page origin changed. Request credentials again.');
-              await requestDaemon(socket, {
-                action: 'fill',
-                selector: `[data-otto-entry-target="${attempt}-${fieldIndex}-${index}"]`,
-                value: count === 1 ? field.value : field.value[index],
-              });
-            }
-          }
+          state.secretsByOrigin.set(input.origin, secrets);
+          await saveState(state);
+          const response = await requestDaemon(socket, {
+            action: 'evaluate',
+            script: credentialEntryScript(input.origin, fields),
+          });
+          const result = response.result;
+          if (!result || typeof result !== 'object' || !('ok' in result) || result.ok !== true)
+            throw new Error('The login fields changed.');
           if (!state.started || state.closed || state.closing)
             throw new Error('The browser session is unavailable.');
           return { status: 'submitted' as const };
         } catch {
-          if (state.started && !state.closed && !state.closing) {
-            if (fields.every((field) => /^@e\d+$/.test(field.selector))) {
-              try {
-                if (new URL(await currentUrl(state)).origin === input.origin) {
-                  const socket = await daemonSocket(state);
-                  for (const field of fields)
-                    await requestDaemon(socket, {
-                      action: 'fill',
-                      selector: field.selector,
-                      value: '',
-                    }).catch(() => {});
-                }
-              } catch {}
-            } else
-              await evaluate(
-                state,
-                `(() => { if(location.origin!==${JSON.stringify(input.origin)}) return false; for(const s of ${JSON.stringify(fields.map((field) => field.selector))}) { for(const e of document.querySelectorAll(s)) { e.value=''; e.dispatchEvent(new Event('input',{bubbles:true})); } } return true; })()`,
-              ).catch(() => {});
-          }
           throw new Error(
             'Secure entry could not be confirmed. Check the login page before continuing.',
           );
@@ -1211,12 +1166,33 @@ export function createAgentBrowserComputer(options: {
     }
   }
 
-  async function inspectPage(state: BrowserState): Promise<LoginInspection> {
+  async function inspectPage(state: BrowserState, target?: LoginTarget): Promise<LoginInspection> {
     const url = await currentUrl(state);
-    if (state.saved.allowedOrigin && new URL(url).origin !== state.saved.allowedOrigin)
+    if (
+      (state.saved.allowedOrigin && new URL(url).origin !== state.saved.allowedOrigin) ||
+      (target && new URL(url).origin !== target.origin)
+    )
       throw new BrowserActionError('browser_origin_changed');
     await maskFields(state);
-    const inspection = loginInspectionSchema.parse(await evaluate(state, loginInspectionScript()));
+    let selected = target;
+    if (target) {
+      const resolve = (selector?: string) => {
+        if (!selector || !selector.startsWith('@')) return selector;
+        const bound = state.loginRefs.get(selector);
+        if (!bound) throw new Error('The browser reference changed. Take a new snapshot.');
+        return bound;
+      };
+      selected = {
+        ...target,
+        usernameSelector: resolve(target.usernameSelector),
+        passwordSelector: resolve(target.passwordSelector),
+      };
+    }
+    const inspection = loginInspectionSchema.parse(
+      await evaluate(state, loginInspectionScript(selected)),
+    );
+    for (const field of inspection.fields) state.protectedSelectors.add(field.selector);
+    await maskFields(state);
     if (inspection.origin !== new URL(url).origin)
       throw new Error('The login page changed. Inspect it again.');
     browserUrl(inspection.url);
@@ -1226,7 +1202,7 @@ export function createAgentBrowserComputer(options: {
     };
   }
 
-  async function inspectLogin(id: string): Promise<LoginInspection> {
+  async function inspectLogin(id: string, target?: LoginTarget): Promise<LoginInspection> {
     const state = await recoverBrowser(id);
     if (state?.saved.navigationFailed || (!state && (await screens.load(id))?.navigationFailed))
       throw new BrowserActionError('browser_navigation_failed');
@@ -1234,7 +1210,7 @@ export function createAgentBrowserComputer(options: {
     if (state.injecting) throw new BrowserLockedError();
     return serialize(state, () => {
       if (state.injecting) throw new BrowserLockedError();
-      return inspectPage(state);
+      return inspectPage(state, target);
     });
   }
 
@@ -1316,6 +1292,7 @@ export function createAgentBrowserComputer(options: {
       state.started = false;
       await saveState(state);
       state.secrets.clear();
+      state.secretsByOrigin.clear();
       state.protectedSelectors.clear();
       for (const directory of state.uploads) await rm(directory, { recursive: true, force: true });
       state.uploads.clear();
