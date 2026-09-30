@@ -67,7 +67,7 @@ export const scheduleObservation = Type.Union([
 export const toolDefinitions = {
   send_message: defineTool(
     'send_message',
-    'Send a message to the user now. Do not repeat it in the final answer. In background runs, send only useful results or necessary questions.',
+    'Send a message to the user now: the acknowledgement before work, a real update, or an earlier short message of your reply. Do not repeat it in the final answer. In background runs, send only useful results or necessary questions.',
     Type.Object({
       text: Type.String(),
       replyToMessageId: Type.Optional(Type.String({ pattern: '^[0-9a-fA-F-]{36}$' })),

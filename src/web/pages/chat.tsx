@@ -629,10 +629,6 @@ export function Chat({
                   streaming={streamIds.has(message.streamId ?? '')}
                   inspectorEnabled={state.configuration.inspectorEnabled}
                   grouped={messagesAreGrouped(visibleMessages[index - 1], message, dateFormat)}
-                  showTimestamp={
-                    !streamIds.has(message.streamId ?? '') &&
-                    !messagesAreGrouped(message, visibleMessages[index + 1], dateFormat)
-                  }
                   onReply={
                     message.turnId || persistedIds.has(message.id)
                       ? () => {
