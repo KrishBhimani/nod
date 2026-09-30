@@ -502,6 +502,7 @@ test(
     let applied: Record<string, string> = {};
     let failApply = false;
     let loseRegistrationResponse = false;
+    let pairingDuringRegistration: string | undefined;
     let settings: Awaited<ReturnType<typeof createChannelSettings>>;
     const options = {
       keyStore: { id: 'fixture', configured: true, getKey: async () => key },
@@ -525,6 +526,22 @@ test(
             'registration_pending',
           );
           registrations.push(body.secret_token);
+          if (pairingDuringRegistration) {
+            assert.equal(
+              await settings.pair({
+                channelId: 'telegram',
+                accountId: '987',
+                senderId: '123',
+                senderName: '@fixture_owner',
+                messageId: 'fixture-queued-start',
+                threadId: 'telegram:123',
+                code: pairingDuringRegistration,
+                sentAt: new Date(),
+              }),
+              true,
+            );
+            pairingDuringRegistration = undefined;
+          }
           if (loseRegistrationResponse) throw new Error('fixture response lost after registration');
           return Response.json({ ok: true, result: true });
         },
@@ -570,9 +587,30 @@ test(
         pending.TELEGRAM_WEBHOOK_SECRET_TOKEN,
         original.TELEGRAM_WEBHOOK_SECRET_TOKEN,
       );
+      const retry = () =>
+        app.inject({
+          method: 'POST',
+          url: '/api/channel-settings/telegram/pairing',
+          payload: {},
+        });
+      assert.equal((await retry()).statusCode, 503);
+      assert.deepEqual(await settings.environment(), pending);
+      assert.equal(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/api/channel-settings/telegram/user',
+            payload: { allowedUserId: '123' },
+          })
+        ).statusCode,
+        503,
+      );
+      assert.deepEqual(await settings.environment(), pending);
       failApply = false;
-      settings = await createChannelSettings(pool, { ...options, ownerId: 'local-development' });
-      assert.equal(await settings.recover(), true);
+      const retried = await retry();
+      assert.equal(retried.statusCode, 200);
+      assert.match(retried.json().pairingUrl, /^https:\/\/t\.me\/fixture_bot\?start=[\w-]{32}$/);
+      assert.equal(retried.json().channel.webhookStatus, 'registered');
       assert.deepEqual(registrations, [pending.TELEGRAM_WEBHOOK_SECRET_TOKEN]);
       assert.equal((await settings.status()).channels[0]?.webhookStatus, 'registered');
 
@@ -609,6 +647,40 @@ test(
 
       loseRegistrationResponse = true;
       assert.equal((await save()).statusCode, 503);
+      const interrupted = await settings.environment();
+      const failedRetry = await retry();
+      assert.equal(failedRetry.statusCode, 503);
+      assert.equal(failedRetry.json().pairingUrl, undefined);
+      assert.deepEqual(await settings.environment(), interrupted);
+      loseRegistrationResponse = false;
+      const resumed = await retry();
+      assert.equal(resumed.statusCode, 200);
+      assert.equal(
+        (await settings.environment()).TELEGRAM_WEBHOOK_SECRET_TOKEN,
+        interrupted.TELEGRAM_WEBHOOK_SECRET_TOKEN,
+      );
+      assert.equal((await settings.status()).channels[0]?.webhookStatus, 'registered');
+      await pool.query(
+        `UPDATE channel_settings SET summary=jsonb_set(summary,'{webhookStatus}','"registration_pending"') WHERE provider='telegram'`,
+      );
+      pairingDuringRegistration = new URL(resumed.json().pairingUrl).searchParams.get('start')!;
+      const pairedDuringRetry = await retry();
+      assert.equal(pairedDuringRetry.statusCode, 200);
+      assert.equal(pairedDuringRetry.json().pairingUrl, undefined);
+      assert.deepEqual(pairedDuringRetry.json().channel.pairingCandidate, {
+        id: '123',
+        name: '@fixture_owner',
+      });
+      assert.equal(pairedDuringRetry.json().channel.webhookStatus, 'registered');
+      const confirmed = await app.inject({
+        method: 'POST',
+        url: '/api/channel-settings/telegram/confirm',
+        payload: {},
+      });
+      assert.equal(confirmed.statusCode, 200);
+      assert.equal(confirmed.json().channel.allowedUserId, '123');
+      loseRegistrationResponse = true;
+      assert.equal((await save()).statusCode, 503);
       assert.equal(
         (await app.inject({ method: 'DELETE', url: '/api/channel-settings/telegram' })).statusCode,
         200,
@@ -628,6 +700,150 @@ test(
       await admin.query(`DROP SCHEMA ${schema} CASCADE`);
       await admin.end();
     }
+  },
+);
+
+test(
+  'Telegram setup retry serializes incoming Start messages with pairing link rotation',
+  { skip: !process.env.TEST_DATABASE_URL, timeout: 10000 },
+  async (t) => {
+    for (const first of ['start', 'retry'] as const)
+      await t.test(`${first} starts first`, async (t) => {
+        const db = await hostedDatabase();
+        const app = Fastify();
+        const key = randomBytes(32);
+        const ownerId = `fixture-${first}`;
+        let releaseRead: () => void = () => {};
+        const resumeRead = new Promise<void>((resolve) => {
+          releaseRead = resolve;
+        });
+        let readPaused: () => void = () => {};
+        const pausedRead = new Promise<void>((resolve) => {
+          readPaused = resolve;
+        });
+        let activated: () => void = () => {};
+        let readsBeforePause: number | undefined;
+        const query = db.pool.query.bind(db.pool);
+        t.mock.method(db.pool, 'query', async (sql: string, values?: unknown[]) => {
+          const result = await query(sql, values);
+          if (sql.startsWith('UPDATE channel_settings SET summary=jsonb_set')) activated();
+          if (
+            readsBeforePause !== undefined &&
+            sql ===
+              "SELECT * FROM channel_settings WHERE owner_id=$1 AND provider='telegram' AND enabled=true" &&
+            readsBeforePause-- === 0
+          ) {
+            readsBeforePause = undefined;
+            readPaused();
+            await resumeRead;
+          }
+          return result;
+        });
+        const settings = await createChannelSettings(db.pool, {
+          ownerId,
+          keyStore: { id: 'fixture', configured: true, getKey: async () => key },
+          verifier: createChatSdkSetupVerifier({
+            fetch: async (url) => {
+              if (String(url).endsWith('/getMe'))
+                return Response.json({
+                  ok: true,
+                  result: {
+                    id: 987,
+                    is_bot: true,
+                    first_name: 'Fixture bot',
+                    username: 'fixture_bot',
+                  },
+                });
+              if (String(url).endsWith('/getWebhookInfo'))
+                return Response.json({ ok: true, result: { url: '' } });
+              assert.ok(String(url).endsWith('/setWebhook'));
+              return Response.json({ ok: true, result: true });
+            },
+          }),
+          apply: async () => {},
+        });
+        settings.registerRoutes(app);
+        try {
+          const saved = await app.inject({
+            method: 'PUT',
+            url: '/api/channel-settings/telegram',
+            payload: {
+              botToken: token,
+              webhookUrl: 'https://webhook.example.com/api/webhooks/telegram',
+            },
+          });
+          assert.equal(saved.statusCode, 200);
+          await query(
+            `UPDATE channel_settings SET summary=jsonb_set(summary,'{webhookStatus}','"registration_pending"') WHERE owner_id=$1 AND provider='telegram'`,
+            [ownerId],
+          );
+          const activationFinished = new Promise<void>((resolve) => {
+            activated = resolve;
+          });
+          const pair = (code: string) =>
+            settings.pair({
+              channelId: 'telegram',
+              accountId: '987',
+              senderId: '123',
+              senderName: '@fixture_owner',
+              messageId: 'fixture-concurrent-start',
+              threadId: 'telegram:123',
+              code,
+              sentAt: new Date(),
+            });
+          const retry = () =>
+            app
+              .inject({
+                method: 'POST',
+                url: '/api/channel-settings/telegram/pairing',
+                payload: {},
+              })
+              .then((response) => response);
+          const code = new URL(saved.json().pairingUrl).searchParams.get('start')!;
+          readsBeforePause = first === 'start' ? 0 : 1;
+          let pairing: Promise<boolean>;
+          let retrying: ReturnType<typeof retry>;
+          if (first === 'start') {
+            pairing = pair(code);
+            await pausedRead;
+            retrying = retry();
+            await activationFinished;
+          } else {
+            retrying = retry();
+            await pausedRead;
+            pairing = pair(code);
+          }
+          const completedWhileBlocked = await Promise.race([
+            (first === 'start' ? retrying : pairing).then(() => true),
+            sleep(250).then(() => false),
+          ]);
+          releaseRead();
+          const [accepted, retried] = await Promise.all([pairing, retrying]);
+          assert.equal(completedWhileBlocked, false);
+          assert.equal(retried.statusCode, 200);
+          assert.equal(accepted, first === 'start');
+          if (first === 'start') {
+            assert.equal(retried.json().pairingUrl, undefined);
+            assert.equal(retried.json().channel.pairingCandidate.id, '123');
+          } else {
+            const nextCode = new URL(retried.json().pairingUrl).searchParams.get('start')!;
+            assert.notEqual(nextCode, code);
+            assert.equal(await pair(nextCode), true);
+          }
+          const confirmed = await app.inject({
+            method: 'POST',
+            url: '/api/channel-settings/telegram/confirm',
+            payload: {},
+          });
+          assert.equal(confirmed.statusCode, 200);
+          assert.equal(confirmed.json().channel.allowedUserId, '123');
+          assert.equal(confirmed.json().channel.webhookStatus, 'registered');
+        } finally {
+          releaseRead();
+          await app.close();
+          await db.close();
+        }
+      });
   },
 );
 
