@@ -373,7 +373,7 @@ export async function createApplication(
         provider: 'pi-web-access',
         category: 'browser',
         status: 'recorded',
-        note: 'Public search operations and duration. Provider prices and network charges are unavailable.',
+        note: 'Public search and fetch operations and duration. Provider prices and network charges are unavailable.',
       },
       ...(adapters.linkPreviews
         ? [
