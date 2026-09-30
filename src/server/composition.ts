@@ -41,7 +41,7 @@ import { createOpenAIRelevanceClassifier } from '../providers/openai/relevance.t
 import { createOpenAISpeechProvider } from '../providers/openai/speech.ts';
 import { createPiAgent } from '../providers/pi/index.ts';
 import { createPublicLinkPreviewProvider } from '../providers/public-web/link-preview.ts';
-import { createWebSearch } from '../providers/public-web/search.ts';
+import { createWebFetch, createWebSearch } from '../providers/public-web/search.ts';
 import { createAgentRuntime } from '../runtime/index.ts';
 import { createApp } from './app.ts';
 import { createWorkAdmission, createWorkConsumers } from './work-admission.ts';
@@ -440,6 +440,7 @@ export async function createApplication(
   const integrationProvider = meterIntegrations(adapters.integrations, providerUsage);
   const classify = meterRelevance(adapters.relevance, providerUsage);
   const webSearch = createWebSearch();
+  const webFetch = createWebFetch();
   const runtime = createAgentRuntime({
     agent: meterAgent(adapters.agent, providerUsage),
     withTool: providerUsage.withTool,
@@ -449,6 +450,11 @@ export async function createApplication(
       providerUsage.track(
         { provider: 'pi-web-access', category: 'browser', operation: 'search' },
         () => webSearch(query, signal),
+      ),
+    webFetch: (url, signal) =>
+      providerUsage.track(
+        { provider: 'pi-web-access', category: 'browser', operation: 'fetch' },
+        () => webFetch(url, signal),
       ),
   });
   const speech = createSpeech(speechProvider);

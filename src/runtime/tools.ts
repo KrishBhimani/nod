@@ -229,6 +229,11 @@ export const toolDefinitions = {
     'Search the public web for current sources.',
     Type.Object({ query: Type.String({ minLength: 1, maxLength: 500 }) }),
   ),
+  web_fetch: defineTool(
+    'web_fetch',
+    'Read one public web page as text. Use the browser for pages that need a saved account session.',
+    Type.Object({ url: Type.String({ minLength: 1, maxLength: 2048 }) }),
+  ),
   create_audio: defineTool(
     'create_audio',
     'Turn text into speech and send the audio to the user.',
@@ -384,11 +389,20 @@ export function ottoTools(turn: Turn): OttoTool[] {
   ];
   const search = turn.webSearch;
   if (search) tools.push(bind(toolDefinitions.web_search, (p) => search(p.query, signal)));
+  const fetch = turn.webFetch;
+  if (fetch) tools.push(bind(toolDefinitions.web_fetch, (p) => fetch(p.url, signal)));
   return tools;
 }
 
-export function inspectToolCatalog(includeWebSearch = false): AgentToolMetadata[] {
+export function inspectToolCatalog(
+  includeWebSearch = false,
+  includeWebFetch = false,
+): AgentToolMetadata[] {
   return Object.values(toolDefinitions)
-    .filter((tool) => includeWebSearch || tool.name !== 'web_search')
+    .filter(
+      (tool) =>
+        (includeWebSearch || tool.name !== 'web_search') &&
+        (includeWebFetch || tool.name !== 'web_fetch'),
+    )
     .map((tool) => structuredClone(tool));
 }

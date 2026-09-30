@@ -15,7 +15,7 @@ import type {
 import type { Computer, Workspace } from '../ports/computer.ts';
 import { BrowserActionError } from '../ports/computer.ts';
 import { threadIdentity } from '../ports/thread-identity.ts';
-import type { WebSearch } from '../ports/web-search.ts';
+import type { WebFetch, WebSearch } from '../ports/web-search.ts';
 import { browserErrorMessage } from '../shared/browser-errors.ts';
 import { requestsPrivateInput } from './communication.ts';
 import { createObservationQueue } from './observations.ts';
@@ -27,7 +27,7 @@ import { privateInputNotice, type Turn } from './turn.ts';
 const skillsDir = fileURLToPath(new URL('./skills', import.meta.url));
 const holdMs = 30 * 60_000;
 const imageBytes = 5 * 1024 * 1024;
-const parallelTools = new Set(['web_search', 'share_file', 'create_audio']);
+const parallelTools = new Set(['web_search', 'web_fetch', 'share_file', 'create_audio']);
 const readOnlyTools: Record<string, true | string[]> = {
   read: true,
   find: true,
@@ -35,6 +35,7 @@ const readOnlyTools: Record<string, true | string[]> = {
   send_message: true,
   apps: true,
   web_search: true,
+  web_fetch: true,
   browser: ['open', 'snapshot', 'scroll', 'screenshot'],
   manage_apps: ['list'],
   manage_personal_context: [
@@ -73,6 +74,7 @@ export function createAgentRuntime(dependencies: {
   computer: Computer;
   workspace: Workspace;
   webSearch?: WebSearch;
+  webFetch?: WebFetch;
   observationTimeoutMs?: number;
   withTool?<T>(turnId: string, toolCallId: string, toolName: string, action: () => T): T;
 }) {
@@ -291,6 +293,7 @@ export function createAgentRuntime(dependencies: {
         context,
         computer,
         webSearch: dependencies.webSearch,
+        webFetch: dependencies.webFetch,
         reply,
         pause,
         confirm,
@@ -433,7 +436,7 @@ export function createAgentRuntime(dependencies: {
     waitForThread: (threadId: string) => activeThreads.get(threadId)?.done ?? Promise.resolve(),
     inspectTools: () => [
       ...(agent.nativeTools ?? []).map((tool) => structuredClone(tool)),
-      ...inspectToolCatalog(Boolean(dependencies.webSearch)),
+      ...inspectToolCatalog(Boolean(dependencies.webSearch), Boolean(dependencies.webFetch)),
     ],
     status: () => ({
       browser: computer.status(),

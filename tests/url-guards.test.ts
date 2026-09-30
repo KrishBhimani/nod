@@ -11,6 +11,7 @@ import {
 } from '../src/providers/public-web/link-preview.ts';
 import { previewableUrl } from '../src/shared/link-preview.ts';
 import { artifactImage, artifactPreview } from '../src/web/components/attachment-images.tsx';
+import { createWebFetch } from '../src/providers/public-web/search.ts';
 import { MessageText } from '../src/web/components/message.tsx';
 import type { Artifact } from '../src/shared/contracts.ts';
 import { connectionUrl } from '../src/web/lib/connection-url.ts';
@@ -344,4 +345,37 @@ test('attachment previews and gallery sources accept only owned artifact URLs an
     '/api/artifacts/abc?token=private',
   ])
     assert.equal(artifactImage({ ...picture, url }), null);
+});
+
+test('web fetch accepts public URL shapes and bounds extracted text', async () => {
+  const calls: string[] = [];
+  const fetch = createWebFetch(async (url, _signal, options) => {
+    calls.push(url);
+    assert.equal(options?.mode, 'raw');
+    return { url, title: 'Fixture', content: 'x'.repeat(60_000), error: null };
+  });
+  const signal = new AbortController().signal;
+  for (const url of ['file:///etc/passwd', 'https://name:secret@example.com/', '/relative'])
+    await assert.rejects(fetch(url, signal), /public HTTP or HTTPS URL/);
+  assert.deepEqual(calls, []);
+  const result = await fetch('https://example.com/report', signal);
+  assert.equal(result.url, 'https://example.com/report');
+  assert.equal(result.content.length, 50_000);
+  assert.deepEqual(calls, ['https://example.com/report']);
+});
+
+test('web fetch removes page scripts and keeps source links', async () => {
+  const fetch = createWebFetch(async (url) => ({
+    url,
+    title: 'report',
+    mimeType: 'text/html',
+    content:
+      '<html><head><title>Source report</title><script>privateToken=123</script></head><body><main><h1>Findings</h1><p>Checked value <a href="/source">source</a>.</p><form>secret field</form></main></body></html>',
+    error: null,
+  }));
+  const result = await fetch('https://example.com/report', new AbortController().signal);
+  assert.equal(result.title, 'Source report');
+  assert.match(result.content, /Findings/);
+  assert.match(result.content, /https:\/\/example\.com\/source/);
+  assert.doesNotMatch(result.content, /privateToken|secret field/);
 });
