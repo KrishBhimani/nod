@@ -96,12 +96,15 @@ export function Chat({
 }) {
   const dateFormat = useDateFormat();
   const { data: connections } = usePageData<Connection[]>('/api/apps');
-  const connectedAppPaths = useMemo(
+  const connectedAppIds = useMemo(
     () =>
       new Set(
         connections
           ?.filter((connection) => connection.status === 'connected')
-          .flatMap((connection) => connection.accessPaths?.map((path) => path.id) ?? []) ?? [],
+          .flatMap((connection) => [
+            connection.slug,
+            ...(connection.accessPaths?.map((path) => path.id) ?? []),
+          ]) ?? [],
       ),
     [connections],
   );
@@ -247,11 +250,13 @@ export function Chat({
         ? integrationServices[slug as keyof typeof integrationServices].name
         : 'App';
     setConnectionNotice(
-      outcome === 'continued' || outcome === 'connected'
-        ? ''
-        : outcome === 'cancelled'
-          ? `${name} connection cancelled. You can try again in chat or Apps.`
-          : `${name} could not connect. Try again in chat or Apps.`,
+      outcome === 'continued'
+        ? `${name} connected. Otto is continuing your request.`
+        : outcome === 'connected'
+          ? `${name} connected.`
+          : outcome === 'cancelled'
+            ? `${name} connection cancelled. Try again in chat.`
+            : `${name} could not connect. Try again in chat.`,
     );
     url.searchParams.delete('connection');
     url.searchParams.delete('service');
@@ -618,7 +623,7 @@ export function Chat({
                 )}
                 <MessageBubble
                   message={message}
-                  connectedAppPaths={connectedAppPaths}
+                  connectedAppIds={connectedAppIds}
                   streaming={streamIds.has(message.streamId ?? '')}
                   inspectorEnabled={state.configuration.inspectorEnabled}
                   grouped={messagesAreGrouped(visibleMessages[index - 1], message, dateFormat)}
