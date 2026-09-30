@@ -115,7 +115,7 @@ def read(name):
   with os.fdopen(os.dup(fd),'rb') as file: return json.load(file)
  finally: os.close(fd)
 if request['action']=='list':
- names=sorted(e.name[:-5] for e in os.scandir(root) if e.name.endswith('.json') and e.is_file(follow_symlinks=False))[:100] if os.path.isdir(root) else []
+ names=sorted(e.name[:-5] for e in os.scandir(root) if e.name.endswith('.json') and e.is_file(follow_symlinks=False)) if os.path.isdir(root) else []
  result=[]
  for name in names:
   try: result.append([name,read(name)])
@@ -179,13 +179,14 @@ function validateFlow(value: unknown): Flow {
     }
     if (action.action === 'open') {
       const url = new URL(action.url.replace(/\{\{[a-z][a-z0-9_]*\}\}/g, 'value'));
-      if (url.origin !== origin) throw new Error('Every open step must use the flow origin.');
+      if (url.origin !== origin || url.username || url.password)
+        throw new Error('Every open step must use the flow origin without URL credentials.');
     }
-    if (
-      step.expectUrl &&
-      new URL(step.expectUrl.replace(/\{\{[a-z][a-z0-9_]*\}\}/g, 'value')).origin !== origin
-    )
-      throw new Error('An expected URL must use the flow origin.');
+    if (step.expectUrl) {
+      const url = new URL(step.expectUrl.replace(/\{\{[a-z][a-z0-9_]*\}\}/g, 'value'));
+      if (url.origin !== origin || url.username || url.password)
+        throw new Error('An expected URL must use the flow origin without URL credentials.');
+    }
   }
   return flow;
 }

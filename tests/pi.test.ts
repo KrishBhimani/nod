@@ -956,8 +956,8 @@ test('browser flows stay discoverable after a thread reset and stop when a page 
     'second-thread',
     new AbortController().signal,
   );
-  const registry = await afterReset({ action: 'list', query: 'bikes marketplace' });
-  assert.equal((registry as { flows: Array<{ id: string }> }).flows[0].id, 'bike-watch');
+  const registry = await afterReset({ action: 'list', query: 'cars listings' });
+  assert.equal((registry as { flows: Array<{ id: string }> }).flows[0].id, 'car-listings');
   assert.equal((registry as { flows: Array<{ id: string }> }).flows.length, 2);
   const paused = await afterReset({
     action: 'run',
@@ -1011,6 +1011,60 @@ test('browser flows stay discoverable after a thread reset and stop when a page 
     }),
     /stable selector/,
   );
+  await assert.rejects(
+    run({
+      action: 'save',
+      flow: {
+        ...flow,
+        steps: [
+          { action: { action: 'open', url: 'https://user:secret@market.example.test/search' } },
+          flow.steps.at(-1)!,
+        ],
+      },
+    }),
+    /URL credentials/,
+  );
+  await assert.rejects(
+    run({
+      action: 'save',
+      flow: {
+        ...flow,
+        steps: [
+          flow.steps[0],
+          {
+            action: { action: 'snapshot' },
+            expectUrl: 'https://user:secret@market.example.test/search',
+          },
+        ],
+      },
+    }),
+    /URL credentials/,
+  );
+  const library = join(root, '.otto/browser-flows');
+  for (let index = 0; index < 101; index++) {
+    const id = `old-flow-${index}`;
+    await writeFile(
+      join(library, `${id}.json`),
+      JSON.stringify({
+        ...flow,
+        id,
+        title: 'Old routine',
+        description: 'Archived site routine.',
+      }),
+    );
+  }
+  await writeFile(
+    join(library, 'z-last.json'),
+    JSON.stringify({
+      ...flow,
+      id: 'z-last',
+      title: 'Late unique listing',
+      description: 'A later site routine.',
+    }),
+  );
+  const fullRegistry = await afterReset({ action: 'list', query: 'late unique' });
+  assert.equal((fullRegistry as { flows: Array<{ id: string }> }).flows[0].id, 'z-last');
+  assert.equal((fullRegistry as { flows: Array<{ id: string }> }).flows.length, 104);
 });
 
 test('a saved flow uses the current agent-browser session on a synthetic page', async (t) => {
