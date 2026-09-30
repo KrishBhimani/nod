@@ -852,6 +852,101 @@ async function appsFixture(t: TestContext) {
 }
 
 test(
+  'known app reads use the selected owned account without approving unknown actions',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async (t) => {
+    for (const { service, action, input, guarded } of [
+      {
+        service: 'gmail' as const,
+        action: 'GMAIL_GET_PROFILE',
+        input: { user_id: 'me' },
+        guarded: ['GMAIL_SEND_EMAIL', 'GMAIL_CREATE_EMAIL_DRAFT', 'GMAIL_GET_AND_DELETE_MESSAGES'],
+      },
+      {
+        service: 'googlecalendar' as const,
+        action: 'GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS',
+        input: { time_min: '2027-01-10T09:00:00Z', time_max: '2027-01-10T18:00:00Z' },
+        guarded: [
+          'GOOGLECALENDAR_CREATE_EVENT',
+          'GOOGLECALENDAR_UPDATE_EVENT',
+          'GOOGLECALENDAR_DELETE_EVENT',
+          'GOOGLECALENDAR_EVENTS_LIST_AND_DELETE',
+        ],
+      },
+    ]) {
+      await t.test(action, async (t) => {
+        const f = await appsFixture(t);
+        const client = new Composio({
+          apiKey: 'fixture-key-never-live',
+          allowTracking: false,
+          disableVersionCheck: true,
+          fileUploadDirs: false,
+        });
+        t.mock.method(client.tools, 'getRawComposioToolBySlug', async (slug: string) => ({
+          slug,
+          name: slug,
+          tags: slug === action ? ['readOnlyHint'] : [],
+        }));
+        f.provider.readOnly = createComposioProvider({ client }).readOnly;
+        await f.connect(service);
+        const selected = await f.connect(service);
+        await assert.rejects(f.service.execute('local-development', action, input), {
+          statusCode: 409,
+        });
+        const result = await f.service.execute('local-development', action, {
+          connectionId: selected.connectionId,
+          ...input,
+        });
+        assert.deepEqual(f.executed, [{ action, args: input, accountId: selected.accountId }]);
+        assert.equal('requiresApproval' in (result as Record<string, unknown>), false);
+        for (const action of guarded) {
+          const args = { connectionId: selected.connectionId };
+          assert.deepEqual(await f.service.execute('local-development', action, args), {
+            requiresApproval: true,
+            action,
+            args,
+          });
+        }
+        const foreign = (
+          await f.pool.query<{ id: string }>(
+            "INSERT INTO app_connections(owner_id,slug,account_id,provider_id) VALUES('another-owner',$1,'foreign-account','fixture') RETURNING id",
+            [service],
+          )
+        ).rows[0]!.id;
+        await assert.rejects(
+          f.service.execute('local-development', action, { connectionId: foreign, ...input }),
+          { statusCode: 404 },
+        );
+        await assert.rejects(
+          f.service.execute('another-owner', action, {
+            connectionId: selected.connectionId,
+            ...input,
+          }),
+          { statusCode: 403 },
+        );
+        assert.equal(
+          (
+            await f.app.inject({
+              method: 'POST',
+              url: `/api/apps/${service}/accounts/${selected.connectionId}/disconnect`,
+            })
+          ).statusCode,
+          200,
+        );
+        await assert.rejects(
+          f.service.execute('local-development', action, {
+            connectionId: selected.connectionId,
+            ...input,
+          }),
+          { statusCode: 404 },
+        );
+        assert.equal(f.executed.length, 1);
+      });
+    }
+  },
+);
+
+test(
   'Slack and Notion preserve owned accounts, reviewed reads, exact write approvals and signed event boundaries',
   { skip: !process.env.TEST_DATABASE_URL },
   async (t) => {
