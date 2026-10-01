@@ -126,7 +126,7 @@ export const toolDefinitions = {
   ),
   browser: defineTool(
     'browser',
-    'Control your private agent-browser session. open {url}; snapshot (accessibility tree of the page with @eN refs; selector scopes it and offset pages through more); click {selector}; fill {selector, text} (never secrets); select {selector, text} by visible label or value; check/uncheck/hover {selector}; drag {selector, targetSelector}; upload {selector, path} from the task workspace; back/forward/reload; tab_list and tab_switch {tabId}; press {key}; scroll {direction, selector?}; evaluate {script} (one JavaScript expression run in the current page; returns its JSON result within 5 seconds, with saved secrets redacted); screenshot (image for you); share_screenshot {name?} (send the image to the user); download {url? | selector?, name?} (copy a file into the workspace; foreground downloads also deliver it, while background downloads stay private until share_file; with neither, the open PDF or the last download). waitMs (up to 15000) waits for slow pages.',
+    'Control your private agent-browser session. open {url}; snapshot (accessibility tree of the page with @eN refs; selector scopes it and offset pages through more); click {selector} or {x,y,durationMs?} (hold for durationMs); fill {selector, text} (never secrets); select {selector, text} by visible label or value; check/uncheck/hover {selector}; drag {selector,targetSelector} or {points:[{x,y},...],durationMs?} (follow the path with the button held, default 500ms). Coordinates are fractions from 0 to 1 of the full visible screenshot, measured from its top-left; use a fresh screenshot, including for canvas and iframe controls. durationMs is at most 15000. upload {selector, path} from the task workspace; back/forward/reload; tab_list and tab_switch {tabId}; press {key}; scroll {direction, selector?}; evaluate {script} (one JavaScript expression run in the current page; returns its JSON result within 5 seconds, with saved secrets redacted); screenshot (image for you); share_screenshot {name?} (send the image to the user); download {url? | selector?, name?} (copy a file into the workspace; foreground downloads also deliver it, while background downloads stay private until share_file; with neither, the open PDF or the last download). waitMs (up to 15000) waits for slow pages.',
     Type.Object({
       action: literals([
         'open',
@@ -156,10 +156,33 @@ export const toolDefinitions = {
       tabId: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
       selector: Type.Optional(Type.String()),
       targetSelector: Type.Optional(Type.String()),
+      x: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
+      y: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
+      points: Type.Optional(
+        Type.Array(
+          Type.Object({
+            x: Type.Number({ minimum: 0, maximum: 1 }),
+            y: Type.Number({ minimum: 0, maximum: 1 }),
+          }),
+          { minItems: 2, maxItems: 100 },
+        ),
+      ),
+      durationMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 15000 })),
       path: Type.Optional(Type.String()),
       text: Type.Optional(Type.String({ maxLength: 8000 })),
       key: Type.Optional(
-        literals(['Enter', 'Escape', 'Tab', 'ArrowDown', 'ArrowUp', 'PageDown', 'PageUp']),
+        literals([
+          'Enter',
+          'Escape',
+          'Tab',
+          'Space',
+          'ArrowDown',
+          'ArrowUp',
+          'ArrowLeft',
+          'ArrowRight',
+          'PageDown',
+          'PageUp',
+        ]),
       ),
       direction: Type.Optional(literals(['up', 'down'])),
       waitMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 15000 })),
@@ -174,7 +197,7 @@ export const toolDefinitions = {
   ),
   get_credential: defineTool(
     'get_credential',
-    'Get a saved website login from Vault by its ID and exact origin. The result includes the username and password. To fill sign-in fields without seeing the values, omit the ID and pass the field reference (@eN) or CSS selector you chose from a fresh snapshot; the page must be on that exact origin. For a code split across several boxes, pass a CSS selector that matches all of them. Pass savedLoginId to select one applicable login. For OTP, set emailCode:true only when the page says it sent a code by email, and pass emailRecipient as the page shows it. Vault can fill a saved login or open a secure form. For the form, message is one sentence for the user about this step in their language, and action is the 2-5 word button text, such as "Add authenticator code"; never ask for the value in chat. Submit with browser and inspect the result.',
+    'Get a saved website login from Vault by its ID and exact origin. The result includes the username and any saved password; a passwordless login has an empty password. To fill sign-in fields without seeing the values, omit the ID and pass the field reference (@eN) or CSS selector you chose from a fresh snapshot; the page must be on that exact origin. For a code split across several boxes, pass a CSS selector that matches all of them. Pass savedLoginId to select one applicable login. For OTP, set emailCode:true only when the page says it sent a code by email, and pass emailRecipient as the page shows it. Vault first tries to retrieve email codes privately from a matching connected mailbox, including supported aliases. If it opens a secure form, that form requires the user to enter the value; it does not retrieve mail. Never read verification codes through apps or ask for them in chat. For the form, message is one sentence for the user about this step in their language, and action is the 2-5 word button text, such as "Add authenticator code"; never ask for the value in chat. Submit with browser and inspect the result.',
     Type.Union([
       Type.Object({
         id: uuid,
@@ -311,6 +334,10 @@ export function ottoTools(
   const screenshot = async () => {
     const bytes = await computer.screenshot(threadId, signal);
     signal.throwIfAborted();
+    if (bytes && computer.screenStatus && computer.screenStatus(threadId).state !== 'live')
+      throw new Error(
+        'A live browser screenshot is unavailable. Reopen the page and take a fresh screenshot before continuing. Do not repeat an action whose result is uncertain.',
+      );
     return bytes;
   };
   const link = async (url: unknown, text: (url: string) => string) => {
@@ -397,7 +424,10 @@ export function ottoTools(
       }
       const { message, action, ...request } = input;
       const result = await context.requestCredential(request);
-      if (result.filled) return 'Saved login entered.';
+      if (result.filled)
+        return request.kind === 'otp'
+          ? 'Verification code entered privately.'
+          : 'Saved login entered.';
       if (!result.url) throw new Error('The secure sign-in request could not be created.');
       await turn.invite(vaultInvitation(request.origin, result.url, message, action));
       await pause('credentials', undefined, { post: false });

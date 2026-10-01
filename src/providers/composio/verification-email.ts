@@ -1,6 +1,7 @@
 import type { Composio } from '@composio/core';
 import { parseFragment } from 'parse5';
 import { z } from 'zod';
+import { parse } from 'tldts';
 import type { VerificationEmail, VerificationEmailQuery } from '../../ports/integrations.ts';
 
 const mailbox = (value: string) => {
@@ -16,7 +17,7 @@ const messageSchema = z.object({
   payload: z.object({ headers: z.array(headerSchema).max(200) }).passthrough(),
 });
 
-function messageText(payload: unknown): string | undefined {
+function messageText(payload: unknown) {
   const queue: Array<{ value: unknown; depth: number }> = [{ value: payload, depth: 0 }];
   const plain: string[] = [];
   const html: string[] = [];
@@ -53,7 +54,9 @@ function messageText(payload: unknown): string | undefined {
     const text = Buffer.from(data, 'base64url').toString('utf8');
     size += text.length;
     if (size > 64_000) return;
-    (part.mimeType === 'text/plain' ? plain : html).push(text);
+    (part.mimeType === 'text/plain' ? plain : html).push(
+      part.mimeType === 'text/plain' ? text.replace(/^\s*>.*$/gm, '') : text,
+    );
   }
   if (plain.length) return plain.join('\n');
   if (!html.length) return;
@@ -61,10 +64,24 @@ function messageText(payload: unknown): string | undefined {
   const nodes: unknown[] = [document];
   const output: string[] = [];
   let count = 0;
+  type EmailNode = {
+    nodeName?: string;
+    value?: string;
+    attrs?: Array<{ name: string; value: string }>;
+    childNodes?: EmailNode[];
+  };
+  const quoted = (node: EmailNode) =>
+    ['script', 'style', 'noscript', 'template', 'blockquote'].includes(node.nodeName ?? '') ||
+    node.attrs?.some((attribute) =>
+      attribute.name === 'type'
+        ? attribute.value === 'cite'
+        : attribute.name === 'class' &&
+          /(?:^|\s)(?:gmail_quote|yahoo_quoted|protonmail_quote)(?:\s|$)/.test(attribute.value),
+    );
   while (nodes.length) {
     if (++count > 3000) return;
-    const node = nodes.shift() as { nodeName?: string; value?: string; childNodes?: unknown[] };
-    if (['script', 'style', 'noscript', 'template'].includes(node.nodeName ?? '')) continue;
+    const node = nodes.shift() as EmailNode;
+    if (quoted(node)) continue;
     if (node.nodeName === '#text') output.push(node.value ?? '');
     if (node.childNodes) nodes.unshift(...node.childNodes);
   }
@@ -155,7 +172,15 @@ export async function readVerificationEmails(
       /(?:^|;)\s*dmarc=pass\b[^;]*\bheader\.from=([a-z0-9.-]+)(?:\s|;|$)/i
         .exec(authentication)?.[1]
         ?.toLowerCase();
-    if (!authenticatedDomain || authenticatedDomain !== address.split('@')[1]) continue;
+    if (!authenticatedDomain) continue;
+    const authenticatedSite = parse(authenticatedDomain, { allowPrivateDomains: true });
+    const senderSite = parse(address.split('@')[1], { allowPrivateDomains: true });
+    if (
+      !authenticatedSite.domain ||
+      (!authenticatedSite.isIcann && !authenticatedSite.isPrivate) ||
+      authenticatedSite.domain !== senderSite.domain
+    )
+      continue;
     const body = messageText(value.payload);
     if (!body) continue;
     results.push({

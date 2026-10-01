@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 import test from 'node:test';
+import { act, createElement } from 'react';
+import { JSDOM } from 'jsdom';
+import { VaultDetails } from '../src/web/components/vault-details.tsx';
+import { Credentials } from '../src/web/pages/credentials.tsx';
 import { Composio } from '@composio/core';
 import Fastify, { type FastifyInstance } from 'fastify';
 import pg from 'pg';
@@ -1123,6 +1127,46 @@ test(
       );
 
       await t.test(
+        'combined sign-in pages allow a different account after saved details are rejected',
+        async () => {
+          await addTask('combined-rejected');
+          const turn = task('combined-rejected');
+          await vault.fillSaved(turn, 'local-development', first.id, input());
+          const combined = { ...input('password'), usernameSelector: '#account' };
+          reject = true;
+          await assert.rejects(vault.fillSaved(turn, 'local-development', first.id, combined));
+          reject = false;
+          const request = await vault.request(turn, 'local-development', combined);
+          await pool.query(
+            "UPDATE turns SET status='waiting',waiting_reason='credentials' WHERE id=$1",
+            [turn.turnId],
+          );
+          const url = request.url.replace('/vault/', '/api/credential-requests/');
+          assert.deepEqual(
+            (await describe(url)).fields?.map((field) => field.kind),
+            ['identifier', 'password'],
+          );
+          const response = await app.inject({
+            method: 'POST',
+            url,
+            payload: {
+              label: 'Different account',
+              username: 'different-member@example.test',
+              password: 'different-synthetic-password',
+            },
+          });
+          assert.equal(response.statusCode, 200);
+          assert.equal(response.json().ok, true);
+          assert.equal(injections.at(-1)?.username, 'different-member@example.test');
+          assert.equal(injections.at(-1)?.password, 'different-synthetic-password');
+          assert.deepEqual((await vault.readCredential(first.id)).secret, {
+            username: 'same-first@example.test',
+            password: 'first-password',
+          });
+        },
+      );
+
+      await t.test(
         'deleted chosen entry cannot switch automatically to the sole remaining account',
         async () => {
           const disposable = await save(
@@ -1742,11 +1786,17 @@ test(
       let observedOrigin = origin;
       let rejected = false;
       let unavailable = false;
+      let rejectIdentifier = false;
+      let unavailableIdentifier = false;
       const options = {
         keyStore: { id: 'fixture', configured: true, getKey: async () => key },
         page: async () => ({ origin: observedOrigin, url: observedOrigin + '/login' }),
         inject: async (input: CredentialInjection) => {
           injections.push(input);
+          if (unavailableIdentifier && input.kind === 'identifier')
+            throw new Error('Synthetic identifier unavailable');
+          if (rejectIdentifier && input.kind === 'identifier')
+            return { status: 'rejected' as const };
           if (unavailable && input.kind === 'password') throw new Error('Synthetic unavailable');
           if (rejected && input.kind === 'password') return { status: 'rejected' as const };
           stages.set(input.threadId, input.kind === 'identifier' ? 'password' : 'otp');
@@ -1778,7 +1828,14 @@ test(
         pool.query("UPDATE turns SET status='waiting',waiting_reason='credentials' WHERE id=$1", [
           turn.turnId,
         ]);
-      const begin = async (id: string) => {
+      const begin = async (
+        id: string,
+        credentials = {
+          label: 'My Google account',
+          username: 'synthetic@example.test',
+          password: 'one-form-synthetic-password',
+        } as { label?: string; username: string; password?: string },
+      ) => {
         if (!tasks.has(id)) {
           const turn = await startTurn();
           tasks.set(id, turn);
@@ -1795,11 +1852,7 @@ test(
         const submitted = await app.inject({
           method: 'POST',
           url,
-          payload: {
-            label: 'My Google account',
-            username: 'synthetic@example.test',
-            password: 'one-form-synthetic-password',
-          },
+          payload: credentials,
         });
         assert.equal(submitted.statusCode, 200);
         assert.equal(submitted.json().ok, true);
@@ -1945,6 +1998,184 @@ test(
           assert.equal(expired.blocked, true);
         },
       );
+
+      await t.test(
+        'passwordless identifiers survive recovery, restart and a later login without filling an empty password',
+        async () => {
+          const username = 'passwordless-member@example.test';
+          await begin('identifier-reuse', { username });
+          await app.close();
+          app = Fastify();
+          vault = await createVault(pool, options);
+          vault.registerRoutes(app);
+          const resetInput = { ...requestInput('identifier'), usernameSelector: '#fresh-account' };
+          assert.equal(
+            await vault.fillSelected(task('identifier-reuse'), 'local-development', resetInput),
+            true,
+          );
+          assert.equal(injections.at(-1)?.username, username);
+          assert.equal(injections.at(-1)?.usernameSelector, '#fresh-account');
+          assert.equal(injections.at(-1)?.password, undefined);
+          assert.equal(injections.at(-1)?.code, undefined);
+          const entries = await vault.list();
+          const entry = (
+            await Promise.all(entries.map((candidate) => vault.readCredential(candidate.id)))
+          ).find((candidate) => candidate.secret.username === username);
+          assert.ok(entry);
+          assert.equal(entry.secret.password, '');
+          await vault.fillSaved(
+            task('identifier-reuse'),
+            'local-development',
+            entry.entry.id,
+            resetInput,
+          );
+          assert.equal(injections.at(-1)?.username, username);
+          await begin('identifier-reuse', { username });
+          assert.equal((await vault.list()).length, entries.length);
+          const later = await startTurn();
+          tasks.set('identifier-later', later);
+          await vault.fillSaved(later, 'local-development', entry.entry.id, resetInput);
+          const before = injections.length;
+          const passwordInput = { ...requestInput('password'), usernameSelector: '#fresh-account' };
+          assert.equal(await vault.fillSelected(later, 'local-development', passwordInput), false);
+          assert.equal(
+            await vault.fillSaved(later, 'local-development', entry.entry.id, passwordInput),
+            false,
+          );
+          assert.equal(injections.length, before);
+          const request = await vault.request(later, 'local-development', passwordInput);
+          await wait(later);
+          const url = request.url.replace('/vault/', '/api/credential-requests/');
+          const description = await app.inject({ url });
+          assert.deepEqual(description.json().savedEntries, []);
+          assert.deepEqual(
+            description.json().fields.map((field: { kind: string }) => field.kind),
+            ['identifier', 'password'],
+          );
+          const rejected = await app.inject({
+            method: 'POST',
+            url: `${url}/saved`,
+            payload: { entryId: entry.entry.id },
+          });
+          assert.equal(rejected.statusCode, 409);
+          assert.equal(injections.length, before);
+          const response = await app.inject({
+            method: 'POST',
+            url,
+            payload: { label: 'Passwordless member', password: 'new-synthetic-password' },
+          });
+          assert.equal(response.statusCode, 200);
+          assert.equal(response.json().ok, true);
+          assert.equal(injections.at(-1)?.username, username);
+          const upgraded = await vault.readCredential(entry.entry.id);
+          assert.equal(upgraded.secret.username, username);
+          assert.equal(upgraded.secret.password, 'new-synthetic-password');
+          assert.equal((await vault.list()).length, entries.length);
+        },
+      );
+
+      await t.test('identifier recovery never fills or replays a held password', async () => {
+        await begin('held-password-recovery');
+        const turn = task('held-password-recovery');
+        assert.equal(
+          await vault.fillSelected(turn, 'local-development', requestInput('identifier')),
+          true,
+        );
+        assert.equal(injections.at(-1)?.username, 'synthetic@example.test');
+        assert.equal(injections.at(-1)?.password, undefined);
+        assert.equal(
+          await vault.fillSelected(turn, 'local-development', requestInput('password')),
+          true,
+        );
+        assert.equal(injections.at(-1)?.password, 'one-form-synthetic-password');
+        const before = injections.length;
+        assert.equal(
+          await vault.fillSelected(turn, 'local-development', requestInput('password')),
+          false,
+        );
+        assert.equal(injections.length, before);
+      });
+
+      await t.test(
+        'identifier recovery preserves account, origin, owner and turn fences',
+        async () => {
+          await begin('identifier-fences', { username: 'fenced-member@example.test' });
+          const turn = task('identifier-fences');
+          const input = requestInput('identifier');
+          const before = injections.length;
+          assert.equal(await vault.fillSelected(turn, 'other-owner', input), undefined);
+          assert.equal(
+            await vault.fillSelected(turn, 'local-development', {
+              ...input,
+              origin: 'https://other.example.test',
+            }),
+            undefined,
+          );
+          observedOrigin = 'https://other.example.test';
+          assert.equal(await vault.fillSelected(turn, 'local-development', input), false);
+          observedOrigin = origin;
+          await pool.query("UPDATE turns SET status='succeeded' WHERE id=$1", [turn.turnId]);
+          assert.equal(await vault.fillSelected(turn, 'local-development', input), false);
+          await pool.query("UPDATE turns SET status='running' WHERE id=$1", [turn.turnId]);
+          assert.equal(
+            await vault.fillSelected(turn, 'local-development', requestInput('otp')),
+            false,
+          );
+          await pool.query(
+            "UPDATE credential_account_selections SET expires_at=now()-interval '1 second' WHERE root_turn_id=$1",
+            [roots.get('identifier-fences')],
+          );
+          assert.equal(await vault.fillSelected(turn, 'local-development', input), false);
+          assert.equal(injections.length, before);
+          const later = await startTurn();
+          assert.equal(await vault.fillSelected(later, 'local-development', input), undefined);
+          const request = await vault.request(later, 'local-development', input);
+          await wait(later);
+          const response = await app.inject({
+            url: request.url.replace('/vault/', '/api/credential-requests/'),
+          });
+          assert.ok(response.json().savedEntries.length > 1);
+          assert.equal(response.json().selectedEntryId, undefined);
+          assert.equal(injections.length, before);
+        },
+      );
+
+      await t.test(
+        'failed identifier recovery is fenced without replaying credentials',
+        async () => {
+          for (const failure of ['rejected', 'uncertain']) {
+            const name = `identifier-${failure}`;
+            await begin(name, { username: `${name}@example.test` });
+            const turn = task(name);
+            const before = injections.length;
+            rejectIdentifier = failure === 'rejected';
+            unavailableIdentifier = failure === 'uncertain';
+            assert.equal(
+              await vault.fillSelected(turn, 'local-development', requestInput('identifier')),
+              false,
+            );
+            rejectIdentifier = false;
+            unavailableIdentifier = false;
+            assert.equal(injections.length, before + 1);
+            assert.equal(
+              await vault.fillSelected(turn, 'local-development', requestInput('identifier')),
+              false,
+            );
+            assert.equal(
+              await vault.fillSelected(turn, 'local-development', requestInput('password')),
+              false,
+            );
+            assert.equal(injections.length, before + 1);
+            const rows = await pool.query(
+              'SELECT * FROM credential_account_selections WHERE root_turn_id=$1',
+              [roots.get(name)],
+            );
+            assert.equal(rows.rows[0].blocked, true);
+            assert.equal(rows.rows[0].credential_entered_at, null);
+            assert.equal(openCredential(key, rows.rows[0]).password, '');
+          }
+        },
+      );
     } finally {
       try {
         await app.close();
@@ -2003,6 +2234,32 @@ test('email verification binds authenticated messages to a recent exact recipien
       request,
     ),
     '381742',
+  );
+});
+
+test('verification links do not grant unrelated senders authority over the signup site', () => {
+  const signup = { ...request, origin: 'https://app.example.net' };
+  const email = {
+    ...message,
+    sender: 'login@transactional.example.com',
+    authenticatedDomain: 'example.com',
+    text: `Your verification code is 123456. Verify email: ${signup.origin}/verify?token=abcdefghijklmnop`,
+  };
+  assert.equal(verificationCode([email], signup), undefined);
+  assert.equal(
+    verificationCode([{ ...email, authenticatedDomain: 'unrelated.com' }], signup),
+    undefined,
+  );
+  assert.equal(
+    verificationCode(
+      [{ ...email, sender: 'login@evil.github.io', authenticatedDomain: 'trusted.github.io' }],
+      signup,
+    ),
+    undefined,
+  );
+  assert.equal(
+    verificationCode([{ ...email, sender: 'login@co.uk', authenticatedDomain: 'co.uk' }], signup),
+    undefined,
   );
 });
 
@@ -2139,6 +2396,75 @@ test('Gmail verification uses fixed account-bound read endpoints and validates r
     );
   assert.equal(verificationCode((await read())!, request), '381742');
   assert.equal(calls.length, 2);
+  sender = 'Attacker <sender@unrelated.example.org>';
+  auth = 'mx.google.com; dmarc=pass header.from=unrelated.example.org';
+  for (const [type, content] of [
+    [
+      'text/plain',
+      `Your verification code is 123456.\nVerify email (${request.origin}/verify?token=abcdefghijklmnop)`,
+    ],
+    [
+      'text/html',
+      `<p>Your verification code is 123456.</p><a href="${request.origin}/verify?token=abcdefghijklmnop">Verify email</a>`,
+    ],
+  ]) {
+    mimeType = type;
+    body = content;
+    const unrelated = await read();
+    assert.equal(unrelated?.length, 1);
+    assert.equal(verificationCode(unrelated!, request), undefined);
+  }
+  sender = 'TOConline <login@toconline.pt>';
+  auth = 'mx.google.com; dmarc=pass (p=REJECT) header.from=toconline.pt; dkim=pass';
+  body = 'O seu código de autenticação é 381742.';
+  mimeType = 'multipart/alternative';
+  parts = [
+    {
+      mimeType: 'text/plain',
+      body: {
+        data: Buffer.from(
+          'Your verification code is 381742.\n> Your verification code is 999999.',
+        ).toString('base64url'),
+      },
+    },
+    {
+      mimeType: 'text/html',
+      body: {
+        data: Buffer.from(
+          '<p>Your verification code is 381742.</p><blockquote>Your verification code is 999999.</blockquote>',
+        ).toString('base64url'),
+      },
+    },
+    {
+      mimeType: 'text/html',
+      headers: [{ name: 'Content-Disposition', value: 'attachment' }],
+      body: {
+        data: Buffer.from('<p>Your verification code is 999998.</p>').toString('base64url'),
+      },
+    },
+  ];
+  const unquoted = (await read())![0];
+  assert.equal(verificationCode([unquoted], request), '381742');
+  assert.doesNotMatch(unquoted.text, /999999|999998/);
+  parts = undefined;
+  mimeType = 'text/plain';
+  sender = 'login@transactional.toconline.pt';
+  assert.equal((await read())?.length, 1);
+  for (const [authenticated, from] of [
+    ['attacker.pt', 'login@transactional.toconline.pt'],
+    ['co.uk', 'login@co.uk'],
+    ['github.io', 'login@tenant.github.io'],
+    ['other.github.io', 'login@tenant.github.io'],
+  ]) {
+    auth = `mx.google.com; dmarc=pass header.from=${authenticated}`;
+    sender = from;
+    assert.deepEqual(await read(), []);
+  }
+  auth = 'mx.google.com; dmarc=pass header.from=tenant.github.io';
+  sender = 'login@mail.tenant.github.io';
+  assert.equal((await read())?.length, 1);
+  auth = 'mx.google.com; dmarc=pass header.from=toconline.pt';
+  sender = 'login@toconline.pt';
   auth = 'mx.google.com; dmarc=fail header.from=toconline.pt';
   assert.deepEqual(await read(), []);
   auth = 'untrusted.example; dmarc=pass header.from=toconline.pt';
@@ -2161,7 +2487,8 @@ test('Gmail verification uses fixed account-bound read endpoints and validates r
   assert.deepEqual(await read(), []);
   labels = ['INBOX'];
   mimeType = 'text/html';
-  body = '<p>Your verification code is <b>381742</b>.</p><script>security code 930184</script>';
+  body =
+    '<p>Your verification code is <b>381742</b>.</p><script>security code 930184</script><blockquote>Your verification code is 999999.</blockquote><div class="gmail_quote">Your verification code is 999998.</div>';
   assert.equal(verificationCode((await read())!, request), '381742');
   mimeType = 'multipart/mixed';
   for (const attachment of [
@@ -2489,6 +2816,28 @@ test(
     });
     assert.equal(await fill('current-challenge-email'), true);
     assert.equal(injected.at(-1)?.code, currentCode);
+    const unrelatedTurn = await begin('unrelated-sender');
+    emails = [
+      {
+        ...message,
+        receivedAt: Date.now() - 1000,
+        sender: 'sender@unrelated.example.org',
+        authenticatedDomain: 'unrelated.example.org',
+        text: `Your verification code is 123456. Verify email: ${origin}/verify?token=abcdefghijklmnop`,
+      },
+    ];
+    const beforeUnrelated = injected.length;
+    assert.equal(await fill('unrelated-sender'), false);
+    assert.equal(injected.length, beforeUnrelated);
+    const manualCode = await vault.request(unrelatedTurn, owner, otpInput);
+    await turns.wait(unrelatedTurn);
+    const manualForm = await app.inject({
+      url: manualCode.url.replace('/vault/', '/api/credential-requests/'),
+    });
+    assert.equal(manualForm.statusCode, 200);
+    assert.equal(manualForm.json().kind, 'otp');
+    assert.equal(manualForm.json().status, 'pending');
+    assert.equal(manualForm.body.includes('123456'), false);
     emails = undefined;
     const nonEmailLogin = (
       await app.inject({
@@ -2618,6 +2967,8 @@ test(
     resultCode = undefined;
     assert.equal(await fill('missing'), false);
     resultCode = code;
+    assert.equal(await fill('missing'), true);
+    assert.equal(await fill('missing'), false);
     await start('rejected');
     reject = true;
     assert.equal(await fill('rejected'), false);
@@ -2658,6 +3009,7 @@ test(
     };
     assert.equal(await fill('provider-error'), false);
     lookup = undefined;
+    assert.equal(await fill('provider-error'), true);
     await start('entry-removed');
     lookup = async () => {
       await pool.query('DELETE FROM vault_entries WHERE id=$1', [saved.id]);
@@ -2797,6 +3149,7 @@ test(
     let reads: string[] = [];
     let active = true;
     let remoteEmail = recipient;
+    let requestedRecipient = recipient;
     let fail = false;
     let duringRead: (() => Promise<void>) | undefined;
     let messages: VerificationEmail[] = [];
@@ -2822,7 +3175,7 @@ test(
       },
       verificationEmails: async (id, query, signal) => {
         reads.push(id);
-        assert.equal(query.recipient, recipient);
+        assert.equal(query.recipient, requestedRecipient);
         assert.equal(query.senderDomain, 'toconline.pt');
         assert.equal(signal.aborted, false);
         if (fail) throw new Error('private-message-body 381742');
@@ -2875,6 +3228,58 @@ test(
     assert.equal(await result?.current(), true);
     assert.deepEqual(inspected, ['owned-mailbox']);
     assert.deepEqual(reads, ['owned-mailbox']);
+    requestedRecipient = 'owner+trial@example.com';
+    messages = [{ ...mail, recipients: [requestedRecipient] }];
+    const alias = await read({ recipient: requestedRecipient });
+    assert.equal(alias?.code, '381742');
+    assert.equal(await alias?.current(), true);
+    messages = [mail];
+    assert.equal(await read({ recipient: requestedRecipient }), undefined);
+    messages = [{ ...mail, recipients: [requestedRecipient] }];
+    remoteEmail = requestedRecipient;
+    assert.equal(await read({ recipient: requestedRecipient }), undefined);
+    remoteEmail = recipient;
+    await pool.query('UPDATE app_connections SET account_email=$2 WHERE id=$1', [
+      connection,
+      requestedRecipient,
+    ]);
+    assert.equal(await alias?.current(), false);
+    await pool.query('UPDATE app_connections SET account_email=$2 WHERE id=$1', [
+      connection,
+      recipient,
+    ]);
+    const aliasedDuplicate = randomUUID();
+    await pool.query(
+      "INSERT INTO app_connections(id,owner_id,slug,account_id,provider_id,account_email) VALUES($1,$2,'gmail','aliased-mailbox','mail-fixture','owner+other@example.com')",
+      [aliasedDuplicate, owner],
+    );
+    assert.equal(await read({ recipient: requestedRecipient }), undefined);
+    await pool.query('DELETE FROM app_connections WHERE id=$1', [aliasedDuplicate]);
+    for (const [primary, aliasRecipient, expected] of [
+      ['first.last@example.com', 'firstlast+trial@example.com', false],
+      ['first.last@example.com', 'first.last+trial@example.com', true],
+      ['first.last@gmail.com', 'firstlast+trial@gmail.com', true],
+      ['first.last@gmail.com', 'first.last+trial@googlemail.com', true],
+      ['first.last@googlemail.com', 'firstlast+trial@gmail.com', true],
+      ['first.last@googlemail.com', 'firstlast+trial@googlemail.com', true],
+      ['first.last@example.com', 'firstlast+trial@googlemail.com', false],
+    ] as const) {
+      await pool.query('UPDATE app_connections SET account_email=$2 WHERE id=$1', [
+        connection,
+        primary,
+      ]);
+      remoteEmail = primary;
+      requestedRecipient = aliasRecipient;
+      messages = [{ ...mail, recipients: [aliasRecipient] }];
+      assert.equal(Boolean(await read({ recipient: aliasRecipient })), expected);
+    }
+    await pool.query('UPDATE app_connections SET account_email=$2 WHERE id=$1', [
+      connection,
+      recipient,
+    ]);
+    remoteEmail = recipient;
+    requestedRecipient = recipient;
+    messages = [mail];
     await pool.query('UPDATE app_connections SET revoked=true WHERE id=$1', [connection]);
     assert.equal(await result?.current(), false);
     inspected = [];
@@ -2961,3 +3366,507 @@ test(
     assert.ok(reads.every((id) => id === 'owned-mailbox'));
   },
 );
+
+test(
+  'manually saved identifier-only logins stay origin-bound and cannot become empty credentials',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async () => {
+    const schema = `test_vault_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+    });
+    const { turn } = await seedTurns(pool);
+    const app = Fastify();
+    const key = randomBytes(32);
+    const injections: CredentialInjection[] = [];
+    const vault = await createVault(pool, {
+      keyStore: { id: 'fixture', configured: true, getKey: async () => key },
+      inject: async (input) => {
+        injections.push(input);
+      },
+      resume: async () => {},
+      retry: async () => {},
+    });
+    vault.registerRoutes(app);
+    try {
+      const payload = {
+        label: 'Fixture login',
+        origin: 'https://example.test',
+        username: 'tester@example.test',
+      };
+      for (const invalid of [
+        { ...payload, origin: '' },
+        { ...payload, origin: 'https://user:password@example.test' },
+        { ...payload, username: '' },
+        { ...payload, username: ' ', password: '' },
+      ])
+        assert.equal(
+          (await app.inject({ method: 'POST', url: '/api/vault', payload: invalid })).statusCode,
+          400,
+        );
+      const saved = await app.inject({ method: 'POST', url: '/api/vault', payload });
+      assert.equal(saved.statusCode, 200);
+      const id = saved.json().id as string;
+      const stored = await vault.readCredential(id);
+      assert.deepEqual(stored.secret, { username: payload.username, password: '' });
+      assert.equal(stored.entry.origin, payload.origin);
+      assert.equal(stored.entry.ciphertext.includes(payload.username), false);
+      assert.equal(
+        (await app.inject({ method: 'POST', url: `/api/vault/${id}/details`, payload: {} })).json()
+          .hasPassword,
+        false,
+      );
+      assert.equal(
+        (
+          await app.inject({
+            method: 'PATCH',
+            url: `/api/vault/${id}`,
+            payload: { label: payload.label, username: '' },
+          })
+        ).statusCode,
+        400,
+      );
+      const ref = await turn();
+      const input = {
+        origin: payload.origin,
+        kind: 'identifier' as const,
+        label: payload.label,
+        usernameSelector: '#email',
+      };
+      await assert.rejects(vault.fillSaved(ref, 'another-owner', id, input));
+      await assert.rejects(
+        vault.fillSaved(ref, 'local-development', id, {
+          ...input,
+          origin: 'https://other.example.test',
+        }),
+      );
+      assert.equal(injections.length, 0);
+      await vault.fillSaved(ref, 'local-development', id, input);
+      assert.equal(injections.length, 1);
+      assert.equal(injections[0].username, payload.username);
+      assert.equal(injections[0].origin, payload.origin);
+      assert.equal(
+        await vault.fillSelected(ref, 'local-development', {
+          origin: payload.origin,
+          kind: 'password',
+          label: payload.label,
+          passwordSelector: '#password',
+        }),
+        false,
+      );
+      assert.equal(injections.length, 1);
+      assert.equal(
+        (
+          await app.inject({
+            method: 'PATCH',
+            url: `/api/vault/${id}`,
+            payload: {
+              label: payload.label,
+              username: payload.username,
+              password: 'synthetic-password',
+            },
+          })
+        ).statusCode,
+        200,
+      );
+      assert.equal((await vault.readCredential(id)).secret.password, 'synthetic-password');
+      const details = await app.inject({
+        method: 'POST',
+        url: `/api/vault/${id}/details`,
+        payload: {},
+      });
+      assert.equal(details.json().hasPassword, true);
+      assert.equal(details.body.includes('synthetic-password'), false);
+      const passwordOnly = await app.inject({
+        method: 'POST',
+        url: '/api/vault',
+        payload: {
+          label: 'Password only',
+          origin: 'https://other.example.test',
+          password: 'synthetic-password',
+        },
+      });
+      assert.equal(passwordOnly.statusCode, 200);
+      assert.equal((await vault.readCredential(passwordOnly.json().id)).secret.username, '');
+    } finally {
+      await app.close();
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);
+
+async function vaultPage(
+  element: React.ReactNode,
+  response: (path: string, init: RequestInit) => Promise<Response>,
+) {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', {
+    url: 'http://localhost:4310/vault/synthetic_credential_request',
+    pretendToBeVisual: true,
+  });
+  const globals = {
+    window: dom.window,
+    document: dom.window.document,
+    HTMLElement: dom.window.HTMLElement,
+    HTMLInputElement: dom.window.HTMLInputElement,
+    Element: dom.window.Element,
+    Node: dom.window.Node,
+    Event: dom.window.Event,
+    CustomEvent: dom.window.CustomEvent,
+    FormData: dom.window.FormData,
+    IS_REACT_ACT_ENVIRONMENT: true,
+    fetch: (path: unknown, init: RequestInit = {}) => response(String(path), init),
+  };
+  const originals = new Map(
+    Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
+  );
+  for (const [key, value] of Object.entries(globals))
+    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  const { createRoot } = await import('react-dom/client');
+  const root = createRoot(dom.window.document.getElementById('root')!);
+  await act(async () => root.render(element));
+  return {
+    window: dom.window,
+    document: dom.window.document,
+    async close() {
+      await act(async () => root.unmount());
+      dom.window.close();
+      for (const [key, value] of originals)
+        if (value) Object.defineProperty(globalThis, key, value);
+        else Reflect.deleteProperty(globalThis, key);
+    },
+  };
+}
+
+test('Vault Escape cancels edits and clears replacement secrets without disabling the selected login', async () => {
+  const entry = {
+    kind: 'login' as const,
+    id: randomUUID(),
+    label: 'Fixture account',
+    origin: 'https://example.test',
+    usernameHint: 'te…',
+    updatedAt: new Date().toISOString(),
+  };
+  let detailsReads = 0;
+  let writes = 0;
+  const page = await vaultPage(
+    createElement(VaultDetails, {
+      entry,
+      onClose() {},
+      onSaved() {
+        writes++;
+      },
+      onDeleted() {
+        writes++;
+      },
+    }),
+    async (path, init) => {
+      if (path.endsWith('/details')) {
+        detailsReads++;
+        return Response.json({ ...entry, username: 'tester@example.test', hasPassword: false });
+      }
+      assert.equal(init.method ?? 'GET', 'GET');
+      return new Response(null, { status: 204 });
+    },
+  );
+  try {
+    const buttons = () => [...page.document.querySelectorAll<HTMLButtonElement>('button')];
+    await act(async () =>
+      buttons()
+        .find((button) => button.hasAttribute('data-vault-edit'))!
+        .click(),
+    );
+    const secret = page.document.querySelector<HTMLInputElement>('input[name="password"]')!;
+    const save = () => page.document.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    for (const event of ['blur', 'visibilitychange']) {
+      secret.value = 'synthetic replacement';
+      await act(async () =>
+        secret.dispatchEvent(new page.window.Event('input', { bubbles: true })),
+      );
+      assert.equal(save().disabled, false);
+      await act(async () => {
+        if (event === 'blur') page.window.dispatchEvent(new page.window.Event(event));
+        else {
+          Object.defineProperty(page.document, 'hidden', { configurable: true, value: true });
+          page.document.dispatchEvent(new page.window.Event(event));
+        }
+      });
+      assert.equal(secret.value, '');
+      assert.equal(save().disabled, true);
+      Object.defineProperty(page.document, 'hidden', { configurable: true, value: false });
+    }
+    const label = page.document.querySelector<HTMLInputElement>('input[name="label"]')!;
+    label.value = 'Renamed fixture account';
+    await act(async () => label.dispatchEvent(new page.window.Event('input', { bubbles: true })));
+    secret.value = 'synthetic replacement';
+    await act(async () => page.window.dispatchEvent(new page.window.Event('blur')));
+    assert.equal(secret.value, '');
+    assert.equal(save().disabled, false);
+    secret.value = 'synthetic replacement';
+    await act(async () => secret.dispatchEvent(new page.window.Event('input', { bubbles: true })));
+    await act(async () =>
+      secret.dispatchEvent(
+        new page.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      ),
+    );
+    assert.equal(secret.value, '');
+    assert.equal(page.document.querySelector('form'), null);
+    const edit = buttons().find((button) => button.hasAttribute('data-vault-edit'))!;
+    assert.equal(edit.disabled, false);
+    assert.equal(page.document.activeElement, edit);
+    await act(async () =>
+      edit.dispatchEvent(
+        new page.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      ),
+    );
+    assert.equal(page.document.querySelector('[data-vault-edit]'), edit);
+    await act(async () =>
+      page.document
+        .querySelector<HTMLButtonElement>('[aria-label="Edit username or email"]')!
+        .click(),
+    );
+    assert.equal(page.document.activeElement?.getAttribute('name'), 'username');
+    assert.equal(
+      page.document.querySelector<HTMLInputElement>('input[name="username"]')!.value,
+      'tester@example.test',
+    );
+    assert.equal(detailsReads, 1);
+    assert.equal(writes, 0);
+  } finally {
+    await page.close();
+  }
+});
+
+test('Vault preserves the saved card when a replacement contains only whitespace', async () => {
+  const entry: VaultCardEntry = {
+    kind: 'card',
+    id: randomUUID(),
+    label: 'Fixture card',
+    brand: 'Visa',
+    last4: '4242',
+    expiryMonth: 12,
+    expiryYear: 2028,
+    updatedAt: new Date().toISOString(),
+  };
+  const updates: Record<string, unknown>[] = [];
+  let saved = 0;
+  const page = await vaultPage(
+    createElement(VaultDetails, {
+      entry,
+      onClose() {},
+      onSaved() {
+        saved++;
+      },
+      onDeleted() {},
+    }),
+    async (path, init) => {
+      if (path.endsWith('/details'))
+        return Response.json({ ...entry, cardholder: 'Alex Tester', hasSecurityCode: false });
+      assert.equal(init.method, 'PATCH');
+      const update = JSON.parse(String(init.body));
+      updates.push(update);
+      if ('cardNumber' in update)
+        return Response.json({ error: 'Invalid replacement card number' }, { status: 400 });
+      return Response.json({ ...entry, label: update.label });
+    },
+  );
+  try {
+    await act(async () =>
+      page.document.querySelector<HTMLButtonElement>('[data-vault-edit]')!.click(),
+    );
+    const card = page.document.querySelector<HTMLInputElement>('input[name="cardNumber"]')!;
+    card.value = '   ';
+    await act(async () => card.dispatchEvent(new page.window.Event('input', { bubbles: true })));
+    const save = page.document.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    assert.equal(save.disabled, true);
+    const label = page.document.querySelector<HTMLInputElement>('input[name="label"]')!;
+    label.value = 'Renamed fixture card';
+    await act(async () => label.dispatchEvent(new page.window.Event('input', { bubbles: true })));
+    assert.equal(save.disabled, false);
+    await act(async () => save.click());
+    assert.equal(updates.length, 1);
+    assert.equal(Object.hasOwn(updates[0], 'cardNumber'), false);
+    assert.equal(updates[0].label, label.value);
+    assert.equal(saved, 1);
+    assert.equal(page.document.querySelector('form'), null);
+  } finally {
+    await page.close();
+  }
+});
+
+test('Vault keeps intentional whitespace in replacement passwords', async () => {
+  const entry = {
+    kind: 'login' as const,
+    id: randomUUID(),
+    label: 'Fixture account',
+    origin: 'https://example.test',
+    usernameHint: 'te…',
+    updatedAt: new Date().toISOString(),
+  };
+  const passwords: string[] = [];
+  const page = await vaultPage(
+    createElement(VaultDetails, { entry, onClose() {}, onSaved() {}, onDeleted() {} }),
+    async (path, init) => {
+      if (path.endsWith('/details'))
+        return Response.json({ ...entry, username: 'tester@example.test', hasPassword: true });
+      if (path.endsWith('/icon')) return new Response(null, { status: 204 });
+      assert.equal(init.method, 'PATCH');
+      passwords.push(JSON.parse(String(init.body)).password);
+      return Response.json(entry);
+    },
+  );
+  try {
+    for (const value of ['   ', '  synthetic password  ']) {
+      await act(async () =>
+        page.document.querySelector<HTMLButtonElement>('[data-vault-edit]')!.click(),
+      );
+      const password = page.document.querySelector<HTMLInputElement>('input[name="password"]')!;
+      password.value = value;
+      await act(async () =>
+        password.dispatchEvent(new page.window.Event('input', { bubbles: true })),
+      );
+      const save = page.document.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+      assert.equal(save.disabled, false);
+      await act(async () => save.click());
+      assert.equal(passwords.at(-1), value);
+    }
+    assert.equal(passwords.length, 2);
+  } finally {
+    await page.close();
+  }
+});
+
+test('secure sign-in derives an unused login name when the optional name is cleared', async () => {
+  const request = {
+    id: 'synthetic_credential_request',
+    turnId: randomUUID(),
+    origin: 'https://example.test',
+    label: 'Fixture sign-in',
+    kind: 'password',
+    status: 'pending',
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    fields: [{ kind: 'password', selector: '#password', label: 'Password' }],
+    savedEntries: ['Example.test', 'Example.test 2'].map((label) => ({
+      kind: 'login',
+      id: randomUUID(),
+      label,
+      origin: 'https://example.test',
+      usernameHint: 'te…',
+      updatedAt: new Date().toISOString(),
+    })),
+  };
+  const submitted: Record<string, unknown>[] = [];
+  const page = await vaultPage(
+    createElement(Credentials, { id: request.id }),
+    async (_path, init) => {
+      if (init.method !== 'POST') return Response.json(request);
+      submitted.push(JSON.parse(String(init.body)));
+      return Response.json({ error: 'Synthetic paused sign-in' }, { status: 503 });
+    },
+  );
+  try {
+    await act(async () =>
+      [...page.document.querySelectorAll('button')]
+        .find((button) => button.textContent === 'Use another login')!
+        .click(),
+    );
+    page.document.querySelector<HTMLInputElement>('input[name="label"]')!.value = '  ';
+    page.document.querySelector<HTMLInputElement>('input[name="password"]')!.value =
+      'synthetic password';
+    await act(async () =>
+      page.document
+        .querySelector('form')!
+        .dispatchEvent(new page.window.Event('submit', { bubbles: true, cancelable: true })),
+    );
+    assert.equal(submitted.length, 1);
+    assert.equal(submitted[0].label, 'Example.test 3');
+    assert.equal(
+      request.savedEntries.some((entry) => entry.label === submitted[0].label),
+      false,
+    );
+  } finally {
+    await page.close();
+  }
+});
+
+test('secure sign-in keeps failed submissions editable and returns to chat only after accepted submission', async () => {
+  const request = {
+    id: 'synthetic_credential_request',
+    turnId: randomUUID(),
+    origin: 'https://example.test',
+    label: 'Fixture sign-in',
+    kind: 'otp',
+    status: 'pending',
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    fields: [{ kind: 'otp', selector: '#code', label: 'Verification code' }],
+  };
+  let finish!: (value: Response) => void;
+  let submissions = 0;
+  let closed = 0;
+  let focused = 0;
+  const page = await vaultPage(
+    createElement(Credentials, { id: request.id }),
+    async (_path, init) => {
+      if (init.method !== 'POST') return Response.json(request);
+      submissions++;
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    },
+  );
+  Object.defineProperty(page.window, 'opener', {
+    value: {
+      closed: false,
+      location: { origin: page.window.location.origin },
+      focus() {
+        focused++;
+      },
+    },
+  });
+  const close = page.window.close.bind(page.window);
+  page.window.close = () => {
+    closed++;
+    Object.defineProperty(page.window, 'closed', { value: true, configurable: true });
+  };
+  try {
+    const submit = async () => {
+      page.document.querySelector<HTMLInputElement>('input[name="code"]')!.value = '123456';
+      await act(async () =>
+        page.document
+          .querySelector('form')!
+          .dispatchEvent(new page.window.Event('submit', { bubbles: true, cancelable: true })),
+      );
+    };
+    await submit();
+    assert.equal(submissions, 1);
+    assert.equal(closed, 0);
+    assert.equal(page.document.querySelector('form'), null);
+    await act(async () =>
+      finish(Response.json({ error: 'Synthetic rejected request' }, { status: 502 })),
+    );
+    assert.equal(closed, 0);
+    assert.ok(page.document.querySelector('form'));
+    assert.equal(page.document.querySelector<HTMLInputElement>('input[name="code"]')!.value, '');
+    await submit();
+    assert.equal(submissions, 2);
+    assert.equal(closed, 0);
+    await act(async () =>
+      finish(Response.json({ ok: false, retryUrl: '/vault/synthetic_replacement_request' })),
+    );
+    assert.equal(closed, 0);
+    assert.ok(page.document.querySelector('form'));
+    await submit();
+    assert.equal(submissions, 3);
+    assert.equal(closed, 0);
+    await act(async () => finish(Response.json({ ok: true })));
+    assert.equal(closed, 1);
+    assert.equal(focused, 1);
+  } finally {
+    page.window.close = close;
+    await page.close();
+  }
+});

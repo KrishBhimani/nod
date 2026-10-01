@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
-import type {
-  ChildProcess,
-  ChildProcessWithoutNullStreams,
-  SpawnOptions,
+import {
+  spawn,
+  type ChildProcess,
+  type ChildProcessWithoutNullStreams,
+  type SpawnOptions,
 } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { connect, createServer, type Socket } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -14,8 +16,12 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
+import Fastify from 'fastify';
+import type { Static } from '@sinclair/typebox';
 import { JSDOM } from 'jsdom';
 import pg from 'pg';
+import { act, createElement } from 'react';
+import { createRoot } from 'react-dom/client';
 import type {
   Agent,
   AgentToolResult,
@@ -28,9 +34,14 @@ import {
   createAgentBrowserComputer,
   redactBrowserText,
   redactBrowserUrl,
+  type BrowserDiagnostic,
 } from '../src/providers/agent-browser/index.ts';
-import { existingDaemonCommand } from '../src/providers/agent-browser/screens.ts';
+import {
+  DaemonCommandError,
+  existingDaemonCommand,
+} from '../src/providers/agent-browser/screens.ts';
 import { runProcess } from '../src/providers/process.ts';
+import { containerBrowserOptions } from '../src/providers/container-browser/config.ts';
 import { runBrowserBridge } from '../src/providers/container-browser/bridge.ts';
 import {
   browserNamespace,
@@ -44,11 +55,117 @@ import {
 } from '../src/providers/container-browser/protocol.ts';
 import { startContainerBrowserWorker } from '../src/providers/container-browser/worker.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';
+import { toolDefinitions } from '../src/runtime/tools.ts';
 import { createInspectorRedactor } from '../src/server/inspector-redaction.ts';
 import type { CredentialInjection } from '../src/server/vault.ts';
 import { createBrowserFixture } from './browser-fixture.ts';
 import { stagedLoginBrowser } from './login-fixture.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
+import { BrowserHandoff } from '../src/web/components/browser-handoff.tsx';
+import { Chat } from '../src/web/pages/chat.tsx';
+import type { AppState } from '../src/shared/contracts.ts';
+import {
+  fixtureCredentials,
+  fixtureSignup,
+  operatorAccess,
+  registerOperatorPage,
+} from '../scripts/e2e-fixtures.ts';
+
+test('acceptance operator controls unlock in the browser without exposing tokens or unauthenticated state', async () => {
+  const app = Fastify();
+  const token = randomUUID();
+  const authorized = operatorAccess(token);
+  const releases: string[] = [];
+  registerOperatorPage(app, token);
+  app.get('/e2e/status', authorized, async () => ({ privateState: 'synthetic-operator-state' }));
+  app.post<{ Params: { variant: string } }>('/e2e/signup/:variant', authorized, async (request) => {
+    releases.push(request.params.variant);
+    return { ok: true };
+  });
+  app.post('/e2e/expected-run', authorized, async () => ({ ok: true }));
+  let dom: JSDOM | undefined;
+  try {
+    const publicPage = await app.inject({ url: '/e2e' });
+    assert.equal(publicPage.statusCode, 200);
+    assert.equal(publicPage.headers['cache-control'], 'no-store');
+    for (const value of [
+      token,
+      ...Object.values(fixtureCredentials),
+      fixtureSignup.base.code,
+      fixtureSignup.alternate.code,
+    ])
+      assert.equal(publicPage.body.includes(value), false);
+    for (const [method, path] of [
+      ['GET', '/e2e/operator'],
+      ['GET', '/e2e/status'],
+      ['POST', '/e2e/signup/base'],
+      ['POST', '/e2e/expected-run'],
+    ] as const) {
+      for (const url of [path, '/e2e/%' + path.charCodeAt(5).toString(16) + path.slice(6)]) {
+        for (const headers of [{}, { authorization: 'Bearer incorrect' }]) {
+          const response = await app.inject({ method, url, headers });
+          assert.equal(response.statusCode, 401);
+          assert.equal(response.body.includes(fixtureCredentials.password), false);
+          assert.equal(response.body.includes('synthetic-operator-state'), false);
+        }
+      }
+    }
+    assert.equal(releases.length, 0);
+    const requests: Array<{ path: string; authorization: string | null }> = [];
+    dom = new JSDOM(publicPage.body, {
+      url: 'http://localhost/e2e',
+      runScripts: 'dangerously',
+      beforeParse(window) {
+        window.fetch = async (input, options) => {
+          const path = String(input);
+          const headers = new Headers(options?.headers);
+          requests.push({ path, authorization: headers.get('authorization') });
+          const response = await app.inject({
+            method: options?.method === 'POST' ? 'POST' : 'GET',
+            url: path,
+            headers: Object.fromEntries(headers),
+          });
+          return new Response(response.body, { status: response.statusCode });
+        };
+      },
+    });
+    const document = dom.window.document;
+    const input = document.querySelector<HTMLInputElement>('#operator-token')!;
+    const access = document.querySelector<HTMLFormElement>('#operator-access')!;
+    const settle = async (done: () => boolean) => {
+      for (let attempt = 0; !done() && attempt < 100; attempt++) await delay(5);
+      assert.equal(done(), true);
+    };
+    input.value = 'incorrect';
+    access.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+    await settle(() => Boolean(document.querySelector('#operator-result')!.textContent));
+    assert.equal(document.body.textContent?.includes(fixtureCredentials.password), false);
+    assert.equal(input.value, '');
+    input.value = token;
+    access.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+    await settle(() => access.hidden);
+    assert.equal(document.body.textContent?.includes(fixtureCredentials.password), true);
+    assert.equal(input.value, '');
+    for (const variant of ['base', 'alternate']) {
+      document.querySelector<HTMLButtonElement>(`[data-operator="${variant}"]`)!.click();
+      await settle(() => releases.includes(variant));
+    }
+    document.querySelector<HTMLButtonElement>('[data-operator="status"]')!.click();
+    await settle(() =>
+      document.querySelector('#operator-events')!.textContent!.includes('synthetic-operator-state'),
+    );
+    assert.deepEqual(releases, ['base', 'alternate']);
+    assert.ok(requests.slice(1).every((request) => request.authorization === `Bearer ${token}`));
+    assert.ok(requests.every((request) => !request.path.includes(token)));
+    assert.equal(dom.window.location.href, 'http://localhost/e2e');
+    assert.equal(dom.window.localStorage.length, 0);
+    assert.equal(dom.window.sessionStorage.length, 0);
+    assert.equal(document.documentElement.outerHTML.includes(token), false);
+  } finally {
+    dom?.window.close();
+    await app.close();
+  }
+});
 
 // Shared helpers
 
@@ -279,7 +396,7 @@ function syntheticComputer(): Computer & { canCheckpoint?: () => boolean } {
   };
 }
 
-async function workerFixture(createComputer: () => Computer | Promise<Computer>) {
+async function workerFixture(createComputer: () => Computer | Promise<Computer>, timeoutMs = 5000) {
   const directory = await mkdtemp('/tmp/sk-quiesce-');
   const socketPath = join(directory, 'control.sock');
   const worker = await startContainerBrowserWorker({
@@ -293,7 +410,7 @@ async function workerFixture(createComputer: () => Computer | Promise<Computer>)
       const socket = connect(socketPath);
       let output = '';
       socket.setEncoding('utf8');
-      socket.setTimeout(5000, () => socket.destroy(new Error('Synthetic request timed out.')));
+      socket.setTimeout(timeoutMs, () => socket.destroy(new Error('Synthetic request timed out.')));
       socket.once('error', reject);
       socket.once('connect', () => {
         socket.write(
@@ -435,6 +552,7 @@ async function transportFixture(respectTimeouts = false) {
   const pages = stagedLoginBrowser();
   const actions: string[] = [];
   const launches: string[] = [];
+  const diagnostics: BrowserDiagnostic[] = [];
   const sockets = new Set<Socket>();
   let before = async (_action: string, _command: Record<string, unknown>) => {};
   let after = async (_action: string, _command: Record<string, unknown>, _socket: Socket) => {};
@@ -482,6 +600,7 @@ async function transportFixture(respectTimeouts = false) {
   );
   const computer = createAgentBrowserComputer({
     dataRoot: directory,
+    onDiagnostic: (event) => diagnostics.push(event),
     daemonCommand: (path, command, signal, timeoutMs) => {
       timeouts.push({ action: command.action, timeoutMs });
       return existingDaemonCommand(path, command, signal, respectTimeouts ? timeoutMs : 250);
@@ -513,6 +632,7 @@ async function transportFixture(respectTimeouts = false) {
     computer,
     actions,
     launches,
+    diagnostics,
     page: () => pages.pages.get('fixture')!,
     switches,
     timeouts,
@@ -570,12 +690,129 @@ test('a timed out snapshot is not resent and its queue remains fenced until clos
     assert.equal(f.actions.slice(before).filter((action) => action === 'snapshot').length, 1);
     assert.equal(f.actions.slice(before).filter((action) => action === 'close').length, 1);
     assert.deepEqual(f.launches, ['open', 'info']);
+    assert.deepEqual(
+      f.diagnostics.map(({ phase, outcome }) => ({ phase, outcome })),
+      [
+        { phase: 'snapshot', outcome: 'timeout' },
+        { phase: 'cleanup', outcome: 'completed' },
+      ],
+    );
   } finally {
     releaseSnapshot.resolve();
     releaseClose.resolve();
     await f.cleanup();
   }
 });
+
+for (const [method, phase] of [
+  ['screenshot', 'screenshot'],
+  ['screenshot', 'url'],
+  ['currentPage', 'url'],
+  ['snapshot', 'url'],
+] as const)
+  test(`an acknowledged ${phase} failure during ${method} preserves the page and emits private-safe diagnostics`, async () => {
+    const browser = await transportFixture();
+    const bridge = await harness({ computer: browser.computer });
+    const computer = bridge.client('/synthetic/capture-failure');
+    const upstreamError = 'Synthetic private upstream detail https://example.test/?token=private';
+    const identifier = 'synthetic-private@example.test';
+    try {
+      await computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+      const page = browser.page();
+      page.input.value = identifier;
+      page.next.disabled = false;
+      browser.fail(phase, upstreamError);
+      const before = browser.actions.length;
+      await assert.rejects(
+        method === 'snapshot'
+          ? computer.act('fixture', { action: 'snapshot' })
+          : computer[method]('fixture'),
+        (error: unknown) => {
+          assert.ok(error instanceof BrowserActionError);
+          assert.equal(error.code, 'browser_observation_failed');
+          assert.equal(error.message.includes(upstreamError), false);
+          return true;
+        },
+      );
+      assert.equal(page.stage, 'identifier');
+      assert.equal(page.input.value, identifier);
+      assert.deepEqual(page.entered, []);
+      assert.deepEqual(
+        browser.actions.slice(before),
+        phase === 'screenshot' ? ['url', phase] : [phase],
+      );
+      assert.equal(browser.diagnostics.length, 1);
+      const diagnostic = browser.diagnostics[0];
+      assert.deepEqual(Object.keys(diagnostic).sort(), ['at', 'elapsedMs', 'outcome', 'phase']);
+      assert.equal(diagnostic.phase, phase);
+      assert.equal(diagnostic.outcome, 'daemon_rejected');
+      assert.ok(Number.isFinite(Date.parse(diagnostic.at)));
+      assert.ok(Number.isFinite(diagnostic.elapsedMs) && diagnostic.elapsedMs >= 0);
+      const recorded = JSON.stringify(browser.diagnostics);
+      for (const secret of [upstreamError, identifier, 'https://', 'private'])
+        assert.equal(recorded.includes(secret), false);
+      browser.fail();
+      const screen = await computer.screenshot('fixture');
+      assert.equal(screen?.toString(), page.screen());
+      assert.equal(computer.screenStatus!('fixture').state, 'live');
+      assert.equal(browser.actions.includes('close'), false);
+      assert.deepEqual(browser.launches, ['open', 'info']);
+    } finally {
+      browser.fail();
+      await bridge.close();
+      await browser.cleanup();
+    }
+  });
+
+for (const action of ['snapshot', 'click'] as const)
+  test(`an acknowledged ${action} observation failure preserves the page through the browser bridge`, async () => {
+    const browser = await transportFixture();
+    const bridge = await harness({ computer: browser.computer });
+    const computer = bridge.client('/synthetic/observation-failure');
+    const upstreamError = 'Snapshot timeout with synthetic-private-upstream-value';
+    try {
+      await computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+      const page = browser.page();
+      page.input.value = 'synthetic@example.test';
+      page.next.disabled = false;
+      browser.after(async (current) => {
+        if (current === 'click') page.next.click();
+      });
+      browser.fail('snapshot', upstreamError);
+      const before = browser.actions.length;
+      await assert.rejects(
+        computer.act('fixture', { action, ...(action === 'click' ? { selector: 'button' } : {}) }),
+        (error: unknown) => {
+          assert.ok(error instanceof BrowserActionError);
+          assert.equal(error.code, 'browser_observation_failed');
+          assert.equal(error.message.includes(upstreamError), false);
+          return true;
+        },
+      );
+      assert.equal(page.stage, action === 'click' ? 'password' : 'identifier');
+      assert.equal(page.entered.length, action === 'click' ? 1 : 0);
+      const screen = await computer.screenshot('fixture');
+      assert.ok(screen);
+      assert.equal(computer.screenStatus!('fixture').state, 'live');
+      assert.equal(screen.toString(), page.screen());
+      browser.fail();
+      assert.match(
+        (await computer.act('fixture', { action: 'snapshot' })).text,
+        new RegExp(page.stage),
+      );
+      assert.deepEqual(
+        browser.actions
+          .slice(before)
+          .filter((current) => ['click', 'navigate', 'close'].includes(current)),
+        action === 'click' ? ['click'] : [],
+      );
+      assert.deepEqual(browser.launches, ['open', 'info']);
+    } finally {
+      browser.fail();
+      await bridge.close();
+      await browser.cleanup();
+    }
+  });
 
 test('failed interruption cleanup blocks later actions until an explicit close succeeds', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'otto-browser-drain-failure-'));
@@ -619,7 +856,10 @@ test('failed interruption cleanup blocks later actions until an explicit close s
   }
 });
 
-type Execute = (id: string, input: BrowserAction) => Promise<AgentToolResult>;
+type Execute = (
+  id: string,
+  input: Static<typeof toolDefinitions.browser.parameters>,
+) => Promise<AgentToolResult>;
 
 async function runtimeFixture(
   computer: Computer,
@@ -679,6 +919,41 @@ async function runtimeFixture(
     },
   };
 }
+
+test('a cancelled browser action cannot feed its cached screenshot back to the model', async () => {
+  const browser = await transportFixture();
+  const releaseClick = deferred();
+  const runtime = await runtimeFixture(
+    {
+      ...browser.computer,
+      screenshot: (_id, signal) => browser.computer.screenshot('fixture', signal),
+      screenStatus: () => browser.computer.screenStatus!('fixture'),
+    },
+    async (execute) => {
+      await execute('fixture', { action: 'screenshot' });
+    },
+  );
+  try {
+    await browser.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    const captured = await browser.computer.screenshot('fixture');
+    assert.ok(captured);
+    assert.equal(browser.computer.screenStatus!('fixture').state, 'live');
+    browser.before(async (action) => {
+      if (action === 'click') await releaseClick.promise;
+    });
+    await assert.rejects(
+      browser.computer.act('fixture', { action: 'click', selector: '@e1' }),
+      /unavailable/,
+    );
+    assert.deepEqual(await browser.computer.screenshot('fixture'), captured);
+    assert.equal(browser.computer.screenStatus!('fixture').state, 'last_known');
+    await assert.rejects(runtime.run(), /live browser screenshot.*reopen/i);
+  } finally {
+    releaseClick.resolve();
+    await runtime.close();
+    await browser.cleanup();
+  }
+});
 
 for (const failure of ['unknown', 'forged', 'navigation', 'wrong_action', 'cancelled_observation'])
   test(`${failure} browser failure stops the turn without a blocked result`, async () => {
@@ -750,6 +1025,9 @@ function workerComputer() {
       calls.push({ method: 'currentPage' });
       return { origin: 'https://example.com', url: 'https://example.com/login' };
     },
+    bindProfile: async (_id, profileId) => {
+      calls.push({ method: 'bindProfile', input: profileId });
+    },
     hold: async () => {},
     close: async () => {
       calls.push({ method: 'close' });
@@ -767,7 +1045,7 @@ function workerComputer() {
   };
 }
 
-async function harness(control: { beforeFirstBridge?: Promise<void> } = {}) {
+async function harness(control: { beforeFirstBridge?: Promise<void>; computer?: Computer } = {}) {
   const root = await mkdtemp('/tmp/sk-browser-');
   const socketPath = join(root, 'control.sock');
   const instances = new Map<string, ReturnType<typeof workerComputer>>();
@@ -775,6 +1053,7 @@ async function harness(control: { beforeFirstBridge?: Promise<void> } = {}) {
     socketPath,
     dataRoot: root,
     createComputer: async (path) => {
+      if (control.computer) return control.computer;
       const value = workerComputer();
       instances.set(path, value);
       return value.computer;
@@ -909,6 +1188,12 @@ test('each application namespace retains its own worker and disposal drains only
       false,
     );
     await assert.rejects(first.act('same-task', { action: 'snapshot' }), /unavailable/);
+    await assert.rejects(
+      first.act('same-task', { action: 'open', url: 'https://example.com' }),
+      /unavailable/,
+    );
+    await assert.rejects(first.bindProfile!('same-task', randomUUID()), /unavailable/);
+    assert.equal(one.calls.filter((call) => call.method === 'dispose').length, 1);
     await second.act('same-task', { action: 'snapshot' });
   } finally {
     await fixture.close();
@@ -974,11 +1259,173 @@ test('an unacknowledged cancellation fences new actions until namespace cleanup 
     controller.abort();
     await cancelled;
     await assert.rejects(computer.act('task', { action: 'snapshot' }), /unavailable/);
-    assert.match(computer.status(), /needs a restart/);
+    assert.match(computer.status(), /reopen/i);
     drain.resolve();
     await computer.dispose();
   } finally {
     drain.resolve();
+    await fixture.close();
+  }
+});
+
+async function interruptedBrowser(fixture: Awaited<ReturnType<typeof harness>>, dataRoot: string) {
+  const computer = fixture.client(dataRoot, { timeoutMs: 200, drainTimeoutMs: 20 });
+  await computer.act('task', { action: 'snapshot' });
+  const instance = fixture.instance(dataRoot);
+  const entered = deferred();
+  const release = deferred();
+  instance.setAct(async () => {
+    entered.resolve();
+    await release.promise;
+    return { text: 'Late', url: 'https://example.com', candidates: [] };
+  });
+  const controller = new AbortController();
+  const cancelled = assert.rejects(
+    computer.act('task', { action: 'click', selector: '#submit' }, controller.signal),
+    /did not finish safely/,
+  );
+  await entered.promise;
+  controller.abort();
+  await cancelled;
+  return { computer, instance, release };
+}
+
+for (const method of ['open', 'bindProfile'] as const)
+  test(`an explicit ${method} drains an uncertain namespace before opening a new session`, async () => {
+    const fixture = await harness();
+    const dataRoot = `/synthetic/recover-${method}`;
+    const interrupted = await interruptedBrowser(fixture, dataRoot);
+    try {
+      const other = fixture.client('/synthetic/other-session');
+      await other.act('task', { action: 'snapshot' });
+      const otherInstance = fixture.instance('/synthetic/other-session');
+      const { computer, instance, release } = interrupted;
+      const launches = fixture.launches.length;
+      await assert.rejects(computer.act('task', { action: 'open', url: 'x'.repeat(8193) }));
+      for (const url of ['not-a-url', 'javascript:alert(1)', 'https://user:pass@example.com'])
+        await assert.rejects(computer.act('task', { action: 'open', url }));
+      await assert.rejects(computer.bindProfile!('task', 'invalid-profile'));
+      await assert.rejects(computer.act('task', { action: 'snapshot' }), /unavailable/);
+      await assert.rejects(
+        computer.act('task', { action: 'click', selector: '#submit' }),
+        /unavailable/,
+      );
+      assert.equal(fixture.launches.length, launches);
+      let settled = false;
+      const recovery = (
+        method === 'open'
+          ? computer.act('task', { action: 'open', url: 'https://example.com/reopened' })
+          : computer.bindProfile!('task', randomUUID())
+      ).then(
+        () => {
+          settled = true;
+          return undefined;
+        },
+        (error: unknown) => {
+          settled = true;
+          return error;
+        },
+      );
+      await delay(10);
+      assert.equal(settled, false);
+      release.resolve();
+      assert.equal(await recovery, undefined);
+      const restored = fixture.instance(dataRoot);
+      assert.notEqual(restored, instance);
+      assert.deepEqual(
+        instance.calls.map(({ method }) => method),
+        ['act', 'act', 'dispose'],
+      );
+      assert.equal(restored.calls.length, 1);
+      if (method === 'open')
+        assert.deepEqual(restored.calls[0], {
+          method: 'act',
+          input: { action: 'open', url: 'https://example.com/reopened' },
+        });
+      else assert.equal(restored.calls[0].method, 'bindProfile');
+      await computer.act('task', { action: 'snapshot' });
+      await other.act('task', { action: 'snapshot' });
+      assert.equal(fixture.instance('/synthetic/other-session'), otherInstance);
+      assert.equal(
+        otherInstance.calls.some(({ method }) => method === 'dispose'),
+        false,
+      );
+    } finally {
+      interrupted.release.resolve();
+      await fixture.close();
+    }
+  });
+
+for (const failure of ['failed', 'unacknowledged'] as const)
+  test(`a ${failure} namespace cleanup leaves explicit browser recovery fenced`, async () => {
+    const fixture = await harness();
+    const dataRoot = `/synthetic/recover-${failure}`;
+    const interrupted = await interruptedBrowser(fixture, dataRoot);
+    const finishClose = deferred();
+    let blocked = true;
+    try {
+      const { computer, instance, release } = interrupted;
+      const close = instance.computer.dispose;
+      const closeStarted = deferred();
+      instance.computer.dispose = async () => {
+        if (blocked) {
+          closeStarted.resolve();
+          if (failure === 'failed') throw new Error('Synthetic cleanup failed');
+          await finishClose.promise;
+        }
+        await close();
+      };
+      const failed = assert.rejects(
+        computer.act('task', { action: 'open', url: 'https://example.com/reopened' }),
+      );
+      release.resolve();
+      await closeStarted.promise;
+      await failed;
+      assert.equal(fixture.instance(dataRoot), instance);
+      const calls = fixture.launches.length;
+      await assert.rejects(computer.act('task', { action: 'snapshot' }), /unavailable/);
+      await assert.rejects(
+        computer.act('task', { action: 'click', selector: '#submit' }),
+        /unavailable/,
+      );
+      assert.equal(fixture.launches.length, calls);
+      assert.equal(instance.calls.filter(({ method }) => method === 'act').length, 2);
+      blocked = false;
+      finishClose.resolve();
+      await computer.act('task', { action: 'open', url: 'https://example.com/reopened' });
+      assert.notEqual(fixture.instance(dataRoot), instance);
+      assert.equal(fixture.instance(dataRoot).calls.length, 1);
+    } finally {
+      blocked = false;
+      finishClose.resolve();
+      interrupted.release.resolve();
+      await fixture.close();
+    }
+  });
+
+test('disposal during explicit browser recovery cannot revive the client', async () => {
+  const fixture = await harness();
+  const dataRoot = '/synthetic/recovery-disposal';
+  const { computer, instance, release } = await interruptedBrowser(fixture, dataRoot);
+  try {
+    const recovery = assert.rejects(
+      computer.act('task', { action: 'open', url: 'https://example.com/reopened' }),
+      /unavailable/,
+    );
+    const disposal = computer.dispose();
+    release.resolve();
+    await Promise.all([recovery, disposal]);
+    await assert.rejects(
+      computer.act('task', { action: 'open', url: 'https://example.com/reopened' }),
+      /unavailable/,
+    );
+    assert.equal(fixture.instance(dataRoot), instance);
+    assert.deepEqual(
+      instance.calls.map(({ method }) => method),
+      ['act', 'act', 'dispose'],
+    );
+  } finally {
+    release.resolve();
     await fixture.close();
   }
 });
@@ -1157,6 +1604,312 @@ test('the user can click, type and scroll in the handed-off browser at page coor
   }
 });
 
+test('visual browser actions use screenshot coordinates and reject invalid gestures before input', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'otto-visual-'));
+  const fixture = stagedLoginBrowser();
+  const commands: Record<string, unknown>[] = [];
+  const computer = createBrowserFixture({
+    dataRoot: directory,
+    run: fixture.run,
+    onDaemonCommand: (command) => commands.push(command),
+  });
+  try {
+    await computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    commands.length = 0;
+    await computer.act('fixture', { action: 'click', x: 0.5, y: 0.25 });
+    assert.deepEqual(
+      commands.filter((command) => String(command.action).startsWith('mouse')),
+      [
+        { action: 'mousemove', x: 512, y: 192 },
+        { action: 'mousedown', button: 'left' },
+        { action: 'mouseup', button: 'left' },
+      ],
+    );
+    for (const input of [
+      { action: 'click', x: -0.1, y: 0.5 },
+      { action: 'click', x: 0.5, y: 1.1 },
+      { action: 'click', x: 0.5 },
+      { action: 'click', x: Number.NaN, y: 0.5 },
+      { action: 'click', x: 0.5, y: 0.5, durationMs: 15_001 },
+      { action: 'click', selector: '#account', x: 0.5, y: 0.5 },
+      { action: 'drag', points: [{ x: 0.5, y: 0.5 }] },
+      {
+        action: 'drag',
+        points: [
+          { x: 0.2, y: 0.5 },
+          { x: 1.1, y: 0.5 },
+        ],
+      },
+      { action: 'drag', points: Array.from({ length: 101 }, () => ({ x: 0.5, y: 0.5 })) },
+    ]) {
+      commands.length = 0;
+      await assert.rejects(computer.act('fixture', input as BrowserAction));
+      assert.equal(
+        commands.some((command) => String(command.action).startsWith('mouse')),
+        false,
+      );
+    }
+  } finally {
+    await computer.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+for (const failure of ['cancelled hold', 'cancelled drag', 'failed drag'])
+  test(`visual browser actions release the pointer after a ${failure}`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'otto-visual-stop-'));
+    const fixture = stagedLoginBrowser();
+    const controller = new AbortController();
+    const pressed = deferred();
+    const commands: string[] = [];
+    const computer = createBrowserFixture({
+      dataRoot: directory,
+      run: fixture.run,
+      onDaemonCommand: (command) => {
+        const action = String(command.action);
+        commands.push(action);
+        if (action === 'mousedown') pressed.resolve();
+        if (failure === 'failed drag' && action === 'mousemove' && commands.includes('mousedown'))
+          throw new DaemonCommandError();
+      },
+    });
+    try {
+      await computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+      const input: BrowserAction =
+        failure === 'cancelled hold'
+          ? { action: 'click', x: 0.5, y: 0.25, durationMs: 1000 }
+          : {
+              action: 'drag',
+              points: [
+                { x: 0.2, y: 0.5 },
+                { x: 0.8, y: 0.5 },
+              ],
+              durationMs: 1000,
+            };
+      const pending = computer.act('fixture', input, controller.signal);
+      await Promise.race([
+        pressed.promise,
+        pending.then(() => assert.fail('The pointer action did not hold the mouse button.')),
+      ]);
+      if (failure.startsWith('cancelled')) controller.abort(new Error('Synthetic stop.'));
+      await assert.rejects(pending);
+      assert.equal(commands.filter((action) => action === 'mousedown').length, 1);
+      assert.equal(commands.filter((action) => action === 'mouseup').length, 1);
+    } finally {
+      await computer.dispose();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+test('visual browser actions fence the session when releasing the pointer fails', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'otto-visual-release-'));
+  const fixture = stagedLoginBrowser();
+  const commands: string[] = [];
+  const computer = createBrowserFixture({
+    dataRoot: directory,
+    run: fixture.run,
+    onDaemonCommand: (command) => {
+      commands.push(String(command.action));
+      if (command.action === 'mouseup') throw new DaemonCommandError();
+    },
+  });
+  try {
+    await computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    await assert.rejects(computer.act('fixture', { action: 'click', x: 0.5, y: 0.25 }));
+    assert.equal(commands.filter((action) => action === 'mousedown').length, 1);
+    await assert.rejects(computer.act('fixture', { action: 'click', selector: '#account' }));
+    assert.equal(commands.includes('click'), false);
+  } finally {
+    await computer.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test(
+  'native container browser stays responsive after output exceeds stderr pipe capacity',
+  {
+    skip: process.env.OTTO_TEST_NATIVE_DOWNLOAD !== 'true' || process.platform !== 'linux',
+    timeout: 30_000,
+  },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'otto-stderr-native-'));
+    const server = createHttpServer((_request, response) => {
+      response.setHeader('content-type', 'text/html');
+      response.end('<button onclick="this.textContent=\'Accepted\'">Continue</button>');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    const computer = createAgentBrowserComputer(containerBrowserOptions(directory));
+    let stderrPath: string | undefined;
+    try {
+      await computer.act('fixture', { action: 'open', url: `http://127.0.0.1:${address.port}` });
+      assert.ok((await computer.screenshot('fixture'))?.length);
+      for (const pid of await readdir('/proc')) {
+        if (!/^\d+$/.test(pid)) continue;
+        const args = await readFile(`/proc/${pid}/cmdline`, 'utf8').catch(() => '');
+        if (args.includes(`--user-data-dir=${directory}/`) && !args.includes('--type=')) {
+          stderrPath = `/proc/${pid}/fd/2`;
+          break;
+        }
+      }
+      assert.ok(stderrPath);
+      const writer = spawn(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          "import { writeFileSync } from 'node:fs'; writeFileSync(process.argv[1], Buffer.alloc(1024 * 1024, 120));",
+          stderrPath,
+        ],
+        { stdio: 'ignore', timeout: 1500, killSignal: 'SIGKILL' },
+      );
+      const exit = await new Promise<number | null>((resolve, reject) => {
+        writer.once('error', reject);
+        writer.once('exit', resolve);
+      });
+      assert.equal(
+        exit,
+        0,
+        'Chromium stderr must not block when browser output exceeds pipe capacity',
+      );
+      await computer.control!('fixture', { type: 'click', x: 0.03, y: 0.035 });
+      const page = await computer.act('fixture', { action: 'snapshot' });
+      assert.match(page.text, /Accepted/);
+      const screenshot = await computer.screenshot('fixture');
+      assert.ok(screenshot?.length);
+      assert.equal(computer.screenStatus!('fixture').state, 'live');
+    } finally {
+      if (stderrPath) {
+        const pipe = await open(stderrPath, constants.O_RDONLY | constants.O_NONBLOCK).catch(
+          () => undefined,
+        );
+        if (pipe) {
+          try {
+            const buffer = Buffer.alloc(65536);
+            for (let count = 0; count < 32; count++) {
+              const read = await pipe.read(buffer).catch(() => ({ bytesRead: 0 }));
+              if (!read.bytesRead) break;
+            }
+          } finally {
+            await pipe.close();
+          }
+        }
+      }
+      await computer.dispose();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'native visual browser actions solve a canvas interaction inside nested cross-origin frames',
+  { skip: process.env.OTTO_TEST_NATIVE_DOWNLOAD !== 'true', timeout: 60_000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'otto-visual-native-'));
+    let frameOrigin = '';
+    const server = createHttpServer((request, response) => {
+      response.setHeader('content-type', 'text/html');
+      response.end(
+        request.url === '/inner'
+          ? `<body style="margin:0"><canvas width="300" height="180" tabindex="0"></canvas><script>
+          const canvas = document.querySelector('canvas');
+          const context = canvas.getContext('2d');
+          context.fillStyle = '#2475cc'; context.fillRect(0, 0, 80, 80);
+          context.fillStyle = '#e04a4a'; context.fillRect(200, 0, 80, 80);
+          context.fillStyle = '#35a763'; context.fillRect(0, 100, 280, 60);
+          const state = { selected: false, dragged: false, held: false, keys: [] };
+          let start, moved;
+          const send = () => top.postMessage(state, '*');
+          canvas.onpointerdown = event => {
+            if (!event.isTrusted) return;
+            canvas.focus(); canvas.setPointerCapture(event.pointerId);
+            start = { x: event.offsetX, y: event.offsetY, time: performance.now() }; moved = false;
+          };
+          canvas.onpointermove = event => {
+            if (event.isTrusted && event.buttons === 1 && event.offsetX > 200) moved = true;
+          };
+          canvas.onpointerup = event => {
+            if (!event.isTrusted || !start) return;
+            if (start.x < 80 && start.y < 80 && event.offsetX < 80) state.selected = true;
+            if (start.x < 80 && start.y > 100 && moved && event.offsetX > 200) state.dragged = true;
+            if (start.x > 200 && start.y < 80 && performance.now() - start.time >= 80) state.held = true;
+            start = null; send();
+          };
+          canvas.onkeydown = event => { if (event.isTrusted) { state.keys.push(event.key); send(); } };
+          </script>`
+          : request.url === '/outer'
+            ? '<body style="margin:0"><iframe src="/inner" style="position:absolute;left:20px;top:30px;width:300px;height:180px;border:0"></iframe>'
+            : `<body><p>Select blue, drag across green, hold red, then use the arrow keys and space.</p>
+            <output id="result"></output>
+            <iframe src="${frameOrigin}/outer" style="position:absolute;left:30px;top:60px;width:360px;height:240px;border:0"></iframe>
+            <script>addEventListener('message', event => { document.querySelector('output').textContent = JSON.stringify(event.data); });</script>`,
+      );
+    });
+    const frames = createHttpServer(
+      server.listeners('request')[0] as Parameters<typeof createHttpServer>[0],
+    );
+    const origin = async (value: typeof server) => {
+      await new Promise<void>((resolve) => value.listen(0, '127.0.0.1', resolve));
+      const address = value.address();
+      assert.ok(address && typeof address !== 'string');
+      return `http://127.0.0.1:${address.port}`;
+    };
+    frameOrigin = await origin(frames);
+    const pageOrigin = await origin(server);
+    const computer = createAgentBrowserComputer({
+      dataRoot: directory,
+      browserExecutable: process.env.OTTO_TEST_BROWSER_EXECUTABLE,
+      headless: true,
+    });
+    const worker = await workerFixture(() => computer, 30_000);
+    const act = async (input: BrowserAction) =>
+      result(await worker.request({ method: 'act', threadId: 'fixture', input })) as {
+        text: string;
+      };
+    try {
+      await act({ action: 'open', url: pageOrigin, waitMs: 100 });
+      const screen = result(await worker.request({ method: 'screenshot', threadId: 'fixture' }));
+      assert.equal(typeof screen, 'string');
+      const png = Buffer.from(screen as string, 'base64');
+      assert.equal(png.toString('hex', 0, 8), '89504e470d0a1a0a');
+      const point = (x: number, y: number) => ({
+        x: x / png.readUInt32BE(16),
+        y: y / png.readUInt32BE(20),
+      });
+      await act({ action: 'click', ...point(90, 130) });
+      await act({
+        action: 'drag',
+        points: [point(90, 220), point(190, 220), point(300, 220)],
+        durationMs: 100,
+      });
+      await act({ action: 'click', ...point(300, 130), durationMs: 120 });
+      for (const key of ['ArrowLeft', 'ArrowRight', 'Space'] as const)
+        await act({ action: 'press', key });
+      const observation = await act({
+        action: 'evaluate',
+        script: "JSON.parse(document.querySelector('#result').textContent)",
+      });
+      assert.deepEqual(JSON.parse(observation.text.slice(observation.text.indexOf('\n') + 1)), {
+        selected: true,
+        dragged: true,
+        held: true,
+        keys: ['ArrowLeft', 'ArrowRight', ' '],
+      });
+    } finally {
+      await worker.close();
+      await Promise.all(
+        [server, frames].map(async (value) => {
+          value.closeAllConnections();
+          await new Promise<void>((resolve) => value.close(() => resolve()));
+        }),
+      );
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
 test('a password typed through the handoff stays out of browser observations', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'otto-handoff-secret-'));
   const fixture = stagedLoginBrowser();
@@ -1260,6 +2013,91 @@ test('secure entry types a code into the referenced field and keeps it out of ob
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test(
+  'native secure entry completes single and split OTP controls without maxlength hints',
+  { skip: process.env.OTTO_TEST_NATIVE_DOWNLOAD !== 'true', timeout: 60_000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'otto-code-native-'));
+    const code = '072846';
+    const server = createHttpServer((request, response) => {
+      const split = request.url === '/split';
+      response.setHeader('content-type', 'text/html');
+      response.end(`<form>
+        ${Array.from({ length: split ? code.length : 1 }, (_, index) => `<input autocomplete="one-time-code" inputmode="numeric" aria-label="Code ${index + 1}">`).join('')}
+        <button type="submit" disabled>Verify</button><output></output>
+        </form><script>
+        const fields = [...document.querySelectorAll('input')];
+        const button = document.querySelector('button');
+        for (const [index, field] of fields.entries()) field.addEventListener('input', event => {
+          if (!event.isTrusted) return;
+          if (fields.length > 1 && field.value) {
+            field.value = field.value.slice(-1);
+            fields[index + 1]?.focus();
+          }
+          button.disabled = fields.map(field => field.value).join('') !== ${JSON.stringify(code)};
+        });
+        document.querySelector('form').onsubmit = event => {
+          event.preventDefault();
+          if (!button.disabled) document.querySelector('output').textContent = 'Verified';
+        };
+        </script>`);
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    const origin = `http://127.0.0.1:${address.port}`;
+    const computer = createAgentBrowserComputer({
+      dataRoot: directory,
+      browserExecutable: process.env.OTTO_TEST_BROWSER_EXECUTABLE,
+      headless: true,
+    });
+    const worker = await workerFixture(() => computer, 30_000);
+    const act = async (input: BrowserAction) =>
+      result(await worker.request({ method: 'act', threadId: 'fixture', input })) as {
+        text: string;
+      };
+    try {
+      for (const path of ['/single', '/split']) {
+        await act({ action: 'open', url: origin + path });
+        const shape = await act({
+          action: 'evaluate',
+          script:
+            '[...document.querySelectorAll(\'input[autocomplete="one-time-code"]\')].map(field => field.maxLength)',
+        });
+        assert.deepEqual(
+          JSON.parse(shape.text.slice(shape.text.indexOf('\n') + 1)),
+          Array(path === '/split' ? 6 : 1).fill(-1),
+        );
+        const injected = result(
+          await worker.request({
+            method: 'injectCredentials',
+            input: {
+              threadId: 'fixture',
+              origin,
+              kind: 'otp',
+              code,
+              passwordSelector: 'input[autocomplete="one-time-code"]',
+            },
+          }),
+        );
+        assert.deepEqual(injected, { status: 'submitted' });
+        await act({ action: 'click', selector: 'button' });
+        const accepted = await act({
+          action: 'evaluate',
+          script: "document.querySelector('output').textContent === 'Verified'",
+        });
+        assert.equal(JSON.parse(accepted.text.slice(accepted.text.indexOf('\n') + 1)), true);
+        assert.equal((await act({ action: 'snapshot' })).text.includes(code), false);
+      }
+    } finally {
+      await worker.close();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
 
 test('closing and reopening a browser fills only the new page', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'otto-login-reopen-'));
@@ -1399,4 +2237,424 @@ test('inspector masks secure links, common token strings and secret assignments 
 test('short secret masking does not scan replacement markers again', () => {
   const redact = createInspectorRedactor(['a', 'red'], { minimumSecretLength: 1 });
   assert.equal(redact('red a'), '[redacted] [redacted]');
+});
+
+function handoffScreen(state = 'live', text = 'Synthetic screen') {
+  return new Response(text, {
+    headers: { 'Content-Type': 'image/png', 'X-Screen-State': state },
+  });
+}
+
+async function handoffView(
+  request: (path: string, options?: RequestInit) => Promise<Response>,
+  content?: React.ReactNode,
+) {
+  const dom = new JSDOM('<div id="root"></div>', {
+    url: 'http://localhost',
+    pretendToBeVisual: true,
+  });
+  const replacements = {
+    window: dom.window,
+    document: dom.window.document,
+    Node: dom.window.Node,
+    Element: dom.window.Element,
+    HTMLElement: dom.window.HTMLElement,
+    DOMParser: dom.window.DOMParser,
+    MutationObserver: dom.window.MutationObserver,
+    getComputedStyle: dom.window.getComputedStyle.bind(dom.window),
+    requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window),
+    cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
+    IS_REACT_ACT_ENVIRONMENT: true,
+    fetch: (input: string | URL | Request, options?: RequestInit) =>
+      request(String(input), options),
+  };
+  const previous = new Map(
+    Object.keys(replacements).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
+  );
+  Object.assign(globalThis, replacements);
+  dom.window.HTMLElement.prototype.scrollIntoView = () => {};
+  const createUrl = URL.createObjectURL;
+  const revokeUrl = URL.revokeObjectURL;
+  const images = new Map<string, Blob>();
+  let serial = 0;
+  URL.createObjectURL = (blob) => {
+    assert.ok(blob instanceof Blob);
+    const url = `blob:handoff-${++serial}`;
+    images.set(url, blob);
+    return url;
+  };
+  URL.revokeObjectURL = (url) => images.delete(url);
+  let poll: () => void = () => {};
+  dom.window.setInterval = (handler) => {
+    assert.equal(typeof handler, 'function');
+    poll = handler as () => void;
+    return 1;
+  };
+  dom.window.clearInterval = () => {
+    poll = () => {};
+  };
+  let completions = 0;
+  let unmounted = false;
+  const root = createRoot(dom.window.document.querySelector('#root')!);
+  await act(async () => {
+    root.render(
+      content ??
+        createElement(BrowserHandoff, {
+          onDone: async () => {
+            completions++;
+          },
+        }),
+    );
+  });
+  const element = <T extends Element>(selector: string) => {
+    const value = dom.window.document.querySelector<T>(selector);
+    assert.ok(value, selector);
+    return value;
+  };
+  return {
+    dom,
+    images,
+    element,
+    completions: () => completions,
+    async poll() {
+      await act(async () => poll());
+    },
+    async clickImage() {
+      const image = element<HTMLImageElement>('img');
+      image.getBoundingClientRect = () =>
+        ({ left: 10, top: 20, width: 200, height: 100 }) as DOMRect;
+      await act(async () => {
+        image.dispatchEvent(
+          new dom.window.MouseEvent('click', { bubbles: true, clientX: 110, clientY: 70 }),
+        );
+      });
+    },
+    async button(label: string) {
+      const button = [...dom.window.document.querySelectorAll('button')].find(
+        (candidate) => candidate.textContent === label,
+      );
+      assert.ok(button, label);
+      await act(async () => button.click());
+    },
+    async unmount() {
+      if (unmounted) return;
+      unmounted = true;
+      await act(async () => root.unmount());
+    },
+    async close() {
+      if (!unmounted) await act(async () => root.unmount());
+      dom.window.close();
+      URL.createObjectURL = createUrl;
+      URL.revokeObjectURL = revokeUrl;
+      for (const [key, descriptor] of previous) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+      }
+    },
+  };
+}
+
+for (const failure of ['rejected', 'disconnected'] as const)
+  test(`chat preserves a ${failure} browser continuation until an acknowledged retry`, async () => {
+    const first = deferred<Response>();
+    const second = deferred<Response>();
+    const submissions: Array<{ clientMessageId: string; threadId: string }> = [];
+    let controls = 0;
+    const state: AppState = {
+      threadId: randomUUID(),
+      threadStatus: 'idle',
+      messages: [
+        {
+          id: randomUUID(),
+          role: 'assistant',
+          turnId: randomUUID(),
+          text: 'Complete this step in [Open browser](/browser).',
+          attachments: [],
+          createdAt: '2026-10-01T12:00:00.000Z',
+        },
+      ],
+      turns: [],
+      configuration: {
+        provider: 'fixture',
+        model: 'none',
+        llmReady: true,
+        speechReady: false,
+        integrationsReady: false,
+        inspectorEnabled: false,
+        localOnly: true,
+      },
+    };
+    const view = await handoffView(
+      async (path, options) => {
+        if (path === '/api/apps') return Response.json([]);
+        if (path === '/api/browser-handoff/screen') return handoffScreen();
+        if (path === '/api/browser-handoff') {
+          controls++;
+          return Response.json({ ok: true });
+        }
+        assert.equal(path, '/api/messages');
+        const attempt = submissions.length;
+        submissions.push(JSON.parse(String(options?.body)));
+        const result = await (attempt ? second.promise : first.promise);
+        if (!attempt && failure === 'disconnected') throw new Error('Synthetic connection lost');
+        return result;
+      },
+      createElement(Chat, {
+        state,
+        streams: {},
+        refresh: async () => {},
+        resetConversation: async () => state.threadId,
+      }),
+    );
+    try {
+      const original = view.element('.browser-handoff');
+      await view.clickImage();
+      await act(async () => delay(350));
+      await view.button('Done');
+      assert.equal(submissions.length, 1);
+      assert.equal(view.element('.browser-handoff'), original);
+      assert.equal(view.element<HTMLButtonElement>('.browser-handoff-bar button').disabled, true);
+      assert.equal(view.dom.window.document.querySelectorAll('.message-user').length, 1);
+      await view.clickImage();
+      await view.poll();
+      assert.equal(submissions.length, 1);
+      assert.equal(controls, 1);
+      await act(async () =>
+        first.resolve(Response.json({ error: 'Synthetic request rejected' }, { status: 503 })),
+      );
+      assert.equal(view.element('.browser-handoff'), original);
+      assert.equal(view.element<HTMLButtonElement>('.browser-handoff-bar button').disabled, false);
+      assert.equal(view.dom.window.document.querySelectorAll('.message-user').length, 0);
+      const failureStatus = view.element('.browser-handoff [role="status"]').textContent;
+      await view.poll();
+      assert.equal(view.element('.browser-handoff [role="status"]').textContent, failureStatus);
+      await view.button('Done');
+      assert.equal(submissions.length, 2);
+      assert.equal(submissions[1].clientMessageId, submissions[0].clientMessageId);
+      assert.equal(view.element('.browser-handoff'), original);
+      assert.equal(controls, 1);
+      await act(async () =>
+        second.resolve(
+          Response.json({
+            messageId: submissions[1].clientMessageId,
+            threadId: state.threadId,
+            turnId: randomUUID(),
+          }),
+        ),
+      );
+      assert.equal(view.dom.window.document.querySelector('.browser-handoff'), null);
+      assert.equal(view.dom.window.document.querySelectorAll('.message-user').length, 1);
+      assert.equal(controls, 1);
+    } finally {
+      first.resolve(Response.json({ error: 'Synthetic rejected request' }, { status: 503 }));
+      second.resolve(Response.json({ error: 'Synthetic rejected request' }, { status: 503 }));
+      await view.close();
+    }
+  });
+
+for (const failure of ['rejected', 'disconnected'] as const)
+  test(`browser handoff preserves a ${failure} input failure through Done and polling without replay`, async () => {
+    const input = deferred<Response>();
+    let inputs = 0;
+    const view = await handoffView(async (_path, options) => {
+      if (options?.method !== 'POST') return handoffScreen();
+      inputs++;
+      const response = await input.promise;
+      if (failure === 'disconnected') throw new Error('Synthetic connection lost');
+      return response;
+    });
+    try {
+      await view.clickImage();
+      await view.button('Done');
+      assert.ok(view.element('.browser-handoff'));
+      assert.equal(view.completions(), 0);
+      assert.equal(view.element<HTMLButtonElement>('button').disabled, true);
+      await act(async () => {
+        input.resolve(
+          new Response(JSON.stringify({ error: 'Synthetic input rejected' }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      });
+      await view.poll();
+      assert.equal(view.completions(), 0);
+      assert.match(view.element('[role="status"]').textContent!, /Refresh the view/);
+      await view.clickImage();
+      assert.equal(inputs, 1);
+      await view.button('Refresh view');
+      await view.button('Done');
+      assert.equal(inputs, 1);
+      assert.equal(view.completions(), 1);
+      assert.equal(view.dom.window.document.querySelector('.browser-handoff'), null);
+    } finally {
+      await view.close();
+    }
+  });
+
+test('browser handoff prevents input on saved frames and recovers an observation failure without replay', async () => {
+  let state = 'last_known';
+  let failScreen = false;
+  let inputs = 0;
+  const view = await handoffView(async (_path, options) => {
+    if (options?.method === 'POST') {
+      inputs++;
+      failScreen = true;
+      return Response.json({ ok: true });
+    }
+    return failScreen
+      ? Response.json({ error: 'Synthetic capture failed' }, { status: 500 })
+      : handoffScreen(state);
+  });
+  try {
+    await view.clickImage();
+    await view.button('Done');
+    assert.equal(inputs, 0);
+    assert.equal(view.completions(), 0);
+    assert.equal(view.element('[role="application"]').getAttribute('aria-disabled'), 'true');
+    state = 'live';
+    await view.poll();
+    await view.clickImage();
+    await act(async () => delay(350));
+    assert.equal(inputs, 1);
+    assert.match(view.element('[role="status"]').textContent!, /capture failed/);
+    await view.clickImage();
+    assert.equal(inputs, 1);
+    failScreen = false;
+    await view.poll();
+    await view.button('Done');
+    assert.equal(view.completions(), 1);
+    assert.equal(inputs, 1);
+  } finally {
+    await view.close();
+  }
+});
+
+test('browser handoff serializes capture polling with controls and completion', async () => {
+  const first = deferred<Response>();
+  const second = deferred<Response>();
+  const input = deferred<Response>();
+  const requests: string[] = [];
+  let captures = 0;
+  let inFlight = 0;
+  let maximum = 0;
+  const view = await handoffView(async (_path, options) => {
+    inFlight++;
+    maximum = Math.max(maximum, inFlight);
+    const control = options?.method === 'POST';
+    requests.push(control ? 'control' : 'screen');
+    try {
+      if (control) return await input.promise;
+      captures++;
+      return await (captures === 1
+        ? first.promise
+        : captures === 2
+          ? second.promise
+          : handoffScreen());
+    } finally {
+      inFlight--;
+    }
+  });
+  try {
+    await view.poll();
+    await view.poll();
+    assert.deepEqual(requests, ['screen']);
+    await act(async () => first.resolve(handoffScreen()));
+    await view.clickImage();
+    await view.poll();
+    assert.deepEqual(requests, ['screen', 'control']);
+    await view.button('Done');
+    assert.equal(view.completions(), 0);
+    await act(async () => {
+      input.resolve(Response.json({ ok: true }));
+      await delay(350);
+    });
+    await view.poll();
+    assert.deepEqual(requests, ['screen', 'control', 'screen']);
+    assert.equal(view.completions(), 0);
+    await act(async () => second.resolve(handoffScreen()));
+    assert.deepEqual(requests, ['screen', 'control', 'screen', 'screen']);
+    assert.equal(view.completions(), 1);
+    assert.equal(maximum, 1);
+  } finally {
+    first.resolve(handoffScreen());
+    second.resolve(handoffScreen());
+    input.resolve(Response.json({ ok: true }));
+    await view.close();
+  }
+});
+
+test('browser handoff cancels queued controls when the preceding view cannot be observed', async () => {
+  const first = deferred<Response>();
+  const inputs: unknown[] = [];
+  let failScreen = false;
+  const view = await handoffView(async (_path, options) => {
+    if (options?.method === 'POST') {
+      inputs.push(JSON.parse(String(options.body)));
+      failScreen = true;
+      return first.promise;
+    }
+    return failScreen
+      ? Response.json({ error: 'Synthetic capture failed' }, { status: 500 })
+      : handoffScreen();
+  });
+  try {
+    await view.clickImage();
+    await view.clickImage();
+    await view.button('Done');
+    await act(async () => {
+      first.resolve(Response.json({ ok: true }));
+      await delay(350);
+    });
+    assert.equal(inputs.length, 1);
+    assert.equal(view.completions(), 0);
+    assert.match(view.element('[role="status"]').textContent!, /pending action was not sent/);
+    failScreen = false;
+    await view.poll();
+    await view.button('Done');
+    assert.equal(view.completions(), 0);
+    await view.button('Refresh view');
+    assert.equal(inputs.length, 1);
+    await view.button('Done');
+    assert.equal(view.completions(), 1);
+  } finally {
+    await view.close();
+  }
+});
+
+test('browser handoff flushes typing before changing focus and drops buffered input on unmount', async () => {
+  const inputs: unknown[] = [];
+  const view = await handoffView(async (_path, options) => {
+    if (options?.method === 'POST') {
+      inputs.push(JSON.parse(String(options.body)));
+      return Response.json({ ok: true });
+    }
+    return handoffScreen();
+  });
+  try {
+    const screen = view.element('[role="application"]');
+    await act(async () => {
+      screen.dispatchEvent(
+        new view.dom.window.KeyboardEvent('keydown', { key: 'a', bubbles: true }),
+      );
+    });
+    await view.clickImage();
+    await act(async () => delay(700));
+    assert.deepEqual(inputs, [
+      { type: 'type', text: 'a' },
+      { type: 'click', x: 0.5, y: 0.5 },
+    ]);
+    await act(async () => {
+      screen.dispatchEvent(
+        new view.dom.window.KeyboardEvent('keydown', { key: 'b', bubbles: true }),
+      );
+      screen.dispatchEvent(new view.dom.window.WheelEvent('wheel', { deltaY: 100, bubbles: true }));
+    });
+    await view.unmount();
+    await delay(350);
+    assert.equal(inputs.length, 2);
+    assert.equal(view.images.size, 0);
+  } finally {
+    await view.close();
+  }
 });

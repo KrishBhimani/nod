@@ -3,7 +3,17 @@ import { spawn } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { mkdirSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { createServer, type IncomingHttpHeaders, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -14,6 +24,7 @@ import { parseEnv } from 'node:util';
 import { Sandbox } from 'e2b';
 import pg from 'pg';
 import { prepareE2BContext } from '../deployment/e2b/context.ts';
+import { acceptanceSourceHash } from '../deployment/e2b/acceptance.ts';
 import type { Computer, WorkspaceSession } from '../src/ports/computer.ts';
 import type {
   ComputerAllocation,
@@ -219,6 +230,10 @@ test('template contexts reject symlinked source and do not copy unrelated local 
       'export const ready = true;\n',
     ),
     writeFile(join(root, 'src/providers/container-browser/bridge.ts'), 'export {};\n'),
+    writeFile(
+      join(root, 'src/providers/container-browser/chromium.sh'),
+      '#!/bin/sh\nexec /usr/bin/chromium "$@" 2>/dev/null\n',
+    ),
     writeFile(join(root, 'deployment/e2b/browser-ready.ts'), 'export {};\n'),
     writeFile(
       join(root, 'src/providers/container-browser/.env'),
@@ -239,6 +254,26 @@ test('template contexts reject symlinked source and do not copy unrelated local 
     join(root, 'src/providers/container-browser/dependency.ts'),
   );
   await assert.rejects(prepareE2BContext({ role: 'browser', root }), /approved context/);
+  await rm(join(root, 'src/providers/container-browser/chromium.sh'));
+  await symlink(
+    join(root, 'src/providers/container-browser/.env'),
+    join(root, 'src/providers/container-browser/chromium.sh'),
+  );
+  await assert.rejects(prepareE2BContext({ role: 'browser', root }), /approved context/);
+});
+
+test('computer acceptance fingerprints launch assets and rejects substituted files', async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'otto-acceptance-source-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const path of ['src', 'deployment/e2b', 'package.json', 'package-lock.json'])
+    await cp(new URL(`../${path}`, import.meta.url), join(root, path), { recursive: true });
+  const before = await acceptanceSourceHash(root);
+  const launcher = join(root, 'src/providers/container-browser/chromium.sh');
+  await writeFile(launcher, (await readFile(launcher, 'utf8')) + '\n');
+  assert.notEqual(await acceptanceSourceHash(root), before);
+  await rm(launcher);
+  await symlink(join(root, 'package.json'), launcher);
+  await assert.rejects(acceptanceSourceHash(root));
 });
 
 function initial(ownerId: string): ComputerAllocation {
@@ -1152,6 +1187,37 @@ test('browser disposal drains cancelled work and failed cleanup remains retryabl
   } finally {
     held.release.resolve();
     await adapters.workspace.dispose();
+    await f.close();
+  }
+});
+
+test('Cloudflare browser status follows an acknowledged explicit recovery', async () => {
+  const f = await cloudflareFixture();
+  const adapters = createCloudflareAdapters(f.options(ownerA));
+  try {
+    await adapters.computer.act('task', { action: 'snapshot' });
+    const ready = adapters.computer.status();
+    f.breakRole('browser');
+    await assert.rejects(
+      adapters.computer.act('task', { action: 'click', selector: '#submit' }),
+      /did not finish safely/,
+    );
+    f.breakRole();
+    const launches = f.launches.length;
+    await assert.rejects(adapters.computer.act('task', { action: 'snapshot' }), /unavailable/);
+    assert.equal(f.launches.length, launches);
+    assert.equal(
+      (await adapters.computer.act('task', { action: 'open', url: 'https://example.test/' })).text,
+      namespace(ownerA),
+    );
+    assert.deepEqual(
+      f.calls.map(({ method }) => method),
+      ['act', 'dispose', 'act'],
+    );
+    assert.equal(adapters.computer.status(), ready);
+  } finally {
+    f.breakRole();
+    await Promise.all([adapters.computer.dispose(), adapters.workspace.dispose()]);
     await f.close();
   }
 });

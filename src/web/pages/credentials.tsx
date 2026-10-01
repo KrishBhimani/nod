@@ -106,8 +106,9 @@ function CredentialForm({ id }: { id: string }) {
     );
   }
   function submitted(result: { ok: boolean; retryUrl?: string; error?: string }) {
-    if (result.ok) {
+    if (result.ok === true) {
       setRequest((current) => (current ? { ...current, status: 'filled' } : current));
+      returnToChat();
       return;
     }
     const retry = new URL(result.retryUrl || '', window.location.origin);
@@ -152,7 +153,17 @@ function CredentialForm({ id }: { id: string }) {
       request.kind === 'otp'
         ? { code: data.get('code') }
         : {
-            ...(password ? { label: data.get('label'), password: data.get('password') } : {}),
+            ...(password
+              ? {
+                  label:
+                    String(data.get('label') || '').trim() ||
+                    suggestLoginName(
+                      request.origin,
+                      savedEntries.map((entry) => entry.label),
+                    ),
+                  password: data.get('password'),
+                }
+              : {}),
             ...(username ? { username: data.get('username') } : {}),
           };
     form.reset();
@@ -287,7 +298,6 @@ function CredentialForm({ id }: { id: string }) {
                           }
                           onInput={(event) => setLoginName(event.currentTarget.value)}
                           placeholder="For example, my work account"
-                          required
                           maxLength={100}
                         />
                       </Field>
@@ -322,8 +332,15 @@ function CredentialForm({ id }: { id: string }) {
                     )}
                   </>
                 )}
+                {request.kind === 'identifier' && (
+                  <p>Your username or email will be saved in Vault for this website.</p>
+                )}
                 <Button className="credential-submit" type="submit" disabled={saving}>
-                  {saving ? 'Continuing…' : password ? 'Save and continue' : 'Continue'}
+                  {saving
+                    ? 'Continuing…'
+                    : request.kind === 'otp'
+                      ? 'Continue'
+                      : 'Save and continue'}
                 </Button>
                 {savedEntries.length > 0 && (
                   <Button

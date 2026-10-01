@@ -21,6 +21,7 @@ import {
   type createDiscoveredConnections,
 } from './discovered-connections.ts';
 import type { WorkAdmission } from './work-admission.ts';
+import type { SiteIcon } from '../ports/link-preview.ts';
 import type { TriageIntent } from './triage.ts';
 import { BrowserConnectionError } from './browser-connections.ts';
 import type { TurnRef } from './thread.ts';
@@ -89,6 +90,7 @@ type IntegrationOptions = {
   removeBrowserAccount?: (id: string) => Promise<void>;
   browserConnections?: () => Promise<Connection[]>;
   removeBrowserConnection?: (id: string) => Promise<unknown>;
+  icon?: (origin: string) => Promise<SiteIcon | null>;
 };
 
 function browserService(origin: string) {
@@ -624,6 +626,47 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       }));
   }
 
+  const icons = new Map<string, { expiresAt: number; value: Promise<SiteIcon | null> }>();
+  async function icon(connectionId: string) {
+    const fetchIcon = options.icon;
+    if (!fetchIcon || !z.uuid().safeParse(connectionId).success) return null;
+    const connection = (await list(configuredOwner, { refresh: false })).find(
+      (item) => item.connectionId === connectionId,
+    );
+    const endpoint = connection?.accessPaths?.find((path) => path.kind !== 'cli')?.endpoint;
+    if (!endpoint) return null;
+    let url: URL;
+    try {
+      url = new URL(endpoint);
+    } catch {
+      return null;
+    }
+    if (url.protocol !== 'https:' || url.username || url.password) return null;
+    const origin = url.origin;
+    const cached = icons.get(origin);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+    icons.delete(origin);
+    const entry = {
+      expiresAt: Date.now() + 86_400_000,
+      value: fetchIcon(origin)
+        .catch(() => null)
+        .then((value) => {
+          if (
+            !value ||
+            value.bytes.byteLength > 128 * 1024 ||
+            !['image/png', 'image/jpeg', 'image/webp', 'image/x-icon'].includes(value.mimeType)
+          ) {
+            entry.expiresAt = Date.now() + 600_000;
+            return null;
+          }
+          return value;
+        }),
+    };
+    icons.set(origin, entry);
+    while (icons.size > 128) icons.delete(icons.keys().next().value!);
+    return entry.value;
+  }
+
   async function selectConnection(
     ownerId: string,
     slug: Slug,
@@ -1147,16 +1190,28 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     return executeApproved(ownerId, action, selectedArgs, turn, signal, checkConnectionId);
   }
 
+  function gmailMailbox(value: string) {
+    const email = normalizedEmail(value);
+    if (!email) return;
+    const [local, domain] = email.split('@');
+    const name = local.split('+')[0];
+    if (!name) return;
+    const canonicalDomain = domain === 'googlemail.com' ? 'gmail.com' : domain;
+    return `${canonicalDomain === 'gmail.com' ? name.replaceAll('.', '') : name}@${canonicalDomain}`;
+  }
+
   async function emailCode(ownerId: string, input: EmailCodeRequest, signal: AbortSignal) {
     try {
       assertOwner(ownerId);
       signal.throwIfAborted();
       const recipient = normalizedEmail(input.recipient);
+      const mailbox = recipient && gmailMailbox(recipient);
       const senderDomain = verificationSenderDomain(input.origin);
       const now = Date.now();
       if (
         !provider.verificationEmails ||
         !recipient ||
+        !mailbox ||
         !senderDomain ||
         !Number.isFinite(input.after) ||
         !Number.isFinite(input.before) ||
@@ -1174,23 +1229,24 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
           row.account_id &&
           row.account_active &&
           !row.revoked &&
-          normalizedEmail(row.account_email ?? '') === recipient,
+          gmailMailbox(row.account_email ?? '') === mailbox,
       );
       if (matches.length !== 1) return;
       const row = matches[0];
+      const primaryEmail = normalizedEmail(row.account_email ?? '');
       const remote = await provider.inspectAccount(row.account_id!, ownerId);
       signal.throwIfAborted();
       if (
         !remote.active ||
         remote.service !== 'gmail' ||
-        normalizedEmail(remote.accountEmail ?? '') !== recipient
+        normalizedEmail(remote.accountEmail ?? '') !== primaryEmail
       )
         return;
       const current = async (database: Pick<PoolClient, 'query'> = pool) =>
         (
           await database.query(
             `SELECT id FROM app_connections WHERE id=$1 AND owner_id=$2 AND provider_id=$3 AND account_id=$4 AND account_active AND NOT revoked AND lower(trim(account_email))=$5 FOR SHARE NOWAIT`,
-            [row.id, ownerId, providerId, row.account_id, recipient],
+            [row.id, ownerId, providerId, row.account_id, primaryEmail],
           )
         ).rowCount === 1;
       if (!(await current())) return;
@@ -1482,6 +1538,18 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         });
       });
       scope.get('/api/apps', async () => list());
+      scope.get<{ Params: { id: string } }>('/api/apps/:id/icon', async (request, reply) => {
+        const value = await icon(request.params.id);
+        if (!value) return reply.code(404).send({ error: 'The app icon is unavailable.' });
+        return reply
+          .header('Content-Type', value.mimeType)
+          .header('X-Content-Type-Options', 'nosniff')
+          .header('Content-Security-Policy', "default-src 'none'; sandbox")
+          .header('Cross-Origin-Resource-Policy', 'same-origin')
+          .header('Cache-Control', 'private, max-age=300')
+          .header('Referrer-Policy', 'no-referrer')
+          .send(Buffer.from(value.bytes));
+      });
       options.discovered?.registerRoutes(scope);
       scope.post<{ Params: { slug: string } }>('/api/apps/:slug/connect', async (request) => {
         const input = z
