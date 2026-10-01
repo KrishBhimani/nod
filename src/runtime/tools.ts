@@ -252,10 +252,6 @@ export const toolDefinitions = {
                 command: Type.String({ minLength: 1, maxLength: 64 }),
                 auth: Type.Optional(Type.Literal('env')),
                 envName: Type.String({ minLength: 3, maxLength: 80 }),
-                testArgs: Type.Array(Type.String({ minLength: 1, maxLength: 300 }), {
-                  minItems: 1,
-                  maxItems: 12,
-                }),
               }),
             ]),
             { minItems: 1, maxItems: 4 },

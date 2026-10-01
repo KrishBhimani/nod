@@ -11,7 +11,7 @@ import type {
 } from '../ports/discovered.ts';
 import type { Connection } from '../shared/contracts.ts';
 import type { createAppGrantVault } from './vault-app-grants.ts';
-import { activeThread, type TurnRef } from './thread.ts';
+import type { TurnRef } from './thread.ts';
 
 const pathSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -35,7 +35,6 @@ const pathSchema = z.discriminatedUnion('kind', [
     command: z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/),
     auth: z.literal('env').default('env'),
     envName: z.string().regex(/^[A-Z][A-Z0-9_]{1,63}(?:TOKEN|API_KEY|SECRET|PASSWORD)$/),
-    testArgs: z.array(z.string().min(1).max(300)).min(1).max(12),
   }),
 ]);
 const proposalSchema = z.object({
@@ -365,15 +364,6 @@ export async function createDiscoveredConnections(
             'GET',
           );
           if (response.status < 200 || response.status >= 300) throw new Error();
-        } else {
-          const result = await options.runCli?.(
-            (await activeThread(pool, owner)).id,
-            path.command,
-            path.testArgs,
-            path.envName,
-            token,
-          );
-          if (!result || result.exitCode !== 0) throw new Error();
         }
       } catch {
         throw error(`The ${path.kind.toUpperCase()} access path could not be verified.`, 409);
@@ -632,7 +622,6 @@ export async function createDiscoveredConnections(
             command: path.command,
             auth: path.auth,
             envName: path.envName,
-            testArgs: path.testArgs,
           };
         return {
           kind: path.kind,
@@ -662,7 +651,6 @@ export async function createDiscoveredConnections(
                 id: path.id,
                 kind: path.kind,
                 endpoint: path.kind === 'cli' ? path.command : path.endpoint,
-                ...(path.kind === 'cli' ? { testArgs: path.testArgs } : {}),
               };
             try {
               const token = await tokenFor(row, path, signal);
@@ -810,7 +798,6 @@ export async function createDiscoveredConnections(
                 command: path.command,
                 auth: path.auth,
                 envName: path.envName,
-                testArgs: path.testArgs,
               }
             : {
                 kind: path.kind,

@@ -846,6 +846,56 @@ async function appsFixture(
 }
 
 test(
+  'legacy app review metadata names only the selected owned account',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async (t) => {
+    const f = await appsFixture(t);
+    const first = await f.connect('gmail');
+    const selected = await f.connect('gmail');
+    await f.pool.query('UPDATE app_connections SET account_email=$2 WHERE id=$1', [
+      selected.connectionId,
+      'selected@example.test',
+    ]);
+    const metadata = await f.service.describeApproval('local-development', 'GMAIL_SEND_EMAIL', {
+      connectionId: selected.connectionId,
+    });
+    assert.deepEqual(metadata, {
+      name: 'Gmail',
+      accountName: `gmail ${selected.accountId}`,
+      accountEmail: 'selected@example.test',
+    });
+    assert.doesNotMatch(JSON.stringify(metadata), /private-callback|connectionId/);
+    assert.notDeepEqual(
+      metadata,
+      await f.service.describeApproval('local-development', 'GMAIL_SEND_EMAIL', {
+        connectionId: first.connectionId,
+      }),
+    );
+    assert.equal(
+      await f.service.describeApproval('local-development', 'NOTION_UPDATE_PAGE', {
+        connectionId: selected.connectionId,
+      }),
+      undefined,
+    );
+    await f.pool.query('UPDATE app_connections SET revoked=true WHERE id=$1', [
+      selected.connectionId,
+    ]);
+    assert.equal(
+      await f.service.describeApproval('local-development', 'GMAIL_SEND_EMAIL', {
+        connectionId: selected.connectionId,
+      }),
+      undefined,
+    );
+    await assert.rejects(
+      f.service.describeApproval('foreign-owner', 'GMAIL_SEND_EMAIL', {
+        connectionId: first.connectionId,
+      }),
+      { statusCode: 403 },
+    );
+  },
+);
+
+test(
   'background app inventory stays local, owned and current without authenticating saved logins',
   { skip: !process.env.TEST_DATABASE_URL },
   async (t) => {
@@ -3099,9 +3149,7 @@ test(
       const result = await discovered.propose({
         service: 'fixture-app',
         name: 'Fixture app',
-        paths: [
-          { kind: 'cli', command: 'fixturecli', envName: 'FIXTURE_API_KEY', testArgs: ['list'] },
-        ],
+        paths: [{ kind: 'cli', command: 'fixturecli', envName: 'FIXTURE_API_KEY' }],
       });
       const id = new URL(result.url, 'http://localhost:4310').searchParams.get('connect');
       const saved = await pool.query<{ paths: Array<{ id: string }> }>(
@@ -3130,7 +3178,6 @@ test(
           command: 'fixturecli',
           auth: 'env',
           envName: 'FIXTURE_API_KEY',
-          testArgs: ['list'],
         },
       ];
       for (const [accountId, accountOwner, accountPaths] of [
@@ -3193,6 +3240,18 @@ test(
         },
       });
       integrations.registerRoutes(app);
+      const cliSetup = await app.inject({
+        method: 'POST',
+        url: `/api/apps/discovery/${id}/complete`,
+        payload: { token: 'synthetic-cli-token', accountName: 'Fixture CLI account' },
+      });
+      assert.equal(cliSetup.statusCode, 200);
+      assert.equal(cliCalls, 0);
+      const addedCli = (await discovered.list()).find(
+        (account) => account.accountName === 'Fixture CLI account',
+      );
+      assert.ok(addedCli?.connectionId);
+      await discovered.disconnect(addedCli.connectionId, 'fixture-app');
       const inventory = await integrations.connectedApps();
       assert.deepEqual(
         new Set(inventory.map((item) => item.connectionId)),
@@ -3384,6 +3443,7 @@ test(
         return { data: {}, error: null };
       },
     }));
+    t.mock.method(client.sessions, 'delete', async () => ({}));
     try {
       const integrations = await createIntegrations(pool, {
         ownerId: 'fixture-owner',

@@ -143,7 +143,6 @@ export function Apps() {
       command?: string;
       auth: string;
       envName?: string;
-      testArgs?: string[];
       testPath?: string;
       scope?: string;
       clientIdRequired?: boolean;
@@ -188,7 +187,6 @@ export function Apps() {
         command?: string;
         auth: string;
         envName?: string;
-        testArgs?: string[];
         testPath?: string;
         scope?: string;
         clientIdRequired?: boolean;
@@ -573,12 +571,7 @@ export function Apps() {
                         'unavailable'}
                     </span>
                   )}
-                  {path.kind === 'cli' && (
-                    <span>
-                      Read check: {path.command}{' '}
-                      {path.testArgs?.map((arg) => JSON.stringify(arg)).join(' ')}
-                    </span>
-                  )}
+                  {path.kind === 'cli' && <span>CLI: {path.command}</span>}
                   {path.scope && <span>Requested access: {path.scope}</span>}
                 </div>
               ))}
