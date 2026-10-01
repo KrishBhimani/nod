@@ -2,7 +2,6 @@ export interface DiscoveredTool {
   name: string;
   description?: string;
   inputSchema: unknown;
-  annotations?: { readOnlyHint?: boolean };
 }
 
 export interface DiscoveredTransport {

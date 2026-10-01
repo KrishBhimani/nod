@@ -587,7 +587,6 @@ export async function createApplication(
       else await integrations.validateApproval(ownerId, action, args);
     },
     (action, args) => integrations.describeApproval(ownerId, action, args),
-    (action, args) => integrations.describeTarget(ownerId, action, args),
   );
   const reactions = createAgentReactionService({ pool, ownerId, refresh });
   const localAccounts = runtimeMode === 'local' ? createAccountStore(pool) : null;
@@ -703,7 +702,7 @@ export async function createApplication(
         return vault.request(turn, ownerId, request);
       },
       integration: async (turn, action, args, options) => {
-        const result = await integrations.execute(
+        return integrations.execute(
           ownerId,
           action,
           args,
@@ -711,28 +710,6 @@ export async function createApplication(
           options?.signal,
           options?.checkConnectionId,
         );
-        if (
-          result &&
-          typeof result === 'object' &&
-          'requiresApproval' in result &&
-          result.requiresApproval
-        ) {
-          if (options?.readOnly)
-            return {
-              status: 'rejected',
-              code: 'read_only',
-              message: 'This turn can only read connected apps. It cannot change their data.',
-            };
-          return approvals.request(
-            turn,
-            action,
-            'args' in result && result.args && typeof result.args === 'object'
-              ? (result.args as Record<string, unknown>)
-              : args,
-            options?.signal,
-          );
-        }
-        return result;
       },
     });
   }

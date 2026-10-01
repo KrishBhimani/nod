@@ -30,7 +30,6 @@ const toolSlug = z
   .string()
   .max(200)
   .regex(/^[A-Z][A-Z0-9]*_[A-Z0-9_]+$/);
-const writeHints = ['destructiveHint', 'createHint', 'updateHint', 'deleteHint'];
 const schemaToolkit = z.string().toLowerCase().pipe(z.enum(integrationServiceIds));
 
 function errorText(error: unknown) {
@@ -165,10 +164,6 @@ export function createComposioProvider(options: {
   const downloadFile = createIntegrationFileDownloader(options.fileDownload);
   const identities = new Map<string, AccountIdentity>();
   const pendingIdentities = new Map<string, Promise<AccountIdentity>>();
-  const readTools = new Map<
-    string,
-    { promise: Promise<boolean>; controller: AbortController; waiters: number; settled: boolean }
-  >();
   const authConfigs = Object.fromEntries(
     Object.entries(options.authConfigs ?? {}).filter(
       ([, id]) => typeof id === 'string' && id.trim().length > 0,
@@ -722,64 +717,6 @@ export function createComposioProvider(options: {
     },
     async deleteSession(id) {
       await required().sessions.delete(id, { signal: AbortSignal.timeout(5_000) });
-    },
-    async readOnly(action, signal) {
-      signal?.throwIfAborted();
-      if (!toolSlug.safeParse(action).success) return false;
-      let current = readTools.get(action);
-      if (!current || current.controller.signal.aborted) {
-        const controller = new AbortController();
-        const promise = required()
-          .tools.getRawComposioToolBySlug(action, undefined, {
-            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
-          })
-          .then(
-            ({ tags = [] }) =>
-              tags.includes('readOnlyHint') && !tags.some((tag) => writeHints.includes(tag)),
-          );
-        const created = { promise, controller, waiters: 0, settled: false };
-        readTools.set(action, created);
-        void promise.then(
-          () => {
-            created.settled = true;
-          },
-          () => {
-            created.settled = true;
-            if (readTools.get(action) === created) readTools.delete(action);
-          },
-        );
-        current = created;
-      }
-      const lookup = current;
-      lookup.waiters++;
-      return new Promise((resolve, reject) => {
-        let finished = false;
-        const finish = (operation: () => void) => {
-          if (finished) return;
-          finished = true;
-          signal?.removeEventListener('abort', abort);
-          lookup.waiters--;
-          if (!lookup.waiters && !lookup.settled) {
-            lookup.controller.abort();
-            if (readTools.get(action) === lookup) readTools.delete(action);
-          }
-          operation();
-        };
-        const abort = () => finish(() => reject(signal?.reason));
-        signal?.addEventListener('abort', abort, { once: true });
-        lookup.promise.then(
-          (value) => finish(() => resolve(value)),
-          () =>
-            finish(() =>
-              reject(
-                new Error(
-                  'The app action could not be verified because the tool catalog is unavailable.',
-                ),
-              ),
-            ),
-        );
-        if (signal?.aborted) abort();
-      });
     },
     async inspectAccount(id, ownerId) {
       const account = await required().connectedAccounts.get(id, {
