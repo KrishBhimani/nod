@@ -213,7 +213,7 @@ export const toolDefinitions = {
   ),
   apps: defineTool(
     'apps',
-    "Use the user's connected accounts. SEARCH_TOOLS {query} returns exact actions, schemas, account and path IDs. Other actions run with args; download actions copy files into the workspace. Foreground downloads also deliver them; background downloads stay private until share_file. Writes may pause for confirmation.",
+    "Use the user's connected accounts. Reuse known action schemas and account IDs. SEARCH_TOOLS {query} finds missing action schemas and IDs. Other actions run with args; download actions copy files into the workspace. Foreground downloads also deliver them; background downloads stay private until share_file.",
     Type.Object({
       action: Type.String({ maxLength: 150 }),
       args: Type.Record(Type.String(), Type.Unknown()),
@@ -252,10 +252,6 @@ export const toolDefinitions = {
                 command: Type.String({ minLength: 1, maxLength: 64 }),
                 auth: Type.Optional(Type.Literal('env')),
                 envName: Type.String({ minLength: 3, maxLength: 80 }),
-                testArgs: Type.Array(Type.String({ minLength: 1, maxLength: 300 }), {
-                  minItems: 1,
-                  maxItems: 12,
-                }),
               }),
             ]),
             { minItems: 1, maxItems: 4 },

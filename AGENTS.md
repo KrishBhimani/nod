@@ -21,14 +21,18 @@ Setup and commands are in [README](README.md); how the system works is in [archi
 
 ## Safety invariants
 
-- Approvals: unknown, destructive or ambiguous outside actions need an owned yes/no confirmation bound to the exact action, account and arguments. Confirmed actions run once; interrupted ones become uncertain and are never re-run.
+- Connected app actions run without a server review. Other reviewed actions use an owned yes/no confirmation bound to the exact action and arguments. Confirmed actions run once; interrupted ones become uncertain and are never re-run.
 - Vault and sign-in: `get_credential` can return one saved login to Pi by owned ID and exact origin. The value enters the Pi model context and saved session. Omit it from separate tool observations and user messages. New credentials go through secure forms and the trusted browser broker, bound to owner, turn, exact origin and expiry.
 - Pi interprets website login methods and field roles from the current browser page. The broker validates selected elements and secure entry; do not gate login on site names or field-label dictionaries. Keep site-specific cases in regression fixtures.
 - Before choosing a login method, check saved account metadata. Reuse a uniquely applicable login; ask when several methods are available without a matching saved login, unless the user already chose. Ask when the matching account or method remains ambiguous.
 - Credential guard: the runtime withholds messages that ask the user for passwords, codes or API keys and redirects the model to `get_credential`.
-- The onboarding welcome turn is read-only.
 - Owner and tenant isolation: every query and route is owner-scoped; tenants get their own SQL role and schemas and never receive control or auth credentials.
 - Internal gateway-to-tenant requests use signed HMAC envelopes binding owner, environment, generation, method, target, body, nonce and expiry. Keep replay and expiry checks.
+
+## Model policy
+
+- Pi decides if a connected app action is destructive and asks the user when the current request does not clearly authorize it. This is a model instruction, not a server guarantee.
+- Onboarding welcome turns and activity checks must only read connected apps. The server does not classify app actions for these turns.
 
 ## Validation
 

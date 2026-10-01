@@ -143,7 +143,6 @@ export function Apps() {
       command?: string;
       auth: string;
       envName?: string;
-      testArgs?: string[];
       testPath?: string;
       scope?: string;
       clientIdRequired?: boolean;
@@ -188,7 +187,6 @@ export function Apps() {
         command?: string;
         auth: string;
         envName?: string;
-        testArgs?: string[];
         testPath?: string;
         scope?: string;
         clientIdRequired?: boolean;
@@ -541,7 +539,9 @@ export function Apps() {
         <DialogContent className="app-discovery-dialog">
           <DialogTitle>Connect {discovery?.name ?? 'app'}</DialogTitle>
           <DialogDescription>
-            Add your account securely. Otto will check access before it saves the connection.
+            {discovery?.paths.some((path) => path.kind === 'cli')
+              ? 'Add your account securely. CLI tokens are saved without a setup check.'
+              : 'Add your account securely. Otto will check access before it saves the connection.'}
           </DialogDescription>
           {discovery?.setupText && <p>{discovery.setupText}</p>}
           {discovery?.setupUrl && (
@@ -574,10 +574,7 @@ export function Apps() {
                     </span>
                   )}
                   {path.kind === 'cli' && (
-                    <span>
-                      Read check: {path.command}{' '}
-                      {path.testArgs?.map((arg) => JSON.stringify(arg)).join(' ')}
-                    </span>
+                    <span>CLI: {path.command} (not checked during setup)</span>
                   )}
                   {path.scope && <span>Requested access: {path.scope}</span>}
                 </div>
@@ -624,7 +621,11 @@ export function Apps() {
                   )
                 }
               >
-                {savingDiscovery ? 'Checking…' : 'Connect account'}
+                {savingDiscovery
+                  ? discovery.paths.some((path) => path.kind === 'cli')
+                    ? 'Saving…'
+                    : 'Checking…'
+                  : 'Connect account'}
               </Button>
             </form>
           ) : null}

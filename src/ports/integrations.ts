@@ -92,7 +92,6 @@ export interface IntegrationProvider {
   ): Promise<IntegrationSession>;
   restoreSession(id: string, signal?: AbortSignal): Promise<IntegrationSession>;
   deleteSession(id: string): Promise<void>;
-  readOnly(action: string, signal?: AbortSignal): Promise<boolean>;
   inspectAccount(
     id: string,
     ownerId: string,

@@ -244,7 +244,6 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       ADD COLUMN IF NOT EXISTS intent text NOT NULL DEFAULT 'classify' CHECK(intent IN ('classify','inspect_message'));
   `);
   const sessions = new Map<string, Promise<IntegrationSession>>();
-  const targets = new Map<string, { label: string; expires: number }>();
   let draining = false;
   let closed = false;
   let refreshing: Promise<void> | undefined;
@@ -833,7 +832,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     return slug.data;
   }
 
-  async function approvedConnection(
+  async function selectedConnection(
     ownerId: string,
     action: string,
     args: Record<string, unknown>,
@@ -842,10 +841,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     const slug = actionToolkit(action);
     const connectionId = z.string().uuid().safeParse(args.connectionId);
     if (!connectionId.success)
-      throw new IntegrationError(
-        'This approval does not identify its connected account. Request a new approval.',
-        409,
-      );
+      throw new IntegrationError('Choose a connected account for this action.', 409);
     const row = await selectConnection(ownerId, slug, connectionId.data);
     if (JSON.stringify(args).length > 32_768)
       throw new IntegrationError('The integration request is too large.');
@@ -864,7 +860,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       await options.discovered.selected(args);
       return;
     }
-    await approvedConnection(ownerId, action, args);
+    await selectedConnection(ownerId, action, args);
   }
 
   async function describeApproval(
@@ -897,112 +893,6 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     };
   }
 
-  function targetKey(accountId: string, slug: Slug, id: string) {
-    return JSON.stringify([accountId, slug, id]);
-  }
-
-  function rememberTargets(
-    accountId: string,
-    slug: Slug,
-    result: unknown,
-    args: Record<string, unknown>,
-  ) {
-    const queue: unknown[] = [result];
-    let visited = 0;
-    while (queue.length && visited++ < 512) {
-      const item = queue.shift();
-      if (!item || typeof item !== 'object') continue;
-      if (Array.isArray(item)) {
-        queue.push(...item.slice(0, 100));
-        continue;
-      }
-      const row = item as Record<string, unknown>;
-      let label =
-        row.subject ??
-        row.name ??
-        row.summary ??
-        row.title ??
-        (slug === 'slack' ? row.text : undefined);
-      if (Array.isArray(label))
-        label = label.map((part) => part?.plain_text ?? part?.text?.content ?? '').join('');
-      if (!label && row.payload && typeof row.payload === 'object') {
-        const headers = (row.payload as Record<string, unknown>).headers;
-        if (Array.isArray(headers))
-          label = headers.find((header) => String(header?.name).toLowerCase() === 'subject')?.value;
-      }
-      const id =
-        row.id ??
-        row.messageId ??
-        row.message_id ??
-        row.file_id ??
-        row.event_id ??
-        row.block_id ??
-        (slug === 'slack' && typeof row.ts === 'string'
-          ? `${String(row.channel ?? args.channel ?? '')}:${row.ts}`
-          : undefined);
-      const ids = [id];
-      if (slug === 'gmail')
-        for (const threadId of [row.threadId, row.thread_id])
-          if (typeof threadId === 'string') ids.push(`thread:${threadId}`);
-      for (const id of ids) {
-        if (
-          typeof id !== 'string' ||
-          id.length >= 500 ||
-          typeof label !== 'string' ||
-          !label.trim()
-        )
-          continue;
-        const key = targetKey(accountId, slug, id);
-        targets.delete(key);
-        targets.set(key, {
-          label: label
-            .replace(/[\u0000-\u001f\u007f]/g, ' ')
-            .trim()
-            .slice(0, 500),
-          expires: Date.now() + 10 * 60_000,
-        });
-        while (targets.size > 256) targets.delete(targets.keys().next().value!);
-      }
-      queue.push(
-        ...Object.values(row)
-          .filter((value) => value && typeof value === 'object')
-          .slice(0, 100),
-      );
-    }
-  }
-
-  async function describeTarget(ownerId: string, action: string, args: Record<string, unknown>) {
-    const deletion = /_(?:DELETE|TRASH|REMOVE|DESTROY|PURGE)(?:_|$)/.test(action);
-    const calendarEvent =
-      action.startsWith('GOOGLECALENDAR_') &&
-      (typeof args.event_id === 'string' || typeof args.eventId === 'string');
-    const gmailReply = action === 'GMAIL_REPLY_TO_THREAD';
-    if (!deletion && !calendarEvent && !gmailReply) return undefined;
-    const row = await approvedConnection(ownerId, action, args);
-    const id = gmailReply
-      ? `thread:${args.thread_id ?? args.threadId}`
-      : (args.message_id ??
-        args.messageId ??
-        args.file_id ??
-        args.fileId ??
-        args.event_id ??
-        args.eventId ??
-        args.block_id ??
-        args.page_id ??
-        args.id ??
-        (row.slug === 'slack' && typeof args.ts === 'string'
-          ? `${String(args.channel ?? '')}:${args.ts}`
-          : undefined));
-    const target =
-      typeof id === 'string' ? targets.get(targetKey(row.account_id!, row.slug, id)) : undefined;
-    if (!target || target.expires <= Date.now())
-      throw new IntegrationError(
-        'Read the exact item in this account first so the confirmation can name what will change.',
-        409,
-      );
-    return target.label;
-  }
-
   async function executeApproved(
     ownerId: string,
     action: string,
@@ -1019,9 +909,9 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       assertOwner(ownerId);
       if (!options.discovered)
         throw new IntegrationError('Discovered connections are unavailable.', 503);
-      return options.discovered.execute(action, args, false, turn, signal);
+      return options.discovered.execute(action, args, turn, signal);
     }
-    const row = await approvedConnection(ownerId, action, args);
+    const row = await selectedConnection(ownerId, action, args);
     if ((integrationDownloadActions as readonly string[]).includes(action))
       return {
         downloadRequired: true,
@@ -1038,18 +928,13 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         signal,
         async (session) => {
           if (checkConnectionId) await options.validateActivityCheck!(turn!, checkConnectionId);
-          const current = await approvedConnection(ownerId, action, args);
+          const current = await selectedConnection(ownerId, action, args);
           if (current.account_id !== row.account_id)
             throw new Error('The selected account changed.');
           signal?.throwIfAborted();
           return session.execute(action, providerArgs, row.account_id!, signal);
         },
       );
-      const read = await providerForRow(row)
-        .readOnly(action, signal)
-        .catch(() => false);
-      signal?.throwIfAborted();
-      if (read) rememberTargets(row.account_id!, row.slug, result, providerArgs);
       return result;
     } catch (error) {
       throw new IntegrationError(failure('The app request failed', error), 502);
@@ -1086,10 +971,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     ) {
       if (!options.discovered)
         throw new IntegrationError('Discovered connections are unavailable.', 503);
-      const read = await options.discovered.isRead(action, args, signal);
-      return read
-        ? options.discovered.execute(action, args, true, turn, signal)
-        : { requiresApproval: true, action, args };
+      return options.discovered.execute(action, args, turn, signal);
     }
     if (action === 'SEARCH_TOOLS') {
       const input = z
@@ -1238,13 +1120,11 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
               },
             },
             CONNECTED_CLI: {
-              description:
-                'Run one saved CLI path with its Vault grant. Mark a verified read with readOnly:true. Writes use account review.',
+              description: 'Run one saved CLI path with its Vault grant.',
               parameters: {
                 connectionId: 'Saved account ID.',
                 pathId: 'Saved path ID.',
                 argv: 'CLI arguments without the program name or a token.',
-                readOnly: 'True only for a verified read command with no side effects.',
                 timeoutSeconds: 'Optional limit from 1 to 120 seconds.',
               },
             },
@@ -1264,9 +1144,6 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       z.string().uuid().optional().parse(args.connectionId),
     );
     const selectedArgs = { ...args, connectionId: row.id };
-    const read = await providerForRow(row).readOnly(action, signal);
-    signal?.throwIfAborted();
-    if (!read) return { requiresApproval: true, action, args: selectedArgs };
     return executeApproved(ownerId, action, selectedArgs, turn, signal, checkConnectionId);
   }
 
@@ -1803,7 +1680,6 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     download,
     validateApproval,
     describeApproval,
-    describeTarget,
     list,
     connectedApps,
     manageConnections: async (

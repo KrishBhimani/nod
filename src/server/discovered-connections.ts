@@ -7,12 +7,11 @@ import type { CredentialKeyStore } from '../ports/key-store.ts';
 import type {
   DiscoveredOAuth,
   DiscoveredOAuthState,
-  DiscoveredTool,
   DiscoveredTransport,
 } from '../ports/discovered.ts';
 import type { Connection } from '../shared/contracts.ts';
 import type { createAppGrantVault } from './vault-app-grants.ts';
-import { activeThread, type TurnRef } from './thread.ts';
+import type { TurnRef } from './thread.ts';
 
 const pathSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -36,7 +35,6 @@ const pathSchema = z.discriminatedUnion('kind', [
     command: z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/),
     auth: z.literal('env').default('env'),
     envName: z.string().regex(/^[A-Z][A-Z0-9_]{1,63}(?:TOKEN|API_KEY|SECRET|PASSWORD)$/),
-    testArgs: z.array(z.string().min(1).max(300)).min(1).max(12),
   }),
 ]);
 const proposalSchema = z.object({
@@ -118,38 +116,6 @@ function redact(value: unknown, token: string): unknown {
       ]),
     );
   return value;
-}
-
-function cliLooksLikeWrite(argv: string[]) {
-  return argv.some(
-    (value, index) =>
-      /^(?:add|approve|archive|close|commit|create|delete|disable|edit|enable|invite|merge|open|post|publish|push|remove|rename|restore|revoke|send|set|submit|transfer|update|upload)$/i.test(
-        value,
-      ) ||
-      /^(?:-f|-F|--body|--field|--force|--input|--raw-field)(?:=|$)/.test(value) ||
-      (/^(?:-X|--method)(?:=|$)/.test(value) &&
-        !/^(?:GET|--method=GET|-X=GET)$/i.test(
-          argv[index + (value.includes('=') ? 0 : 1)] ?? value,
-        )),
-  );
-}
-
-function cliRead(args: Record<string, unknown>, argv: string[], testArgs: string[]) {
-  const readVerb = /^(?:get|inspect|list|search|show|status|view)$/i;
-  const declaredRead =
-    readVerb.test(argv[0] ?? '') ||
-    readVerb.test(argv[1] ?? '') ||
-    (argv[0] === 'api' &&
-      argv.some((value, index) =>
-        /^(?:-X|--method)$/i.test(value)
-          ? argv[index + 1] === 'GET'
-          : /^(?:-X|--method)=GET$/i.test(value),
-      ));
-  return (
-    !cliLooksLikeWrite(argv) &&
-    declaredRead &&
-    (args.readOnly === true || JSON.stringify(argv) === JSON.stringify(testArgs))
-  );
 }
 
 function target(path: Extract<AccessPath, { kind: 'http' }>, relative: string) {
@@ -273,8 +239,6 @@ export async function createDiscoveredConnections(
       const pathId = index === 0 ? id : randomUUID();
       if (path.kind === 'cli') {
         if (!options.runCli) throw error('CLI connections are unavailable.', 503);
-        if (!cliRead({ readOnly: true }, path.testArgs, path.testArgs))
-          throw error('The CLI check must use a read command.');
         if (
           /^(?:bash|dash|env|fish|node|npx|npm|python(?:3(?:\.\d+)?)?|sh|su|sudo|zsh)$/i.test(
             path.command,
@@ -400,15 +364,6 @@ export async function createDiscoveredConnections(
             'GET',
           );
           if (response.status < 200 || response.status >= 300) throw new Error();
-        } else {
-          const result = await options.runCli?.(
-            (await activeThread(pool, owner)).id,
-            path.command,
-            path.testArgs,
-            path.envName,
-            token,
-          );
-          if (!result || result.exitCode !== 0) throw new Error();
         }
       } catch {
         throw error(`The ${path.kind.toUpperCase()} access path could not be verified.`, 409);
@@ -667,7 +622,6 @@ export async function createDiscoveredConnections(
             command: path.command,
             auth: path.auth,
             envName: path.envName,
-            testArgs: path.testArgs,
           };
         return {
           kind: path.kind,
@@ -697,7 +651,6 @@ export async function createDiscoveredConnections(
                 id: path.id,
                 kind: path.kind,
                 endpoint: path.kind === 'cli' ? path.command : path.endpoint,
-                ...(path.kind === 'cli' ? { testArgs: path.testArgs } : {}),
               };
             try {
               const token = await tokenFor(row, path, signal);
@@ -727,7 +680,6 @@ export async function createDiscoveredConnections(
                     name: redact(tool.name, token),
                     description: redact(tool.description, token),
                     inputSchema: redact(tool.inputSchema, token),
-                    readOnly: readOnly(tool),
                   })),
               };
             } catch {
@@ -741,14 +693,6 @@ export async function createDiscoveredConnections(
     );
     return { accounts };
   }
-  function readOnly(tool: DiscoveredTool) {
-    return (
-      tool.annotations?.readOnlyHint === true &&
-      /^(?:get|list|search|fetch|read|find|view|whoami|issue_read|pull_request_read)(?:_|$)/i.test(
-        tool.name,
-      )
-    );
-  }
   async function selected(args: Record<string, unknown>) {
     const connectionId = z.uuid().parse(args.connectionId);
     const pathId = z.uuid().parse(args.pathId);
@@ -758,41 +702,9 @@ export async function createDiscoveredConnections(
     if (JSON.stringify(args).length > 32_768) throw error('The app request is too large.');
     return { row, path };
   }
-  async function isRead(action: string, args: Record<string, unknown>, signal?: AbortSignal) {
-    signal?.throwIfAborted();
-    const { row, path } = await selected(args);
-    if (action === 'CONNECTED_HTTP') {
-      if (path.kind !== 'http') throw error('Choose an HTTP access path.');
-      target(path, z.string().parse(args.path));
-      return args.method === 'GET';
-    }
-    if (action === 'CONNECTED_CLI') {
-      if (path.kind !== 'cli') throw error('Choose a CLI access path.');
-      const argv = z.array(z.string().min(1).max(1000)).min(1).max(32).parse(args.argv);
-      return cliRead(args, argv, path.testArgs);
-    }
-    if (action !== 'CONNECTED_MCP_CALL' || path.kind !== 'mcp')
-      throw error('Choose an MCP access path.');
-    const name = z.string().min(1).max(150).parse(args.tool);
-    const token = await tokenFor(row, path, signal);
-    let tools: DiscoveredTool[];
-    try {
-      tools = await options.transport.listTools(path.endpoint, headers(path, token), signal);
-    } catch (cause) {
-      signal?.throwIfAborted();
-      throw error(
-        `The connected MCP tool list is unavailable: ${String(redact(cause instanceof Error ? cause.message : String(cause), token))}`,
-        502,
-      );
-    }
-    const tool = tools.find((item) => item.name === name);
-    if (!tool) throw error('This tool is no longer available.', 409);
-    return readOnly(tool);
-  }
   async function execute(
     action: string,
     args: Record<string, unknown>,
-    readOnlyRequired = false,
     turn?: TurnRef,
     signal?: AbortSignal,
   ) {
@@ -829,8 +741,6 @@ export async function createDiscoveredConnections(
       if (path.kind !== 'cli') throw error('Choose a CLI access path.');
       if (!turn || !options.runCli) throw error('CLI connections are unavailable.', 503);
       const argv = z.array(z.string().min(1).max(1000)).min(1).max(32).parse(args.argv);
-      if (readOnlyRequired && !cliRead(args, argv, path.testArgs))
-        throw error('This CLI command needs confirmation.', 409);
       try {
         const result = await options.runCli(
           turn.threadId,
@@ -855,17 +765,6 @@ export async function createDiscoveredConnections(
       throw error('Choose an MCP access path.');
     const name = z.string().min(1).max(150).parse(args.tool);
     const input = z.record(z.string(), z.unknown()).parse(args.input ?? {});
-    let selectedTool: DiscoveredTool | undefined;
-    try {
-      selectedTool = (
-        await options.transport.listTools(path.endpoint, headers(path, token), signal)
-      ).find((tool) => tool.name === name);
-    } catch (cause) {
-      throw failed('The connected MCP tool list is unavailable', cause);
-    }
-    if (!selectedTool) throw error('This tool is no longer available.', 409);
-    if (readOnlyRequired && !readOnly(selectedTool))
-      throw error('This tool now needs confirmation.', 409);
     try {
       return safeResult(
         await options.transport.callTool(path.endpoint, headers(path, token), name, input, signal),
@@ -899,7 +798,6 @@ export async function createDiscoveredConnections(
                 command: path.command,
                 auth: path.auth,
                 envName: path.envName,
-                testArgs: path.testArgs,
               }
             : {
                 kind: path.kind,
@@ -933,7 +831,6 @@ export async function createDiscoveredConnections(
     completeOAuth,
     reconnect,
     search,
-    isRead,
     execute,
     selected,
     describe,

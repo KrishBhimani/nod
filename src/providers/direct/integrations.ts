@@ -266,10 +266,6 @@ export function createDirectProvider(options: {
       return this.createSession(id, {}, signal);
     },
     async deleteSession() {},
-    async readOnly(action, signal) {
-      signal?.throwIfAborted();
-      return Object.hasOwn(tools, action);
-    },
     async inspectAccount(id, ownerId) {
       const account = await oauth.access(ownerId, id);
       const details = await mcp(account.service, account.accessToken, async (client) => {

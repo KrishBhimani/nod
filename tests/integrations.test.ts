@@ -45,16 +45,7 @@ import { createAppGrantVault } from '../src/server/vault-app-grants.ts';
 import { integrationServiceIds } from '../src/shared/integrations.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 
-const readTool = { annotations: { readOnlyHint: true } };
-
-function catalogReadOnly(tools: Record<string, { annotations?: { readOnlyHint?: boolean } }>) {
-  return async (action: string) => tools[action]?.annotations?.readOnlyHint === true;
-}
-
-function fakeProvider(
-  session: IntegrationSession,
-  tools: Parameters<typeof catalogReadOnly>[0] = {},
-): IntegrationProvider {
+function fakeProvider(session: IntegrationSession): IntegrationProvider {
   return {
     id: 'fixture',
     configured: true,
@@ -62,7 +53,6 @@ function fakeProvider(
     supportsSubscriptions: ['gmail', 'googlecalendar'],
     createSession: async () => session,
     restoreSession: async () => session,
-    readOnly: catalogReadOnly(tools),
     deleteSession: async () => {},
     inspectAccount: async () => ({ active: true, service: 'gmail' }),
     deleteAccount: async () => {},
@@ -97,7 +87,7 @@ test('notification summaries exclude message bodies, tokens, and unbounded provi
 });
 
 test(
-  'integration accounts stay owner-private while event policy verifies, deduplicates, and gates writes',
+  'integration accounts stay owner-private while event policy verifies and deduplicates',
   { skip: !process.env.TEST_DATABASE_URL },
   async (t) => {
     const schema = `test_composio_${randomUUID().replaceAll('-', '')}`;
@@ -122,7 +112,7 @@ test(
         suggestions: [{ useCase: 'Send email', primaryToolSlugs: ['GMAIL_SEND_EMAIL'] }],
       }),
     };
-    const provider = fakeProvider(session, { GMAIL_FETCH_EMAILS: readTool });
+    const provider = fakeProvider(session);
     const discoveredBrowserId = randomUUID();
     const pendingBrowserId = randomUUID();
     const savedLoginIds = [randomUUID(), randomUUID()];
@@ -234,24 +224,15 @@ test(
         recipient_email: 'test@example.com',
         subject: 'Fixture',
       });
-      assert.deepEqual(result, {
-        requiresApproval: true,
-        action: 'GMAIL_SEND_EMAIL',
-        args: {
-          recipient_email: 'test@example.com',
-          subject: 'Fixture',
-          connectionId: (await integrations.list()).find((row) => row.slug === 'gmail')
-            ?.connectionId,
-        },
-      });
-      assert.equal(executed, 0);
-      await integrations.execute('local-development', 'GMAIL_FETCH_EMAILS', { max_results: 5 });
+      assert.deepEqual(result, { successful: true, data: { messages: [] } });
       assert.equal(executed, 1);
+      await integrations.execute('local-development', 'GMAIL_FETCH_EMAILS', { max_results: 5 });
+      assert.equal(executed, 2);
       await integrations.executeApproved('local-development', 'GMAIL_SEND_EMAIL', {
         recipient_email: 'fixture@example.com',
         connectionId: (await integrations.list()).find((row) => row.slug === 'gmail')?.connectionId,
       });
-      assert.equal(executed, 2);
+      assert.equal(executed, 3);
       await assert.rejects(integrations.execute('another-user', 'GMAIL_FETCH_EMAILS', {}));
       await assert.rejects(
         integrations.executeApproved('local-development', 'COMPOSIO_MULTI_EXECUTE_TOOL', {}),
@@ -492,7 +473,7 @@ test(
 );
 
 test(
-  'multiple Google accounts keep independent identity, approvals, subscriptions and revocation',
+  'multiple Google accounts keep independent identity, actions, subscriptions and revocation',
   { skip: !process.env.TEST_DATABASE_URL },
   async () => {
     const schema = `test_accounts_${randomUUID().replaceAll('-', '')}`;
@@ -522,7 +503,7 @@ test(
         return { data: { labels: [] } };
       },
     };
-    const provider = fakeProvider(session, { GMAIL_LIST_LABELS: readTool });
+    const provider = fakeProvider(session);
     provider.createSession = async (_owner, accounts) => {
       accountSets.push(accounts);
       return session;
@@ -586,16 +567,16 @@ test(
         { action: 'GMAIL_LIST_LABELS', args: { user_id: 'me' }, accountId: 'account-2' },
       ]);
       assert.deepEqual(accountSets.at(-1), { gmail: ['account-1', 'account-2'] });
-      const approval = await integrations.execute('local-development', 'GMAIL_SEND_EMAIL', {
+      const sent = await integrations.execute('local-development', 'GMAIL_SEND_EMAIL', {
         connectionId: first.connectionId,
         subject: 'Fixture',
       });
-      assert.deepEqual(approval, {
-        requiresApproval: true,
+      assert.deepEqual(sent, { data: { labels: [] } });
+      assert.deepEqual(executions[1], {
         action: 'GMAIL_SEND_EMAIL',
-        args: { connectionId: first.connectionId, subject: 'Fixture' },
+        args: { subject: 'Fixture' },
+        accountId: 'account-1',
       });
-      assert.equal(executions.length, 1);
       const search = (await integrations.execute('local-development', 'SEARCH_TOOLS', {
         query: 'List Gmail labels',
       })) as { accounts: Array<{ connectionId: string }> };
@@ -703,12 +684,11 @@ test(
           }),
           {
             statusCode: 409,
-            message:
-              'This approval does not identify its connected account. Request a new approval.',
+            message: 'Choose a connected account for this action.',
           },
         );
       }
-      assert.equal(executions.length, 1);
+      assert.equal(executions.length, 2);
       await integrations.execute('local-development', 'GMAIL_LIST_LABELS', {});
       assert.equal(executions.at(-1)?.accountId, 'account-2');
     } finally {
@@ -748,16 +728,6 @@ async function appsFixture(
   const sessions: unknown[] = [];
   const wakes: string[] = [];
   const wakeIntents: Array<string | undefined> = [];
-  const tools = {
-    GMAIL_GET_PROFILE: readTool,
-    GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID: readTool,
-    GMAIL_FETCH_MESSAGE_BY_THREAD_ID: readTool,
-    GOOGLECALENDAR_EVENTS_GET: readTool,
-    GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS: readTool,
-    GMAIL_GET_ATTACHMENT: readTool,
-    NOTION_RETRIEVE_PAGE: readTool,
-    SLACK_SEARCH_MESSAGES: readTool,
-  };
   const session: IntegrationSession = {
     id: 'current-session',
     authorize: async (service, callback) => {
@@ -793,7 +763,6 @@ async function appsFixture(
     restoreSession: async () => {
       assert.fail('An old session must be replaced.');
     },
-    readOnly: catalogReadOnly(tools),
     deleteSession: async (id) => {
       removed.push(id);
     },
@@ -877,94 +846,52 @@ async function appsFixture(
 }
 
 test(
-  'calendar proposals require an observed event in the exact owned account',
+  'legacy app review metadata names only the selected owned account',
   { skip: !process.env.TEST_DATABASE_URL },
   async (t) => {
     const f = await appsFixture(t);
-    const selected = await f.connect('googlecalendar');
-    const another = await f.connect('googlecalendar');
-    const args = { connectionId: selected.connectionId, event_id: 'event-1' };
-    await assert.rejects(
-      f.service.describeTarget('local-development', 'GOOGLECALENDAR_UPDATE_EVENT', args),
-      { statusCode: 409 },
-    );
-    f.session.execute = async () => ({
-      data: { id: 'event-1', summary: 'Synthetic planning meeting' },
-    });
-    await f.service.execute('local-development', 'GOOGLECALENDAR_EVENTS_GET', args);
-    assert.equal(
-      await f.service.describeTarget('local-development', 'GOOGLECALENDAR_UPDATE_EVENT', args),
-      'Synthetic planning meeting',
-    );
-    for (const changed of [
-      { ...args, connectionId: another.connectionId },
-      { ...args, event_id: 'event-2' },
-    ])
-      await assert.rejects(
-        f.service.describeTarget('local-development', 'GOOGLECALENDAR_UPDATE_EVENT', changed),
-        { statusCode: 409 },
-      );
-    await assert.rejects(
-      f.service.describeTarget('foreign-owner', 'GOOGLECALENDAR_UPDATE_EVENT', args),
-      { statusCode: 403 },
-    );
-    await f.pool.query("UPDATE app_connections SET account_id='replacement-account' WHERE id=$1", [
-      selected.connectionId,
-    ]);
-    await assert.rejects(
-      f.service.describeTarget('local-development', 'GOOGLECALENDAR_UPDATE_EVENT', args),
-    );
-  },
-);
-
-test(
-  'Gmail reply proposals require a fresh observed thread in the exact owned account',
-  { skip: !process.env.TEST_DATABASE_URL },
-  async (t) => {
-    const f = await appsFixture(t);
+    const first = await f.connect('gmail');
     const selected = await f.connect('gmail');
-    const another = await f.connect('gmail');
-    const args = { connectionId: selected.connectionId, thread_id: 'thread-1' };
-    const describe = (input = args, owner = 'local-development') =>
-      f.service.describeTarget(owner, 'GMAIL_REPLY_TO_THREAD', input);
-    await assert.rejects(describe(), { statusCode: 409 });
-    f.session.execute = async () => ({
-      successful: true,
-      data: {
-        id: 'message-1',
-        threadId: 'thread-1',
-        payload: { headers: [{ name: 'Subject', value: 'Synthetic reply subject' }] },
-      },
-    });
-    await f.service.execute('local-development', 'GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID', {
+    await f.pool.query('UPDATE app_connections SET account_email=$2 WHERE id=$1', [
+      selected.connectionId,
+      'selected@example.test',
+    ]);
+    const metadata = await f.service.describeApproval('local-development', 'GMAIL_SEND_EMAIL', {
       connectionId: selected.connectionId,
-      message_id: 'message-1',
     });
-    assert.equal(await describe(), 'Synthetic reply subject');
-    for (const changed of [
-      { ...args, connectionId: another.connectionId },
-      { ...args, thread_id: 'thread-2' },
-      { ...args, thread_id: 'message-1' },
-    ])
-      await assert.rejects(describe(changed), { statusCode: 409 });
-    await assert.rejects(describe(args, 'foreign-owner'), { statusCode: 403 });
-    const now = Date.now();
-    const clock = t.mock.method(Date, 'now', () => now + 10 * 60_000 + 1);
-    await assert.rejects(describe(), { statusCode: 409 });
-    f.session.execute = async () => ({
-      successful: true,
-      data: {
-        messages: [{ message_id: 'message-2', thread_id: 'thread-2', subject: 'Another subject' }],
-      },
+    assert.deepEqual(metadata, {
+      name: 'Gmail',
+      accountName: `gmail ${selected.accountId}`,
+      accountEmail: 'selected@example.test',
     });
-    await f.service.execute('local-development', 'GMAIL_FETCH_MESSAGE_BY_THREAD_ID', args);
-    await assert.rejects(describe(), { statusCode: 409 });
-    assert.equal(await describe({ ...args, thread_id: 'thread-2' }), 'Another subject');
-    clock.mock.restore();
+    assert.doesNotMatch(JSON.stringify(metadata), /private-callback|connectionId/);
+    assert.notDeepEqual(
+      metadata,
+      await f.service.describeApproval('local-development', 'GMAIL_SEND_EMAIL', {
+        connectionId: first.connectionId,
+      }),
+    );
+    assert.equal(
+      await f.service.describeApproval('local-development', 'NOTION_UPDATE_PAGE', {
+        connectionId: selected.connectionId,
+      }),
+      undefined,
+    );
     await f.pool.query('UPDATE app_connections SET revoked=true WHERE id=$1', [
       selected.connectionId,
     ]);
-    await assert.rejects(describe({ ...args, thread_id: 'thread-2' }));
+    assert.equal(
+      await f.service.describeApproval('local-development', 'GMAIL_SEND_EMAIL', {
+        connectionId: selected.connectionId,
+      }),
+      undefined,
+    );
+    await assert.rejects(
+      f.service.describeApproval('foreign-owner', 'GMAIL_SEND_EMAIL', {
+        connectionId: first.connectionId,
+      }),
+      { statusCode: 403 },
+    );
   },
 );
 
@@ -1173,152 +1100,7 @@ test(
 );
 
 test(
-  'known app reads use the selected owned account without approving unknown actions',
-  { skip: !process.env.TEST_DATABASE_URL },
-  async (t) => {
-    for (const { service, action, input, guarded } of [
-      {
-        service: 'gmail' as const,
-        action: 'GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID',
-        input: { user_id: 'me', message_id: 'fixture-message', format: 'full' },
-        guarded: ['GMAIL_SEND_EMAIL', 'GMAIL_CREATE_EMAIL_DRAFT', 'GMAIL_GET_AND_DELETE_MESSAGES'],
-      },
-      {
-        service: 'googlecalendar' as const,
-        action: 'GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS',
-        input: { time_min: '2027-01-10T09:00:00Z', time_max: '2027-01-10T18:00:00Z' },
-        guarded: [
-          'GOOGLECALENDAR_CREATE_EVENT',
-          'GOOGLECALENDAR_UPDATE_EVENT',
-          'GOOGLECALENDAR_DELETE_EVENT',
-          'GOOGLECALENDAR_EVENTS_LIST_AND_DELETE',
-        ],
-      },
-    ]) {
-      await t.test(action, async (t) => {
-        const f = await appsFixture(t);
-        const client = new Composio({
-          apiKey: 'fixture-key-never-live',
-          allowTracking: false,
-          disableVersionCheck: true,
-          fileUploadDirs: false,
-        });
-        let catalogFailure: Error | undefined;
-        t.mock.method(client.tools, 'getRawComposioToolBySlug', async (slug: string) => {
-          if (catalogFailure) throw catalogFailure;
-          return { slug, name: slug, tags: slug === action ? ['readOnlyHint'] : [] };
-        });
-        f.provider.readOnly = createComposioProvider({ client }).readOnly;
-        await f.connect(service);
-        const selected = await f.connect(service);
-        await assert.rejects(f.service.execute('local-development', action, input), {
-          statusCode: 409,
-        });
-        for (const failure of [
-          Object.assign(new Error('synthetic-private-catalog-denial'), { status: 403 }),
-          new Error('synthetic-private-catalog-outage'),
-          new DOMException('synthetic-private-catalog-timeout', 'TimeoutError'),
-        ]) {
-          catalogFailure = failure;
-          await assert.rejects(
-            f.service.execute('local-development', action, {
-              connectionId: selected.connectionId,
-              ...input,
-            }),
-            {
-              message:
-                'The app action could not be verified because the tool catalog is unavailable.',
-            },
-          );
-          assert.equal(f.executed.length, 0);
-        }
-        catalogFailure = undefined;
-        const result = await f.service.execute('local-development', action, {
-          connectionId: selected.connectionId,
-          ...input,
-        });
-        assert.deepEqual(f.executed, [{ action, args: input, accountId: selected.accountId }]);
-        assert.equal('requiresApproval' in (result as Record<string, unknown>), false);
-        for (const action of guarded) {
-          const args = { connectionId: selected.connectionId };
-          assert.deepEqual(await f.service.execute('local-development', action, args), {
-            requiresApproval: true,
-            action,
-            args,
-          });
-        }
-        const foreign = (
-          await f.pool.query<{ id: string }>(
-            "INSERT INTO app_connections(owner_id,slug,account_id,provider_id) VALUES('another-owner',$1,'foreign-account','fixture') RETURNING id",
-            [service],
-          )
-        ).rows[0]!.id;
-        await assert.rejects(
-          f.service.execute('local-development', action, { connectionId: foreign, ...input }),
-          { statusCode: 404 },
-        );
-        await assert.rejects(
-          f.service.execute('another-owner', action, {
-            connectionId: selected.connectionId,
-            ...input,
-          }),
-          { statusCode: 403 },
-        );
-        assert.equal(
-          (
-            await f.app.inject({
-              method: 'POST',
-              url: `/api/apps/${service}/accounts/${selected.connectionId}/disconnect`,
-            })
-          ).statusCode,
-          200,
-        );
-        await assert.rejects(
-          f.service.execute('local-development', action, {
-            connectionId: selected.connectionId,
-            ...input,
-          }),
-          { statusCode: 404 },
-        );
-        assert.equal(f.executed.length, 1);
-      });
-    }
-  },
-);
-
-test(
-  'catalog failures do not undo a completed approved app action',
-  { skip: !process.env.TEST_DATABASE_URL },
-  async (t) => {
-    const f = await appsFixture(t);
-    const client = new Composio({
-      apiKey: 'fixture-key-never-live',
-      allowTracking: false,
-      disableVersionCheck: true,
-      fileUploadDirs: false,
-    });
-    const lookup = t.mock.method(client.tools, 'getRawComposioToolBySlug', async () => {
-      throw Object.assign(new Error('synthetic-private-catalog-denial'), { status: 403 });
-    });
-    f.provider.readOnly = createComposioProvider({ client }).readOnly;
-    const selected = await f.connect('gmail');
-    const action = 'GMAIL_SEND_EMAIL';
-    const input = { recipient_email: 'recipient@example.com', body: 'Synthetic approved reply' };
-    const args = { ...input, connectionId: selected.connectionId };
-    await assert.rejects(f.service.execute('local-development', action, args), {
-      message: 'The app action could not be verified because the tool catalog is unavailable.',
-    });
-    assert.equal(f.executed.length, 0);
-    assert.deepEqual(await f.service.executeApproved('local-development', action, args), {
-      ok: true,
-    });
-    assert.deepEqual(f.executed, [{ action, args: input, accountId: selected.accountId }]);
-    assert.equal(lookup.mock.callCount(), 2);
-  },
-);
-
-test(
-  'private Gmail drafts remain writes bound to a selected active owned account',
+  'private Gmail drafts run on the selected active owned account',
   { skip: !process.env.TEST_DATABASE_URL },
   async (t) => {
     const f = await appsFixture(t);
@@ -1334,33 +1116,20 @@ test(
       statusCode: 409,
     });
     const args = { ...content, connectionId: selected.connectionId };
-    assert.deepEqual(await f.service.execute('local-development', action, args), {
-      requiresApproval: true,
-      action,
-      args,
-    });
-    assert.equal(f.executed.length, 0);
-    await f.service.validateApproval('local-development', action, args);
-    await f.service.executeApproved('local-development', action, args);
+    assert.deepEqual(await f.service.execute('local-development', action, args), { ok: true });
     assert.deepEqual(f.executed, [{ action, args: content, accountId: selected.accountId }]);
     await f.pool.query('UPDATE app_connections SET owner_id=$2 WHERE id=$1', [
       selected.connectionId,
       'foreign',
     ]);
-    await assert.rejects(f.service.validateApproval('local-development', action, args), {
-      statusCode: 404,
-    });
-    await assert.rejects(f.service.executeApproved('local-development', action, args), {
+    await assert.rejects(f.service.execute('local-development', action, args), {
       statusCode: 404,
     });
     await f.pool.query('UPDATE app_connections SET owner_id=$2,revoked=true WHERE id=$1', [
       selected.connectionId,
       'local-development',
     ]);
-    await assert.rejects(f.service.validateApproval('local-development', action, args), {
-      statusCode: 404,
-    });
-    await assert.rejects(f.service.executeApproved('local-development', action, args), {
+    await assert.rejects(f.service.execute('local-development', action, args), {
       statusCode: 404,
     });
     assert.equal(f.executed.length, 1);
@@ -2074,7 +1843,7 @@ test(
 );
 
 test(
-  'Slack and Notion preserve owned accounts, reviewed reads, exact write approvals and signed event boundaries',
+  'Slack and Notion keep owned accounts, direct actions and signed event boundaries',
   { skip: !process.env.TEST_DATABASE_URL },
   async (t) => {
     const f = await appsFixture(t);
@@ -2114,9 +1883,19 @@ test(
       ['NOTION_CREATE_FILE_UPLOAD', notion.connectionId],
     ]) {
       const result = await f.service.execute('local-development', action!, { connectionId });
-      assert.deepEqual(result, { requiresApproval: true, action, args: { connectionId } });
+      assert.deepEqual(result, { ok: true });
     }
-    assert.equal(f.executed.length, 2);
+    assert.deepEqual(
+      f.executed.slice(2).map(({ action, accountId }) => ({ action, accountId })),
+      [
+        { action: 'SLACK_SEND_MESSAGE', accountId: slack.accountId },
+        { action: 'SLACK_ENABLE_PUBLIC_SHARING_OF_A_FILE', accountId: slack.accountId },
+        { action: 'SLACK_DOWNLOAD_SLACK_FILE', accountId: slack.accountId },
+        { action: 'SLACK_GET_AND_DELETE_MESSAGES', accountId: slack.accountId },
+        { action: 'NOTION_UPDATE_PAGE', accountId: notion.accountId },
+        { action: 'NOTION_CREATE_FILE_UPLOAD', accountId: notion.accountId },
+      ],
+    );
     await assert.rejects(
       f.service.execute('local-development', 'NOTION_RETRIEVE_PAGE', {
         connectionId: slack.connectionId,
@@ -2178,7 +1957,7 @@ test(
 );
 
 test(
-  'attachment retrieval avoids write review and downloads only from the selected current account',
+  'attachment retrieval downloads only from the selected current account',
   { skip: !process.env.TEST_DATABASE_URL },
   async (t) => {
     const f = await appsFixture(t);
@@ -2273,7 +2052,7 @@ test(
 
 const query = 'List Gmail labels';
 const searchResult = {
-  tools: { GMAIL_LIST_LABELS: { inputSchema: { type: 'object' }, ...readTool } },
+  tools: { GMAIL_LIST_LABELS: { inputSchema: { type: 'object' } } },
   suggestions: [{ useCase: query, primaryToolSlugs: ['GMAIL_LIST_LABELS'] }],
 };
 type Execute = (id: string, action: string, args: Record<string, unknown>) => Promise<unknown>;
@@ -2364,7 +2143,6 @@ async function searchFixture(
       return session;
     },
     restoreSession: async () => session,
-    readOnly: catalogReadOnly(searchResult.tools),
     deleteSession: async () => {},
     inspectAccount: async (id) => ({
       active: true,
@@ -3047,10 +2825,6 @@ test(
         return session(id);
       },
       restoreSession: async () => session(id),
-      readOnly: catalogReadOnly({
-        NOTION_SEARCH_NOTION_PAGE: readTool,
-        LINEAR_LIST_PROJECTS: readTool,
-      }),
       deleteSession: async () => {},
       inspectAccount: async (accountId) => {
         if (accountId.endsWith('linear') && failInspectOnce) {
@@ -3375,9 +3149,7 @@ test(
       const result = await discovered.propose({
         service: 'fixture-app',
         name: 'Fixture app',
-        paths: [
-          { kind: 'cli', command: 'fixturecli', envName: 'FIXTURE_API_KEY', testArgs: ['list'] },
-        ],
+        paths: [{ kind: 'cli', command: 'fixturecli', envName: 'FIXTURE_API_KEY' }],
       });
       const id = new URL(result.url, 'http://localhost:4310').searchParams.get('connect');
       const saved = await pool.query<{ paths: Array<{ id: string }> }>(
@@ -3406,7 +3178,6 @@ test(
           command: 'fixturecli',
           auth: 'env',
           envName: 'FIXTURE_API_KEY',
-          testArgs: ['list'],
         },
       ];
       for (const [accountId, accountOwner, accountPaths] of [
@@ -3469,6 +3240,18 @@ test(
         },
       });
       integrations.registerRoutes(app);
+      const cliSetup = await app.inject({
+        method: 'POST',
+        url: `/api/apps/discovery/${id}/complete`,
+        payload: { token: 'synthetic-cli-token', accountName: 'Fixture CLI account' },
+      });
+      assert.equal(cliSetup.statusCode, 200);
+      assert.equal(cliCalls, 0);
+      const addedCli = (await discovered.list()).find(
+        (account) => account.accountName === 'Fixture CLI account',
+      );
+      assert.ok(addedCli?.connectionId);
+      await discovered.disconnect(addedCli.connectionId, 'fixture-app');
       const inventory = await integrations.connectedApps();
       assert.deepEqual(
         new Set(inventory.map((item) => item.connectionId)),
@@ -3497,7 +3280,7 @@ test(
         integrations.execute(
           owner,
           'CONNECTED_CLI',
-          { connectionId, pathId: cliPath, argv: ['list'], readOnly: true },
+          { connectionId, pathId: cliPath, argv: ['list'] },
           ref,
           new AbortController().signal,
           connectionId,
@@ -3514,22 +3297,13 @@ test(
         [NonNullable<typeof blocked>, (signal: AbortSignal) => Promise<unknown>]
       > = [
         ['listTools', (signal) => discovered.search('list_records', connectionId, signal)],
-        ['listTools', (signal) => discovered.isRead('CONNECTED_MCP_CALL', mcpArgs, signal)],
-        [
-          'listTools',
-          (signal) => discovered.execute('CONNECTED_MCP_CALL', mcpArgs, true, ref, signal),
-        ],
-        [
-          'callTool',
-          (signal) => discovered.execute('CONNECTED_MCP_CALL', mcpArgs, true, ref, signal),
-        ],
+        ['callTool', (signal) => discovered.execute('CONNECTED_MCP_CALL', mcpArgs, ref, signal)],
         [
           'http',
           (signal) =>
             discovered.execute(
               'CONNECTED_HTTP',
               { connectionId, pathId: httpPath, method: 'GET', path: 'records' },
-              true,
               ref,
               signal,
             ),
@@ -3539,8 +3313,7 @@ test(
           (signal) =>
             discovered.execute(
               'CONNECTED_CLI',
-              { connectionId, pathId: cliPath, argv: ['list'], readOnly: true },
-              true,
+              { connectionId, pathId: cliPath, argv: ['list'] },
               ref,
               signal,
             ),
@@ -3642,91 +3415,58 @@ test('Composio failure envelopes reject with the provider error', async (t) => {
   assert.deepEqual(await session.execute('GMAIL_SEND_EMAIL', {}, 'fixture-account'), result);
 });
 
-test('Composio actions skip review only when the catalog tags them read-only', async (t) => {
-  const client = new Composio({
-    apiKey: 'fixture-key-never-live',
-    allowTracking: false,
-    disableVersionCheck: true,
-    fileUploadDirs: false,
-  });
-  const tags: Record<string, string[]> = {
-    GMAIL_GET_PROFILE: ['readOnlyHint', 'openWorldHint'],
-    GMAIL_SEND_EMAIL: ['openWorldHint'],
-    SLACK_GET_AND_DELETE_MESSAGES: ['readOnlyHint', 'destructiveHint'],
-    GMAIL_UNTAGGED_ACTION: [],
-    GMAIL_LIST_THREADS: ['readOnlyHint'],
-  };
-  let outage = true;
-  const lookup = t.mock.method(client.tools, 'getRawComposioToolBySlug', async (slug: string) => {
-    if (slug === 'GMAIL_LIST_THREADS' && outage) throw new Error('Fixture catalog outage');
-    return { slug, name: slug, tags: tags[slug] };
-  });
-  const provider = createComposioProvider({ client });
-  assert.equal(await provider.readOnly('GMAIL_GET_PROFILE'), true);
-  assert.equal(await provider.readOnly('GMAIL_SEND_EMAIL'), false);
-  assert.equal(await provider.readOnly('SLACK_GET_AND_DELETE_MESSAGES'), false);
-  assert.equal(await provider.readOnly('GMAIL_UNTAGGED_ACTION'), false);
-  assert.equal(await provider.readOnly('not a tool slug'), false);
-  await assert.rejects(provider.readOnly('GMAIL_LIST_THREADS'), {
-    message: 'The app action could not be verified because the tool catalog is unavailable.',
-  });
-  outage = false;
-  assert.equal(await provider.readOnly('GMAIL_LIST_THREADS'), true);
-  assert.equal(await provider.readOnly('GMAIL_GET_PROFILE'), true);
-  assert.equal(lookup.mock.callCount(), 6);
-});
-
-test('Composio catalog cancellation preserves live waiters and evicts abandoned reads', async (t) => {
-  const client = new Composio({
-    apiKey: 'fixture-key-never-live',
-    allowTracking: false,
-    disableVersionCheck: true,
-    fileUploadDirs: false,
-  });
-  const requests: Array<{ signal: AbortSignal; resolve: (value: unknown) => void }> = [];
-  t.mock.method(
-    client.tools,
-    'getRawComposioToolBySlug',
-    async (_slug: string, _version: unknown, options: { signal: AbortSignal }) =>
-      new Promise((resolve, reject) => {
-        requests.push({ signal: options.signal, resolve });
-        options.signal.addEventListener('abort', () => reject(options.signal.reason), {
-          once: true,
-        });
-      }),
-  );
-  const provider = createComposioProvider({ client });
-  const cancelled = new AbortController();
-  const first = assert.rejects(provider.readOnly('GMAIL_GET_PROFILE', cancelled.signal), {
-    name: 'AbortError',
-  });
-  const live = provider.readOnly('GMAIL_GET_PROFILE');
-  assert.equal(requests.length, 1);
-  cancelled.abort();
-  await first;
-  assert.equal(requests[0].signal.aborted, false);
-  requests[0].resolve({ tags: ['readOnlyHint'] });
-  assert.equal(await live, true);
-  assert.equal(await provider.readOnly('GMAIL_GET_PROFILE'), true);
-  assert.equal(requests.length, 1);
-
-  const abandoned = new AbortController();
-  const second = assert.rejects(provider.readOnly('GMAIL_LIST_THREADS', abandoned.signal), {
-    name: 'AbortError',
-  });
-  assert.equal(requests.length, 2);
-  abandoned.abort();
-  await second;
-  assert.equal(requests[1].signal.aborted, true);
-  await assert.rejects(provider.readOnly('GMAIL_LIST_THREADS', abandoned.signal), {
-    name: 'AbortError',
-  });
-  assert.equal(requests.length, 2);
-  const recovered = provider.readOnly('GMAIL_LIST_THREADS');
-  assert.equal(requests.length, 3);
-  requests[2].resolve({ tags: ['readOnlyHint'] });
-  assert.equal(await recovered, true);
-});
+test(
+  'connected Composio actions execute without a second tool catalog request',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async (t) => {
+    const schema = `catalog_free_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const pool = new pg.Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+    });
+    const client = new Composio({
+      apiKey: 'fixture-key-never-live',
+      allowTracking: false,
+      disableVersionCheck: true,
+      fileUploadDirs: false,
+    });
+    const lookup = t.mock.method(client.tools, 'getRawComposioToolBySlug', async () => {
+      throw new Error('Fixture catalog outage');
+    });
+    const calls: string[] = [];
+    t.mock.method(client.sessions, 'create', async () => ({
+      sessionId: 'fixture-session',
+      execute: async (action: string) => {
+        calls.push(action);
+        return { data: {}, error: null };
+      },
+    }));
+    t.mock.method(client.sessions, 'delete', async () => ({}));
+    try {
+      const integrations = await createIntegrations(pool, {
+        ownerId: 'fixture-owner',
+        provider: createComposioProvider({ client }),
+        baseUrl: 'http://localhost:4310',
+        wake: async () => {},
+      });
+      const connectionId = randomUUID();
+      await pool.query(
+        'INSERT INTO app_connections(id,owner_id,slug,account_id,provider_id) VALUES($1,$2,$3,$4,$5)',
+        [connectionId, 'fixture-owner', 'gmail', 'fixture-account', 'composio'],
+      );
+      await integrations.execute('fixture-owner', 'GMAIL_FETCH_EMAILS', { connectionId });
+      await integrations.execute('fixture-owner', 'GMAIL_SEND_EMAIL', { connectionId });
+      assert.deepEqual(calls, ['GMAIL_FETCH_EMAILS', 'GMAIL_SEND_EMAIL']);
+      assert.equal(lookup.mock.callCount(), 0);
+    } finally {
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);
 
 test('Composio account identity comes from an account-bound Google response and excludes credentials', async (t) => {
   const client = new Composio({
@@ -3909,7 +3649,6 @@ test(
       restoreSession: async () => {
         throw new Error();
       },
-      readOnly: async () => false,
       deleteSession: async () => {},
       deleteAccount: async () => {},
       inspectAccount: async (id, owner) => {
