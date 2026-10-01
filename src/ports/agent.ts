@@ -2,12 +2,6 @@ import type { ProviderUsageEvent } from './provider-usage.ts';
 import type { ConnectedApp } from './integrations.ts';
 import type { CredentialKind, WorkspaceSession } from './computer.ts';
 import type { AgentReactionResult, Artifact, MessageReaction } from '../shared/contracts.ts';
-export interface CredentialInvitation {
-  origin: string;
-  kind: CredentialKind;
-  methodSelection?: boolean;
-  savedLoginAvailable?: boolean;
-}
 
 export interface ModelUsageObservation {
   type: 'model_usage';
@@ -142,12 +136,12 @@ export interface RuntimeContext {
           usernameSelector?: string;
           passwordSelector?: string;
           emailCode?: boolean;
+          emailRecipient?: string;
           savedLoginId?: string;
         },
   ): Promise<{
     url?: string;
     filled?: boolean;
-    invitation?: CredentialInvitation;
     credential?: { username: string; password: string };
   }>;
   integration(
