@@ -24,6 +24,7 @@ const forwardedEnvironment = [
   'LLM_PROVIDER',
   'LLM_MODEL',
   'TRIAGE_MODEL',
+  'MEMORY_MODEL',
   'OPENAI_API_KEY',
   'ANTHROPIC_API_KEY',
   'TYPESAFE_API_KEY',

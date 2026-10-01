@@ -4,3 +4,5 @@ export const agentModels = {
 } as const;
 
 export const relevanceModel = 'gpt-6-luna';
+
+export const memoryModels = { openai: relevanceModel, anthropic: 'claude-haiku-4-5' } as const;

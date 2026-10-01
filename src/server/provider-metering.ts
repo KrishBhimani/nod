@@ -2,6 +2,7 @@ import type { Agent, ModelUsageObservation } from '../ports/agent.ts';
 import type { Computer, Workspace } from '../ports/computer.ts';
 import type { IntegrationProvider, IntegrationSession } from '../ports/integrations.ts';
 import type { MessagingTransport } from '../ports/messaging.ts';
+import type { MemoryCurator } from '../ports/memory-curator.ts';
 import type { RelevanceClassifier } from '../ports/relevance.ts';
 import type { SpeechProvider } from '../ports/speech.ts';
 import type { ProviderUsageStore } from './provider-usage.ts';
@@ -200,6 +201,19 @@ export function meterRelevance(
     classify: (context, policy, signal) =>
       usage.track({ provider: provider.id, category: 'relevance', operation: 'classify' }, () =>
         provider.classify(context, policy, signal),
+      ),
+  };
+}
+
+export function meterMemoryCurator(
+  provider: MemoryCurator,
+  usage: ProviderUsageStore,
+): MemoryCurator {
+  return {
+    ...provider,
+    curate: (request, signal) =>
+      usage.track({ provider: provider.id, category: 'memory', operation: request.task }, () =>
+        provider.curate(request, signal),
       ),
   };
 }

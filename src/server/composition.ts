@@ -6,6 +6,7 @@ import type { Agent } from '../ports/agent.ts';
 import type { Computer, Workspace } from '../ports/computer.ts';
 import type { IntegrationProvider, IntegrationService } from '../ports/integrations.ts';
 import type { CredentialKeyStore } from '../ports/key-store.ts';
+import type { MemoryCurator } from '../ports/memory-curator.ts';
 import type { RelevanceClassifier } from '../ports/relevance.ts';
 import type { SpeechProvider } from '../ports/speech.ts';
 import type { MessagingTransport } from '../ports/messaging.ts';
@@ -41,6 +42,7 @@ import { createOpenAIRelevanceClassifier } from '../providers/openai/relevance.t
 import { createOpenAISpeechProvider } from '../providers/openai/speech.ts';
 import { createPiAgent } from '../providers/pi/index.ts';
 import { readPiSessionEntries } from '../providers/pi/checkpoint.ts';
+import { createPiMemoryCurator } from '../providers/pi/memory-curator.ts';
 import { createPublicLinkPreviewProvider } from '../providers/public-web/link-preview.ts';
 import { createAgentRuntime } from '../runtime/index.ts';
 import { createApp } from './app.ts';
@@ -80,6 +82,7 @@ import { createPromptInspector } from './inspector-prompts.ts';
 import { createErrorRedactor } from './inspector-redaction.ts';
 import { registerBugReport } from './bug-report.ts';
 import { createPersonalService } from './personal.ts';
+import { createMemoryLearning, initializeMemoryLearning } from './memory-learning.ts';
 import { createMemoryService } from './memory.ts';
 import { createSpeech } from './speech.ts';
 import {
@@ -107,6 +110,7 @@ import {
   meterComputer,
   meterWorkspace,
   meterIntegrations,
+  meterMemoryCurator,
   meterRelevance,
   meterSpeech,
   meterMessaging,
@@ -132,6 +136,7 @@ export interface ApplicationAdapters {
   ) => IntegrationProvider;
   keyStore: CredentialKeyStore;
   relevance: RelevanceClassifier;
+  memoryCurator?: MemoryCurator;
   messaging?: MessagingTransport;
   linkPreviews?: LinkPreviewProvider;
   messagingSetup?: {
@@ -291,6 +296,7 @@ export function createDefaultAdapters(
     relevance: env.TYPESAFE_API_KEY
       ? createJevRelevanceClassifier({ apiKey: env.TYPESAFE_API_KEY, model: env.TYPESAFE_MODEL })
       : createOpenAIRelevanceClassifier({ apiKey: env.OPENAI_API_KEY, model: env.TRIAGE_MODEL }),
+    memoryCurator: createPiMemoryCurator({ provider, apiKey, model: env.MEMORY_MODEL }),
     messagingSetup: {
       verifier: createChatSdkSetupVerifier(
         runtimeMode === 'tenant'
@@ -339,6 +345,8 @@ export async function createApplication(
       if (password) inspectorSecrets.push(password);
     } catch {}
   }
+  const memoryCurator =
+    adapters.memoryCurator ?? createPiMemoryCurator({ provider: adapters.model.provider });
   const inspector = createInspectorStore(inspectorDatabase, {
     ownerId,
     enabled: () => configuration().inspectorEnabled,
@@ -367,6 +375,12 @@ export async function createApplication(
         category: 'relevance',
         status: 'recorded',
         note: 'Classification operations and duration. Tokens and prices are not exposed by this adapter.',
+      },
+      {
+        provider: memoryCurator.id,
+        category: 'memory',
+        status: 'recorded',
+        note: 'Background memory reflection, consolidation and search calls and duration. Tokens and prices are not exposed by this adapter.',
       },
       {
         provider: 'agent-browser',
@@ -444,6 +458,7 @@ export async function createApplication(
   const speechProvider = meterSpeech(adapters.speech, providerUsage);
   const integrationProvider = meterIntegrations(adapters.integrations, providerUsage);
   const classify = meterRelevance(adapters.relevance, providerUsage);
+  const curator = meterMemoryCurator(memoryCurator, providerUsage);
   const runtime = createAgentRuntime({
     agent: meterAgent(adapters.agent, providerUsage),
     withTool: providerUsage.withTool,
@@ -456,7 +471,9 @@ export async function createApplication(
     pool,
     ownerId,
     store: adapters.objectStore ?? createFilesystemObjectStore(join(dataRoot, 'objects')),
+    curator,
   });
+  const learning = createMemoryLearning({ pool, ownerId, memory, curator });
   const personal = createPersonalService({
     pool,
     ownerId,
@@ -607,6 +624,7 @@ export async function createApplication(
   if (options.workers !== false) {
     await inspector.recover().catch(() => {});
     await triage.initializeHeartbeat();
+    await initializeMemoryLearning({ boss, consumers, run: learning.run });
     await startThreadWorkers({
       consumers,
       artifacts,
