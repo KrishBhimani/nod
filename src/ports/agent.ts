@@ -208,9 +208,9 @@ export interface AgentSessionOptions {
   threadId: string;
   turnId: string;
   systemPrompt: string;
+  systemContext?: string;
   tools: AgentTool[];
   workspace: WorkspaceSession;
-  skillsDir?: string;
   runTool(
     name: string,
     params: unknown,
