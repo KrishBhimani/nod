@@ -74,7 +74,7 @@ import { createChannelAccountRegistry } from './channel-account-registry.ts';
 import { createTenantControl, createTenantChannelRegistry } from './tenant-control.ts';
 import { createHostedWebhooks } from './hosted-webhooks.ts';
 import { loadPrivacyNoticeFile, registerPrivacyNotice } from './privacy.ts';
-import { createInspectorPool, initializeDatabase, pool } from './db.ts';
+import { createInspectorPool, createPool, initializeDatabase, pool } from './db.ts';
 import { events, refresh } from './events.ts';
 import { createIntegrations } from './integrations.ts';
 import { createInspectorStore } from './inspector.ts';
@@ -176,13 +176,6 @@ export function createDefaultAdapters(
       : undefined;
   if (computerProvider === 'e2b' && (!env.E2B_API_KEY || !env.E2B_COMPUTER_TEMPLATE))
     throw new Error('The remote computer configuration is incomplete.');
-  if (
-    computerProvider === 'e2b' &&
-    (env.E2B_BROWSER_TEMPLATE !== undefined || env.E2B_WORKSPACE_TEMPLATE !== undefined)
-  )
-    throw new Error(
-      'Split E2B templates are no longer supported. Configure E2B_COMPUTER_TEMPLATE.',
-    );
   const e2b = allocations
     ? createE2BAdapters({
         apiKey: env.E2B_API_KEY!,
@@ -268,7 +261,6 @@ export function createDefaultAdapters(
       }),
     speech: createOpenAISpeechProvider({
       apiKey: env.OPENAI_API_KEY,
-      transcriptionModel: env.STT_MODEL,
       speechModel: env.TTS_MODEL,
       voice: env.TTS_VOICE,
     }),
@@ -500,7 +492,6 @@ export async function createApplication(
   const discovered = await createDiscoveredConnections(pool, {
     ownerId,
     baseUrl: publicOrigin,
-    keyStore: adapters.keyStore,
     grantVault,
     transport: createDiscoveredTransport(),
     accountReplaced: triage.invalidateActivityCheck,
@@ -587,23 +578,10 @@ export async function createApplication(
     (action, args, provenance) =>
       action === 'OTTO_memory_save'
         ? memory.save(args, { sourceMessageId: provenance.sourceMessageId, approved: true })
-        : action.startsWith('OTTO_')
-          ? personal.manage(action.slice('OTTO_'.length), args, provenance)
-          : providerUsage.withTurn(provenance.turnId, () =>
-              integrations.executeApproved(
-                ownerId,
-                action,
-                args,
-                { threadId: provenance.threadId, turnId: provenance.turnId },
-                provenance.signal,
-              ),
-            ),
+        : personal.manage(action.slice('OTTO_'.length), args, provenance),
     async (action, args) => {
-      if (action.startsWith('OTTO_'))
-        await personal.validateReview(action.slice('OTTO_'.length), args);
-      else await integrations.validateApproval(ownerId, action, args);
+      await personal.validateReview(action.slice('OTTO_'.length), args);
     },
-    (action, args) => integrations.describeApproval(ownerId, action, args),
   );
   const reactions = createAgentReactionService({ pool, ownerId, refresh });
   const localAccounts = runtimeMode === 'local' ? createAccountStore(pool) : null;
@@ -669,7 +647,7 @@ export async function createApplication(
         if (action === 'memory_save' && (await memory.untrusted(turn.threadId))) {
           const input = memory.validate(args);
           // An explicit request allows one direct note, so once any note cites this message the rest are confirmed.
-          const result = await approvals.request(turn, 'OTTO_memory_save', input, undefined, {
+          const result = await approvals.request(turn, 'OTTO_memory_save', input, {
             confirm: await memory.cites(provenance.sourceMessageId),
           });
           if (!(result && typeof result === 'object' && 'requiresConfirmation' in result))
@@ -750,7 +728,6 @@ export async function createApplication(
       return restartOnboarding(threadId);
     },
     startOnboarding: welcome,
-    speech,
     computer,
     runtime,
     inspector,
@@ -759,7 +736,6 @@ export async function createApplication(
         provider: adapters.model.provider,
         model: adapters.model.name,
         llmReady: adapters.model.configured,
-        speechReady: adapters.speech.configured,
         integrationsReady: adapters.integrations.configured,
       }),
   });
@@ -868,6 +844,7 @@ export async function createApplication(
       ...(channelSettings ? { pair: channelSettings.pair } : {}),
       transport: meterMessaging(messaging, providerUsage),
       acceptVerification: (text, input) => chatVerification.accept(text, input),
+      refresh,
       subscribe(listener) {
         const onEvent = (event: { type?: string }) => {
           if (event.type === 'refresh') listener();
@@ -967,10 +944,9 @@ export async function createGatewayApplication(
   await pool.query(
     'CREATE SCHEMA IF NOT EXISTS otto_auth; REVOKE ALL ON SCHEMA otto_auth FROM PUBLIC',
   );
-  const authenticationDatabase = new pg.Pool({
+  const authenticationDatabase = createPool({
     connectionString: databaseUrl,
     max: 4,
-    connectionTimeoutMillis: 10_000,
     options: '-c search_path=otto_auth',
   });
   let runtimes: ReturnType<typeof createTenantRuntimeHost> | undefined;

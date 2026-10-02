@@ -4,7 +4,8 @@ import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { IntegrationProvider, IntegrationSession } from '../../ports/integrations.ts';
 import type { CredentialKeyStore } from '../../ports/key-store.ts';
 import type { AppGrantVault } from '../../ports/app-grants.ts';
-import { createDirectOAuth, type Service } from './oauth.ts';
+import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { createDirectOAuth, ReconnectRequired, type Service } from './oauth.ts';
 import { withDirectMcp } from './mcp.ts';
 
 const linearTools = {
@@ -74,9 +75,10 @@ export function createDirectProvider(options: {
         'notion',
         account.accessToken,
         async (client) => {
-          const tools = (await client.listTools()).tools;
-          let toolName = searching ? 'notion-search' : 'notion-fetch';
+          let toolName = 'notion-fetch';
           if (searching) {
+            const tools = (await client.listTools()).tools;
+            toolName = 'notion-search';
             if (!tools.some((tool) => tool.name === 'notion-get-tool-access'))
               throw new Error('The Notion search access check is unavailable.');
             const access = await client.callTool({ name: 'notion-get-tool-access', arguments: {} });
@@ -109,13 +111,10 @@ export function createDirectProvider(options: {
               tools.some((tool) => tool.name === 'notion-ai-search')
             )
               toolName = 'notion-ai-search';
+            if (!tools.some((tool) => tool.name === toolName))
+              throw new Error('The Notion read tool is unavailable.');
           }
-          const selected = tools.find((tool) => tool.name === toolName);
-          if (!selected) throw new Error('The Notion read tool is unavailable.');
-          const input = !searching
-            ? { id: args.id ?? args.page_id ?? args.pageId }
-            : { query: args.query ?? args.search_query ?? args.searchQuery };
-          const result = await client.callTool({ name: selected.name, arguments: input });
+          const result = await client.callTool({ name: toolName, arguments: args });
           if (result.isError)
             throw new Error(toolFailure('The Notion read failed', result, account.accessToken));
           return result;
@@ -130,8 +129,6 @@ export function createDirectProvider(options: {
         'linear',
         account.accessToken,
         async (client) => {
-          if (!(await client.listTools()).tools.some((tool) => tool.name === toolName))
-            throw new Error('The Linear read tool is unavailable.');
           const result = await client.callTool({ name: toolName, arguments: args });
           if (result.isError)
             throw new Error(toolFailure('The Linear read failed', result, account.accessToken));
@@ -267,67 +264,76 @@ export function createDirectProvider(options: {
     },
     async deleteSession() {},
     async inspectAccount(id, ownerId) {
-      const account = await oauth.access(ownerId, id);
-      const details = await mcp(account.service, account.accessToken, async (client) => {
-        const available = await client.listTools();
-        if (
-          account.service !== 'notion' ||
-          !available.tools.some((tool) => tool.name === 'notion-get-users')
-        )
-          return {};
-        try {
-          const result = await client.callTool({
-            name: 'notion-get-users',
-            arguments: { user_id: 'self' },
-          });
-          if (result.isError) return {};
-          const blocks = Array.isArray(result.content)
-            ? (result.content as Array<{ type: string; text?: string }>)
-            : [];
-          const content =
-            result.structuredContent ??
-            JSON.parse(blocks.find((item) => item.type === 'text')?.text ?? '{}');
-          const data =
-            content && typeof content === 'object' && 'self' in content
-              ? content.self
-              : content &&
-                  typeof content === 'object' &&
-                  'results' in content &&
-                  Array.isArray(content.results)
-                ? content.results[0]
-                : content;
-          if (!data || typeof data !== 'object') return {};
-          const record = data as Record<string, unknown>;
-          const workspace = record.workspace as Record<string, unknown> | undefined;
-          const user = (
-            record.user && typeof record.user === 'object' ? record.user : record
-          ) as Record<string, unknown>;
-          const name = z
-            .string()
-            .trim()
-            .min(1)
-            .max(200)
-            .safeParse(workspace?.name ?? user.name);
-          const email = z
-            .email()
-            .max(320)
-            .safeParse(user.email ?? (user.person as Record<string, unknown> | undefined)?.email);
-          return {
-            ...(name.success ? { accountName: name.data } : {}),
-            ...(email.success ? { accountEmail: email.data } : {}),
-          };
-        } catch {
-          return {};
-        }
-      });
-      return {
-        active: true,
-        service: account.service,
-        accountName:
-          details.accountName ??
-          `${account.service === 'notion' ? 'Notion' : 'Linear'} account ${id.slice(0, 8)}`,
-        ...(details.accountEmail ? { accountEmail: details.accountEmail } : {}),
-      };
+      try {
+        const account = await oauth.access(ownerId, id);
+        const details = await mcp(account.service, account.accessToken, async (client) => {
+          const available = await client.listTools();
+          if (
+            account.service !== 'notion' ||
+            !available.tools.some((tool) => tool.name === 'notion-get-users')
+          )
+            return {};
+          try {
+            const result = await client.callTool({
+              name: 'notion-get-users',
+              arguments: { user_id: 'self' },
+            });
+            if (result.isError) return {};
+            const blocks = Array.isArray(result.content)
+              ? (result.content as Array<{ type: string; text?: string }>)
+              : [];
+            const content =
+              result.structuredContent ??
+              JSON.parse(blocks.find((item) => item.type === 'text')?.text ?? '{}');
+            const data =
+              content && typeof content === 'object' && 'self' in content
+                ? content.self
+                : content &&
+                    typeof content === 'object' &&
+                    'results' in content &&
+                    Array.isArray(content.results)
+                  ? content.results[0]
+                  : content;
+            if (!data || typeof data !== 'object') return {};
+            const record = data as Record<string, unknown>;
+            const workspace = record.workspace as Record<string, unknown> | undefined;
+            const user = (
+              record.user && typeof record.user === 'object' ? record.user : record
+            ) as Record<string, unknown>;
+            const name = z
+              .string()
+              .trim()
+              .min(1)
+              .max(200)
+              .safeParse(workspace?.name ?? user.name);
+            const email = z
+              .email()
+              .max(320)
+              .safeParse(user.email ?? (user.person as Record<string, unknown> | undefined)?.email);
+            return {
+              ...(name.success ? { accountName: name.data } : {}),
+              ...(email.success ? { accountEmail: email.data } : {}),
+            };
+          } catch {
+            return {};
+          }
+        }).catch((error) => {
+          throw error instanceof StreamableHTTPError && error.code === 401
+            ? new ReconnectRequired(account.service)
+            : error;
+        });
+        return {
+          active: true,
+          service: account.service,
+          accountName:
+            details.accountName ??
+            `${account.service === 'notion' ? 'Notion' : 'Linear'} account ${id.slice(0, 8)}`,
+          ...(details.accountEmail ? { accountEmail: details.accountEmail } : {}),
+        };
+      } catch (error) {
+        if (error instanceof ReconnectRequired) return { active: false, service: error.service };
+        throw error;
+      }
     },
     deleteAccount: oauth.deleteAccount,
     parseCallback: oauth.parseCallback,

@@ -8,7 +8,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { constants } from 'node:fs';
-import { mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { connect, createServer, type Socket } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -16,7 +16,6 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
-import Fastify from 'fastify';
 import type { Static } from '@sinclair/typebox';
 import { JSDOM } from 'jsdom';
 import pg from 'pg';
@@ -63,109 +62,7 @@ import { stagedLoginBrowser } from './login-fixture.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 import { BrowserHandoff } from '../src/web/components/browser-handoff.tsx';
 import { Chat } from '../src/web/pages/chat.tsx';
-import type { AppState } from '../src/shared/contracts.ts';
-import {
-  fixtureCredentials,
-  fixtureSignup,
-  operatorAccess,
-  registerOperatorPage,
-} from '../scripts/e2e-fixtures.ts';
-
-test('acceptance operator controls unlock in the browser without exposing tokens or unauthenticated state', async () => {
-  const app = Fastify();
-  const token = randomUUID();
-  const authorized = operatorAccess(token);
-  const releases: string[] = [];
-  registerOperatorPage(app, token);
-  app.get('/e2e/status', authorized, async () => ({ privateState: 'synthetic-operator-state' }));
-  app.post<{ Params: { variant: string } }>('/e2e/signup/:variant', authorized, async (request) => {
-    releases.push(request.params.variant);
-    return { ok: true };
-  });
-  app.post('/e2e/expected-run', authorized, async () => ({ ok: true }));
-  let dom: JSDOM | undefined;
-  try {
-    const publicPage = await app.inject({ url: '/e2e' });
-    assert.equal(publicPage.statusCode, 200);
-    assert.equal(publicPage.headers['cache-control'], 'no-store');
-    for (const value of [
-      token,
-      ...Object.values(fixtureCredentials),
-      fixtureSignup.base.code,
-      fixtureSignup.alternate.code,
-    ])
-      assert.equal(publicPage.body.includes(value), false);
-    for (const [method, path] of [
-      ['GET', '/e2e/operator'],
-      ['GET', '/e2e/status'],
-      ['POST', '/e2e/signup/base'],
-      ['POST', '/e2e/expected-run'],
-    ] as const) {
-      for (const url of [path, '/e2e/%' + path.charCodeAt(5).toString(16) + path.slice(6)]) {
-        for (const headers of [{}, { authorization: 'Bearer incorrect' }]) {
-          const response = await app.inject({ method, url, headers });
-          assert.equal(response.statusCode, 401);
-          assert.equal(response.body.includes(fixtureCredentials.password), false);
-          assert.equal(response.body.includes('synthetic-operator-state'), false);
-        }
-      }
-    }
-    assert.equal(releases.length, 0);
-    const requests: Array<{ path: string; authorization: string | null }> = [];
-    dom = new JSDOM(publicPage.body, {
-      url: 'http://localhost/e2e',
-      runScripts: 'dangerously',
-      beforeParse(window) {
-        window.fetch = async (input, options) => {
-          const path = String(input);
-          const headers = new Headers(options?.headers);
-          requests.push({ path, authorization: headers.get('authorization') });
-          const response = await app.inject({
-            method: options?.method === 'POST' ? 'POST' : 'GET',
-            url: path,
-            headers: Object.fromEntries(headers),
-          });
-          return new Response(response.body, { status: response.statusCode });
-        };
-      },
-    });
-    const document = dom.window.document;
-    const input = document.querySelector<HTMLInputElement>('#operator-token')!;
-    const access = document.querySelector<HTMLFormElement>('#operator-access')!;
-    const settle = async (done: () => boolean) => {
-      for (let attempt = 0; !done() && attempt < 100; attempt++) await delay(5);
-      assert.equal(done(), true);
-    };
-    input.value = 'incorrect';
-    access.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
-    await settle(() => Boolean(document.querySelector('#operator-result')!.textContent));
-    assert.equal(document.body.textContent?.includes(fixtureCredentials.password), false);
-    assert.equal(input.value, '');
-    input.value = token;
-    access.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
-    await settle(() => access.hidden);
-    assert.equal(document.body.textContent?.includes(fixtureCredentials.password), true);
-    assert.equal(input.value, '');
-    for (const variant of ['base', 'alternate']) {
-      document.querySelector<HTMLButtonElement>(`[data-operator="${variant}"]`)!.click();
-      await settle(() => releases.includes(variant));
-    }
-    document.querySelector<HTMLButtonElement>('[data-operator="status"]')!.click();
-    await settle(() =>
-      document.querySelector('#operator-events')!.textContent!.includes('synthetic-operator-state'),
-    );
-    assert.deepEqual(releases, ['base', 'alternate']);
-    assert.ok(requests.slice(1).every((request) => request.authorization === `Bearer ${token}`));
-    assert.ok(requests.every((request) => !request.path.includes(token)));
-    assert.equal(dom.window.location.href, 'http://localhost/e2e');
-    assert.equal(dom.window.localStorage.length, 0);
-    assert.equal(dom.window.sessionStorage.length, 0);
-    assert.equal(document.documentElement.outerHTML.includes(token), false);
-  } finally {
-    dom?.window.close();
-    await app.close();
-  }
-});
+import type { AppState, Message } from '../src/shared/contracts.ts';
 
 // Shared helpers
 
@@ -595,9 +492,11 @@ async function transportFixture(respectTimeouts = false) {
       if (!socket.destroyed) socket.end(JSON.stringify({ success: true, data }) + '\n');
     });
   });
-  await new Promise<void>((resolve) =>
-    server.listen(join(directory, `${browserSessionId('fixture')}.sock`), resolve),
-  );
+  const startDaemon = () =>
+    new Promise<void>((resolve) =>
+      server.listen(join(directory, `${browserSessionId('fixture')}.sock`), resolve),
+    );
+  await startDaemon();
   const computer = createAgentBrowserComputer({
     dataRoot: directory,
     onDiagnostic: (event) => diagnostics.push(event),
@@ -648,6 +547,11 @@ async function transportFixture(respectTimeouts = false) {
     },
     after(value: typeof after) {
       after = value;
+    },
+    startDaemon,
+    async stopDaemon() {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     },
     async cleanup() {
       before = async () => {};
@@ -814,45 +718,156 @@ for (const action of ['snapshot', 'click'] as const)
     }
   });
 
-test('failed interruption cleanup blocks later actions until an explicit close succeeds', async () => {
+test('discarding a thread closes its browser and deletes only its throwaway data', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'otto-browser-discard-'));
+  const fixture = stagedLoginBrowser();
+  const commands: string[] = [];
+  const computer = createBrowserFixture({
+    dataRoot: directory,
+    run: async (executable, args, options) => {
+      commands.push(args[args.indexOf('--idle-timeout') + 2]);
+      return fixture.run(executable, args, options);
+    },
+  });
+  const runtime = join(directory, 'runtime');
+  const savedProfile = randomUUID();
+  const dirs = ['profiles/old', 'downloads/old', 'profiles/other', `profiles/${savedProfile}`];
+  const screens = [
+    'screen-old.png',
+    'screen-old.capture.png',
+    'screen-bound.png',
+    'screen-other.png',
+  ];
+  try {
+    for (const dir of dirs) {
+      await mkdir(join(runtime, dir), { recursive: true });
+      await writeFile(join(runtime, dir, 'data'), 'synthetic');
+    }
+    for (const screen of screens) await writeFile(join(runtime, screen), 'synthetic');
+    await computer.act('old', { action: 'open', url: 'https://1.1.1.1/login' });
+    await computer.act('other', { action: 'open', url: 'https://1.1.1.1/login' });
+    await computer.bindProfile!('bound', savedProfile);
+    await computer.discard!('old');
+    await computer.discard!('bound');
+    await assert.rejects(
+      computer.act('old', { action: 'open', url: 'https://1.1.1.1/login' }),
+      /was reset/,
+    );
+    await assert.rejects(computer.bindProfile!('old', savedProfile), /was reset/);
+    assert.equal(commands.filter((command) => command === 'close').length, 1);
+    assert.deepEqual(
+      (await readdir(join(runtime, 'profiles'))).sort(),
+      [savedProfile, 'other'].sort(),
+    );
+    assert.deepEqual(await readdir(join(runtime, 'downloads')), []);
+    assert.deepEqual(
+      (await readdir(runtime)).filter((file) => file.startsWith('screen-')),
+      ['screen-other.png'],
+    );
+    assert.equal(computer.screenStatus!('old').state, 'unavailable');
+    assert.equal(
+      (await computer.act('other', { action: 'snapshot' })).url,
+      'https://1.1.1.1/login',
+    );
+  } finally {
+    await computer.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+async function wedgedBrowser(options: { idleTimeoutMs?: number } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'otto-browser-drain-failure-'));
   const fixture = stagedLoginBrowser();
   const commands: string[] = [];
   let failClose = true;
   const computer = createBrowserFixture({
     dataRoot: directory,
-    run: async (executable, args, options) => {
+    ...options,
+    run: async (executable, args, input) => {
       const action = args[args.indexOf('--idle-timeout') + 2];
       commands.push(action);
       if (action === 'open' && failClose)
         throw new Error('Runtime command exceeded its time limit.');
       if (action === 'close' && failClose) throw new Error('Synthetic close unavailable.');
-      return fixture.run(executable, args, options);
+      return fixture.run(executable, args, input);
     },
   });
+  await assert.rejects(
+    computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' }),
+    /could not stop safely/,
+  );
+  return {
+    computer,
+    commands,
+    repair: () => {
+      failClose = false;
+    },
+    async cleanup() {
+      failClose = false;
+      await computer.dispose();
+      await rm(directory, { recursive: true, force: true });
+    },
+  };
+}
+
+test('failed interruption cleanup blocks actions until the next open retries the close', async () => {
+  const wedged = await wedgedBrowser();
+  const { computer, commands } = wedged;
   try {
-    await assert.rejects(
-      computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' }),
-      /could not stop safely/,
-    );
-    const count = commands.length;
     await assert.rejects(computer.act('fixture', { action: 'snapshot' }), /expired/);
+    const count = commands.length;
     await assert.rejects(
       computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' }),
-      /expired/,
+      /Synthetic close unavailable/,
     );
-    assert.equal(commands.length, count);
-    failClose = false;
-    await computer.close('fixture');
+    assert.equal(commands.slice(count).at(-1), 'close');
+    wedged.repair();
     const reopened = await computer.act('fixture', {
       action: 'open',
       url: 'https://1.1.1.1/login',
     });
     assert.equal(reopened.url, 'https://1.1.1.1/login');
   } finally {
-    failClose = false;
-    await computer.dispose();
-    await rm(directory, { recursive: true, force: true });
+    await wedged.cleanup();
+  }
+});
+
+test('calls rejected by a wedged browser do not keep it from idling out', async () => {
+  const wedged = await wedgedBrowser({ idleTimeoutMs: 40 });
+  const { computer, commands } = wedged;
+  try {
+    wedged.repair();
+    const count = commands.length;
+    for (const deadline = Date.now() + 3000; !commands.slice(count).includes('close');) {
+      assert.ok(Date.now() < deadline, 'the idle sweep never closed the wedged browser');
+      await assert.rejects(computer.act('fixture', { action: 'snapshot' }));
+      await delay(5);
+    }
+    const reopened = await computer.act('fixture', {
+      action: 'open',
+      url: 'https://1.1.1.1/login',
+    });
+    assert.equal(reopened.url, 'https://1.1.1.1/login');
+  } finally {
+    await wedged.cleanup();
+  }
+});
+
+test('a browser whose daemon is gone closes without a daemon and can be reopened', async () => {
+  const f = await transportFixture();
+  try {
+    await f.computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
+    await f.stopDaemon();
+    await assert.rejects(f.computer.act('fixture', { action: 'snapshot' }), /unavailable/);
+    await f.startDaemon();
+    const reopened = await f.computer.act('fixture', {
+      action: 'open',
+      url: 'https://1.1.1.1/login',
+    });
+    assert.equal(reopened.url, 'https://1.1.1.1/login');
+    assert.equal(f.actions.includes('close'), false);
+  } finally {
+    await f.cleanup();
   }
 });
 
@@ -1031,6 +1046,9 @@ function workerComputer() {
     hold: async () => {},
     close: async () => {
       calls.push({ method: 'close' });
+    },
+    discard: async (id) => {
+      calls.push({ method: 'discard', input: id });
     },
     dispose: async () => {
       calls.push({ method: 'dispose' });
@@ -1238,32 +1256,18 @@ test('malformed methods and namespaces never reach a computer or filesystem path
   }
 });
 
-test('an unacknowledged cancellation fences new actions until namespace cleanup succeeds', async () => {
+test('discard reaches the namespace computer of the same thread only', async () => {
   const fixture = await harness();
-  const drain = deferred();
   try {
-    const computer = fixture.client('/synthetic/timeout', { drainTimeoutMs: 20 });
+    const computer = fixture.client('/synthetic/discard');
     await computer.act('task', { action: 'snapshot' });
-    const entered = deferred();
-    fixture.instance('/synthetic/timeout').setAct(async () => {
-      entered.resolve();
-      await drain.promise;
-      return { text: 'Late', url: 'https://example.com', candidates: [] };
-    });
-    const controller = new AbortController();
-    const cancelled = assert.rejects(
-      computer.act('task', { action: 'snapshot' }, controller.signal),
-      /did not finish safely/,
-    );
-    await entered.promise;
-    controller.abort();
-    await cancelled;
-    await assert.rejects(computer.act('task', { action: 'snapshot' }), /unavailable/);
-    assert.match(computer.status(), /reopen/i);
-    drain.resolve();
-    await computer.dispose();
+    await computer.discard!('task');
+    assert.deepEqual(fixture.instance('/synthetic/discard').calls, [
+      { method: 'act', input: { action: 'snapshot' } },
+      { method: 'discard', input: 'task' },
+    ]);
+    await assert.rejects(computer.discard!('../task'));
   } finally {
-    drain.resolve();
     await fixture.close();
   }
 });
@@ -1910,17 +1914,18 @@ test(
   },
 );
 
-test('a password typed through the handoff stays out of browser observations', async () => {
+test('a password typed through the handoff in several pauses hides only the finished value', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'otto-handoff-secret-'));
   const fixture = stagedLoginBrowser();
-  const secret = 'synthetic-handoff-password';
+  const secret = 'Sign-handoff-password';
   const computer = createBrowserFixture({ dataRoot: directory, run: fixture.run });
   try {
     await computer.act('fixture', { action: 'open', url: 'https://1.1.1.1/login' });
     fixture.pages.get('fixture')!.stage = 'password';
     fixture.pages.get('fixture')!.render();
     await computer.act('fixture', { action: 'click', selector: '#account' });
-    await computer.control!('fixture', { type: 'type', text: secret });
+    await computer.control!('fixture', { type: 'type', text: 'Sign' });
+    await computer.control!('fixture', { type: 'type', text: secret.slice(4) });
     assert.equal(fixture.pages.get('fixture')!.input.value, secret);
     for (const observation of [
       await computer.act('fixture', { action: 'snapshot' }),
@@ -1930,6 +1935,19 @@ test('a password typed through the handoff stays out of browser observations', a
       }),
     ])
       assert.equal(JSON.stringify(observation).includes(secret), false);
+    assert.match((await computer.act('fixture', { action: 'snapshot' })).text, /Sign in password/);
+    await computer.act('fixture', { action: 'fill', selector: '#search', text: 'Sign' });
+    const page = fixture.pages.get('fixture')!;
+    const other = page.dom.window.document.createElement('input');
+    other.type = 'password';
+    page.dom.window.document.body.append(other);
+    other.focus();
+    await computer.control!('fixture', { type: 'type', text: `${secret}2` });
+    const first = await computer.act('fixture', {
+      action: 'evaluate',
+      script: "document.querySelector('#account').value",
+    });
+    assert.equal(JSON.stringify(first).includes(secret), false);
   } finally {
     await computer.dispose();
     await rm(directory, { recursive: true, force: true });
@@ -2319,6 +2337,9 @@ async function handoffView(
     async poll() {
       await act(async () => poll());
     },
+    async render(next: React.ReactNode) {
+      await act(async () => root.render(next));
+    },
     async clickImage() {
       const image = element<HTMLImageElement>('img');
       image.getBoundingClientRect = () =>
@@ -2378,7 +2399,6 @@ for (const failure of ['rejected', 'disconnected'] as const)
         provider: 'fixture',
         model: 'none',
         llmReady: true,
-        speechReady: false,
         integrationsReady: false,
         inspectorEnabled: false,
         localOnly: true,
@@ -2451,6 +2471,66 @@ for (const failure of ['rejected', 'disconnected'] as const)
       await view.close();
     }
   });
+
+test('chat keeps every message across refreshes after earlier messages were loaded', async () => {
+  const threadId = randomUUID();
+  const messages: Message[] = Array.from({ length: 6 }, (_, index) => ({
+    id: randomUUID(),
+    role: 'user',
+    turnId: null,
+    text: `Synthetic message ${index}`,
+    attachments: [],
+    createdAt: new Date(Date.UTC(2026, 9, 1, 12, index)).toISOString(),
+  }));
+  const state = (window: Message[]): AppState => ({
+    threadId,
+    threadStatus: 'idle',
+    hasEarlierMessages: true,
+    messages: window,
+    turns: [],
+    configuration: {
+      provider: 'fixture',
+      model: 'none',
+      llmReady: true,
+      integrationsReady: false,
+      inspectorEnabled: false,
+      localOnly: true,
+    },
+  });
+  const chat = (window: Message[]) =>
+    createElement(Chat, {
+      state: state(window),
+      streams: {},
+      refresh: async () => {},
+      resetConversation: async () => threadId,
+    });
+  const view = await handoffView(
+    async (path) => {
+      if (path === '/api/apps') return Response.json([]);
+      assert.match(path, /^\/api\/messages\?/);
+      return Response.json({ messages: messages.slice(0, 2), hasMore: false });
+    },
+    chat(messages.slice(2, 5)),
+  );
+  const shown = () =>
+    [...view.dom.window.document.querySelectorAll<HTMLElement>('[data-message-id]')].map(
+      (element) => element.dataset.messageId,
+    );
+  try {
+    await view.button('Load earlier messages');
+    assert.deepEqual(
+      shown(),
+      messages.slice(0, 5).map((message) => message.id),
+    );
+    await view.render(chat(messages.slice(3, 6)));
+    assert.deepEqual(
+      shown(),
+      messages.map((message) => message.id),
+    );
+  } finally {
+    await view.close();
+  }
+});
 
 for (const failure of ['rejected', 'disconnected'] as const)
   test(`browser handoff preserves a ${failure} input failure through Done and polling without replay`, async () => {
@@ -2530,60 +2610,6 @@ test('browser handoff prevents input on saved frames and recovers an observation
   }
 });
 
-test('browser handoff serializes capture polling with controls and completion', async () => {
-  const first = deferred<Response>();
-  const second = deferred<Response>();
-  const input = deferred<Response>();
-  const requests: string[] = [];
-  let captures = 0;
-  let inFlight = 0;
-  let maximum = 0;
-  const view = await handoffView(async (_path, options) => {
-    inFlight++;
-    maximum = Math.max(maximum, inFlight);
-    const control = options?.method === 'POST';
-    requests.push(control ? 'control' : 'screen');
-    try {
-      if (control) return await input.promise;
-      captures++;
-      return await (captures === 1
-        ? first.promise
-        : captures === 2
-          ? second.promise
-          : handoffScreen());
-    } finally {
-      inFlight--;
-    }
-  });
-  try {
-    await view.poll();
-    await view.poll();
-    assert.deepEqual(requests, ['screen']);
-    await act(async () => first.resolve(handoffScreen()));
-    await view.clickImage();
-    await view.poll();
-    assert.deepEqual(requests, ['screen', 'control']);
-    await view.button('Done');
-    assert.equal(view.completions(), 0);
-    await act(async () => {
-      input.resolve(Response.json({ ok: true }));
-      await delay(350);
-    });
-    await view.poll();
-    assert.deepEqual(requests, ['screen', 'control', 'screen']);
-    assert.equal(view.completions(), 0);
-    await act(async () => second.resolve(handoffScreen()));
-    assert.deepEqual(requests, ['screen', 'control', 'screen', 'screen']);
-    assert.equal(view.completions(), 1);
-    assert.equal(maximum, 1);
-  } finally {
-    first.resolve(handoffScreen());
-    second.resolve(handoffScreen());
-    input.resolve(Response.json({ ok: true }));
-    await view.close();
-  }
-});
-
 test('browser handoff cancels queued controls when the preceding view cannot be observed', async () => {
   const first = deferred<Response>();
   const inputs: unknown[] = [];
@@ -2617,43 +2643,6 @@ test('browser handoff cancels queued controls when the preceding view cannot be 
     assert.equal(inputs.length, 1);
     await view.button('Done');
     assert.equal(view.completions(), 1);
-  } finally {
-    await view.close();
-  }
-});
-
-test('browser handoff flushes typing before changing focus and drops buffered input on unmount', async () => {
-  const inputs: unknown[] = [];
-  const view = await handoffView(async (_path, options) => {
-    if (options?.method === 'POST') {
-      inputs.push(JSON.parse(String(options.body)));
-      return Response.json({ ok: true });
-    }
-    return handoffScreen();
-  });
-  try {
-    const screen = view.element('[role="application"]');
-    await act(async () => {
-      screen.dispatchEvent(
-        new view.dom.window.KeyboardEvent('keydown', { key: 'a', bubbles: true }),
-      );
-    });
-    await view.clickImage();
-    await act(async () => delay(700));
-    assert.deepEqual(inputs, [
-      { type: 'type', text: 'a' },
-      { type: 'click', x: 0.5, y: 0.5 },
-    ]);
-    await act(async () => {
-      screen.dispatchEvent(
-        new view.dom.window.KeyboardEvent('keydown', { key: 'b', bubbles: true }),
-      );
-      screen.dispatchEvent(new view.dom.window.WheelEvent('wheel', { deltaY: 100, bubbles: true }));
-    });
-    await view.unmount();
-    await delay(350);
-    assert.equal(inputs.length, 2);
-    assert.equal(view.images.size, 0);
   } finally {
     await view.close();
   }

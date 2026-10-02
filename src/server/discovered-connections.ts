@@ -1,9 +1,8 @@
-import { createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { posix } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
-import type { CredentialKeyStore } from '../ports/key-store.ts';
 import type {
   DiscoveredOAuth,
   DiscoveredOAuthState,
@@ -71,7 +70,6 @@ type ProposalRow = {
   setup_text: string | null;
   account_name: string | null;
   oauth_state_hash: string | null;
-  oauth_ciphertext: string | null;
   connection_id: string | null;
   thread_id: string | null;
   turn_id: string | null;
@@ -88,14 +86,6 @@ export class DiscoveredConnectionError extends Error {
 
 function error(message: string, statusCode = 400) {
   return new DiscoveredConnectionError(message, statusCode);
-}
-
-function open(key: Buffer, owner: string, id: string, ciphertext: string) {
-  const bytes = Buffer.from(ciphertext, 'base64');
-  const decipher = createDecipheriv('aes-256-gcm', key, bytes.subarray(0, 12));
-  decipher.setAAD(Buffer.from(JSON.stringify(['otto-discovered-v1', owner, id])));
-  decipher.setAuthTag(bytes.subarray(12, 28));
-  return Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString();
 }
 
 function headers(
@@ -144,7 +134,6 @@ export async function createDiscoveredConnections(
   options: {
     ownerId: string;
     baseUrl: string;
-    keyStore: CredentialKeyStore;
     grantVault: Awaited<ReturnType<typeof createAppGrantVault>>;
     transport: DiscoveredTransport;
     oauth: DiscoveredOAuth;
@@ -173,14 +162,11 @@ export async function createDiscoveredConnections(
       id uuid PRIMARY KEY,owner_id text NOT NULL,service text NOT NULL,name text NOT NULL,
       paths jsonb NOT NULL,connection_id uuid,thread_id uuid,turn_id uuid,
       setup_url text,setup_text text,
-      account_name text,oauth_state_hash text,oauth_ciphertext text,
+      account_name text,oauth_state_hash text,
       expires_at timestamptz NOT NULL DEFAULT now()+interval '15 minutes'
     );
+    ALTER TABLE discovered_connections DROP COLUMN IF EXISTS ciphertext;
   `);
-  async function key() {
-    if (!options.keyStore.configured) throw error('Secure storage is unavailable.', 503);
-    return options.keyStore.getKey();
-  }
   async function account(id: string) {
     const result = await pool.query<AccountRow>(
       'SELECT * FROM discovered_connections WHERE owner_id=$1 AND id=$2',
@@ -278,7 +264,7 @@ export async function createDiscoveredConnections(
   async function proposal(id: string) {
     const row = (
       await pool.query<ProposalRow>(
-        `SELECT id,owner_id,service,name,paths,connection_id,thread_id,turn_id,setup_url,setup_text,account_name,oauth_state_hash,oauth_ciphertext
+        `SELECT id,owner_id,service,name,paths,connection_id,thread_id,turn_id,setup_url,setup_text,account_name,oauth_state_hash
        FROM discovered_connection_proposals
        WHERE id=$1 AND owner_id=$2 AND expires_at>now()`,
         [z.uuid().parse(id), owner],
@@ -405,7 +391,7 @@ export async function createDiscoveredConnections(
       await client.query('BEGIN');
       const updated = await client.query(
         `UPDATE discovered_connection_proposals
-         SET account_name=$3,oauth_state_hash=$4,oauth_ciphertext=NULL
+         SET account_name=$3,oauth_state_hash=$4
          WHERE id=$1 AND owner_id=$2 AND expires_at>now()`,
         [pending.id, owner, pending.name, createHash('sha256').update(state).digest('hex')],
       );
@@ -474,9 +460,7 @@ export async function createDiscoveredConnections(
       };
     try {
       const saved = JSON.parse(
-        pending.oauth_ciphertext
-          ? open(await key(), owner, pending.id, pending.oauth_ciphertext)
-          : (await options.grantVault.read(pending.id)).value,
+        (await options.grantVault.read(pending.id)).value,
       ) as DiscoveredOAuthState;
       const metadata = saved.discovery?.authorizationServerMetadata;
       const issuer = metadata?.issuer;
@@ -636,6 +620,15 @@ export async function createDiscoveredConnections(
   }
   async function search(query: string, connectionId?: string, signal?: AbortSignal) {
     signal?.throwIfAborted();
+    const terms = query
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter(Boolean);
+    const words = terms.some((word) => word.length > 2)
+      ? terms.filter((word) => word.length > 2)
+      : terms;
+    const score = (text: string) =>
+      words.filter((word) => text.toLowerCase().includes(word)).length;
     const rows = (
       await pool.query<AccountRow>(
         'SELECT * FROM discovered_connections WHERE owner_id=$1 AND ($2::uuid IS NULL OR id=$2)',
@@ -663,20 +656,18 @@ export async function createDiscoveredConnections(
                 id: path.id,
                 kind: path.kind,
                 endpoint: path.endpoint,
-                ...(row.service.includes(query.toLowerCase()) ||
-                row.name.toLowerCase().includes(query.toLowerCase())
+                ...(score(row.service) || score(row.name)
                   ? {
                       toolNames: available.slice(0, 200).map((tool) => redact(tool.name, token)),
                       toolCount: available.length,
                     }
                   : {}),
                 tools: available
-                  .filter((tool) =>
-                    `${tool.name} ${tool.description ?? ''}`
-                      .toLowerCase()
-                      .includes(query.toLowerCase()),
-                  )
-                  .map((tool) => ({
+                  .map((tool) => ({ tool, score: score(`${tool.name} ${tool.description ?? ''}`) }))
+                  .filter((entry) => entry.score)
+                  .sort((left, right) => right.score - left.score)
+                  .slice(0, 25)
+                  .map(({ tool }) => ({
                     name: redact(tool.name, token),
                     description: redact(tool.description, token),
                     inputSchema: redact(tool.inputSchema, token),
@@ -773,14 +764,6 @@ export async function createDiscoveredConnections(
       throw failed('The connected MCP request failed', cause);
     }
   }
-  async function describe(args: Record<string, unknown>) {
-    const { row, path } = await selected(args);
-    return {
-      name: row.name,
-      accountName: row.account_name,
-      ...(path.kind === 'cli' ? { command: path.command } : {}),
-    };
-  }
   function registerRoutes(app: FastifyInstance) {
     app.get<{ Params: { id: string } }>('/api/apps/discovery/:id', async (request, reply) => {
       const row = await proposal(request.params.id);
@@ -832,8 +815,6 @@ export async function createDiscoveredConnections(
     reconnect,
     search,
     execute,
-    selected,
-    describe,
     disconnect,
     registerRoutes,
   };

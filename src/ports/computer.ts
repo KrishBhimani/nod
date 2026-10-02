@@ -63,6 +63,7 @@ export interface BrowserObservation {
 }
 export const browserDownloadBytes = 12 * 1024 * 1024;
 export const browserUploadBytes = 12 * 1024 * 1024;
+export const browserRequestBytes = Math.ceil(browserUploadBytes / 3) * 4 + 8192;
 export interface BrowserDownloadInput {
   selector?: string;
   url?: string;
@@ -94,7 +95,7 @@ export interface CredentialInput {
   passwordSelector?: string;
 }
 export interface CredentialSubmission {
-  status: 'submitted' | 'rejected';
+  status: 'submitted';
 }
 export interface Computer {
   currentSession?(): { threadId: string; lastActivityAt: string } | undefined;
@@ -121,6 +122,7 @@ export interface Computer {
   currentPage(threadId: string): Promise<BrowserPage>;
   hold(threadId: string, until: number | null): Promise<void>;
   close(threadId: string): Promise<void>;
+  discard?(threadId: string): Promise<void>;
   dispose(): Promise<void>;
   status(): string;
 }

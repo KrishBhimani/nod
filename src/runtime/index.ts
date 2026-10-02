@@ -100,13 +100,9 @@ function inspectedAppResult(value: unknown): boolean {
       result.resultOmitted === true ||
       result.downloadRequired === true ||
       Boolean(result.error) ||
-      Boolean(result.requiresConfirmation) ||
-      Boolean(result.requiresApproval) ||
       'workspaceFile' in result ||
       ('bytes' in result && 'preview' in result) ||
-      ['rejected', 'failed', 'error', 'unavailable', 'pending', 'waiting_approval'].includes(
-        String(result.status),
-      ) ||
+      ['rejected', 'failed', 'error', 'unavailable', 'pending'].includes(String(result.status)) ||
       (result.truncated === true &&
         !['data', 'content', 'items', 'results', 'messages'].some((key) => key in result))
     )
@@ -269,7 +265,7 @@ export function createAgentRuntime(dependencies: {
       status = reason === 'credentials' ? 'waiting_credentials' : 'waiting_user';
       waitingFor = reason;
       if (text && reason !== 'credentials') question = text;
-      if (hold) await computer.hold(threadId, Date.now() + holdMs);
+      if (hold) await computer.hold(threadId, Date.now() + holdMs).catch(() => {});
       stopped = true;
       if (post && text) {
         if (context.waitForUser) await context.waitForUser(text);

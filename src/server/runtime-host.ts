@@ -29,7 +29,6 @@ const forwardedEnvironment = [
   'ANTHROPIC_API_KEY',
   'TYPESAFE_API_KEY',
   'TYPESAFE_MODEL',
-  'STT_MODEL',
   'TTS_MODEL',
   'TTS_VOICE',
   'COMPOSIO_API_KEY',
@@ -43,8 +42,6 @@ const forwardedEnvironment = [
   'COMPOSIO_NOTION_AUTH_CONFIG_ID',
   'OBJECT_STORAGE_PROVIDER',
   'OBJECT_STORAGE_ENDPOINT',
-  'OBJECT_STORAGE_BUCKET',
-  'OBJECT_STORAGE_REGION',
 ] as const;
 
 type Entry = { lease: TenantLease; secret: string; healthy: boolean; stopping?: Promise<void> };
@@ -235,9 +232,7 @@ export function createTenantRuntimeHost(options: {
       environment.OTTO_CONTROL_URL =
         options.operatorEnvironment.OTTO_RUNTIME_URL === 'http://otto.runtime'
           ? 'http://otto.control'
-          : options.operatorEnvironment.OTTO_CONTROL_ORIGIN ||
-            options.operatorEnvironment.OTTO_PUBLIC_URL ||
-            '';
+          : options.operatorEnvironment.OTTO_PUBLIC_URL || '';
       await options.transport.start({ ownerId, generation: lease.generation, environment });
       if (closed || Date.parse(lease.expiresAt) <= Date.now())
         throw new Error('The account runtime did not become ready.');

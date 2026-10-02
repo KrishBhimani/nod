@@ -41,6 +41,7 @@ interface BrowserState {
   injecting: boolean;
   secrets: Set<string>;
   secretsByOrigin: Map<string, Set<string>>;
+  typed?: { value: string; origin: string; field: number; fresh: boolean };
   protectedSelectors: Set<string>;
   uploads: Set<string>;
   started: boolean;
@@ -154,6 +155,7 @@ export function createAgentBrowserComputer(options: {
   onDiagnostic?(event: BrowserDiagnostic): void;
 }): Computer & { canCheckpoint(): boolean } {
   const browsers = new Map<string, BrowserState>();
+  const discarded = new Set<string>();
   let lastSession: { threadId: string; lastActivityAt: string } | undefined;
   const markActivity = (id: string) => {
     lastSession = { threadId: id, lastActivityAt: new Date().toISOString() };
@@ -235,9 +237,14 @@ export function createAgentBrowserComputer(options: {
       }
     };
   }
+  function assertNotDiscarded(id: string) {
+    threadIdentity(id);
+    if (discarded.has(id)) throw new Error('This conversation was reset. Its browser is gone.');
+  }
+
   function stateFor(id: string): BrowserState {
     if (disposed) throw new Error('The browser service has stopped.');
-    threadIdentity(id);
+    assertNotDiscarded(id);
     let state = browsers.get(id);
     if (!state) {
       state = {
@@ -263,12 +270,14 @@ export function createAgentBrowserComputer(options: {
   }
 
   function serialize<T>(state: BrowserState, operation: () => Promise<T>): Promise<T> {
-    state.lastUsed = Date.now();
     state.busy += 1;
     const execute = async () => {
+      if (state.closed || state.closing) {
+        state.busy -= 1;
+        throw new Error('The browser session has expired. Open the URL again.');
+      }
+      state.lastUsed = Date.now();
       try {
-        if (state.closed || state.closing)
-          throw new Error('The browser session has expired. Open the URL again.');
         return await operation();
       } finally {
         state.busy -= 1;
@@ -332,7 +341,7 @@ export function createAgentBrowserComputer(options: {
       state.closed = true;
       await saveState(state);
     } catch {
-      throw new Error('The browser could not stop safely. Close it before continuing.');
+      throw new Error('The browser could not stop safely. Open the URL again to retry.');
     }
   }
 
@@ -791,9 +800,12 @@ export function createAgentBrowserComputer(options: {
     const gesture = visualGesture(input);
     const savedProfile = input.action === 'open' ? await screens.load(id) : null;
     if (input.action === 'open' && !browsers.has(id)) await recoverBrowser(id, true);
-    if (input.action === 'open' && browsers.get(id)?.recovered) await closeBrowser(id);
-    if (input.action === 'open' && browsers.get(id)?.closed) await closeBrowser(id);
-    if (input.action === 'open' && browsers.get(id)?.saved.navigationFailed) await closeBrowser(id);
+    const existing = input.action === 'open' ? browsers.get(id) : undefined;
+    if (
+      existing &&
+      (existing.recovered || existing.closed || existing.closing || existing.saved.navigationFailed)
+    )
+      await closeBrowser(id);
     const state = stateFor(id);
     if (input.action === 'open' && savedProfile?.profileId && !state.saved.profileId) {
       state.saved.profileId = savedProfile.profileId;
@@ -903,14 +915,8 @@ export function createAgentBrowserComputer(options: {
           const autocomplete = await command(state, ['get', 'attr', target, 'autocomplete'], {
             signal,
           });
-          const loginField = await command(
-            state,
-            ['get', 'attr', target, 'data-otto-login-field'],
-            { signal },
-          );
           if (
             /password|one-time-code|username/i.test([type.value, autocomplete.value].join(' ')) ||
-            /identifier|password|otp/.test(String(loginField.value ?? '')) ||
             state.protectedSelectors.has(target)
           )
             throw new Error('Use the secure credential request tool for this field.');
@@ -1283,14 +1289,26 @@ export function createAgentBrowserComputer(options: {
           { action: 'keyboard', subaction: 'type', text: input.text },
           signal,
         );
-        const secret = await evaluate(
+        const typed = await evaluate(
           state,
-          "(() => { const field = document.activeElement; return field instanceof HTMLInputElement && field.type === 'password' ? field.value : null; })()",
+          "(() => { const field = document.activeElement; return field instanceof HTMLInputElement && field.type === 'password' ? [field.value, [...document.querySelectorAll('input[type=\"password\"]')].indexOf(field)] : null; })()",
           signal,
         );
-        if (typeof secret === 'string' && secret) {
+        const [secret, field] = z.tuple([z.string(), z.number()]).catch(['', -1]).parse(typed);
+        if (secret) {
           const origin = new URL(await currentUrl(state, signal)).origin;
           const secrets = state.secretsByOrigin.get(origin) ?? new Set<string>();
+          const earlier = state.typed;
+          if (
+            earlier?.fresh &&
+            earlier.origin === origin &&
+            earlier.field === field &&
+            secret.startsWith(earlier.value)
+          ) {
+            state.secrets.delete(earlier.value);
+            secrets.delete(earlier.value);
+          }
+          state.typed = { value: secret, origin, field, fresh: !state.secrets.has(secret) };
           state.secrets.add(secret);
           secrets.add(secret);
           state.secretsByOrigin.set(origin, secrets);
@@ -1360,8 +1378,9 @@ export function createAgentBrowserComputer(options: {
 
   async function bindProfile(id: string, rawProfileId: string): Promise<void> {
     const profileId = z.uuid().parse(rawProfileId);
-    threadIdentity(id);
+    assertNotDiscarded(id);
     await allocate(async () => {
+      assertNotDiscarded(id);
       const previous = browsers.get(id) ?? (await recoverBrowser(id, true));
       if (previous?.saved.profileId === profileId) {
         if (!previous.saved.restoreSession) {
@@ -1419,6 +1438,19 @@ export function createAgentBrowserComputer(options: {
     });
   }
 
+  async function discard(rawId: string): Promise<void> {
+    const id = threadIdentity(rawId);
+    discarded.add(id);
+    await closeBrowser(id);
+    await Promise.all([
+      rm(resolve(runtimeRoot, 'profiles', id), { recursive: true, force: true }),
+      rm(resolve(runtimeRoot, 'downloads', id), { recursive: true, force: true }),
+      rm(resolve(runtimeRoot, `screen-${id}.capture.png`), { force: true }),
+      screens.delete(id),
+    ]);
+    screenStatuses.delete(id);
+  }
+
   function browserStatus(): string {
     const count = [...browsers.values()].filter(
       (state) => state.started || state.saved.navigationFailed,
@@ -1464,6 +1496,7 @@ export function createAgentBrowserComputer(options: {
     currentPage: tracked(currentPage),
     hold: tracked(hold),
     close: tracked(closeBrowser),
+    discard: tracked(discard),
     status: browserStatus,
     dispose: async () => {
       disposed = true;

@@ -403,6 +403,11 @@ test(
       });
       assert.equal(response.statusCode, 200);
       assert.equal(attempts, 2);
+      assert.deepEqual((await vault.readCredential(saved.json().id)).secret, {
+        username: 'person',
+        password: 'old-password',
+      });
+      assert.equal((await vault.list()).length, 2);
       const interrupted = await vault.request(taskInterrupted, 'local-development', input);
       await wait(taskInterrupted);
       await app.close();
@@ -494,7 +499,12 @@ test(
         "UPDATE credential_requests SET expires_at=now()-interval '1 second' WHERE turn_id=$1",
         [task1.turnId],
       );
-      assert.equal((await app.inject({ method: 'POST', url: `${url}/retry` })).statusCode, 200);
+      const concurrent = await Promise.all([
+        app.inject({ method: 'POST', url: `${url}/retry` }),
+        app.inject({ method: 'POST', url: `${url}/retry` }),
+      ]);
+      assert.deepEqual(concurrent.map((result) => result.statusCode).sort(), [200, 409]);
+      assert.equal((await app.inject({ method: 'POST', url: `${url}/retry` })).statusCode, 409);
       assert.deepEqual(retried, [task1.turnId]);
       assert.equal(injected, 0);
       assert.equal(keyReads, 0);
@@ -596,59 +606,6 @@ test(
   },
 );
 
-test(
-  'an expired credential link restarts the credential step only once',
-  { skip: !process.env.TEST_DATABASE_URL },
-  async () => {
-    const schema = `test_vault_${randomUUID().replaceAll('-', '')}`;
-    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
-    await admin.query(`CREATE SCHEMA ${schema}`);
-    const pool = new pg.Pool({
-      connectionString: process.env.TEST_DATABASE_URL,
-      options: `-c search_path=${schema}`,
-    });
-    const { turn, wait } = await seedTurns(pool);
-    const task = await turn();
-    const app = Fastify();
-    const retried: string[] = [];
-    const vault = await createVault(pool, {
-      keyStore: { id: 'fixture', configured: true, getKey: async () => randomBytes(32) },
-      inject: async () => {},
-      resume: async () => {},
-      retry: async (turnId) => {
-        retried.push(turnId);
-      },
-    });
-    vault.registerRoutes(app);
-    try {
-      const request = await vault.request(task, 'local-development', {
-        origin: 'https://example.com',
-        label: 'Example',
-        kind: 'password',
-        passwordSelector: '#password',
-      });
-      await wait(task);
-      const url = request.url.replace('/vault/', '/api/credential-requests/');
-      await pool.query(
-        "UPDATE credential_requests SET expires_at=now()-interval '1 second' WHERE turn_id=$1",
-        [task.turnId],
-      );
-      const concurrent = await Promise.all([
-        app.inject({ method: 'POST', url: `${url}/retry` }),
-        app.inject({ method: 'POST', url: `${url}/retry` }),
-      ]);
-      assert.deepEqual(concurrent.map((result) => result.statusCode).sort(), [200, 409]);
-      assert.equal((await app.inject({ method: 'POST', url: `${url}/retry` })).statusCode, 409);
-      assert.deepEqual(retried, [task.turnId]);
-    } finally {
-      await app.close();
-      await pool.end();
-      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
-      await admin.end();
-    }
-  },
-);
-
 async function vaultFixture() {
   const schema = `test_vault_${randomUUID().replaceAll('-', '')}`;
   const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
@@ -740,10 +697,6 @@ test(
         await f.pool.query(`UPDATE turns SET ${change} WHERE id=$1`, [running.turnId]);
         assert.equal(await f.status(url), 'expired');
         assert.equal((await f.submit(url)).statusCode, 409);
-        assert.equal(
-          (await f.app.inject({ method: 'POST', url: `${url}/refresh` })).statusCode,
-          409,
-        );
       }
       await f.wait(running);
       assert.equal(await f.status(url), 'pending');
@@ -761,7 +714,6 @@ test(
       ]);
       assert.equal(await f.status(url), 'expired');
       assert.equal((await f.submit(url)).statusCode, 409);
-      assert.equal((await f.app.inject({ method: 'POST', url: `${url}/refresh` })).statusCode, 409);
       assert.equal(
         (
           await f.app.inject({
@@ -884,14 +836,12 @@ test(
     const stages = new Map<string, CredentialKind>();
     const injections: CredentialInjection[] = [];
     const resumed: string[] = [];
-    let reject = false;
     let app = Fastify();
     const options = {
       keyStore: { id: 'fixture', configured: true, getKey: async () => key },
       page: async () => ({ origin: 'https://example.com', url: 'https://example.com/login' }),
       inject: async (input: CredentialInjection) => {
         injections.push(input);
-        if (reject) return { status: 'rejected' as const };
         stages.set(input.threadId, input.kind === 'identifier' ? 'password' : 'otp');
       },
       retry: async () => {},
@@ -1082,60 +1032,12 @@ test(
       );
 
       await t.test(
-        'rejected saved details return a fresh named-entry form and never overwrite the saved account',
+        'combined sign-in pages allow a different account than the saved one already chosen',
         async () => {
-          await addTask('rejected', 'password');
-          const url = await form('rejected');
-          const expiresAt = (await describe(url)).expiresAt;
-          const beforeCount = (await vault.list()).length;
-          reject = true;
-          const response = await choose(url, second.id);
-          reject = false;
-          assert.equal(response.json().ok, false);
-          assert.equal(resumed.includes('rejected'), false);
-          const retryUrl = response.json().retryUrl.replace('/vault/', '/api/credential-requests/');
-          const retried = await describe(retryUrl);
-          assert.equal(retried.expiresAt, expiresAt);
-          assert.deepEqual(retried.savedEntries, []);
-          assert.equal(
-            await vault.fillSelected(task('rejected'), 'local-development', input('password')),
-            false,
-          );
-          const injected = injections.length;
-          const missingName = await app.inject({
-            method: 'POST',
-            url: retryUrl,
-            payload: { password: 'replacement-password' },
-          });
-          assert.equal(missingName.statusCode, 400);
-          assert.equal(injections.length, injected);
-          const corrected = await app.inject({
-            method: 'POST',
-            url: retryUrl,
-            payload: { label: 'Work replacement', password: 'replacement-password' },
-          });
-          assert.equal(corrected.statusCode, 200);
-          assert.equal((await vault.list()).length, beforeCount + 1);
-          assert.equal((await vault.list()).find((entry) => entry.id === second.id)?.label, 'Work');
-          assert.ok((await vault.list()).find((entry) => entry.label === 'Work replacement'));
-          const stored = (
-            await pool.query('SELECT * FROM vault_entries WHERE label=$1', ['Work replacement'])
-          ).rows[0];
-          assert.equal(stored.origin, 'https://example.com');
-          assert.doesNotMatch(JSON.stringify(stored), /replacement-password|same-second/);
-        },
-      );
-
-      await t.test(
-        'combined sign-in pages allow a different account after saved details are rejected',
-        async () => {
-          await addTask('combined-rejected');
-          const turn = task('combined-rejected');
+          await addTask('combined-different');
+          const turn = task('combined-different');
           await vault.fillSaved(turn, 'local-development', first.id, input());
           const combined = { ...input('password'), usernameSelector: '#account' };
-          reject = true;
-          await assert.rejects(vault.fillSaved(turn, 'local-development', first.id, combined));
-          reject = false;
           const request = await vault.request(turn, 'local-development', combined);
           await pool.query(
             "UPDATE turns SET status='waiting',waiting_reason='credentials' WHERE id=$1",
@@ -1291,9 +1193,6 @@ test(
           vault = await createVault(pool, options);
           vault.registerRoutes(app);
           const url = request.url.replace('/vault/', '/api/credential-requests/');
-          const refreshed = await app.inject({ method: 'POST', url: `${url}/refresh` });
-          assert.equal(refreshed.statusCode, 200, refreshed.body);
-          assert.deepEqual((await stored(turn.turnId)).selectors, before.selectors);
           if (kind === 'otp')
             assert.deepEqual(
               await vault.submitChatCode('local-development', turn.turnId, '001234', before.id),
@@ -1317,7 +1216,7 @@ test(
           if (kind === 'password') assert.equal(injections.at(-1)?.usernameSelector, '@e3');
         });
       }
-      await t.test('a page on another origin blocks requests, refresh and submission', async () => {
+      await t.test('a page on another origin blocks requests and submission', async () => {
         pageOrigin = origin;
         const turn = await turns.turn();
         const request = await vault.request(turn, 'local-development', {
@@ -1330,7 +1229,6 @@ test(
         pageOrigin = 'https://other.example.test';
         const count = injections.length;
         const url = request.url.replace('/vault/', '/api/credential-requests/');
-        assert.equal((await app.inject({ method: 'POST', url: `${url}/refresh` })).statusCode, 409);
         assert.equal(
           (
             await app.inject({
@@ -1784,9 +1682,7 @@ test(
       const injections: CredentialInjection[] = [];
       const origin = 'https://accounts.example.test';
       let observedOrigin = origin;
-      let rejected = false;
       let unavailable = false;
-      let rejectIdentifier = false;
       let unavailableIdentifier = false;
       const options = {
         keyStore: { id: 'fixture', configured: true, getKey: async () => key },
@@ -1795,10 +1691,7 @@ test(
           injections.push(input);
           if (unavailableIdentifier && input.kind === 'identifier')
             throw new Error('Synthetic identifier unavailable');
-          if (rejectIdentifier && input.kind === 'identifier')
-            return { status: 'rejected' as const };
           if (unavailable && input.kind === 'password') throw new Error('Synthetic unavailable');
-          if (rejected && input.kind === 'password') return { status: 'rejected' as const };
           stages.set(input.threadId, input.kind === 'identifier' ? 'password' : 'otp');
           return { status: 'submitted' as const };
         },
@@ -1862,58 +1755,6 @@ test(
       };
 
       await t.test(
-        'a rejected held password is consumed without saving or trying it twice',
-        async () => {
-          await begin('rejected');
-          const before = (await pool.query('SELECT * FROM vault_entries')).rowCount;
-          const beforeInjections = injections.length;
-          rejected = true;
-          assert.equal(
-            await vault.fillSelected(
-              task('rejected'),
-              'local-development',
-              requestInput('password'),
-            ),
-            false,
-          );
-          assert.equal((await pool.query('SELECT * FROM vault_entries')).rowCount, before);
-          assert.equal(injections.length, beforeInjections + 1);
-          assert.equal(injections.at(-1)?.kind, 'password');
-          const selected = (
-            await pool.query('SELECT * FROM credential_account_selections WHERE root_turn_id=$1', [
-              roots.get('rejected'),
-            ])
-          ).rows[0];
-          assert.equal(selected.blocked, true);
-          assert.equal(openCredential(key, selected).password, '');
-          const count = injections.length;
-          assert.equal(
-            await vault.fillSelected(
-              task('rejected'),
-              'local-development',
-              requestInput('password'),
-            ),
-            false,
-          );
-          assert.equal(injections.length, count);
-          rejected = false;
-          await begin('rejected');
-          assert.equal(
-            await vault.fillSelected(
-              task('rejected'),
-              'local-development',
-              requestInput('password'),
-            ),
-            true,
-          );
-          assert.equal(
-            (await pool.query('SELECT * FROM vault_entries')).rowCount,
-            (before ?? 0) + 1,
-          );
-        },
-      );
-
-      await t.test(
         'an uncertain password attempt clears its held value and is not replayed',
         async () => {
           await begin('interrupted');
@@ -1944,58 +1785,6 @@ test(
             false,
           );
           assert.equal(injections.length, count);
-        },
-      );
-
-      await t.test(
-        'held passwords remain bound to owner, origin, running turn and expiry',
-        async () => {
-          await begin('fences');
-          const count = injections.length;
-          assert.equal(
-            await vault.fillSelected(task('fences'), 'another-owner', requestInput('password')),
-            undefined,
-          );
-          assert.equal(
-            await vault.fillSelected(task('fences'), 'local-development', {
-              ...requestInput('password'),
-              origin: 'https://other.example.test',
-            }),
-            undefined,
-          );
-          observedOrigin = 'https://other.example.test';
-          assert.equal(
-            await vault.fillSelected(task('fences'), 'local-development', requestInput('password')),
-            false,
-          );
-          observedOrigin = origin;
-          await pool.query("UPDATE turns SET status='succeeded' WHERE id=$1", [
-            task('fences').turnId,
-          ]);
-          assert.equal(
-            await vault.fillSelected(task('fences'), 'local-development', requestInput('password')),
-            false,
-          );
-          await pool.query("UPDATE turns SET status='running' WHERE id=$1", [
-            task('fences').turnId,
-          ]);
-          await pool.query(
-            "UPDATE credential_account_selections SET expires_at=now()-interval '1 second' WHERE root_turn_id=$1",
-            [roots.get('fences')],
-          );
-          assert.equal(
-            await vault.fillSelected(task('fences'), 'local-development', requestInput('password')),
-            false,
-          );
-          assert.equal(injections.length, count);
-          await vault.resumePending();
-          const expired = (
-            await pool.query('SELECT * FROM credential_account_selections WHERE root_turn_id=$1', [
-              roots.get('fences'),
-            ])
-          ).rows[0];
-          assert.equal(expired.ciphertext, '');
-          assert.equal(expired.blocked, true);
         },
       );
 
@@ -2097,83 +1886,96 @@ test(
       });
 
       await t.test(
-        'identifier recovery preserves account, origin, owner and turn fences',
+        'held credentials remain bound to owner, origin, running turn and expiry',
         async () => {
-          await begin('identifier-fences', { username: 'fenced-member@example.test' });
-          const turn = task('identifier-fences');
-          const input = requestInput('identifier');
-          const before = injections.length;
-          assert.equal(await vault.fillSelected(turn, 'other-owner', input), undefined);
-          assert.equal(
-            await vault.fillSelected(turn, 'local-development', {
-              ...input,
-              origin: 'https://other.example.test',
-            }),
-            undefined,
-          );
-          observedOrigin = 'https://other.example.test';
-          assert.equal(await vault.fillSelected(turn, 'local-development', input), false);
-          observedOrigin = origin;
-          await pool.query("UPDATE turns SET status='succeeded' WHERE id=$1", [turn.turnId]);
-          assert.equal(await vault.fillSelected(turn, 'local-development', input), false);
-          await pool.query("UPDATE turns SET status='running' WHERE id=$1", [turn.turnId]);
-          assert.equal(
-            await vault.fillSelected(turn, 'local-development', requestInput('otp')),
-            false,
-          );
-          await pool.query(
-            "UPDATE credential_account_selections SET expires_at=now()-interval '1 second' WHERE root_turn_id=$1",
-            [roots.get('identifier-fences')],
-          );
-          assert.equal(await vault.fillSelected(turn, 'local-development', input), false);
-          assert.equal(injections.length, before);
-          const later = await startTurn();
-          assert.equal(await vault.fillSelected(later, 'local-development', input), undefined);
-          const request = await vault.request(later, 'local-development', input);
-          await wait(later);
-          const response = await app.inject({
-            url: request.url.replace('/vault/', '/api/credential-requests/'),
-          });
-          assert.ok(response.json().savedEntries.length > 1);
-          assert.equal(response.json().selectedEntryId, undefined);
-          assert.equal(injections.length, before);
+          for (const kind of ['password', 'identifier'] as const) {
+            const name = `fences-${kind}`;
+            await begin(
+              name,
+              kind === 'identifier' ? { username: 'fenced-member@example.test' } : undefined,
+            );
+            const turn = task(name);
+            const input = requestInput(kind);
+            const count = injections.length;
+            assert.equal(await vault.fillSelected(turn, 'another-owner', input), undefined);
+            assert.equal(
+              await vault.fillSelected(turn, 'local-development', {
+                ...input,
+                origin: 'https://other.example.test',
+              }),
+              undefined,
+            );
+            observedOrigin = 'https://other.example.test';
+            assert.equal(await vault.fillSelected(turn, 'local-development', input), false);
+            observedOrigin = origin;
+            await pool.query("UPDATE turns SET status='succeeded' WHERE id=$1", [turn.turnId]);
+            assert.equal(await vault.fillSelected(turn, 'local-development', input), false);
+            await pool.query("UPDATE turns SET status='running' WHERE id=$1", [turn.turnId]);
+            assert.equal(
+              await vault.fillSelected(turn, 'local-development', requestInput('otp')),
+              false,
+            );
+            await pool.query(
+              "UPDATE credential_account_selections SET expires_at=now()-interval '1 second' WHERE root_turn_id=$1",
+              [roots.get(name)],
+            );
+            assert.equal(await vault.fillSelected(turn, 'local-development', input), false);
+            assert.equal(injections.length, count);
+            if (kind === 'password') {
+              await vault.resumePending();
+              const expired = (
+                await pool.query(
+                  'SELECT * FROM credential_account_selections WHERE root_turn_id=$1',
+                  [roots.get(name)],
+                )
+              ).rows[0];
+              assert.equal(expired.ciphertext, '');
+              assert.equal(expired.blocked, true);
+            }
+            const later = await startTurn();
+            assert.equal(await vault.fillSelected(later, 'local-development', input), undefined);
+            const request = await vault.request(later, 'local-development', input);
+            await wait(later);
+            const response = await app.inject({
+              url: request.url.replace('/vault/', '/api/credential-requests/'),
+            });
+            assert.ok(response.json().savedEntries.length > 1);
+            assert.equal(response.json().selectedEntryId, undefined);
+            assert.equal(injections.length, count);
+          }
         },
       );
 
       await t.test(
         'failed identifier recovery is fenced without replaying credentials',
         async () => {
-          for (const failure of ['rejected', 'uncertain']) {
-            const name = `identifier-${failure}`;
-            await begin(name, { username: `${name}@example.test` });
-            const turn = task(name);
-            const before = injections.length;
-            rejectIdentifier = failure === 'rejected';
-            unavailableIdentifier = failure === 'uncertain';
-            assert.equal(
-              await vault.fillSelected(turn, 'local-development', requestInput('identifier')),
-              false,
-            );
-            rejectIdentifier = false;
-            unavailableIdentifier = false;
-            assert.equal(injections.length, before + 1);
-            assert.equal(
-              await vault.fillSelected(turn, 'local-development', requestInput('identifier')),
-              false,
-            );
-            assert.equal(
-              await vault.fillSelected(turn, 'local-development', requestInput('password')),
-              false,
-            );
-            assert.equal(injections.length, before + 1);
-            const rows = await pool.query(
-              'SELECT * FROM credential_account_selections WHERE root_turn_id=$1',
-              [roots.get(name)],
-            );
-            assert.equal(rows.rows[0].blocked, true);
-            assert.equal(rows.rows[0].credential_entered_at, null);
-            assert.equal(openCredential(key, rows.rows[0]).password, '');
-          }
+          const name = 'identifier-uncertain';
+          await begin(name, { username: `${name}@example.test` });
+          const turn = task(name);
+          const before = injections.length;
+          unavailableIdentifier = true;
+          assert.equal(
+            await vault.fillSelected(turn, 'local-development', requestInput('identifier')),
+            false,
+          );
+          unavailableIdentifier = false;
+          assert.equal(injections.length, before + 1);
+          assert.equal(
+            await vault.fillSelected(turn, 'local-development', requestInput('identifier')),
+            false,
+          );
+          assert.equal(
+            await vault.fillSelected(turn, 'local-development', requestInput('password')),
+            false,
+          );
+          assert.equal(injections.length, before + 1);
+          const rows = await pool.query(
+            'SELECT * FROM credential_account_selections WHERE root_turn_id=$1',
+            [roots.get(name)],
+          );
+          assert.equal(rows.rows[0].blocked, true);
+          assert.equal(rows.rows[0].credential_entered_at, null);
+          assert.equal(openCredential(key, rows.rows[0]).password, '');
         },
       );
     } finally {
@@ -2200,7 +2002,6 @@ const request = {
   origin: 'https://app20.toconline.pt',
   after: now - 30_000,
   before: now,
-  length: 6,
 };
 const message: VerificationEmail = {
   id: 'fixture-mail',
@@ -2222,8 +2023,6 @@ test('email verification binds authenticated messages to a recent exact recipien
     { text: 'Your verification codes are 381742 and 940173.' },
     { text: 'Your receipt number is 381742.' },
     { text: 'Your login code is a381742b.' },
-    { text: 'Your login code is 3817429.' },
-    { text: 'Your security code is 3817.' },
   ])
     assert.equal(verificationCode([{ ...message, ...changed }], request), undefined);
   assert.equal(verificationCode([message, { ...message, id: 'second' }], request), undefined);
@@ -2648,7 +2447,6 @@ test(
     let read = 0;
     let lookup: (() => Promise<void>) | undefined;
     let available = true;
-    let reject = false;
     let injectionFailure = false;
     let resultCode: string | undefined = code;
     let emails: VerificationEmail[] | undefined;
@@ -2662,7 +2460,7 @@ test(
       inject: async (value) => {
         injected.push({ threadId: value.threadId, code: value.code });
         if (injectionFailure && value.kind === 'otp') throw new Error('Uncertain code submission.');
-        return { status: reject && value.kind === 'otp' ? 'rejected' : 'submitted' };
+        return { status: 'submitted' as const };
       },
       resume: turns.resume,
       retry: async () => {},
@@ -2969,11 +2767,6 @@ test(
     resultCode = code;
     assert.equal(await fill('missing'), true);
     assert.equal(await fill('missing'), false);
-    await start('rejected');
-    reject = true;
-    assert.equal(await fill('rejected'), false);
-    assert.equal(await fill('rejected'), false);
-    reject = false;
     const manualTurn = await begin('manual-password');
     const manual = await vault.request(manualTurn, owner, input);
     await turns.wait(manualTurn);
@@ -3032,7 +2825,7 @@ test(
 );
 
 test(
-  'chat codes consume the exact pending owned request and rejected codes rotate without plaintext storage',
+  'chat codes consume the exact pending owned request without plaintext storage',
   { skip: !process.env.TEST_DATABASE_URL },
   async (t) => {
     const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
@@ -3057,14 +2850,13 @@ test(
       await admin.end();
     });
     let injected = 0;
-    let reject = true;
     const vault = await createVault(pool, {
       keyStore: { id: 'fixture', configured: true, getKey: async () => randomBytes(32) },
       page: async () => ({ origin, url: `${origin}/login` }),
       inject: async (input) => {
         injected++;
         assert.equal(input.code, code);
-        return { status: reject ? 'rejected' : 'submitted' };
+        return { status: 'submitted' as const };
       },
       resume: turns.resume,
       retry: async () => {},
@@ -3098,21 +2890,12 @@ test(
     });
     assert.equal(injected, 0);
     assert.deepEqual(await vault.submitChatCode(owner, chat.turnId, code, requestId), {
-      status: 'rejected',
+      status: 'submitted',
     });
-    const retryId = (await pending())[0];
-    assert.notEqual(retryId, requestId);
     assert.deepEqual(await vault.submitChatCode(owner, chat.turnId, code, requestId), {
       status: 'unavailable',
     });
-    reject = false;
-    assert.deepEqual(await vault.submitChatCode(owner, chat.turnId, code, retryId), {
-      status: 'submitted',
-    });
-    assert.deepEqual(await vault.submitChatCode(owner, chat.turnId, code, retryId), {
-      status: 'unavailable',
-    });
-    assert.equal(injected, 2);
+    assert.equal(injected, 1);
     assert.deepEqual(await turns.resumed(chat.turnId), [
       { parent: 'waiting', reason: 'credentials', status: 'running', source: 'resume' },
     ]);
@@ -3641,6 +3424,84 @@ test('Vault Escape cancels edits and clears replacement secrets without disablin
   }
 });
 
+test('secure sign-in keeps failed submissions editable and returns to chat only after accepted submission', async () => {
+  const request = {
+    id: 'synthetic_credential_request',
+    turnId: randomUUID(),
+    origin: 'https://example.test',
+    label: 'Fixture sign-in',
+    kind: 'otp',
+    status: 'pending',
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    fields: [{ kind: 'otp', selector: '#code', label: 'Verification code' }],
+  };
+  let finish!: (value: Response) => void;
+  let submissions = 0;
+  let closed = 0;
+  let focused = 0;
+  const page = await vaultPage(
+    createElement(Credentials, { id: request.id }),
+    async (_path, init) => {
+      if (init.method !== 'POST') return Response.json(request);
+      submissions++;
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    },
+  );
+  Object.defineProperty(page.window, 'opener', {
+    value: {
+      closed: false,
+      location: { origin: page.window.location.origin },
+      focus() {
+        focused++;
+      },
+    },
+  });
+  const close = page.window.close.bind(page.window);
+  page.window.close = () => {
+    closed++;
+    Object.defineProperty(page.window, 'closed', { value: true, configurable: true });
+  };
+  try {
+    const submit = async () => {
+      page.document.querySelector<HTMLInputElement>('input[name="code"]')!.value = '123456';
+      await act(async () =>
+        page.document
+          .querySelector('form')!
+          .dispatchEvent(new page.window.Event('submit', { bubbles: true, cancelable: true })),
+      );
+    };
+    await submit();
+    assert.equal(submissions, 1);
+    assert.equal(closed, 0);
+    assert.equal(page.document.querySelector('form'), null);
+    await act(async () =>
+      finish(Response.json({ error: 'Synthetic rejected request' }, { status: 502 })),
+    );
+    assert.equal(closed, 0);
+    assert.ok(page.document.querySelector('form'));
+    assert.equal(page.document.querySelector<HTMLInputElement>('input[name="code"]')!.value, '');
+    await submit();
+    assert.equal(submissions, 2);
+    assert.equal(closed, 0);
+    await act(async () =>
+      finish(Response.json({ ok: false, retryUrl: '/vault/synthetic_replacement_request' })),
+    );
+    assert.equal(closed, 0);
+    assert.ok(page.document.querySelector('form'));
+    await submit();
+    assert.equal(submissions, 3);
+    assert.equal(closed, 0);
+    await act(async () => finish(Response.json({ ok: true })));
+    assert.equal(closed, 1);
+    assert.equal(focused, 1);
+  } finally {
+    page.window.close = close;
+    await page.close();
+  }
+});
+
 test('Vault preserves the saved card when a replacement contains only whitespace', async () => {
   const entry: VaultCardEntry = {
     kind: 'card',
@@ -3736,137 +3597,6 @@ test('Vault keeps intentional whitespace in replacement passwords', async () => 
     }
     assert.equal(passwords.length, 2);
   } finally {
-    await page.close();
-  }
-});
-
-test('secure sign-in derives an unused login name when the optional name is cleared', async () => {
-  const request = {
-    id: 'synthetic_credential_request',
-    turnId: randomUUID(),
-    origin: 'https://example.test',
-    label: 'Fixture sign-in',
-    kind: 'password',
-    status: 'pending',
-    expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    fields: [{ kind: 'password', selector: '#password', label: 'Password' }],
-    savedEntries: ['Example.test', 'Example.test 2'].map((label) => ({
-      kind: 'login',
-      id: randomUUID(),
-      label,
-      origin: 'https://example.test',
-      usernameHint: 'te…',
-      updatedAt: new Date().toISOString(),
-    })),
-  };
-  const submitted: Record<string, unknown>[] = [];
-  const page = await vaultPage(
-    createElement(Credentials, { id: request.id }),
-    async (_path, init) => {
-      if (init.method !== 'POST') return Response.json(request);
-      submitted.push(JSON.parse(String(init.body)));
-      return Response.json({ error: 'Synthetic paused sign-in' }, { status: 503 });
-    },
-  );
-  try {
-    await act(async () =>
-      [...page.document.querySelectorAll('button')]
-        .find((button) => button.textContent === 'Use another login')!
-        .click(),
-    );
-    page.document.querySelector<HTMLInputElement>('input[name="label"]')!.value = '  ';
-    page.document.querySelector<HTMLInputElement>('input[name="password"]')!.value =
-      'synthetic password';
-    await act(async () =>
-      page.document
-        .querySelector('form')!
-        .dispatchEvent(new page.window.Event('submit', { bubbles: true, cancelable: true })),
-    );
-    assert.equal(submitted.length, 1);
-    assert.equal(submitted[0].label, 'Example.test 3');
-    assert.equal(
-      request.savedEntries.some((entry) => entry.label === submitted[0].label),
-      false,
-    );
-  } finally {
-    await page.close();
-  }
-});
-
-test('secure sign-in keeps failed submissions editable and returns to chat only after accepted submission', async () => {
-  const request = {
-    id: 'synthetic_credential_request',
-    turnId: randomUUID(),
-    origin: 'https://example.test',
-    label: 'Fixture sign-in',
-    kind: 'otp',
-    status: 'pending',
-    expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    fields: [{ kind: 'otp', selector: '#code', label: 'Verification code' }],
-  };
-  let finish!: (value: Response) => void;
-  let submissions = 0;
-  let closed = 0;
-  let focused = 0;
-  const page = await vaultPage(
-    createElement(Credentials, { id: request.id }),
-    async (_path, init) => {
-      if (init.method !== 'POST') return Response.json(request);
-      submissions++;
-      return new Promise((resolve) => {
-        finish = resolve;
-      });
-    },
-  );
-  Object.defineProperty(page.window, 'opener', {
-    value: {
-      closed: false,
-      location: { origin: page.window.location.origin },
-      focus() {
-        focused++;
-      },
-    },
-  });
-  const close = page.window.close.bind(page.window);
-  page.window.close = () => {
-    closed++;
-    Object.defineProperty(page.window, 'closed', { value: true, configurable: true });
-  };
-  try {
-    const submit = async () => {
-      page.document.querySelector<HTMLInputElement>('input[name="code"]')!.value = '123456';
-      await act(async () =>
-        page.document
-          .querySelector('form')!
-          .dispatchEvent(new page.window.Event('submit', { bubbles: true, cancelable: true })),
-      );
-    };
-    await submit();
-    assert.equal(submissions, 1);
-    assert.equal(closed, 0);
-    assert.equal(page.document.querySelector('form'), null);
-    await act(async () =>
-      finish(Response.json({ error: 'Synthetic rejected request' }, { status: 502 })),
-    );
-    assert.equal(closed, 0);
-    assert.ok(page.document.querySelector('form'));
-    assert.equal(page.document.querySelector<HTMLInputElement>('input[name="code"]')!.value, '');
-    await submit();
-    assert.equal(submissions, 2);
-    assert.equal(closed, 0);
-    await act(async () =>
-      finish(Response.json({ ok: false, retryUrl: '/vault/synthetic_replacement_request' })),
-    );
-    assert.equal(closed, 0);
-    assert.ok(page.document.querySelector('form'));
-    await submit();
-    assert.equal(submissions, 3);
-    assert.equal(closed, 0);
-    await act(async () => finish(Response.json({ ok: true })));
-    assert.equal(closed, 1);
-    assert.equal(focused, 1);
-  } finally {
-    page.window.close = close;
     await page.close();
   }
 });

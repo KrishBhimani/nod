@@ -30,7 +30,7 @@ export interface SubmitMessageResponse {
   turnId: string;
   messageId: string;
   messageText?: string;
-  verificationStatus?: 'pending' | 'submitted' | 'rejected' | 'unavailable';
+  verificationStatus?: 'pending' | 'submitted' | 'unavailable';
 }
 export interface VerificationRequest {
   id: string;
@@ -99,13 +99,6 @@ export interface CredentialRequest {
   label: string;
   kind: 'identifier' | 'password' | 'otp';
   fields?: { kind: 'identifier' | 'password' | 'otp'; selector: string; label: string }[];
-  methods?: {
-    id: string;
-    label: string;
-    kind: 'credentials' | 'oauth' | 'passkey' | 'manual';
-    supported: boolean;
-    reason?: string;
-  }[];
   status: 'pending' | 'filled' | 'expired';
   expiresAt: string;
   savedEntries?: VaultLoginEntry[];
@@ -134,7 +127,6 @@ export interface Configuration {
   provider: string;
   model: string;
   llmReady: boolean;
-  speechReady: boolean;
   integrationsReady: boolean;
   inspectorEnabled: boolean;
   localOnly: boolean;
@@ -206,15 +198,6 @@ export interface ScheduleHistory {
   runs: ScheduleRun[];
   nextCursor: string | null;
 }
-export interface Approval {
-  id: string;
-  action: string;
-  args: Record<string, unknown>;
-  connection?: Pick<Connection, 'name' | 'accountName' | 'accountEmail'> & {
-    command?: string;
-  };
-  status: 'pending' | 'executing' | 'completed' | 'declined' | 'uncertain' | 'expired';
-}
 export type HourCycle = 'auto' | 'h12' | 'h23';
 export interface Preferences {
   notificationRule: string;
@@ -224,4 +207,18 @@ export interface Preferences {
   quietHoursEnabled: boolean;
   quietStart: string;
   quietEnd: string;
+}
+export type ChannelProvider = 'telegram' | 'whatsapp';
+export interface ChannelSetupSummary {
+  provider: ChannelProvider;
+  enabled: boolean;
+  accountName?: string;
+  accountHandle?: string;
+  mode?: 'polling' | 'webhook';
+  webhookStatus?: 'registered' | 'manual_setup' | 'registration_pending';
+  webhookUrl?: string;
+  pairedUser?: string;
+  allowedUserId?: string;
+  pairingCandidate?: { id: string; name: string };
+  pairingExpiresAt?: string;
 }

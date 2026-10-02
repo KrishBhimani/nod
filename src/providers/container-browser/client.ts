@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   BrowserActionError,
   browserDownloadBytes,
+  browserRequestBytes,
   browserUploadBytes,
   type Computer,
 } from '../../ports/computer.ts';
@@ -13,7 +14,6 @@ import {
   browserRequest,
   browserResponse,
   imageBytes,
-  requestBytes,
   responseBytes,
   type BrowserCall,
   type BrowserMetadata,
@@ -103,7 +103,7 @@ export function createBridgeComputer(options: {
       namespace: options.namespace,
     });
     const encoded = JSON.stringify({ type: 'request', request }) + '\n';
-    if (Buffer.byteLength(encoded) > requestBytes)
+    if (Buffer.byteLength(encoded) > browserRequestBytes)
       return Promise.reject(new Error('The browser request is too large.'));
     const available = options.available?.(input) !== false;
     if (input.method !== 'dispose' && (disposed || uncertain || !available)) {
@@ -332,7 +332,7 @@ export function createBridgeComputer(options: {
       } = input;
       return (
         z
-          .object({ status: z.enum(['submitted', 'rejected']) })
+          .object({ status: z.literal('submitted') })
           .strict()
           .nullable()
           .parse(
@@ -357,6 +357,10 @@ export function createBridgeComputer(options: {
     },
     close: async (id) => {
       await call({ method: 'close', threadId: threadIdentity(id) });
+    },
+    discard: async (id) => {
+      await call({ method: 'discard', threadId: threadIdentity(id) });
+      screens.delete(threadIdentity(id));
     },
     dispose: () => {
       disposing ??= (async () => {

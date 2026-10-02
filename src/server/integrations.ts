@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 import { getDomain } from 'tldts';
-import type { Approval, Connection, VaultLoginEntry } from '../shared/contracts.ts';
+import type { Connection, VaultLoginEntry } from '../shared/contracts.ts';
 import {
   IntegrationInboxCursorExpired,
   type ConnectedApp,
@@ -479,6 +479,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
               }),
             ]);
             if (closed) return;
+            const active = remote.active && remote.service === row.slug;
             await pool.query(
               `UPDATE app_connections SET account_active=$4,account_name=COALESCE($5,account_name),
             account_email=COALESCE($6,account_email),account_checked_at=now()
@@ -487,13 +488,18 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
                 row.id,
                 row.owner_id,
                 row.provider_id,
-                remote.active && remote.service === row.slug,
+                active,
                 remote.accountName ?? null,
                 remote.accountEmail ?? null,
                 row.account_id,
               ],
             );
-            options.refresh?.();
+            if (
+              active !== row.account_active ||
+              (remote.accountName && remote.accountName !== row.account_name) ||
+              (remote.accountEmail && remote.accountEmail !== row.account_email)
+            )
+              options.refresh?.();
           } catch {
             if (!closed)
               await pool.query(
@@ -704,6 +710,10 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
 
   async function connect(slug: Slug, returnTo: ReturnTarget = 'apps', turn?: TurnRef) {
     requireService(slug);
+    await pool.query(
+      'DELETE FROM app_connections WHERE owner_id=$1 AND account_id IS NULL AND callback_expires<now()',
+      [configuredOwner],
+    );
     const selected = providerFor(slug);
     const prior = await pool.query<{ provider_id: string }>(
       'SELECT DISTINCT provider_id FROM app_connections WHERE owner_id=$1 AND slug=$2 AND provider_id<>$3',
@@ -831,29 +841,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     return false;
   }
 
-  async function setTriggers(slug: Slug, enabled: boolean, connectionId?: string) {
-    if (!enabled)
-      throw new IntegrationError(
-        'Updates are always requested for connected apps. Disconnect the account to stop them.',
-        409,
-      );
-    const row = await selectConnection(configuredOwner, slug, connectionId);
-    if (!supportsWatch(slug, providerForRow(row)))
-      throw new IntegrationError('Automatic notifications are unavailable for this service.', 409);
-    await pool.query(
-      `UPDATE app_connections SET watch_requested=$2,watch_attempted=false,watch_revision=watch_revision+1,
-       triggers_enabled=($2 AND trigger_id IS NOT NULL),trigger_id=CASE WHEN $2 THEN trigger_id ELSE NULL END
-       WHERE id=$1 AND owner_id=$3 AND provider_id=$4`,
-      [row.id, enabled, configuredOwner, row.provider_id],
-    );
-    if (!enabled && row.trigger_id) {
-      await providerForRow(row).unsubscribe(row.trigger_id);
-    }
-    if (enabled) await activateWatch(row.id);
-    return { ok: true };
-  }
-
-  async function disconnect(slug: Slug, connectionId?: string) {
+  async function disconnect(slug: Slug, connectionId: string) {
     const row = await selectConnection(configuredOwner, slug, connectionId, true);
     await pool.query(
       `WITH revoked AS (UPDATE app_connections SET revoked=true,triggers_enabled=false,watch_requested=false,
@@ -901,51 +889,6 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     if (JSON.stringify(args).length > 32_768)
       throw new IntegrationError('The integration request is too large.');
     return row;
-  }
-
-  async function validateApproval(ownerId: string, action: string, args: Record<string, unknown>) {
-    if (
-      action === 'CONNECTED_HTTP' ||
-      action === 'CONNECTED_MCP_CALL' ||
-      action === 'CONNECTED_CLI'
-    ) {
-      assertOwner(ownerId);
-      if (!options.discovered)
-        throw new IntegrationError('Discovered connections are unavailable.', 503);
-      await options.discovered.selected(args);
-      return;
-    }
-    await selectedConnection(ownerId, action, args);
-  }
-
-  async function describeApproval(
-    ownerId: string,
-    action: string,
-    args: Record<string, unknown>,
-  ): Promise<Approval['connection']> {
-    assertOwner(ownerId);
-    if (
-      action === 'CONNECTED_HTTP' ||
-      action === 'CONNECTED_MCP_CALL' ||
-      action === 'CONNECTED_CLI'
-    )
-      return options.discovered?.describe(args);
-    const slug = slugSchema.safeParse(action.split('_')[0].toLowerCase());
-    const connectionId = z.uuid().safeParse(args.connectionId);
-    if (!slug.success || !connectionId.success) return undefined;
-    const result = await pool.query<Pick<ConnectionRow, 'account_name' | 'account_email'>>(
-      `SELECT account_name,account_email FROM app_connections
-       WHERE id=$1 AND owner_id=$2 AND slug=$3
-       AND provider_id=ANY($4::text[]) AND account_id IS NOT NULL AND NOT revoked`,
-      [connectionId.data, ownerId, slug.data, providerIds],
-    );
-    const row = result.rows[0];
-    if (!row) return undefined;
-    return {
-      name: catalogs[slug.data].name,
-      ...(row.account_name ? { accountName: row.account_name } : {}),
-      ...(row.account_email ? { accountEmail: row.account_email } : {}),
-    };
   }
 
   async function executeApproved(
@@ -1087,19 +1030,9 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
             > => result.status === 'fulfilled',
           )
           .map((result) => result.value);
-        if (!searches.length && !options.discovered)
-          throw new Error(
-            results
-              .map((result) =>
-                result.status === 'rejected'
-                  ? result.reason instanceof Error
-                    ? result.reason.message
-                    : String(result.reason)
-                  : '',
-              )
-              .filter(Boolean)
-              .join('; ') || 'No app tool catalog is available.',
-          );
+        const failed = availableProviders.filter(
+          (_item, index) => results[index].status === 'rejected',
+        );
         const tools = Object.assign({}, ...searches.map((item) => item.tools));
         const primary =
           availableProviders[0] === provider && results[0].status === 'fulfilled'
@@ -1153,6 +1086,23 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
             accountEmail,
           }));
         const discovered = await options.discovered?.search(query, connectionId, signal);
+        if (
+          !searches.length &&
+          !discovered?.accounts.length &&
+          (failed.length || !options.discovered)
+        )
+          throw new Error(
+            results
+              .map((result) =>
+                result.status === 'rejected'
+                  ? result.reason instanceof Error
+                    ? result.reason.message
+                    : String(result.reason)
+                  : '',
+              )
+              .filter(Boolean)
+              .join('; ') || 'No app tool catalog is available.',
+          );
         if (discovered?.accounts.length) {
           Object.assign(tools, {
             CONNECTED_HTTP: {
@@ -1185,7 +1135,16 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
             },
           });
         }
-        return { ...search, accounts, discovered: discovered?.accounts ?? [] };
+        return {
+          ...search,
+          accounts,
+          discovered: discovered?.accounts ?? [],
+          ...(failed.length
+            ? {
+                incomplete: `Could not search ${failed.map((item) => item.id).join(', ')}. Matching tools may be missing; retry before concluding that no action exists.`,
+              }
+            : {}),
+        };
       } catch (error) {
         throw new IntegrationError(failure('App tool search failed', error), 502);
       }
@@ -1230,9 +1189,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         input.after < now - 5 * 60_000 - 30_000 ||
         input.after > now ||
         input.before < input.after ||
-        input.before > now + 30_000 ||
-        (input.length !== undefined &&
-          (!Number.isInteger(input.length) || input.length < 4 || input.length > 8))
+        input.before > now + 30_000
       )
         return;
       const matches = (await connectionRows(ownerId)).filter(
@@ -1656,15 +1613,6 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
             ).href,
           );
       });
-      scope.post<{ Params: { slug: string } }>('/api/apps/:slug/disconnect', async (request) =>
-        disconnect(slugSchema.parse(request.params.slug)),
-      );
-      scope.post<{ Params: { slug: string } }>('/api/apps/:slug/triggers', async (request) =>
-        setTriggers(
-          slugSchema.parse(request.params.slug),
-          z.object({ enabled: z.boolean() }).strict().parse(request.body).enabled,
-        ),
-      );
       scope.post<{ Params: { slug: string; connectionId: string } }>(
         '/api/apps/:slug/accounts/:connectionId/disconnect',
         async (request) => {
@@ -1701,15 +1649,6 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
             : (options.discovered?.disconnect(id, request.params.slug) ??
                 Promise.reject(new IntegrationError('This service is unavailable.', 404)));
         },
-      );
-      scope.post<{ Params: { slug: string; connectionId: string } }>(
-        '/api/apps/:slug/accounts/:connectionId/triggers',
-        async (request) =>
-          setTriggers(
-            slugSchema.parse(request.params.slug),
-            z.object({ enabled: z.boolean() }).strict().parse(request.body).enabled,
-            z.uuid().parse(request.params.connectionId),
-          ),
       );
     });
     app.register(async (scope) => {
@@ -1773,11 +1712,8 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
   return {
     registerRoutes,
     execute,
-    executeApproved,
     emailCode,
     download,
-    validateApproval,
-    describeApproval,
     list,
     connectedApps,
     manageConnections: async (

@@ -3,9 +3,17 @@ import type { Pool } from 'pg';
 import { z } from 'zod';
 import type { AppGrantVault } from '../../ports/app-grants.ts';
 import type { CredentialKeyStore } from '../../ports/key-store.ts';
-import { loadDirectPlugin } from './plugin.ts';
 
-export type Service = 'notion' | 'linear';
+export const endpoints = {
+  notion: 'https://mcp.notion.com/mcp',
+  linear: 'https://mcp.linear.app/mcp/readonly',
+} as const;
+export type Service = keyof typeof endpoints;
+export class ReconnectRequired extends Error {
+  constructor(readonly service: Service) {
+    super('Connect this account again.');
+  }
+}
 type Secrets = {
   accessToken?: string;
   refreshToken?: string;
@@ -87,15 +95,15 @@ export function createDirectOAuth(options: {
     const grant = await options.grantVault.read(account.id);
     signal?.throwIfAborted();
     const secrets = JSON.parse(grant.value) as Secrets;
-    if (!secrets.accessToken) throw new Error('The connected account has no access token.');
-    if (secrets.refreshUncertain) throw new Error('Connect this account again.');
+    if (!secrets.accessToken || secrets.refreshUncertain)
+      throw new ReconnectRequired(account.service);
     if (!secrets.expiresAt || secrets.expiresAt > Date.now() + 60_000) return secrets;
     let current = refreshes.get(account.id);
     if (!current) {
       const controller = new AbortController();
       const pending = (async () => {
         if (!secrets.refreshToken || !secrets.tokenEndpoint)
-          throw new Error('Connect this account again.');
+          throw new ReconnectRequired(account.service);
         const body = new URLSearchParams({
           grant_type: 'refresh_token',
           refresh_token: secrets.refreshToken,
@@ -104,15 +112,14 @@ export function createDirectOAuth(options: {
         if (secrets.resource) body.set('resource', secrets.resource);
         let refreshed;
         try {
-          refreshed = tokenSchema.parse(
-            await json(
-              await options.request(secrets.tokenEndpoint, {
-                method: 'POST',
-                body,
-                signal: controller.signal,
-              }),
-            ),
-          );
+          const response = await options.request(secrets.tokenEndpoint, {
+            method: 'POST',
+            body,
+            signal: controller.signal,
+          });
+          if (response.status === 400 || response.status === 401)
+            throw new ReconnectRequired(account.service);
+          refreshed = tokenSchema.parse(await json(response));
         } catch (error) {
           if (controller.signal.aborted)
             await options.grantVault.replace(
@@ -187,7 +194,7 @@ export function createDirectOAuth(options: {
     if (callback.hostname === 'localhost') callback.hostname = '127.0.0.1';
     const id = randomUUID();
     const verifier = randomBytes(32).toString('base64url');
-    const endpoint = await loadDirectPlugin(service);
+    const endpoint = new URL(endpoints[service]);
     const server = endpoint.origin;
     const resourceUrl = service === 'linear' ? endpoint.href : undefined;
     const resource = z

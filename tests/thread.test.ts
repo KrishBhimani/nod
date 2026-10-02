@@ -106,7 +106,13 @@ test(
     const accounts = createAccountStore(db.pool);
     await accounts.initialize();
     const userMessages = thread.createUserMessageService({ confirmAction: approvals.acceptChat });
+    const discarded: string[] = [];
     const app = await createApp({
+      computer: fakeComputer({
+        discard: async (threadId) => {
+          discarded.push(threadId);
+        },
+      }),
       submitMessage: userMessages.submit,
       configuration: () => ({ ...configuration(), llmReady: true }),
       onboard: (_timeZone, threadId) => thread.restartOnboarding(threadId),
@@ -214,7 +220,7 @@ test(
     const abortedPrompts = new Set<string>();
     const remoteUploads = new Map<string, Uint8Array>();
     const fileContexts = new Map<string, RuntimeContext>();
-    const integrationReads: boolean[] = [];
+    const integrationReads: string[] = [];
     const appResults = new Map<string, unknown>();
     const largeAppResult = {
       threads: Array.from({ length: 400 }, (_, index) => ({
@@ -243,7 +249,7 @@ test(
       },
       integration: async (_turn, action, _args, options) => {
         if (action === 'GMAIL_LIST_THREADS') return largeAppResult;
-        integrationReads.push(options.readOnly);
+        integrationReads.push(action);
         return { successful: true, data: { threads: 2 } };
       },
       manage: async () => {
@@ -352,7 +358,10 @@ test(
         if (context.attachments.length)
           stagedReads.set(context.prompt, await readFile(context.attachments[0].path, 'utf8'));
         workspaceListings.set(context.prompt, await readdir(context.workspacePath));
-        if (context.prompt === 'runtime-failure') throw new Error('Synthetic runtime failure');
+        if (context.prompt === 'runtime-failure')
+          throw Object.assign(new Error('Synthetic runtime failure for private-fixture'), {
+            code: 'E_SYNTHETIC',
+          });
         if (context.prompt === 'screenshot-during-stop') {
           await context.publishScreenshot!(new Uint8Array([1, 2, 3]), 'atomic.png');
           return { status: 'succeeded' };
@@ -942,12 +951,17 @@ test(
 
       await t.test(
         'a runtime failure ends the turn failed with one message and no retry',
-        async () => {
+        async (t) => {
+          const logged = t.mock.method(console, 'error', () => {});
           const before = (await db.pool.query('SELECT count(*)::int AS count FROM turns')).rows[0]
             .count;
           const failed = await thread.submitUserMessage('runtime-failure', [], { channel: 'web' });
           await waitFor(settled(failed.turnId));
           await delay(1200);
+          const lines = logged.mock.calls.map((call) => String(call.arguments[0]));
+          const failure = lines.find((line) => line.includes(failed.turnId));
+          assert.match(failure ?? '', /Error \| code=E_SYNTHETIC/);
+          assert.doesNotMatch(failure ?? '', /private-fixture/);
           const row = (
             await db.pool.query('SELECT status,error FROM turns WHERE id=$1', [failed.turnId])
           ).rows[0];
@@ -967,6 +981,15 @@ test(
           await waitFor(async () => (await thread.activeThread(db.pool)).status === 'idle');
         },
       );
+
+      await t.test('an idle database connection error is logged without crashing', (t) => {
+        const logged = t.mock.method(console, 'error', () => {});
+        assert.doesNotThrow(() =>
+          db.pool.emit('error', Object.assign(new Error('private-fixture'), { code: '57P01' })),
+        );
+        assert.match(String(logged.mock.calls[0].arguments[0]), /Error 57P01/);
+        assert.doesNotMatch(String(logged.mock.calls[0].arguments[0]), /private-fixture/);
+      });
 
       await t.test('stop cancels the running turn and every queued turn', async () => {
         block('stop running');
@@ -1131,7 +1154,7 @@ test(
           assert.deepEqual(readOnlyRefusals, [
             'This turn can only read. Use app reads, and browser open, snapshot or scroll.',
           ]);
-          assert.deepEqual(integrationReads, [true]);
+          assert.equal(integrationReads.length, 1);
           assert.deepEqual(
             runs.filter((context) => context.readOnly).map((context) => context.turnId),
             [turn.id],
@@ -1159,7 +1182,7 @@ test(
               old.turnId,
             ])
           ).rows[0].id as string;
-          await request('PUT', '/api/profile', {
+          await personal.manage('profile_update', {
             name: 'Fixture name',
             location: 'Lisbon',
             phone: '',
@@ -1225,6 +1248,8 @@ test(
           assert.equal(reset.statusCode, 200, reset.body);
           freshThread = reset.json<{ ok: boolean; threadId: string }>().threadId;
           assert.notEqual(freshThread, firstThreadId);
+          assert.deepEqual(discarded, [firstThreadId]);
+          assert.equal('previousThreadId' in reset.json(), false);
           assert.deepEqual(
             (
               await db.pool.query(
@@ -1312,7 +1337,10 @@ test(
           assert.equal((await request('GET', '/api/goals')).json().length, 1);
           assert.equal((await request('GET', '/api/schedules')).json().length, 1);
           assert.equal((await request('GET', '/api/vault')).json().length, 1);
-          assert.equal((await request('GET', '/api/profile')).json().name, 'Fixture name');
+          assert.equal(
+            ((await personal.manage('profile_get', {})) as { name: string }).name,
+            'Fixture name',
+          );
           assert.equal(
             (await db.pool.query('SELECT account_id FROM app_connections')).rows[0].account_id,
             'saved-fixture-account',
@@ -1765,7 +1793,6 @@ test(
                 let writes = 0;
                 dependencies.integration = async (_turn, _action, args, options) => {
                   assert.equal(options.checkConnectionId, connectionId);
-                  assert.equal(options.readOnly, true);
                   if (args.abort) cancelled.abort(new Error('Synthetic read deadline'));
                   return args.page_size === 1 ? page : largeAppResult;
                 };
@@ -2485,7 +2512,8 @@ const scriptedCurator = (configured = true) => {
 test(
   'background learning reads only plain user messages, once, and keeps its own watermark',
   { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
-  async () => {
+  async (t) => {
+    t.mock.method(console, 'error', () => {});
     const { pool, ownerId, post, memory, close } = await memoryFixture([approvalsTable]);
     const idle = await memoryFixture([approvalsTable]);
     try {
@@ -2622,26 +2650,29 @@ test(
       state.answer = () => {
         throw new Error('offline');
       };
-      await assert.rejects(learning.reflect(), /offline/);
-      assert.equal((await memory.load()).reflected, before);
+      assert.equal(await learning.reflect(), 0);
+      const offline = await memory.load();
+      assert.equal(offline.reflected, before);
+      assert.equal(offline.retries, 1);
       state.answer = () => 'not an object';
-      for (const retries of [1, 2]) {
-        assert.equal(await learning.reflect(), 0);
-        const waiting = await memory.load();
-        assert.equal(waiting.reflected, before);
-        assert.equal(waiting.retries, retries);
-      }
+      assert.equal(await learning.reflect(), 0);
+      const waiting = await memory.load();
+      assert.equal(waiting.reflected, before);
+      assert.equal(waiting.retries, 2);
+      state.answer = () => {
+        throw new Error('offline');
+      };
       assert.equal(await learning.reflect(), 0);
       const skipped = await memory.load();
       assert.notEqual(skipped.reflected, before);
       assert.equal(skipped.retries, 0);
-      assert.equal(calls.length, 6);
+      assert.equal(calls.length, 5);
 
       await post('I only drink oat milk in coffee.', { at: '2026-01-01T13:00:00Z' });
       let release!: (value: unknown) => void;
       state.answer = () => new Promise((resolve) => (release = resolve));
       const slow = learning.reflect();
-      while (calls.length < 7) await delay(5);
+      while (calls.length < 6) await delay(5);
       const newer = `2026-01-01T13:30:00.000000Z/${randomUUID()}`;
       await memory.edit((tree) => {
         tree.reflected = newer;
@@ -2665,6 +2696,21 @@ test(
         raced.entries.some((entry) => entry.slug === 'oat-milk'),
         false,
       );
+
+      const trip = await memory.save(
+        { area: 'preferences', text: 'Is travelling this week.', expires: '2020-01-01' },
+        await post('I am travelling this week.', { at: '2026-01-01T14:00:00Z' }),
+      );
+      state.answer = () => {
+        throw new Error('offline');
+      };
+      await learning.run();
+      const maintained = await memory.load();
+      assert.equal(
+        maintained.entries.some((entry) => `${entry.area}/${entry.slug}` === trip.path),
+        false,
+      );
+      assert.equal(maintained.retries, 1);
 
       const unconfigured = scriptedCurator(false);
       await createMemoryLearning({

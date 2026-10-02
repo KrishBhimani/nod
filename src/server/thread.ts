@@ -83,7 +83,6 @@ export interface ThreadDependencies {
   executeConfirmation?: (
     turnId: string,
     signal: AbortSignal,
-    present: (action: string, result: unknown) => Promise<unknown>,
   ) => Promise<{ prompt: string } | undefined>;
   recordFailure?: (turnId: string, error: unknown) => Promise<void>;
   observe?: (turnId: string, event: RuntimeObservation) => Promise<void>;
@@ -104,7 +103,7 @@ export interface ThreadDependencies {
     turn: TurnRef,
     action: string,
     args: Record<string, unknown>,
-    options: { readOnly: boolean; signal: AbortSignal; checkConnectionId?: string },
+    options: { signal: AbortSignal; checkConnectionId?: string },
   ) => Promise<unknown>;
   connections?: (
     action: 'list' | 'connect' | 'propose',
@@ -436,11 +435,11 @@ export async function resetThread() {
       "UPDATE threads SET archived_at=now(),status='idle',updated_at=now() WHERE id=$1",
       [thread.id],
     );
-    return { cancelled, threadId: (await activeThread(client)).id };
+    return { cancelled, previousThreadId: thread.id, threadId: (await activeThread(client)).id };
   });
   abortTurns(result.cancelled);
   refresh();
-  return { ok: true, threadId: result.threadId };
+  return { ok: true, threadId: result.threadId, previousThreadId: result.previousThreadId };
 }
 
 const onboardingPrompt =
@@ -614,6 +613,22 @@ async function finishTurn(
           ? 'Waiting for your input.'
           : (fields.error ?? status),
     );
+}
+
+function describeFailure(error: unknown) {
+  if (!(error instanceof Error)) return 'a thrown value that is not an Error';
+  const fields = [error.name];
+  for (const key of ['code', 'statusCode'] as const) {
+    const value = (error as { code?: unknown; statusCode?: unknown })[key];
+    if (typeof value === 'string' || typeof value === 'number')
+      fields.push(`${key}=${String(value).slice(0, 64)}`);
+  }
+  const frames = (error.stack ?? '')
+    .split(/\r?\n/)
+    .filter((line) => /^\s+at /.test(line))
+    .slice(0, 2)
+    .map((line) => line.trim());
+  return [...fields, ...frames].join(' | ');
 }
 
 async function interruptTurn(turnId: string) {
@@ -909,7 +924,7 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
       operation.throwIfAborted();
       return value;
     };
-    const confirmed = await dependencies.executeConfirmation?.(turnId, signal, inline);
+    const confirmed = await dependencies.executeConfirmation?.(turnId, signal);
     if (confirmed) turn.prompt = confirmed.prompt;
     await ensureCurrent();
     const loaded = await loadTurnContext(turn, dependencies);
@@ -1034,7 +1049,6 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
         const operation = callSignal ? AbortSignal.any([signal, callSignal]) : signal;
         operation.throwIfAborted();
         const result = await dependencies.integration(ref, action, args, {
-          readOnly: turn.read_only || turn.source_id?.startsWith('onboarding:') === true,
           signal: operation,
           checkConnectionId: loaded.context.activityCheck?.connectionId,
         });
@@ -1105,10 +1119,12 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
     });
   } catch (error) {
     if (stopping) return;
-    if (await interruptTurn(turnId))
+    if (await interruptTurn(turnId)) {
+      console.error(`Turn ${turnId} failed: ${describeFailure(error)}`);
       void Promise.resolve()
         .then(() => dependencies.recordFailure?.(turnId, error))
         .catch(() => {});
+    }
   } finally {
     void Promise.resolve()
       .then(() => dependencies.finishObservationSegment?.(turnId))

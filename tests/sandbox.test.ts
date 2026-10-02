@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { EventEmitter, once } from 'node:events';
+import { existsSync } from 'node:fs';
 import {
   chmod,
   lstat,
@@ -285,7 +286,7 @@ test('cancel waits for the remote process group, including a child ignoring TERM
     controller.abort();
     await rejected;
     assert.ok(Date.now() - started >= 1800);
-    await delay(1100);
+    await delay(1500);
     assert.equal(await exists(join(f.directory, 'late')), false);
     assert.equal((await f.run(['printf', 'ready again'])).stdout.toString(), 'ready again');
   } finally {
@@ -293,6 +294,31 @@ test('cancel waits for the remote process group, including a child ignoring TERM
     await f.close();
   }
 });
+
+test(
+  'cancel reaches a command that moved itself into a new process group',
+  { skip: !existsSync('/proc') },
+  async () => {
+    const f = await local();
+    const controller = new AbortController();
+    try {
+      const command =
+        'import os,time; os.setpgid(0,0); open("ready","w").close(); time.sleep(2); open("late","w").write("unexpected")';
+      const operation = f.run(['sh', '-c', `python3 -c '${command}' & wait`], {
+        signal: controller.signal,
+      });
+      const rejected = assert.rejects(operation, /Task cancelled/);
+      await ready(join(f.directory, 'ready'));
+      controller.abort();
+      await rejected;
+      await delay(2200);
+      assert.equal(await exists(join(f.directory, 'late')), false);
+    } finally {
+      controller.abort();
+      await f.close();
+    }
+  },
+);
 
 test('output overflow and timeout drain the remote command before rejecting', async () => {
   for (const limited of [true, false]) {
@@ -561,7 +587,7 @@ function rejected(result: Awaited<ReturnType<typeof run>>) {
   assert.equal(result.stderr, failure);
 }
 
-test('checkpoint roundtrip preserves private files, executable modes and internal npm-style symlinks', async () => {
+test('checkpoint roundtrip preserves private files, executable modes, npm-style symlinks and absolute venv-style links', async () => {
   const f = await fixture();
   try {
     await mkdir(join(f.source, 'package'), { mode: 0o700 });
@@ -573,6 +599,7 @@ test('checkpoint roundtrip preserves private files, executable modes and interna
     await writeFile(join(f.source, 'private'), 'synthetic private value', { mode: 0o600 });
     await symlink('../package/run', join(f.source, '.bin', 'run'));
     await symlink('package', join(f.source, 'package-alias'));
+    await symlink('/usr/bin/python3', join(f.source, 'python3'));
     const captured = await f.create();
     assert.equal(captured.code, 0, captured.stderr);
     assert.equal(captured.stderr, '');
@@ -584,6 +611,7 @@ test('checkpoint roundtrip preserves private files, executable modes and interna
     assert.deepEqual(await readFile(join(f.target, '.bin', 'run')), Buffer.from([0, 255, 128, 10]));
     assert.equal(await readlink(join(f.target, '.bin', 'run')), '../package/run');
     assert.equal(await readlink(join(f.target, 'package-alias')), 'package');
+    assert.equal(await readlink(join(f.target, 'python3')), '/usr/bin/python3');
     assert.equal((await lstat(f.target)).mode & 0o7777, 0o700);
     assert.equal((await lstat(join(f.target, 'private'))).mode & 0o7777, 0o600);
     assert.equal((await lstat(join(f.target, 'package', 'run'))).mode & 0o7777, 0o700);
@@ -637,7 +665,10 @@ test('restore rejects traversal, symlink pivots, duplicates, conflicting parents
         { name: 'pivot/sentinel', data: Buffer.from('overwrite') },
       ],
       [{ name: 'pivot', type: '2', link: '../sentinel' }],
-      [{ name: 'pivot', type: '2', link: '/tmp' }],
+      [
+        { name: 'pivot', type: '2', link: '/tmp' },
+        { name: 'pivot/sentinel', data: Buffer.from('overwrite') },
+      ],
       [
         { name: 'a', type: '2', link: 'b' },
         { name: 'b', type: '2', link: 'a' },
@@ -695,6 +726,11 @@ test('create rejects escaping or cyclic links, FIFOs and sockets without leaking
     await rm(join(f.source, privateName));
     await symlink('b', join(f.source, 'a'));
     await symlink('a', join(f.source, 'b'));
+    rejected(await f.create());
+    await rm(join(f.source, 'a'));
+    await rm(join(f.source, 'b'));
+    await symlink('/usr', join(f.source, 'a'));
+    await symlink('a/bin', join(f.source, 'b'));
     rejected(await f.create());
     await rm(join(f.source, 'a'));
     await rm(join(f.source, 'b'));

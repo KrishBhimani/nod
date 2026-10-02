@@ -1,4 +1,4 @@
-import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
+import Fastify, { type FastifyReply } from 'fastify';
 import multipart from '@fastify/multipart';
 import { randomUUID } from 'node:crypto';
 import type { ServerResponse } from 'node:http';
@@ -25,11 +25,11 @@ import {
 } from './thread.ts';
 import { isMessageReaction } from '../shared/emoji.ts';
 import { registerLocalAccess } from './access.ts';
+import { logFailure } from './failure-log.ts';
 import { inspectorPayloadLimit, inspectorRetentionDays, type InspectorStore } from './inspector.ts';
 import type { AgentToolMetadata } from '../ports/agent.ts';
 import { registerRuntimeAccess } from './runtime-auth.ts';
 import { createMultipartReader } from './multipart.ts';
-import type { SpeechService } from './speech.ts';
 import { BrowserActionError, type Computer } from '../ports/computer.ts';
 import { browserErrorMessage } from '../shared/browser-errors.ts';
 import { browserHandoffInput } from '../shared/browser-handoff.ts';
@@ -64,10 +64,9 @@ export interface AppDependencies {
   artifacts?: ArtifactService;
   submitMessage?: typeof submitUserMessage;
   verification?: Awaited<ReturnType<typeof createChatVerification>>;
-  speech?: SpeechService;
   computer?: Pick<
     Computer,
-    'screenshot' | 'control' | 'status' | 'screenStatus' | 'currentSession'
+    'screenshot' | 'control' | 'status' | 'screenStatus' | 'currentSession' | 'discard'
   >;
   runtime?: {
     status(): { browser: string; workspace: string; activeThreads?: number };
@@ -82,11 +81,6 @@ export interface AppDependencies {
 export async function createApp(dependencies: AppDependencies = {}) {
   const publicConfiguration = dependencies.configuration ?? configuration;
   const artifacts = dependencies.artifacts ?? localArtifacts;
-  const speech = () => {
-    if (!dependencies.speech)
-      throw Object.assign(new Error('Speech is not configured.'), { statusCode: 503 });
-    return dependencies.speech;
-  };
   const app = Fastify({
     logger: false,
     bodyLimit: 256 * 1024,
@@ -120,6 +114,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
   app.setErrorHandler((error, _request, reply) => {
     const known = error instanceof Error ? (error as Error & { statusCode?: number }) : undefined;
     const status = error instanceof z.ZodError ? 400 : known?.statusCode || 500;
+    if (status >= 500) logFailure('request_failed', error);
     reply.code(status).send({
       error:
         error instanceof z.ZodError
@@ -217,7 +212,9 @@ export async function createApp(dependencies: AppDependencies = {}) {
     z.object({})
       .strict()
       .parse(request.body ?? {});
-    return resetThread();
+    const { previousThreadId, ...reset } = await resetThread();
+    void dependencies.computer?.discard?.(previousThreadId).catch(() => {});
+    return reset;
   });
   app.post('/api/onboarding', async (request) => {
     const { timeZone, threadId } = z
@@ -387,23 +384,6 @@ export async function createApp(dependencies: AppDependencies = {}) {
     reply.header('Content-Length', file.size);
     return reply.send(await artifacts.readArtifact(file.id));
   });
-  app.post('/api/speech/transcribe', async (request) => {
-    const file = await uploads.readFile(request);
-    if (!file || !file.mimetype.startsWith('audio/'))
-      throw Object.assign(new Error('Choose an audio recording.'), { statusCode: 400 });
-    return {
-      text: await speech().transcribe({
-        bytes: file.bytes,
-        mimeType: file.mimetype,
-        fileName: file.filename || 'recording.webm',
-      }),
-    };
-  });
-  app.post('/api/speech/speak', async (request) => {
-    const { text } = z.object({ text: z.string().min(1).max(3000) }).parse(request.body);
-    const audio = await speech().synthesize(text);
-    return artifacts.storeArtifact(audio.bytes, audio.fileName, audio.mimeType);
-  });
   app.get('/api/inspector/tools', async (_request, reply) => {
     if (!publicConfiguration().inspectorEnabled)
       return reply.code(404).send({ error: 'Inspector is disabled.' });
@@ -436,7 +416,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
     const latest = await pool.query(
       `SELECT left(COALESCE(m.text,u.prompt),100) AS title,u.status,COALESCE(e.created_at,u.created_at) AS "lastActivityAt"
        FROM turns u LEFT JOIN messages m ON m.id=u.message_id
-       LEFT JOIN LATERAL (SELECT created_at FROM turn_events WHERE turn_id=u.id AND type IN ('tool_start','tool_complete') AND summary IN ('browser','browser step','inspect login','request credentials') ORDER BY created_at DESC LIMIT 1) e ON true
+       LEFT JOIN LATERAL (SELECT created_at FROM turn_events WHERE turn_id=u.id AND type IN ('tool_start','tool_complete') AND summary='browser' ORDER BY created_at DESC LIMIT 1) e ON true
        WHERE u.owner_id=$1 AND u.thread_id=$2 ${activeBrowser ? '' : 'AND e.created_at IS NOT NULL'}
        ORDER BY e.created_at IS NULL,COALESCE(e.created_at,u.created_at) DESC LIMIT 1`,
       [ownerId, thread.id],
