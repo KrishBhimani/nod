@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, Bug, Check } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { ArrowDown, Bug, Check, Trash2 } from 'lucide-react';
 import type {
   AppState,
   Artifact,
@@ -14,7 +15,17 @@ import { Composer, type ComposerHandle, type ComposerSendResult } from '../compo
 import { MessageBubble } from '../components/message';
 import { ChatTurnRail } from '../components/chat-turn-rail';
 import { BrandMark } from '../components/brand';
-import { Button, Notice, Skeleton } from '../components/ui';
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+  Notice,
+  Skeleton,
+} from '../components/ui';
+import { SetupNotice } from '../components/setup-notice';
+import { desktopBuildInfo, desktopSettingsAvailable } from '../lib/desktop';
 import { usePageData } from '../hooks/use-page-data';
 import { api, apiResponse, errorMessage, post } from '../lib/api';
 import {
@@ -53,14 +64,20 @@ export function Chat({
   refresh,
   resetConversation,
   initialFocusMessageId,
+  toolbarActions,
+  visible = true,
+  onReadLatest,
   requestedMessage,
   onRequestHandled,
 }: {
   state: AppState;
   streams: Record<string, string>;
   refresh(): Promise<void>;
-  resetConversation(): Promise<string>;
+  resetConversation(threadId: string): Promise<string>;
   initialFocusMessageId?: string;
+  toolbarActions?: HTMLElement | null;
+  visible?: boolean;
+  onReadLatest?(threadId: string): void;
   requestedMessage?: { id: string; text: string };
   onRequestHandled?(id: string): void;
 }) {
@@ -81,6 +98,7 @@ export function Chat({
   const [sending, setSending] = useState(false);
   const [returningHandoff, setReturningHandoff] = useState<string | null>(null);
   const [resetting, setResetting] = useState(false);
+  const [resetTarget, setResetTarget] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [reportStatus, setReportStatus] = useState<'idle' | 'copying' | 'copied'>('idle');
   useEffect(() => {
@@ -130,7 +148,6 @@ export function Chat({
   const scroll = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const resetLock = useRef(false);
-  const setupAction = useRef(() => {});
   const streamTimes = useRef(new Map<string, string>());
   const known = useRef<{ threadId: string; messages: Message[] }>({ threadId, messages: [] });
   const persistedMessages = useMemo(() => {
@@ -192,7 +209,23 @@ export function Chat({
     if (stickToBottom.current)
       bottom.current?.scrollIntoView({ behavior: 'instant', block: 'end' });
     else updateAway();
-  }, [state.messages, streams, sending, resetting, optimistic]);
+    reportRead();
+  }, [state.messages, streams, sending, resetting, optimistic, visible, focusTarget]);
+  useEffect(() => {
+    let frame = 0;
+    const update = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(reportRead);
+    };
+    update();
+    window.addEventListener('focus', update);
+    document.addEventListener('visibilitychange', update);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('focus', update);
+      document.removeEventListener('visibilitychange', update);
+    };
+  }, [visible, threadId, onReadLatest, focusTarget]);
   useEffect(() => {
     const ids = new Set(state.messages.map((message) => message.id));
     setOptimistic((current) => {
@@ -225,11 +258,6 @@ export function Chat({
     setStopping(false);
     stickToBottom.current = true;
   }, [threadId]);
-  useEffect(() => {
-    const restart = () => setupAction.current();
-    window.addEventListener('otto:restart-setup', restart);
-    return () => window.removeEventListener('otto:restart-setup', restart);
-  }, []);
   useEffect(() => {
     const url = new URL(window.location.href);
     if (url.pathname !== '/') return;
@@ -280,13 +308,13 @@ export function Chat({
       scroll.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? [],
     ).find((element) => element.dataset.messageId === focusTarget.id);
     if (target) {
-      setFocusTarget(null);
       stickToBottom.current = false;
       requestAnimationFrame(() => {
-        target.scrollIntoView({ block: 'center', behavior: scrollBehavior() });
+        target.scrollIntoView({ block: 'center', behavior: 'instant' });
         target.focus({ preventScroll: true });
         target.classList.add('message-focused');
-        setTimeout(() => target.classList.remove('message-focused'), 2400);
+        setTimeout(() => target.classList.remove('message-focused'), 1600);
+        setFocusTarget(null);
       });
       return;
     }
@@ -514,6 +542,27 @@ export function Chat({
   function cancelReturn() {
     returning.current = 0;
   }
+  function reportRead() {
+    const element = scroll.current;
+    if (
+      !visible ||
+      focusTarget ||
+      !element ||
+      !element.clientHeight ||
+      !element.getClientRects().length ||
+      document.visibilityState !== 'visible' ||
+      !document.hasFocus()
+    )
+      return;
+    if (
+      Array.from(
+        document.querySelectorAll('dialog[open], [role="dialog"], [role="alertdialog"]'),
+      ).some((dialog) => dialog.getClientRects().length)
+    )
+      return;
+    if (element.scrollHeight - element.scrollTop - element.clientHeight <= 2)
+      onReadLatest?.(threadId);
+  }
   function updateAway() {
     const element = scroll.current;
     if (!element) return;
@@ -527,6 +576,7 @@ export function Chat({
       const shown = Boolean(current?.shown) || distance > element.clientHeight;
       return current?.shown === shown ? current : { since: current?.since ?? since, shown };
     });
+    reportRead();
   }
   function updateActiveTurn() {
     const element = scroll.current;
@@ -547,6 +597,7 @@ export function Chat({
     const current =
       turns.filter((turn) => turn.getBoundingClientRect().top <= anchor).at(-1) ?? turns[0];
     setActiveTurn(current?.dataset.messageId ?? null);
+    reportRead();
   }
   useEffect(() => {
     const frame = requestAnimationFrame(updateActiveTurn);
@@ -560,33 +611,30 @@ export function Chat({
       observer?.disconnect();
       window.removeEventListener('resize', updateActiveTurn);
     };
-  }, [state.messages, historyPage, streams, optimistic]);
-  async function startOnboarding() {
-    if (resetLock.current || !state.configuration.llmReady) return;
+  }, [state.messages, historyPage, streams, optimistic, visible, onReadLatest, focusTarget]);
+  async function clearMessages() {
+    if (resetLock.current || !resetTarget || !state.configuration.conversationResetEnabled) return;
     resetLock.current = true;
     setResetting(true);
     setError('');
     try {
-      const nextThread = await resetConversation();
+      const nextThread = await resetConversation(resetTarget);
       threadRef.current = nextThread;
       historyVersion.current++;
       setHistoryPage({ threadId: nextThread, messages: [] });
       setLoadingHistory(false);
       setReplyTo(null);
       setText('');
-      await post('/api/onboarding', {
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        threadId: nextThread,
-      });
+      setResetTarget(null);
       await refresh();
     } catch (cause) {
+      setResetTarget(null);
       setError(errorMessage(cause));
     } finally {
       resetLock.current = false;
       setResetting(false);
     }
   }
-  setupAction.current = () => void startOnboarding();
   async function stop() {
     if (stopping) return;
     const stoppedThread = threadId;
@@ -607,13 +655,18 @@ export function Chat({
     setReportStatus('copying');
     setError('');
     try {
-      const report = await api<{ threadId: string }>('/api/conversation/bug-report');
+      const [report, desktop] = await Promise.all([
+        api<{ threadId: string }>('/api/conversation/bug-report'),
+        desktopBuildInfo(),
+      ]);
       if (threadRef.current !== requestedThread) return;
       if (report.threadId !== requestedThread) {
         setReportStatus('idle');
         return;
       }
-      await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
+      await navigator.clipboard.writeText(
+        JSON.stringify({ ...report, ...(desktop ? { desktop } : {}) }, null, 2),
+      );
       if (threadRef.current === requestedThread) setReportStatus('copied');
     } catch (cause) {
       if (threadRef.current === requestedThread) {
@@ -622,27 +675,52 @@ export function Chat({
       }
     }
   }
-  return (
-    <div className="chat-page">
-      <header className="chat-report-action">
-        <h1 className="chat-title">Chat</h1>
+  const chatActions = (
+    <>
+      {import.meta.env?.DEV === true && state.configuration.conversationResetEnabled && (
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          onClick={() => void copyBugReport()}
-          disabled={reportStatus === 'copying'}
-          aria-label={reportStatus === 'copied' ? 'Bug report copied' : 'Copy bug report'}
-          title="Copy conversation and trace as JSON"
+          disabled={resetting || sending || welcoming}
+          onClick={() => setResetTarget(threadId)}
         >
-          {reportStatus === 'copied' ? <Check size={15} /> : <Bug size={15} />}
-          {reportStatus === 'copying'
-            ? 'Copying…'
-            : reportStatus === 'copied'
-              ? 'Copied'
-              : 'Copy bug report'}
+          <Trash2 size={14} aria-hidden="true" />
+          Clear messages
         </Button>
-      </header>
+      )}
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="chat-report-button"
+        onClick={() => void copyBugReport()}
+        disabled={reportStatus === 'copying'}
+        aria-label={reportStatus === 'copied' ? 'Bug report copied' : 'Copy bug report'}
+        title="Copy conversation and trace as JSON"
+      >
+        {reportStatus === 'copied' ? <Check size={15} /> : <Bug size={15} />}
+        {reportStatus === 'copying'
+          ? 'Copying…'
+          : reportStatus === 'copied'
+            ? 'Copied'
+            : 'Copy bug report'}
+      </Button>
+    </>
+  );
+  return (
+    <div className="chat-page">
+      {desktopSettingsAvailable() ? (
+        <>
+          <h1 className="sr-only">Chat</h1>
+          {toolbarActions && createPortal(chatActions, toolbarActions)}
+        </>
+      ) : (
+        <header className="chat-report-action">
+          <h1 className="chat-title">Chat</h1>
+          {chatActions}
+        </header>
+      )}
       <ChatTurnRail
         messages={allMessages}
         activeId={activeTurn}
@@ -797,11 +875,7 @@ export function Chat({
             {connectionNotice.text}
           </Notice>
         )}
-        {!state.configuration.llmReady && (
-          <Notice kind="info">
-            The assistant isn’t connected yet. Check the development setup.
-          </Notice>
-        )}
+        <SetupNotice configuration={state.configuration} capability="assistant" />
         <Composer
           key={threadId}
           ref={composer}
@@ -815,6 +889,22 @@ export function Chat({
           stopping={stopping}
         />
       </div>
+      <Dialog open={resetTarget !== null} onOpenChange={(open) => !open && setResetTarget(null)}>
+        <DialogContent>
+          <DialogTitle>Clear messages?</DialogTitle>
+          <DialogDescription>
+            This starts an empty chat and stops its running tasks.
+          </DialogDescription>
+          <div className="dialog-actions">
+            <Button variant="outline" disabled={resetting} onClick={() => setResetTarget(null)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" disabled={resetting} onClick={() => void clearMessages()}>
+              {resetting ? 'Clearing…' : 'Clear messages'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

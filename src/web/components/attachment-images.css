@@ -192,7 +192,7 @@
   gap: 12px;
   width: min(1100px, calc(100vw - 24px));
   max-width: none;
-  max-height: calc(100dvh - 24px);
+  max-height: calc(var(--dialog-viewport-height) - 24px);
   padding: 48px 16px 12px;
 }
 
@@ -215,12 +215,12 @@
   display: block;
   max-width: 100%;
   min-width: 0;
-  max-height: calc(100dvh - 148px);
+  max-height: calc(var(--dialog-viewport-height) - 148px);
   object-fit: contain;
 }
 
 .attachment-viewer-surface.is-audio {
-  min-height: min(200px, calc(100dvh - 148px));
+  min-height: min(200px, calc(var(--dialog-viewport-height) - 148px));
 }
 
 .attachment-viewer-surface audio {
@@ -232,10 +232,30 @@
   display: flex;
   flex-direction: column;
   width: 100%;
-  height: min(720px, calc(100dvh - 148px));
+  height: min(720px, calc(var(--dialog-viewport-height) - 148px));
   min-width: 0;
   min-height: 0;
   gap: 8px;
+}
+
+.attachment-pdf-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--muted);
+  overscroll-behavior: contain;
+}
+
+.attachment-pdf-pages {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: max-content;
+  min-width: 100%;
+  padding: 12px;
 }
 
 .attachment-data-preview {
@@ -243,7 +263,7 @@
   flex-direction: column;
   gap: 14px;
   width: 100%;
-  height: min(720px, calc(100dvh - 148px));
+  height: min(720px, calc(var(--dialog-viewport-height) - 148px));
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -398,6 +418,20 @@
   background: white;
 }
 
+.attachment-pdf-pages .attachment-pdf-page {
+  flex: none;
+  overflow: hidden;
+  padding: 0;
+  border-radius: 0;
+  background: white;
+  box-shadow: 0 1px 4px #0002;
+}
+
+.attachment-pdf-pages canvas {
+  flex-shrink: 0;
+  max-width: none;
+}
+
 .attachment-pdf-loading {
   align-self: center;
   color: var(--muted-foreground);
@@ -408,16 +442,31 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: 4px;
   flex-shrink: 0;
   font-size: 13px;
   color: var(--muted-foreground);
   font-variant-numeric: tabular-nums;
 }
 
+.attachment-pdf-controls > span {
+  margin-right: auto;
+}
+
 .attachment-pdf-controls .button {
-  width: 40px;
-  height: 40px;
+  height: 28px;
+  padding-inline: 8px;
+  font-size: 12px;
+}
+
+.attachment-pdf-controls .button-icon {
+  width: 28px;
+  padding: 0;
+}
+
+.attachment-pdf-controls [aria-pressed='true'] {
+  background: var(--secondary);
+  color: var(--foreground);
 }
 
 .attachment-preview-unavailable {

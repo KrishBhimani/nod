@@ -6,7 +6,6 @@ import {
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
-  RotateCcw,
   Settings,
   Sun,
 } from 'lucide-react';
@@ -24,10 +23,11 @@ import {
 
 export function Sidebar({
   path,
+  unreadCount = 0,
+  unreadPending = false,
   collapsed,
   onToggle,
   onNavigate,
-  onRestart,
   development = import.meta.env?.DEV === true,
   inspectorEnabled = false,
   inspectorOpen = false,
@@ -35,10 +35,11 @@ export function Sidebar({
   account,
 }: {
   path: string;
+  unreadCount?: number;
+  unreadPending?: boolean;
   collapsed: boolean;
   onToggle(): void;
   onNavigate(path: string): void;
-  onRestart(): void;
   development?: boolean;
   inspectorEnabled?: boolean;
   inspectorOpen?: boolean;
@@ -48,6 +49,27 @@ export function Sidebar({
   const [hints, setHints] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [appMenuOpen, setAppMenuOpen] = useState(false);
+  const unreadLabel =
+    unreadCount > 99
+      ? 'More than 99 unread messages'
+      : unreadPending
+        ? unreadCount
+          ? `${unreadCount} or more unread messages`
+          : 'Checking unread messages'
+        : `${unreadCount} unread ${unreadCount === 1 ? 'message' : 'messages'}`;
+  const chatLabel = unreadCount || unreadPending ? `Chat, ${unreadLabel}` : 'Chat';
+  const unreadBadge =
+    unreadCount || unreadPending ? (
+      <span className="chat-unread-badge" aria-hidden="true">
+        {unreadCount > 99
+          ? '99+'
+          : unreadPending
+            ? unreadCount
+              ? `${unreadCount}+`
+              : '…'
+            : unreadCount}
+      </span>
+    ) : null;
   const mobileTrigger = useRef<HTMLButtonElement>(null);
   const mobileSheet = useRef<HTMLDialogElement>(null);
   const theme = useSyncExternalStore(subscribeTheme, currentTheme, () => 'light');
@@ -230,7 +252,7 @@ export function Sidebar({
               <li key={item.path}>
                 <a
                   href={item.path}
-                  aria-label={item.label}
+                  aria-label={item.path === '/' ? chatLabel : item.label}
                   aria-current={path === item.path ? 'page' : undefined}
                   aria-keyshortcuts={
                     item.key
@@ -238,7 +260,7 @@ export function Sidebar({
                       : undefined
                   }
                   title={label ? `${item.label} (${label})` : item.label}
-                  className={`nav-link ${path === item.path ? 'nav-link-active' : ''}`}
+                  className={`nav-link ${path === item.path ? 'nav-link-active' : ''} ${item.path === '/' && unreadBadge ? 'has-chat-unread' : ''}`}
                   onClick={(event) => {
                     if (
                       event.metaKey ||
@@ -254,6 +276,7 @@ export function Sidebar({
                 >
                   <Icon size={26} strokeWidth={1.8} aria-hidden="true" />
                   <span className="nav-label">{item.label}</span>
+                  {item.path === '/' && unreadBadge}
                   {item.key && (
                     <kbd className="nav-shortcut" aria-hidden="true">
                       {item.key.toUpperCase()}
@@ -269,7 +292,7 @@ export function Sidebar({
         <a
           href="/"
           className="mobile-chat-link"
-          aria-label="Chat"
+          aria-label={chatLabel}
           aria-current={path === '/' ? 'page' : undefined}
           onClick={(event) => {
             if (
@@ -286,6 +309,7 @@ export function Sidebar({
           }}
         >
           <BrandMark />
+          {unreadBadge}
         </a>
         <button
           type="button"
@@ -296,7 +320,7 @@ export function Sidebar({
           aria-expanded={mobileMenuOpen}
           onClick={() => setMobileMenuOpen(true)}
         >
-          {account ? (
+          {account && !account.local ? (
             <AccountAvatar user={account.user} />
           ) : (
             <LayoutGrid size={22} aria-hidden="true" />
@@ -320,6 +344,7 @@ export function Sidebar({
                     key={item.path}
                     href={item.path}
                     className="mobile-section"
+                    aria-label={item.path === '/' ? chatLabel : item.label}
                     aria-current={path === item.path ? 'page' : undefined}
                     onClick={(event) => {
                       if (
@@ -337,6 +362,7 @@ export function Sidebar({
                   >
                     <Icon size={24} strokeWidth={1.8} aria-hidden="true" />
                     <span>{item.label}</span>
+                    {item.path === '/' && unreadBadge}
                   </a>
                 );
               })}
@@ -406,52 +432,39 @@ export function Sidebar({
             </kbd>
           </button>
         )}
-        {development ? (
-          <button
-            type="button"
-            className="nav-link"
-            aria-label="Get started"
-            title="Get started"
-            onClick={onRestart}
-          >
-            <RotateCcw size={22} aria-hidden="true" />
-            <span className="nav-label">Get started</span>
-          </button>
-        ) : (
-          inspectorEnabled && (
-            <div className="sidebar-app-menu">
-              <ConnectionMenu
-                label="App menu"
-                triggerClassName="nav-link"
-                compact
-                open={appMenuOpen}
-                onOpenChange={setAppMenuOpen}
-                trigger={
-                  <>
-                    <MoreHorizontal size={22} aria-hidden="true" />
-                    <span className="nav-label">More</span>
-                  </>
-                }
-              >
-                {(close) => (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    aria-expanded={inspectorOpen}
-                    aria-controls="developer-inspector"
-                    aria-keyshortcuts="Meta+I Control+I"
-                    title={`Inspector (${shortcutLabel('i', mac)})`}
-                    onClick={() => {
-                      close();
-                      onToggleInspector?.();
-                    }}
-                  >
-                    <Monitor size={18} aria-hidden="true" /> Inspector
-                  </button>
-                )}
-              </ConnectionMenu>
-            </div>
-          )
+        {!development && inspectorEnabled && (
+          <div className="sidebar-app-menu">
+            <ConnectionMenu
+              label="App menu"
+              triggerClassName="nav-link"
+              compact
+              open={appMenuOpen}
+              onOpenChange={setAppMenuOpen}
+              trigger={
+                <>
+                  <MoreHorizontal size={22} aria-hidden="true" />
+                  <span className="nav-label">More</span>
+                </>
+              }
+            >
+              {(close) => (
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-expanded={inspectorOpen}
+                  aria-controls="developer-inspector"
+                  aria-keyshortcuts="Meta+I Control+I"
+                  title={`Inspector (${shortcutLabel('i', mac)})`}
+                  onClick={() => {
+                    close();
+                    onToggleInspector?.();
+                  }}
+                >
+                  <Monitor size={18} aria-hidden="true" /> Inspector
+                </button>
+              )}
+            </ConnectionMenu>
+          </div>
         )}
         {account &&
           (account.canLogout ? (
@@ -463,9 +476,10 @@ export function Sidebar({
               aria-label="Settings"
               aria-keyshortcuts="Meta+, Control+,"
               title="Settings"
-              onClick={(event) => account.onSettings('Preferences', event.currentTarget)}
+              onClick={(event) => account.onSettings('Appearance', event.currentTarget)}
             >
               <Settings size={22} aria-hidden="true" />
+              <span className="nav-label">Settings</span>
             </button>
           ))}
       </div>

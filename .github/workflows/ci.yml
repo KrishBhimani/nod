@@ -28,7 +28,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U otto -d otto_ci"
+          --health-cmd "pg_isready -h 127.0.0.1 -U otto -d otto_ci"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
@@ -45,12 +45,24 @@ jobs:
         with:
           node-version: '24.21.0'
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            desktop/package-lock.json
       - name: Install locked dependencies
         run: npm ci
+      - name: Install desktop build tooling without downloading Electron
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: npm --prefix desktop ci
+      - name: Check desktop lifecycle, storage and release contracts
+        run: npm run desktop:test
+      - name: Check desktop network isolation during restart
+        run: >-
+          sudo env OTTO_TEST_RUNTIME_NETWORK=1 "$(command -v node)"
+          --test --test-name-pattern='workload firewall refresh'
+          desktop/test/runtime-assets.test.mjs
       - name: Check types, boundaries and formatting
         run: npm run check
-      - name: Run all tests with PostgreSQL fixtures
-        run: npm run test:integration
       - name: Build the client
         run: npm run build
       - name: Install Cloudflare adapter dependencies
@@ -75,7 +87,10 @@ jobs:
           docker build --platform linux/amd64 --file deployment/cloudflare/Dockerfile --tag otto-ci .
           docker build --platform linux/amd64 --file deployment/cloudflare/Dockerfile.browser --tag otto-ci-browser .
           docker build --platform linux/amd64 --file deployment/cloudflare/Dockerfile.workspace --tag otto-ci-workspace .
-      - name: Verify browser recovery, credential transitions and authenticated downloads
+          docker build --platform linux/amd64 --file Dockerfile.browser --tag otto-ci-local-browser .
+      - name: Verify the shared local and desktop browser image
+        run: node --import tsx desktop/scripts/check-browser-image.mjs otto-ci-local-browser
+      - name: Run all integration tests with PostgreSQL and Chromium
         run: >-
           docker run --rm --network host --shm-size=1g
           --env TEST_DATABASE_URL
@@ -84,10 +99,12 @@ jobs:
           --volume "$PWD/src:/app/src:ro"
           --volume "$PWD/tests:/app/tests:ro"
           --volume "$PWD/scripts:/app/scripts:ro"
+          --volume "$PWD/deployment/e2b:/app/deployment/e2b:ro"
           --volume "$PWD/tsconfig.json:/app/tsconfig.json:ro"
           --volume "$PWD/dist/web:/app/dist/web:ro"
+          --tmpfs /app/.local:uid=1000,gid=1000
           --entrypoint /usr/bin/tini otto-ci-browser
-          -- node --import tsx --test tests/browser.test.ts tests/downloads.test.ts tests/download-delivery.test.ts
+          -- node scripts/test-integration.mjs --run
       - name: Verify the runtime filesystem and user
         run: >-
           docker run --rm --network none --entrypoint node otto-ci
