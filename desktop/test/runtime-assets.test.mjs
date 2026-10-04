@@ -17,7 +17,7 @@ import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { create } from 'tar';
 import { copyBundleSource, copyEngineDependencies } from '../scripts/engine-dependencies.mjs';
@@ -165,6 +165,59 @@ test('signing cleanup fences process identity and stops an orphaned group before
   await exited;
   assert.deepEqual(calls, ['delete-keychain', 'list-keychains']);
   assert.deepEqual(await readdir(root), []);
+});
+
+test('signing discovery preserves native bundles and skips symlinks under a low file limit', async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'otto-signing-discovery-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const application = join(root, 'Synthetic.app');
+  const framework = join(application, 'Contents/Frameworks/Synthetic.framework');
+  const helper = join(application, 'Contents/Helpers/Synthetic Helper.app');
+  const native = [join(framework, 'Versions/A/Synthetic'), join(helper, 'Contents/MacOS/helper')];
+  for (const file of native) {
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0, 0, 0, 0]));
+  }
+  for (let directory = 0; directory < 8; directory++) {
+    const path = join(application, 'Contents/Resources/dependencies', String(directory));
+    await mkdir(path, { recursive: true });
+    for (let file = 0; file < 256; file++)
+      await writeFile(join(path, `${file}.js`), 'export const synthetic = true;\n');
+  }
+  const outside = join(root, 'outside');
+  await mkdir(outside);
+  const sentinel = join(outside, 'untouched.cstemp');
+  await writeFile(sentinel, Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0]));
+  await symlink(outside, join(application, 'outside'));
+  await symlink(application, join(application, 'cycle'));
+  await symlink(native[0], join(framework, 'Synthetic'));
+  const stale = join(application, 'stale.cstemp');
+  await writeFile(stale, 'Synthetic stale signing file');
+  const utility = pathToFileURL(
+    join(dirname(fileURLToPath(import.meta.resolve('@electron/osx-sign'))), 'util.js'),
+  ).href;
+  const script = `import { walk } from ${JSON.stringify(utility)};
+process.stdout.write(JSON.stringify(await walk(process.argv[1])));`;
+  const { stdout } = await promisify(execFile)(
+    '/bin/sh',
+    [
+      '-c',
+      'ulimit -n 256\nexec "$@"',
+      'otto-signing-discovery',
+      process.execPath,
+      '--input-type=module',
+      '-e',
+      script,
+      application,
+    ],
+    { env: { PATH: process.env.PATH }, timeout: 30_000 },
+  );
+  const paths = JSON.parse(stdout);
+  assert.deepEqual([...paths].sort(), [...native, framework, helper].sort());
+  assert(paths.indexOf(native[0]) < paths.indexOf(framework));
+  assert(paths.indexOf(native[1]) < paths.indexOf(helper));
+  assert.equal((await readFile(sentinel)).length, 5);
+  await assert.rejects(stat(stale), { code: 'ENOENT' });
 });
 
 test('runtime public verification uses a bounded GET when HEAD is unsupported or lacks length', async (t) => {

@@ -229,6 +229,12 @@ await mkdir(diskStage, { recursive: true });
 await run('/bin/cp', ['-cR', application, join(diskStage, 'Otto Preview.app')]);
 await run('/bin/ln', ['-s', '/Applications', join(diskStage, 'Applications')]);
 const diskImage = join(output, full ? 'Otto-Preview-full-arm64.dmg' : 'Otto-Preview-arm64.dmg');
+const legacyDiskImage = join(
+  output,
+  full ? 'Otto Preview-full-arm64.dmg' : 'Otto Preview-arm64.dmg',
+);
+await rm(legacyDiskImage, { force: true });
+await rm(`${legacyDiskImage}.sha256`, { force: true });
 await rm(diskImage, { force: true });
 await run(
   '/usr/bin/hdiutil',

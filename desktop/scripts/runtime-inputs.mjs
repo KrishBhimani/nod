@@ -15,6 +15,7 @@ const inputs = [
   'desktop/scripts/check-browser-image.mjs',
   'desktop/scripts/empty-entitlements.plist',
   'desktop/scripts/lima-entitlements.plist',
+  'desktop/scripts/patch-osx-sign.mjs',
   'desktop/scripts/prepare-runtime.mjs',
   'desktop/scripts/release-tools.mjs',
   'desktop/scripts/runtime-build-lock.json',
