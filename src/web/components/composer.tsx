@@ -1,9 +1,18 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
 import { ArrowUp, Paperclip, X, FileText, LoaderCircle, CornerUpLeft, Square } from 'lucide-react';
 import type { Artifact, Message } from '../../shared/contracts';
 import { api, errorMessage } from '../lib/api';
 import { createComposerExtensions } from '../lib/composer-editor';
+import { onPrepareDesktopUpdate } from '../lib/desktop';
 import { Button, Notice } from './ui';
 import {
   ImageViewer,
@@ -42,10 +51,11 @@ interface ComposerProps {
   onSend(text: string, attachments: Artifact[]): Promise<ComposerSendResult>;
   onStop?(): void;
   stopping?: boolean;
+  canRestart?(): boolean;
 }
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
-  { ready, text, setText, replyTo, clearReply, onSend, onStop, stopping = false },
+  { ready, text, setText, replyTo, clearReply, onSend, onStop, stopping = false, canRestart },
   ref,
 ) {
   const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
@@ -60,6 +70,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const previewTrigger = useRef<AttachmentTrigger | null>(null);
   const lastText = useRef(text);
   const sends = useRef(0);
+  const pendingSends = useRef(0);
   const unsent = useRef<Array<{ sequence: number; text: string; attachments: DraftAttachment[] }>>(
     [],
   );
@@ -100,6 +111,23 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       focus();
   }
   useImperativeHandle(ref, () => ({ focus }), [editor]);
+  useLayoutEffect(
+    () =>
+      onPrepareDesktopUpdate(
+        () =>
+          Boolean(editor && !editor.isDestroyed) &&
+          !text.trim() &&
+          !editor!.getMarkdown().trim() &&
+          !attachmentValues.current.length &&
+          !uploads.current.size &&
+          !pendingSends.current &&
+          !unsent.current.length &&
+          !replyTo &&
+          !document.querySelector('[role="dialog"], dialog[open]') &&
+          (canRestart?.() ?? true),
+      ),
+    [editor, text, replyTo, canRestart],
+  );
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -210,6 +238,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     const sentAttachments = attachmentValues.current;
     if (!sentText && !sentAttachments.length) return;
     const sequence = ++sends.current;
+    pendingSends.current++;
     setError('');
     editor.commands.clearContent();
     updateAttachments([]);
@@ -223,6 +252,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     } catch (cause) {
       if (mounted.current) setError(errorMessage(cause));
     } finally {
+      pendingSends.current--;
       if (result.sent || !result.restoreText)
         for (const item of sentAttachments) releasePreview(item);
       else {
