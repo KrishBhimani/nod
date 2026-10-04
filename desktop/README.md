@@ -8,7 +8,7 @@ Desktop is a wrapper around the same Otto product: it starts `src/server/index.t
 
 ## Trying it
 
-1. Open `Otto Preview-arm64.dmg` and copy **Otto Preview** to Applications.
+1. Open `Otto-Preview-arm64.dmg` and copy **Otto Preview** to Applications.
 2. Open **Otto Preview** and choose OpenAI or Anthropic.
 3. Add the provider API key and, optionally, a Composio key for app connections.
 4. Choose whether to open at login and show notifications. Otto detects date/time defaults and follows the system appearance; customize these later in Settings.
@@ -84,7 +84,7 @@ For a full installer that embeds the runtime assets, run:
 npm --prefix desktop run build -- --full
 ```
 
-That emits `Otto Preview-full-arm64.dmg`. It avoids the separate runtime pack, although first provisioning can still need network access. A lean build can enable automatic runtime acquisition by setting `OTTO_RUNTIME_RELEASE_URL` to the actual HTTPS URL of its immutable archive while running `runtime-pack.mjs`. Publish and verify that archive separately before distributing such a build. Without that variable, the picker is the supported first-install path.
+That emits `Otto-Preview-full-arm64.dmg`. It avoids the separate runtime pack, although first provisioning can still need network access. A lean build can enable automatic runtime acquisition by setting `OTTO_RUNTIME_RELEASE_URL` to the actual HTTPS URL of its immutable archive while running `runtime-pack.mjs`. Publish and verify that archive separately before distributing such a build. Without that variable, the picker is the supported first-install path.
 
 ## Historical distribution size
 
