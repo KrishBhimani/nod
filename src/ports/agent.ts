@@ -87,13 +87,6 @@ export interface RuntimeContext {
   }>;
   personalContext?: {
     profile: { name: string; location: string; phone: string; preferences: string };
-    activeGoals: Array<{
-      title: string;
-      description: string;
-      progress: number;
-      nextAction: string;
-      targetDate: string | null;
-    }>;
   };
   memory?: string;
   workspacePath: string;
@@ -157,6 +150,7 @@ export interface RuntimeContext {
     args: Record<string, unknown>,
   ): Promise<Artifact & { workspaceFile: string }>;
   manage(action: string, args: Record<string, unknown>): Promise<unknown>;
+  task?(input: unknown): Promise<unknown>;
   takeMessages?(): Promise<Array<{ id: string; text: string }>>;
 }
 export interface PromptSnapshot {

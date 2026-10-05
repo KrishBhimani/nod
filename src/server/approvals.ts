@@ -276,12 +276,9 @@ export async function createApprovals(
       const id = randomUUID();
       let targetTitle: string | undefined;
       if (!direct && typeof snapshot.id === 'string') {
-        const table =
-          action === 'OTTO_goal_update'
-            ? 'goals'
-            : ['OTTO_schedule_update', 'OTTO_schedule_cancel'].includes(action)
-              ? 'schedules'
-              : undefined;
+        const table = ['OTTO_schedule_update', 'OTTO_schedule_cancel'].includes(action)
+          ? 'schedules'
+          : undefined;
         if (table)
           targetTitle = (
             await client.query(`SELECT title FROM ${table} WHERE id=$1 AND owner_id=$2`, [

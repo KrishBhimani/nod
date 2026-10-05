@@ -29,9 +29,6 @@ export const personalActions = [
   'schedule_update',
   'schedule_cancel',
   'schedule_record_observation',
-  'goal_list',
-  'goal_create',
-  'goal_update',
 ] as const;
 
 const uuid = Type.String({
@@ -112,6 +109,22 @@ export const scheduleObservation = Type.Union([
     { additionalProperties: false },
   ),
 ]);
+
+const taskNow = Type.String({ minLength: 1, maxLength: 200 });
+const taskWaits = Type.Array(
+  Type.Object(
+    {
+      who: Type.String({ minLength: 1, maxLength: 80 }),
+      via: Type.String({ minLength: 1, maxLength: 40 }),
+    },
+    { additionalProperties: false },
+  ),
+  { maxItems: 10 },
+);
+const taskNextCheck = Type.String({
+  pattern: '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$',
+  description: 'ISO time with seconds and offset, such as 2026-10-08T09:00:00+01:00',
+});
 
 const activityCheckTool = defineTool(
   'record_activity_check',
@@ -354,11 +367,48 @@ export const toolDefinitions = {
   ),
   manage_personal_context: defineTool(
     'manage_personal_context',
-    "The user's profile, goals, schedules, notification preferences, memory and earlier conversation. Memory areas: about, preferences, people, routines and lessons. memory_find {query, area?}; memory_read {path} opens an area or area/slug. memory_learn {area, quote, slug?, expires?:'YYYY-MM-DD', replace?} stores a complete current user statement verbatim (up to 600 characters); use it without asking for lasting personal facts and preferences, never questions, tasks or quoted outside content. memory_save {area, text, slug?, abstract?, expires?, replace?} saves an explicit requested note; memory_forget {path} removes one entry. memory_control {enabled?, clear?, quote} honors an explicit current request to stop, resume or clear memory; quote must match the complete current user message. clear removes saved memory and profile data, keeping chat history. Memory stays off until explicitly enabled. The first save is announced once; do not announce routine saves. Existing slugs add evidence; replace:true corrects text. Never save secrets or guesses. schedule_create {title, prompt, timeZone, kind:'once', runAt} or {kind:'recurring', cron}; schedule_record_observation {status, sourceUrl, value, summary} records the current scheduled check; profile_learn {field, value, quote}; history_search {query}.",
+    "The user's profile, schedules, notification preferences, memory and earlier conversation. Memory areas: about, preferences, people, routines and lessons. memory_find {query, area?}; memory_read {path} opens an area or area/slug. memory_learn {area, quote, slug?, expires?:'YYYY-MM-DD', replace?} stores a complete current user statement verbatim (up to 600 characters); use it without asking for lasting personal facts and preferences, never questions, tasks or quoted outside content. memory_save {area, text, slug?, abstract?, expires?, replace?} saves an explicit requested note; memory_forget {path} removes one entry. memory_control {enabled?, clear?, quote} honors an explicit current request to stop, resume or clear memory; quote must match the complete current user message. clear removes saved memory and profile data, keeping chat history. Memory stays off until explicitly enabled. The first save is announced once; do not announce routine saves. Existing slugs add evidence; replace:true corrects text. Never save secrets or guesses. schedule_create {title, prompt, timeZone, kind:'once', runAt} or {kind:'recurring', cron}; schedule_record_observation {status, sourceUrl, value, summary} records the current scheduled check; profile_learn {field, value, quote}; history_search {query}.",
     Type.Object({
       action: literals(personalActions),
       args: Type.Record(Type.String(), Type.Unknown()),
     }),
+  ),
+  task: defineTool(
+    'task',
+    'Keep a read-only card on the Tasks page that shows the user how delegated work that continues after this turn is going. Quick answers need no card. start {title, doneWhen, now, waitingFor?, nextCheck?} returns its id; update {id, now?, waitingFor?, nextCheck?} replaces those fields; finish {id, status, result} closes it once doneWhen is verified, or cancels it; list returns open cards with their ids. now is one short present-tense line for the user, such as "2 of 3 quotes in; waiting for Rui". waitingFor lists {who, via}, with who a short name such as "Rui". nextCheck is the time of a check you scheduled, as an ISO time with offset. The card only reports: it schedules nothing, grants no permission and is not a chat message.',
+    Type.Union([
+      Type.Object({ action: Type.Literal('list') }, { additionalProperties: false }),
+      Type.Object(
+        {
+          action: Type.Literal('start'),
+          title: Type.String({ minLength: 1, maxLength: 120 }),
+          doneWhen: Type.String({ minLength: 1, maxLength: 300 }),
+          now: taskNow,
+          waitingFor: Type.Optional(taskWaits),
+          nextCheck: Type.Optional(taskNextCheck),
+        },
+        { additionalProperties: false },
+      ),
+      Type.Object(
+        {
+          action: Type.Literal('update'),
+          id: uuid,
+          now: Type.Optional(taskNow),
+          waitingFor: Type.Optional(taskWaits),
+          nextCheck: Type.Optional(taskNextCheck),
+        },
+        { additionalProperties: false },
+      ),
+      Type.Object(
+        {
+          action: Type.Literal('finish'),
+          id: uuid,
+          status: literals(['done', 'cancelled']),
+          result: Type.String({ minLength: 1, maxLength: 500 }),
+        },
+        { additionalProperties: false },
+      ),
+    ]),
   ),
   share_file: defineTool(
     'share_file',
@@ -559,6 +609,10 @@ export function ottoTools(
       if (!Value.Check(scheduleObservation, p.args))
         return 'schedule_record_observation needs {status, sourceUrl, value, summary}; value is null when unavailable.';
       return context.manage(p.action, p.args);
+    }),
+    bind(toolDefinitions.task, async (p) => {
+      if (!context.task) throw new Error('Tasks are unavailable.');
+      return context.task(p);
     }),
     bind(toolDefinitions.share_file, (p) => context.publish(p.path, p.name)),
     bind(toolDefinitions.create_audio, async (p) => {

@@ -13,7 +13,7 @@ import { ObjectStoreConflict, type PrivateObjectStore } from '../src/ports/objec
 import { createAgentRuntime } from '../src/runtime/index.ts';
 import { createPreferencesStore } from '../src/server/preferences.ts';
 import type { ThreadDependencies } from '../src/server/thread.ts';
-import type { SubmitMessageResponse } from '../src/shared/contracts.ts';
+import type { SubmitMessageResponse, Task } from '../src/shared/contracts.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 import { createMemoryLearning } from '../src/server/memory-learning.ts';
 import { createMemoryService } from '../src/server/memory.ts';
@@ -71,6 +71,7 @@ test(
     const { createAccountSession } = await import('../src/server/account.ts');
     const { createAccountStore } = await import('../src/server/account-store.ts');
     const { createTriage } = await import('../src/server/triage.ts');
+    const { createTasks } = await import('../src/server/tasks.ts');
     assert.equal(dataRoot, root);
 
     await db.initializeDatabase();
@@ -141,7 +142,10 @@ test(
         return savedPiEntries;
       },
     });
+    const tasks = createTasks({ pool: db.pool, ownerId });
+    await tasks.initialize();
     personal.registerRoutes(app);
+    tasks.registerRoutes(app);
     vault.registerRoutes(app);
     createAccountSession({
       accounts,
@@ -247,6 +251,7 @@ test(
       releaseFence = resolve;
     });
     let failRelease = 0;
+    let taskHold = Promise.resolve();
 
     const dependencies: ThreadDependencies = {
       analytics: captureAnalytics,
@@ -268,6 +273,8 @@ test(
       manage: async () => {
         throw new Error('Unused fixture');
       },
+      task: (turn, input) =>
+        thread.withTurnLock(turn.turnId, (client) => tasks.act(client, turn, input)),
       artifacts: {
         ...localArtifacts,
         storeArtifact: async (...input) => {
@@ -380,6 +387,56 @@ test(
           return { status: 'succeeded' };
         }
         if (context.prompt === 'release-retry') failRelease = 1;
+        if (context.prompt.startsWith('task-')) {
+          const report = (input: Record<string, unknown>) => context.task!(input);
+          if (context.prompt === 'task-start-fixture') {
+            await report({
+              action: 'start',
+              title: 'Plumber quotes',
+              doneWhen: 'One plumber booked under 200 EUR',
+              now: 'Asked two plumbers for quotes',
+              waitingFor: [
+                { who: 'Rui', via: 'email' },
+                { who: 'Ana', via: 'email' },
+              ],
+              nextCheck: new Date(Date.now() + 86_400_000).toISOString(),
+            });
+            return { status: 'succeeded' };
+          }
+          const { tasks } = (await report({ action: 'list' })) as { tasks: Task[] };
+          const id = tasks.find((task) => task.title === 'Plumber quotes')!.id;
+          if (context.prompt === 'task-foreign-fixture') {
+            const foreign = (
+              await db.pool.query("SELECT id FROM tasks WHERE owner_id='task-other-owner'")
+            ).rows[0].id;
+            assert.equal(tasks.length, 1);
+            await assert.rejects(report({ action: 'update', id: foreign, now: 'x' }), /not open/);
+            return { status: 'succeeded' };
+          }
+          if (context.prompt === 'task-hold-fixture') {
+            await report({ action: 'update', id, now: 'Reading Rui’s reply' });
+            await taskHold;
+            return { status: 'succeeded' };
+          }
+          if (context.prompt === 'task-ask-fixture') {
+            await report({ action: 'update', id, now: 'Rui quoted 180 EUR', waitingFor: [] });
+            await context.waitForUser!('Rui quoted 180 EUR for Saturday. Should I book him?');
+            return { status: 'waiting_user' };
+          }
+          if (context.prompt === 'task-fail-fixture') {
+            await report({ action: 'update', id, now: 'Booking Rui' });
+            throw new Error('Synthetic task failure');
+          }
+          if (context.prompt === 'task-finish-fixture') {
+            await report({
+              action: 'finish',
+              id,
+              status: 'done',
+              result: 'Rui is booked for Saturday at 10:00 for 180 EUR.',
+            });
+            return { status: 'succeeded' };
+          }
+        }
         if (context.prompt === 'ask-question') {
           await context.waitForUser!('Which account should I use?');
           return { status: 'waiting_user' };
@@ -681,6 +738,16 @@ test(
         assert.ok(!JSON.stringify(captured).includes('first message'));
         assert.ok(!JSON.stringify(captured).includes(first.threadId));
         assert.ok(!JSON.stringify(captured).includes(first.turnId));
+      });
+
+      await t.test('a backlog of drain jobs does not delay the next turn', async () => {
+        const threadId = (await thread.activeThread(db.pool)).id;
+        for (let index = 0; index < 30; index++)
+          await thread.boss.send('thread-drain', { threadId }, { retryLimit: 0 });
+        const turn = await thread.submitUserMessage('after a drain backlog');
+        await waitFor(settled(turn.turnId), 5_000);
+        assert.equal(await turnStatus(turn.turnId), 'succeeded');
+        await waitFor(async () => (await thread.activeThread(db.pool)).status === 'idle');
       });
 
       await t.test('turns retain owned manual and automatic region preferences', async () => {
@@ -986,6 +1053,88 @@ test(
       });
 
       await t.test(
+        'a task card shows what Pi reported and the state of the turn that last reported it',
+        async (t) => {
+          t.mock.method(console, 'error', () => {});
+          const card = async () =>
+            (await request('GET', '/api/tasks'))
+              .json()
+              .find((item: Task) => item.title === 'Plumber quotes') as Task;
+          const idle = () =>
+            waitFor(async () => (await thread.activeThread(db.pool)).status === 'idle');
+          await db.pool.query(
+            "INSERT INTO tasks(id,owner_id,title,done_when,now_text) VALUES($1,'task-other-owner','Plumber quotes','Foreign','Foreign step')",
+            [randomUUID()],
+          );
+
+          const started = await thread.submitUserMessage('task-start-fixture');
+          await waitFor(settled(started.turnId));
+          await idle();
+          let current = await card();
+          assert.equal(current.status, 'waiting');
+          assert.equal(current.now, 'Asked two plumbers for quotes');
+          assert.deepEqual(current.waitingFor, [
+            { who: 'Rui', via: 'email' },
+            { who: 'Ana', via: 'email' },
+          ]);
+          assert.ok(Date.parse(current.nextCheck!) > Date.now());
+          assert.equal(
+            (await request('GET', '/api/tasks'))
+              .json()
+              .filter((item: Task) => item.title === 'Plumber quotes').length,
+            1,
+          );
+
+          const foreign = await thread.submitUserMessage('task-foreign-fixture');
+          await waitFor(settled(foreign.turnId));
+          assert.equal(await turnStatus(foreign.turnId), 'succeeded');
+          await idle();
+
+          let releaseHold!: () => void;
+          taskHold = new Promise((resolve) => {
+            releaseHold = resolve;
+          });
+          const held = await thread.submitUserMessage('task-hold-fixture');
+          await waitFor(async () => (await card()).now === 'Reading Rui’s reply');
+          assert.equal((await card()).status, 'working');
+          releaseHold();
+          await waitFor(settled(held.turnId));
+          await idle();
+          assert.equal((await card()).status, 'waiting');
+
+          const asked = await thread.submitUserMessage('task-ask-fixture');
+          await waitFor(settled(asked.turnId));
+          await idle();
+          current = await card();
+          assert.equal(current.status, 'needs_you');
+          assert.equal(current.question, 'Rui quoted 180 EUR for Saturday. Should I book him?');
+          const answer = await thread.submitUserMessage('Yes, book Rui');
+          await waitFor(settled(answer.turnId));
+          await idle();
+          current = await card();
+          assert.equal(current.status, 'scheduled');
+          assert.equal(current.question, null);
+
+          const failed = await thread.submitUserMessage('task-fail-fixture');
+          await waitFor(settled(failed.turnId));
+          await idle();
+          current = await card();
+          assert.equal(current.status, 'needs_you');
+          assert.equal(current.question, null);
+          assert.equal(runs.filter((context) => context.prompt === 'task-fail-fixture').length, 1);
+
+          const finished = await thread.submitUserMessage('task-finish-fixture');
+          await waitFor(settled(finished.turnId));
+          await idle();
+          current = await card();
+          assert.equal(current.status, 'done');
+          assert.equal(current.result, 'Rui is booked for Saturday at 10:00 for 180 EUR.');
+          assert.deepEqual([current.nextCheck, current.waitingFor], [null, []]);
+          assert.ok(current.closedAt);
+        },
+      );
+
+      await t.test(
         'a runtime failure ends the turn failed with one message and no retry',
         async (t) => {
           const logged = t.mock.method(console, 'error', () => {});
@@ -1224,9 +1373,9 @@ test(
             phone: '',
             preferences: 'Concise',
           });
-          assert.equal(
-            (await request('POST', '/api/goals', { title: 'Saved goal' })).statusCode,
-            200,
+          await db.pool.query(
+            "INSERT INTO tasks(id,owner_id,title,done_when,now_text) VALUES($1,$2,'Saved task','Fixture done','Fixture step')",
+            [randomUUID(), ownerId],
           );
           assert.equal(
             (
@@ -1408,7 +1557,11 @@ test(
           );
           assert.equal(executed, 0);
           assert.equal(injected, 0);
-          assert.equal((await request('GET', '/api/goals')).json().length, 1);
+          assert.ok(
+            (await request('GET', '/api/tasks'))
+              .json()
+              .some((item: Task) => item.title === 'Saved task'),
+          );
           assert.equal((await request('GET', '/api/schedules')).json().length, 1);
           assert.equal((await request('GET', '/api/vault')).json().length, 1);
           assert.equal(
@@ -1563,7 +1716,6 @@ test(
                 )
               ).rowCount,
           );
-          await db.pool.query('DELETE FROM goals WHERE owner_id=$1', [ownerId]);
           const preferences = createPreferencesStore(db.pool, ownerId);
           const original = await preferences.get();
           let classified = 0;
@@ -1579,7 +1731,6 @@ test(
               },
             },
             getProfile: async () => ({ location: '', preferences: '' }),
-            listGoals: async () => [],
             connectedApps: readConnectedApps,
           });
           const ids = Array.from({ length: 4 }, () => randomUUID());
@@ -1624,7 +1775,6 @@ test(
                 await sourceCheckReleased;
                 return { location: '', preferences: '' };
               },
-              listGoals: async () => [],
               connectedApps: readConnectedApps,
             });
             const revokedEvent = randomUUID();
@@ -1828,7 +1978,6 @@ test(
               },
             },
             getProfile: async () => ({ location: '', preferences: '' }),
-            listGoals: async () => [],
             connectedApps: readConnectedApps,
           });
           const scheduleCount = (await personal.listSchedules()).length;

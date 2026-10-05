@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { ArrowUp, LoaderCircle, Sparkles } from 'lucide-react';
-import type { Goal, Schedule } from '../../shared/contracts';
+import type { Schedule } from '../../shared/contracts';
 import { Button, Field, Input, Notice, Switch } from './ui';
 import { SearchPicker, TimeZonePicker, type PickerOption } from './time-zone-picker';
 import { api, errorMessage } from '../lib/api';
@@ -14,18 +14,14 @@ import {
   type ScheduleFrequency,
 } from '../lib/schedules';
 
-type Kind = 'goal' | 'schedule';
-type Subject = { kind: Kind; title?: string };
+type Subject = { title?: string };
 
 function subjectPrefix(subject: Subject) {
-  if (!subject.title) return subject.kind === 'goal' ? 'New goal: ' : 'New schedule: ';
-  return `About the ${subject.kind} ${JSON.stringify(subject.title)}: `;
+  return subject.title ? `About the schedule ${JSON.stringify(subject.title)}: ` : 'New schedule: ';
 }
 
 const suggestions = {
-  goal: ['Mark it 50% done', 'Change the next step', 'Move the target date'],
   schedule: ['Move it to 8:00 on weekdays', 'Run it every Monday', 'Add the weather'],
-  newGoal: ['Run a 10 km race', 'Read more books', 'Save for a trip'],
   newSchedule: ['Remind me to stretch at 16:00', 'Summarize my inbox each Friday'],
 };
 
@@ -42,24 +38,18 @@ function AskOtto({
   const input = useRef<HTMLInputElement>(null);
   const id = useId();
   useEffect(() => input.current?.focus(), []);
-  const chips = subject.title
-    ? suggestions[subject.kind]
-    : subject.kind === 'goal'
-      ? suggestions.newGoal
-      : suggestions.newSchedule;
+  const chips = subject.title ? suggestions.schedule : suggestions.newSchedule;
   const submit = (value: string) => {
     if (!value.trim()) return;
     onAsk(`${subjectPrefix(subject)}${value.trim()}`);
   };
   const placeholder = subject.title
     ? `What should change in ${subject.title}?`
-    : subject.kind === 'goal'
-      ? 'What do you want to achieve?'
-      : 'What should Otto do, and when?';
+    : 'What should Otto do, and when?';
   return (
     <div className="ask-otto" role="group" aria-labelledby={`${id}-label`}>
       <span className="sr-only" id={`${id}-label`}>
-        Ask Otto {subject.title ? `about ${subject.title}` : `for a new ${subject.kind}`}
+        Ask Otto {subject.title ? `about ${subject.title}` : 'for a new schedule'}
       </span>
       <form
         className="ask-otto-field"
@@ -96,20 +86,15 @@ function AskOtto({
   );
 }
 
-function statusChange(kind: Kind, item: Goal | Schedule) {
-  if (kind === 'goal') return { status: (item as Goal).status === 'active' ? 'paused' : 'active' };
-  return { enabled: !(item as Schedule).enabled };
-}
-
-async function patchPlan(kind: Kind, id: string, body: Record<string, unknown>) {
-  const path = `/api/${kind}s`;
-  const saved = await api<Goal | Schedule>(`${path}/${encodeURIComponent(id)}`, {
+async function patchSchedule(id: string, body: Record<string, unknown>) {
+  const path = '/api/schedules';
+  const saved = await api<Schedule>(`${path}/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(10000),
   });
-  pageDataCache.update<Array<Goal | Schedule>>(path, (items) =>
+  pageDataCache.update<Schedule[]>(path, (items) =>
     items ? items.map((entry) => (entry.id === id ? { ...entry, ...saved } : entry)) : items,
   );
   void pageDataCache.refresh(path, true);
@@ -163,7 +148,7 @@ export function PlanToast() {
   );
 }
 
-function useDirectChange(kind: Kind, id: string) {
+function useDirectChange(id: string) {
   const [busy, setBusy] = useState(false);
   async function apply(
     body: Record<string, unknown>,
@@ -172,14 +157,14 @@ function useDirectChange(kind: Kind, id: string) {
   ) {
     setBusy(true);
     try {
-      await patchPlan(kind, id, body);
+      await patchSchedule(id, body);
       showToast({
         id: Date.now(),
         text: note,
         ...(undo
           ? {
               undo: () =>
-                void patchPlan(kind, id, undo).catch((cause) =>
+                void patchSchedule(id, undo).catch((cause) =>
                   showToast({ id: Date.now(), text: errorMessage(cause), failed: true }),
                 ),
             }
@@ -194,11 +179,10 @@ function useDirectChange(kind: Kind, id: string) {
   return { busy, apply };
 }
 
-function pauseNote(kind: Kind, pausing: boolean, title: string) {
-  if (!pausing) return `Resumed ${title}.`;
-  return kind === 'schedule'
+function pauseNote(pausing: boolean, title: string) {
+  return pausing
     ? `Paused ${title}. Otto will not run it until you resume it.`
-    : `Paused ${title}. Progress and next step stay saved.`;
+    : `Resumed ${title}.`;
 }
 
 const frequencies = [
@@ -267,7 +251,7 @@ function Note({ change }: { change: { busy: boolean } }) {
 }
 
 function ScheduleControls({ schedule, canPause }: { schedule: Schedule; canPause: boolean }) {
-  const change = useDirectChange('schedule', schedule.id);
+  const change = useDirectChange(schedule.id);
   return (
     <div className="schedule-controls">
       <div className="schedule-control-status">
@@ -280,7 +264,7 @@ function ScheduleControls({ schedule, canPause }: { schedule: Schedule; canPause
             onChange={() =>
               void change.apply(
                 { enabled: !schedule.enabled },
-                pauseNote('schedule', schedule.enabled, schedule.title),
+                pauseNote(schedule.enabled, schedule.title),
                 { enabled: schedule.enabled },
               )
             }
@@ -465,60 +449,14 @@ function ScheduleTiming({
   );
 }
 
-function GoalControls({ goal }: { goal: Goal }) {
-  const change = useDirectChange('goal', goal.id);
-  if (goal.status === 'completed') return null;
-  const save = (value: string) =>
-    void change.apply({ progress: Number(value) }, `${goal.title} is ${value}% done.`, {
-      progress: goal.progress,
-    });
-  return (
-    <div className="plan-controls">
-      <Toggle
-        label={`${goal.title} active`}
-        on={goal.status === 'active'}
-        text={goal.status === 'active' ? 'Active' : 'Paused'}
-        disabled={change.busy}
-        onChange={() =>
-          void change.apply(
-            statusChange('goal', goal),
-            pauseNote('goal', goal.status === 'active', goal.title),
-            { status: goal.status },
-          )
-        }
-      />
-      <input
-        className="plan-range"
-        type="range"
-        min={0}
-        max={100}
-        step={5}
-        defaultValue={goal.progress}
-        key={goal.progress}
-        aria-label={`${goal.title} progress`}
-        disabled={change.busy}
-        onPointerUp={(event) => save(event.currentTarget.value)}
-        onKeyUp={(event) => {
-          if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key))
-            save(event.currentTarget.value);
-        }}
-      />
-      <span className="plan-range-value">{goal.progress}%</span>
-      <Note change={change} />
-    </div>
-  );
-}
-
 export function PlanFooter({
-  kind,
   item,
   meta,
   remove,
   canPause,
   onAsk,
 }: {
-  kind: Kind;
-  item: Goal | Schedule;
+  item: Schedule;
   meta: ReactNode;
   remove: ReactNode;
   canPause: boolean;
@@ -527,11 +465,7 @@ export function PlanFooter({
   const [open, setOpen] = useState(false);
   return (
     <>
-      {kind === 'goal' ? (
-        <GoalControls goal={item as Goal} />
-      ) : (
-        <ScheduleControls schedule={item as Schedule} canPause={canPause} />
-      )}
+      <ScheduleControls schedule={item} canPause={canPause} />
       <div className="saved-plan-footer">
         <span>{meta}</span>
         <div className="saved-plan-actions">
@@ -549,27 +483,23 @@ export function PlanFooter({
         </div>
       </div>
       {open && (
-        <AskOtto
-          subject={{ kind, title: item.title }}
-          onAsk={onAsk}
-          onClose={() => setOpen(false)}
-        />
+        <AskOtto subject={{ title: item.title }} onAsk={onAsk} onClose={() => setOpen(false)} />
       )}
     </>
   );
 }
 
-export function NewPlan({ kind, onAsk }: { kind: Kind; onAsk(text: string): void }) {
+export function NewPlan({ onAsk }: { onAsk(text: string): void }) {
   const [open, setOpen] = useState(false);
   return (
     <>
       <Button size="sm" aria-expanded={open} onClick={() => setOpen(!open)}>
         <Sparkles size={14} aria-hidden="true" />
-        {kind === 'goal' ? 'New goal' : 'New schedule'}
+        New schedule
       </Button>
       {open && (
         <div className="connection-menu-options menu new-plan-card">
-          <AskOtto subject={{ kind }} onAsk={onAsk} onClose={() => setOpen(false)} />
+          <AskOtto subject={{}} onAsk={onAsk} onClose={() => setOpen(false)} />
         </div>
       )}
     </>

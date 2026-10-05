@@ -226,7 +226,7 @@ export function registerBugReport(
       approvals,
       notifications,
       profile,
-      goals,
+      tasks,
       schedules,
     ] = await Promise.all([
       options.pool.query(
@@ -270,7 +270,7 @@ export function registerBugReport(
       ),
       options.pool.query('SELECT data FROM profiles WHERE owner_id=$1', [options.ownerId]),
       options.pool.query(
-        'SELECT id,title,description,progress,status,next_action,target_date,updated_at FROM goals WHERE owner_id=$1 ORDER BY updated_at,id',
+        'SELECT id,turn_id,title,done_when,now_text,state,result,waiting_for,next_check,created_at,updated_at,closed_at FROM tasks WHERE owner_id=$1 ORDER BY created_at,id',
         [options.ownerId],
       ),
       options.pool.query(
@@ -303,7 +303,7 @@ export function registerBugReport(
       notificationDecisions: notifications.rows.map(redact),
       memory: {
         profile: redact(profile.rows[0]?.data ?? {}),
-        goals: goals.rows.map(redact),
+        tasks: tasks.rows.map(redact),
         schedules: schedules.rows.map(redact),
       },
     };

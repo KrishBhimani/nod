@@ -111,6 +111,7 @@ import {
   withTurnLock,
 } from './thread.ts';
 import { createTriage } from './triage.ts';
+import { createTasks } from './tasks.ts';
 import { createVault, credentialOrigin } from './vault.ts';
 import { createBrowserConnections } from './browser-connections.ts';
 import { createProviderUsageStore } from './provider-usage.ts';
@@ -604,11 +605,12 @@ async function initializeApplication(
   });
   await memory.initialize();
   await personal.initialize({ workers: options.workers });
+  const tasks = createTasks({ pool, ownerId });
+  await tasks.initialize();
   const triage = createTriage({
     consumers,
     classifier: classify,
     getProfile: personal.getProfile,
-    listGoals: personal.listGoals,
     connectedApps: () => integrations.connectedApps(),
   });
   const grantVault = await createAppGrantVault(pool, {
@@ -769,6 +771,11 @@ async function initializeApplication(
       connectedApps: integrations.connectedApps,
       activityCheck: triage.activityCheck,
       memoryContext: memory.context,
+      task: async (turn, input) => {
+        const result = await withTurnLock(turn.turnId, (client) => tasks.act(client, turn, input));
+        refresh();
+        return result;
+      },
       markUntrustedContext: (turn) => memory.markUntrusted(turn.threadId),
       flagInjection: trust.flag,
       connections: integrations.manageConnections,
@@ -780,8 +787,6 @@ async function initializeApplication(
           [
             'profile_update',
             'notification_preferences_update',
-            'goal_create',
-            'goal_update',
             'schedule_create',
             'schedule_update',
             'schedule_cancel',
@@ -983,6 +988,7 @@ async function initializeApplication(
   vault.registerRoutes(app);
   integrations.registerRoutes(app);
   personal.registerRoutes(app);
+  tasks.registerRoutes(app);
   triage.registerRoutes(app);
   let channels: Awaited<ReturnType<typeof createChannels>> | undefined;
   let channelSettings: Awaited<ReturnType<typeof createChannelSettings>> | undefined;

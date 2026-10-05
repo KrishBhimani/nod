@@ -352,7 +352,7 @@ function trustedAppURL(value) {
         '/channels',
         '/you',
         '/schedule',
-        '/goals',
+        '/tasks',
         '/vault',
         '/browser',
         '/privacy',

@@ -2463,7 +2463,7 @@ test('chat request submits once under StrictMode and keeps the pending message v
   const pending = deferred<Response>();
   const submissions: Array<{ clientMessageId: string; text: string }> = [];
   const handled: string[] = [];
-  const request = { id: randomUUID(), text: 'Create a synthetic goal.' };
+  const request = { id: randomUUID(), text: 'Create a synthetic task.' };
   const chat = () =>
     createElement(
       StrictMode,
@@ -2513,7 +2513,7 @@ test('chat request waits for model readiness before consuming and submitting onc
   const pending = deferred<Response>();
   const submissions: Array<{ clientMessageId: string; text: string }> = [];
   const handled: string[] = [];
-  const request = { id: randomUUID(), text: 'Create a synthetic goal.' };
+  const request = { id: randomUUID(), text: 'Create a synthetic task.' };
   const chat = (llmReady: boolean) =>
     createElement(Chat, {
       state: { ...state, configuration: { ...state.configuration, llmReady } },
@@ -2559,7 +2559,7 @@ test('chat request queues a later page request behind an unacknowledged message'
   const second = deferred<Response>();
   const submissions: Array<{ clientMessageId: string; text: string }> = [];
   const requests = [
-    { id: randomUUID(), text: 'Create a synthetic goal.' },
+    { id: randomUUID(), text: 'Create a synthetic task.' },
     { id: randomUUID(), text: 'Schedule a synthetic reminder.' },
   ];
   const chat = (requestedMessage: (typeof requests)[number]) =>
@@ -2618,7 +2618,7 @@ test('chat request restores failed queued requests in submission order without d
   const pending = deferred<Response>();
   const draft = 'Keep this unsent draft.';
   const requests = [
-    { id: randomUUID(), text: 'Create a synthetic goal.' },
+    { id: randomUUID(), text: 'Create a synthetic task.' },
     { id: randomUUID(), text: 'Schedule a synthetic reminder.' },
   ];
   const submissions: Array<{ text: string }> = [];
@@ -2660,7 +2660,7 @@ test('chat request restores failed queued requests in submission order without d
 test('chat request isolates a stale reply and attachments and restores failure before the existing draft', async () => {
   const state = requestedChatState();
   const pending = deferred<Response>();
-  const request = { id: randomUUID(), text: 'Create a synthetic goal.' };
+  const request = { id: randomUUID(), text: 'Create a synthetic task.' };
   const draft = 'Keep this unsent draft.';
   const artifact = {
     id: randomUUID(),

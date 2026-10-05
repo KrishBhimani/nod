@@ -71,8 +71,8 @@ const readOnlyTools: Record<string, true | string[]> = {
     'memory_find',
     'memory_read',
     'schedule_list',
-    'goal_list',
   ],
+  task: ['list'],
 };
 const readOnlyRefusal =
   'This turn can only read. Use app reads, and browser open, snapshot or scroll.';
