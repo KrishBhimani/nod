@@ -213,8 +213,8 @@ export function createPiModelBackend(options: { fetch?: typeof fetch } = {}): Mo
               .optional(),
             reasoning: z.object({ supported_efforts: z.array(z.string()).optional() }).optional(),
             pricing: z.object({
-              prompt: z.coerce.number().nonnegative().finite(),
-              completion: z.coerce.number().nonnegative().finite(),
+              prompt: z.coerce.number().finite(),
+              completion: z.coerce.number().finite(),
               input_cache_read: z.coerce.number().nonnegative().finite().optional(),
               input_cache_write: z.coerce.number().nonnegative().finite().optional(),
             }),
