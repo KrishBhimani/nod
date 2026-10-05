@@ -176,8 +176,8 @@ export function createPiModelBackend(options: { fetch?: typeof fetch } = {}): Mo
               .optional(),
             reasoning: z.object({ supported_efforts: z.array(z.string()).optional() }).optional(),
             pricing: z.object({
-              prompt: z.coerce.number().nonnegative().finite(),
-              completion: z.coerce.number().nonnegative().finite(),
+              prompt: z.coerce.number().finite(),
+              completion: z.coerce.number().finite(),
               input_cache_read: z.coerce.number().nonnegative().finite().optional(),
               input_cache_write: z.coerce.number().nonnegative().finite().optional(),
             }),
@@ -191,6 +191,8 @@ export function createPiModelBackend(options: { fetch?: typeof fetch } = {}): Mo
             m.supported_parameters.includes('tools') &&
             m.architecture.input_modalities.includes('text') &&
             m.architecture.output_modalities.includes('text') &&
+            m.pricing.prompt >= 0 &&
+            m.pricing.completion >= 0 &&
             !m.id.includes(':batch'),
         )
         .map((m) => {
