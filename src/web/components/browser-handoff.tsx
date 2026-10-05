@@ -11,6 +11,7 @@ const specialKeys = new Set<string>(browserHandoffKeys);
 
 export function BrowserHandoff({ onDone }: { onDone: () => Promise<void> }) {
   const screen = useRef<HTMLDivElement>(null);
+  const dialog = useRef<HTMLDivElement>(null);
   const queue = useRef(Promise.resolve());
   const pending = useRef(0);
   const active = useRef(false);
@@ -158,12 +159,29 @@ export function BrowserHandoff({ onDone }: { onDone: () => Promise<void> }) {
   useEffect(() => {
     if (!expanded || closed) return;
     screen.current?.focus();
-    const escape = (event: KeyboardEvent) => {
+    const keydown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !screen.current?.contains(event.target as Node))
         setExpanded(false);
+      if (event.key !== 'Tab' || event.defaultPrevented || !dialog.current) return;
+      const focusable = [
+        ...dialog.current.querySelectorAll<HTMLElement>('button:not(:disabled), [tabindex="0"]'),
+      ];
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const inside = dialog.current.contains(document.activeElement);
+      if (!inside || (event.shiftKey && document.activeElement === first)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first)?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
     };
-    window.addEventListener('keydown', escape);
-    return () => window.removeEventListener('keydown', escape);
+    window.addEventListener('keydown', keydown);
+    return () => {
+      window.removeEventListener('keydown', keydown);
+      screen.current?.focus();
+    };
   }, [expanded, closed]);
 
   function click(event: React.MouseEvent<HTMLImageElement>) {
@@ -254,7 +272,11 @@ export function BrowserHandoff({ onDone }: { onDone: () => Promise<void> }) {
   );
   const panel = (
     <div
+      ref={dialog}
       className={`browser-handoff${expanded ? ' browser-handoff-expanded' : ''}`}
+      role={expanded ? 'dialog' : undefined}
+      aria-modal={expanded || undefined}
+      aria-label={expanded ? "Otto's browser" : undefined}
       style={
         expanded && naturalWidth
           ? { width: `min(${naturalWidth + 2}px, calc(100vw - 48px))` }
