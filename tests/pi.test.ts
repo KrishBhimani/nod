@@ -15,9 +15,12 @@ import {
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import {
+  calculateCost,
   createAssistantMessageEventStream,
   InMemoryCredentialStore,
+  type Api,
   type AssistantMessage,
+  type Model,
 } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai/providers/faux';
 import type { AgentSession, RuntimeContext } from '../src/ports/agent.ts';
@@ -2508,6 +2511,7 @@ test('ChatGPT requests keep full history and namespaced tool calls and make one 
 test('OpenRouter catalogs and both request formats retain tools, effort and one provider attempt', async () => {
   const { createPiModelBackend, createPiModelRuntime } =
     await import('../src/providers/pi/models.ts');
+  const { createPiUsageTracker } = await import('../src/providers/pi/usage.ts');
   const backend = createPiModelBackend({
     fetch: async (input, init) => {
       if (String(input) === 'https://openrouter.ai/api/v1/key') {
@@ -2523,6 +2527,7 @@ test('OpenRouter catalogs and both request formats retain tools, effort and one 
           'anthropic/claude-opus-5.5',
           'fixture/new-model',
           'fixture/no-tools',
+          'openrouter/auto',
         ].map((id) => ({
           id,
           name: id,
@@ -2530,7 +2535,10 @@ test('OpenRouter catalogs and both request formats retain tools, effort and one 
           supported_parameters: id.endsWith('no-tools') ? [] : ['tools', 'reasoning'],
           reasoning: { supported_efforts: ['low', 'medium', 'high'] },
           architecture: { input_modalities: ['text', 'image'], output_modalities: ['text'] },
-          pricing: { prompt: '0.000002', completion: '0.00001' },
+          pricing:
+            id === 'openrouter/auto'
+              ? { prompt: '-1', completion: '-1' }
+              : { prompt: '0.000002', completion: '0.00001' },
         })),
       });
     },
@@ -2542,7 +2550,33 @@ test('OpenRouter catalogs and both request formats retain tools, effort and one 
     type: 'api_key',
     key: 'fixture-router-key',
   });
-  assert.equal(definitions.length, 3);
+  assert.deepEqual(
+    definitions.map((definition) => definition.choice.id),
+    ['openai/gpt-6.1-sol', 'anthropic/claude-opus-5.5', 'fixture/new-model', 'openrouter/auto'],
+  );
+  const router = definitions.find((definition) => definition.choice.id === 'openrouter/auto')!;
+  const usage = {
+    input: 1000,
+    output: 100,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 1100,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+  calculateCost(router.spec as unknown as Model<Api>, usage);
+  const observed = createPiUsageTracker({
+    sessionId: 'fixture-session',
+    provider: 'openrouter',
+    model: 'openrouter/auto',
+    history: [],
+  })({
+    ...fauxAssistantMessage([{ type: 'text', text: 'Synthetic answer' }]),
+    provider: 'openrouter',
+    model: 'openrouter/auto',
+    usage,
+  });
+  assert.equal(observed?.costUsd, null);
+  assert.equal(observed?.costSource, 'unavailable');
   for (const definition of definitions) {
     const { runtime, model } = await createPiModelRuntime({
       provider: 'openrouter',

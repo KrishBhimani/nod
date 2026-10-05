@@ -191,8 +191,6 @@ export function createPiModelBackend(options: { fetch?: typeof fetch } = {}): Mo
             m.supported_parameters.includes('tools') &&
             m.architecture.input_modalities.includes('text') &&
             m.architecture.output_modalities.includes('text') &&
-            m.pricing.prompt >= 0 &&
-            m.pricing.completion >= 0 &&
             !m.id.includes(':batch'),
         )
         .map((m) => {
