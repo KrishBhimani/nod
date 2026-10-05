@@ -1,5 +1,18 @@
 # Desktop changelog
 
+## 0.1.3 - 2026-10-05
+
+Source: `4a191997bfefaa409f702ca41d16f88ce3540566`
+Previous release: `desktop-v0.1.2`
+
+- Allow inference-capable OpenAI keys that cannot list models during setup (#121) (fece5b1)
+- Keep OpenRouter models with variable pricing available (#120) (459dfc2)
+- Open the browser handoff in a larger modal view (#122) (982e1c2)
+- Load trusted task skills on demand (#115) (33d3997)
+- Add trust checks for outside app actions and untrusted results (#119) (523a0be)
+- Enable product analytics and masked session recordings by default in app, web, and hosted sessions (#123) (4a19199)
+- Allow the public PostHog project token in its analytics configuration while retaining secret checks (#124) (271799f)
+
 ## 0.1.2 - 2026-10-05
 
 Source: `0662e781e357b932f49b0914c0b531f9dab1d1c0`
