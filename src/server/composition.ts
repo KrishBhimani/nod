@@ -5,6 +5,9 @@ import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { z } from 'zod';
 import { appConfirmation, type Agent } from '../ports/agent.ts';
+import type { ProductAnalytics } from '../ports/analytics.ts';
+import { createPostHogAnalytics } from '../providers/posthog/analytics.ts';
+import { analyticsEnabled, analyticsEnvironment, createAnalytics } from './analytics.ts';
 import type { Computer, Workspace } from '../ports/computer.ts';
 import type { IntegrationProvider, IntegrationService } from '../ports/integrations.ts';
 import type { CredentialKeyStore } from '../ports/key-store.ts';
@@ -124,6 +127,7 @@ import {
 } from './provider-metering.ts';
 
 export interface ApplicationAdapters {
+  analytics?: ProductAnalytics;
   initialize?(): Promise<void>;
   models?: ReturnType<typeof createModelService>;
   prepareComputer?(): Promise<void>;
@@ -250,6 +254,7 @@ export function createDefaultAdapters(
   if (runtimeMode === 'tenant' && !objectStore)
     throw new Error('Private durable storage is required.');
   return {
+    ...(analyticsEnabled(env) ? { analytics: createPostHogAnalytics() } : {}),
     initialize: async () => {
       await models.initialize();
       await allocations?.initialize();
@@ -371,6 +376,28 @@ export async function createApplication(
   adapters: ApplicationAdapters,
   options: { workers?: boolean; channels?: boolean } = {},
 ) {
+  try {
+    return await initializeApplication(adapters, options);
+  } catch (error) {
+    try {
+      await adapters.analytics?.shutdown();
+    } catch {}
+    throw error;
+  }
+}
+
+async function initializeApplication(
+  adapters: ApplicationAdapters,
+  options: { workers?: boolean; channels?: boolean },
+) {
+  const analytics = await createAnalytics({
+    provider: adapters.analytics,
+    deployment: runtimeMode === 'local' ? 'local' : 'hosted',
+    environment: analyticsEnvironment(process.env),
+    dataRoot,
+    installationId: process.env.OTTO_ANALYTICS_ID,
+  });
+  const captureAnalytics = analytics.forOwner(ownerId);
   const admission = createWorkAdmission();
   const consumers = createWorkConsumers();
   const deploymentDrain = createTenantDrain({
@@ -565,6 +592,7 @@ export async function createApplication(
   });
   const learning = createMemoryLearning({ pool, ownerId, memory, curator });
   const personal = createPersonalService({
+    analytics: captureAnalytics,
     pool,
     ownerId,
     scheduler: boss,
@@ -723,6 +751,7 @@ export async function createApplication(
     await triage.initializeHeartbeat();
     await initializeMemoryLearning({ boss, consumers, run: learning.run });
     await startThreadWorkers({
+      analytics: captureAnalytics,
       consumers,
       artifacts,
       writeArtifact: workspace.writeArtifact?.bind(workspace),
@@ -865,6 +894,7 @@ export async function createApplication(
     await startOnboarding(name, [...new Set(connected.map((connection) => connection.name))]);
   };
   const app = await createApp({
+    analytics: captureAnalytics,
     admission,
     deploymentDrain,
     artifacts,
@@ -911,6 +941,7 @@ export async function createApplication(
   if (localAccounts) {
     registerPrivacyNotice(app, privacyNotice);
     createAccountSession({
+      analytics,
       accounts: localAccounts,
       origin: publicOrigin,
       localUser: { id: ownerId, name: 'You', email: null, avatarUrl: null },
@@ -1055,6 +1086,7 @@ export async function createApplication(
       () => promptInspector.close(),
       () => providerUsage.close(),
       () => inspectorDatabase.end(),
+      () => analytics.shutdown(),
     ]) {
       try {
         await close();
@@ -1105,6 +1137,12 @@ export async function createGatewayApplication(
     options: '-c search_path=otto_auth',
   });
   let runtimes: ReturnType<typeof createTenantRuntimeHost> | undefined;
+  const analytics = await createAnalytics({
+    provider: analyticsEnabled(env) ? createPostHogAnalytics() : undefined,
+    deployment: 'hosted',
+    environment: analyticsEnvironment(env),
+    dataRoot,
+  });
   try {
     const authentication = createGoogleAuthentication({
       database: authenticationDatabase,
@@ -1142,6 +1180,7 @@ export async function createGatewayApplication(
       operatorEnvironment: { ...env, OTTO_PUBLIC_URL: origin },
     });
     const app = await createGateway({
+      analytics,
       origin,
       authentication,
       accounts,
@@ -1207,8 +1246,10 @@ export async function createGatewayApplication(
       clearInterval(timer);
     });
     app.addHook('onClose', async () => authenticationDatabase.end());
+    app.addHook('onClose', async () => analytics.shutdown());
     return { app };
   } catch {
+    await analytics.shutdown();
     await runtimes?.close().catch(() => {});
     await authenticationDatabase.end().catch(() => {});
     throw new Error('The hosted application configuration could not be initialized.');
