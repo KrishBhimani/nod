@@ -6457,7 +6457,29 @@ test('desktop OAuth retains pending sign-in links and matches onboarding complet
         return Response.json([{ slug: 'gmail', name: 'Gmail', status: 'disconnected' }]);
       }
       if (path === '/api/models')
-        return Response.json({ connections: [], selection: null, subscriptionAvailable: true });
+        return Response.json({
+          connections: [
+            {
+              id: 'fixture-model',
+              provider: 'openai',
+              method: 'api_key',
+              label: 'Fixture',
+              status: 'connected',
+              models: [
+                {
+                  id: 'fixture',
+                  name: 'Fixture',
+                  efforts: ['high'],
+                  images: false,
+                  contextWindow: 1000,
+                },
+              ],
+              managed: false,
+            },
+          ],
+          selection: { connectionId: 'fixture-model', modelId: 'fixture', effort: 'high' },
+          subscriptionAvailable: true,
+        });
       if (path === '/api/preferences') return Response.json({ timeZone: 'Europe/Lisbon' });
       if (path === '/api/account/prepare') return Response.json({ ok: true });
       if (path === '/api/apps/gmail/connect') {
@@ -6649,7 +6671,7 @@ test('desktop OAuth retains pending sign-in links and matches onboarding complet
     assert.equal(canRestart(), true);
     await act(async () =>
       dom.window.document
-        .querySelector<HTMLButtonElement>('.account-onboarding-actions .button-ghost')!
+        .querySelector<HTMLButtonElement>('.account-onboarding-actions .button')!
         .click(),
     );
     await act(async () =>

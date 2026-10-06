@@ -1446,6 +1446,11 @@ describe('model connections', { skip: !process.env.TEST_DATABASE_URL }, () => {
     assert.equal((await complete()).statusCode, 400);
     assert.equal(captured.length, 2);
     assert.deepEqual((await status()).json(), { status: 'connected' });
+    const repeated = await app.inject({
+      url: `/api/models/oauth/callback?state=${signIn.attempt}&code=fixture-code`,
+    });
+    assert.equal(repeated.statusCode, 200);
+    assert.equal(captured.length, 2);
     assert.equal(exchanges, 1);
     const openRouter = await app.inject({
       method: 'POST',
@@ -1491,6 +1496,37 @@ describe('model connections', { skip: !process.env.TEST_DATABASE_URL }, () => {
     assert.match(pending.json().error, /pending sign-in/);
     assert.equal(captured.length, 3);
     assert.deepEqual((await status()).json(), { status: 'connected' });
+    let exchanging!: () => void;
+    let finishExchange!: () => void;
+    const exchangeStarted = new Promise<void>((resolve) => {
+      exchanging = resolve;
+    });
+    const exchangeGate = new Promise<void>((resolve) => {
+      finishExchange = resolve;
+    });
+    const slow = await f.create('fixture-slow', {
+      ...backend,
+      async exchange() {
+        exchanging();
+        await exchangeGate;
+        return backend.exchange();
+      },
+    });
+    const slowApp = Fastify();
+    slow.register(slowApp);
+    t.after(() => slowApp.close());
+    const slowSignIn = await slow.start('openrouter');
+    const slowCallback = `/api/models/oauth/callback?state=${slowSignIn.attempt}&code=fixture-code`;
+    const first = slowApp.inject({ url: slowCallback });
+    await exchangeStarted;
+    const second = slowApp.inject({ url: slowCallback });
+    const exchangesBefore = exchanges;
+    finishExchange();
+    assert.deepEqual(
+      (await Promise.all([first, second])).map((response) => response.statusCode),
+      [200, 200],
+    );
+    assert.equal(exchanges, exchangesBefore + 1);
     const hosted = await f.create('fixture-hosted', backend, false);
     await assert.rejects(hosted.start('openai'));
     const failed = await f.create('fixture-failed', {

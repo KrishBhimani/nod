@@ -169,11 +169,10 @@ export function createComposioProvider(options: {
       ([, id]) => typeof id === 'string' && id.trim().length > 0,
     ),
   );
-  const client =
-    options.client ??
-    (options.apiKey
+  function connect(apiKey?: string) {
+    return apiKey
       ? new Composio({
-          apiKey: options.apiKey,
+          apiKey,
           allowTracking: false,
           fileUploadDirs: false,
           toolkitVersions: {
@@ -186,7 +185,9 @@ export function createComposioProvider(options: {
             notion: '20260915_00',
           },
         })
-      : undefined);
+      : undefined;
+  }
+  let client = options.client ?? connect(options.apiKey);
   function required() {
     if (!client) throw new Error('The connection provider is not configured.');
     return client;
@@ -425,9 +426,16 @@ export function createComposioProvider(options: {
   }
   return {
     id: 'composio',
-    configured: Boolean(client),
+    get configured() {
+      return Boolean(client);
+    },
+    setApiKey(apiKey) {
+      client = connect(apiKey);
+    },
     supportedServices: toolkits,
-    webhooksConfigured: Boolean(client && options.webhookSecret),
+    get webhooksConfigured() {
+      return Boolean(client && options.webhookSecret);
+    },
     supportsSubscriptions: ['gmail', 'googlecalendar', 'slack', 'notion'],
     verificationEmails: (accountId, query, signal) =>
       readVerificationEmails(required().tools, accountId, query, signal),

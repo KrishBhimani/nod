@@ -72,6 +72,7 @@ export function createModelService(options: {
       timer: ReturnType<typeof setTimeout>;
       status: 'waiting' | 'completing' | 'connected' | 'failed';
       error?: string;
+      completion?: Promise<void>;
     }
   >();
   function forgetAttempt(state: string) {
@@ -264,6 +265,11 @@ export function createModelService(options: {
     if (!attempt || closed || attempt.expires < Date.now() || attempt.status !== 'waiting')
       throw new ConnectionError('This sign-in request has expired. Start a new connection.');
     attempt.status = 'completing';
+    attempt.completion = finish(attempt, callback);
+    attempt.completion.catch(() => {});
+    return attempt.completion;
+  }
+  async function finish(attempt: NonNullable<ReturnType<typeof attempts.get>>, callback: URL) {
     try {
       let value: ModelCredential;
       try {
@@ -289,6 +295,12 @@ export function createModelService(options: {
     } finally {
       attempt.secret = {};
     }
+  }
+  async function completeCallback(callback: URL) {
+    const attempt = attempts.get(callback.searchParams.get('state') ?? '');
+    await (attempt?.completion && !closed && attempt.expires >= Date.now()
+      ? attempt.completion
+      : complete(callback));
   }
   async function start(provider: 'openai' | 'openrouter', connectionId?: string) {
     if (closed) throw new ConnectionError('Model connections have stopped.');
@@ -322,7 +334,7 @@ export function createModelService(options: {
             response.end();
             return;
           }
-          void complete(callback).then(
+          void completeCallback(callback).then(
             () => {
               response.writeHead(200, {
                 'Content-Type': 'text/html; charset=utf-8',
@@ -643,7 +655,7 @@ export function createModelService(options: {
         });
         routes.get('/api/models/oauth/callback', async (request, reply) => {
           try {
-            await complete(new URL(request.url, options.origin));
+            await completeCallback(new URL(request.url, options.origin));
             return reply
               .header('Cache-Control', 'no-store')
               .header('Referrer-Policy', 'no-referrer')

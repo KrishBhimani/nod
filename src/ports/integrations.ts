@@ -82,6 +82,7 @@ export interface VerificationEmail {
 export interface IntegrationProvider {
   id: string;
   configured: boolean;
+  setApiKey?(apiKey?: string): void;
   supportedServices?: readonly IntegrationService[];
   webhooksConfigured: boolean;
   supportsSubscriptions: readonly IntegrationService[];

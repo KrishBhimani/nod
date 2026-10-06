@@ -157,6 +157,13 @@ export function meterIntegrations(
   }
   return {
     ...provider,
+    get configured() {
+      return provider.configured;
+    },
+    get webhooksConfigured() {
+      return provider.webhooksConfigured;
+    },
+    setApiKey: provider.setApiKey?.bind(provider),
     createSession: async (owner, accounts, signal) =>
       session(
         await usage.track({ ...base, operation: 'create_session' }, () =>

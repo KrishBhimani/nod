@@ -48,6 +48,7 @@ import { createKeychainKeyStore } from '../providers/keychain/key-store.ts';
 import { createOpenAISpeechProvider } from '../providers/openai/speech.ts';
 import { createPiModelBackend } from '../providers/pi/models.ts';
 import { createModelService } from './models.ts';
+import { createIntegrationKeyService } from './integration-key.ts';
 import { createPiAgent } from '../providers/pi/index.ts';
 import { createSkillLibrary } from '../providers/pi/skills.ts';
 import { readPiSessionEntries } from '../providers/pi/checkpoint.ts';
@@ -135,6 +136,7 @@ export interface ApplicationAdapters {
   analytics?: ProductAnalytics;
   initialize?(): Promise<void>;
   models?: ReturnType<typeof createModelService>;
+  integrationKey?: ReturnType<typeof createIntegrationKeyService>;
   prepareComputer?(): Promise<void>;
   computerLifecycle?: { pause(): Promise<void>; resume(): Promise<void> };
   confirmComputerShutdown?(): Promise<void>;
@@ -211,6 +213,22 @@ export function createDefaultAdapters(
     slack: env.COMPOSIO_SLACK_AUTH_CONFIG_ID,
     notion: env.COMPOSIO_NOTION_AUTH_CONFIG_ID,
   };
+  const integrations = createComposioProvider({
+    apiKey: env.COMPOSIO_API_KEY,
+    webhookSecret: env.COMPOSIO_WEBHOOK_SECRET,
+    webhookUrl: env.OTTO_COMPOSIO_WEBHOOK_URL,
+    authConfigs,
+  });
+  const integrationKey =
+    runtimeMode === 'local' && !desktopMode
+      ? createIntegrationKeyService({
+          database: pool,
+          ownerId,
+          keyStore,
+          provider: integrations,
+          changed: refresh,
+        })
+      : undefined;
   const computerProvider = env.COMPUTER_PROVIDER || 'docker';
   if (
     !['docker', 'e2b', 'cloudflare'].includes(computerProvider) ||
@@ -265,6 +283,7 @@ export function createDefaultAdapters(
     ...(analyticsEnabled(env) ? { analytics: createPostHogAnalytics() } : {}),
     initialize: async () => {
       await models.initialize();
+      await integrationKey?.initialize();
       await allocations?.initialize();
       await databaseObjects?.initialize();
     },
@@ -318,12 +337,8 @@ export function createDefaultAdapters(
       speechModel: env.TTS_MODEL,
       voice: env.TTS_VOICE,
     }),
-    integrations: createComposioProvider({
-      apiKey: env.COMPOSIO_API_KEY,
-      webhookSecret: env.COMPOSIO_WEBHOOK_SECRET,
-      webhookUrl: env.OTTO_COMPOSIO_WEBHOOK_URL,
-      authConfigs,
-    }),
+    integrations,
+    ...(integrationKey ? { integrationKey } : {}),
     ...(['local', 'tenant'].includes(runtimeMode)
       ? {
           directIntegrations: (
@@ -446,6 +461,7 @@ async function initializeApplication(
     } catch {}
   }
   adapters.models?.onSecrets((values) => inspectorSecrets.push(...values));
+  adapters.integrationKey?.onSecrets((values) => inspectorSecrets.push(...values));
   const memoryCurator =
     adapters.memoryCurator ?? createPiMemoryCurator({ provider: adapters.model.provider });
   const inspector = createInspectorStore(inspectorDatabase, {
@@ -940,6 +956,7 @@ async function initializeApplication(
       }),
   });
   adapters.models?.register(app);
+  adapters.integrationKey?.register(app);
   app.addHook('preClose', async () => {
     await adapters.models?.close();
   });
