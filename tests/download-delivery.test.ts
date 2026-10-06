@@ -231,12 +231,14 @@ test(
             mode === 'adapter fixture'
               ? fakeComputer({
                   act: async (threadId, input) => {
-                    assert.deepEqual(input, { action: 'open', url: `${fixture.origin}/session` });
+                    assert.deepEqual(
+                      { action: input.action, url: input.url },
+                      { action: 'open', url: `${fixture.origin}/session` },
+                    );
                     active.add(threadId);
                     return {
                       text: 'Synthetic invoices',
                       url: `${fixture.origin}/session`,
-                      candidates: [],
                     };
                   },
                   download: async (threadId, input, signal) => {

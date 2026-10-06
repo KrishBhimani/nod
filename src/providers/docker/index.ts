@@ -99,7 +99,7 @@ export function createDockerWorkspace(options: {
     workspaceRoot: options.workspaceRoot,
     status: `${options.container}; Linux · internet enabled`,
     instructions:
-      'Your Linux workspace uses Docker networking without an Otto egress firewall. Node, Python (with pdfplumber and pillow_heif), pipx, git, curl, ripgrep, jq, ffmpeg, yt-dlp, poppler-utils and Tesseract OCR are installed. Install trusted CLIs with npm install -g <package> or pipx install <package>; /home/node persists across tasks and restarts. You run as an unprivileged user without sudo or a graphical display; use a CLI or browser web app. Keep outputs in this workspace and install tools here, not on the user’s device.',
+      'Your Linux workspace uses Docker networking without an Otto egress firewall. Node, Python (with pdfplumber and pillow_heif), pipx, git, curl, ripgrep, jq, ffmpeg, yt-dlp, poppler-utils, qpdf, Ghostscript and Tesseract OCR are installed. Python also has pypdf, openpyxl, python-docx and python-pptx, and LibreOffice (soffice) converts office files. Install trusted Python libraries with pip install <package>, trusted CLIs with npm install -g <package> or pipx install <package>; /home/node persists across tasks and restarts. You run as an unprivileged user without sudo or a graphical display; use a CLI or browser web app. Keep outputs in this workspace and install tools here, not on the user’s device.',
     runCommand: (id, args, input) =>
       runWorkspaceCommand({
         container: options.container,
@@ -127,6 +127,7 @@ type CommandInput = {
   timeoutMs?: number;
   maxBytes?: number;
   onData?(chunk: Buffer): void;
+  session?: boolean;
 };
 type CommandResult = { stdout: Buffer; stderr: Buffer; exitCode: number };
 
@@ -239,12 +240,13 @@ export function createCommandWorkspace(options: {
       return {
         path: `/workspace/${id}`,
         instructions: options.instructions,
-        async exec(script, { input: stdin, signal, timeoutMs = 600_000, onData } = {}) {
+        async exec(script, { input: stdin, signal, timeoutMs = 600_000, onData, notices } = {}) {
           const result = await command(id, ['bash', '-c', script], {
             input: stdin,
             signal: signal ? AbortSignal.any([signal, input.signal]) : input.signal,
             timeoutMs: Math.max(1000, Math.min(timeoutMs, 3_600_000)),
             onData: onData ?? (() => {}),
+            session: notices,
           });
           return { exitCode: result.exitCode };
         },

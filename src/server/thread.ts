@@ -37,6 +37,22 @@ export const boss = new PgBoss({
   max: runtimeMode === 'tenant' ? 2 : 10,
 });
 const running = new Map<string, { turnId: string; controller: AbortController }>();
+const heldBrowsers = new Set<string>();
+
+async function holdBrowser(
+  dependencies: ThreadDependencies,
+  threadId: string,
+  until: number | null,
+) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    dependencies.holdBrowser?.(threadId, until),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, 15_000);
+    }),
+  ]).catch(() => {});
+  clearTimeout(timer);
+}
 let stopping = false;
 
 export type TurnSource = 'user' | 'schedule' | 'event' | 'resume';
@@ -98,6 +114,7 @@ export interface ThreadDependencies {
   task?: (turn: TurnRef, input: unknown) => Promise<unknown>;
   markUntrustedContext?: (turn: TurnRef) => Promise<void>;
   flagInjection?: (turn: TurnRef, findings: string[]) => Promise<void>;
+  holdBrowser?: (threadId: string, until: number | null) => Promise<void>;
   runTurn: (context: RuntimeContext) => Promise<RuntimeResult>;
   speech: Pick<SpeechService, 'synthesize'>;
   requestCredential: (
@@ -121,6 +138,7 @@ export interface ThreadDependencies {
     request: BrowserConnectionRequest,
     turn: TurnRef,
     signal: AbortSignal,
+    launch: { timeZone?: string; locale?: string },
   ) => Promise<unknown>;
   reactToMessage?: (
     input: AgentReactionInput,
@@ -445,6 +463,7 @@ export async function resetThread(expectedThreadId: string) {
     return { cancelled, previousThreadId: thread.id, threadId: (await activeThread(client)).id };
   });
   abortTurns(result.cancelled);
+  heldBrowsers.delete(result.previousThreadId);
   refresh();
   return { ok: true, threadId: result.threadId, previousThreadId: result.previousThreadId };
 }
@@ -898,6 +917,7 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
     refresh();
   };
   try {
+    if (heldBrowsers.delete(threadId)) await holdBrowser(dependencies, threadId, null);
     const workspacePath = join(dataRoot, 'workspaces', threadId);
     await mkdir(workspacePath, { recursive: true });
     const stage = async (
@@ -1051,7 +1071,13 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
           connections(action, service, ref, proposal, newAccount),
         ),
       browserConnection:
-        browserConnection && fenced((request) => browserConnection(request, ref, signal)),
+        browserConnection &&
+        fenced((request) =>
+          browserConnection(request, ref, signal, {
+            timeZone: loaded.context.timeZone,
+            locale: loaded.context.locale,
+          }),
+        ),
       requestCredential: fenced((input) => dependencies.requestCredential(ref, input)),
       integration: fenced(async (action, args, callSignal?: AbortSignal) => {
         const operation = callSignal ? AbortSignal.any([signal, callSignal]) : signal;
@@ -1130,6 +1156,10 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
     ).catch((error) => {
       if (!signal.aborted) throw error;
     });
+    if (dependencies.holdBrowser && result.status !== 'succeeded' && !signal.aborted) {
+      heldBrowsers.add(threadId);
+      if (!turn.background) await holdBrowser(dependencies, threadId, Date.now() + 30 * 60_000);
+    }
     outcome = signal.aborted ? 'cancelled' : result.status;
   } catch (error) {
     if (stopping) {

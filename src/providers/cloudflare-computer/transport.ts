@@ -12,11 +12,13 @@ export function launchCloudflareCommand(options: {
   role: 'browser' | 'workspace';
   generation: string;
   threadId?: string;
+  connected?: boolean;
+  session?: boolean;
   fetch?: typeof fetch;
   origin?: string;
   onUncertain(): void;
 }): CommandProcess {
-  const { role, generation, threadId: selectedThreadId, onUncertain } = options;
+  const { role, generation, threadId: selectedThreadId, connected, session, onUncertain } = options;
   let origin: string;
   try {
     const url = new URL(options.origin ?? 'http://otto.computer');
@@ -31,7 +33,9 @@ export function launchCloudflareCommand(options: {
         !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) ||
       !['browser', 'workspace'].includes(role) ||
       !/^[1-9]\d{0,18}$/.test(generation) ||
-      (role === 'workspace' && !selectedThreadId)
+      (role === 'workspace' && !selectedThreadId) ||
+      ((connected || session) && role !== 'workspace') ||
+      (connected && session)
     )
       throw new Error();
     if (selectedThreadId !== undefined) threadIdentity(selectedThreadId);
@@ -285,7 +289,13 @@ export function launchCloudflareCommand(options: {
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id, role, ...(selectedThreadId && { threadId: selectedThreadId }) }),
+        body: JSON.stringify({
+          id,
+          role,
+          ...(selectedThreadId && { threadId: selectedThreadId }),
+          ...(connected && { connected: true }),
+          ...(session && { session: true }),
+        }),
       },
       async (response) => {
         if (response.status !== 201 || !response.body) throw error();
@@ -333,4 +343,22 @@ export function launchCloudflareCommand(options: {
       return true;
     },
   });
+}
+
+export async function cloudflareBrowserLive(options: { generation: string; fetch?: typeof fetch }) {
+  if (!/^[1-9]\d{0,18}$/.test(options.generation))
+    throw new Error('The remote computer configuration is invalid.');
+  try {
+    const response = await (options.fetch ?? fetch)('http://otto.computer/v1/status', {
+      headers: { 'x-otto-generation': options.generation, 'x-otto-computer-role': 'browser' },
+      redirect: 'error',
+      signal: AbortSignal.timeout(10_000),
+    });
+    const value: { live?: unknown } | undefined =
+      response.status === 200 ? await response.json() : undefined;
+    await response.body?.cancel().catch(() => {});
+    return value?.live === true;
+  } catch {
+    return false;
+  }
 }

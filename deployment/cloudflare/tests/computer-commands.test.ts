@@ -100,10 +100,16 @@ function processFixture() {
 
 function fixture(overrides: Partial<Parameters<typeof createComputerCommands>[0]> = {}) {
   const processes: ReturnType<typeof processFixture>[] = [];
-  const launches: Array<{ id: string; generation: string; threadId?: string }> = [];
+  const launches: Array<{
+    id: string;
+    generation: string;
+    threadId?: string;
+    session?: boolean;
+  }> = [];
   const completed: Array<{ id: string; generation: string; code: number }> = [];
   const uncertain: Array<{ id: string; generation: string }> = [];
   let allowed = true;
+  let live = false;
   const role = overrides.role ?? 'workspace';
   const registry = createComputerCommands({
     role,
@@ -122,6 +128,7 @@ function fixture(overrides: Partial<Parameters<typeof createComputerCommands>[0]
     async uncertain(input) {
       uncertain.push(input);
     },
+    live: () => live,
     ...overrides,
   });
   const request = (path: string, init: RequestInit = {}, version = '1') =>
@@ -149,6 +156,9 @@ function fixture(overrides: Partial<Parameters<typeof createComputerCommands>[0]
       ),
     revoke() {
       allowed = false;
+    },
+    live(value: boolean) {
+      live = value;
     },
     async close() {
       await registry.stop();
@@ -207,6 +217,8 @@ test('computer command creation validates identities, role, thread and generatio
         { ...valid, threadId: role === 'browser' ? 'thread' : undefined },
         { ...valid, threadId: '../private' },
         { ...valid, arbitrary: 'private synthetic value' },
+        { ...valid, session: role === 'browser' },
+        { ...valid, session: 'private' },
         null,
         [],
       ]) {
@@ -235,11 +247,51 @@ test('computer command creation validates identities, role, thread and generatio
         { id, generation: '1', threadId: role === 'workspace' ? 'thread' : undefined },
       ]);
       assert.equal((await f.create(id)).status, 409);
+      if (role === 'workspace') {
+        const g = fixture({ role });
+        try {
+          const session = randomUUID();
+          const response = await g.request('/v1/commands', {
+            method: 'POST',
+            body: JSON.stringify({ ...valid, id: session, session: true }),
+          });
+          assert.equal(response.status, 201);
+          assert.deepEqual(g.launches, [
+            { id: session, generation: '1', threadId: 'thread', session: true },
+          ]);
+        } finally {
+          await g.close();
+        }
+      }
       assert.equal((await f.request(`/v1/commands/${id}/output`, {}, '2')).status, 404);
       assert.equal((await f.request(`/v1/commands/${randomUUID()}/output`)).status, 404);
     } finally {
       await f.close();
     }
+  }
+});
+
+test('computer status reports liveness without launching and only to the current generation', async () => {
+  const f = fixture({
+    role: 'browser',
+    async authorize(version) {
+      if (version !== '1') throw new RuntimeControlError(403);
+    },
+  });
+  try {
+    const status = async () => {
+      const response = await f.request('/v1/status');
+      return { status: response.status, body: await response.text() };
+    };
+    assert.deepEqual(await status(), { status: 200, body: '{"live":false}' });
+    f.live(true);
+    assert.deepEqual(await status(), { status: 200, body: '{"live":true}' });
+    assert.equal((await f.request('/v1/status', { method: 'POST' })).status, 404);
+    assert.equal((await f.request('/v1/status?live=1')).status, 404);
+    assert.notEqual((await f.request('/v1/status', {}, '2')).status, 200);
+    assert.equal(f.launches.length, 0);
+  } finally {
+    await f.close();
   }
 });
 

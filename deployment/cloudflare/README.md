@@ -1,13 +1,13 @@
 # Cloudflare deployment
 
-The public Worker serves `dist/web` and sends `/api/*` to one private Node gateway. The gateway authenticates Google sessions, provisions a tenant SQL role and schemas per user, and sends signed requests to that user's tenant container. Each owner also gets separate browser and workspace containers that start on first use and checkpoint to private R2 when idle. Provider keys stay in the Node runtime.
+The public Worker serves `dist/web` and sends `/api/*` to one private Node gateway. The gateway authenticates Google sessions, provisions a tenant SQL role and schemas per user, and sends signed requests to that user's tenant container. Each owner also gets separate browser and workspace containers that start on first use and checkpoint to private R2 (see [Computer checkpoints](#computer-checkpoints)). Provider keys stay in the Node runtime.
 
 | Class                        | Image tag                            | Instance type | Development max | Production max |
 | ---------------------------- | ------------------------------------ | ------------- | --------------- | -------------- |
 | `GatewayContainer`           | `otto-<environment>:<SHA>`           | `basic`       | 1               | 1              |
-| `TenantContainer`            | same runtime image                   | `basic`       | 8               | 100            |
+| `TenantContainer`            | same runtime image                   | `standard-1`  | 8               | 100            |
 | `BrowserComputerContainer`   | `otto-<environment>-browser:<SHA>`   | `standard-4`  | 8               | 100            |
-| `WorkspaceComputerContainer` | `otto-<environment>-workspace:<SHA>` | `basic`       | 8               | 100            |
+| `WorkspaceComputerContainer` | `otto-<environment>-workspace:<SHA>` | `standard-2`  | 8               | 100            |
 
 Production uses `OTTO_MAX_USERS=100` in `GATEWAY_ENV`. The default remains 8 for other deployments, with a maximum of 400. Admission must match the container limits; raise them together with database connections and budget.
 
@@ -59,6 +59,18 @@ npm --prefix deployment/cloudflare run provision:storage -- development
 npm --prefix deployment/cloudflare run provision:storage -- production
 ```
 
+## Workspace users
+
+Workspace commands run as `node` and connected CLI commands as `otto-connected` (uid 1002, private home, single secret in the environment), as in local Docker. A deployed container gives every process root's capabilities whatever its user, so both start through `setpriv --no-new-privs` with inheritable and ambient capabilities cleared; otherwise a workspace command could read a CLI token from `/proc`. `/home/node/state` and its `workspace` and `tools` directories are mode 755 so `otto-connected` can run installed CLIs and read shared workspace files but not write them.
+
+## Computer checkpoints
+
+A checkpoint is a gzip tar of `/home/node/state` (workspace) or the owner's browser data directory, at most 1 GiB uncompressed, 512 MiB per file and 100,000 entries. It skips `__pycache__` and `.cache` directories, FIFOs and sockets, and for the browser Chromium's HTTP, code, GPU, shader and Dawn caches and CRX caches; cookies, Local Storage, IndexedDB and Service Worker data are kept. Restore also reads the earlier uncompressed format.
+
+The browser checkpoints when it goes idle, which closes its pages. When a foreground turn ends waiting on the user (a question, approval or credential request) and the browser is running, the tenant holds it for up to 30 minutes; the next turn or a reset releases it. A hold never starts a stopped browser. The workspace checkpoints about 20 seconds after its last command finishes and before it sleeps, stops or is drained, not after every command. Durability trade-off: if the workspace container is lost in that window, changes since the last checkpoint are lost and the model is told on its next command; the computer is not fenced.
+
+A workspace too large to save keeps running with its previous checkpoint, and every command still runs. The output of the model's next bash command starts with the sizes, the largest files and what to delete. The unsaved changes are discarded when the workspace sleeps, stops or is drained, and the next bash command says so. Neither case fences the computer or blocks a deploy.
+
 ## CI and rollout
 
 `.github/workflows/ci.yml` runs root checks, PostgreSQL tests, the build, this package's checks and tests, both dry runs and the image builds. `.github/workflows/deploy.yml` runs after successful CI on the current `main` commit, in the GitHub `production` environment, which needs:
@@ -74,7 +86,7 @@ npm --prefix deployment/cloudflare run provision:storage -- production
 
 1. Pushes all three images and resolves their digests.
 2. Closes a durable admission barrier (authorized by an HMAC derived from `OTTO_MASTER_KEY`).
-3. Drains each tenant naturally, then requires clean browser/workspace checkpoints and confirmed stop of each exact generation. Active holds, uncertain state or an expired deadline block the deploy; nothing is force-cancelled.
+3. Drains each tenant naturally, then requires clean browser/workspace checkpoints and confirmed stop of each exact generation. Active holds, uncertain state or an expired deadline block the deploy; nothing is force-cancelled. A workspace too large to save is stopped without its unsaved changes.
 4. Publishes Worker code, image references and `GATEWAY_ENV` together with `wrangler deploy --secrets-file`.
 5. Verifies every container application's image and rollout, the R2 binding, and a public smoke test, then reopens admission.
 
@@ -92,7 +104,7 @@ node deployment/cloudflare/scripts/recover.mjs production complete  # only after
 
 A failed or expired deployment never reopens automatically. Do not delete the barrier, substitute a nonce or clear a fence to get past a failure.
 
-Before a rollback, confirm the previous code supports the current SQL schema, Durable Object classes, checkpoint format and keys, and stop the current tenant and computer generations. Worker rollback does not revert PostgreSQL, R2 or completed external actions; prefer a forward fix.
+Before a rollback, confirm the previous code supports the current SQL schema, Durable Object classes, checkpoint format and keys, and stop the current tenant and computer generations. Releases before gzip checkpoints cannot restore them. Worker rollback does not revert PostgreSQL, R2 or completed external actions; prefer a forward fix.
 
 ## Database reset
 

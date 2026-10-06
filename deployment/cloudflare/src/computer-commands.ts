@@ -8,6 +8,7 @@ import {
 } from './protocol.ts';
 import { browserRequestBytes } from '../../../src/ports/computer.ts';
 import { threadIdentity } from '../../../src/ports/thread-identity.ts';
+import type { ComputerCommand } from './computer-lifecycle.ts';
 
 type Command = {
   id: string;
@@ -38,9 +39,10 @@ const receiptLimit = 32;
 export function createComputerCommands(options: {
   role: 'browser' | 'workspace';
   authorize(generation: string): Promise<void>;
-  launch(input: { id: string; generation: string; threadId?: string }): Promise<ExecProcess>;
+  launch(input: ComputerCommand): Promise<ExecProcess>;
   completed(input: { id: string; generation: string; code: number }): Promise<void>;
   uncertain(input: { id: string; generation: string }): Promise<void>;
+  live(): boolean;
   timeoutMs?: number;
   authorizationIntervalMs?: number;
   receiptTimeoutMs?: number;
@@ -227,7 +229,13 @@ export function createComputerCommands(options: {
   }
 
   async function create(request: Request, version: string) {
-    let input: { id: string; role: string; threadId?: string };
+    let input: {
+      id: string;
+      role: string;
+      threadId?: string;
+      connected?: boolean;
+      session?: boolean;
+    };
     try {
       input = JSON.parse(
         new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(
@@ -238,9 +246,15 @@ export function createComputerCommands(options: {
         !input ||
         typeof input !== 'object' ||
         Array.isArray(input) ||
-        Object.keys(input).some((key) => !['id', 'role', 'threadId'].includes(key)) ||
+        Object.keys(input).some(
+          (key) => !['id', 'role', 'threadId', 'connected', 'session'].includes(key),
+        ) ||
         input.role !== options.role ||
         (input.threadId !== undefined && typeof input.threadId !== 'string') ||
+        [input.connected, input.session].some(
+          (flag) => flag !== undefined && (flag !== true || options.role !== 'workspace'),
+        ) ||
+        (input.connected && input.session) ||
         (options.role === 'workspace' && !input.threadId) ||
         (options.role === 'browser' && input.threadId !== undefined)
       )
@@ -318,6 +332,8 @@ export function createComputerCommands(options: {
           id: input.id,
           generation: version,
           threadId: input.threadId,
+          ...(input.connected && { connected: true }),
+          ...(input.session && { session: true }),
         });
       } catch (error) {
         rejected = !command.failed && error instanceof RuntimeControlError && error.status === 409;
@@ -428,6 +444,13 @@ export function createComputerCommands(options: {
         if (url.pathname === '/v1/commands' && request.method === 'POST') {
           await options.authorize(version);
           return await create(request, version);
+        }
+        if (url.pathname === '/v1/status' && request.method === 'GET') {
+          await options.authorize(version);
+          return Response.json(
+            { live: !fenced && options.live() },
+            { headers: { 'cache-control': 'no-store' } },
+          );
         }
         const match = /^\/v1\/commands\/([0-9a-f-]{36})\/(input|end|kill|output)$/.exec(
           url.pathname,

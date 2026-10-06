@@ -4,7 +4,7 @@ import type { Computer, Workspace } from '../../ports/computer.ts';
 import { createBridgeComputer } from '../container-browser/client.ts';
 import { createCommandWorkspace } from '../docker/index.ts';
 import { runSupervisedCommand, WorkspaceCommandError } from '../docker/command.ts';
-import { launchCloudflareCommand } from './transport.ts';
+import { cloudflareBrowserLive, launchCloudflareCommand } from './transport.ts';
 
 export function createCloudflareAdapters(options: {
   ownerId: string;
@@ -50,34 +50,50 @@ export function createCloudflareAdapters(options: {
     workspaceRoot,
     status: 'Remote Linux workspace is ready.',
     instructions:
-      'Your remote Linux workspace is separate from the trusted browser. Node, Python (with pdfplumber and pillow_heif), pipx, git, curl, ripgrep, jq, ffmpeg, yt-dlp, poppler-utils and Tesseract OCR are installed. Install trusted CLIs with npm install -g <package> or pipx install <package>. You run as an unprivileged user without sudo or a graphical display; use a CLI or browser web app. Internet follows server provider policy. Keep outputs in this workspace.',
-    runCommand: (threadId, args, input) => {
-      if (workspaceUnavailable)
-        throw new WorkspaceCommandError(
-          true,
-          'The workspace is unavailable. Restart Otto before continuing.',
-        );
-      return runSupervisedCommand({
-        args,
-        ...input,
-        drainTimeoutMs,
-        transportGraceMs,
-        launch: () =>
-          launch({
-            role: 'workspace',
-            generation,
-            threadId,
-            fetch: requestFetch,
-            onUncertain: () => {
-              workspaceUnavailable = true;
-            },
-          }),
-      });
-    },
+      'Your remote Linux workspace is separate from the trusted browser. Node, Python (with pdfplumber and pillow_heif), pipx, git, curl, ripgrep, jq, ffmpeg, yt-dlp, poppler-utils, qpdf, Ghostscript and Tesseract OCR are installed. Python also has pypdf, openpyxl, python-docx and python-pptx, and LibreOffice (soffice) converts office files. Install trusted Python libraries with pip install <package>, trusted CLIs with npm install -g <package> or pipx install <package>. You run as an unprivileged user without sudo or a graphical display; use a CLI or browser web app. Internet follows server provider policy. Keep outputs in this workspace.',
+    runCommand: (threadId, args, { session, ...input }) => run(threadId, args, input, { session }),
+    runConnectedCommand: (threadId, args, input) => run(threadId, args, input, { connected: true }),
   });
+  function run(
+    threadId: string,
+    args: string[],
+    input: Omit<Parameters<typeof runSupervisedCommand>[0], 'args' | 'launch'>,
+    mode: { connected?: boolean; session?: boolean },
+  ) {
+    if (workspaceUnavailable)
+      throw new WorkspaceCommandError(
+        true,
+        'The workspace is unavailable. Restart Otto before continuing.',
+      );
+    return runSupervisedCommand({
+      args,
+      ...input,
+      drainTimeoutMs,
+      transportGraceMs,
+      launch: () =>
+        launch({
+          role: 'workspace',
+          generation,
+          threadId,
+          ...mode,
+          fetch: requestFetch,
+          onUncertain: () => {
+            workspaceUnavailable = true;
+          },
+        }),
+    });
+  }
   return {
     computer: {
       ...computer,
+      async hold(threadId, until) {
+        if (
+          browserUsed &&
+          !browserDisposed &&
+          (await cloudflareBrowserLive({ generation, fetch: requestFetch }))
+        )
+          await computer.hold(threadId, until);
+      },
       status: () => (browserDisposed ? 'Workspace browser is stopped.' : computer.status()),
       async dispose() {
         if (browserUsed) await computer.dispose();

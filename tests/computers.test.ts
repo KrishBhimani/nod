@@ -197,6 +197,10 @@ test('template contexts reject symlinked source and do not copy unrelated local 
       join(root, 'src/providers/container-browser/chromium.sh'),
       '#!/bin/sh\nexec /usr/bin/chromium "$@" 2>/dev/null\n',
     ),
+    writeFile(
+      join(root, 'src/providers/container-browser/xvfb.sh'),
+      '#!/bin/sh\nexec /usr/bin/Xvfb "$@"\n',
+    ),
     writeFile(join(root, 'deployment/e2b/browser-ready.ts'), 'export {};\n'),
     writeFile(
       join(root, 'src/providers/container-browser/.env'),
@@ -390,7 +394,6 @@ async function e2bFixture() {
           return {
             text: 'Synthetic page',
             url: input.url ?? 'https://example.test/',
-            candidates: [],
           };
         },
         screenshot: async () => Buffer.from('masked image'),
@@ -925,6 +928,8 @@ async function cloudflareFixture() {
     role: string;
     generation: string;
     threadId?: string;
+    connected?: boolean;
+    session?: boolean;
     frames: string[];
   }> = [];
   let hold:
@@ -949,7 +954,7 @@ async function cloudflareFixture() {
             await waiting.release.promise;
             throw new Error('Synthetic cancellation');
           }
-          return { text: selected, url: input.url ?? 'https://example.test/', candidates: [] };
+          return { text: selected, url: input.url ?? 'https://example.test/' };
         },
         screenshot: async () => Buffer.from(selected),
         injectCredentials: async (input) => {
@@ -957,7 +962,9 @@ async function cloudflareFixture() {
           return { status: 'submitted' };
         },
         currentPage: async () => ({ origin: 'https://example.test', url: 'https://example.test/' }),
-        hold: async () => {},
+        hold: async (threadId, until) => {
+          calls.push({ namespace: selected, method: 'hold', input: { threadId, until } });
+        },
         close: async () => {},
         dispose: async () => {
           calls.push({ namespace: selected, method: 'dispose' });
@@ -980,6 +987,8 @@ async function cloudflareFixture() {
         role: input.role,
         generation: input.generation,
         threadId: input.threadId,
+        connected: input.connected,
+        session: input.session,
         frames: [] as string[],
       };
       launches.push(record);
@@ -1118,6 +1127,80 @@ test('Cloudflare adapters bind owner namespaces and generations while keeping br
       a.workspace.dispose(),
       b.workspace.dispose(),
     ]);
+    await f.close();
+  }
+});
+
+test('Cloudflare connected CLI commands use the connected path with one secret and a private home', async () => {
+  const f = await cloudflareFixture();
+  const adapters = createCloudflareAdapters(f.options(ownerA));
+  try {
+    assert.equal(adapters.workspace.connectedCliAvailable, true);
+    const session = adapters.workspace.open({
+      threadId: 'same-task',
+      workspacePath: join(f.root, 'roots', ownerA, 'same-task'),
+      signal: new AbortController().signal,
+    });
+    const result = await session.executeProgram!(
+      'python3',
+      [
+        '-c',
+        'import os;e=os.environ;print(e["SYNTHETIC_API_KEY"], os.path.samefile(os.getcwd(), e["HOME"]), e["XDG_CONFIG_HOME"] == e["HOME"] + "/.config")',
+      ],
+      { SYNTHETIC_API_KEY: 'synthetic-connected-value' },
+      5,
+    );
+    assert.deepEqual(result, { exitCode: 0, output: 'synthetic-connected-value True True\n' });
+    await execute(session, 'printf model');
+    assert.deepEqual(
+      f.launches.map((launch) => [launch.connected, launch.session]),
+      [
+        [true, undefined],
+        [undefined, undefined],
+      ],
+    );
+    assert.ok(f.launches[0]!.frames.join('').includes('synthetic-connected-value'));
+    assert.equal(f.launches[1]!.frames.join('').includes('synthetic-connected-value'), false);
+  } finally {
+    await adapters.workspace.dispose();
+    await f.close();
+  }
+});
+
+test('Cloudflare browser holds reach a running browser only and never start one', async () => {
+  const f = await cloudflareFixture();
+  let live = true;
+  const statuses: Request[] = [];
+  const adapters = createCloudflareAdapters({
+    ...f.options(ownerA),
+    fetch: async (input, init) => {
+      statuses.push(new Request(input, init));
+      return Response.json({ live });
+    },
+  });
+  try {
+    await adapters.computer.hold('same-task', Date.now() + 60_000);
+    assert.equal(statuses.length + f.launches.length, 0);
+    await adapters.computer.act('same-task', { action: 'open', url: 'https://example.test/' });
+    await adapters.computer.hold('same-task', 123);
+    live = false;
+    await adapters.computer.hold('same-task', null);
+    assert.deepEqual(
+      f.calls.filter((call) => call.method === 'hold').map((call) => call.input),
+      [{ threadId: 'same-task', until: 123 }],
+    );
+    assert.equal(f.launches.length, 2);
+    assert.deepEqual(
+      statuses.map((request) => [
+        request.method,
+        request.url,
+        request.headers.get('x-otto-generation'),
+        request.headers.get('x-otto-computer-role'),
+      ]),
+      Array(2).fill(['GET', 'http://otto.computer/v1/status', '17', 'browser']),
+    );
+  } finally {
+    await adapters.computer.dispose();
     await f.close();
   }
 });
