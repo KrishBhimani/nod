@@ -102,9 +102,6 @@
   gap: 5px;
   align-items: center;
 }
-.model-sign-in details {
-  margin-top: 12px;
-}
 .model-sign-in form {
   display: grid;
   gap: 10px;
@@ -126,11 +123,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.model-picker-effort {
-  color: var(--muted-foreground);
-  font-weight: 400;
-  flex-shrink: 0;
 }
 .model-picker-source {
   font-size: 11px;
@@ -200,19 +192,6 @@
   color: var(--muted-foreground);
   padding: 12px 8px;
 }
-.model-efforts {
-  border-top: 1px solid var(--border);
-  padding-top: 12px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 12px;
-}
-.model-efforts > div {
-  display: flex;
-  gap: 2px;
-  flex-wrap: wrap;
-}
 .model-manage {
   margin-top: 12px;
   width: 100%;
@@ -236,9 +215,6 @@
     flex-wrap: wrap;
     justify-content: flex-end;
   }
-  .model-efforts {
-    align-items: flex-start;
-  }
 }
 
 .model-current {
@@ -250,8 +226,12 @@
   font-size: 12px;
   color: var(--muted-foreground);
 }
-.model-current .model-picker {
+.model-current .model-picker,
+.model-choice .model-picker {
   padding: 0;
+}
+.model-choice .model-picker-trigger {
+  max-width: 260px;
 }
 .model-details {
   margin-top: 20px;

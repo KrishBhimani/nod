@@ -9,12 +9,7 @@ import {
   SlidersHorizontal,
   X,
 } from 'lucide-react';
-import type {
-  ModelConnection,
-  ModelEffort,
-  ModelProvider,
-  ModelsResponse,
-} from '../../shared/models';
+import type { ModelConnection, ModelProvider, ModelsResponse } from '../../shared/models';
 import { modelProviderNames, modelSource } from '../../shared/models';
 import { agentModels } from '../../shared/model-defaults';
 import { BrandMark } from './brand';
@@ -34,15 +29,6 @@ import {
   SearchField,
 } from './ui';
 
-const effortNames: Record<ModelEffort, string> = {
-  off: 'Off',
-  minimal: 'Minimal',
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-  xhigh: 'Extra high',
-  max: 'Maximum',
-};
 function useModels() {
   const page = usePageData<ModelsResponse>('/api/models');
   const pending = useRef(false);
@@ -73,8 +59,10 @@ function useModels() {
 
 export function ModelSettings({
   onDirtyChange,
+  onboarding = false,
 }: {
   onDirtyChange?(dirty: boolean): void;
+  onboarding?: boolean;
 } = {}) {
   const models = useModels();
   const [keyProvider, setKeyProvider] = useState<ModelProvider | null>(null);
@@ -83,6 +71,17 @@ export function ModelSettings({
   const [signIn, setSignIn] = useState<{ url: string; attempt: string } | null>(null);
   const [callback, setCallback] = useState('');
   const dirty = models.busy || signingIn || !!signIn || Boolean(key.trim());
+  const [chooseSignal, setChooseSignal] = useState(0);
+  const available = models.data?.connections.filter(
+    (connection) => connection.status === 'connected' && connection.models.length > 0,
+  ).length;
+  const seen = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (available === undefined) return;
+    if (onboarding && seen.current !== undefined && available > seen.current)
+      setChooseSignal((count) => count + 1);
+    seen.current = available;
+  }, [available, onboarding]);
   useEffect(() => {
     onDirtyChange?.(dirty);
     return () => onDirtyChange?.(false);
@@ -159,9 +158,7 @@ export function ModelSettings({
       <p className="model-intro" data-analytics-public>
         Connect as many services as you want. All their models appear in one list.
       </p>
-      {data.connections.some(
-        (connection) => connection.status === 'connected' && connection.models.length > 0,
-      ) && (
+      {!onboarding && !!available && (
         <div className="model-current">
           <span>Your model</span>
           <ModelPicker manageConnections={false} />
@@ -331,10 +328,26 @@ export function ModelSettings({
               ))}
           </section>
         ))}
+        {onboarding && !!available && (
+          <section className="model-service model-choice" aria-label="Choose your model">
+            <div className="model-service-heading">
+              <div>
+                <h4>Choose your model</h4>
+                <p>All models from your connected services</p>
+              </div>
+              <div className="model-service-actions">
+                <ModelPicker manageConnections={false} openSignal={chooseSignal} />
+              </div>
+            </div>
+          </section>
+        )}
       </div>
       {signIn && (
         <div className="model-sign-in">
-          <p>Complete sign-in in the browser, then return to Otto.</p>
+          <p>
+            Complete sign-in in the browser, then return to Otto. If the browser ends on a page that
+            does not load, copy its full address and paste it below.
+          </p>
           <Button
             type="button"
             variant="outline"
@@ -352,53 +365,52 @@ export function ModelSettings({
           <Button type="button" variant="ghost" size="sm" onClick={() => setSignIn(null)}>
             Dismiss
           </Button>
-          <details>
-            <summary>Callback did not open?</summary>
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                const url = callback;
-                setCallback('');
-                void models.change('/api/models/oauth/complete', 'POST', { url }).then((saved) => {
-                  if (saved) setSignIn(null);
-                });
-              }}
-            >
-              <Field label="Callback URL">
-                <Input
-                  value={callback}
-                  autoComplete="off"
-                  disabled={models.busy}
-                  onChange={(event) => setCallback(event.target.value)}
-                  required
-                  type="url"
-                />
-              </Field>
-              <Button type="submit" size="sm" disabled={models.busy}>
-                Complete sign-in
-              </Button>
-            </form>
-          </details>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              const url = callback;
+              setCallback('');
+              void models.change('/api/models/oauth/complete', 'POST', { url }).then((saved) => {
+                if (saved) setSignIn(null);
+              });
+            }}
+          >
+            <Field label="Callback URL">
+              <Input
+                value={callback}
+                autoComplete="off"
+                disabled={models.busy}
+                onChange={(event) => setCallback(event.target.value)}
+                required
+                type="url"
+              />
+            </Field>
+            <Button type="submit" size="sm" disabled={models.busy}>
+              Complete sign-in
+            </Button>
+          </form>
         </div>
       )}
       {models.error && <Notice>{models.error}</Notice>}
-      <details className="model-details">
-        <summary>Connection details</summary>
-        <p className="model-footnote">
-          Claude plans do not support this connection. Use an Anthropic API key or OpenRouter.{' '}
-          <a
-            href="https://code.claude.com/docs/en/legal-and-compliance"
-            target="_blank"
-            rel="noreferrer"
-          >
-            Provider conditions
-          </a>
-        </p>
-        {!data.subscriptionAvailable && (
-          <p className="model-footnote">ChatGPT plan sign-in is available in local Otto.</p>
-        )}
-        <p className="model-footnote">Voice needs an OpenAI API key in server settings.</p>
-      </details>
+      {!onboarding && (
+        <details className="model-details">
+          <summary>Connection details</summary>
+          <p className="model-footnote">
+            Claude plans do not support this connection. Use an Anthropic API key or OpenRouter.{' '}
+            <a
+              href="https://code.claude.com/docs/en/legal-and-compliance"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Provider conditions
+            </a>
+          </p>
+          {!data.subscriptionAvailable && (
+            <p className="model-footnote">ChatGPT plan sign-in is available in local Otto.</p>
+          )}
+          <p className="model-footnote">Voice needs an OpenAI API key in server settings.</p>
+        </details>
+      )}
     </div>
   );
 }
@@ -406,12 +418,20 @@ export function ModelSettings({
 export function ModelPicker({
   setup = false,
   manageConnections = true,
+  openSignal = 0,
 }: {
   setup?: boolean;
   manageConnections?: boolean;
+  openSignal?: number;
 }) {
   const models = useModels();
   const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (openSignal > 0) {
+      setSearch('');
+      setOpen(true);
+    }
+  }, [openSignal]);
   const [manage, setManage] = useState(false);
   const [search, setSearch] = useState('');
   const selected = models.data?.selection;
@@ -441,7 +461,9 @@ export function ModelPicker({
         a.item.name.localeCompare(b.item.name) ||
         modelSource(a.source).localeCompare(modelSource(b.source)),
     );
-  async function choose(source: ModelConnection, id: string, effort: ModelEffort) {
+  async function choose(source: ModelConnection, id: string) {
+    const efforts = source.models.find((item) => item.id === id)?.efforts ?? [];
+    const effort = efforts.includes('high') ? 'high' : efforts[0];
     if (
       await models.change('/api/models/selection', 'PUT', {
         connectionId: source.id,
@@ -468,7 +490,6 @@ export function ModelPicker({
         {model && !setup ? (
           <>
             <span className="model-picker-name">{model.name}</span>
-            <span className="model-picker-effort">{effortNames[selected!.effort]}</span>
             <ChevronDown size={13} />
           </>
         ) : (
@@ -501,11 +522,6 @@ export function ModelPicker({
           <div className="model-options">
             {choices.map(({ source, item, recommended }) => {
               const active = selected?.connectionId === source.id && selected.modelId === item.id;
-              const effort = active
-                ? selected.effort
-                : item.efforts.includes('high')
-                  ? 'high'
-                  : item.efforts[0];
               return (
                 <button
                   type="button"
@@ -513,7 +529,7 @@ export function ModelPicker({
                   className="model-option"
                   aria-pressed={active}
                   disabled={models.busy}
-                  onClick={() => void choose(source, item.id, effort)}
+                  onClick={() => void choose(source, item.id)}
                 >
                   <span>
                     <strong>{item.name}</strong>
@@ -533,26 +549,6 @@ export function ModelPicker({
               <p className="model-empty">No available models match this search.</p>
             )}
           </div>
-          {model && model.efforts.length > 1 && (
-            <div className="model-efforts">
-              <span>Effort</span>
-              <div role="group" aria-label="Model effort">
-                {model.efforts.map((effort) => (
-                  <Button
-                    type="button"
-                    key={effort}
-                    variant={selected!.effort === effort ? 'secondary' : 'ghost'}
-                    size="sm"
-                    aria-pressed={selected!.effort === effort}
-                    disabled={models.busy}
-                    onClick={() => void choose(connection!, model.id, effort)}
-                  >
-                    {effortNames[effort]}
-                  </Button>
-                ))}
-              </div>
-            </div>
-          )}
           {models.error && <Notice>{models.error}</Notice>}
           {manageConnections && (
             <Button

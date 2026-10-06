@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Check, LoaderCircle } from 'lucide-react';
 import type { AccountPreparationResponse, AccountUser } from '../../shared/account';
 import type { Configuration, Connection } from '../../shared/contracts';
-import { ModelPicker, ModelSettings } from '../components/models';
+import { ModelSettings } from '../components/models';
 import type { ModelsResponse } from '../../shared/models';
 import { SetupNotice } from '../components/setup-notice';
 import { ComposioSettings } from '../components/desktop-settings';
@@ -65,6 +65,7 @@ export function Onboarding({
           model.id === models.selection?.modelId && model.efforts.includes(models.selection.effort),
       ),
   );
+  const keysReady = !!configuration?.integrationsReady;
   const [pending, setPending] = useState<Partial<Record<IntegrationService, Pending>>>({});
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -221,7 +222,7 @@ export function Onboarding({
     }
   }
   async function complete() {
-    if (saving || composioDirty || preparation !== 'ready') return;
+    if (!keysReady || saving || composioDirty || preparation !== 'ready') return;
     const captureAnalytics = analyticsForCurrentSession();
     setSaving(true);
     setError('');
@@ -250,36 +251,37 @@ export function Onboarding({
       <div className="account-onboarding-content">
         {canLogout && <AccountAvatar user={user} large />}
         <h1>
-          Welcome{canLogout && user.name.trim() ? `, ${user.name.trim().split(/\s+/)[0]}` : ''}.
+          {step === 'models'
+            ? `Welcome${canLogout && user.name.trim() ? `, ${user.name.trim().split(/\s+/)[0]}` : ''}.`
+            : 'Let’s connect your apps.'}
         </h1>
-        <p data-analytics-public>
-          {step === 'models' ? 'Connect your models.' : 'Connect your apps.'}
-        </p>
+        {step === 'models' ? (
+          <p data-analytics-public>Connect your models.</p>
+        ) : (
+          <p data-analytics-public>
+            It’s <strong>safe to connect your work accounts</strong>.{' '}
+            {configuration?.localOnly ? (
+              <>
+                Otto <strong>runs on your computer</strong>, keeps
+              </>
+            ) : (
+              'Otto keeps'
+            )}{' '}
+            your keys and passwords <strong>encrypted</strong>, and{' '}
+            <strong>asks before it sends, posts or deletes</strong> anything you didn’t ask for.
+          </p>
+        )}
         {step === 'models' ? (
           <>
-            <ModelSettings onDirtyChange={desktop ? setModelDirty : undefined} />
+            <ModelSettings onDirtyChange={desktop ? setModelDirty : undefined} onboarding />
             <div className="account-onboarding-actions" data-analytics-public>
               <Button disabled={!modelReady || modelDirty} onClick={() => setStep('apps')}>
                 Continue
-              </Button>
-              <Button variant="ghost" disabled={modelDirty} onClick={() => setStep('apps')}>
-                Skip for now
               </Button>
             </div>
           </>
         ) : (
           <>
-            <div className="onboarding-model">
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={composioDirty}
-                onClick={() => setStep('models')}
-              >
-                Back to models
-              </Button>
-              {modelReady && <ModelPicker />}
-            </div>
             {desktop && <ComposioSettings onDirtyChange={setComposioDirty} />}
             {!desktop && configuration && <SetupNotice configuration={configuration} />}
             {(error || loadError) && <Notice>{error || loadError}</Notice>}
@@ -355,7 +357,14 @@ export function Onboarding({
             )}
             <div className="account-onboarding-actions" data-analytics-public>
               <Button
-                disabled={saving || composioDirty || preparation !== 'ready'}
+                variant="outline"
+                disabled={saving || composioDirty}
+                onClick={() => setStep('models')}
+              >
+                Back
+              </Button>
+              <Button
+                disabled={!keysReady || saving || composioDirty || preparation !== 'ready'}
                 onClick={() => void complete()}
               >
                 {preparation === 'pending'
@@ -363,13 +372,6 @@ export function Onboarding({
                   : saving
                     ? 'Opening Otto…'
                     : 'Continue to Otto'}
-              </Button>
-              <Button
-                variant="ghost"
-                disabled={saving || composioDirty || preparation !== 'ready'}
-                onClick={() => void complete()}
-              >
-                I’ll do this later
               </Button>
             </div>
           </>
