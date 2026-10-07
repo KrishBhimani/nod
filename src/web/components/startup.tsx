@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { ArrowUp, Paperclip } from 'lucide-react';
 import { BrandMark } from './brand';
 import { Skeleton } from './ui';
-import { navigationItems } from '../lib/navigation';
+import { sidebarItems } from '../lib/navigation';
 import { readUiPreference } from '../lib/ui-preferences';
 import { desktopSettingsAvailable } from '../lib/desktop';
 import { DesktopToolbar } from './desktop-toolbar';
@@ -86,7 +86,7 @@ export function ChatSkeleton({
               </span>
             </div>
             <span className="button button-icon send-button ghost-send">
-              <ArrowUp size={24} />
+              <ArrowUp size={18} />
             </span>
           </div>
         </div>
@@ -110,7 +110,7 @@ function StartupShell({ children }: { children: ReactNode }) {
         </span>
         <nav className="main-nav" id="sidebar-navigation">
           <ul>
-            {navigationItems.map((item) => (
+            {sidebarItems.map((item) => (
               <li key={item.path}>
                 <span className="nav-link">
                   <Skeleton className="ghost-nav-icon" />

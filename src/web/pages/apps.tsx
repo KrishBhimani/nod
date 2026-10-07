@@ -1,6 +1,6 @@
 import { PageTitle } from '../components/page-title';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { AlertCircle, Check, Link2, LoaderCircle, Plus } from 'lucide-react';
+import { AlertCircle, Check, ExternalLink, Link2, LoaderCircle, Plus } from 'lucide-react';
 import type { Configuration, Connection } from '../../shared/contracts';
 import { SetupNotice } from '../components/setup-notice';
 import { api, ApiError, errorMessage } from '../lib/api';
@@ -116,7 +116,7 @@ export function ConnectedAccount({
       <div className="compact-account-details">
         <span className="compact-account-name">{identity.primary}</span>
         {identity.secondary && <span className="compact-account-email">{identity.secondary}</span>}
-        <p className="app-account-status" data-needs-attention={Boolean(issue) || undefined}>
+        <p className="app-status" data-status={issue ? 'attention' : 'connected'}>
           {issue ? (
             <AlertCircle size={16} aria-hidden="true" />
           ) : (
@@ -407,44 +407,43 @@ export function Apps({ configuration }: { configuration?: Configuration }) {
       <div className="app-grid">
         {items.map(({ service, accounts }) => (
           <article key={service.slug} className="app-card" aria-labelledby={`app-${service.slug}`}>
-            <div className="app-card-summary">
-              <ServiceLogo connection={service} />
-              <div className="app-card-copy">
-                <h3 id={`app-${service.slug}`}>{service.name}</h3>
-                {!accounts.length && <p className="app-card-description">{service.description}</p>}
-                {service.status === 'not_configured' && (
-                  <p className="app-card-unavailable">Sign-in unavailable</p>
-                )}
-                {accounts.some((account) => connectionIssue(account)) && (
-                  <p className="app-card-unavailable">Sign-in required</p>
-                )}
-              </div>
-              {accounts.length ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="app-manage"
-                  data-manage-service={service.slug}
-                  aria-label={`Manage ${service.name} accounts`}
-                  onClick={() => setManageService(service.slug)}
-                >
-                  Manage
-                </Button>
-              ) : (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="app-connect"
-                  data-connect-service={service.slug}
-                  aria-label={`Connect ${service.name}`}
-                  aria-busy={busy === `connect:${service.slug}`}
-                  disabled={service.status === 'not_configured' || Boolean(busy)}
-                  onClick={() => void connect(service)}
-                >
-                  {busy === `connect:${service.slug}` ? 'Opening…' : 'Connect'}
-                </Button>
+            <ServiceLogo connection={service} />
+            <div className="app-card-copy">
+              <h3 id={`app-${service.slug}`}>{service.name}</h3>
+              {!accounts.length && <p className="app-card-description">{service.description}</p>}
+              {service.status === 'not_configured' && (
+                <p className="app-status">Sign-in unavailable</p>
+              )}
+              {accounts.some((account) => connectionIssue(account)) && (
+                <p className="app-status" data-status="attention">
+                  <AlertCircle size={16} aria-hidden="true" />
+                  Sign-in required
+                </p>
               )}
             </div>
+            {accounts.length ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                data-manage-service={service.slug}
+                aria-label={`Manage ${service.name} accounts`}
+                onClick={() => setManageService(service.slug)}
+              >
+                Manage
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                data-connect-service={service.slug}
+                aria-label={`Connect ${service.name}`}
+                aria-busy={busy === `connect:${service.slug}`}
+                disabled={service.status === 'not_configured' || Boolean(busy)}
+                onClick={() => void connect(service)}
+              >
+                {busy === `connect:${service.slug}` ? 'Opening…' : 'Connect'}
+              </Button>
+            )}
           </article>
         ))}
       </div>
@@ -641,9 +640,12 @@ export function Apps({ configuration }: { configuration?: Configuration }) {
           </DialogDescription>
           {discovery?.setupText && <p>{discovery.setupText}</p>}
           {discovery?.setupUrl && (
-            <a href={discovery.setupUrl} target="_blank" rel="noopener noreferrer">
-              Open setup page
-            </a>
+            <Button asChild variant="outline" size="sm" className="app-discovery-setup">
+              <a href={discovery.setupUrl} target="_blank" rel="noopener noreferrer">
+                Open setup page
+                <ExternalLink size={16} aria-hidden="true" />
+              </a>
+            </Button>
           )}
           {discovery?.paths.map((path) => (
             <div

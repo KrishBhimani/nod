@@ -1,9 +1,8 @@
-import { Brain, KeyRound, ListChecks, MessageCircle, PlugZap, Radio } from 'lucide-react';
+import { KeyRound, ListChecks, MessageCircle, PlugZap, Radio } from 'lucide-react';
 
-export const navigationItems = [
+export const sidebarItems = [
   { path: '/', label: 'Chat', key: 'j', icon: MessageCircle },
   { path: '/tasks', label: 'Tasks', key: 'g', icon: ListChecks },
-  { path: '/memory', label: 'Memory', key: 'y', icon: Brain },
   { path: '/apps', label: 'Apps', key: 'e', icon: PlugZap },
   { path: '/channels', label: 'Channels', key: 'd', icon: Radio },
   { path: '/vault', label: 'Vault', key: 'k', icon: KeyRound },
@@ -38,7 +37,8 @@ export function navigationShortcut(
   const key = event.key.toLowerCase();
   if (key === 'b') return { type: 'sidebar' } as const;
   if (key === 'i') return { type: 'inspector' } as const;
-  const item = navigationItems.find((entry) => entry.key === key);
+  if (key === 'y') return { type: 'memory' } as const;
+  const item = sidebarItems.find((entry) => entry.key === key);
   return item ? ({ type: 'navigate', path: item.path } as const) : null;
 }
 

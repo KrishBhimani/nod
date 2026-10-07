@@ -56,14 +56,12 @@ export function DeletePlan({ id, title }: { id: string; title: string }) {
       <DialogTrigger asChild>
         <Button
           variant="ghost"
-          size="sm"
+          size="icon"
           aria-label={`Delete schedule ${title}`}
-          onClick={() => {
-            setError('');
-          }}
+          title="Delete"
+          onClick={() => setError('')}
         >
-          <Trash2 size={16} />
-          Delete
+          <Trash2 size={16} aria-hidden="true" />
         </Button>
       </DialogTrigger>
       <DialogContent

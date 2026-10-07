@@ -24,12 +24,13 @@
   --pink-90: #44001b;
   --background: var(--white);
   --canvas: var(--background);
-  --sidebar: var(--gray-15);
+  --sidebar: #f5f5f5;
   --surface: var(--gray-0);
   --surface-overlay: var(--gray-0);
   --surface-subtle: var(--gray-15);
   --surface-inset: var(--gray-20);
   --hover: var(--gray-20);
+  --nav-hover: color-mix(in srgb, var(--accent-soft) 60%, transparent);
   --foreground: var(--black);
   --text-secondary: var(--gray-80);
   --muted-foreground: var(--gray-70);
@@ -44,15 +45,13 @@
   --primary-foreground: var(--black);
   --chat-sent: var(--pink-20);
   --chat-sent-foreground: var(--black);
-  --primary-border: var(--pink-70);
   --control: var(--gray-15);
   --control-hover: var(--gray-10);
   --control-foreground: var(--foreground);
-  --control-border: var(--gray-60);
   --control-active: var(--gray-20);
   --input-background: var(--surface);
-  --input: var(--gray-70);
-  --input-hover: var(--gray-80);
+  --input: var(--gray-30);
+  --input-hover: var(--gray-50);
   --switch-off: var(--gray-70);
   --switch-thumb: var(--white);
   --secondary: var(--surface-inset);
@@ -60,7 +59,8 @@
   --muted: var(--surface-subtle);
   --border: var(--gray-25);
   --ring: var(--pink-70);
-  --focus-shadow: color-mix(in srgb, var(--brand-pink) 24%, transparent);
+  --focus-border: color-mix(in srgb, var(--primary) 55%, var(--border));
+  --focus-halo: 0 0 0 4px color-mix(in srgb, var(--primary) 16%, transparent);
   --selection: var(--pink-20);
   --dot-grid: var(--gray-30);
   --deboss-top: var(--gray-20);
@@ -82,11 +82,14 @@
   --image-overlay: color-mix(in srgb, var(--black) 85%, transparent);
   --image-foreground: var(--white);
   --shadow-sm: 0 1px 3px var(--shadow-color);
-  --shadow-composer: 0 4px 16px var(--shadow-color), 0 1px 3px var(--shadow-color);
+  --shadow-composer:
+    0 6px 24px color-mix(in srgb, var(--black) 6%, transparent), 0 1px 3px var(--shadow-color);
   --shadow-menu: 0 12px 32px var(--shadow-overlay), 0 2px 8px var(--shadow-color);
   --shadow-dialog: 0 24px 80px var(--shadow-overlay);
   --shadow-deboss: inset 8px 8px 12px var(--deboss-top), inset -8px -8px 12px var(--deboss-bottom);
   --control-radius: 8px;
+  --input-radius: 12px;
+  --radius-full: 999px;
   --card-radius: 12px;
   --dialog-radius: 16px;
   --control-height: 40px;
@@ -105,7 +108,7 @@
 :root[data-theme='dark'] {
   color-scheme: dark;
   --background: var(--black);
-  --sidebar: var(--gray-90);
+  --sidebar: #1f1f1f;
   --surface: var(--gray-90);
   --surface-overlay: var(--gray-85);
   --surface-subtle: var(--gray-90);
@@ -119,14 +122,12 @@
   --accent-border: var(--pink-70);
   --chat-sent: var(--pink-80);
   --chat-sent-foreground: var(--white);
-  --primary-border: var(--brand-pink);
-  --control: var(--gray-85);
-  --control-hover: var(--gray-70);
-  --control-border: var(--gray-60);
-  --control-active: var(--gray-80);
+  --control: color-mix(in srgb, var(--white) 12%, transparent);
+  --control-hover: color-mix(in srgb, var(--white) 20%, transparent);
+  --control-active: color-mix(in srgb, var(--white) 16%, transparent);
   --input-background: var(--black);
-  --input: var(--gray-60);
-  --input-hover: var(--gray-40);
+  --input: var(--gray-80);
+  --input-hover: var(--gray-70);
   --switch-off: var(--gray-60);
   --switch-thumb: var(--black);
   --border: var(--gray-85);
@@ -146,6 +147,11 @@
   --overlay: color-mix(in srgb, var(--black) 72%, transparent);
   --shadow-overlay: #00000059;
   --shadow-color: #00000026;
+  --shadow-composer: 0 4px 16px var(--shadow-color), 0 1px 3px var(--shadow-color);
+}
+
+:root[data-theme='dark'] .dialog-content {
+  --border: var(--gray-80);
 }
 
 @media (max-width: 640px) {

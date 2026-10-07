@@ -12,6 +12,7 @@
   width: 100%;
   min-height: 58px;
   padding: 8px 12px;
+  border-radius: var(--control-radius);
   text-align: left;
   white-space: normal;
 }

@@ -44,6 +44,7 @@ import { exportMemory } from '../lib/memory-export';
 import { localeRegion } from '../../shared/date-locale';
 import { desktopSettingsAvailable } from '../lib/desktop';
 import { ComposioSettings, DesktopOptions, useDesktopSettings } from './desktop-settings';
+import { Memory } from '../pages/memory';
 
 const editablePreferences = ['quietHoursEnabled', 'quietStart', 'quietEnd'] as const;
 const regionLabels = {
@@ -158,7 +159,7 @@ function LanguageAndRegion({
               key={option.value}
               type="button"
               size="sm"
-              variant={saved.hourCycle === option.value ? 'default' : 'outline'}
+              variant={saved.hourCycle === option.value ? 'secondary' : 'ghost'}
               aria-pressed={saved.hourCycle === option.value}
               disabled={saving}
               onClick={() => {
@@ -377,7 +378,6 @@ export function AccountSettings({
   openRequest,
   onOpenChange,
   onName,
-  onViewMemory,
   returnFocus,
 }: {
   account: AccountControls;
@@ -386,16 +386,15 @@ export function AccountSettings({
   openRequest: number;
   onOpenChange(open: boolean): void;
   onName(name: string): Promise<void>;
-  onViewMemory(): void;
   returnFocus(): HTMLElement | null;
 }) {
   const desktop = desktopSettingsAvailable();
   const native = useDesktopSettings(desktop && open);
   const tabs: AccountTab[] = desktop
-    ? ['General', 'Models', 'Preferences']
+    ? ['General', 'Models', 'Preferences', 'Memory']
     : account.local
-      ? ['Models', 'Appearance', 'Preferences']
-      : ['Profile', 'Models', 'Appearance', 'Preferences'];
+      ? ['Models', 'Appearance', 'Preferences', 'Memory']
+      : ['Profile', 'Models', 'Appearance', 'Preferences', 'Memory'];
   const selectedTab = tabs.includes(initialTab) ? initialTab : desktop ? 'General' : 'Appearance';
   const [tab, setTab] = useState<AccountTab>(selectedTab);
   const [composioDirty, setComposioDirty] = useState(false);
@@ -418,7 +417,7 @@ export function AccountSettings({
     if (recordedTab.current === key) return;
     recordedTab.current = key;
     captureAnalytics('otto_settings_viewed', {
-      tab: value.toLowerCase() as 'general' | 'profile' | 'appearance' | 'preferences' | 'models',
+      tab: value.toLowerCase() as Lowercase<AccountTab>,
     });
   }
   const id = useId();
@@ -502,9 +501,11 @@ export function AccountSettings({
                   ? KeyRound
                   : value === 'Profile'
                     ? UserRound
-                    : value === 'Appearance' || value === 'General'
-                      ? Sun
-                      : SlidersHorizontal;
+                    : value === 'Memory'
+                      ? Brain
+                      : value === 'Appearance' || value === 'General'
+                        ? Sun
+                        : SlidersHorizontal;
               return (
                 <button
                   key={value}
@@ -549,7 +550,11 @@ export function AccountSettings({
             <header className="account-settings-header" data-analytics-public>
               <h3>{tab}</h3>
             </header>
-            <div key={tab} className="account-settings-body" tabIndex={0}>
+            <div
+              key={tab}
+              className={`account-settings-body${tab === 'Memory' ? ' is-wide' : ''}`}
+              tabIndex={0}
+            >
               {!account.local && tab === 'Profile' && (
                 <form className="account-profile-form" onSubmit={(event) => void saveName(event)}>
                   <div className="account-profile-identity">
@@ -667,12 +672,12 @@ export function AccountSettings({
                   <PreferencesForm onDirtyChange={setPreferencesDirty} />
                   <MemoryRow
                     onView={() => {
-                      if (pending.current) setError('Save or cancel your changes first.');
-                      else onViewMemory();
+                      if (changeTab('Memory')) document.getElementById(`${id}-Memory`)?.focus();
                     }}
                   />
                 </>
               )}
+              {tab === 'Memory' && <Memory />}
               {tab === 'Models' && (
                 <>
                   <ModelSettings onDirtyChange={desktop ? setModelDirty : undefined} />

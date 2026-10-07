@@ -2,172 +2,151 @@
   container-type: inline-size;
 }
 
-.channels-page .secondary-heading {
-  margin-bottom: 32px;
+.channels-group + .channels-group {
+  margin-top: 40px;
 }
 
-.channels-page .channels-group + .channels-group {
-  margin-top: 24px;
-}
-
-.channels-page .channels-group > h2 {
-  margin: 0 0 12px;
+.channels-group > h2 {
+  margin-bottom: 16px;
   color: var(--muted-foreground);
   font-size: var(--text-control);
   font-weight: 500;
   line-height: 1.5;
 }
 
-.channels-page .channel-options {
-  grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
+.channel-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
 }
 
-.channels-page .channel-option {
+.channel-option {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px 16px;
   min-width: 0;
-  overflow: hidden;
-  padding: 0;
+  padding: 20px 24px;
   border: 1px solid var(--border);
-  border-radius: var(--card-radius);
+  border-radius: var(--dialog-radius);
   background: var(--surface);
 }
 
-.channels-page .channel-option.is-connected {
-  display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(0, 1.4fr);
-  align-items: center;
-}
-
-.channels-page .channel-option-heading {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px;
-  min-height: 86px;
-  padding: 16px;
-}
-
-.channels-page .channel-option-heading > img {
+.channel-option > img {
+  align-self: start;
   width: 24px;
   height: 24px;
   object-fit: contain;
 }
 
-.channels-page .channel-option-heading > div {
+.channel-option-copy {
   min-width: 0;
 }
 
-.channels-page .channel-option-heading h3 {
-  margin: 0;
-  color: var(--foreground);
+.channel-option-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-height: 24px;
+}
+
+.channel-option-title h3 {
   font-size: var(--text-control);
   font-weight: 500;
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
 
-.channels-page .channel-option-benefit {
-  max-width: none;
-  margin: 4px 0 0;
-  color: var(--muted-foreground);
+.channel-chip {
+  padding: 4px 12px;
+  border-radius: var(--radius-full);
+  background: var(--control);
+  color: var(--text-secondary);
   font-size: var(--text-control);
-  line-height: 1.5;
-}
-
-.channels-page .channel-connect {
-  min-height: var(--control-height);
-  padding: 0 8px;
-  border-radius: var(--control-radius);
-  font-size: var(--text-control);
+  font-weight: 500;
   white-space: nowrap;
 }
 
-.channels-page .channel-account {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  min-width: 0;
-  margin: 0;
-  padding: 16px;
-  border: 0;
+.channel-chip[data-status='connected'] {
+  background: var(--success-soft);
+  color: var(--success);
 }
 
-.channels-page .channel-account-row {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  gap: 8px;
+.channel-chip[data-status='needs-setup'] {
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 
-.channels-page .channel-account-info {
-  min-width: 0;
-}
-
-.channels-page .channel-account-label {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0 8px;
+.channel-option-benefit,
+.channel-account-label,
+.channel-account-status {
+  margin-top: 4px;
+  color: var(--muted-foreground);
+  font-size: var(--text-control);
+  line-height: 1.5;
   overflow-wrap: anywhere;
 }
 
-.channels-page .channel-account-label strong {
-  font-size: var(--text-control);
-  font-weight: 500;
+.channel-account-label {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 8px;
+  color: var(--text-secondary);
 }
 
-.channels-page .channel-account-label > span {
-  display: block;
-  font-size: var(--text-control);
-}
-
-.channels-page .channel-account-status {
-  margin-top: 4px;
+.channel-account-label > span {
   color: var(--muted-foreground);
 }
 
-.channels-page .channel-account-status.needs-setup {
-  color: var(--foreground);
-}
-
-.channels-page .channel-account-actions {
-  flex: none;
-  flex-wrap: nowrap;
-  justify-content: flex-end;
+.channel-account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  grid-column: 2 / -1;
+  align-items: center;
   gap: 8px;
-  margin: 0;
 }
 
-.channels-page .channel-account-actions > .button:not(.channel-remove) {
-  min-height: var(--control-height);
-  padding-inline: 12px;
-  border-radius: var(--control-radius);
-  font-size: var(--text-control);
-}
-
-.channels-page .channel-remove {
-  flex: none;
-  width: 32px;
-  height: 32px;
-  min-height: 32px;
-  padding: 0;
-  border-radius: 4px;
-  color: var(--muted-foreground);
-}
-
-.channels-page .channel-remove:hover:not(:disabled) {
-  color: var(--error);
+.channel-remove:hover:not(:disabled) {
   background: var(--error-soft);
+  color: var(--error);
+}
+
+@container (max-width: 580px) {
+  .channel-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@container (max-width: 400px) {
+  .channel-option {
+    padding: 16px;
+  }
+}
+
+@media (pointer: coarse) {
+  .channel-remove {
+    width: 40px;
+    height: 40px;
+  }
+
+  .channel-connect,
+  .channel-account-actions > .button {
+    min-height: 40px;
+  }
 }
 
 .channel-remove-dialog {
   width: min(400px, calc(100vw - 32px));
-  padding: 24px;
 }
 
 .channel-remove-dialog > h2 {
   padding-right: 24px;
   font-size: 18px;
+}
+
+.channel-remove-dialog[aria-busy='true'] > .dialog-close {
+  visibility: hidden;
 }
 
 .channel-remove-actions {
@@ -178,77 +157,102 @@
   margin-top: 24px;
 }
 
-.channel-remove-dialog[aria-busy='true'] > .dialog-close {
-  visibility: hidden;
-}
-
-.channel-delivery-dialog {
-  gap: 16px;
-}
-
-.channel-delivery-dialog > p {
-  color: var(--muted-foreground);
-  font-size: var(--text-control);
-  line-height: 1.6;
-}
-
 .channel-delivery-address {
   display: grid;
   gap: 4px;
   min-width: 0;
+  margin-bottom: 16px;
+  font-size: var(--text-control);
 }
 
 .channel-delivery-address > span {
   color: var(--muted-foreground);
-  font-size: var(--text-control);
 }
 
 .channel-delivery-address code {
   overflow-wrap: anywhere;
+}
+
+.channel-wizard {
+  width: min(470px, calc(100vw - 32px));
+}
+
+.channel-wizard-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 24px;
+  padding-right: 24px;
   font-size: var(--text-control);
+  font-weight: 500;
 }
 
-@container (max-width: 700px) {
-  .channels-page .channel-option.is-connected {
-    display: block;
-  }
-
-  .channels-page .channel-account {
-    margin: 0 16px;
-    padding: 8px 0 12px;
-    border-top: 1px solid var(--border);
-  }
+.channel-wizard-heading small {
+  margin-left: auto;
+  color: var(--muted-foreground);
+  font-size: var(--text-control);
+  font-weight: 400;
 }
 
-@container (max-width: 400px) {
-  .channels-page .channel-account {
-    display: block;
-  }
-
-  .channels-page .channel-account-row {
-    justify-content: space-between;
-  }
-
-  .channels-page .channel-account-actions {
-    margin-top: 8px;
-  }
-
-  .channels-page .channel-account-actions > .button:not(.channel-remove) {
-    flex: 1;
-  }
+.channel-wizard-step {
+  display: grid;
+  gap: 16px;
+  margin: 24px 0;
 }
 
-@media (pointer: coarse) {
-  .channels-page .channel-remove {
-    width: 40px;
-    height: 40px;
-    min-height: 40px;
-  }
+.channel-wizard-step > p {
+  color: var(--muted-foreground);
+  font-size: var(--text-control);
+  line-height: 1.65;
+}
 
-  .channels-page .channel-connect,
-  .channels-page .channel-account-actions > .button {
-    min-height: 40px;
-  }
+.telegram-checklist-form > p code {
+  color: var(--foreground);
+}
+
+.channel-wizard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.channel-external-link {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  color: var(--foreground);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.channel-advanced > summary {
+  color: var(--muted-foreground);
+  font-size: var(--text-control);
+  cursor: pointer;
+}
+
+.channel-advanced[open] > .field {
+  margin-top: 16px;
+}
+
+.channel-requirements {
+  display: grid;
+  gap: 8px;
+  padding-left: 16px;
+  font-size: var(--text-control);
+  line-height: 1.5;
+  list-style: disc;
+}
+
+.channel-policy {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--muted-foreground);
+  font-size: var(--text-control);
+  line-height: 1.6;
 }
 
 .channel-pairing-signal {
@@ -281,33 +285,37 @@
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .channel-pairing-signal::after {
+    animation: none;
+  }
+}
+
 .telegram-checklist {
   display: grid;
   margin: 24px 0;
-  padding: 0;
-  list-style: none;
 }
 
 .telegram-checklist > li {
   position: relative;
   display: grid;
-  grid-template-columns: 26px minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 16px;
   padding-bottom: 24px;
 }
 
 .telegram-checklist > li:not(:last-child)::before {
   position: absolute;
-  top: 30px;
-  bottom: 4px;
-  left: 12.5px;
+  top: 32px;
+  bottom: 8px;
+  left: 11.5px;
   width: 1px;
   background: var(--border);
   content: '';
 }
 
 .telegram-checklist > li:last-child {
-  padding-bottom: 4px;
+  padding-bottom: 0;
 }
 
 .telegram-checklist-marker {
@@ -315,33 +323,32 @@
   place-items: center;
   width: 24px;
   height: 24px;
-  border: 1px solid var(--border);
   border-radius: 50%;
+  background: var(--surface-subtle);
   color: var(--muted-foreground);
-  font-size: var(--text-control);
+  font-size: 12px;
   font-weight: 500;
 }
 
 .telegram-checklist > li.is-active .telegram-checklist-marker {
-  border-color: var(--accent);
-  color: var(--foreground);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .telegram-checklist > li.is-done .telegram-checklist-marker {
-  border-color: transparent;
   background: var(--success-soft);
   color: var(--success);
 }
 
-.telegram-checklist > li.is-next .telegram-checklist-marker {
-  opacity: 0.55;
-}
-
 .telegram-checklist li > div > strong {
   display: block;
-  padding-top: 4px;
   font-size: var(--text-control);
   font-weight: 500;
+  line-height: 24px;
+}
+
+.telegram-checklist > li.is-next > div > strong {
+  color: var(--muted-foreground);
 }
 
 .telegram-checklist li > div > p,
@@ -352,19 +359,12 @@
   line-height: 1.6;
 }
 
-.telegram-checklist-form > p code {
-  color: var(--foreground);
-  font-size: var(--text-control);
-}
-
 .telegram-checklist .telegram-candidate {
   margin-top: 8px;
-  padding: 12px 12px;
-  border: 1px solid var(--accent);
-  border-radius: var(--control-radius);
+  padding: 12px 16px;
+  border-radius: var(--input-radius);
   background: var(--accent-soft);
   color: var(--foreground);
-  font-size: var(--text-control);
 }
 
 .telegram-candidate strong {
@@ -399,7 +399,7 @@
 }
 
 .telegram-pairing-qr svg {
-  border-radius: 8px;
+  border-radius: var(--input-radius);
 }
 
 .telegram-pairing-qr figcaption {
@@ -421,29 +421,4 @@
 
 .telegram-manual-toggle:hover:not(:disabled) {
   color: var(--foreground);
-}
-
-.channels-page .channel-coming-soon {
-  display: inline-flex;
-  align-items: center;
-  min-height: 24px;
-  padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface-subtle);
-  color: var(--muted-foreground);
-  font-size: var(--text-control);
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-.channels-page .channel-option.is-coming-soon .channel-option-heading > img,
-.channels-page .channel-option.is-coming-soon h3 {
-  opacity: 0.6;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .channel-pairing-signal::after {
-    animation: none;
-  }
 }

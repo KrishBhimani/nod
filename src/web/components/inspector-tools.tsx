@@ -390,7 +390,10 @@ function ToolDrilldown({
       )}
       {definition && (
         <details className="inspector-schema">
-          <summary>Input schema</summary>
+          <summary>
+            <ChevronDown size={16} className="inspector-disclosure" />
+            Input schema
+          </summary>
           <RecordedJson label="Input schema" value={definition.parameters} />
         </details>
       )}
@@ -639,7 +642,10 @@ export function InspectorTools({ turnId }: { turnId?: string }) {
               <h4>{tool.name}</h4>
               <p className="inspector-tool-description">{tool.description}</p>
               <details className="inspector-schema">
-                <summary>Input schema</summary>
+                <summary>
+                  <ChevronDown size={16} className="inspector-disclosure" />
+                  Input schema
+                </summary>
                 <RecordedJson label="Input schema" value={tool.parameters} />
               </details>
             </section>
@@ -713,7 +719,7 @@ export function InspectorActivity({ turnId, events }: { turnId?: string; events:
     info: '',
   };
   return (
-    <section className="inspector-section inspector-activity">
+    <section className="inspector-activity">
       <div className="inspector-section-heading">
         <h3>Recent actions</h3>
         <span>{turnId ? 'Message activity' : 'All activity'}</span>
@@ -739,7 +745,10 @@ export function InspectorActivity({ turnId, events }: { turnId?: string; events:
                 </small>
                 {item.diagnostic !== undefined && (
                   <details className="inspector-record">
-                    <summary>Private failure details</summary>
+                    <summary>
+                      <ChevronDown size={16} className="inspector-disclosure" />
+                      <span className="inspector-record-title">Private failure details</span>
+                    </summary>
                     <div className="inspector-record-body">
                       <p className="inspector-data-note">
                         Redacted developer data · seven-day retention.

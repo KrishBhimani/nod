@@ -5,8 +5,8 @@
   justify-content: center;
   min-width: 18px;
   height: 18px;
-  padding: 0 4px;
-  border-radius: var(--control-radius);
+  padding: 0 6px;
+  border-radius: var(--radius-full);
   background: var(--primary);
   color: var(--primary-foreground);
   font-size: 10px;

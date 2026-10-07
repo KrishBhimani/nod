@@ -1,5 +1,5 @@
-import { useState, type FormEvent } from 'react';
-import { ArrowRight, ChevronLeft, Download, Plus } from 'lucide-react';
+import { useState, useSyncExternalStore, type FormEvent } from 'react';
+import { ChevronLeft, Download, Plus } from 'lucide-react';
 import {
   memoryAreas,
   type MemoryArchived,
@@ -10,7 +10,6 @@ import {
   type MemoryUpdate,
   type MemoryView,
 } from '../../shared/memory';
-import { PageTitle } from '../components/page-title';
 import {
   Button,
   Dialog,
@@ -23,7 +22,6 @@ import {
   Switch,
 } from '../components/ui';
 import { usePageData } from '../hooks/use-page-data';
-import { usePhone } from '../hooks/use-phone';
 import { api, errorMessage } from '../lib/api';
 import { exportMemory } from '../lib/memory-export';
 import { dayKey, formatCalendarDate, formatDayLabel, useDateFormat } from '../lib/date-format';
@@ -79,6 +77,18 @@ const channels: Record<string, string> = {
 };
 
 const archivedKey = (item: MemoryArchived) => `${item.path}@${item.archived}`;
+const compactQuery = '(max-width: 900px)';
+
+function useCompact() {
+  return useSyncExternalStore(
+    (change) => {
+      const media = window.matchMedia?.(compactQuery);
+      media?.addEventListener('change', change);
+      return () => media?.removeEventListener('change', change);
+    },
+    () => window.matchMedia?.(compactQuery).matches ?? false,
+  );
+}
 
 function MemoryMark({ stage }: { stage: Stage }) {
   return (
@@ -101,26 +111,30 @@ function Stages({
 }) {
   return (
     <div className="memory-stages" role="group" aria-label="Filter by status">
-      {stages.map((stage, index) => (
-        <div
+      <button
+        type="button"
+        className="memory-stage"
+        aria-pressed={!selected}
+        onClick={() => onSelect(null)}
+      >
+        All
+        <span className="memory-stage-count">
+          {counts.tentative + counts.observed + counts.stated}
+        </span>
+      </button>
+      {stages.map((stage) => (
+        <button
           key={stage.id}
-          className={cn('memory-stage-slot', stage.id === 'archive' && 'is-apart')}
+          type="button"
+          className="memory-stage"
+          aria-pressed={selected === stage.id}
+          title={stage.hint}
+          onClick={() => onSelect(selected === stage.id ? null : stage.id)}
         >
-          <button
-            type="button"
-            className="memory-stage"
-            aria-pressed={selected === stage.id}
-            onClick={() => onSelect(selected === stage.id ? null : stage.id)}
-          >
-            <span className="memory-stage-head">
-              <MemoryMark stage={stage.id} />
-              {stage.label}
-              <span className="memory-stage-count">{counts[stage.id]}</span>
-            </span>
-            <span className="memory-stage-hint">{stage.hint}</span>
-          </button>
-          {index < 2 && <ArrowRight className="memory-stage-arrow" size={16} aria-hidden="true" />}
-        </div>
+          <MemoryMark stage={stage.id} />
+          {stage.label}
+          <span className="memory-stage-count">{counts[stage.id]}</span>
+        </button>
       ))}
     </div>
   );
@@ -224,7 +238,7 @@ function NoteDetail({
           </div>
         </form>
       ) : (
-        <h2 className="memory-text">{note.text}</h2>
+        <h4 className="memory-text">{note.text}</h4>
       )}
       {mode === 'expires' ? (
         <form className="memory-form" onSubmit={save}>
@@ -331,7 +345,7 @@ function ArchivedDetail({
         <MemoryMark stage="archive" />
         {reasons[item.reason]} · {formatDayLabel(item.archived, format)}
       </p>
-      <h2 className="memory-text is-archived">{item.text}</h2>
+      <h4 className="memory-text is-archived">{item.text}</h4>
       <Sources sources={item.sources} />
       {error && <Notice>{error}</Notice>}
       <div className="memory-actions">
@@ -423,7 +437,7 @@ function AddNote({
 export function Memory() {
   const { data: view, error: loadError, loading, update } = usePageData<MemoryView>('/api/memory');
   const format = useDateFormat();
-  const phone = usePhone();
+  const compact = useCompact();
   const [stage, setStage] = useState<Stage | null>(null);
   const [query, setQuery] = useState('');
   const [chosen, setChosen] = useState<Selection | undefined>(undefined);
@@ -482,7 +496,7 @@ export function Memory() {
         : 'archived' in item && item.archived === value.archived,
     );
   const selection =
-    chosen === undefined || (chosen && !listed(chosen)) ? (phone ? null : visible[0]) : chosen;
+    chosen === undefined || (chosen && !listed(chosen)) ? (compact ? null : visible[0]) : chosen;
   const note =
     selection && 'note' in selection
       ? view?.notes.find((n) => n.path === selection.note)
@@ -491,15 +505,15 @@ export function Memory() {
     selection && 'archived' in selection
       ? view?.archive.find((item) => archivedKey(item) === selection.archived)
       : undefined;
-  const pageMode = phone && Boolean(note || archived);
-  const back = phone ? () => setChosen(null) : undefined;
+  const pageMode = compact && Boolean(note || archived);
+  const back = compact ? () => setChosen(null) : undefined;
 
   const row = (item: MemoryNote) => (
     <button
       key={item.path}
       type="button"
       className="memory-row"
-      aria-current={!phone && note?.path === item.path ? 'true' : undefined}
+      aria-current={!compact && note?.path === item.path ? 'true' : undefined}
       onClick={() => setChosen({ note: item.path })}
     >
       <MemoryMark stage={item.status} />
@@ -522,7 +536,7 @@ export function Memory() {
             key={archivedKey(item)}
             type="button"
             className="memory-row"
-            aria-current={!phone && archived === item ? 'true' : undefined}
+            aria-current={!compact && archived === item ? 'true' : undefined}
             onClick={() => setChosen({ archived: archivedKey(item) })}
           >
             <MemoryMark stage="archive" />
@@ -537,7 +551,7 @@ export function Memory() {
       <>
         {profile.length > 0 && view && (
           <div className="memory-group">
-            <h3>Profile</h3>
+            <h4>Profile</h4>
             {profile.map((field) => (
               <div key={field} className="memory-row is-static">
                 <MemoryMark stage="stated" />
@@ -553,7 +567,7 @@ export function Memory() {
           const group = notes.filter((n) => n.area === area);
           return group.length ? (
             <div key={area} className="memory-group">
-              <h3>{areaLabels[area]}</h3>
+              <h4>{areaLabels[area]}</h4>
               {group.map(row)}
             </div>
           ) : null;
@@ -607,15 +621,27 @@ export function Memory() {
   ) : null;
 
   return (
-    <div className={cn('content-page secondary-page memory-page', pageMode && 'is-detail')}>
-      {!pageMode && (
-        <header className="page-heading secondary-heading">
-          <PageTitle path="/memory" />
-          <div className="secondary-heading-actions">
+    <div className="memory-panel" data-analytics-private>
+      {loadError && !view && <Notice>Could not load your memory.</Notice>}
+      {!view ? (
+        loading && <Loading label="Loading memory…" />
+      ) : pageMode ? (
+        detail
+      ) : (
+        <>
+          <div className="memory-bar">
+            <SearchField
+              className="memory-search"
+              type="search"
+              value={query}
+              placeholder="Search"
+              aria-label="Search memory"
+              onChange={(event) => setQuery(event.target.value)}
+            />
             <Button
               variant="ghost"
               size="sm"
-              disabled={exporting || !view}
+              disabled={exporting}
               onClick={() => {
                 setExporting(true);
                 setSettingError('');
@@ -632,36 +658,11 @@ export function Memory() {
               Add note
             </Button>
           </div>
-        </header>
-      )}
-      {loadError && !view && <Notice>Could not load your memory.</Notice>}
-      {!view ? (
-        loading && <Loading label="Loading memory…" />
-      ) : pageMode ? (
-        <div className="memory-page-detail" data-analytics-private>
-          {detail}
-        </div>
-      ) : (
-        <div data-analytics-private>
           <Stages counts={counts} selected={stage} onSelect={filter} />
-          <div className="memory-bar">
-            <SearchField
-              className="memory-search"
-              type="search"
-              value={query}
-              placeholder="Search"
-              aria-label="Search memory"
-              onChange={(event) => setQuery(event.target.value)}
-            />
-            {stage && (
-              <Button variant="ghost" size="sm" onClick={() => filter(null)}>
-                Show all
-              </Button>
-            )}
-          </div>
-          <div className={cn('memory-layout', detail && !phone && 'has-detail')}>
+          {stage && <p className="memory-hint">{stages.find((item) => item.id === stage)?.hint}</p>}
+          <div className={cn('memory-layout', detail && !compact && 'has-detail')}>
             <div className="memory-list">{list}</div>
-            {!phone && detail && <div className="memory-detail-column">{detail}</div>}
+            {!compact && detail && <div className="memory-detail-column">{detail}</div>}
           </div>
           <footer className="memory-settings">
             <label className="memory-setting">
@@ -681,7 +682,7 @@ export function Memory() {
             </label>
           </footer>
           {settingError && <Notice>{settingError}</Notice>}
-        </div>
+        </>
       )}
       {adding && (
         <AddNote

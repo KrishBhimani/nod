@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { ArrowUp, LoaderCircle, Sparkles } from 'lucide-react';
+import { ArrowUp, ChevronDown, LoaderCircle, Sparkles } from 'lucide-react';
 import type { Schedule } from '../../shared/contracts';
 import { Button, Field, Input, Notice, Switch } from './ui';
 import { SearchPicker, TimeZonePicker, type PickerOption } from './time-zone-picker';
@@ -25,7 +25,7 @@ const suggestions = {
   newSchedule: ['Remind me to stretch at 16:00', 'Summarize my inbox each Friday'],
 };
 
-function AskOtto({
+export function AskOtto({
   subject,
   onAsk,
   onClose,
@@ -148,7 +148,7 @@ export function PlanToast() {
   );
 }
 
-function useDirectChange(id: string) {
+export function useDirectChange(id: string) {
   const [busy, setBusy] = useState(false);
   async function apply(
     body: Record<string, unknown>,
@@ -178,6 +178,8 @@ function useDirectChange(id: string) {
   }
   return { busy, apply };
 }
+
+type ScheduleChange = ReturnType<typeof useDirectChange>;
 
 function pauseNote(pausing: boolean, title: string) {
   return pausing
@@ -225,68 +227,32 @@ function SchedulePicker({
   );
 }
 
-function Toggle({
-  label,
-  on,
-  text,
-  disabled,
-  onChange,
-}: {
-  label: string;
-  on: boolean;
-  text: string;
-  disabled: boolean;
-  onChange(): void;
-}) {
+export function PauseSwitch({ schedule, change }: { schedule: Schedule; change: ScheduleChange }) {
   return (
-    <span className="plan-toggle">
-      <Switch checked={on} aria-label={label} disabled={disabled} onCheckedChange={onChange} />
-      <span aria-hidden="true">{text}</span>
-    </span>
-  );
-}
-
-function Note({ change }: { change: { busy: boolean } }) {
-  return change.busy ? <LoaderCircle size={16} className="spin" aria-label="Saving" /> : null;
-}
-
-function ScheduleControls({ schedule, canPause }: { schedule: Schedule; canPause: boolean }) {
-  const change = useDirectChange(schedule.id);
-  return (
-    <div className="schedule-controls">
-      <div className="schedule-control-status">
-        {canPause && (
-          <Toggle
-            label={`${schedule.title} active`}
-            on={schedule.enabled}
-            text={schedule.enabled ? 'Active' : 'Paused'}
-            disabled={change.busy}
-            onChange={() =>
-              void change.apply(
-                { enabled: !schedule.enabled },
-                pauseNote(schedule.enabled, schedule.title),
-                { enabled: schedule.enabled },
-              )
-            }
-          />
-        )}
-        <Note change={change} />
-      </div>
-      <ScheduleTiming
-        key={`${schedule.kind}:${schedule.cron}:${schedule.runAt}:${schedule.timeZone}`}
-        schedule={schedule}
-        change={change}
+    <>
+      {change.busy && <LoaderCircle size={16} className="spin" aria-label="Saving" />}
+      <Switch
+        checked={schedule.enabled}
+        aria-label={`${schedule.title} active`}
+        disabled={change.busy}
+        onCheckedChange={() =>
+          void change.apply(
+            { enabled: !schedule.enabled },
+            pauseNote(schedule.enabled, schedule.title),
+            { enabled: schedule.enabled },
+          )
+        }
       />
-    </div>
+    </>
   );
 }
 
-function ScheduleTiming({
+export function ScheduleTiming({
   schedule,
   change,
 }: {
   schedule: Schedule;
-  change: ReturnType<typeof useDirectChange>;
+  change: ScheduleChange;
 }) {
   const initial = {
     ...readSchedule(schedule.cron ?? ''),
@@ -449,42 +415,40 @@ function ScheduleTiming({
   );
 }
 
-export function PlanFooter({
-  item,
-  meta,
-  remove,
-  canPause,
-  onAsk,
+export function PlanDetails({
+  label,
+  summary,
+  children,
+  actions,
 }: {
-  item: Schedule;
-  meta: ReactNode;
-  remove: ReactNode;
-  canPause: boolean;
-  onAsk(text: string): void;
+  label: string;
+  summary?: ReactNode;
+  children: ReactNode;
+  actions?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  const id = useId();
   return (
     <>
-      <ScheduleControls schedule={item} canPause={canPause} />
-      <div className="saved-plan-footer">
-        <span>{meta}</span>
-        <div className="saved-plan-actions">
-          <Button
-            variant="ghost"
-            size="sm"
-            aria-expanded={open}
-            aria-label={`Ask Otto about ${item.title}`}
-            onClick={() => setOpen(!open)}
-          >
-            <Sparkles size={16} aria-hidden="true" />
-            Ask Otto
-          </Button>
-          {remove}
-        </div>
+      {!open && summary && <p className="saved-plan-summary">{summary}</p>}
+      <div className="saved-plan-details" id={id} hidden={!open}>
+        {open && children}
       </div>
-      {open && (
-        <AskOtto subject={{ title: item.title }} onAsk={onAsk} onClose={() => setOpen(false)} />
-      )}
+      <div className="saved-plan-footer">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="saved-plan-more"
+          aria-expanded={open}
+          aria-controls={id}
+          aria-label={`${open ? 'Hide' : 'See'} details for ${label}`}
+          onClick={() => setOpen(!open)}
+        >
+          {open ? 'Hide details' : 'See details'}
+          <ChevronDown size={16} aria-hidden="true" />
+        </Button>
+        {actions && <div className="saved-plan-actions">{actions}</div>}
+      </div>
     </>
   );
 }

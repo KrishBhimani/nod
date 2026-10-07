@@ -16,9 +16,9 @@ import { AccountMenu, AccountMenuItems, type AccountControls } from './account-m
 import { currentTheme, setTheme, subscribeTheme } from '../lib/theme';
 import {
   isEditingTarget,
-  navigationItems,
   navigationShortcut,
   shortcutLabel,
+  sidebarItems,
 } from '../lib/navigation';
 
 export function Sidebar({
@@ -79,8 +79,8 @@ export function Sidebar({
   const mac = /Mac|iPhone|iPad/.test(navigator.platform);
   const navigate = useRef(onNavigate);
   navigate.current = onNavigate;
-  const toggles = useRef({ onToggle, onToggleInspector, inspectorEnabled });
-  toggles.current = { onToggle, onToggleInspector, inspectorEnabled };
+  const toggles = useRef({ onToggle, onToggleInspector, inspectorEnabled, account });
+  toggles.current = { onToggle, onToggleInspector, inspectorEnabled, account };
   const closeMobileMenu = () => {
     setMobileMenuOpen(false);
     (window.innerWidth <= 640
@@ -143,8 +143,9 @@ export function Sidebar({
       const action = navigationShortcut(event);
       if (!action) return;
       if (
-        action.type === 'inspector' &&
-        (!toggles.current.inspectorEnabled || !toggles.current.onToggleInspector)
+        (action.type === 'inspector' &&
+          (!toggles.current.inspectorEnabled || !toggles.current.onToggleInspector)) ||
+        (action.type === 'memory' && !toggles.current.account)
       )
         return;
       event.preventDefault();
@@ -157,6 +158,11 @@ export function Sidebar({
       if (action.type === 'inspector') {
         setMobileMenuOpen(false);
         toggles.current.onToggleInspector?.();
+        return;
+      }
+      if (action.type === 'memory') {
+        setMobileMenuOpen(false);
+        toggles.current.account?.onSettings('Memory');
         return;
       }
       navigate.current(action.path);
@@ -245,7 +251,7 @@ export function Sidebar({
             links[next]?.focus();
           }}
         >
-          {navigationItems.map((item) => {
+          {sidebarItems.map((item) => {
             const Icon = item.icon;
             const label = item.key ? shortcutLabel(item.key, mac) : undefined;
             return (
@@ -343,7 +349,7 @@ export function Sidebar({
         >
           <div className="mobile-sheet-body" tabIndex={-1}>
             <nav className="mobile-sections" aria-label="Sections">
-              {navigationItems.map((item) => {
+              {sidebarItems.map((item) => {
                 const Icon = item.icon;
                 return (
                   <a
