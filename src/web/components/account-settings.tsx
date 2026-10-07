@@ -45,7 +45,7 @@ import { localeRegion } from '../../shared/date-locale';
 import { desktopSettingsAvailable } from '../lib/desktop';
 import { ComposioSettings, DesktopOptions, useDesktopSettings } from './desktop-settings';
 import { Memory } from '../pages/memory';
-import { shortcutLabel } from '../lib/navigation';
+import { isEditingTarget, navigationShortcut, shortcutLabel } from '../lib/navigation';
 
 const editablePreferences = ['quietHoursEnabled', 'quietStart', 'quietEnd'] as const;
 const regionLabels = {
@@ -484,6 +484,15 @@ export function AccountSettings({
             event.preventDefault();
             target.focus({ preventScroll: true });
           }
+        }}
+        onKeyDown={(event) => {
+          if (
+            navigationShortcut(event.nativeEvent)?.type !== 'memory' ||
+            isEditingTarget(event.target)
+          )
+            return;
+          event.preventDefault();
+          changeTab('Memory');
         }}
       >
         <DialogTitle className="sr-only" data-analytics-public>
