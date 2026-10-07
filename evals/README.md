@@ -35,7 +35,7 @@ Results are saved under `.local/capability-evals/<label>/` (`report.html` with e
 
 ## The suite
 
-Thirty-one scenarios, each a real task written the way a user would ask, most of them from the Otto capabilities project in Linear. Status tells you how much to trust a number: _scored_ scenarios were calibrated and count toward the pass rate; _calibrating_ ones run only with `--include-pending` or by name until their failures have been classified as agent, scenario or fake; _known gap_ scenarios describe something Otto cannot do yet, so they are expected to fail today and are reported apart from the headline; _live web_ ones use the open internet and are never part of the default run.
+Thirty-two scenarios, each a real task written the way a user would ask, most of them from the Otto capabilities project in Linear. Status tells you how much to trust a number: _scored_ scenarios were calibrated and count toward the pass rate; _calibrating_ ones run only with `--include-pending` or by name until their failures have been classified as agent, scenario or fake; _known gap_ scenarios describe something Otto cannot do yet, so they are expected to fail today and are reported apart from the headline; _live web_ ones use the open internet and are never part of the default run.
 
 | Scenario                   | Linear  | What it checks                                                                | Capabilities                             | Status      |
 | -------------------------- | ------- | ----------------------------------------------------------------------------- | ---------------------------------------- | ----------- |
@@ -49,6 +49,7 @@ Thirty-one scenarios, each a real task written the way a user would ask, most of
 | `finance-sheet`            | LAB-380 | Spending by category vs budget from my sheet, then a daily check              | apps, files, schedules, approvals        | scored      |
 | `gym-data-export`          | LAB-384 | Get my workout history out of a gym site with no export, show my progression  | apps, browser, files, vault, schedules   | calibrating |
 | `health-results-pdf`       | LAB-391 | Get my blood test PDF from email, explain it, remind me to re-test            | files, apps, memory, schedules           | scored      |
+| `invoice-signin-blocker`   | LAB-471 | Explain why an invoice needs sign-in and what to do next                      | browser, vault, progress                 | calibrating |
 | `invoices-overdue`         | LAB-386 | Find who owes me money in my email, keep a sheet, draft reminders             | apps, files, approvals                   | scored      |
 | `login-2fa-metrics`        | LAB-379 | Log in with 2FA and read weekly active users                                  | vault, browser, approvals                | scored      |
 | `memory-across-reset`      | LAB-370 | Remember what I told you and never ask twice                                  | memory, progress                         | scored      |
@@ -64,12 +65,14 @@ Thirty-one scenarios, each a real task written the way a user would ask, most of
 | `reply-drafts`             | LAB-382 | Draft replies in my voice to the emails that need one                         | apps, memory, approvals                  | scored      |
 | `saved-card-checkout`      | LAB-367 | Pay with my saved card, but only after I approve                              | vault, approvals, browser                | known gap   |
 | `schedule-meeting-invite`  | LAB-373 | Set up a 30-minute call at a time that works, and send the invite             | apps, approvals                          | scored      |
-| `slack-catchup`            | LAB-376 | Slack catch-up: what did I miss and what needs my reply                       | apps, progress                           | scored      |
+| `slack-catchup`            | LAB-376 | Slack catch-up: exclude requests already answered in their threads            | apps, progress                           | scored      |
 | `steering-mid-task`        | LAB-374 | Take a new instruction in the middle of a task                                | progress, files                          | calibrating |
 | `stop-and-continue`        | LAB-445 | Stop it halfway, say continue, and finish without repeating or losing work    | long-running, progress, files            | calibrating |
 | `video-links`              |         | Download videos from X, TikTok, YouTube, Instagram and Reddit links           | files, research                          | calibrating |
 | `video-to-three-platforms` | LAB-396 | Post one video to three platforms with captions that fit each, shown first    | approvals, files, vault, browser         | calibrating |
 | `youtube-topics`           | LAB-383 | Recent YouTube videos on a theme, grouped into topics                         | research, progress, files                | calibrating |
+
+The `slack-catchup` case also covers [LAB-469](https://linear.app/n8n/issue/LAB-469): a request that the owner has already answered in its thread must not need another reply.
 
 ## Reading a report
 
