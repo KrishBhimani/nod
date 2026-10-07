@@ -94,6 +94,7 @@ test(
       environment: 'development',
       dataRoot: root,
     });
+    analytics.setUsageData(ownerId, true);
     const captureAnalytics = analytics.forOwner(ownerId);
     const personal = createPersonalService({
       analytics: captureAnalytics,
@@ -172,7 +173,7 @@ test(
       origin: `http://localhost:${port}`,
       localUser: { id: ownerId, name: 'You', email: null, avatarUrl: null },
       start: async (_owner, name) => {
-        await thread.startOnboarding(name, ['Gmail']);
+        await thread.startOnboarding(name);
       },
     }).register(app);
     const headers = { host: `localhost:${port}`, origin: `http://localhost:${port}` };
@@ -183,6 +184,7 @@ test(
     ) => app.inject({ method, url: path, headers, payload });
 
     const readOnlyRefusals: string[] = [];
+    const suggestionResults: string[] = [];
     const agent: Agent = {
       open: async (input) => ({
         resumed: false,
@@ -198,6 +200,31 @@ test(
             })
             .catch((error: Error) => readOnlyRefusals.push(error.message));
           await tools.get('send_message')!.execute({ text: 'Two threads wait for your reply.' });
+          const suggest = (tasks: Array<{ title: string; source: string }>) =>
+            tools
+              .get('suggest_tasks')!
+              .execute({ intro: `Here are three ideas.\n${'Synthetic intro. '.repeat(20)}`, tasks })
+              .then(
+                () => 'saved',
+                (error: Error) => error.message,
+              );
+          const tasks = [
+            {
+              title: `Draft replies to synthetic clients ${'waiting '.repeat(6)}`,
+              source: 'gmail',
+            },
+            { title: 'Research synthetic newsletter venues.', source: 'web' },
+            { title: 'Summarise the synthetic week', source: 'web' },
+          ];
+          suggestionResults.push(
+            await suggest([...tasks.slice(0, 2), { title: 'Check in weekly', source: 'telegram' }]),
+            await suggest([
+              ...tasks.slice(0, 2),
+              { title: 'Email the invoice to someone@example.test', source: 'web' },
+            ]),
+            await suggest(tasks),
+            await suggest(tasks),
+          );
         },
       }),
       dispose: () => {},
@@ -272,6 +299,8 @@ test(
     });
     let failRelease = 0;
     let taskHold = Promise.resolve();
+    let welcomeRun: ThreadDependencies['runTurn'] | undefined;
+    const finishedTurns = new Set<string>();
 
     const browserHolds: Array<{ threadId: string; until: number | null; runs: number }> = [];
     const dependencies: ThreadDependencies = {
@@ -281,6 +310,9 @@ test(
       },
       connectedApps: readConnectedApps,
       activityCheck: async (turn) => activityLookup?.(turn),
+      finishObservationSegment: async (turnId) => {
+        finishedTurns.add(turnId);
+      },
       speech: {
         synthesize: async () => {
           throw new Error('Unused fixture');
@@ -362,6 +394,7 @@ test(
           await activityRun?.(context);
           return { status: 'succeeded' };
         }
+        if (context.suggestTasks && welcomeRun) return welcomeRun(context);
         if (context.readOnly) return readOnlyRuntime.runTurn(context);
         if (quietBackgroundWork && context.background) return quietRuntime.runTurn(context);
         if (context.prompt === 'remote-attachment-fixture') {
@@ -1749,7 +1782,7 @@ test(
           block('Earlier synthetic request');
           const earlier = await thread.submitUserMessage('Earlier synthetic request');
           await waitFor(() => Boolean(ran(earlier.turnId)));
-          await thread.startOnboarding('Alex', ['Gmail']);
+          await thread.startOnboarding('Alex');
           assert.equal(
             (await db.pool.query("SELECT id FROM turns WHERE source_id LIKE 'onboarding:%'"))
               .rowCount,
@@ -1757,6 +1790,16 @@ test(
           );
           await thread.stopThread();
           await waitFor(settledThread);
+          currentApps = [
+            {
+              slug: 'gmail',
+              name: 'Gmail',
+              status: 'connected',
+              connectionId: 'synthetic-gmail',
+              access: ['api'],
+              triggersEnabled: false,
+            },
+          ];
           const landing = () => request('POST', '/api/account/welcome', {});
           assert.equal((await landing()).statusCode, 409);
           const complete = () => request('PATCH', '/api/account', { onboardingCompleted: true });
@@ -1780,8 +1823,36 @@ test(
                 [turn.id],
               )
             ).rows.map((row) => row.role),
-            ['assistant', 'assistant'],
+            ['assistant', 'assistant', 'assistant'],
           );
+          assert.deepEqual(suggestionResults, [
+            'The tool arguments do not match its schema.',
+            'Leave out email addresses, links, handles and phone numbers.',
+            'saved',
+            'The cards were already sent. Stop now.',
+          ]);
+          const suggested = await db.pool.query(
+            'SELECT text,suggestions FROM messages WHERE turn_id=$1 AND suggestions IS NOT NULL',
+            [turn.id],
+          );
+          assert.equal(suggested.rowCount, 1);
+          const { intro, tasks } = suggested.rows[0].suggestions;
+          assert.ok(intro.length <= 201 && intro.endsWith('…') && !intro.includes('\n'));
+          assert.deepEqual(
+            tasks.map((task: { title: string; source: string }) => [task.title, task.source]),
+            [
+              ['Draft replies to synthetic clients waiting waiting waiting', 'gmail'],
+              ['Research synthetic newsletter venues', 'web'],
+              ['Summarise the synthetic week', 'web'],
+            ],
+          );
+          assert.equal(new Set(tasks.map((task: { id: string }) => task.id)).size, 3);
+          assert.ok(suggested.rows[0].text.endsWith('- Summarise the synthetic week'));
+          assert.deepEqual(
+            runs.filter((context) => context.suggestTasks).map((context) => context.turnId),
+            [turn.id],
+          );
+          currentApps = [];
           assert.equal(
             (
               await db.pool.query(
@@ -1799,6 +1870,79 @@ test(
             runs.filter((context) => context.readOnly).map((context) => context.turnId),
             [turn.id],
           );
+        },
+      );
+
+      await t.test(
+        'a welcome that ends without cards gets one fallback set unless the tripwire flagged it',
+        async () => {
+          const welcomeAgain = async (run: ThreadDependencies['runTurn']) => {
+            await db.pool.query('UPDATE turns SET source_id=$1 WHERE source_id=$2', [
+              `welcome-fixture:${randomUUID()}`,
+              thread.welcomeSourceId,
+            ]);
+            welcomeRun = run;
+            await thread.startOnboarding('Alex');
+            const { id } = (
+              await db.pool.query('SELECT id FROM turns WHERE owner_id=$1 AND source_id=$2', [
+                ownerId,
+                thread.welcomeSourceId,
+              ])
+            ).rows[0];
+            await waitFor(() => finishedTurns.has(id));
+            return id as string;
+          };
+          const cards = async () =>
+            (
+              await db.pool.query(
+                'SELECT turn_id AS "turnId",suggestions FROM messages WHERE owner_id=$1 AND suggestions IS NOT NULL',
+                [ownerId],
+              )
+            ).rows;
+          const modelCards = await cards();
+          assert.equal(modelCards.length, 1);
+          await welcomeAgain(async () => ({ status: 'succeeded' }));
+          assert.deepEqual(await cards(), modelCards);
+
+          await db.pool.query('UPDATE messages SET suggestions=NULL WHERE owner_id=$1', [ownerId]);
+          await welcomeAgain(async (context) => {
+            await context.flagInjection!(['synthetic injection']);
+            return { status: 'succeeded' };
+          });
+          assert.deepEqual(await cards(), []);
+
+          currentApps = [
+            {
+              slug: 'gmail',
+              name: 'Gmail',
+              status: 'connected',
+              connectionId: 'synthetic-gmail',
+              access: ['api'],
+              triggersEnabled: false,
+            },
+          ];
+          const failed = await welcomeAgain(async () => {
+            throw new Error('Synthetic welcome failure');
+          });
+          assert.equal(await turnStatus(failed), 'failed');
+          const fallback = await cards();
+          assert.equal(fallback.length, 1);
+          assert.equal(fallback[0].turnId, failed);
+          assert.deepEqual(
+            fallback[0].suggestions.tasks.map((task: { title: string; source: string }) => [
+              task.title,
+              task.source,
+            ]),
+            [
+              ['Draft replies waiting on you', 'gmail'],
+              ['Plan your next two weeks', 'web'],
+              ['Send you a Friday recap', 'web'],
+            ],
+          );
+          await welcomeAgain(async () => ({ status: 'succeeded' }));
+          assert.deepEqual(await cards(), fallback);
+          welcomeRun = undefined;
+          currentApps = [];
         },
       );
 

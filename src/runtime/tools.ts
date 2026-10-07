@@ -5,6 +5,7 @@ import type { BrowserAction, BrowserObservation } from '../ports/computer.ts';
 import { browserDownloadBytes } from '../ports/computer.ts';
 import { browserUploadBytes } from '../ports/computer.ts';
 import { basename } from 'node:path';
+import { emailAddress } from '../shared/action-effect.ts';
 import { isMessageReaction } from '../shared/emoji.ts';
 import { requestsPrivateInput, vaultInvitation } from './communication.ts';
 import { browserFlowParameters } from './browser-flows.ts';
@@ -158,6 +159,72 @@ const activityCheckTool = defineTool(
   ]),
 );
 
+const suggestionSources = ['gmail', 'web', 'telegram'] as const;
+type SuggestionSource = (typeof suggestionSources)[number];
+
+function suggestTasksTool(sources: readonly SuggestionSource[]) {
+  return defineTool(
+    'suggest_tasks',
+    `Show the user exactly three first tasks as cards with a Do it button, once, then stop. intro is one short sentence. Each title is plain text of at most six words that starts with a verb, with no email address, link, handle or phone number; Do it sends exactly that title to you as the user's request. source is where the work happens: ${sources.join(', ')}.`,
+    Type.Object(
+      {
+        intro: Type.String({ minLength: 1, maxLength: 400 }),
+        tasks: Type.Array(
+          Type.Object(
+            {
+              title: Type.String({ minLength: 1, maxLength: 120 }),
+              source: literals(sources),
+            },
+            { additionalProperties: false },
+          ),
+          { minItems: 3, maxItems: 3 },
+        ),
+      },
+      { additionalProperties: false },
+    ),
+  );
+}
+
+function fit(text: string, max: number, more = '') {
+  const value = text
+    .replace(/[\p{Cc}\p{Cf}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (value.length <= max) return value;
+  const cut = value.slice(0, max + 1);
+  const space = cut.lastIndexOf(' ');
+  return `${(space > max / 2 ? cut.slice(0, space) : value.slice(0, max)).replace(/[\s,;:-]+$/, '')}${more}`;
+}
+
+function contactDetail(text: string) {
+  return (
+    Boolean(text.match(emailAddress)) ||
+    /https?:\/\/|www\.|(^|[\s(])@\w|\+\d[\d\s().-]{6,}|\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/i.test(
+      text,
+    )
+  );
+}
+
+function taskSuggestions(
+  input: { intro: string; tasks: Array<{ title: string; source: string }> },
+  sources: readonly string[],
+) {
+  const intro = fit(input.intro, 200, '…');
+  const tasks = input.tasks.map((task) => ({
+    title: fit(task.title, 60).replace(/[.!]+$/, ''),
+    source: task.source as SuggestionSource,
+  }));
+  if (!intro || tasks.length !== 3 || tasks.some((task) => !task.title))
+    throw new Error('Give one intro and three task titles.');
+  if (tasks.some((task) => !sources.includes(task.source)))
+    throw new Error(`Use only these sources: ${sources.join(', ')}.`);
+  if ([input.intro, ...input.tasks.map((task) => task.title)].some(contactDetail))
+    throw new Error('Leave out email addresses, links, handles and phone numbers.');
+  if (new Set(tasks.map((task) => task.title.toLowerCase())).size !== 3)
+    throw new Error('Suggest three different tasks.');
+  return { intro, tasks };
+}
+
 export const toolDefinitions = {
   skills: defineTool(
     'skills',
@@ -182,6 +249,7 @@ export const toolDefinitions = {
       replyToMessageId: Type.Optional(Type.String({ pattern: '^[0-9a-fA-F-]{36}$' })),
     }),
   ),
+  suggest_tasks: suggestTasksTool(suggestionSources),
   ask_user: defineTool(
     'ask_user',
     'Ask one necessary question and pause until the user answers.',
@@ -466,6 +534,8 @@ export function ottoTools(
     await pause('question', text(url));
     return 'Waiting for the user to sign in.';
   };
+  let suggested = false;
+  const suggest = context.suggestTasks;
   const tools = [
     ...(skills
       ? [
@@ -479,6 +549,17 @@ export function ottoTools(
       async (p) =>
         (await turn.reply(p.text, undefined, p.replyToMessageId)) ?? 'Message delivered.',
     ),
+    ...(suggest
+      ? [
+          bind(suggestTasksTool(suggest.sources), async (p) => {
+            if (suggested) throw new Error('The cards were already sent. Stop now.');
+            const suggestions = taskSuggestions(p, suggest.sources);
+            await suggest.save(suggestions);
+            suggested = true;
+            return 'The cards are in the chat. Stop now without another message.';
+          }),
+        ]
+      : []),
     bind(toolDefinitions.ask_user, async (p) => {
       if (requestsPrivateInput(p.question))
         return { status: 'withheld', message: privateInputNotice };

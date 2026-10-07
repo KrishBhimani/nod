@@ -47,7 +47,7 @@ import type { WorkAdmission } from './work-admission.ts';
 import type { TenantDrain } from '../ports/deployment.ts';
 import { registerAnalyticsRoutes, type CaptureAnalytics } from './analytics.ts';
 
-const messageFields = `m.id,m.role,m.text,m.turn_id AS "turnId",m.created_at AS "createdAt",m.attachments,m.stream_id AS "streamId",m.reaction,m.assistant_reaction AS "assistantReaction",m.reply_to_message_id AS "replyToMessageId",
+const messageFields = `m.id,m.role,m.text,m.turn_id AS "turnId",m.created_at AS "createdAt",m.attachments,m.stream_id AS "streamId",m.reaction,m.assistant_reaction AS "assistantReaction",m.reply_to_message_id AS "replyToMessageId",m.suggestions,
  CASE WHEN target.id IS NULL THEN NULL ELSE json_build_object('id',target.id,'role',target.role,'text',left(target.text,1000)) END AS "replyTo"`;
 function messageView(row: Message & { assistantReaction?: MessageReaction | null }): Message {
   const { assistantReaction, ...message } = row;
@@ -152,7 +152,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
       );
       return { running: result.rows };
     });
-  const turnFields = `u.id,u.status,u.source,u.error,u.created_at AS "createdAt",u.finished_at AS "finishedAt",(NOT u.background OR u.source_id=$2) AS "showTyping"`;
+  const turnFields = `u.id,u.status,u.source,u.error,u.created_at AS "createdAt",u.finished_at AS "finishedAt",(NOT u.background OR u.source_id=$2) AS "showTyping",COALESCE(u.source_id=$2,false) AS "welcome"`;
   async function messageTurns(threadId: string, ids: string[]): Promise<Turn[]> {
     if (!ids.length) return [];
     const result = await pool.query(

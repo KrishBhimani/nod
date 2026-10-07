@@ -1,0 +1,59 @@
+.ob-welcome {
+  flex: 1 1 auto;
+  gap: 0;
+  margin: 0 auto;
+}
+.ob-welcome > .ob-row {
+  margin: auto 0;
+}
+.ob-welcome-slot {
+  position: relative;
+  z-index: 2;
+}
+.ob-welcome-avatar {
+  display: block;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.ob-greeting {
+  padding: 12px 20px;
+  border-radius: 20px;
+}
+.ob-greeting-title {
+  display: block;
+  font-size: 30px;
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+.ob-greeting-sub {
+  display: block;
+  margin-top: 4px;
+  font-size: 18px;
+  line-height: 1.45;
+}
+.ob-wave-hand {
+  display: inline-block;
+  margin-right: 10px;
+  transform-origin: 70% 75%;
+}
+.ob-wave-hand.waving {
+  animation: ob-wave 1.8s ease-in-out 250ms 2;
+}
+.ob-welcome-cta {
+  --rise-from: translateY(8px);
+  display: flex;
+  justify-content: flex-end;
+}
+.ob .ob-welcome-cta .button {
+  font-size: 16px;
+}
+.ob-welcome-reset :is(.ob-grow, .ob-bubble, .ob-rise) {
+  transition: none;
+}

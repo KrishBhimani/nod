@@ -49,7 +49,7 @@ import { createKeychainKeyStore } from '../providers/keychain/key-store.ts';
 import { createOpenAISpeechProvider } from '../providers/openai/speech.ts';
 import { createPiModelBackend } from '../providers/pi/models.ts';
 import { createModelService } from './models.ts';
-import { createIntegrationKeyService } from './integration-key.ts';
+import { createIntegrationKeyService, registerIntegrationKeyRoutes } from './integration-key.ts';
 import { createPiAgent } from '../providers/pi/index.ts';
 import { createSkillLibrary } from '../providers/pi/skills.ts';
 import { readPiSessionEntries } from '../providers/pi/checkpoint.ts';
@@ -59,6 +59,7 @@ import { createAgentRuntime } from '../runtime/index.ts';
 import { coreSkills } from '../runtime/prompt.ts';
 import { createApp } from './app.ts';
 import { createWorkAdmission, createWorkConsumers } from './work-admission.ts';
+import { learnWritingStyle } from './writing-style.ts';
 import { createTenantDrain } from './tenant-drain.ts';
 import { createChatVerification } from './chat-verification.ts';
 import { createAgentReactionService } from './agent-reactions.ts';
@@ -100,6 +101,7 @@ import { buildFeedbackReport, type FeedbackReportOptions } from './bug-report.ts
 import { registerFeedback } from './feedback.ts';
 import { feedbackContext } from './feedback-context.ts';
 import { createPersonalService } from './personal.ts';
+import { createOnboardingInterview } from './onboarding-interview.ts';
 import { createMemoryLearning, initializeMemoryLearning } from './memory-learning.ts';
 import { createMemoryService } from './memory.ts';
 import { createSpeech } from './speech.ts';
@@ -698,6 +700,7 @@ async function initializeApplication(
         workspace.readArtifact!(turn.threadId, path, maxBytes, 'attachment')),
     validateActivityCheck: triage.validateActivityCheck,
     resumeConnection: resumeAfterConnection,
+    learnWritingStyle: (read, stop) => learnWritingStyle({ memory, curator }, read, stop),
     ...(adapters.directIntegrations
       ? {
           additionalProviders: [
@@ -772,6 +775,12 @@ async function initializeApplication(
   const localAccounts = runtimeMode === 'local' ? createAccountStore(pool) : null;
   const accountProfiles = createAccountProfileStore(pool, ownerId);
   await (localAccounts ?? accountProfiles).initialize();
+  analytics.setUsageData(
+    ownerId,
+    localAccounts
+      ? (await localAccounts.read(ownerId)).usageData
+      : ((await accountProfiles.read())?.usageData ?? false),
+  );
   const accountProfile = async () =>
     runtimeAccount(
       localAccounts
@@ -814,6 +823,13 @@ async function initializeApplication(
       finishObservationSegment: inspector.finishSegment,
       accountProfile,
       connectedApps: integrations.connectedApps,
+      telegramPaired: async () =>
+        Boolean(
+          (await channelSettings?.status())?.channels.some(
+            (channel) =>
+              channel.provider === 'telegram' && channel.enabled && channel.allowedUserId,
+          ),
+        ),
       activityCheck: triage.activityCheck,
       memoryContext: memory.context,
       task: async (turn, input) => {
@@ -945,11 +961,7 @@ async function initializeApplication(
     });
   }
   const welcome = async (name?: string) => {
-    if (!adapters.model.configured) return;
-    const connected = (await integrations.list()).filter(
-      (connection) => connection.status === 'connected',
-    );
-    await startOnboarding(name, [...new Set(connected.map((connection) => connection.name))]);
+    if (adapters.model.configured) await startOnboarding(name);
   };
   const app = await createApp({
     analytics: captureAnalytics,
@@ -975,7 +987,9 @@ async function initializeApplication(
       }),
   });
   adapters.models?.register(app);
-  adapters.integrationKey?.register(app);
+  if (adapters.integrationKey) adapters.integrationKey.register(app);
+  else if (runtimeMode === 'local' && desktopMode)
+    registerIntegrationKeyRoutes(app, adapters.integrations);
   app.addHook('preClose', async () => {
     await adapters.models?.close();
   });
@@ -1028,7 +1042,7 @@ async function initializeApplication(
       return { ok: true };
     });
     app.put('/api/account/profile', async (request) => {
-      await accountProfiles.save(request.body);
+      analytics.setUsageData(ownerId, (await accountProfiles.save(request.body)).usageData);
       return { ok: true };
     });
   }
@@ -1053,6 +1067,7 @@ async function initializeApplication(
   vault.registerRoutes(app);
   integrations.registerRoutes(app);
   personal.registerRoutes(app);
+  createOnboardingInterview({ curator, memory }).registerRoutes(app);
   tasks.registerRoutes(app);
   triage.registerRoutes(app);
   let channels: Awaited<ReturnType<typeof createChannels>> | undefined;
