@@ -42,7 +42,7 @@ import type {
   Turn,
 } from '../shared/contracts.ts';
 import type { createChatVerification } from './chat-verification.ts';
-import { registerTenantDrain } from './tenant-drain.ts';
+import { registerTenantDrain, registerWorkAdmission } from './tenant-drain.ts';
 import type { WorkAdmission } from './work-admission.ts';
 import type { TenantDrain } from '../ports/deployment.ts';
 import { registerAnalyticsRoutes, type CaptureAnalytics } from './analytics.ts';
@@ -105,12 +105,14 @@ export async function createApp(dependencies: AppDependencies = {}) {
         })
       : undefined;
   if (!runtimeAccess) registerLocalAccess(app, port, desktopAccess);
-  if ((runtimeAccess || desktopAccess) && dependencies.admission && dependencies.deploymentDrain)
+  if (runtimeAccess && dependencies.admission && dependencies.deploymentDrain)
     registerTenantDrain(app, {
       admission: dependencies.admission,
       drain: dependencies.deploymentDrain,
-      generation: desktopAccess ? 'desktop' : runtimeGeneration,
+      generation: runtimeGeneration,
     });
+  else if (desktopAccess && dependencies.admission)
+    registerWorkAdmission(app, dependencies.admission);
   const uploads = createMultipartReader({
     maxFileSize,
     verifiedBody: runtimeAccess?.takeBody,
@@ -136,11 +138,11 @@ export async function createApp(dependencies: AppDependencies = {}) {
   });
   if (desktopAccess)
     app.get('/api/desktop/status', async () => {
-      const result = await pool.query<{ active: boolean }>(
-        "SELECT EXISTS (SELECT 1 FROM turns WHERE owner_id=$1 AND status IN ('queued','running')) AS active",
-        [ownerId],
+      const result = await pool.query<{ source: string; visible: boolean }>(
+        "SELECT source,(NOT background OR source_id=$2) AS visible FROM turns WHERE owner_id=$1 AND status='running'",
+        [ownerId, welcomeSourceId],
       );
-      return { activeWork: result.rows[0].active || (dependencies.admission?.pending ?? 0) > 1 };
+      return { running: result.rows };
     });
   const turnFields = `u.id,u.status,u.source,u.error,u.created_at AS "createdAt",u.finished_at AS "finishedAt",(NOT u.background OR u.source_id=$2) AS "showTyping"`;
   async function messageTurns(threadId: string, ids: string[]): Promise<Turn[]> {
