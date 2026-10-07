@@ -10,6 +10,7 @@ import {
   brief,
   find,
   fold,
+  freeSlug,
   id,
   indexLayout,
   isEmpty,
@@ -22,16 +23,19 @@ import {
   path,
   pathOf,
   render,
+  same,
   similar,
   slug,
   slugFor,
   unsafe,
-  view,
+  view as memoryView,
+  type Area,
   type Entry,
   type Tree,
 } from './memory-tree.ts';
 
 const key = 'memory/MEMORY.md';
+const nilId = '00000000-0000-0000-0000-000000000000';
 
 const saveInput = z
   .object({
@@ -47,6 +51,23 @@ const findInput = z
   .object({ query: z.string().trim().min(1).max(200), area: area.optional() })
   .strict();
 const readInput = z.object({ path: z.union([area, path]) }).strict();
+const noteInput = z.object({ area, text: line(600), expires: z.iso.date().optional() }).strict();
+const changeInput = z
+  .object({
+    text: line(600).optional(),
+    expires: z.iso.date().nullable().optional(),
+    confirm: z.literal(true).optional(),
+  })
+  .strict()
+  .refine((input) => Object.keys(input).length > 0);
+const archivedInput = z.object({ path, archived: z.iso.datetime({ offset: true }) }).strict();
+const settingsInput = z
+  .object({ saving: z.boolean().optional(), sensitive: z.boolean().optional() })
+  .strict()
+  .refine((input) => Object.keys(input).length > 0);
+function fail(message: string, statusCode = 400): never {
+  throw Object.assign(new Error(message), { statusCode });
+}
 
 export function createMemoryService(options: {
   pool: Pool;
@@ -86,7 +107,10 @@ export function createMemoryService(options: {
     return { tree: parse(object?.bytes), bytes: object?.bytes, version: object?.version ?? null };
   }
 
-  async function edit<T>(change: (tree: Tree) => T, allowDisabled = false): Promise<T> {
+  async function edit<T>(
+    change: (tree: Tree) => T,
+    { allowDisabled = false, announce = false } = {},
+  ): Promise<T> {
     for (let attempt = 0; ; attempt++) {
       const current = await load();
       if (!current.tree.enabled && !allowDisabled) throw new Error('Memory is turned off.');
@@ -99,10 +123,10 @@ export function createMemoryService(options: {
         return result;
       try {
         await options.store.write(key, bytes, { expectedVersion: current.version });
-        const saved = current.tree.entries.find(
-          (entry) => previous.get(pathOf(entry)) !== JSON.stringify(entry),
-        );
-        if (saved) await options.onSaved?.(saved.sources.at(-1)!);
+        const source = current.tree.entries
+          .find((entry) => previous.get(pathOf(entry)) !== JSON.stringify(entry))
+          ?.sources.at(-1);
+        if (announce && source) await options.onSaved?.(source);
         return result;
       } catch (error) {
         if (!(error instanceof ObjectStoreConflict) || attempt === 2) throw error;
@@ -122,7 +146,20 @@ export function createMemoryService(options: {
   async function context() {
     const { tree } = await load();
     const index = indexLayout(tree).text;
-    return tree.enabled ? index : JSON.stringify({ savingEnabled: false, ...JSON.parse(index) });
+    const settings = {
+      ...(tree.enabled ? {} : { savingEnabled: false }),
+      ...(tree.sensitive ? { sensitiveTopics: 'allowed' } : {}),
+    };
+    return Object.keys(settings).length
+      ? JSON.stringify({ ...settings, ...JSON.parse(index) })
+      : index;
+  }
+
+  async function watermark() {
+    const { rows } = await options.pool.query(
+      `SELECT to_char(now() AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS now`,
+    );
+    return `${rows[0].now}/${nilId}`;
   }
 
   async function currentSource(
@@ -164,21 +201,22 @@ export function createMemoryService(options: {
     if (input.enabled === undefined && !input.clear)
       throw new Error('Choose whether to turn memory on, turn it off or clear it.');
     await currentSource(provenance, input.quote);
-    const { rows } = await options.pool.query(
-      `SELECT to_char(now() AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS now`,
+    const mark = await watermark();
+    return edit(
+      (tree) => {
+        if (input.enabled !== undefined) tree.enabled = input.enabled;
+        if (input.clear) {
+          tree.entries = [];
+          tree.archive = [];
+          tree.overviews = {};
+          tree.consolidated = {};
+        }
+        tree.reflected = mark;
+        tree.retries = 0;
+        return { enabled: tree.enabled, cleared: input.clear };
+      },
+      { allowDisabled: true },
     );
-    return edit((tree) => {
-      if (input.enabled !== undefined) tree.enabled = input.enabled;
-      if (input.clear) {
-        tree.entries = [];
-        tree.archive = [];
-        tree.overviews = {};
-        tree.consolidated = {};
-      }
-      tree.reflected = `${rows[0].now}/00000000-0000-0000-0000-000000000000`;
-      tree.retries = 0;
-      return { enabled: tree.enabled, cleared: input.clear };
-    }, true);
   }
 
   async function cites(messageId: string | null) {
@@ -198,56 +236,204 @@ export function createMemoryService(options: {
     );
     if (!source.rowCount)
       throw new Error('The current owned user message is required as evidence.');
-    return edit((tree) => {
-      const now = new Date().toISOString();
-      const group = areaEntries(tree, input.area);
-      const same = input.slug
-        ? undefined
-        : group.find((entry) => fold(entry.text) === fold(input.text));
-      const near =
-        input.slug || same ? undefined : group.find((e) => similar(e.text, input.text, 0.6));
-      if (near)
-        throw new Error(
-          `A similar memory exists at ${pathOf(near)}. Save to its slug to add evidence, or use replace:true for a correction.`,
-        );
-      const name = input.slug ?? same?.slug ?? slugFor(tree, input.area, input.text);
-      const existing = locate(tree, `${input.area}/${name}`);
-      const replaced = !!existing && existing.text !== input.text;
-      if (replaced && !input.replace)
-        throw new Error('A change of memory text needs a replacement.');
-      if (!existing && tree.entries.length >= maxEntries)
-        throw new Error('The memory is full. Forget entries first.');
-      if (existing && replaced) archive(tree, existing, 'superseded', now);
-      const abstract = input.abstract ?? (replaced ? undefined : existing?.abstract);
-      const expires = input.expires ?? (replaced ? undefined : existing?.expires);
-      const entry: Entry = {
-        area: input.area,
-        slug: name,
-        text: input.text,
-        ...(abstract ? { abstract } : {}),
-        origin: 'stated',
-        updated: now,
-        sources: replaced
-          ? [sourceMessageId]
-          : [...new Set([...(existing?.sources ?? []), sourceMessageId])].slice(-5),
-        ...(expires ? { expires } : {}),
-      };
-      tree.entries = [...tree.entries.filter((item) => item !== existing), entry];
-      return { path: pathOf(entry), text: entry.text, status: 'stated' };
-    });
+    return edit(
+      (tree) => {
+        const now = new Date().toISOString();
+        const group = areaEntries(tree, input.area);
+        const same = input.slug
+          ? undefined
+          : group.find((entry) => fold(entry.text) === fold(input.text));
+        const near =
+          input.slug || same ? undefined : group.find((e) => similar(e.text, input.text, 0.6));
+        if (near)
+          throw new Error(
+            `A similar memory exists at ${pathOf(near)}. Save to its slug to add evidence, or use replace:true for a correction.`,
+          );
+        const name = input.slug ?? same?.slug ?? slugFor(tree, input.area, input.text);
+        const existing = locate(tree, `${input.area}/${name}`);
+        const replaced = !!existing && existing.text !== input.text;
+        if (replaced && !input.replace)
+          throw new Error('A change of memory text needs a replacement.');
+        if (!existing && tree.entries.length >= maxEntries)
+          throw new Error('The memory is full. Forget entries first.');
+        if (existing && replaced) archive(tree, existing, 'superseded', now);
+        const abstract = input.abstract ?? (replaced ? undefined : existing?.abstract);
+        const expires = input.expires ?? (replaced ? undefined : existing?.expires);
+        const entry: Entry = {
+          area: input.area,
+          slug: name,
+          text: input.text,
+          ...(abstract ? { abstract } : {}),
+          origin: 'stated',
+          updated: now,
+          sources: replaced
+            ? [sourceMessageId]
+            : [...new Set([...(existing?.sources ?? []), sourceMessageId])].slice(-5),
+          ...(expires ? { expires } : {}),
+        };
+        tree.entries = [...tree.entries.filter((item) => item !== existing), entry];
+        return { path: pathOf(entry), text: entry.text, status: 'stated' };
+      },
+      { announce: true },
+    );
   }
 
   async function forget(raw: unknown) {
     const target = path.parse(raw);
-    return edit((tree) => {
-      const entry = locate(tree, target);
-      const archived = tree.archive.length;
-      tree.archive = tree.archive.filter((item) => pathOf(item) !== target && item.by !== target);
-      if (!entry && tree.archive.length === archived)
-        throw new Error('The memory entry was not found.');
-      tree.entries = tree.entries.filter((item) => item !== entry);
-      return { ok: true };
-    }, true);
+    return edit(
+      (tree) => {
+        const entry = locate(tree, target);
+        const archived = tree.archive.length;
+        tree.archive = tree.archive.filter((item) => pathOf(item) !== target && item.by !== target);
+        if (!entry && tree.archive.length === archived)
+          fail('This note is no longer in memory.', 404);
+        tree.entries = tree.entries.filter((item) => item !== entry);
+        return { ok: true };
+      },
+      { allowDisabled: true },
+    );
+  }
+
+  function owned<T>(change: (tree: Tree, now: string) => T) {
+    return edit((tree) => change(tree, new Date().toISOString()), { allowDisabled: true });
+  }
+
+  function safe(text: string | undefined) {
+    if (unsafe(text))
+      fail('Passwords, codes, card numbers and instructions to Otto can’t be saved as notes.');
+  }
+
+  function duplicate(tree: Tree, target: Area, text: string, except?: Entry) {
+    if (areaEntries(tree, target).some((entry) => entry !== except && same(entry.text, text)))
+      fail('You already have this note.');
+  }
+
+  async function add(raw: unknown) {
+    const input = noteInput.parse(raw);
+    safe(input.text);
+    return owned((tree, now) => {
+      duplicate(tree, input.area, input.text);
+      if (tree.entries.length >= maxEntries) fail('Memory is full. Forget a note first.');
+      const entry: Entry = {
+        area: input.area,
+        slug: slugFor(tree, input.area, input.text),
+        text: input.text,
+        origin: 'stated',
+        updated: now,
+        edited: now,
+        sources: [],
+        ...(input.expires ? { expires: input.expires } : {}),
+      };
+      tree.entries.push(entry);
+      return pathOf(entry);
+    });
+  }
+
+  async function change(target: string, raw: unknown) {
+    const at = path.parse(target);
+    const input = changeInput.parse(raw);
+    safe(input.text);
+    await owned((tree, now) => {
+      const entry = locate(tree, at) ?? fail('This note is no longer in memory.', 404);
+      const text = input.text ?? entry.text;
+      const expires = input.expires === undefined ? entry.expires : (input.expires ?? undefined);
+      const rewritten = text !== entry.text;
+      if (!rewritten && expires === entry.expires && !input.confirm) return;
+      if (rewritten) {
+        duplicate(tree, entry.area, text, entry);
+        archive(tree, entry, 'superseded', now);
+      }
+      tree.entries = [
+        ...tree.entries.filter((item) => item !== entry),
+        {
+          area: entry.area,
+          slug: entry.slug,
+          text,
+          ...(!rewritten && entry.abstract ? { abstract: entry.abstract } : {}),
+          origin: rewritten || input.confirm ? 'stated' : entry.origin,
+          updated: now,
+          edited: now,
+          sources: rewritten ? [] : entry.sources,
+          ...(expires ? { expires } : {}),
+        },
+      ];
+    });
+  }
+
+  async function restore(raw: unknown) {
+    const input = archivedInput.parse(raw);
+    return owned((tree, now) => {
+      const item =
+        tree.archive.find(
+          (entry) => pathOf(entry) === input.path && entry.archived === input.archived,
+        ) ?? fail('This note is no longer in the archive.', 404);
+      const current = locate(tree, input.path);
+      const replaces =
+        !!current && item.reason === 'superseded' && (item.by ?? input.path) === input.path;
+      duplicate(tree, item.area, item.text, replaces ? current : undefined);
+      if (!replaces && tree.entries.length >= maxEntries)
+        fail('Memory is full. Forget a note first.');
+      tree.archive = tree.archive.filter((entry) => entry !== item);
+      if (current && replaces) archive(tree, current, 'superseded', now);
+      const entry: Entry = {
+        area: item.area,
+        slug: current && !replaces ? freeSlug(tree, item.area, item.slug) : item.slug,
+        text: item.text,
+        ...(item.abstract ? { abstract: item.abstract } : {}),
+        origin: 'stated',
+        updated: now,
+        edited: now,
+        sources: item.sources,
+        ...(item.expires && item.expires >= now.slice(0, 10) ? { expires: item.expires } : {}),
+      };
+      tree.entries.push(entry);
+      return pathOf(entry);
+    });
+  }
+
+  async function forgetArchived(raw: unknown) {
+    const input = archivedInput.parse(raw);
+    await owned((tree) => {
+      const kept = tree.archive.filter(
+        (entry) => !(pathOf(entry) === input.path && entry.archived === input.archived),
+      );
+      if (kept.length === tree.archive.length) fail('This note is no longer in the archive.', 404);
+      tree.archive = kept;
+    });
+  }
+
+  async function settings(raw: unknown) {
+    const input = settingsInput.parse(raw);
+    const mark = await watermark();
+    await owned((tree) => {
+      if (input.saving !== undefined && input.saving !== tree.enabled) {
+        tree.enabled = input.saving;
+        tree.reflected = mark;
+        tree.retries = 0;
+      }
+      if (input.sensitive !== undefined) tree.sensitive = input.sensitive;
+    });
+  }
+
+  async function view() {
+    const { tree } = await load();
+    const ids = [...new Set([...tree.entries, ...tree.archive].flatMap((entry) => entry.sources))];
+    const { rows } = await options.pool.query(
+      `SELECT m.id,left(m.text,600) AS text,m.created_at,split_part(COALESCE(u.channel,'web'),':',1) AS channel
+       FROM messages m LEFT JOIN turns u ON u.id=m.turn_id AND u.owner_id=m.owner_id
+       WHERE m.owner_id=$1 AND m.role='user' AND m.id=ANY($2::uuid[])`,
+      [options.ownerId, ids],
+    );
+    const found = new Map(
+      rows.map((row) => [
+        row.id as string,
+        { id: row.id, text: row.text, at: row.created_at.toISOString(), channel: row.channel },
+      ]),
+    );
+    return memoryView(
+      tree,
+      (source) => found.get(source) ?? { id: source, text: null, at: null, channel: null },
+    );
   }
 
   return {
@@ -264,17 +450,24 @@ export function createMemoryService(options: {
     save,
     forget,
     edit,
+    add,
+    change,
+    restore,
+    forgetArchived,
+    settings,
+    view,
     load: async () => (await load()).tree,
-    view: async () => view((await load()).tree),
     find: async (raw: unknown) => {
       const input = findInput.parse(raw);
       const { tree } = await load();
       const hits = find(tree, input.query, input.area);
-      if (hits.length >= 3 || !options.curator?.configured) return hits;
       const known = new Set(hits.map((hit) => hit.path));
-      const extra = (await relatedPaths(options.curator, tree, input.query, input.area))
-        .filter((target) => !known.has(target))
-        .flatMap((target) => locate(tree, target) ?? []);
+      const extra =
+        hits.length >= 3 || !options.curator?.configured
+          ? []
+          : (await relatedPaths(options.curator, tree, input.query, input.area))
+              .filter((target) => !known.has(target))
+              .flatMap((target) => locate(tree, target) ?? []);
       return [...hits, ...extra.map(brief)].slice(0, 10);
     },
     read: async (raw: unknown) => open((await load()).tree, readInput.parse(raw).path),
