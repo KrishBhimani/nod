@@ -432,7 +432,7 @@ export function PlanDetails({
     <>
       {!open && summary && <p className="saved-plan-summary">{summary}</p>}
       <div className="saved-plan-details" id={id} hidden={!open}>
-        {open && children}
+        {children}
       </div>
       <div className="saved-plan-footer">
         <Button

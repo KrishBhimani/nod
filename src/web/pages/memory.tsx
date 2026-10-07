@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { ChevronLeft, Download, Plus } from 'lucide-react';
 import {
   memoryAreas,
@@ -77,17 +77,16 @@ const channels: Record<string, string> = {
 };
 
 const archivedKey = (item: MemoryArchived) => `${item.path}@${item.archived}`;
-const compactQuery = '(max-width: 900px)';
-
 function useCompact() {
-  return useSyncExternalStore(
-    (change) => {
-      const media = window.matchMedia?.(compactQuery);
-      media?.addEventListener('change', change);
-      return () => media?.removeEventListener('change', change);
-    },
-    () => window.matchMedia?.(compactQuery).matches ?? false,
-  );
+  const [panel, setPanel] = useState<HTMLDivElement | null>(null);
+  const [compact, setCompact] = useState(false);
+  useEffect(() => {
+    if (!panel || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(([entry]) => setCompact(entry.contentRect.width <= 640));
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [panel]);
+  return [compact, setPanel] as const;
 }
 
 function MemoryMark({ stage }: { stage: Stage }) {
@@ -437,7 +436,7 @@ function AddNote({
 export function Memory() {
   const { data: view, error: loadError, loading, update } = usePageData<MemoryView>('/api/memory');
   const format = useDateFormat();
-  const compact = useCompact();
+  const [compact, panelRef] = useCompact();
   const [stage, setStage] = useState<Stage | null>(null);
   const [query, setQuery] = useState('');
   const [chosen, setChosen] = useState<Selection | undefined>(undefined);
@@ -621,7 +620,7 @@ export function Memory() {
   ) : null;
 
   return (
-    <div className="memory-panel" data-analytics-private>
+    <div className="memory-panel" ref={panelRef} data-analytics-private>
       {loadError && !view && <Notice>Could not load your memory.</Notice>}
       {!view ? (
         loading && <Loading label="Loading memory…" />

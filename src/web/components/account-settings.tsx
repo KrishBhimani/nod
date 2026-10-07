@@ -45,6 +45,7 @@ import { localeRegion } from '../../shared/date-locale';
 import { desktopSettingsAvailable } from '../lib/desktop';
 import { ComposioSettings, DesktopOptions, useDesktopSettings } from './desktop-settings';
 import { Memory } from '../pages/memory';
+import { shortcutLabel } from '../lib/navigation';
 
 const editablePreferences = ['quietHoursEnabled', 'quietStart', 'quietEnd'] as const;
 const regionLabels = {
@@ -514,7 +515,12 @@ export function AccountSettings({
                   role="tab"
                   aria-selected={value === tab}
                   aria-label={value}
-                  title={value}
+                  aria-keyshortcuts={value === 'Memory' ? 'Meta+Y Control+Y' : undefined}
+                  title={
+                    value === 'Memory'
+                      ? `${value} (${shortcutLabel('y', /Mac|iPhone|iPad/.test(navigator.platform))})`
+                      : value
+                  }
                   aria-controls={`${id}-content`}
                   tabIndex={value === tab ? 0 : -1}
                   onClick={() => changeTab(value)}
