@@ -37,7 +37,7 @@ const providers: Record<
   openrouter: {
     sub: 'Account or API key',
     oauth: 'Connect OpenRouter',
-    note: 'One account, hundreds of models from every major lab.',
+    note: 'One account gives me models from lots of different labs.',
     placeholder: 'sk-or-…',
     hint: 'openrouter.ai/keys',
   },
@@ -190,7 +190,7 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
     panel = (
       <div className="ob-brain-status" data-analytics-public>
         <Spinner />
-        <p className="ob-brain-wait">{models.error || 'Loading your services…'}</p>
+        <p className="ob-brain-wait">{models.error || 'Loading providers…'}</p>
       </div>
     );
   else if (shown)
@@ -201,7 +201,7 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
         </span>
         <div className="ob-brain-status-text" data-analytics-public>
           <p className="ob-brain-title">Connected to {modelSource(shown)}</p>
-          <p className="ob-brain-note">You can add more services later in Settings.</p>
+          <p className="ob-brain-note">You can add more later in Settings.</p>
         </div>
         {options.length ? (
           <label className="ob-brain-model">
@@ -213,7 +213,7 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
             >
               {!current && (
                 <option value="" disabled>
-                  Choose a model
+                  Pick a model
                 </option>
               )}
               {options.map((source) => {
@@ -234,7 +234,7 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
           </label>
         ) : (
           <Button
-            variant="secondary"
+            variant="outline"
             disabled={models.busy}
             onClick={() =>
               void models.change(`/api/models/connections/${shown.id}/refresh`, 'POST')
@@ -252,12 +252,11 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
       <div className="ob-brain-status">
         <Spinner />
         <p className="ob-brain-wait" data-analytics-public>
-          Finish signing in your browser.
+          Finish signing in, then come back here.
         </p>
         <Button
           variant="ghost"
           size="sm"
-          className="ob-brain-cancel"
           disabled={flow.pending}
           data-analytics-public
           onClick={() => void flow.cancel().then((done) => done && setCallback(''))}
@@ -266,12 +265,12 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
         </Button>
         {flow.signIn && (
           <details className="ob-brain-fallback">
-            <summary data-analytics-public>Browser page didn’t load?</summary>
+            <summary data-analytics-public>Sign-in page didn’t open?</summary>
             <p data-analytics-public>
               <button type="button" className="ob-brain-link" onClick={flow.reopen}>
-                Open sign-in again
+                Open it again
               </button>{' '}
-              or paste the full address the browser ended on.
+              or paste the address your browser ended up on.
             </p>
             <form
               className="ob-brain-row"
@@ -293,7 +292,7 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
                 data-analytics-private
                 onChange={(event) => setCallback(event.target.value)}
               />
-              <Button type="submit" variant="secondary" disabled={models.busy}>
+              <Button type="submit" variant="outline" disabled={models.busy}>
                 Finish
               </Button>
             </form>
@@ -306,7 +305,7 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
     panel = (
       <div className="ob-brain-form" data-analytics-public>
         <div className="ob-brain-oauth">
-          <Button variant="secondary" disabled={flow.pending} onClick={startSignIn}>
+          <Button variant="outline" disabled={flow.pending} onClick={startSignIn}>
             <Logo provider={provider} />
             {oauth}
           </Button>
@@ -346,7 +345,7 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
               setKeyError('');
             }}
           />
-          <Button type="submit" variant="secondary" disabled={checking} data-analytics-public>
+          <Button type="submit" variant="outline" disabled={checking} data-analytics-public>
             {checking && <LoaderCircle size={16} className="spin" aria-hidden="true" />}
             {checking ? 'Checking' : 'Connect'}
           </Button>
@@ -382,10 +381,9 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
         typing={typing}
         className="ob-brain-messages"
         items={[
-          <Bubble data-analytics-public>First, I need a brain.</Bubble>,
+          <Bubble data-analytics-public>Let’s pick a model for me.</Bubble>,
           <Bubble data-analytics-public>
-            I think with a model from an AI service you already use. Connect one so we can kick
-            things off.
+            Here are the providers I work with. Connect one and we’re off.
           </Bubble>,
         ]}
       />

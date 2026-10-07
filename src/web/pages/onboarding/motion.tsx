@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useRef,
   useState,
   type CSSProperties,
   type HTMLAttributes,
@@ -63,23 +64,42 @@ export function useReveal(
   };
 }
 
+export type GlyphReaction = { kind: 'on' | 'off'; count: number };
+
 export function OttoGlyph({
   size = 32,
   mode = 'idle',
+  reaction,
   className,
 }: {
   size?: number;
   mode?: 'idle' | 'thinking' | 'still';
+  reaction?: GlyphReaction | null;
   className?: string;
 }) {
-  const dot = (
+  const thinking = mode === 'thinking';
+  const [phase, setPhase] = useState<'rest' | 'spin' | 'settle'>(thinking ? 'spin' : 'rest');
+  const live = useRef({ thinking, since: 0 });
+  useEffect(() => {
+    live.current = { thinking, since: performance.now() };
+    if (prefersReducedMotion()) setPhase(thinking ? 'spin' : 'rest');
+    else if (thinking) setPhase((current) => (current === 'rest' ? 'spin' : current));
+  }, [thinking]);
+  const circle = (
     <circle
       cx="25"
       cy="6"
       r="4"
-      className={mode === 'idle' ? 'ob-glyph-pulse' : undefined}
+      className={mode === 'idle' && phase === 'rest' ? 'ob-glyph-pulse' : undefined}
       fill="var(--brand-pink)"
     />
+  );
+  const dot = reaction ? (
+    <g key={reaction.count} className="ob-glyph-react" data-reaction={reaction.kind}>
+      {circle}
+    </g>
+  ) : (
+    circle
   );
   return (
     <svg
@@ -91,7 +111,20 @@ export function OttoGlyph({
       aria-hidden="true"
     >
       <circle cx="16" cy="16" r="10" stroke="currentColor" strokeWidth="4" />
-      {mode === 'thinking' ? <g className="ob-glyph-orbit">{dot}</g> : dot}
+      <g
+        className="ob-glyph-orbit"
+        data-phase={phase}
+        onAnimationIteration={(event) => {
+          if (event.target !== event.currentTarget || live.current.thinking) return;
+          if (performance.now() - live.current.since > 600) setPhase('settle');
+        }}
+        onAnimationEnd={(event) => {
+          if (event.target === event.currentTarget)
+            setPhase(live.current.thinking ? 'spin' : 'rest');
+        }}
+      >
+        {dot}
+      </g>
     </svg>
   );
 }
@@ -237,7 +270,7 @@ export function Footer({
 export function Select({ className, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <span className={cn('ob-select', className)}>
-      <select {...props} />
+      <select className="input" {...props} />
       <ChevronDown size={16} aria-hidden="true" />
     </span>
   );

@@ -1304,6 +1304,15 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     }
   }
 
+  async function inboxSnippets(signal: AbortSignal) {
+    for (const row of await connectionRows(configuredOwner)) {
+      const selected = providers.find((item) => item.id === row.provider_id);
+      if (row.slug !== 'gmail' || !row.account_id || !row.account_active || row.revoked) continue;
+      if (selected?.inboxSnippets) return selected.inboxSnippets(row.account_id, signal);
+    }
+    return [];
+  }
+
   function pollInboxes() {
     if (closed || !provider.configured || !provider.pollInbox) return Promise.resolve();
     if (polling) return polling;
@@ -1715,6 +1724,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     executeApproved,
     prepare,
     emailCode,
+    inboxSnippets,
     list,
     connectedApps,
     manageConnections: async (

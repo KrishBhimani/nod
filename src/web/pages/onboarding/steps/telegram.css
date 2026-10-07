@@ -2,16 +2,16 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 32px;
-  padding: 28px;
+  padding: 24px;
   border: 1px solid var(--border);
-  border-radius: var(--panel-radius);
+  border-radius: var(--dialog-radius);
   background: var(--surface);
 }
 .ob-tg-steps,
 .ob-tg-steps > ol {
   display: grid;
   align-content: start;
-  gap: 22px;
+  gap: 24px;
 }
 .ob-tg-steps > ol {
   margin: 0;
@@ -22,7 +22,6 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  font-size: 16px;
   font-weight: 500;
 }
 .ob-tg-logo {
@@ -41,7 +40,7 @@
 .ob-tg-item {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr);
-  gap: 14px;
+  gap: 16px;
   transition: opacity 200ms ease;
 }
 .ob-tg-item[data-state='next'] {
@@ -53,9 +52,9 @@
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: var(--bubble);
+  background: var(--control);
   color: var(--muted-foreground);
-  font-size: 13px;
+  font-size: var(--text-control);
   font-weight: 600;
   transition:
     background 240ms ease,
@@ -72,7 +71,7 @@
   transform: scale(0.4);
 }
 .ob-tg-item[data-state='active'] .ob-tg-badge {
-  background: var(--brand-pink);
+  background: var(--primary);
   color: var(--primary-foreground);
 }
 .ob-tg-item[data-state='done'] .ob-tg-badge {
@@ -96,24 +95,21 @@
 }
 .ob-tg-text {
   display: grid;
-  gap: 2px;
-  padding-top: 3px;
+  gap: 4px;
+  padding-top: 4px;
   color: var(--muted-foreground);
-  font-size: 14px;
+  font-size: var(--text-control);
 }
 .ob-tg-text > .ob-tg-title {
   color: var(--foreground);
-  font-size: 15px;
+  font-size: var(--text-body);
   font-weight: 500;
 }
 .ob-tg-extra {
   display: grid;
   justify-items: start;
-  gap: 10px;
-  padding: 10px 4px 4px;
-}
-.ob .ob-tg-extra .button {
-  font-size: 14px;
+  gap: 8px;
+  padding: 8px 4px 4px;
 }
 .ob-tg-form {
   display: flex;
@@ -121,10 +117,8 @@
   gap: 8px;
   width: 100%;
 }
-.ob .ob-tg-form > .input {
+.ob-tg-form > .input {
   flex: 1 1 180px;
-  min-width: 0;
-  font-size: 13px;
 }
 .ob-tg-spinner {
   flex-shrink: 0;
@@ -136,14 +130,14 @@
 .ob-tg-waiting {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--text-control);
 }
 .ob-tg-candidate {
   display: grid;
-  gap: 10px;
-  font-size: 14px;
+  gap: 8px;
+  font-size: var(--text-control);
 }
 .ob-tg-buttons {
   display: flex;
@@ -152,13 +146,13 @@
 }
 .ob-tg-error {
   color: var(--error);
-  font-size: 14px;
+  font-size: var(--text-control);
 }
 .ob-tg-panel {
   display: grid;
   min-height: 300px;
   padding: 24px;
-  border-radius: 12px;
+  border-radius: var(--card-radius);
   background: color-mix(in srgb, var(--foreground) 4%, var(--surface));
   text-align: center;
 }
@@ -168,11 +162,11 @@
   grid-area: 1 / 1;
   place-items: center;
   align-content: center;
-  gap: 14px;
+  gap: 16px;
 }
 .ob-tg-code {
   padding: 12px;
-  border-radius: var(--panel-radius);
+  border-radius: var(--card-radius);
   background: var(--gray-0);
   line-height: 0;
 }
@@ -185,11 +179,11 @@
 }
 .ob-tg-caption {
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--text-control);
 }
 .ob a.ob-tg-open {
   color: var(--muted-foreground);
-  font-size: 13px;
+  font-size: var(--text-control);
 }
 .ob a.ob-tg-open:hover {
   color: var(--foreground);
@@ -207,7 +201,6 @@
   animation: ob-tg-pop 520ms var(--ease-pop);
 }
 .ob-tg-paired {
-  font-size: 16px;
   font-weight: 500;
 }
 @keyframes ob-tg-swap {
@@ -223,6 +216,6 @@
 }
 @media (max-width: 640px) {
   .ob-tg-card {
-    padding: 20px;
+    padding: 16px;
   }
 }

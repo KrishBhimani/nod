@@ -10,7 +10,6 @@ import { delta, refresh } from './events.ts';
 import { localArtifacts, type ArtifactService } from './artifacts.ts';
 import type { SpeechService } from './speech.ts';
 import type { Artifact, MessageReaction } from '../shared/contracts.ts';
-import type { SuggestedTask } from '../shared/onboarding.ts';
 import type {
   BrowserConnectionRequest,
   PromptSnapshot,
@@ -19,7 +18,6 @@ import type {
   RuntimeResult,
 } from '../ports/agent.ts';
 import { appConfirmation } from '../ports/agent.ts';
-import { fallbackSuggestions, welcomeGreeting, welcomePrompt } from './welcome.ts';
 import { isMessageReaction, reactionEmoji } from '../shared/emoji.ts';
 import { defaultPreferences } from './preferences.ts';
 import { formattingLocale, timeZoneRegion } from '../shared/date-locale.ts';
@@ -111,7 +109,6 @@ export interface ThreadDependencies {
   finishObservationSegment?: (turnId: string) => Promise<void>;
   accountProfile?: () => Promise<RuntimeContext['account']>;
   connectedApps?: () => Promise<NonNullable<RuntimeContext['connectedApps']>>;
-  telegramPaired?: () => Promise<boolean>;
   activityCheck?: (turn: TurnRef) => Promise<RuntimeContext['activityCheck']>;
   memoryContext?: () => Promise<RuntimeContext['memory']>;
   task?: (turn: TurnRef, input: unknown) => Promise<unknown>;
@@ -254,46 +251,6 @@ async function insertAssistantMessage(
       replyToMessageId ?? null,
     ],
   );
-}
-
-async function insertSuggestions(
-  client: PoolClient,
-  turn: TurnRef,
-  { intro, tasks }: { intro: string; tasks: Array<Omit<SuggestedTask, 'id'>> },
-) {
-  const saved = await client.query(
-    `INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id,suggestions)
-     SELECT $1,$2,'assistant',$3,$4,$5,$6 WHERE NOT EXISTS
-     (SELECT 1 FROM messages WHERE owner_id=$2 AND suggestions IS NOT NULL)`,
-    [
-      randomUUID(),
-      ownerId,
-      [intro, ...tasks.map((task) => `- ${task.title}`)].join('\n'),
-      turn.threadId,
-      turn.turnId,
-      JSON.stringify({ intro, tasks: tasks.map((task) => ({ id: randomUUID(), ...task })) }),
-    ],
-  );
-  return Boolean(saved.rowCount);
-}
-
-async function saveFallbackSuggestions(turn: TurnRef, dependencies: ThreadDependencies) {
-  const [apps, telegram, memory] = await Promise.all([
-    dependencies.connectedApps?.().catch(() => []),
-    dependencies.telegramPaired?.().catch(() => false),
-    dependencies.memoryContext?.().catch(() => ''),
-  ]);
-  const suggestions = fallbackSuggestions({
-    told: /"onboarding-[a-z-]+: /.test(memory ?? ''),
-    gmail: Boolean(apps?.some((app) => app.slug === 'gmail' && app.status === 'connected')),
-    telegram: Boolean(telegram),
-  });
-  const saved = await transaction(
-    async (client) =>
-      (await lockThread(client)).id === turn.threadId &&
-      insertSuggestions(client, turn, suggestions),
-  );
-  if (saved) refresh();
 }
 
 export async function reply(
@@ -514,30 +471,6 @@ export async function restartOnboarding(expectedThreadId?: string) {
     prompt: onboardingPrompt,
   });
   return { turnId: result.turnId, threadId: result.threadId };
-}
-
-export const welcomeSourceId = 'onboarding:welcome';
-export async function startOnboarding(name?: string) {
-  const greeting = welcomeGreeting(name);
-  const started = await transaction(async (client) => {
-    const thread = await lockThread(client);
-    const blocked = await client.query(
-      `SELECT 1 FROM turns WHERE owner_id=$1 AND source_id=$2
-       UNION ALL SELECT 1 FROM turns WHERE thread_id=$3 AND source='user' AND status IN ('queued','running') LIMIT 1`,
-      [ownerId, welcomeSourceId, thread.id],
-    );
-    if (blocked.rowCount) return false;
-    const turnId = randomUUID();
-    await client.query(
-      `INSERT INTO turns(id,owner_id,thread_id,source,source_id,prompt,channel,background,read_only)
-       VALUES($1,$2,$3,'event',$4,$5,'web',true,true)`,
-      [turnId, ownerId, thread.id, welcomeSourceId, welcomePrompt(greeting)],
-    );
-    await insertAssistantMessage(client, { threadId: thread.id, turnId }, greeting);
-    await sendDrain(client, thread.id);
-    return true;
-  });
-  if (started) refresh();
 }
 
 export async function reactToAssistantMessage(
@@ -915,7 +848,6 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
   let outcome: Extract<AnalyticsEvent, { event: 'otto_turn_completed' }>['properties']['outcome'] =
     'failed';
   let unwatch: (() => void) | undefined;
-  let injected = false;
   dependencies.analytics?.({ event: 'otto_turn_started', properties: analyticsProperties });
   const turnId = turn.id as string;
   const threadId = turn.thread_id as string;
@@ -1063,28 +995,6 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
       refresh();
     };
     const { reactToMessage, connections, browserConnection, observe, inspectPrompt } = dependencies;
-    const suggestTasks: RuntimeContext['suggestTasks'] =
-      turn.source_id === welcomeSourceId
-        ? {
-            sources: [
-              ...(loaded.context.connectedApps?.some(
-                (app) => app.slug === 'gmail' && app.status === 'connected',
-              )
-                ? (['gmail'] as const)
-                : []),
-              'web',
-              ...((await dependencies.telegramPaired?.().catch(() => false))
-                ? (['telegram'] as const)
-                : []),
-            ],
-            save: async (suggestions) => {
-              if (injected) throw new Error('Do not suggest tasks from this inbox. Stop now.');
-              if (!(await current((client) => insertSuggestions(client, ref, suggestions))))
-                throw new Error('The cards were already sent.');
-              refresh();
-            },
-          }
-        : undefined;
     await emit('started', 'Turn started.');
     const result = await dependencies.runTurn({
       threadId,
@@ -1094,7 +1004,6 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
       readOnly: turn.read_only,
       channel: String(turn.channel).split(':')[0],
       ...loaded.context,
-      ...(suggestTasks ? { suggestTasks } : {}),
       currentMessageId: loaded.sourceMessageId ?? undefined,
       replyTo: loaded.replyTo && describe(loaded.replyTo),
       history: loaded.history.map(describe),
@@ -1171,10 +1080,9 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
               return taken;
             },
       markUntrustedContext: fenced(async () => dependencies.markUntrustedContext?.(ref)),
-      flagInjection: fenced(async (findings: string[]) => {
-        injected = true;
-        await dependencies.flagInjection?.(ref, findings);
-      }),
+      flagInjection: fenced(async (findings: string[]) =>
+        dependencies.flagInjection?.(ref, findings),
+      ),
       createAudio: async (text) => {
         const audio = await fenced(() => dependencies.speech.synthesize(text, signal))();
         return attach(audio.bytes, audio.fileName, audio.mimeType, 'Audio generated by AI.');
@@ -1231,14 +1139,6 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
     }
   } finally {
     unwatch?.();
-    if (
-      turn.source_id === welcomeSourceId &&
-      !injected &&
-      ['succeeded', 'failed', 'cancelled'].includes(outcome)
-    )
-      await saveFallbackSuggestions(ref, dependencies).catch((error) =>
-        console.error(`Welcome cards were not saved: ${describeFailure(error)}`),
-      );
     dependencies.analytics?.({
       event: 'otto_turn_completed',
       properties: {

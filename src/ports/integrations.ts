@@ -85,6 +85,10 @@ export interface SentEmail {
   automated: boolean;
   text: string;
 }
+export interface InboxSnippet {
+  subject: string;
+  snippet: string;
+}
 export interface IntegrationProvider {
   id: string;
   configured: boolean;
@@ -116,6 +120,7 @@ export interface IntegrationProvider {
     signal: AbortSignal,
   ): Promise<VerificationEmail[] | undefined>;
   sentEmails?(accountId: string, signal: AbortSignal): Promise<SentEmail[]>;
+  inboxSnippets?(accountId: string, signal: AbortSignal): Promise<InboxSnippet[]>;
   pollInbox?(
     accountId: string,
     cursor: string | null,

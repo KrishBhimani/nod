@@ -1,5 +1,6 @@
-import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
+import { useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import { Button } from '../../../components/ui';
+import { sessionStore } from '../../../lib/session';
 import type { StepProps } from '..';
 import { Bubble, Messages, OttoGlyph, Rise, useReveal, type RevealStep } from '../motion';
 
@@ -14,6 +15,10 @@ const sequence: RevealStep[] = [
 ];
 
 export function Welcome({ arrived, onNext }: StepProps) {
+  const hosted = useSyncExternalStore(
+    sessionStore.subscribe,
+    () => sessionStore.getSnapshot().session?.auth.mode === 'google',
+  );
   const section = useRef<HTMLElement>(null);
   const slot = useRef<HTMLSpanElement>(null);
   const [offset, setOffset] = useState({ dx: 0, dy: 0 });
@@ -89,14 +94,21 @@ export function Welcome({ arrived, onNext }: StepProps) {
             </span>
           </Bubble>,
           <Bubble>
-            I run on <strong>your computer</strong> and work in{' '}
-            <strong>the apps you already use</strong>. Let me get to know you first, so I can do
-            great work for you.
+            {hosted ? (
+              'I work'
+            ) : (
+              <>
+                I run on <strong>your computer</strong> and work
+              </>
+            )}{' '}
+            in <strong>the apps you already use</strong>. Let’s get to know each other a bit first,
+            so I can really help.
           </Bubble>,
           <Bubble>
-            It’s <strong>safe</strong> to connect your work accounts.{' '}
-            <strong>Keys and passwords are encrypted</strong>, and I{' '}
-            <strong>ask before I send, post or delete</strong> anything.
+            It’s <strong>safe</strong> to connect your work accounts. Your{' '}
+            <strong>keys and passwords are encrypted</strong>, and I{' '}
+            <strong>check with you before I send, post or delete</strong> anything you didn’t ask
+            for.
           </Bubble>,
         ]}
       />

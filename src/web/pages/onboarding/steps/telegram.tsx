@@ -13,12 +13,12 @@ const botFather = 'https://t.me/BotFather';
 const steps = [
   {
     title: 'Create your bot',
-    body: 'Scan the code with your phone. In Telegram, send /newbot to BotFather and pick any name.',
+    body: 'Scan the code with your phone, send /newbot to BotFather and pick any name.',
   },
-  { title: 'Paste the token', body: 'BotFather replies with a token. Copy it here.' },
+  { title: 'Paste the token', body: 'BotFather replies with a token. Paste it here.' },
   {
     title: 'Say hi to your bot',
-    body: 'Scan the new code and send /start. That pairs your phone with this computer.',
+    body: 'Scan the new code and send /start. That links your phone to me.',
   },
 ];
 
@@ -88,13 +88,13 @@ export function Telegram({ arrived, onNext, onBack }: StepProps) {
     if (state.needsDelivery)
       return (
         <Button
-          variant="secondary"
+          variant="outline"
           className="ob-tg-action"
           disabled={busy}
           data-analytics-public
           onClick={() => void telegramAction('pairing')}
         >
-          {busy ? 'Connecting…' : 'Retry connection'}
+          {busy ? 'Connecting…' : 'Try again'}
         </Button>
       );
     if (state.candidate && state.waiting)
@@ -127,7 +127,7 @@ export function Telegram({ arrived, onNext, onBack }: StepProps) {
     return (
       <div className="ob-tg-swap" key="expired">
         <Button
-          variant="secondary"
+          variant="outline"
           className="ob-tg-action"
           data-analytics-public
           onClick={() => void telegramAction('pairing')}
@@ -140,7 +140,7 @@ export function Telegram({ arrived, onNext, onBack }: StepProps) {
 
   const actions = [
     <Button
-      variant="secondary"
+      variant="outline"
       className="ob-tg-action"
       data-analytics-public
       onClick={() => {
@@ -169,12 +169,7 @@ export function Telegram({ arrived, onNext, onBack }: StepProps) {
           setError('');
         }}
       />
-      <Button
-        type="submit"
-        variant="secondary"
-        disabled={busy || unavailable}
-        data-analytics-public
-      >
+      <Button type="submit" variant="outline" disabled={busy || unavailable} data-analytics-public>
         {busy && <Spinner />}
         {busy ? 'Checking' : 'Save'}
       </Button>
@@ -237,8 +232,8 @@ export function Telegram({ arrived, onNext, onBack }: StepProps) {
                         {active && index === 1 && unavailable && (
                           <p className="ob-tg-error" role="alert">
                             {hosted
-                              ? 'Telegram setup is temporarily unavailable.'
-                              : 'The secure key store needs local setup before you can save a channel.'}
+                              ? 'Telegram setup isn’t available right now. Try again later.'
+                              : 'I need my secure key store set up on this computer before I can save your bot.'}
                           </p>
                         )}
                       </div>

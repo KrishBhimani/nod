@@ -178,6 +178,12 @@ export function meterIntegrations(
       ? (id, signal) =>
           usage.track({ ...base, operation: 'sent_emails' }, () => provider.sentEmails!(id, signal))
       : undefined,
+    inboxSnippets: provider.inboxSnippets
+      ? (id, signal) =>
+          usage.track({ ...base, operation: 'inbox_snippets' }, () =>
+            provider.inboxSnippets!(id, signal),
+          )
+      : undefined,
     pollInbox: provider.pollInbox
       ? (id, cursor, signal) =>
           usage.track({ ...base, operation: 'poll_inbox' }, () =>

@@ -5,11 +5,41 @@
 .ob-about-chat {
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
-  gap: 18px;
   min-height: 320px;
+  max-height: max(320px, min(560px, 100dvh - 360px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
 }
-.ob-about-answer {
+.ob-about-chat::-webkit-scrollbar {
+  display: none;
+}
+.ob-about-chat[data-top='false'] {
+  mask-image: linear-gradient(to bottom, transparent, #000 96px);
+}
+.ob-about-log {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: auto;
+  padding-top: 24px;
+}
+.ob-about-sent {
+  display: grid;
+  grid-template-rows: 1fr;
+}
+.ob-about-sent > div {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.ob-about-sent[data-new='true'] {
+  animation: ob-about-row 400ms var(--ease-reveal);
+}
+.ob-about-sent[data-new='true'] > div {
+  overflow: hidden;
+}
+.ob-about-sent[data-new='true'] .ob-user-bubble {
   animation: ob-about-sent 320ms var(--ease-reveal);
   transform-origin: bottom right;
 }
@@ -23,7 +53,7 @@
   display: flex;
   flex-wrap: wrap;
   column-gap: 8px;
-  margin-top: 2px;
+  margin-top: 4px;
 }
 .ob-about-summary > span:first-child {
   margin-top: 8px;
@@ -35,99 +65,36 @@
   display: grid;
   gap: 12px;
 }
-.ob-composer {
-  padding: 14px 10px 10px;
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  background: var(--surface);
-  box-shadow:
-    0 6px 24px color-mix(in srgb, var(--black) 6%, transparent),
-    0 1px 3px var(--shadow-color);
-  transition:
-    border-color 180ms ease,
-    box-shadow 180ms ease;
-}
-.ob-composer:focus-within {
-  border-color: color-mix(in srgb, var(--brand-pink) 55%, var(--border));
-  box-shadow:
-    0 6px 24px color-mix(in srgb, var(--black) 6%, transparent),
-    0 1px 3px var(--shadow-color),
-    0 0 0 4px color-mix(in srgb, var(--brand-pink) 16%, transparent);
-}
 .ob-composer > input {
   display: block;
   width: 100%;
-  min-height: 42px;
+  min-height: 40px;
   margin: 0;
-  padding: 0 6px 8px;
+  padding: 0 4px 8px;
   border: 0;
   outline: none;
   background: transparent;
   color: var(--foreground);
   font: inherit;
-  font-size: 16px;
+  font-size: var(--text-body);
   line-height: 1.6;
 }
 .ob-composer > input::placeholder {
   color: var(--placeholder);
 }
-.ob-composer-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.ob-composer-actions > button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: 0;
-  border-radius: var(--pill-radius);
-  transition:
-    background 140ms,
-    color 140ms,
-    transform 140ms;
-}
-.ob-composer-mic {
-  width: 32px;
-  height: 32px;
-  background: transparent;
-  color: var(--muted-foreground);
-}
-.ob-composer-mic:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.ob-composer-send {
-  width: 34px;
-  height: 34px;
-  background: var(--primary);
-  color: var(--primary-foreground);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--black) 12%, transparent);
-  cursor: pointer;
-}
-.ob-composer-send:hover:not(:disabled) {
-  background: var(--primary-hover);
-}
-.ob-composer-send:active:not(:disabled) {
-  background: var(--primary-pressed);
-  transform: scale(0.96);
-}
-.ob-composer-send:disabled {
-  background: var(--hover);
-  color: var(--muted-foreground);
-  box-shadow: none;
-  cursor: not-allowed;
-}
 .ob-about-hint {
   color: var(--muted-foreground);
-  font-size: 13px;
+  font-size: var(--text-control);
   text-align: center;
 }
 .ob-about-error {
   color: var(--error);
-  font-size: 14px;
+  font-size: var(--text-control);
+}
+@keyframes ob-about-row {
+  from {
+    grid-template-rows: 0fr;
+  }
 }
 @keyframes ob-about-sent {
   from {

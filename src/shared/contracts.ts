@@ -46,7 +46,6 @@ export interface Turn {
   finishedAt?: string | null;
   error?: string | null;
   showTyping?: boolean;
-  welcome?: boolean;
 }
 export interface TurnEvent {
   id: string;
@@ -138,6 +137,7 @@ export interface AppState {
   threadId: string;
   hasEarlierMessages?: boolean;
   verificationRequests?: VerificationRequest[];
+  planningTasks?: boolean;
   messages: Message[];
   turns: Turn[];
   configuration: Configuration;

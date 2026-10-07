@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { ArrowUp, Mic } from 'lucide-react';
+import { Button } from '../../../components/ui';
 import type { StepProps } from '..';
 import {
   interviewLabels,
+  lastQuestion,
   type InterviewResponse,
   type InterviewSave,
 } from '../../../../shared/onboarding';
@@ -11,6 +13,7 @@ import {
   Bubble,
   Footer,
   Messages,
+  OttoGlyph,
   prefersReducedMotion,
   Rise,
   UserBubble,
@@ -23,24 +26,24 @@ type Talk = { answers: string[]; turns: Turn[] };
 
 const first: Turn = {
   ack: [
-    'I’m curious about you.',
-    'I’m great at helping you launch that side project, grow your business, or take on the busywork you don’t have capacity for.',
+    'I’d love to get to know you a little, so I’ve got three quick questions.',
+    'I can help you launch a side project, grow your business, or take the busywork off your hands.',
   ],
-  question: 'So, what are you working on these days?',
+  question: 'What are you working on these days? What’s your story?',
 };
 const scripted: Turn[] = [
   first,
   {
-    ack: ['Got it, thanks.'],
-    question:
-      'What’s the next concrete win you’re aiming for? A launch, a milestone, a first group of people?',
+    ack: ['Sounds cool!'],
+    question: 'What are you aiming for with it? A launch, a milestone, a first group of users?',
   },
-  { ack: ['That’s a clear target.'], question: 'What’s getting in the way of it right now?' },
-  {
-    ack: ['Makes sense.'],
-    question: 'If I could take one recurring thing off your plate, what would it be?',
-  },
+  { ack: ['Love it, that’s a good one to chase.'], question: lastQuestion },
 ];
+const still = (
+  <span className="ob-avatar">
+    <OttoGlyph mode="still" />
+  </span>
+);
 const wrapUp: Turn = { ack: [], question: '' };
 const owner = () => readStep<{ owner: string }>()?.owner;
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -54,7 +57,7 @@ function restore(): Talk {
     !Array.isArray(saved.turns)
   )
     return { answers: [], turns: [first] };
-  const answers = saved.answers.slice(0, 4);
+  const answers = saved.answers.slice(0, 3);
   return { answers, turns: [first, ...saved.turns.slice(0, answers.length)] };
 }
 
@@ -70,9 +73,12 @@ export function About({ arrived, onNext }: StepProps) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const input = useRef<HTMLInputElement>(null);
+  const chat = useRef<HTMLDivElement>(null);
+  const log = useRef<HTMLDivElement>(null);
+  const stuck = useRef(true);
   const index = turns.length - 1;
   const thinking = turns.length === answers.length;
-  const wrapped = turns.length === 5;
+  const wrapped = turns.length === 4;
 
   useEffect(() => {
     writeStored('about', { owner: owner(), answers, turns: turns.slice(1) });
@@ -84,7 +90,7 @@ export function About({ arrived, onNext }: StepProps) {
     const controller = new AbortController();
     const started = Date.now();
     const next: Promise<Turn> =
-      count === 4
+      count === 3
         ? wait(1000).then(() => wrapUp)
         : api<InterviewResponse>('/api/onboarding/interview', {
             method: 'POST',
@@ -106,8 +112,28 @@ export function About({ arrived, onNext }: StepProps) {
   }, [answers]);
 
   useEffect(() => {
-    if (introDone && !thinking && !wrapped) input.current?.focus();
+    if (introDone && !thinking && !wrapped) input.current?.focus({ preventScroll: true });
   }, [introDone, index]);
+
+  useEffect(() => {
+    const box = chat.current;
+    if (!box || !log.current) return;
+    const follow = () => {
+      if (stuck.current) box.scrollTop = box.scrollHeight;
+      box.dataset.top = String(box.scrollTop < 1);
+    };
+    const observer = new ResizeObserver(follow);
+    observer.observe(log.current);
+    follow();
+    return () => observer.disconnect();
+  }, []);
+
+  function scrolled() {
+    const box = chat.current;
+    if (!box) return;
+    stuck.current = box.scrollHeight - box.scrollTop - box.clientHeight < 32;
+    box.dataset.top = String(box.scrollTop < 1);
+  }
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -116,6 +142,7 @@ export function About({ arrived, onNext }: StepProps) {
     setDraft('');
     setShown(false);
     setWaited(true);
+    stuck.current = true;
     setTalk({ answers: [...answers, text], turns });
   }
 
@@ -124,6 +151,7 @@ export function About({ arrived, onNext }: StepProps) {
     setShown(false);
     setFresh(true);
     setWaited(false);
+    stuck.current = true;
     setTalk({ answers: [], turns: [first] });
   }
 
@@ -140,12 +168,17 @@ export function About({ arrived, onNext }: StepProps) {
     }
   }
 
-  const generated = index > 0 || undefined;
+  const said = (turn: Turn, at: number) => [
+    ...turn.ack.map((text) => <Bubble data-analytics-private={at > 0 || undefined}>{text}</Bubble>),
+    <Bubble className="ob-about-question" data-analytics-private={at > 0 || undefined}>
+      {turn.question}
+    </Bubble>,
+  ];
   const lines: ReactNode[] = wrapped
     ? [
-        <Bubble>So good to meet you.</Bubble>,
+        <Bubble>It’s great to meet you.</Bubble>,
         <Bubble>
-          So this is you:
+          This is what I’ve learned about you so far:
           <span className="ob-about-summary" data-analytics-private>
             {interviewLabels.map((label, at) => (
               <span key={label}>
@@ -156,45 +189,45 @@ export function About({ arrived, onNext }: StepProps) {
           </span>
         </Bubble>,
         <Bubble>
-          I’ll keep all of this in mind. Next, let’s connect your email so I can start helping.
+          I’ll keep this in mind. Next, let’s connect your <strong>email</strong> so I can start
+          helping.
         </Bubble>,
       ]
-    : [
-        ...turns[index].ack.map((text) => (
-          <Bubble data-analytics-private={generated}>{text}</Bubble>
-        )),
-        <Bubble className="ob-about-question" data-analytics-private={generated}>
-          {turns[index].question}
-        </Bubble>,
-      ];
-  const previous = thinking ? answers.at(-1) : index > 0 && !wrapped ? answers[index - 1] : '';
+    : said(turns[index], index);
 
   return (
     <section className="ob-step ob-about" data-analytics-public>
-      <div className="ob-about-chat">
-        {previous && (
-          <UserBubble key={`answer-${answers.length}`} className="ob-about-answer">
-            {previous}
-          </UserBubble>
-        )}
-        {thinking ? (
-          <Messages key="thinking" items={[]} typing />
-        ) : (
-          <Reveal
-            key={`turn-${index}`}
-            lines={lines}
-            animate={fresh || index > 0}
-            open={waited}
-            onDone={() => {
-              setIntroDone(true);
-              setShown(true);
-            }}
-          />
-        )}
+      <div className="ob-about-chat" ref={chat} onScroll={scrolled}>
+        <div className="ob-about-log" ref={log}>
+          {answers.map((answer, at) => (
+            <Fragment key={at}>
+              <Messages items={said(turns[at], at)} avatar={still} />
+              <div className="ob-about-sent" data-new={waited && at === answers.length - 1}>
+                <div>
+                  <UserBubble>{answer}</UserBubble>
+                </div>
+              </div>
+            </Fragment>
+          ))}
+          {thinking ? (
+            <Messages key="thinking" items={[]} typing />
+          ) : (
+            <Reveal
+              key={`turn-${index}`}
+              lines={lines}
+              animate={fresh || index > 0}
+              open={waited}
+              onDone={() => {
+                setIntroDone(true);
+                setShown(true);
+              }}
+            />
+          )}
+        </div>
       </div>
       {!wrapped && (
         <Rise show={introDone} className="ob-about-compose">
-          <form className="ob-composer" onSubmit={submit}>
+          <form className="composer ob-composer" onSubmit={submit}>
             <input
               ref={input}
               value={draft}
@@ -205,28 +238,30 @@ export function About({ arrived, onNext }: StepProps) {
               maxLength={560}
               data-analytics-private
             />
-            <div className="ob-composer-actions">
-              <button
+            <div className="composer-tools">
+              <Button
                 type="button"
-                className="ob-composer-mic"
+                variant="ghost"
+                size="icon"
                 disabled
                 title="Voice input is coming soon"
                 aria-label="Voice input is coming soon"
               >
                 <Mic size={16} aria-hidden="true" />
-              </button>
-              <button
+              </Button>
+              <Button
                 type="submit"
-                className="ob-composer-send"
+                size="icon"
+                className="send-button"
                 aria-label="Send"
                 disabled={!draft.trim() || thinking}
               >
                 <ArrowUp size={18} aria-hidden="true" />
-              </button>
+              </Button>
             </div>
           </form>
           <p className="ob-about-hint">
-            Question {Math.min(turns.length, 4)} of 4 · type your answer
+            Question {Math.min(turns.length, 3)} of 3 · type your answer
           </p>
         </Rise>
       )}

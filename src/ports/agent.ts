@@ -2,7 +2,6 @@ import type { ProviderUsageEvent } from './provider-usage.ts';
 import type { ConnectedApp } from './integrations.ts';
 import type { CredentialKind, WorkspaceSession } from './computer.ts';
 import type { AgentReactionResult, Artifact, MessageReaction } from '../shared/contracts.ts';
-import type { SuggestedTask } from '../shared/onboarding.ts';
 
 export interface ModelUsageObservation {
   type: 'model_usage';
@@ -70,10 +69,6 @@ export interface RuntimeContext {
     connectionId: string;
     previous?: { checkedAt: string; value: string; summary: string };
     record(result: ActivityCheckResult, signal?: AbortSignal): Promise<void>;
-  };
-  suggestTasks?: {
-    sources: SuggestedTask['source'][];
-    save(suggestions: { intro: string; tasks: Omit<SuggestedTask, 'id'>[] }): Promise<void>;
   };
   channel?: string;
   timeZone?: string;

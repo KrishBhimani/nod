@@ -1086,6 +1086,75 @@ test(
 );
 
 test(
+  "first-task inbox snippets read only the owner's active Gmail account",
+  { skip: !process.env.TEST_DATABASE_URL },
+  async (t) => {
+    const f = await appsFixture(t);
+    const reads: string[] = [];
+    f.provider.inboxSnippets = async (accountId) => {
+      reads.push(accountId);
+      return [{ subject: 'Synthetic subject', snippet: 'Synthetic snippet' }];
+    };
+    await f.pool.query(
+      "INSERT INTO app_connections(owner_id,slug,account_id) VALUES('synthetic-foreign-owner','gmail','foreign-gmail')",
+    );
+    const signal = AbortSignal.timeout(1000);
+    assert.deepEqual(await f.service.inboxSnippets(signal), []);
+    const gmail = await f.connect('gmail');
+    assert.deepEqual(await f.service.inboxSnippets(signal), [
+      { subject: 'Synthetic subject', snippet: 'Synthetic snippet' },
+    ]);
+    assert.deepEqual(reads, [gmail.accountId]);
+  },
+);
+
+test('Composio first-task inbox snippets read at most fifteen subjects and snippets, never bodies', async (t) => {
+  const requests: Array<{ path: string; parameters: unknown }> = [];
+  const snippets = inboxPollFixture(
+    t,
+    (input) => {
+      const path = input.endpoint.replace('https://gmail.googleapis.com/gmail/v1/users/me/', '');
+      requests.push({ path, parameters: input.parameters });
+      if (path === 'messages')
+        return {
+          status: 200,
+          data: { messages: Array.from({ length: 15 }, (_, index) => ({ id: `m${index}` })) },
+        };
+      return {
+        status: 200,
+        data: {
+          snippet: `Synthetic snippet ${path}`,
+          payload: { headers: [{ name: 'Subject', value: `Synthetic ${path}` }] },
+        },
+      };
+    },
+    'inboxSnippets',
+  );
+  const read = await snippets('inbox-account', new AbortController().signal);
+  assert.equal(read.length, 15);
+  assert.deepEqual(read[0], {
+    subject: 'Synthetic messages/m0',
+    snippet: 'Synthetic snippet messages/m0',
+  });
+  assert.equal(requests.length, 16);
+  assert.deepEqual(requests[0].parameters, [
+    {
+      in: 'query',
+      name: 'q',
+      value: 'in:inbox newer_than:14d -category:promotions -category:social -category:forums',
+    },
+    { in: 'query', name: 'maxResults', value: 15 },
+    { in: 'query', name: 'fields', value: 'messages/id' },
+  ]);
+  for (const request of requests.slice(1))
+    assert.deepEqual(request.parameters, [
+      { in: 'query', name: 'format', value: 'metadata' },
+      { in: 'query', name: 'metadataHeaders', value: 'Subject' },
+      { in: 'query', name: 'fields', value: 'snippet,payload/headers' },
+    ]);
+});
+
+test(
   'saved integration keys remain redacted after restart and replacement',
   { skip: !process.env.TEST_DATABASE_URL },
   async (t) => {
@@ -5660,12 +5729,13 @@ test('metering covers capabilities without recording prompts, arguments, output 
   assert.doesNotMatch(JSON.stringify(rows), /private|secret\.example/);
 });
 
-function inboxPollFixture(
+function inboxPollFixture<M extends 'pollInbox' | 'inboxSnippets' = 'pollInbox'>(
   t: TestContext,
   respond: (
     input: Parameters<Composio['tools']['proxyExecute']>[0],
     signal: AbortSignal,
   ) => unknown,
+  method: M = 'pollInbox' as M,
 ) {
   const client = new Composio({
     apiKey: 'fixture-key-never-live',
@@ -5687,7 +5757,7 @@ function inboxPollFixture(
       return respond(input, options.signal);
     },
   );
-  return createComposioProvider({ client }).pollInbox!;
+  return createComposioProvider({ client })[method]!;
 }
 
 test('Composio inbox polling establishes an account-bound baseline without replaying mail', async (t) => {

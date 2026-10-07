@@ -288,12 +288,8 @@ export function Chat({
       };
     }),
   ]);
-  const welcomeTurn = state.turns.find(
-    (turn) => turn.welcome && (turn.status === 'queued' || turn.status === 'running'),
-  );
   const planning =
-    welcomeTurn &&
-    !allMessages.some((message) => message.turnId === welcomeTurn.id && message.suggestions);
+    state.planningTasks === true && !allMessages.some((message) => message.suggestions);
   function taskStatus(task: SuggestedTask, after: number) {
     const sent = allMessages
       .slice(after + 1)
@@ -940,10 +936,7 @@ export function Chat({
                 </span>
               </div>
             ) : (
-              (sending ||
-                resetting ||
-                hasVisibleChatActivity(state.turns.filter((turn) => turn !== welcomeTurn)) ||
-                welcoming) &&
+              (sending || resetting || working || welcoming) &&
               streamEntries.length === 0 && (
                 <div
                   className="thinking"

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { integrationServiceIds } from '../../shared/integrations.ts';
 import { createComposioFiles } from './downloads.ts';
-import { readSentEmails } from './sent-email.ts';
+import { readInboxSnippets, readSentEmails } from './sent-email.ts';
 import { readVerificationEmails } from './verification-email.ts';
 import { safeRemoteFetch } from '../discovered/remote.ts';
 import {
@@ -480,6 +480,7 @@ export function createComposioProvider(options: {
     verificationEmails: (accountId, query, signal) =>
       readVerificationEmails(required().tools, accountId, query, signal),
     sentEmails: (accountId, signal) => readSentEmails(required().tools, accountId, signal),
+    inboxSnippets: (accountId, signal) => readInboxSnippets(required().tools, accountId, signal),
     async pollInbox(accountId, cursor, signal) {
       const deadline = AbortSignal.timeout(25_000);
       const operation = AbortSignal.any([signal, deadline]);

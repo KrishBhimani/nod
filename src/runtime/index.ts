@@ -45,7 +45,6 @@ const handsOverBrowser = (name: string, params: unknown) =>
 const trustedResultTools = new Set([
   'skills',
   'send_message',
-  'suggest_tasks',
   'ask_user',
   'react_to_message',
   'manage_apps',
@@ -68,7 +67,6 @@ const readOnlyTools: Record<string, true | string[]> = {
   find: true,
   ls: true,
   send_message: true,
-  suggest_tasks: true,
   apps: true,
   record_activity_check: true,
   web_search: true,

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ComponentType } from 'react';
 import { MessageSquare } from 'lucide-react';
 import type { AccountPreparationResponse, AccountUser } from '../../../shared/account';
+import type { ModelsResponse } from '../../../shared/models';
 import { onboardingSteps, type OnboardingStep } from '../../../shared/onboarding';
 import { Button, Notice } from '../../components/ui';
 import { useBrowserTimeZone } from '../../hooks/use-browser-time-zone';
@@ -57,6 +58,7 @@ export function Onboarding({
     const stored = readStep<{ owner: string; step: OnboardingStep }>();
     const step =
       stored?.owner === user.id && onboardingSteps.includes(stored.step) ? stored.step : 'welcome';
+    if (step === 'welcome') clearStored();
     return { step, arrived: 'forward' as StepProps['arrived'] };
   });
   const { step, arrived } = position;
@@ -75,6 +77,21 @@ export function Onboarding({
     });
     if (main.current) main.current.scrollTop = 0;
   }, [step, user.id]);
+
+  useEffect(() => {
+    if (onboardingSteps.indexOf(step) < 2) return;
+    let current = true;
+    void api<ModelsResponse>('/api/models')
+      .then((models) => {
+        if (!current || models.connections.some((item) => item.status !== 'reconnect')) return;
+        clearStored();
+        setPosition({ step: 'welcome', arrived: 'forward' });
+      })
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
+  }, [user.id]);
 
   useEffect(() => {
     active.current = true;
@@ -176,7 +193,7 @@ export function Onboarding({
                 id="feedback-launcher"
                 variant="ghost"
                 size="sm"
-                className={cn('ob-header-button ob-feedback', nudge && 'ob-feedback-nudge')}
+                className={cn('ob-feedback', nudge && 'ob-feedback-nudge')}
                 onClick={onFeedback}
                 aria-label="Feedback"
               >
@@ -191,7 +208,7 @@ export function Onboarding({
             </span>
           )}
           {canLogout && (
-            <Button variant="ghost" size="sm" className="ob-header-button" onClick={onLogout}>
+            <Button variant="ghost" size="sm" onClick={onLogout}>
               Sign out
             </Button>
           )}
@@ -213,7 +230,7 @@ export function Onboarding({
         {step === 'open' && (preparation === 'failed' || error) && (
           <div className="ob-notice">
             <Notice>
-              {error || 'Setup could not be completed.'}{' '}
+              {error || 'Something went wrong while I was getting set up.'}{' '}
               {preparation === 'failed' && (
                 <Button variant="ghost" onClick={() => void prepare()}>
                   Try again

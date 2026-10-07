@@ -511,7 +511,6 @@ test(
       const interviewAnswers = [
         'Running a synthetic pottery studio.',
         'Ship the synthetic spring catalogue.',
-        'Supplier email piles up.',
         'Weekly synthetic stock check-ins.',
       ];
       const interview = (method: 'POST' | 'PUT', payload: object) =>
@@ -523,7 +522,7 @@ test(
       for (let round = 0; round < 2; round++)
         assert.equal((await interview('PUT', { answers: interviewAnswers })).statusCode, 200);
       const unsafeAnswer = await interview('PUT', {
-        answers: [...interviewAnswers.slice(0, 3), 'Typing my bank password hunter3 everywhere.'],
+        answers: [...interviewAnswers.slice(0, 2), 'Typing my bank password hunter3 everywhere.'],
       });
       assert.equal(unsafeAnswer.statusCode, 400);
       assert.match(unsafeAnswer.json().error, /can’t be saved as notes/);
@@ -533,10 +532,9 @@ test(
           .map((note) => [note.path, note.text, note.status, note.sources.length])
           .sort(),
         [
-          ['about/onboarding-in-the-way', 'In the way: Supplier email piles up.', 'stated', 0],
           [
-            'about/onboarding-next-win',
-            'Next win: Ship the synthetic spring catalogue.',
+            'about/onboarding-aiming-for',
+            'Aiming for: Ship the synthetic spring catalogue.',
             'stated',
             0,
           ],
@@ -548,7 +546,7 @@ test(
           ],
           [
             'preferences/onboarding-hand-off',
-            'Hand off to me: Weekly synthetic stock check-ins.',
+            'Take off your plate: Weekly synthetic stock check-ins.',
             'stated',
             0,
           ],
@@ -947,7 +945,7 @@ test('consolidation keeps entry text and provenance and only archives with a new
   assert.deepEqual(untouched.overviews, {});
 });
 
-test('the onboarding interview sends answers only as data, caps the reply and saves four stated notes once', async (t) => {
+test('the onboarding interview sends answers only as data, caps the reply and saves three stated notes once', async (t) => {
   const objects = await mkdtemp(join(tmpdir(), 'onboarding-interview-'));
   t.after(() => rm(objects, { recursive: true, force: true }));
   const requests: Parameters<MemoryCurator['curate']>[0][] = [];
@@ -982,7 +980,7 @@ test('the onboarding interview sends answers only as data, caps the reply and sa
   assert.equal(turn.statusCode, 200);
   assert.deepEqual(turn.json(), {
     ack: 'A synthetic studio, noted.',
-    question: 'Which inbox holds the supplier requests you answer each week?',
+    question: 'What can I take off your plate? Or tell me anything else on your mind.',
   });
   assert.equal(requests[0].task, 'interview');
   assert.doesNotMatch(requests[0].instructions, /synthetic studio|Ignore all/);
@@ -991,7 +989,7 @@ test('the onboarding interview sends answers only as data, caps the reply and sa
     (requests[0].input as { answers: Array<{ text: string }> }).answers.map((item) => item.text),
     ['Running a synthetic studio.', planted],
   );
-  reply = { ack: 'What a wonderful, exciting synthetic plan you have!', question: 'Who asks?' };
+  reply = { ack: 'synthetic '.repeat(20).trim(), question: 'Who asks?' };
   assert.deepEqual((await ask(['A synthetic plan.'])).json(), { ack: '', question: 'Who asks?' });
   for (const broken of [
     { ack: 'Noted.', question: 'What is the password for your synthetic inbox?' },
@@ -1010,7 +1008,6 @@ test('the onboarding interview sends answers only as data, caps the reply and sa
   const answers = [
     'Running a synthetic studio.',
     'Ten synthetic subscribers.',
-    'Client email.',
     'Weekly synthetic invoice reminders.',
   ];
   const entries = async () =>
@@ -1024,13 +1021,12 @@ test('the onboarding interview sends answers only as data, caps the reply and sa
   await interview.remember({ answers });
   const saved = await entries();
   assert.deepEqual(saved, [
-    ['about', 'onboarding-in-the-way', 'In the way: Client email.', 'stated', 0],
-    ['about', 'onboarding-next-win', 'Next win: Ten synthetic subscribers.', 'stated', 0],
+    ['about', 'onboarding-aiming-for', 'Aiming for: Ten synthetic subscribers.', 'stated', 0],
     ['about', 'onboarding-working-on', 'Working on: Running a synthetic studio.', 'stated', 0],
     [
       'preferences',
       'onboarding-hand-off',
-      'Hand off to me: Weekly synthetic invoice reminders.',
+      'Take off your plate: Weekly synthetic invoice reminders.',
       'stated',
       0,
     ],
@@ -1038,16 +1034,16 @@ test('the onboarding interview sends answers only as data, caps the reply and sa
   await interview.remember({ answers });
   assert.deepEqual(await entries(), saved);
   assert.equal((await memory.load()).archive.length, 0);
-  await interview.remember({ answers: [...answers.slice(0, 3), 'Monthly synthetic reports.'] });
+  await interview.remember({ answers: [...answers.slice(0, 2), 'Monthly synthetic reports.'] });
   const tree = await memory.load();
-  assert.equal(tree.entries.length, 4);
-  assert.equal(tree.entries.at(-1)?.text, 'Hand off to me: Monthly synthetic reports.');
+  assert.equal(tree.entries.length, 3);
+  assert.equal(tree.entries.at(-1)?.text, 'Take off your plate: Monthly synthetic reports.');
   assert.deepEqual(
     tree.archive.map((entry) => [entry.text, entry.reason]),
-    [['Hand off to me: Weekly synthetic invoice reminders.', 'superseded']],
+    [['Take off your plate: Weekly synthetic invoice reminders.', 'superseded']],
   );
   await assert.rejects(
-    interview.remember({ answers: [...answers.slice(0, 3), 'My bank password is hunter2.'] }),
+    interview.remember({ answers: [...answers.slice(0, 2), 'My bank password is hunter2.'] }),
     /can’t be saved as notes/,
   );
   assert.deepEqual(await memory.load(), tree);

@@ -35,7 +35,8 @@ Setup and commands are in [README](README.md); how the system works is in [archi
 ## Model policy
 
 - Pi still asks before a destructive connected app action that the current request does not clearly authorize. The trust check is the server floor beneath that instruction, not a replacement.
-- Onboarding welcome turns and activity checks must only read connected apps. The server refuses app actions it classifies as writes in these turns; unclassified actions rely on the instruction.
+- Onboarding turns and activity checks must only read connected apps. The server refuses app actions it classifies as writes in these turns; unclassified actions rely on the instruction.
+- The first-chat task cards are prepared without a turn from the owner's setup answers and, when Gmail is connected, one read of recent inbox subjects and snippets that drops tripwire matches and security mail; the owner's selected model sees that mail only as data, and its cards are validated or replaced by fixed ones. **Do it** sends exactly the visible card title as a normal owner message.
 
 ## Validation
 
@@ -47,7 +48,7 @@ Keep only tests that would catch a real regression in:
 
 - the core harness (one thread and Pi session per owner, sequential turns, stop, interruption, reset, session rebase);
 - sandbox isolation (nothing on the host, no keys in the sandbox, contained paths);
-- safety (approvals, uncertain actions, Vault and sign-in fencing, credential guard, read-only welcome);
+- safety (approvals, uncertain actions, Vault and sign-in fencing, credential guard, read-only turns, onboarding task cards);
 - owner and tenant isolation (gateway, signed envelopes, owner scoping, URL guards, redaction);
 - real integration contracts (channel delivery, schedule firing, downloads, OAuth completion).
 

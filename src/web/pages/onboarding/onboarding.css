@@ -5,7 +5,7 @@
   overflow: hidden;
   background: var(--canvas);
   color: var(--foreground);
-  font-size: 16px;
+  font-size: var(--text-body);
   line-height: 1.5;
 }
 :root[data-desktop='true'] .ob {
@@ -33,7 +33,7 @@
   align-items: center;
   gap: 16px;
   height: 72px;
-  padding: 0 28px;
+  padding: 0 24px;
 }
 .ob-brand {
   display: flex;
@@ -52,15 +52,15 @@
 .ob-dots > span {
   width: 6px;
   height: 6px;
-  border-radius: 3px;
-  background: var(--progress-track);
+  border-radius: var(--radius-full);
+  background: var(--input);
   transition:
     width 280ms ease,
     background 280ms ease;
 }
 .ob-dots > span[data-state='done'],
 .ob-dots > span[data-state='current'] {
-  background: var(--brand-pink);
+  background: var(--primary);
 }
 .ob-dots > span[data-state='current'] {
   width: 24px;
@@ -74,13 +74,7 @@
 .ob-feedback-wrap {
   position: relative;
   display: inline-flex;
-  border-radius: var(--pill-radius);
-}
-.ob .ob-header-button {
-  min-height: 32px;
-  padding: 4px 16px;
-  color: var(--text-secondary);
-  font-size: 14px;
+  border-radius: var(--radius-full);
 }
 .ob .ob-feedback-nudge {
   background: var(--accent-soft);
@@ -94,7 +88,7 @@
   z-index: 5;
   width: 36px;
   margin-left: -18px;
-  font-size: 34px;
+  font-size: 32px;
   line-height: 1;
   text-align: center;
   pointer-events: none;
@@ -113,11 +107,11 @@
 .ob-step {
   display: flex;
   flex-direction: column;
-  gap: 28px;
+  gap: 24px;
   width: 100%;
   max-width: 720px;
   margin: auto;
-  padding: 16px 28px 48px;
+  padding: 16px 24px 48px;
   animation: ob-step-in 260ms ease-out;
 }
 .ob-step-wide {
@@ -127,12 +121,12 @@
   width: 100%;
   max-width: 720px;
   margin: 0 auto;
-  padding: 0 28px 24px;
+  padding: 0 24px 24px;
 }
 .ob-row {
   display: flex;
   align-items: flex-end;
-  gap: 14px;
+  gap: 12px;
 }
 .ob-avatar {
   display: block;
@@ -152,7 +146,22 @@
 .ob-glyph-orbit {
   transform-box: view-box;
   transform-origin: 16px 16px;
+}
+.ob-glyph-orbit[data-phase='spin'] {
   animation: ob-spin 1.1s linear infinite;
+}
+.ob-glyph-orbit[data-phase='settle'] {
+  animation: ob-spin-out 1.6s cubic-bezier(0.33, 0.48, 0.4, 1);
+}
+.ob-glyph-react {
+  transform-box: view-box;
+  transform-origin: 25px 6px;
+}
+.ob-glyph-react[data-reaction='on'] {
+  animation: ob-dot-hop 480ms var(--ease-pop);
+}
+.ob-glyph-react[data-reaction='off'] {
+  animation: ob-dot-droop 440ms var(--ease-reveal);
 }
 .ob-stack {
   display: grid;
@@ -184,14 +193,14 @@
   transform: none;
 }
 .ob-grow[data-open='true'] ~ .ob-grow > div > .ob-bubble {
-  margin-top: 6px;
+  margin-top: 4px;
 }
 .ob-bubble {
   max-width: 640px;
   padding: 8px 16px;
-  border-radius: var(--panel-radius);
-  background: var(--bubble);
-  font-size: 16px;
+  border-radius: 24px;
+  background: var(--surface-subtle);
+  font-size: var(--text-body);
   line-height: 1.6;
 }
 .ob-user-bubble {
@@ -203,15 +212,15 @@
 .ob-typing {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  height: 38px;
-  padding: 7px 16px;
+  gap: 4px;
+  height: 40px;
+  padding: 8px 16px;
 }
 .ob-typing > span {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  background: var(--gray-60);
+  background: var(--muted-foreground);
   animation: ob-bounce 1.1s ease-in-out infinite;
 }
 .ob-typing > span:nth-child(2) {
@@ -242,59 +251,8 @@
   gap: 8px;
   margin-left: auto;
 }
-.ob .button {
-  border-color: transparent;
-  border-radius: var(--pill-radius);
-  transition:
-    background 160ms,
-    color 160ms,
-    opacity 160ms;
-}
-.ob .button-default {
-  min-height: 40px;
-  padding: 8px 24px;
-  font-size: 15px;
-}
-.ob .button-secondary {
-  background: var(--control);
-  color: var(--foreground);
-}
-.ob .button-secondary:hover:not(:disabled) {
-  background: var(--control-hover);
-}
-.ob .button-secondary:active:not(:disabled) {
-  background: var(--control-active);
-}
-.ob .button-ghost:hover:not(:disabled) {
-  background: var(--hover);
-  color: var(--foreground);
-}
-.ob .button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
 .ob .ob-next {
   min-width: 120px;
-}
-.ob .input {
-  min-height: 40px;
-  padding: 8px 16px;
-  border: 1px solid var(--field-border);
-  border-radius: 12px;
-  background: var(--surface);
-  font-size: 14px;
-  outline: none;
-  transition:
-    border-color 160ms ease,
-    box-shadow 160ms ease;
-}
-.ob .input:hover:not(:disabled) {
-  border-color: var(--field-border-hover);
-}
-.ob .input:focus-visible {
-  border-color: color-mix(in srgb, var(--brand-pink) 55%, var(--border));
-  outline: none;
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand-pink) 16%, transparent);
 }
 .ob .ob-mono,
 .ob .input[type='password'] {
@@ -304,39 +262,19 @@
   position: relative;
   display: inline-flex;
   align-items: center;
-  color: var(--muted-foreground);
 }
 .ob-select > select {
-  min-height: 40px;
-  padding: 0 40px 0 14px;
-  border: 1px solid var(--field-border);
-  border-radius: 12px;
+  width: auto;
+  padding-right: 40px;
   appearance: none;
-  background: var(--surface);
-  color: var(--foreground);
-  font-size: 14px;
   font-weight: 500;
   cursor: pointer;
 }
-.ob-select > select:hover:not(:disabled) {
-  border-color: var(--field-border-hover);
-}
 .ob-select > svg {
   position: absolute;
-  right: 14px;
+  right: 16px;
+  color: var(--muted-foreground);
   pointer-events: none;
-}
-.ob .switch {
-  width: 36px;
-  height: 22px;
-  padding: 3px;
-}
-.ob .switch > span {
-  background: var(--switch-thumb);
-  transition: transform 180ms ease;
-}
-.ob .switch[aria-checked='true'] > span {
-  transform: translateX(14px);
 }
 @keyframes ob-step-in {
   from {
@@ -356,6 +294,31 @@
 @keyframes ob-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+@keyframes ob-spin-out {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes ob-dot-hop {
+  30% {
+    transform: translate(2px, -5px) scale(1.35);
+  }
+  55% {
+    transform: translate(1px, 0) scale(0.9, 1.1);
+  }
+  75% {
+    transform: translate(0.5px, -1.5px) scale(1.06);
+  }
+}
+@keyframes ob-dot-droop {
+  35% {
+    opacity: 0.6;
+    transform: translate(-1.5px, 3px) scale(0.75);
+  }
+  70% {
+    transform: translate(-0.5px, 0.5px) scale(1.04);
   }
 }
 @keyframes ob-bounce {
@@ -399,11 +362,11 @@
 }
 @keyframes ob-ring {
   0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand-pink) 60%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 60%, transparent);
   }
   70%,
   100% {
-    box-shadow: 0 0 0 12px color-mix(in srgb, var(--brand-pink) 0%, transparent);
+    box-shadow: 0 0 0 12px color-mix(in srgb, var(--primary) 0%, transparent);
   }
 }
 @media (max-width: 640px) {

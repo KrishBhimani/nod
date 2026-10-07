@@ -29,7 +29,7 @@ const outcomes = ['connected', 'cancelled', 'failed', 'expired'];
 
 function connectionMessage(result: string | null) {
   if (result === 'cancelled') return 'Sign-in cancelled. You can try again.';
-  if (result === 'failed' || result === 'expired') return 'Gmail could not connect. Try again.';
+  if (result === 'failed' || result === 'expired') return 'Gmail didn’t connect. Try again?';
   return '';
 }
 
@@ -195,7 +195,7 @@ export function Email({ arrived, onNext, onBack }: StepProps) {
       const url = connectionUrl(response.url, window.location.origin);
       if (external || popup) {
         if (!response.attempt || !/^[A-Za-z0-9_-]{43}$/.test(response.attempt))
-          throw new Error('Gmail could not connect. Try again.');
+          throw new Error('Gmail didn’t connect. Try again?');
         attempt.current = response.attempt;
       }
       if (external) {
@@ -244,8 +244,8 @@ export function Email({ arrived, onNext, onBack }: StepProps) {
         items={[
           <Bubble>Let’s connect your email.</Bubble>,
           <Bubble>
-            It’s where most of your work happens, so it’s the fastest way for me to learn how you
-            work. I read, sort and draft. I never send anything without asking.
+            It’s where a lot of your work happens, so it’s the quickest way for me to learn how you
+            work. I can read, sort and draft, and I won’t send anything unless you ask.
           </Bubble>,
         ]}
       />
@@ -284,11 +284,11 @@ export function Email({ arrived, onNext, onBack }: StepProps) {
             {explain && (
               <div className="ob-email-explain">
                 <p>
-                  Composio is the secure bridge Otto uses to sign in to apps like Gmail, Slack and
-                  Notion. Otto never sees your password, and you can revoke access anytime.
+                  Composio is how I sign in to apps like Gmail, Slack and Notion for you. I never
+                  see your passwords, and you can take away access anytime.
                 </p>
                 <p>
-                  Create a free account, copy your API key from Settings, and paste it here. It
+                  Make a free account, copy your API key from its Settings and paste it here. It
                   takes about a minute.
                 </p>
                 <a href="https://app.composio.dev" target="_blank" rel="noreferrer">
@@ -316,7 +316,7 @@ export function Email({ arrived, onNext, onBack }: StepProps) {
                       setKeyError('');
                     }}
                   />
-                  <Button type="submit" variant="secondary" disabled={checking}>
+                  <Button type="submit" variant="outline" disabled={checking}>
                     {checking && <LoaderCircle size={16} className="spin" aria-hidden="true" />}
                     {checking ? 'Checking' : 'Save'}
                   </Button>
@@ -326,6 +326,9 @@ export function Email({ arrived, onNext, onBack }: StepProps) {
                     {keyError}
                   </p>
                 )}
+                <p className="ob-email-muted">
+                  It’s encrypted, stays on this computer and never goes to AI providers.
+                </p>
               </>
             )}
             {keyDone && (
@@ -346,7 +349,7 @@ export function Email({ arrived, onNext, onBack }: StepProps) {
             )}
             {status && !status.saved && !status.editable && (
               <p className="ob-email-muted">
-                App connections aren’t set up yet. Ask your Otto administrator, or skip for now.
+                Apps aren’t set up here yet. Ask your Otto admin, or skip this for now.
               </p>
             )}
           </div>
@@ -360,7 +363,7 @@ export function Email({ arrived, onNext, onBack }: StepProps) {
             {gmailState === 'idle' || gmailState === 'opening' ? (
               <div className="ob-email-connect">
                 <Button
-                  variant="secondary"
+                  variant="outline"
                   className="ob-gmail-connect"
                   disabled={!canConnect || gmailState === 'opening'}
                   onClick={() => void connect()}
@@ -376,7 +379,7 @@ export function Email({ arrived, onNext, onBack }: StepProps) {
                   {!keyDone
                     ? 'Save your Composio key first.'
                     : restartRequired
-                      ? 'Restart Otto to apply your key.'
+                      ? 'Restart Otto to start using your key.'
                       : 'Opens Google in your browser.'}
                 </p>
                 {restartRequired && keyDone && (
