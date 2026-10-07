@@ -250,33 +250,6 @@
   display: grid;
   gap: 12px;
 }
-.task-views,
-.schedule-views {
-  display: flex;
-  gap: 16px;
-  min-height: var(--secondary-tab-height);
-  margin-bottom: var(--secondary-section-gap);
-  border-bottom: 1px solid var(--border);
-}
-.task-views > button,
-.schedule-views > button {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: calc(var(--secondary-tab-height) - 1px);
-  padding: 8px 0 12px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: var(--text-control);
-  cursor: pointer;
-}
-.task-views > button[aria-selected='true'],
-.schedule-views > button[aria-selected='true'] {
-  color: var(--foreground);
-  border-bottom-color: var(--accent);
-}
 .schedule-inactive {
   margin-top: 24px;
 }
@@ -290,42 +263,6 @@
 }
 .schedule-inactive > .saved-plan-list {
   margin-top: 12px;
-}
-.schedule-run-list {
-  border: 1px solid var(--border);
-  border-radius: var(--card-radius);
-  background: var(--surface);
-}
-.schedule-run {
-  padding: 16px 16px;
-}
-.schedule-run + .schedule-run {
-  border-top: 1px solid var(--border);
-}
-.schedule-run-heading {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-}
-.schedule-run h2 {
-  font-size: var(--text-control);
-  font-weight: 500;
-  overflow-wrap: anywhere;
-}
-.schedule-run-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--muted-foreground);
-  font-size: var(--text-control);
-}
-.schedule-run-failed {
-  color: var(--error);
-}
-.schedule-run-waiting {
-  color: var(--warning);
 }
 .schedule-run > p {
   display: flex;
@@ -389,9 +326,6 @@
   width: 100%;
   overflow-wrap: anywhere;
 }
-.schedule-run-body > .button {
-  justify-self: end;
-}
 .schedule-run > .schedule-run-empty {
   color: var(--muted-foreground);
   font-size: var(--text-control);
@@ -434,19 +368,6 @@
   line-height: 1.65;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-.saved-plan-next {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-top: 12px;
-  font-size: var(--text-control);
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-.saved-plan-next > span {
-  flex-shrink: 0;
-  color: var(--muted-foreground);
 }
 .saved-plan-footer {
   display: flex;

@@ -1377,6 +1377,87 @@ test(
           await waitFor(settled(updating.turnId));
           await idle();
 
+          progressAnswer = () => ({ title: 'Daily digest', now: 'Reading the inbox', task: null });
+          block('watch-schedule-fixture');
+          const fired = await thread.enqueueTurn('watch-schedule-fixture', {
+            source: 'schedule',
+            sourceId: `schedule:${randomUUID()}`,
+          });
+          await waitFor(async () =>
+            (await cards()).some(
+              (item) => item.title === 'Daily digest' && item.status === 'working',
+            ),
+          );
+          release('watch-schedule-fixture');
+          await waitFor(settled(fired));
+          await idle();
+          await waitFor(
+            async () =>
+              (
+                await db.pool.query(
+                  "SELECT 1 FROM tasks WHERE owner_id=$1 AND title='Daily digest' AND state='done'",
+                  [ownerId],
+                )
+              ).rowCount === 1,
+          );
+          assert.equal(
+            (await cards()).some((item) => item.title === 'Daily digest'),
+            false,
+          );
+
+          progressAnswer = (input) => ({
+            title: 'Flat hunt',
+            now: 'Reading listings',
+            task: input.cards.find((offered) => offered.title === 'Flat hunt')?.id ?? null,
+          });
+          block('watch-ask-fixture');
+          const hunt = await thread.submitUserMessage('watch-ask-fixture');
+          await waitFor(async () =>
+            (await cards()).some((item) => item.title === 'Flat hunt' && item.status === 'working'),
+          );
+          release('watch-ask-fixture');
+          await waitFor(settled(hunt.turnId));
+          await idle();
+          const huntId = (await cards()).find((item) => item.title === 'Flat hunt')!.id;
+          block('watch-schedule-fixture');
+          const continued = await thread.enqueueTurn('watch-schedule-fixture', {
+            source: 'schedule',
+            sourceId: `schedule:${randomUUID()}`,
+          });
+          await waitFor(async () => (await turnTask(continued)) === huntId);
+          release('watch-schedule-fixture');
+          await waitFor(settled(continued));
+          await idle();
+          await waitFor(
+            async () => (await cards()).find((item) => item.id === huntId)?.status === 'done',
+          );
+
+          progressAnswer = (input) => ({
+            title: 'Garden quote',
+            now: 'Asking for a quote',
+            task: input.cards.find((offered) => offered.title === 'Garden quote')?.id ?? null,
+          });
+          block('watch-ask-fixture');
+          const asking = await thread.enqueueTurn('watch-ask-fixture', {
+            source: 'schedule',
+            sourceId: `schedule:${randomUUID()}`,
+          });
+          await waitFor(async () =>
+            (await cards()).some(
+              (item) => item.title === 'Garden quote' && item.status === 'working',
+            ),
+          );
+          release('watch-ask-fixture');
+          await waitFor(settled(asking));
+          await idle();
+          const quoteId = (await cards()).find((item) => item.title === 'Garden quote')!.id;
+          const chosen = await thread.submitUserMessage('the cheaper one');
+          await waitFor(settled(chosen.turnId));
+          await idle();
+          await waitFor(
+            async () => (await cards()).find((item) => item.id === quoteId)?.status === 'done',
+          );
+
           assert.ok(
             progressInputs.every((input) =>
               input.cards.every((offered) => offered.id !== foreign.id),
