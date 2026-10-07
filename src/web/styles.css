@@ -316,7 +316,7 @@ a svg {
   pointer-events: none;
 }
 .search-field > .input {
-  padding: 8px 44px 8px 40px;
+  padding: 8px 40px;
 }
 .search-field > .button {
   position: absolute;
@@ -1211,10 +1211,10 @@ input[type='range']:disabled {
 }
 .composer {
   border: 1px solid var(--border);
-  border-radius: 20px;
+  border-radius: 24px;
   background: var(--surface);
   box-shadow: var(--shadow-composer);
-  padding: 14px 10px 10px;
+  padding: 16px 12px 8px;
   transition:
     border-color 180ms ease,
     box-shadow 180ms ease;
@@ -2216,8 +2216,8 @@ input[type='range']:disabled {
 }
 .ghost-composer p {
   margin: 0;
-  padding: 0 6px;
-  min-height: 42px;
+  padding: 0 4px;
+  min-height: 40px;
   font-size: var(--text-body);
   line-height: 1.6;
   color: var(--placeholder);

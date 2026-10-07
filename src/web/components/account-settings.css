@@ -68,7 +68,7 @@
   width: 270px;
 }
 .sidebar .connection-menu-options {
-  padding: 6px;
+  padding: 8px;
   border-radius: 24px;
 }
 .sidebar .connection-menu-options > [role^='menuitem'] {
@@ -332,7 +332,7 @@
 }
 .account-theme-previews > button {
   min-width: 0;
-  padding: 6px;
+  padding: 8px;
   border: 1px solid transparent;
   border-radius: var(--dialog-radius);
   background: transparent;
@@ -354,8 +354,8 @@
 .account-theme-label {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 12px 6px 6px;
+  gap: 8px;
+  padding: 12px 8px 8px;
   font-size: var(--text-control);
   font-weight: 500;
 }
@@ -364,7 +364,7 @@
   height: 104px;
   overflow: hidden;
   border: 1px solid var(--gray-25);
-  border-radius: 10px;
+  border-radius: 8px;
   background: var(--white);
 }
 .account-theme-sample > i {

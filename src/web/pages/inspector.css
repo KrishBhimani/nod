@@ -58,10 +58,9 @@
   border-radius: var(--radius-full);
   background: var(--info-soft);
   color: var(--info);
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 500;
   line-height: 20px;
-  letter-spacing: 0.04em;
 }
 .inspector-tabs {
   display: flex;
@@ -140,13 +139,13 @@
 }
 .inspector-section-heading > span {
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: var(--text-control);
 }
 .inspector-data-note,
 .inspector-unpriced {
   margin-block: 8px;
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: var(--text-control);
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
@@ -236,7 +235,7 @@
 .screen-caption {
   padding: 8px 4px 0;
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: var(--text-control);
 }
 .inspector-system,
 .inspector-section {
@@ -271,7 +270,7 @@
   align-items: center;
   gap: 8px;
   margin-inline: -12px;
-  padding: 6px 12px;
+  padding: 8px 12px;
   border-radius: var(--radius-full);
   color: var(--text-secondary);
   overflow-wrap: anywhere;
@@ -317,7 +316,7 @@
 .event-list small {
   display: block;
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: var(--text-control);
   line-height: 1.6;
 }
 .event-list .inspector-record {
@@ -344,12 +343,12 @@
   gap: 4px;
 }
 .inspector-scope-toggle button {
-  min-height: 28px;
-  padding: 2px 12px;
+  min-height: 32px;
+  padding: 4px 12px;
   border-radius: var(--radius-full);
   background: var(--control);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-control);
   font-weight: 500;
 }
 .inspector-scope-toggle button[aria-pressed='true'] {
@@ -429,15 +428,15 @@ details[open] > summary .inspector-disclosure {
 .inspector-record-title small,
 .inspector-record-state small {
   display: block;
-  margin-top: 2px;
+  margin-top: 4px;
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: var(--text-control);
   line-height: 1.5;
 }
 .inspector-record-state {
   max-width: 128px;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-control);
   line-height: 1.5;
   text-align: right;
   font-variant-numeric: tabular-nums;
@@ -476,7 +475,7 @@ details[open] > summary .inspector-disclosure {
   display: grid;
   grid-template-columns: 72px minmax(0, 1fr);
   gap: 4px 8px;
-  font-size: 12px;
+  font-size: var(--text-control);
   line-height: 1.6;
 }
 .inspector-record-facts dt {
@@ -499,7 +498,7 @@ details[open] > summary .inspector-disclosure {
 .inspector-payload h4 {
   margin-bottom: 4px;
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: var(--text-control);
   font-weight: 500;
 }
 .inspector-payload pre,
@@ -547,10 +546,10 @@ details[open] > summary .inspector-disclosure {
 }
 .inspector-tool-facts {
   display: grid;
-  gap: 2px;
+  gap: 4px;
   margin-top: 4px;
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: var(--text-control);
   line-height: 1.5;
 }
 .inspector-tool-has-failures .inspector-tool-facts > :first-child {
@@ -560,7 +559,7 @@ details[open] > summary .inspector-disclosure {
 .inspector-provider-total {
   display: grid;
   flex-shrink: 0;
-  gap: 2px;
+  gap: 4px;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -574,7 +573,7 @@ details[open] > summary .inspector-disclosure {
 .inspector-provider-name > small {
   display: block;
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: var(--text-control);
   line-height: 1.5;
 }
 .inspector-tool-cost {
@@ -635,7 +634,7 @@ details[open] > summary .inspector-disclosure {
 .inspector-cost-heading strong,
 .inspector-cost-total strong {
   color: var(--foreground);
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 500;
   letter-spacing: -0.04em;
   font-variant-numeric: tabular-nums;
@@ -644,7 +643,7 @@ details[open] > summary .inspector-disclosure {
   display: block;
   margin-top: 4px;
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: var(--text-control);
 }
 .inspector-usage-grid,
 .inspector-provider-metrics {
@@ -656,11 +655,11 @@ details[open] > summary .inspector-disclosure {
 .inspector-usage-grid dt,
 .inspector-provider-metrics dt {
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: var(--text-control);
 }
 .inspector-usage-grid dd,
 .inspector-provider-metrics dd {
-  margin-top: 2px;
+  margin-top: 4px;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
@@ -690,9 +689,9 @@ details[open] > summary .inspector-disclosure {
 }
 .inspector-prompt-heading small {
   display: block;
-  margin-top: 2px;
+  margin-top: 4px;
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: var(--text-control);
 }
 .inspector-prompt-text > summary {
   display: flex;
@@ -700,12 +699,12 @@ details[open] > summary .inspector-disclosure {
   align-items: baseline;
   justify-content: space-between;
   gap: 4px 12px;
-  padding: 6px 0;
+  padding: 8px 0;
   color: var(--text-secondary);
 }
 .inspector-prompt-text > summary > small {
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: var(--text-control);
 }
 .inspector-prompt-label {
   display: flex;

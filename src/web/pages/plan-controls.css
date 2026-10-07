@@ -4,7 +4,7 @@
 .connection-menu-options.new-plan-card {
   width: min(460px, calc(100vw - 32px));
   padding: 16px;
-  border-radius: 20px;
+  border-radius: 24px;
 }
 .ask-otto {
   display: grid;

@@ -89,7 +89,7 @@
   --shadow-deboss: inset 8px 8px 12px var(--deboss-top), inset -8px -8px 12px var(--deboss-bottom);
   --control-radius: 8px;
   --input-radius: 12px;
-  --radius-full: 999px;
+  --radius-full: 400px;
   --card-radius: 12px;
   --dialog-radius: 16px;
   --control-height: 40px;
