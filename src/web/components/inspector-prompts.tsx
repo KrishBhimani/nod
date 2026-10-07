@@ -12,7 +12,7 @@ function PromptText({ label, text }: { label: string; text: string }) {
     <details className="inspector-prompt-text">
       <summary>
         <span className="inspector-prompt-label">
-          <ChevronDown size={16} />
+          <ChevronDown size={16} className="inspector-disclosure" />
           {label}
         </span>
         <small>{formatNumber(text.length)} characters</small>

@@ -1,9 +1,11 @@
 import { useId, useState } from 'react';
 import {
   CalendarClock,
+  ChevronDown,
   CircleAlert,
   CircleCheck,
   CircleSlash,
+  Clock,
   Hourglass,
   LoaderCircle,
   MessageCircle,
@@ -68,6 +70,14 @@ export function TaskCard({ task }: { task: Task }) {
           {labels[task.status]}
         </span>
       </div>
+      <p className="saved-plan-meta">
+        <Clock size={16} aria-hidden="true" />
+        <span>
+          {task.closedAt
+            ? `${task.status === 'cancelled' ? 'Stopped' : 'Finished'} ${formatDateTime(task.closedAt, format)}`
+            : `Started ${formatDateTime(task.createdAt, format)}`}
+        </span>
+      </p>
       <p className="task-now">{headline(task)}</p>
       {!closed(task) && (task.waitingFor.length > 0 || task.nextCheck || task.doneWhen) && (
         <ul className="task-facts">
@@ -91,11 +101,6 @@ export function TaskCard({ task }: { task: Task }) {
           )}
         </ul>
       )}
-      <p className="saved-plan-footer">
-        {task.closedAt
-          ? `${task.status === 'cancelled' ? 'Stopped' : 'Finished'} ${formatDateTime(task.closedAt, format)}`
-          : `Started ${formatDateTime(task.createdAt, format)}`}
-      </p>
     </article>
   );
 }
@@ -275,6 +280,7 @@ export function Tasks({ onAsk }: { onAsk(text: string): void }) {
                 <details className="schedule-inactive" open={!upcoming.length}>
                   <summary>
                     Not scheduled <span>{inactive.length}</span>
+                    <ChevronDown size={16} aria-hidden="true" />
                   </summary>
                   <div className="saved-plan-list">
                     {inactive.map((schedule) => (

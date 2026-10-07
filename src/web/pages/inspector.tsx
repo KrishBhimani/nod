@@ -1,14 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import {
-  Activity,
-  Monitor,
-  X,
-  Coins,
-  Wrench,
-  ScrollText,
-  BrainCircuit,
-  ChevronDown,
-} from 'lucide-react';
+import { X, ChevronDown } from 'lucide-react';
 import type { Turn } from '../../shared/contracts';
 import { Button, Notice } from '../components/ui';
 import { InspectorScreen } from '../components/inspector-screen';
@@ -64,12 +55,12 @@ export function Inspector({
   const turn = turns.find((item) => item.id === scope);
   const events = data?.events.filter((event) => !scope || event.turnId === scope) ?? [];
   const views = [
-    ['screen', 'Screen', Monitor],
-    ['activity', 'Activity', Activity],
-    ['tools', 'Tools', Wrench],
-    ['models', 'Models', BrainCircuit],
-    ['costs', 'Costs', Coins],
-    ['prompts', 'Prompts', ScrollText],
+    ['screen', 'Screen'],
+    ['activity', 'Activity'],
+    ['tools', 'Tools'],
+    ['models', 'Models'],
+    ['costs', 'Costs'],
+    ['prompts', 'Prompts'],
   ] as const;
   return (
     <aside
@@ -107,18 +98,15 @@ export function Inspector({
       />
       <header className="inspector-heading">
         <div>
-          <Monitor size={16} />
           <h2>Inspector</h2>
           <span className="dev-label">DEV</span>
         </div>
-        <div>
-          <Button variant="ghost" size="icon" aria-label="Close inspector" onClick={onClose}>
-            <X size={16} />
-          </Button>
-        </div>
+        <Button variant="ghost" size="icon" aria-label="Close inspector" onClick={onClose}>
+          <X size={16} />
+        </Button>
       </header>
       <div className="inspector-tabs" role="tablist" aria-label="Inspector views">
-        {views.map(([value, label, Icon], index) => (
+        {views.map(([value, label], index) => (
           <button
             role="tab"
             aria-selected={tab === value}
@@ -145,7 +133,6 @@ export function Inspector({
             key={value}
             onClick={() => setTab(value)}
           >
-            <Icon size={16} />
             {label}
           </button>
         ))}

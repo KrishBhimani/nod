@@ -36,7 +36,7 @@
   font-size: var(--text-control);
 }
 .sidebar-account-menu .account-menu-trigger[aria-expanded='true'] {
-  background: var(--hover);
+  background: var(--nav-hover);
   color: var(--foreground);
 }
 .account-menu-trigger .nav-label {
@@ -67,11 +67,19 @@
   right: auto;
   width: 270px;
 }
+.sidebar .connection-menu-options {
+  padding: 8px;
+  border-radius: 24px;
+}
+.sidebar .connection-menu-options > [role^='menuitem'] {
+  padding: 8px 12px;
+  border-radius: var(--radius-full);
+}
 .account-menu-identity {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 8px 16px;
+  padding: 12px 12px 16px;
 }
 .account-menu-identity > div {
   min-width: 0;
@@ -100,14 +108,14 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 8px 8px;
+  padding: 8px 12px;
   font-size: var(--text-control);
 }
 .account-menu-themes > div {
   display: flex;
   gap: 4px;
   padding: 4px;
-  border-radius: 8px;
+  border-radius: var(--radius-full);
   background: var(--surface-subtle);
 }
 .account-menu-themes button {
@@ -118,7 +126,7 @@
   width: 32px;
   padding: 4px;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--radius-full);
   color: var(--muted-foreground);
   background: transparent;
 }
@@ -134,9 +142,10 @@
   line-height: 1.5;
 }
 .account-settings.dialog-content {
-  width: min(860px, calc(100vw - 48px));
+  width: min(1040px, calc(100vw - 48px));
   padding: 0;
   overflow: hidden;
+  border-radius: 24px;
 }
 .account-settings .dialog-close {
   top: 18px;
@@ -146,9 +155,9 @@
 }
 .account-settings-layout {
   display: grid;
-  grid-template-columns: 190px minmax(0, 1fr);
+  grid-template-columns: 200px minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr) auto;
-  height: 600px;
+  height: 680px;
   max-height: calc(90dvh - 2px);
 }
 .account-settings-layout > nav {
@@ -158,22 +167,23 @@
   flex-direction: column;
   align-items: stretch;
   gap: 4px;
-  padding: 16px 8px;
-  border-right: 1px solid var(--border);
+  padding: 24px 12px 16px;
   background: var(--sidebar);
 }
-.account-settings-layout > nav button {
+.account-settings-layout > nav button,
+.account-settings-signout button {
   display: inline-flex;
   align-items: center;
   justify-content: flex-start;
   flex-shrink: 0;
   gap: 8px;
+  width: 100%;
   min-height: 40px;
-  padding: 8px 12px;
+  padding: 8px 16px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-full);
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--muted-foreground);
   font-size: var(--text-control);
   text-align: left;
   cursor: pointer;
@@ -182,8 +192,9 @@
   width: 24px;
   height: 24px;
 }
-.account-settings-layout > nav button:hover {
-  background: var(--hover);
+.account-settings-layout > nav button:hover,
+.account-settings-signout button:hover {
+  background: var(--nav-hover);
   color: var(--foreground);
 }
 .account-settings-layout > nav button[aria-selected='true'] {
@@ -193,6 +204,11 @@
 }
 .account-settings-layout > nav button[aria-selected='true'] svg {
   color: var(--accent);
+}
+.account-settings-layout > nav button:focus-visible,
+.account-settings-signout button:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 .account-settings-pane {
   grid-column: 2;
@@ -204,8 +220,7 @@
 }
 .account-settings-header {
   flex-shrink: 0;
-  padding: 24px 64px 24px 32px;
-  border-bottom: 1px solid var(--border);
+  padding: 24px 64px 12px 32px;
 }
 .account-settings-body {
   flex: 1;
@@ -213,7 +228,7 @@
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 24px 32px;
+  padding: 12px 32px 32px;
   scroll-padding-block: 24px;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
@@ -221,39 +236,22 @@
 }
 .account-settings-header > h3 {
   margin: 0;
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 500;
   letter-spacing: -0.4px;
 }
+.account-settings-body:not(.is-wide) > * {
+  max-width: 640px;
+}
 .account-settings-body:focus-visible {
-  outline: 2px solid var(--ring);
+  outline: 2px solid var(--primary);
   outline-offset: -4px;
 }
 .account-settings-signout {
   grid-column: 1;
   grid-row: 2;
-  padding: 12px 8px;
-  border-right: 1px solid var(--border);
+  padding: 12px;
   background: var(--sidebar);
-}
-.account-settings-signout button {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  justify-content: flex-start;
-  width: 100%;
-  min-height: 40px;
-  padding: 8px 12px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: var(--text-control);
-  cursor: pointer;
-}
-.account-settings-signout button:hover {
-  background: var(--hover);
-  color: var(--foreground);
 }
 .account-profile-form {
   display: grid;
@@ -334,26 +332,30 @@
 }
 .account-theme-previews > button {
   min-width: 0;
-  padding: 4px;
-  border: 2px solid transparent;
-  border-radius: var(--control-radius);
+  padding: 8px;
+  border: 1px solid transparent;
+  border-radius: var(--dialog-radius);
   background: transparent;
   color: var(--foreground);
   text-align: left;
   cursor: pointer;
 }
 .account-theme-previews > button:hover {
-  background: var(--surface-subtle);
+  background: var(--nav-hover);
 }
 .account-theme-previews > button[aria-pressed='true'] {
-  border-color: var(--accent);
+  border-color: var(--accent-border);
   background: var(--accent-soft);
+}
+.account-theme-previews > button:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 .account-theme-label {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 12px 4px 4px;
+  gap: 8px;
+  padding: 12px 8px 8px;
   font-size: var(--text-control);
   font-weight: 500;
 }
@@ -362,7 +364,7 @@
   height: 104px;
   overflow: hidden;
   border: 1px solid var(--gray-25);
-  border-radius: 4px;
+  border-radius: 8px;
   background: var(--white);
 }
 .account-theme-sample > i {
@@ -497,7 +499,8 @@
     padding: 16px 8px;
     gap: 4px;
   }
-  .account-settings-layout > nav button {
+  .account-settings-layout > nav button,
+  .account-settings-signout button {
     justify-content: center;
     min-height: 44px;
     padding: 8px;
@@ -506,23 +509,14 @@
   .account-settings-signout button > span {
     display: none;
   }
-  .account-settings-layout > nav button > svg {
-    width: 24px;
-    height: 24px;
-  }
   .account-settings-header {
-    padding: 24px 64px 16px 16px;
+    padding: 24px 64px 8px 16px;
   }
   .account-settings-body {
-    padding: 24px 16px;
+    padding: 12px 16px 24px;
   }
   .account-settings-signout {
     padding: 12px 8px;
-  }
-  .account-settings-signout button {
-    justify-content: center;
-    min-height: 44px;
-    padding: 8px;
   }
   .account-profile-identity {
     gap: 12px;
@@ -542,10 +536,6 @@
     align-items: center;
     gap: 12px;
     padding: 8px;
-    border-color: var(--border);
-  }
-  .account-theme-previews > button[aria-pressed='true'] {
-    border-color: var(--accent);
   }
   .account-theme-sample {
     flex-shrink: 0;
@@ -590,8 +580,7 @@
   }
 }
 .account-region {
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
+  padding-bottom: 16px;
 }
 .account-region h4 {
   margin: 0 0 4px;

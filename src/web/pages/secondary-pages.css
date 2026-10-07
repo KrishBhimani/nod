@@ -34,27 +34,8 @@
 }
 .secondary-heading-actions > .button {
   min-height: var(--control-height);
-  padding: 8px 12px;
+  padding: 8px 16px;
   font-size: var(--text-control);
-}
-.compact-account {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  min-width: 0;
-  padding: 4px 0;
-}
-.compact-account-details {
-  flex: 1;
-  min-width: 0;
-  padding-top: 4px;
-}
-.compact-account-email {
-  display: block;
-  margin-top: 0;
-  color: var(--muted-foreground);
-  font-size: var(--text-control);
-  overflow-wrap: anywhere;
 }
 .connection-menu {
   position: relative;
@@ -98,250 +79,31 @@
   color: var(--muted-foreground);
   font-size: var(--text-control);
 }
-.channel-options {
-  display: grid;
-  gap: 12px;
-}
-.channel-option {
-  padding: 16px 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--card-radius);
-  background: var(--surface);
-}
-.channel-option-heading {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.channel-option-heading > img {
-  flex-shrink: 0;
-}
-.channel-option-heading > div {
-  flex: 1;
-}
-.channel-option-heading h2 {
-  font-size: var(--text-control);
-  font-weight: 500;
-  line-height: 1.5;
-}
-.channel-option-heading span {
-  color: var(--muted-foreground);
-  font-size: var(--text-control);
-}
-.channel-option-benefit {
-  max-width: 60ch;
-  margin: 12px 0 0;
-  color: var(--muted-foreground);
-  font-size: var(--text-control);
-  line-height: 1.55;
-}
-.channel-account {
-  display: grid;
-  gap: 4px;
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border);
-  font-size: var(--text-control);
-  line-height: 1.55;
-}
-.channel-account > p,
-.channel-account-label > span {
-  color: var(--muted-foreground);
-}
-.channel-account-label {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 8px;
-  overflow-wrap: anywhere;
-}
-.channel-account-label strong {
-  font-weight: 500;
-}
-.channel-account-status {
-  font-size: var(--text-control);
-}
-.channel-account-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 8px;
-}
-.channel-wizard {
-  width: min(470px, calc(100vw - 32px));
-}
-.channel-wizard-heading {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 24px;
-  padding-right: 24px;
-  font-size: var(--text-control);
-  font-weight: 500;
-}
-.channel-wizard-heading small {
-  margin-left: auto;
-  color: var(--muted-foreground);
-  font-size: var(--text-control);
-  font-weight: 400;
-}
-.channel-wizard .channel-wizard-description {
-  margin-top: 8px;
-  font-size: var(--text-control);
-  line-height: 1.55;
-}
-.channel-wizard-step {
-  display: grid;
-  gap: 16px;
-  margin: 24px 0;
-}
-.channel-wizard-step > p {
-  color: var(--muted-foreground);
-  font-size: var(--text-control);
-  line-height: 1.65;
-}
-.channel-wizard-step code {
-  color: var(--foreground);
-  font-size: var(--text-control);
-}
-.channel-external-link {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 4px;
-  color: var(--foreground);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-.channel-advanced > summary {
-  color: var(--muted-foreground);
-  font-size: var(--text-control);
-  cursor: pointer;
-}
-.channel-advanced[open] > .field {
-  margin-top: 16px;
-}
-.channel-requirements {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding-left: 16px;
-  font-size: var(--text-control);
-  line-height: 1.5;
-}
-.channel-policy {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  color: var(--muted-foreground);
-  font-size: var(--text-control);
-  line-height: 1.6;
-}
-.channel-wizard-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-}
 .saved-plan-list {
   display: grid;
   gap: 12px;
 }
-.schedule-inactive {
-  margin-top: 24px;
-}
-.schedule-inactive > summary {
-  color: var(--muted-foreground);
-  font-size: var(--text-control);
-  cursor: pointer;
-}
-.schedule-inactive > summary > span {
-  margin-left: 4px;
-}
-.schedule-inactive > .saved-plan-list {
-  margin-top: 12px;
-}
-.schedule-run > p {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-  margin-top: 8px;
-  color: var(--muted-foreground);
+.schedule-run-error {
+  color: var(--error);
   font-size: var(--text-control);
   line-height: 1.55;
-}
-.schedule-run > p > span {
-  font-size: var(--text-control);
-}
-.schedule-run > .schedule-run-error {
-  color: var(--foreground);
   overflow-wrap: anywhere;
-}
-.schedule-run-preview {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  width: 100%;
-  margin-top: 8px;
-  padding: 4px 0 4px 8px;
-  border: 0;
-  border-left: 2px solid var(--border);
-  background: transparent;
-  color: var(--foreground);
-  font-size: var(--text-control);
-  line-height: 1.5;
-  text-align: left;
-}
-.schedule-run-preview > span {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.schedule-run-preview > svg {
-  flex: none;
-  margin: 4px 0 0 auto;
-  color: var(--muted-foreground);
-}
-.schedule-run-open .schedule-run-preview {
-  padding-bottom: 0;
-}
-.schedule-run-open .schedule-run-preview > svg {
-  transform: rotate(180deg);
-}
-.schedule-run-body {
-  display: grid;
-  justify-items: start;
-  gap: 4px;
-  padding: 0 0 8px 8px;
-  border-left: 2px solid var(--border);
-  font-size: var(--text-control);
-  line-height: 1.55;
-}
-.schedule-run-body .message-text {
-  width: 100%;
-  overflow-wrap: anywhere;
-}
-.schedule-run > .schedule-run-empty {
-  color: var(--muted-foreground);
-  font-size: var(--text-control);
 }
 .schedule-history-more {
   margin-top: 12px;
 }
 .saved-plan {
-  padding: 16px 24px 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  padding: 24px;
   border: 1px solid var(--border);
-  border-radius: var(--card-radius);
+  border-radius: var(--dialog-radius);
   background: var(--surface);
 }
 .saved-plan-title {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
 }
 .saved-plan-title h2 {
@@ -353,49 +115,77 @@
   overflow-wrap: anywhere;
 }
 .saved-plan-status {
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--surface-subtle);
+  flex-shrink: 0;
+  padding: 4px 12px;
+  border-radius: var(--radius-full);
+  background: var(--control);
   color: var(--text-secondary);
   font-size: var(--text-control);
-  text-transform: capitalize;
+  font-weight: 500;
+}
+.saved-plan-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  color: var(--muted-foreground);
+  font-size: var(--text-control);
+  line-height: 1.5;
+}
+.saved-plan-meta > :not(svg) ~ *::before {
+  content: '·';
+  margin-right: 8px;
+}
+.saved-plan-summary {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--text-control);
+  line-height: 1.55;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.saved-plan-details {
+  display: grid;
+  gap: 16px;
+}
+.saved-plan-details[hidden] {
+  display: none;
 }
 .saved-plan-description {
-  margin-top: 8px;
-  color: var(--muted-foreground);
+  color: var(--text-secondary);
   font-size: var(--text-control);
   line-height: 1.65;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.saved-plan-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 12px;
+.saved-plan-note {
   color: var(--muted-foreground);
   font-size: var(--text-control);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.saved-plan-note a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.saved-plan-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.saved-plan-more {
+  margin-left: -12px;
+  padding-inline: 12px;
+}
+.saved-plan-more[aria-expanded='true'] > svg {
+  transform: rotate(180deg);
 }
 .saved-plan-actions {
   display: flex;
+  align-items: center;
   gap: 4px;
   margin-left: auto;
-}
-.saved-schedule-time {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-  margin-top: 8px;
-  font-size: var(--text-control);
-  line-height: 1.5;
-}
-.saved-schedule-time > span {
-  color: var(--muted-foreground);
-  font-size: var(--text-control);
 }
 .secondary-empty {
   display: flex;
@@ -438,13 +228,7 @@
   .secondary-heading-actions {
     gap: 0;
   }
-  .channel-option {
-    padding: 16px;
-  }
   .saved-plan {
-    padding: 16px 12px 8px;
-  }
-  .saved-plan-footer > span {
-    flex-basis: 100%;
+    padding: 16px;
   }
 }

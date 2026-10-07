@@ -403,7 +403,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               aria-label="Send message"
               disabled={!ready || pendingUploads > 0 || (!text.trim() && !attachments.length)}
             >
-              <ArrowUp size={24} />
+              <ArrowUp size={18} />
             </Button>
           </div>
         </div>

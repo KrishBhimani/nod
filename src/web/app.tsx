@@ -7,7 +7,6 @@ import { Channels } from './pages/channels';
 import { Credentials } from './pages/credentials';
 import { Inspector } from './pages/inspector';
 import { Tasks } from './pages/tasks';
-import { Memory } from './pages/memory';
 import { useAppState } from './hooks/use-app-state';
 import { useChatUnread } from './hooks/use-chat-unread';
 import { prefetchPageData } from './hooks/use-page-data';
@@ -17,7 +16,7 @@ import { Sidebar } from './components/sidebar';
 import { DesktopToolbar } from './components/desktop-toolbar';
 import { FeedbackDialog } from './components/feedback';
 import { captureFeedbackScreenshot } from './lib/feedback-capture';
-import { navigationItems } from './lib/navigation';
+import { sidebarItems } from './lib/navigation';
 import { BrowserWindow } from './pages/browser';
 import { readUiPreference, writeUiPreference } from './lib/ui-preferences';
 import type { AccountPreferences, AccountUpdate, SessionResponse } from '../shared/account';
@@ -259,8 +258,7 @@ function Workspace({
             {currentPath === '/apps' && <Apps configuration={state?.configuration} />}
             {currentPath === '/channels' && <Channels hosted={session.auth.mode === 'google'} />}
             {currentPath === '/tasks' && <Tasks onAsk={askInChat} />}
-            {currentPath === '/memory' && <Memory />}
-            {!navigationItems.some((item) => item.path === currentPath) && (
+            {!sidebarItems.some((item) => item.path === currentPath) && (
               <div className="empty-state">
                 <h1>This page isn’t here.</h1>
                 <Button variant="outline" onClick={() => navigate('/')}>
@@ -339,6 +337,8 @@ function AuthenticatedApp({
   );
   const [settingsError, setSettingsError] = useState('');
   const settingsTrigger = useRef<HTMLElement | null>(null);
+  const lastPath = useRef('/');
+  if (path !== '/memory') lastPath.current = path;
   const openSettings = (tab: AccountTab, trigger?: HTMLElement) => {
     setSettingsError('');
     setSettingsRequest((current) => current + 1);
@@ -361,6 +361,23 @@ function AuthenticatedApp({
       ),
     [session.auth.mode],
   );
+  useEffect(() => {
+    if (path !== '/memory' || !session.settings!.onboardingCompleted) return;
+    window.history.replaceState(null, '', lastPath.current);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    openSettings('Memory');
+  }, [path, session.settings!.onboardingCompleted]);
+  useEffect(() => {
+    const openMemory = (event: MouseEvent) => {
+      const link = event.target instanceof Element && event.target.closest('a[href="/memory"]');
+      if (!link || event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+        return;
+      event.preventDefault();
+      openSettings('Memory', link as HTMLElement);
+    };
+    document.addEventListener('click', openMemory);
+    return () => document.removeEventListener('click', openMemory);
+  }, []);
   useEffect(() => {
     const apply = () => {
       setSettingsError('');
@@ -437,7 +454,7 @@ function AuthenticatedApp({
         />
       ) : (
         <Workspace
-          path={path}
+          path={lastPath.current}
           session={session}
           account={account}
           settingsError={settingsError}
@@ -464,10 +481,6 @@ function AuthenticatedApp({
         openRequest={settingsRequest}
         onOpenChange={setSettingsOpen}
         onName={(name) => onAccountUpdate({ name })}
-        onViewMemory={() => {
-          setSettingsOpen(false);
-          navigate('/memory');
-        }}
         returnFocus={() =>
           settingsTrigger.current?.isConnected
             ? settingsTrigger.current

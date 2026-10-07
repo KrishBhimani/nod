@@ -5,7 +5,9 @@ import { analyticsRoute, recordingOptions, sanitizedAnalyticsUrl } from './analy
 
 type AnalyticsEvents = {
   otto_onboarding_step_viewed: { step: 'models' | 'apps' };
-  otto_settings_viewed: { tab: 'general' | 'profile' | 'appearance' | 'preferences' | 'models' };
+  otto_settings_viewed: {
+    tab: 'general' | 'profile' | 'appearance' | 'preferences' | 'models' | 'memory';
+  };
   otto_chat_message_sent: { has_attachments: boolean; is_reply: boolean };
   otto_chat_stop_requested: undefined;
   otto_ui_error: {
@@ -18,7 +20,9 @@ type AnalyticsEvents = {
 
 const eventProperties: Record<keyof AnalyticsEvents, Record<string, readonly unknown[]>> = {
   otto_onboarding_step_viewed: { step: ['models', 'apps'] },
-  otto_settings_viewed: { tab: ['general', 'profile', 'appearance', 'preferences', 'models'] },
+  otto_settings_viewed: {
+    tab: ['general', 'profile', 'appearance', 'preferences', 'models', 'memory'],
+  },
   otto_chat_message_sent: { has_attachments: [true, false], is_reply: [true, false] },
   otto_chat_stop_requested: {},
   otto_ui_error: {

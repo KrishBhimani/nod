@@ -1,102 +1,90 @@
-.memory-page {
-  container-type: inline-size;
-}
-.memory-stages {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 0.9fr);
-  gap: 0;
-  margin-bottom: 24px;
-}
-.memory-stage-slot {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-}
-.memory-stage-slot.is-apart {
-  padding-left: 24px;
-}
-.memory-stage {
-  display: grid;
-  flex: 1;
-  align-self: stretch;
-  align-content: start;
-  gap: 8px;
-  min-width: 0;
-  padding: 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--card-radius);
-  background: var(--surface);
-  color: var(--foreground);
-  text-align: left;
-  cursor: pointer;
-}
-.memory-stage:hover {
-  background: var(--hover);
-}
-.memory-stage[aria-pressed='true'] {
-  border-color: var(--accent-border);
-  background: var(--accent-soft);
-}
-.memory-stage:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
-}
-.memory-stage-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: var(--text-control);
-  font-weight: 500;
-}
-.memory-stage-count {
-  margin-left: auto;
-  color: var(--muted-foreground);
-  font-weight: 400;
-  font-variant-numeric: tabular-nums;
-}
-.memory-stage-hint {
-  color: var(--muted-foreground);
-  font-size: var(--text-control);
-  line-height: 1.45;
-  text-wrap: pretty;
-}
-.memory-stage-arrow {
-  flex: none;
-  margin: 0 8px;
-  color: var(--muted-foreground);
-}
-
 .memory-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   margin-bottom: 16px;
 }
 .memory-search {
-  flex: none;
-  width: 280px;
+  flex: 1 1 200px;
+  max-width: 320px;
+  margin-right: auto;
+}
+
+.memory-stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 16px;
+}
+.memory-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--control-height-sm);
+  padding: 4px 4px 4px 12px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--text-control);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.memory-stage:hover {
+  background: var(--nav-hover);
+  color: var(--foreground);
+}
+.memory-stage[aria-pressed='true'] {
+  background: var(--accent-soft);
+  color: var(--foreground);
+  font-weight: 500;
+}
+.memory-stage:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.memory-stage-count {
+  min-width: 20px;
+  padding: 0 4px;
+  border-radius: var(--radius-full);
+  background: var(--control);
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 20px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.memory-stage[aria-pressed='true'] .memory-stage-count {
+  background: var(--surface);
+  color: var(--accent);
+}
+.memory-hint {
+  margin: -8px 0 16px;
+  padding-left: 12px;
+  color: var(--muted-foreground);
+  font-size: var(--text-control);
+  line-height: 1.5;
 }
 
 .memory-layout {
   display: grid;
-  min-height: 420px;
-  overflow: clip;
-  border: 1px solid var(--border);
-  border-radius: var(--card-radius);
-  background: var(--surface);
+  align-items: start;
+  gap: 16px;
 }
 .memory-layout.has-detail {
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 400px);
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
 }
 .memory-list {
   display: grid;
   align-content: start;
-  padding: 8px;
+  min-width: 0;
 }
 .memory-group + .memory-group {
-  margin-top: 8px;
+  margin-top: 12px;
 }
-.memory-group h3 {
+.memory-group h4 {
   padding: 8px 12px 4px;
   color: var(--muted-foreground);
   font-size: var(--text-control);
@@ -109,9 +97,9 @@
   gap: 12px;
   width: 100%;
   min-height: 40px;
-  padding: 8px 12px;
+  padding: 8px 16px 8px 12px;
   border: 0;
-  border-radius: var(--control-radius);
+  border-radius: var(--radius-full);
   background: transparent;
   color: var(--foreground);
   font-size: var(--text-control);
@@ -119,7 +107,7 @@
   cursor: pointer;
 }
 .memory-row:hover {
-  background: var(--hover);
+  background: var(--nav-hover);
 }
 .memory-row.is-static {
   cursor: default;
@@ -131,7 +119,7 @@
   background: var(--accent-soft);
 }
 .memory-row:focus-visible {
-  outline: 2px solid var(--ring);
+  outline: 2px solid var(--primary);
   outline-offset: -2px;
 }
 .memory-row-text {
@@ -178,28 +166,33 @@
 }
 
 .memory-detail-column {
+  position: sticky;
+  top: 12px;
   padding: 24px;
-  border-left: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--dialog-radius);
+  background: var(--surface);
 }
 .memory-detail {
   display: grid;
   align-content: start;
   gap: 12px;
 }
-.memory-detail-column > .memory-detail {
-  position: sticky;
-  top: 24px;
-}
 .memory-back {
   justify-self: start;
   margin-left: -8px;
 }
 .memory-status {
-  display: flex;
+  display: inline-flex;
+  justify-self: start;
   align-items: center;
-  gap: 8px;
-  color: var(--muted-foreground);
+  gap: 4px;
+  padding: 4px 12px 4px 8px;
+  border-radius: var(--radius-full);
+  background: var(--control);
+  color: var(--text-secondary);
   font-size: var(--text-control);
+  font-weight: 500;
 }
 .memory-text {
   font-size: var(--text-body);
@@ -247,7 +240,7 @@
 .memory-form textarea {
   width: 100%;
   min-height: 88px;
-  padding: 8px 12px;
+  padding: 12px 16px;
   resize: vertical;
   font: inherit;
   line-height: 1.5;
@@ -261,8 +254,8 @@
 .memory-settings {
   display: flex;
   flex-wrap: wrap;
-  gap: 24px;
-  margin-top: 16px;
+  gap: 12px 24px;
+  margin-top: 24px;
 }
 .memory-setting {
   display: inline-flex;
@@ -285,22 +278,9 @@
   gap: 12px;
 }
 
-@container (max-width: 960px) {
-  .memory-stages {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
-  }
-  .memory-stage-slot.is-apart {
-    padding-left: 0;
-  }
-  .memory-stage-arrow {
-    display: none;
-  }
-}
-@media (max-width: 720px) {
+@container account-settings (max-width: 520px) {
   .memory-search {
-    flex: 1;
-    width: auto;
+    max-width: none;
   }
   .memory-row-meta {
     display: none;

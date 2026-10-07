@@ -1,5 +1,5 @@
-import { useEffect, useId, useRef, useState } from 'react';
-import { CalendarClock, ChevronDown } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { CalendarClock, Sparkles } from 'lucide-react';
 import type { Schedule, ScheduleHistory, ScheduleRun } from '../../shared/contracts';
 import { StatusIcon, statusLabels } from '../components/turn-status';
 import { usePageData } from '../hooks/use-page-data';
@@ -8,7 +8,14 @@ import { scheduleDate, scheduleLabel } from '../lib/schedules';
 import { useDateFormat } from '../lib/date-format';
 import { DeletePlan } from '../components/delete-plan';
 import { MessageText } from '../components/message';
-import { PlanFooter } from '../components/plan-controls';
+import {
+  AskOtto,
+  PauseSwitch,
+  PlanDetails,
+  ScheduleTiming,
+  useDirectChange,
+} from '../components/plan-controls';
+import { Button } from '../components/ui';
 
 const historyPath = '/api/schedule-runs?limit=20';
 
@@ -20,53 +27,84 @@ export function ScheduleRow({
   onAsk(text: string): void;
 }) {
   const dateFormat = useDateFormat();
-  const canResume =
-    schedule.kind !== 'once' || Boolean(schedule.runAt && Date.parse(schedule.runAt) > Date.now());
+  const change = useDirectChange(schedule.id);
+  const [asking, setAsking] = useState(false);
+  const date = (value: string) => scheduleDate(value, schedule.timeZone, dateFormat);
+  const canPause =
+    schedule.enabled ||
+    schedule.kind !== 'once' ||
+    Boolean(schedule.runAt && Date.parse(schedule.runAt) > Date.now());
   return (
-    <article className="saved-plan saved-schedule">
+    <article className="saved-plan">
       <div className="saved-plan-title">
         <h2>{schedule.title}</h2>
         <span className="saved-plan-status">
           {!schedule.enabled ? 'Paused' : schedule.kind === 'once' ? 'One time' : 'Recurring'}
         </span>
+        {canPause && <PauseSwitch schedule={schedule} change={change} />}
       </div>
-      <p className="saved-schedule-time">
+      <p className="saved-plan-meta">
         <CalendarClock size={16} aria-hidden="true" />
-        {schedule.kind === 'once'
-          ? schedule.runAt
-            ? scheduleDate(schedule.runAt, schedule.timeZone, dateFormat)
-            : 'Time unavailable'
-          : scheduleLabel(schedule.cron ?? '', dateFormat)}
-        <span>{schedule.timeZone}</span>
+        <span>
+          {schedule.kind === 'once'
+            ? schedule.runAt
+              ? date(schedule.runAt)
+              : 'Time unavailable'
+            : scheduleLabel(schedule.cron ?? '', dateFormat)}
+        </span>
+        {schedule.kind === 'recurring' && schedule.nextRun && (
+          <span>Next {date(schedule.nextRun)}</span>
+        )}
+        {schedule.timeZone !== dateFormat.timeZone && <span>{schedule.timeZone}</span>}
       </p>
-      <p className="saved-plan-description">{schedule.prompt}</p>
-      {schedule.baselineObservation?.status === 'verified' && (
-        <p className="saved-schedule-time">
-          Baseline: {schedule.baselineObservation.value} ·{' '}
-          {scheduleDate(schedule.baselineObservation.checkedAt, schedule.timeZone, dateFormat)}
-        </p>
-      )}
-      <PlanFooter
-        item={schedule}
-        canPause={schedule.enabled || canResume}
-        meta={
-          schedule.kind === 'recurring' && schedule.nextRun
-            ? `Next ${scheduleDate(schedule.nextRun, schedule.timeZone, dateFormat)}`
-            : ''
+      <PlanDetails
+        label={schedule.title}
+        summary={schedule.prompt}
+        actions={
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-expanded={asking}
+              aria-label={`Ask Otto about ${schedule.title}`}
+              onClick={() => setAsking(!asking)}
+            >
+              <Sparkles size={16} aria-hidden="true" />
+              Ask Otto
+            </Button>
+            <DeletePlan id={schedule.id} title={schedule.title} />
+          </>
         }
-        remove={<DeletePlan id={schedule.id} title={schedule.title} />}
-        onAsk={onAsk}
-      />
+      >
+        <p className="saved-plan-description">{schedule.prompt}</p>
+        {schedule.baselineObservation?.status === 'verified' && (
+          <p className="saved-plan-note">
+            Baseline: {schedule.baselineObservation.value} ·{' '}
+            {date(schedule.baselineObservation.checkedAt)}
+          </p>
+        )}
+        <ScheduleTiming
+          key={`${schedule.kind}:${schedule.cron}:${schedule.runAt}:${schedule.timeZone}`}
+          schedule={schedule}
+          change={change}
+        />
+      </PlanDetails>
+      {asking && (
+        <AskOtto
+          subject={{ title: schedule.title }}
+          onAsk={onAsk}
+          onClose={() => setAsking(false)}
+        />
+      )}
     </article>
   );
 }
 
 export function ScheduleRunRow({ run }: { run: ScheduleRun }) {
-  const [open, setOpen] = useState(false);
-  const bodyId = useId();
   const dateFormat = useDateFormat();
+  const date = (value: string) => scheduleDate(value, run.timeZone, dateFormat);
   return (
-    <article className={`saved-plan schedule-run${open ? ' schedule-run-open' : ''}`}>
+    <article className="saved-plan schedule-run">
       <div className="saved-plan-title">
         <h2>{run.title}</h2>
         <span className="task-status" data-status={run.status}>
@@ -74,48 +112,29 @@ export function ScheduleRunRow({ run }: { run: ScheduleRun }) {
           {statusLabels[run.status]}
         </span>
       </div>
-      <p className="saved-schedule-time">
+      <p className="saved-plan-meta">
         <CalendarClock size={16} aria-hidden="true" />
-        <time dateTime={run.scheduledFor}>
-          {scheduleDate(run.scheduledFor, run.timeZone, dateFormat)}
-        </time>
-        <span>{run.timeZone}</span>
+        <time dateTime={run.scheduledFor}>{date(run.scheduledFor)}</time>
+        {run.timeZone !== dateFormat.timeZone && <span>{run.timeZone}</span>}
       </p>
       {run.error && <p className="schedule-run-error">{run.error}</p>}
       {run.observation && (
-        <p>
+        <p className="saved-plan-note">
           {run.observation.status === 'verified' ? run.observation.value : 'Source unavailable'} ·{' '}
           Checked{' '}
-          <time dateTime={run.observation.checkedAt}>
-            {scheduleDate(run.observation.checkedAt, run.timeZone, dateFormat)}
-          </time>{' '}
-          · {run.observation.summary}{' '}
+          <time dateTime={run.observation.checkedAt}>{date(run.observation.checkedAt)}</time> ·{' '}
+          {run.observation.summary}{' '}
           <a href={run.observation.sourceUrl} target="_blank" rel="noopener noreferrer">
             Source
           </a>
         </p>
       )}
       {run.messageId ? (
-        <>
-          <button
-            type="button"
-            className="schedule-run-preview"
-            aria-expanded={open}
-            aria-controls={open ? bodyId : undefined}
-            aria-label={`${open ? 'Hide' : 'Read'} the message from ${run.title}`}
-            onClick={() => setOpen(!open)}
-          >
-            {!open && <span>{run.messagePreview}</span>}
-            <ChevronDown size={16} aria-hidden="true" />
-          </button>
-          {open && (
-            <div className="schedule-run-body" id={bodyId}>
-              <MessageText text={run.messageText ?? run.messagePreview ?? ''} />
-            </div>
-          )}
-        </>
+        <PlanDetails label={run.title} summary={run.messagePreview}>
+          <MessageText text={run.messageText ?? run.messagePreview ?? ''} />
+        </PlanDetails>
       ) : (
-        !run.observation && <p className="schedule-run-empty">No message</p>
+        !run.observation && <p className="saved-plan-note">No message</p>
       )}
     </article>
   );
