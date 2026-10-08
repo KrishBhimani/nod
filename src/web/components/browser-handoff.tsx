@@ -129,7 +129,17 @@ export function BrowserHandoff({ onDone }: { onDone: () => Promise<void> }) {
   }
 
   function key(event: React.KeyboardEvent<HTMLDivElement>) {
-    if (event.target !== event.currentTarget || event.altKey) return;
+    if (event.target !== event.currentTarget) return;
+    if (
+      event.key.length === 1 &&
+      !event.metaKey &&
+      (event.getModifierState('AltGraph') ||
+        (!event.ctrlKey && (!event.altKey || /Mac|iPhone|iPad/.test(window.navigator.platform))))
+    ) {
+      event.preventDefault();
+      return queue({ type: 'text', text: event.key });
+    }
+    if (event.altKey) return;
     const letter = event.key.toLowerCase();
     if (event.ctrlKey || event.metaKey) {
       if (letter === 'v' || !/^[a-z0-9]$/.test(letter)) return;
@@ -143,9 +153,6 @@ export function BrowserHandoff({ onDone }: { onDone: () => Promise<void> }) {
         key: event.shiftKey && event.key === 'Tab' ? 'Shift+Tab' : event.key,
       });
     }
-    if (event.key.length !== 1) return;
-    event.preventDefault();
-    queue({ type: 'text', text: event.key });
   }
 
   function paste(event: React.ClipboardEvent<HTMLDivElement>) {
