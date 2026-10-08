@@ -10,7 +10,7 @@ import type {
   WentWrong,
 } from './results.ts';
 
-function choose(n: number, k: number) {
+export function choose(n: number, k: number) {
   if (k < 0 || k > n) return 0;
   let value = 1;
   for (let i = 1; i <= k; i++) value = (value * (n - k + i)) / i;
@@ -35,6 +35,50 @@ export function wilson(passed: number, total: number, z = 1.96) {
   const margin =
     (z * Math.sqrt((p * (1 - p)) / total + (z * z) / (4 * total * total))) / denominator;
   return { low: Math.max(0, center - margin), high: Math.min(1, center + margin) };
+}
+
+export function fisherLower(
+  passedAfter: number,
+  after: number,
+  passedBefore: number,
+  before: number,
+) {
+  const successes = passedAfter + passedBefore;
+  const total = after + before;
+  let sum = 0;
+  for (let i = Math.max(0, after - (total - successes)); i <= passedAfter; i++)
+    sum += choose(successes, i) * choose(total - successes, after - i);
+  return sum / choose(total, after);
+}
+
+export function holm(pValues: number[], alpha = 0.05) {
+  const order = pValues.map((p, index) => ({ p, index })).sort((a, b) => a.p - b.p);
+  const rejected = new Set<number>();
+  for (const [rank, item] of order.entries()) {
+    if (item.p >= alpha / (order.length - rank)) break;
+    rejected.add(item.index);
+  }
+  return rejected;
+}
+
+const studentT = [
+  12.7062, 4.3027, 3.1824, 2.7764, 2.5706, 2.4469, 2.3646, 2.306, 2.2622, 2.2281, 2.201, 2.1788,
+  2.1604, 2.1448, 2.1314, 2.1199, 2.1098, 2.1009, 2.093, 2.086, 2.0796, 2.0739, 2.0687, 2.0639,
+  2.0595, 2.0555, 2.0518, 2.0484, 2.0452, 2.0423,
+];
+
+export function pairedChange(differences: number[]) {
+  const n = differences.length;
+  if (n < 5) return undefined;
+  const mean = differences.reduce((sum, value) => sum + value, 0) / n;
+  const sd = Math.sqrt(differences.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (n - 1));
+  const df = n - 1;
+  const z = 1.959964;
+  const t =
+    studentT[df - 1] ??
+    z + (z ** 3 + z) / (4 * df) + (5 * z ** 5 + 16 * z ** 3 + 3 * z) / (96 * df * df);
+  const half = (t * sd) / Math.sqrt(n);
+  return { n, mean, low: Math.max(-1, mean - half), high: Math.min(1, mean + half) };
 }
 
 export function band(passAt1: number | null, attempts: number) {
