@@ -85,6 +85,12 @@ export interface Stack {
   stop(): Promise<void>;
 }
 
+export function createStackRequest(baseUrl: string, cookie: string): Stack['request'] {
+  const origin = new URL(baseUrl).origin;
+  return (path, init) =>
+    fetch(new URL(path, baseUrl), { ...init, headers: { ...init?.headers, origin, cookie } });
+}
+
 export async function startStack(options: {
   model: Model;
   integrations: IntegrationProvider;
@@ -338,8 +344,7 @@ export async function startStack(options: {
     const baseUrl = `http://localhost:${port}`;
     const cookie = `${accessCookie(port)}=${await accessKey(join(directory, '.local'))}`;
     return {
-      request: (path, init) =>
-        fetch(new URL(path, baseUrl), { ...init, headers: { ...init?.headers, cookie } }),
+      request: createStackRequest(baseUrl, cookie),
       origin: baseUrl,
       directory,
       container,

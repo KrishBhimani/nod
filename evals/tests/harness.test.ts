@@ -2,13 +2,18 @@ import assert from 'node:assert/strict';
 import dns from 'node:dns';
 import { lookup } from 'node:dns/promises';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
 import type { TestContext } from 'node:test';
+import Fastify from 'fastify';
 import type { RuntimeContext } from '../../src/ports/agent.ts';
 import { createAgentRuntime } from '../../src/runtime/index.ts';
+import { accessCookie, registerLocalAccess } from '../../src/server/access.ts';
+import { createAccountSession } from '../../src/server/account.ts';
+import type { StoredAccount } from '../../src/server/account-store.ts';
 import { fakeComputer, fakeWorkspace } from '../../tests/runtime-fixtures.ts';
 import { band, passAtK, passPowK, summarize, wilson } from '../src/aggregate.ts';
 import { amounts, asksForSecret, finished, mentions, urlsGrounded } from '../src/checks.ts';
@@ -24,7 +29,8 @@ import { choice, number, parseArgs, text, whole } from '../src/options.ts';
 import { changes, html, markdown, terminal, trustLabels } from '../src/report.ts';
 import { select } from '../src/run.ts';
 import { scenarios } from '../src/scenarios/index.ts';
-import { waitUntil } from '../src/session.ts';
+import { createSession, waitUntil } from '../src/session.ts';
+import { createStackRequest, type Stack } from '../src/stack.ts';
 import { createApps, gmail, sheets, slack } from '../src/world/apps.ts';
 import { routeFixtureHosts } from '../src/world/fixture-fetch.ts';
 import { page, serveSites } from '../src/world/sites.ts';
@@ -451,6 +457,97 @@ test('a case waits for observed work and reports a missing test condition', asyn
     waitUntil(async () => true, 0),
     /test condition was not reached/,
   );
+});
+
+test('scenario API calls use authenticated local transport and refuse outside targets', async (t) => {
+  const probe = createServer();
+  await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const port = (probe.address() as { port: number }).port;
+  await new Promise<void>((resolve) => probe.close(() => resolve()));
+  const origin = `http://127.0.0.1:${port}`;
+  const key = 'a'.repeat(43);
+  const cookie = `${accessCookie(port)}=${key}`;
+  const account: StoredAccount = {
+    theme: 'system',
+    onboardingCompleted: false,
+    displayName: null,
+    usageData: false,
+  };
+  let writes = 0;
+  let started = 0;
+  const app = Fastify();
+  t.after(() => app.close());
+  registerLocalAccess(app, port, { key });
+  createAccountSession({
+    origin,
+    localUser: { id: 'synthetic-owner', name: 'Fixture', email: null, avatarUrl: null },
+    accounts: {
+      async read() {
+        return account;
+      },
+      async update(owner, input) {
+        assert.equal(owner, 'synthetic-owner');
+        writes++;
+        account.displayName = input.name ?? account.displayName;
+        account.onboardingCompleted = input.onboardingCompleted ?? account.onboardingCompleted;
+        return account;
+      },
+    },
+    async start(owner) {
+      assert.equal(owner, 'synthetic-owner');
+      started++;
+    },
+  }).register(app);
+  await app.listen({ host: '127.0.0.1', port });
+  const body = { name: 'Synthetic', onboardingCompleted: true };
+  for (const [headers, status] of [
+    [{ origin }, 401],
+    [{ cookie }, 403],
+  ] as const) {
+    const response = await fetch(`${origin}/api/account`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+    assert.equal(response.status, status);
+    await response.body?.cancel();
+  }
+  assert.equal(writes, 0);
+  assert.equal(started, 0);
+  let calls = 0;
+  const request = createStackRequest(origin, cookie);
+  const stack = {
+    origin,
+    request(path, init) {
+      calls++;
+      return request(path, init);
+    },
+  } as Stack;
+  const session = createSession({ stack, user: {}, deadline: Date.now() + 1000 });
+  const updated = await session.api('PATCH', '/api/account', body);
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.user.name, 'Synthetic');
+  assert.equal(updated.body.settings.onboardingCompleted, true);
+  assert.equal(account.displayName, 'Synthetic');
+  assert.equal(account.onboardingCompleted, true);
+  assert.equal(writes, 1);
+  assert.equal(started, 1);
+  for (const path of ['api/session', `${origin}/api/session`]) {
+    const state = await session.api('GET', path);
+    assert.equal(state.status, 200);
+    assert.equal(state.body.user.name, 'Synthetic');
+  }
+  for (const path of [
+    'https://outside.example.test/api',
+    '//outside.example.test/api',
+    '/\\outside.example.test/api',
+    '/\n/outside.example.test/api',
+    '/\t/outside.example.test/api',
+  ])
+    await assert.rejects(session.api('GET', path), /must stay on the Otto server/);
+  assert.equal(calls, 3);
+  assert.equal(writes, 1);
+  assert.equal(started, 1);
 });
 
 test('the stop case rejects a task that finished before Stop', async () => {
