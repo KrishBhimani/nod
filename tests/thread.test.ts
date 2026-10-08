@@ -24,7 +24,7 @@ import type { MemoryCurator } from '../src/ports/memory-curator.ts';
 import { ObjectStoreConflict, type PrivateObjectStore } from '../src/ports/object-storage.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';
 import { injectionFindings } from '../src/runtime/untrusted.ts';
-import { createPreferencesStore } from '../src/server/preferences.ts';
+import { createPreferencesStore, defaultPreferences } from '../src/server/preferences.ts';
 import type { ThreadDependencies } from '../src/server/thread.ts';
 import type { SubmitMessageResponse, Task } from '../src/shared/contracts.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
@@ -210,13 +210,18 @@ test(
       payload?: Record<string, unknown>,
     ) => app.inject({ method, url: path, headers, payload });
 
+    const quietInstructions = new Map<string, Record<string, unknown>>();
     const quietRuntime = createAgentRuntime({
       agent: {
         open: async (input) => ({
           resumed: false,
           abort() {},
           dispose() {},
-          async prompt() {
+          async prompt(text) {
+            quietInstructions.set(
+              input.turnId,
+              JSON.parse(text.split('Request data (JSON):\n')[1]!),
+            );
             await input.tools
               .find((tool) => tool.name === 'apps')!
               .execute({
@@ -869,6 +874,79 @@ test(
       });
 
       await t.test(
+        'queued background turns receive the current owned notification rule at execution',
+        async () => {
+          const preferences = createPreferencesStore(db.pool, ownerId);
+          const otherOwner = `notification-owner-${randomUUID()}`;
+          const otherPreferences = createPreferencesStore(db.pool, otherOwner);
+          const original = await preferences.get();
+          const oldRule = 'Report each synthetic receipt as it arrives.';
+          const foreignRule = 'Another owner only wants synthetic travel alerts.';
+          const eventPrompt = `Inspect this synthetic receipt quietly. Previously saved rule: ${oldRule}`;
+          const schedulePrompt = 'Send the requested synthetic daily briefing now.';
+          try {
+            quietBackgroundWork = true;
+            await otherPreferences.update({ notificationRule: foreignRule });
+            for (const rule of [
+              'Keep routine synthetic updates for my daily briefing, except urgent matters.',
+              '',
+              '   ',
+              undefined,
+            ]) {
+              await preferences.update({ notificationRule: oldRule });
+              const ids: string[] = [];
+              await db.transaction(async (client) => {
+                for (const [source, prompt] of [
+                  ['event', eventPrompt],
+                  ['schedule', schedulePrompt],
+                ] as const)
+                  ids.push(await thread.enqueueTurn(prompt, { source, client }));
+                if (rule === undefined)
+                  await db.pool.query('DELETE FROM preferences WHERE owner_id=$1', [ownerId]);
+                else await preferences.update({ notificationRule: rule });
+              });
+              for (const [index, id] of ids.entries()) {
+                await waitFor(settled(id));
+                assert.equal(await turnStatus(id), 'succeeded');
+                const expected = rule ?? defaultPreferences.notificationRule;
+                assert.equal(Reflect.get(ran(id)!, 'notificationRule'), expected);
+                assert.equal(quietInstructions.get(id)?.notificationRule, expected);
+                assert.equal(
+                  quietInstructions.get(id)?.currentInstruction,
+                  index === 0 ? eventPrompt : schedulePrompt,
+                );
+                assert.ok(!JSON.stringify(quietInstructions.get(id)).includes(foreignRule));
+              }
+              assert.equal(
+                (
+                  await db.pool.query('SELECT id FROM messages WHERE turn_id=ANY($1::uuid[])', [
+                    ids,
+                  ])
+                ).rowCount,
+                0,
+              );
+            }
+            await preferences.update({ notificationRule: '' });
+            const direct = await thread.submitUserMessage('A direct synthetic receipt question');
+            await waitFor(settled(direct.turnId));
+            assert.equal(await turnStatus(direct.turnId), 'succeeded');
+            assert.ok(
+              (
+                await db.pool.query(
+                  "SELECT id FROM messages WHERE turn_id=$1 AND role='assistant'",
+                  [direct.turnId],
+                )
+              ).rowCount,
+            );
+          } finally {
+            quietBackgroundWork = false;
+            await preferences.update(original);
+            await db.pool.query('DELETE FROM preferences WHERE owner_id=$1', [otherOwner]);
+          }
+        },
+      );
+
+      await t.test(
         'messages sent during a running turn join it in order until one needs its own turn',
         async () => {
           const provenance: Array<string | null> = [];
@@ -1218,6 +1296,7 @@ test(
         const holds = browserHolds.length;
         const question = await thread.submitUserMessage('ask-question', [], { channel: 'web' });
         await waitFor(settled(question.turnId));
+        await waitFor(() => browserHolds.length > holds);
         const held = browserHolds.slice(holds);
         assert.equal(held.length, 1);
         assert.equal(held[0]!.threadId, question.threadId);
@@ -2416,6 +2495,8 @@ test(
               ).rowCount,
               0,
             );
+            const queuedRule = 'Keep synthetic calendar digests for 20:00 only.';
+            await preferences.update({ notificationRule: queuedRule });
             block('Hold for app inventory change');
             const held = await thread.submitUserMessage('Hold for app inventory change');
             await waitFor(() => Boolean(ran(held.turnId)));
@@ -2429,7 +2510,7 @@ test(
             release('Hold for app inventory change');
             assert.equal(classified, 1);
             const dispatched = await db.pool.query(
-              `SELECT n.decision,n.turn_id,u.background,u.source,u.thread_id FROM notifications n
+              `SELECT n.decision,n.turn_id,u.background,u.source,u.thread_id,u.prompt FROM notifications n
              LEFT JOIN turns u ON u.id=n.turn_id WHERE n.event_id=ANY($1::text[]) AND n.owner_id=$2`,
               [ids, ownerId],
             );
@@ -2443,6 +2524,7 @@ test(
               assert.equal(await turnStatus(row.turn_id), 'succeeded');
               assert.deepEqual(ran(row.turn_id)?.connectedApps, []);
             }
+            assert.ok(dispatched.rows.every((row) => !row.prompt.includes(queuedRule)));
             const turnIds = dispatched.rows.map((row) => row.turn_id);
             await triage.triageEvent('Synthetic inbox duplicate', ids[0], 'inspect_message');
             assert.equal(runs.filter((run) => turnIds.includes(run.turnId)).length, 4);
@@ -3149,12 +3231,10 @@ test(
         /similar memory exists at preferences\/prefers-short-progress-reports/,
       );
       await memory.save({ area: 'preferences', text: detailed }, secret);
-      assert.equal(
-        (await memory.load()).entries.find((entry) => entry.slug === slug)?.sources.length,
-        2,
+      assert.deepEqual(
+        (await memory.load()).entries.find((entry) => entry.slug === slug)?.sources,
+        [correction.sourceMessageId, secret.sourceMessageId],
       );
-      assert.equal(await memory.cites(secret.sourceMessageId), true);
-      assert.equal(await memory.cites(randomUUID()), false);
       const approved = await memory.save(
         { area: 'about', text: 'Lives in Lisbon.' },
         { sourceMessageId: first.sourceMessageId, approved: true },
@@ -4847,6 +4927,7 @@ test('feedback diagnostics recover bounded private tool activity when inspector 
     const encoded = await buildFeedbackReport({ ...options, captureEnabled: () => captureEnabled });
     const report = JSON.parse(encoded);
     assert.equal(report.coverage.toolTraceSource, 'saved-session');
+    assert.equal(report.coverage.truncated, false);
     assert.equal(report.trace.length, 7);
     const browser = report.trace.find((item: { id: string }) => item.id === 'recent');
     assert.deepEqual(browser.input, { action: 'snapshot' });
@@ -4891,6 +4972,24 @@ test('feedback diagnostics recover bounded private tool activity when inspector 
   assert.equal(captured.trace.length, 1);
   assert.equal(captured.trace[0].id, 'captured');
   assert.equal(JSON.parse(await buildFeedbackReport(options)).trace.length, 7);
+  entries = Array.from({ length: 60 }, (_, index) =>
+    activity(`compact-${index}`, 'browser', {}, 'synthetic', now - (61 - index) * 1000),
+  ).flat();
+  const complete = JSON.parse(await buildFeedbackReport(options));
+  assert.equal(complete.coverage.truncated, false);
+  assert.equal(complete.trace.length, 60);
+  entries.push(...activity('compact-60', 'browser', {}, 'synthetic', now));
+  const sampled = JSON.parse(await buildFeedbackReport(options));
+  assert.equal(sampled.coverage.truncated, true);
+  assert.deepEqual(
+    sampled.trace.map((row: { id: string }) => row.id),
+    Array.from({ length: 60 }, (_, index) => `compact-${index + 1}`),
+  );
+  assert.equal(
+    JSON.parse(await buildFeedbackReport({ ...options, captureEnabled: () => true })).coverage
+      .truncated,
+    false,
+  );
   const large = 'x'.repeat(3500);
   entries = Array.from({ length: 70 }, (_, index) =>
     activity(
@@ -4919,7 +5018,7 @@ test(
     await f.pool.query(`
       CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text,status text DEFAULT 'idle',archived_at timestamptz);
       CREATE TABLE messages(id uuid,owner_id text,thread_id uuid,turn_id uuid,role text,text text,created_at timestamptz DEFAULT now());
-      CREATE TABLE turns(id uuid,owner_id text,thread_id uuid,source text,status text,error text,created_at timestamptz DEFAULT now(),started_at timestamptz,finished_at timestamptz);
+      CREATE TABLE turns(id uuid,owner_id text,thread_id uuid,source text,status text,error text,background boolean DEFAULT false,waiting_reason text,created_at timestamptz DEFAULT now(),started_at timestamptz,finished_at timestamptz);
       CREATE TABLE inspector_records(id uuid,owner_id text,thread_id uuid,turn_id uuid,kind text,name text,status text,input jsonb,output jsonb,error text,duration_ms integer,recorded_at timestamptz DEFAULT now(),started_at timestamptz DEFAULT now(),finished_at timestamptz);
       CREATE TABLE profiles(owner_id text,data jsonb);
       CREATE TABLE goals(owner_id text,title text);
@@ -5051,10 +5150,59 @@ test(
     assert.ok(truncated.messages.length <= 30);
     assert.ok(truncated.trace.length <= 60);
     assert.ok(truncated.messages.length + truncated.trace.length > 0);
+    for (const [field, limit, sql] of [
+      [
+        'messages',
+        30,
+        "INSERT INTO messages(id,owner_id,thread_id,role,text,created_at) VALUES($1,$2,$3,'assistant','Synthetic diagnostic',$4)",
+      ],
+      [
+        'turns',
+        20,
+        "INSERT INTO turns(id,owner_id,thread_id,source,status,background,waiting_reason,created_at) VALUES($1,$2,$3,'schedule','waiting',true,'user',$4)",
+      ],
+      [
+        'trace',
+        60,
+        "INSERT INTO inspector_records(id,owner_id,thread_id,kind,name,started_at) VALUES($1,$2,$3,'tool','browser',$4)",
+      ],
+    ] as const) {
+      await t.test(`${field} reports omitted older records at the row limit`, async () => {
+        await f.pool.query('TRUNCATE messages,turns,inspector_records');
+        const ids: string[] = [];
+        const start = Date.now() - 120_000;
+        for (let index = 0; index <= limit; index++) {
+          if (index === limit) {
+            const complete = JSON.parse(await buildFeedbackReport(options));
+            assert.equal(complete.coverage.truncated, false);
+            assert.deepEqual(
+              complete[field].map((row: { id: string }) => row.id),
+              ids,
+            );
+          }
+          const id = randomUUID();
+          ids.push(id);
+          await f.pool.query(sql, [id, ownerId, threadId, new Date(start + index * 1000)]);
+        }
+        const sampled = JSON.parse(await buildFeedbackReport(options));
+        assert.equal(sampled.coverage.truncated, true);
+        assert.deepEqual(
+          sampled[field].map((row: { id: string }) => row.id),
+          ids.slice(1),
+        );
+        if (field === 'turns') {
+          assert.equal(sampled.turns.at(-1).background, true);
+          assert.equal(sampled.turns.at(-1).waiting_reason, 'user');
+        }
+      });
+    }
   },
 );
 
 test('feedback context identifies the running source checkout and keeps hosted release metadata', async (t) => {
+  const os = (await import('node:os')).default;
+  t.mock.method(os, 'platform', () => 'linux');
+  const hostname = t.mock.method(os, 'hostname', () => 'synthetic-local-machine');
   const { feedbackContext } = await import('../src/server/feedback-context.ts');
   const cwd = await mkdtemp(join(tmpdir(), 'feedback-source-'));
   t.after(() => rm(cwd, { recursive: true, force: true }));
@@ -5095,6 +5243,7 @@ test('feedback context identifies the running source checkout and keeps hosted r
     assert.equal(clean.appModified, false);
     assert.equal(clean.appVersion, null);
     assert.equal(clean.source, 'local-web');
+    assert.equal(clean.computerName, 'synthetic-local-machine');
     await writeFile(join(cwd, 'source.txt'), 'Synthetic modified source');
     const modified = await feedbackContext({ runtimeMode: 'local', environment, cwd });
     assert.equal(modified.appRelease, head);
@@ -5105,7 +5254,9 @@ test('feedback context identifies the running source checkout and keeps hosted r
     assert.equal(unavailable.appModified, null);
     assert.equal(unavailable.appVersion, null);
     assert.equal(unavailable.source, 'local-web');
+    assert.equal(unavailable.computerName, 'synthetic-local-machine');
   }
+  const localNameReads = hostname.mock.callCount();
   for (const runtimeMode of ['tenant', 'gateway'] as const) {
     const hosted = await feedbackContext({
       runtimeMode,
@@ -5121,6 +5272,8 @@ test('feedback context identifies the running source checkout and keeps hosted r
     assert.equal(hosted.appModified, null);
     assert.equal(hosted.source, 'hosted-web');
     assert.equal(hosted.development, false);
+    assert.equal(hosted.computerName, null);
+    assert.equal(hostname.mock.callCount(), localNameReads);
   }
   const production = await feedbackContext({
     runtimeMode: 'local',
@@ -5128,6 +5281,51 @@ test('feedback context identifies the running source checkout and keeps hosted r
     cwd,
   });
   assert.equal(production.appRelease, 'previous-release');
+  assert.equal(production.computerName, 'synthetic-local-machine');
   assert.equal(production.appModified, null);
   assert.equal(production.development, false);
+});
+
+test('feedback context reads macOS computer names and falls back without reading hosted machines', async (t) => {
+  const os = (await import('node:os')).default;
+  const childProcess = (await import('node:child_process')).default;
+  const { feedbackContext } = await import('../src/server/feedback-context.ts');
+  const platform = t.mock.method(os, 'platform', () => 'darwin');
+  const hostname = t.mock.method(os, 'hostname', () => 'synthetic-hostname');
+  let output = '  Synthetic Mac\n';
+  let error: Error | undefined;
+  const execute = t.mock.fn(async (file: string, args: string[]) => {
+    assert.equal(file, '/usr/sbin/scutil');
+    assert.deepEqual(args, ['--get', 'ComputerName']);
+    if (error) throw error;
+    return { stdout: output, stderr: '' };
+  });
+  const original = childProcess.execFile;
+  childProcess.execFile = Object.assign(original.bind(childProcess), {
+    [promisify.custom]: execute,
+  });
+  t.after(() => {
+    childProcess.execFile = original;
+  });
+  const environment = { NODE_ENV: 'production' };
+  const preferred = await feedbackContext({ runtimeMode: 'local', environment });
+  assert.equal(preferred.computerName, 'Synthetic Mac');
+  assert.equal(hostname.mock.callCount(), 0);
+  output = ' \n';
+  const empty = await feedbackContext({ runtimeMode: 'local', environment });
+  assert.equal(empty.computerName, 'synthetic-hostname');
+  assert.equal(hostname.mock.callCount(), 1);
+  error = new Error('Synthetic scutil failure');
+  const failed = await feedbackContext({ runtimeMode: 'local', environment });
+  assert.equal(failed.computerName, 'synthetic-hostname');
+  assert.equal(hostname.mock.callCount(), 2);
+  assert.equal(execute.mock.callCount(), 3);
+  const platformReads = platform.mock.callCount();
+  for (const runtimeMode of ['tenant', 'gateway'] as const) {
+    const hosted = await feedbackContext({ runtimeMode, environment });
+    assert.equal(hosted.computerName, null);
+    assert.equal(platform.mock.callCount(), platformReads);
+    assert.equal(hostname.mock.callCount(), 2);
+    assert.equal(execute.mock.callCount(), 3);
+  }
 });

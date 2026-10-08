@@ -29,6 +29,7 @@ import './pages/onboarding/steps/telegram.css';
 import './pages/onboarding/steps/open-source.css';
 import './components/account-settings.css';
 import './components/feedback.css';
+import './components/editor-formatting.css';
 import './components/feedback-attachments.css';
 import './components/feedback-diagnostics.css';
 import './components/feedback-intro.css';

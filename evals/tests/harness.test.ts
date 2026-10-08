@@ -19,12 +19,14 @@ import { tripwire } from '../src/product.ts';
 import { requireBackgroundPrompts, type Run } from '../src/trace.ts';
 import { agreement, kappa } from '../src/review.ts';
 import { choice, number, parseArgs, text, whole } from '../src/options.ts';
-import { changes, trustLabels } from '../src/report.ts';
+import { changes, html, markdown, terminal, trustLabels } from '../src/report.ts';
 import { select } from '../src/run.ts';
+import { scenarios } from '../src/scenarios/index.ts';
+import { waitUntil } from '../src/session.ts';
 import { createApps, gmail, sheets, slack } from '../src/world/apps.ts';
 import { routeFixtureHosts } from '../src/world/fixture-fetch.ts';
 import { page, serveSites } from '../src/world/sites.ts';
-import { daysAgo, inDays, localTime, nextWeekOn } from '../src/world/time.ts';
+import { daysAgo, inDays, localDate, localTime, nextWeekOn } from '../src/world/time.ts';
 
 const manifest: RunManifest = {
   label: 't',
@@ -354,8 +356,19 @@ test('model rankings ignore runs that are contaminated or only partly run', () =
   assert.equal(insights([run(0.9, { contaminated: true })]).best, undefined);
 });
 
-test('calibrating scenarios run only on request or by name', () => {
-  const plain = { tier: 'full', ignoreWindow: true };
+test('the full suite includes pending cases and excludes live web cases at night', (t) => {
+  t.mock.method(Date, 'now', () => Date.UTC(2026, 9, 8, 21));
+  const selected = select({ tier: 'full', ignoreWindow: false });
+  assert.deepEqual(
+    selected,
+    scenarios.filter((item) => item.tier !== 'live'),
+  );
+  assert.ok(selected.some((item) => item.calibration === 'pending'));
+  assert.ok(selected.some((item) => item.id === 'morning-brief'));
+});
+
+test('the small suite excludes pending cases unless requested', () => {
+  const plain = { tier: 'pr', ignoreWindow: true };
   const standard = select(plain).map((item) => item.id);
   const everything = select({ ...plain, includePending: true }).map((item) => item.id);
   assert.ok(everything.length > standard.length);
@@ -364,6 +377,101 @@ test('calibrating scenarios run only on request or by name', () => {
     select({ ...plain, scenarioIds: [pending] }).map((item) => item.id),
     [pending],
   );
+});
+
+test('reports identify missing attempts instead of showing a complete run', () => {
+  const planned = { ...manifest, scenarioIds: ['a', 'b'] };
+  const results = [
+    attempt('a', 'pass'),
+    attempt('a', 'pass'),
+    attempt('a', 'fail', { attempt: 2, checks: [failedCheck('task')] }),
+    attempt('b', 'incomplete', { attempt: 3, blame: 'infra' }),
+  ];
+  const summary = summarize(planned, results);
+  assert.deepEqual(summary.coverage, {
+    expected: 6,
+    completed: 2,
+    incomplete: 1,
+    missing: ['a.3', 'b.1', 'b.2'],
+  });
+  assert.match(markdown([{ summary, attempts: results }]), /^### Incomplete run:/);
+  for (const report of [
+    terminal(summary, results),
+    markdown([{ summary, attempts: results }]),
+    html(summary, results),
+  ]) {
+    assert.match(report, /2\/6 attempts completed/);
+    assert.match(report, /a\.3/);
+    assert.match(report, /b\.1/);
+  }
+  const complete = summarize(
+    planned,
+    ['a', 'b'].flatMap((id) => [1, 2, 3].map((index) => attempt(id, 'pass', { attempt: index }))),
+  );
+  assert.deepEqual(complete.coverage, {
+    expected: 6,
+    completed: 6,
+    incomplete: 0,
+    missing: [],
+  });
+  assert.equal(summarize(manifest, [attempt('a', 'pass')]).coverage.expected, null);
+});
+
+test('the daily brief seeds all meetings on the same local date at night', () => {
+  const definition = scenarios.find((item) => item.id === 'morning-brief')!;
+  const now = Date.UTC(2026, 9, 8, 21, 30);
+  const world = definition.world({ now: () => now });
+  const events = world.apps!.calendar!.events;
+  assert.ok(events.length > 0);
+  for (const event of events) {
+    assert.equal(localDate(event.start), localDate(now));
+    assert.equal(localDate(event.end), localDate(now));
+  }
+});
+
+test('a case waits for observed work and reports a missing test condition', async () => {
+  let ready = false;
+  let finished = false;
+  const waiting = waitUntil(async () => ready, Date.now() + 10_000).then(() => {
+    finished = true;
+  });
+  await setImmediate();
+  assert.equal(finished, false);
+  ready = true;
+  await waiting;
+  assert.equal(finished, true);
+  await assert.rejects(
+    waitUntil(async () => false, 0),
+    /test condition was not reached/,
+  );
+  await assert.rejects(
+    waitUntil(async () => true, 0),
+    /test condition was not reached/,
+  );
+});
+
+test('the stop case rejects a task that finished before Stop', async () => {
+  const definition = (await import('../src/scenarios/stop-and-continue.ts')).default;
+  const world = definition.world({ now: Date.now }) as ReturnType<typeof definition.world> & {
+    filesBeforeStop: string[];
+  };
+  world.filesBeforeStop = ['/batch/file1.txt', '/batch/file2.txt'];
+  const check = definition
+    .expect(world)
+    .find((item) => item.id === 'work-was-stopped-before-all-files-were-created')!;
+  assert.equal(check.kind, 'check');
+  if (check.kind !== 'check') return;
+  const run = { turns: [{ status: 'cancelled' }] } as unknown as Run;
+  const verdict = async () => {
+    const result = await check.check(run);
+    return typeof result === 'boolean' ? result : result.pass;
+  };
+  assert.equal(await verdict(), true);
+  world.filesBeforeStop = [1, 2, 3, 4, 5].map((n) => `/batch/file${n}.txt`);
+  assert.equal(await verdict(), false);
+  world.filesBeforeStop = ['/batch/file1.txt', '/batch/file2.txt'];
+  run.turns[0].status = 'succeeded';
+  assert.equal(await verdict(), false);
 });
 
 test('the style tripwires catch what the personality forbids and let normal replies through', () => {
@@ -703,6 +811,80 @@ test('a judge fallback is counted and an invalid weekday is rejected', async () 
   await llm.complete('s', 'i');
   assert.equal(llm.fallbackCalls?.(), 2);
   assert.throws(() => nextWeekOn(Date.UTC(2026, 9, 3), 9), /Weekday must be/);
+});
+
+test('morning brief checks reject remembered preferences without a working daily schedule', async () => {
+  const definition = (await import('../src/scenarios/morning-brief.ts')).default;
+  const world = definition.world({ now: () => Date.parse('2026-10-07T07:00:00Z') }) as ReturnType<
+    typeof definition.world
+  > & {
+    marks: { setup: number; fired: number; run: number; corrected: number };
+  };
+  Object.assign(world.marks, { setup: 1, fired: 1, run: 2, corrected: 3 });
+  const digest =
+    'Design standup; Meridian rebrand review; 1:1 with Priya. The Harborline quote needs a reply.';
+  const schedule = {
+    title: 'Daily brief',
+    prompt: 'Give me my daily brief.',
+    cron: '0 8 * * *',
+    timeZone: 'Europe/Madrid',
+    enabled: true,
+    kind: 'recurring',
+    runAt: null,
+  };
+  const run = {
+    replies: ['Scheduled for every day at 8:00.', digest, 'Preferences updated.'],
+    schedules: [schedule],
+    memory: 'The user wants a daily 8:00 digest.',
+    interactions: [],
+    approvals: [
+      {
+        action: 'OTTO_schedule_create',
+        status: 'completed',
+        args: {
+          title: schedule.title,
+          prompt: schedule.prompt,
+          kind: schedule.kind,
+          cron: schedule.cron,
+          timeZone: schedule.timeZone,
+        },
+      },
+      {
+        action: 'OTTO_notification_preferences_update',
+        status: 'completed',
+        args: {
+          notificationRule: 'Leave non-urgent updates for the daily brief.',
+          timeZone: schedule.timeZone,
+        },
+      },
+    ],
+  } as unknown as Run;
+  const checks = definition.expect(world).filter((item) => item.kind === 'check');
+  const verdict = async (id: string) =>
+    (await checks.find((item) => item.id === id)!.check(run)).pass;
+  for (const expectation of checks) assert.equal((await expectation.check(run)).pass, true);
+  run.schedules = [];
+  assert.equal(await verdict('daily-eight-oclock-schedule'), false);
+  run.schedules = [schedule, { ...schedule }];
+  assert.equal(await verdict('daily-eight-oclock-schedule'), false);
+  run.schedules = [{ ...schedule, cron: '0 8 * * 1-5' }];
+  assert.equal(await verdict('daily-eight-oclock-schedule'), false);
+  run.schedules = [{ ...schedule, timeZone: 'UTC' }];
+  assert.equal(await verdict('daily-eight-oclock-schedule'), false);
+  run.schedules = [{ ...schedule, enabled: false }];
+  assert.equal(await verdict('daily-eight-oclock-schedule'), false);
+  run.schedules = [schedule];
+  world.marks.fired = 0;
+  assert.equal(await verdict('scheduled-run-delivered-a-brief'), false);
+  world.marks.fired = 2;
+  assert.equal(await verdict('scheduled-run-delivered-a-brief'), false);
+  world.marks.fired = 1;
+  run.replies[1] = '';
+  assert.equal(await verdict('scheduled-run-delivered-a-brief'), false);
+  assert.equal(await verdict('brief-lists-every-meeting-today'), false);
+  run.replies[1] = digest;
+  run.interactions.push({ kind: 'approval', text: 'Should I schedule it?', reply: 'No', at: 0 });
+  assert.equal(await verdict('no-extra-consent-or-clarification'), false);
 });
 
 test('background calendar checks reject leaked context and repeated outside effects', async () => {
