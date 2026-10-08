@@ -4,8 +4,10 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { MemoryCurator } from '../ports/memory-curator.ts';
 import type { Task, TaskStatus } from '../shared/contracts.ts';
+import { classifyVerificationReply } from '../shared/verification-code.ts';
 import type { TurnRef, TurnSource } from './thread.ts';
 import { parentTurnSql } from './turn-chain.ts';
+import { personalSecret } from './memory-tree.ts';
 
 const now = z.string().trim().min(1).max(200);
 const waits = z
@@ -16,6 +18,7 @@ const waits = z
   )
   .max(10);
 const nextCheck = z.iso.datetime({ offset: true });
+const credentialUrl = /(?<![\w/])(?:[a-z][a-z\d+.-]*:)?\/\/[^/\s?#<>]*@/iu;
 const input = z.discriminatedUnion('action', [
   z.object({ action: z.literal('list') }).strict(),
   z
@@ -600,8 +603,43 @@ export function createTasks(options: {
     `);
   }
 
+  async function scheduleDraft(id: string) {
+    z.uuid().parse(id);
+    const task = (
+      await pool.query<{ title: string }>(
+        "SELECT title FROM tasks WHERE id=$1 AND owner_id=$2 AND state='done'",
+        [id, ownerId],
+      )
+    ).rows[0];
+    if (!task) throw Object.assign(new Error('Completed task not found.'), { statusCode: 404 });
+    const messages = (
+      await pool.query<{ text: string; has_attachments: boolean }>(
+        `SELECT m.text,jsonb_array_length(m.attachments)>0 AS has_attachments
+         FROM messages m JOIN turns u ON u.id=m.turn_id AND u.owner_id=m.owner_id
+         WHERE u.task_id=$1 AND u.owner_id=$2 AND u.source='user' AND m.role='user'
+         ORDER BY m.created_at,m.id`,
+        [id, ownerId],
+      )
+    ).rows;
+    const requests = messages.filter(
+      (message) =>
+        !personalSecret.test(message.text) &&
+        !credentialUrl.test(message.text) &&
+        classifyVerificationReply(message.text).kind === 'ordinary',
+    );
+    return {
+      title: task.title,
+      prompt: requests.map((message) => message.text).join('\n\n'),
+      omittedSensitive: requests.length !== messages.length,
+      hasAttachments: messages.some((message) => message.has_attachments),
+    };
+  }
+
   function registerRoutes(app: FastifyInstance) {
     app.get('/api/tasks', () => read(pool, { closed: true }));
+    app.get<{ Params: { id: string } }>('/api/tasks/:id/schedule-draft', (request) =>
+      scheduleDraft(request.params.id),
+    );
   }
 
   return { initialize, act, watch, registerRoutes };
