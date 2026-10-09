@@ -1001,11 +1001,7 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
       refresh();
     };
     const { reactToMessage, connections, browserConnection, observe, inspectPrompt } = dependencies;
-    if (
-      turn.background &&
-      turn.source !== 'resume' &&
-      (await dependencies.spendingLimitReached?.())
-    ) {
+    if (await dependencies.spendingLimitReached?.()) {
       await current((client) =>
         finishTurn(client, turnId, 'failed', { error: spendingLimitReached }),
       );
@@ -1088,6 +1084,7 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
           ? undefined
           : async () => {
               if (signal.aborted) throw turnStopped();
+              if (await dependencies.spendingLimitReached?.()) return [];
               const taken = await takeQueuedMessages(turnId, turn.channel);
               if (taken.length) {
                 sourceMessageId = taken.at(-1)!.id;
@@ -1147,7 +1144,11 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
       return;
     }
     if (signal.aborted) outcome = 'cancelled';
-    if (await interruptTurn(turnId))
+    if (!signal.aborted && error instanceof Error && error.message === spendingLimitReached)
+      await current((client) =>
+        finishTurn(client, turnId, 'failed', { error: spendingLimitReached }),
+      );
+    else if (await interruptTurn(turnId))
       console.error(`Turn ${turnId} failed: ${describeFailure(error)}`);
   } finally {
     unwatch?.();

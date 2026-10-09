@@ -13,6 +13,7 @@ import pg from 'pg';
 import type { FeedbackEnvelope } from '../src/ports/feedback.ts';
 import { createN8nFeedback } from '../src/providers/n8n/feedback.ts';
 import { registerFeedback } from '../src/server/feedback.ts';
+import { spendingLimitReached } from '../src/server/ledger.ts';
 import {
   feedbackLimits,
   type FeedbackReceipt,
@@ -151,6 +152,7 @@ test(
       });
     const onboarding = onboardingFor(ownerId);
     await onboarding.initialize();
+    let pricingUnavailable = false;
     const app = await createApp({
       analytics: captureAnalytics,
       computer: fakeComputer({
@@ -163,6 +165,10 @@ test(
       onboard: (_timeZone, threadId) => thread.restartOnboarding(threadId),
       startOnboarding: onboarding.complete,
       planningTasks: onboarding.planning,
+      messageCosts: async () => {
+        if (pricingUnavailable) throw new Error('Synthetic pricing failure.');
+        return {};
+      },
     });
     onboarding.registerRoutes(app);
     type ProgressInput = { steps: string[]; cards: Array<{ id: string; title: string }> };
@@ -330,6 +336,7 @@ test(
       },
       runTurn: async (context) => {
         runs.push(context);
+        if (context.prompt === 'limit race fixture') throw new Error(spendingLimitReached);
         if (context.prompt === 'background-research-fixture') {
           const file = await context.publishBrowserFile!({
             bytes: Buffer.from('synthetic research'),
@@ -1049,11 +1056,28 @@ test(
         },
       );
 
-      await t.test('a reached spending limit pauses background turns but not chat', async (t) => {
-        limitReached = true;
+      await t.test('a reached spending limit pauses chat and background turns', async (t) => {
+        const raced = await thread.submitUserMessage('limit race fixture');
+        await waitFor(settled(raced.turnId));
+        assert.equal(
+          (await db.pool.query('SELECT error FROM turns WHERE id=$1', [raced.turnId])).rows[0]
+            .error,
+          spendingLimitReached,
+        );
         t.after(() => {
           limitReached = false;
+          release('steer-limit');
         });
+        block('steer-limit');
+        const active = await thread.submitUserMessage('steer-limit', [], { channel: 'web' });
+        await waitFor(() => Boolean(ran(active.turnId)));
+        limitReached = true;
+        const chat = await thread.submitUserMessage('limit chat fixture', [], { channel: 'web' });
+        release('steer-limit');
+        await waitFor(settled(active.turnId));
+        await waitFor(settled(chat.turnId));
+        assert.deepEqual(taken.get(active.turnId), []);
+        assert.equal(await turnStatus(active.turnId), 'succeeded');
         const background = [
           await thread.enqueueTurn('limit schedule fixture', {
             source: 'schedule',
@@ -1063,18 +1087,19 @@ test(
             source: 'event',
             sourceId: `notification:limit:${randomUUID()}`,
           }),
+          await thread.enqueueTurn('limit resume fixture', {
+            source: 'resume',
+            sourceId: `connection:${randomUUID()}`,
+          }),
         ];
-        const chat = await thread.submitUserMessage('limit chat fixture', [], { channel: 'web' });
         for (const turnId of [...background, chat.turnId]) await waitFor(settled(turnId));
-        for (const turnId of background) {
+        for (const turnId of [...background, chat.turnId]) {
           assert.equal(ran(turnId), undefined);
           const row = (await db.pool.query('SELECT status,error FROM turns WHERE id=$1', [turnId]))
             .rows[0];
           assert.equal(row.status, 'failed');
           assert.match(row.error, /spending limit was reached/);
         }
-        assert.ok(ran(chat.turnId));
-        assert.equal(await turnStatus(chat.turnId), 'succeeded');
       });
 
       await t.test(
@@ -2322,7 +2347,11 @@ test(
 
       await t.test(
         'history paging and reactions stay inside the owner’s active thread',
-        async () => {
+        async (t) => {
+          pricingUnavailable = true;
+          t.after(() => {
+            pricingUnavailable = false;
+          });
           const turn = randomUUID();
           await db.pool.query(
             "INSERT INTO turns(id,owner_id,thread_id,source,prompt,status) VALUES($1,$2,$3,'user','Fixture','succeeded')",

@@ -7422,7 +7422,7 @@ test(
           message_id uuid,prompt text NOT NULL,channel text NOT NULL DEFAULT 'web',status text NOT NULL DEFAULT 'succeeded',
           read_only boolean NOT NULL DEFAULT false,error text,created_at timestamptz NOT NULL DEFAULT now());
         CREATE TABLE turn_events(turn_id uuid,type text,created_at timestamptz NOT NULL DEFAULT now());
-        CREATE TABLE messages(id uuid,owner_id text,text text);
+        CREATE TABLE messages(id uuid,owner_id text,role text,text text,turn_id uuid,created_at timestamptz DEFAULT now());
         CREATE TABLE preferences(owner_id text PRIMARY KEY,time_zone text,locale text,hour_cycle text);
         CREATE TABLE schedules(id uuid,owner_id text,title text);
         CREATE TABLE notifications(owner_id text,turn_id uuid,summary text)`);
@@ -7434,6 +7434,12 @@ test(
         [chat, scheduled, foreign, `schedule:${schedule}:1:now`],
       );
       await pool.query("INSERT INTO schedules VALUES($1,'owner','Morning brief')", [schedule]);
+      const chatAnswer = randomUUID();
+      const scheduledAnswer = randomUUID();
+      await pool.query(
+        "INSERT INTO messages(id,owner_id,role,text,turn_id) VALUES($1,'owner','assistant','Chat reply',$3),($2,'owner','assistant','Scheduled reply',$4)",
+        [chatAnswer, scheduledAnswer, chat, scheduled],
+      );
       await pool.query(
         "INSERT INTO turn_events(turn_id,type) VALUES($1,'tool_complete'),($1,'tool_complete'),($2,'tool_complete'),($3,'tool_complete')",
         [chat, scheduled, foreign],
@@ -7502,16 +7508,18 @@ test(
         forwarded.map((event) => event.type),
         ['model_usage', 'model_usage', 'model_usage'],
       );
-      await ledger
-        .curator({
-          id: 'fixture',
-          configured: true,
-          curate: async (_request, _signal, report) => {
-            report?.({ model: 'fixture-small', costUsd: 0.05 });
-            return {};
-          },
-        })
-        .curate({ task: 'review', instructions: 'Synthetic', input: {} });
+      await ledger.withTurn(chat, () =>
+        ledger
+          .curator({
+            id: 'fixture',
+            configured: true,
+            curate: async (_request, _signal, report) => {
+              report?.({ model: 'fixture-small', costUsd: 0.05 });
+              return {};
+            },
+          })
+          .curate({ task: 'review', instructions: 'Synthetic', input: {} }),
+      );
       await ledger.action(chat, 'GMAIL_FETCH_EMAILS', { query: 'from:sam' });
       await ledger.action(chat, 'GMAIL_SEND_EMAIL', { recipient_email: 'sam@example.test' });
       await ledger.action(foreign, 'GMAIL_SEND_EMAIL', { recipient_email: 'x@example.test' });
@@ -7523,6 +7531,10 @@ test(
       assert.deepEqual((await pool.query('SELECT DISTINCT owner_id FROM model_usage')).rows, [
         { owner_id: 'owner' },
       ]);
+      const costs = await ledger.messageCosts([chat, scheduled, foreign]);
+      assert.deepEqual(costs[chat], { messageId: chatAnswer, costUsd: 0.55 });
+      assert.deepEqual(costs[scheduled], { messageId: scheduledAnswer, costUsd: null });
+      assert.equal(Object.hasOwn(costs, foreign), false);
       assert.deepEqual((await pool.query('SELECT action,effect FROM app_actions')).rows, [
         { action: 'GMAIL_SEND_EMAIL', effect: 'outbound' },
       ]);
@@ -7536,7 +7548,7 @@ test(
         view.entries.map((entry: TrustEntry) => [entry.title, entry.source, entry.costUsd]),
         [
           ['Morning brief', 'schedule', 0.1],
-          ['Tell Sam we take the quote', 'chat', 0.5],
+          ['Tell Sam we take the quote', 'chat', 0.55],
         ],
       );
       assert.deepEqual(view.entries[1].actions, ['Gmail: send email']);
@@ -7576,6 +7588,50 @@ test(
         (await pool.query('SELECT count(*)::int AS n FROM spending_limits')).rows[0].n,
         0,
       );
+      await limit(1.16);
+      await pool.query(`
+        CREATE FUNCTION refuse_usage() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN RAISE EXCEPTION 'Synthetic usage write failure.'; END;
+        $$;
+        CREATE TRIGGER refuse_usage BEFORE INSERT ON model_usage FOR EACH ROW EXECUTE FUNCTION refuse_usage()`);
+      let modelRequests = 0;
+      const curator = ledger.curator({
+        id: 'fixture',
+        configured: true,
+        curate: async (_request, _signal, report) => {
+          modelRequests++;
+          report?.({ model: 'fixture-small', costUsd: 0.05 });
+          return {};
+        },
+      });
+      const request = { task: 'review' as const, instructions: 'Synthetic', input: {} };
+      await assert.rejects(curator.curate(request), /Synthetic usage write failure/);
+      const failedAt = Date.now();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await assert.rejects(curator.curate(request), /Synthetic usage write failure/);
+      assert.equal(modelRequests, 1);
+      await pool.query('DROP TRIGGER refuse_usage ON model_usage');
+      assert.equal(await ledger.limitReached(), true);
+      await assert.rejects(curator.curate(request), /spending limit was reached/);
+      assert.equal(modelRequests, 1);
+      const recoveredUsage = await pool.query(
+        "SELECT created_at FROM model_usage WHERE owner_id='owner' AND turn_id IS NULL AND model='fixture-small'",
+      );
+      assert.ok(recoveredUsage.rows[0].created_at.getTime() <= failedAt);
+      assert.equal(
+        Math.round((await app.inject('/api/trust')).json().month.spentUsd * 100) / 100,
+        1.2,
+      );
+      const decimalLedger = createLedger({ pool, ownerId: 'decimal-owner' });
+      await pool.query("INSERT INTO spending_limits VALUES('decimal-owner',1)");
+      await pool.query(
+        "INSERT INTO model_usage(id,owner_id,cost_usd) SELECT 'decimal-'||n,'decimal-owner',0.1 FROM generate_series(1,9) n",
+      );
+      assert.equal(await decimalLedger.limitReached(), false);
+      await pool.query(
+        "INSERT INTO model_usage(id,owner_id,cost_usd) VALUES('decimal-10','decimal-owner',0.1)",
+      );
+      assert.equal(await decimalLedger.limitReached(), true);
     } finally {
       await app.close();
       await pool.end();
