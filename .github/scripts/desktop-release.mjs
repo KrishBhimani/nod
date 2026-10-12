@@ -482,25 +482,33 @@ async function verifyDelivery(tag, version) {
   if (!sourceUrl) return;
   const { createUpdateSource } = await import('../../desktop/main/updates.mjs');
   const get = (url, options) => fetch(url, { ...options, signal: AbortSignal.timeout(30_000) });
-  let arch;
+  let target;
   try {
-    for (arch of ['arm64', 'x64']) {
+    for (target of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
+      const [os, arch] = target.split('-');
       let update;
       for (let attempt = 0; update?.version !== version; attempt++) {
         if (attempt === 6) throw new Error(`it does not list Otto ${version}`);
         if (attempt) await new Promise((resolve) => setTimeout(resolve, 10_000));
-        update = await createUpdateSource({ sourceUrl, arch }).latest('0.0.0');
+        update = await createUpdateSource({ sourceUrl, os, arch }).latest('0.0.0');
       }
-      const installer = await get(`${sourceUrl}/releases?installer=true&platform=darwin-${arch}`);
-      const archive = await get(update.downloadUrl, { redirect: 'manual' });
-      await archive.body?.cancel();
-      const feed = await get(update.feedUrl);
+      const response = await get(`${sourceUrl}/releases?installer=true&platform=${target}`);
+      const installer = response.ok ? await response.json() : {};
+      const downloads =
+        os === 'win32'
+          ? [installer.installer?.url, installer.runtime?.url]
+          : [installer.disk?.url, update.downloadUrl];
+      const statuses = [];
+      for (const url of downloads) {
+        const download = await get(url, { redirect: 'manual' });
+        await download.body?.cancel();
+        statuses.push(download.status);
+      }
+      const feed = update.feedUrl && (await get(update.feedUrl));
       if (
-        !installer.ok ||
-        (await installer.json()).version !== version ||
-        archive.status !== 302 ||
-        !feed.ok ||
-        (await feed.json()).name !== `Otto ${version}`
+        installer.version !== version ||
+        statuses.some((status) => status !== 302) ||
+        (feed && (!feed.ok || (await feed.json()).name !== `Otto ${version}`))
       )
         throw new Error('its installer, runtime or update is unavailable');
     }
@@ -510,7 +518,7 @@ async function verifyDelivery(tag, version) {
       releaseRepository,
     );
     throw new Error(
-      `Otto ${version} is a draft again because ${sourceUrl} cannot deliver the ${arch} Mac app: ${error.message}`,
+      `Otto ${version} is a draft again because ${sourceUrl} cannot deliver ${target}: ${error.message}`,
     );
   }
 }
@@ -752,6 +760,7 @@ async function draftAll() {
     metadata.version !== version ||
     metadata.source !== source ||
     metadata.platform !== 'win32-x64' ||
+    metadata.updateSourceUrl !== (process.env.OTTO_DESKTOP_UPDATE_SOURCE_URL || undefined) ||
     metadata.signing?.mode !== 'unsigned' ||
     ['installed', 'engine', 'wsl', 'application', 'browser', 'workspaceFiles', 'reopened'].some(
       (key) => receipt[key] !== true,
@@ -802,7 +811,7 @@ async function draftAll() {
   await copyFile(join(windows, 'SHA256SUMS'), sum);
   const download = (file) =>
     `https://github.com/${releaseRepository}/releases/download/${tag}/${file}`;
-  const notes = `### Downloads\n\n- [Mac Intel](${download('Otto-x64.dmg')})\n- [Mac ARM](${download('Otto-arm64.dmg')})\n- [Windows](${download('Otto-Setup-x64.exe')})\n\n### Runtime packs\n\n- [Mac Intel](${`https://github.com/${runtimeRepository}/releases/download/${targets[1].tag}/${targets[1].runtime.archive.file}`})\n- [Mac ARM](${`https://github.com/${runtimeRepository}/releases/download/${targets[0].tag}/${targets[0].runtime.archive.file}`})\n- [Windows](${download('Otto-Runtime-win32-x64.tar.gz')})\n\nMac requires macOS 14 or later. Windows requires Windows 11 with WSL 2. For Windows setup, download the installer and runtime pack into the same folder. Keep the runtime pack compressed, then run the installer.\n\nMac builds use ${signingMode === 'self-signed' ? 'the internal signing certificate' : 'Developer ID signing and Apple notarization'}. Windows builds are unsigned.\n\n${prepared.notes.trimEnd()}\n\n${marker}\n`;
+  const notes = `### Downloads\n\n- [Mac Intel](${download('Otto-x64.dmg')})\n- [Mac ARM](${download('Otto-arm64.dmg')})\n- [Windows](${download('Otto-Setup-x64.exe')})\n\n### Runtime packs\n\n- [Mac Intel](${`https://github.com/${runtimeRepository}/releases/download/${targets[1].tag}/${targets[1].runtime.archive.file}`})\n- [Mac ARM](${`https://github.com/${runtimeRepository}/releases/download/${targets[0].tag}/${targets[0].runtime.archive.file}`})\n- [Windows](${download('Otto-Runtime-win32-x64.tar.gz')})\n\nMac requires macOS 14 or later. Windows requires Windows 11 with WSL 2. To install with one Terminal or PowerShell command, follow the [install guide](https://otto-docs.pages.dev/get-started/install-desktop/). Installed apps update themselves. For a manual Windows install, download the installer and runtime pack into the same folder, keep the runtime pack compressed, then run the installer.\n\nMac builds use ${signingMode === 'self-signed' ? 'the internal signing certificate' : 'Developer ID signing and Apple notarization'}. Windows builds are unsigned.\n\n${prepared.notes.trimEnd()}\n\n${marker}\n`;
   let release = await uploadDraft({
     repository: releaseRepository,
     tag,
