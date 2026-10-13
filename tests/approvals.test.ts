@@ -707,19 +707,9 @@ test(
             await access.authorize(requested, { origin: site, kind: 'sign_in', itemId: first }),
             { ok: true, reason: 'asked' },
           );
-          let kept = true;
-          await access.prepare(requested, async () => {
-            kept = false;
-          });
-          assert.equal(kept, true);
           aligned = false;
           for (const source of ['event', 'onboarding'] as const) {
             const background = await begin('Synthetic background work', { source });
-            let signedOut = false;
-            await access.prepare(background, async () => {
-              signedOut = true;
-            });
-            assert.equal(signedOut, true);
             const before = reviews.length;
             const verdict = await access.authorize(background, {
               origin: site,
@@ -1498,6 +1488,20 @@ test(
             assert.equal(await assistantMessages(next.turnId), 1);
             assert.equal(await confirm(id, true), undefined);
           }
+          const asked = await begin('A synthetic background question.', { source: 'event' });
+          const question = await propose(asked, 'OTTO_schedule_cancel', { id: randomUUID() });
+          await finish(asked.turnId);
+          assert.ok(await confirm(question, false));
+          const answered = await resumeTurns(question);
+          assert.equal(answered.length, 1);
+          assert.deepEqual(
+            (
+              await db.pool.query('SELECT session_id,background FROM turns WHERE id=$1', [
+                answered[0]!.id,
+              ])
+            ).rows[0],
+            { session_id: asked.turnId, background: true },
+          );
           assert.equal(calls.length, before);
         },
       );

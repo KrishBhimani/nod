@@ -17,7 +17,6 @@ import type { Computer, Workspace } from '../ports/computer.ts';
 import { BrowserActionError } from '../ports/computer.ts';
 import { threadIdentity } from '../ports/thread-identity.ts';
 import { actionEffect } from '../shared/action-effect.ts';
-import { conversation, createBrowserClaims } from './browser-claims.ts';
 import { createBrowserFlows } from './browser-flows.ts';
 import { createObservationQueue } from './observations.ts';
 import { firstInstruction, steeredInstruction, systemContext, systemPrompt } from './prompt.ts';
@@ -28,7 +27,9 @@ import { delimit } from './untrusted.ts';
 
 const holdMs = 30 * 60_000;
 const imageBytes = 5 * 1024 * 1024;
+const ownBrowserTools = new Set(['sign_in', 'pay', 'browser_session']);
 const parallelTools = new Set([
+  'delegate',
   'share_file',
   'create_audio',
   'skills',
@@ -43,6 +44,7 @@ const handsOverBrowser = (name: string, params: unknown) =>
 const confirmationNotice = 'The confirmation question is in chat. Wait for the reply.';
 const delimitedTools = new Set([
   'apps',
+  'delegate',
   'browser',
   'browser_flow',
   'web_search',
@@ -192,7 +194,6 @@ export function createAgentRuntime(dependencies: {
 }) {
   const { agent, computer } = dependencies;
   const activeTurns = new Map<string, { abort(): void; done: Promise<void> }>();
-  const claims = createBrowserClaims(holdMs);
   let disposed = false;
   let disposal: Promise<void> | undefined;
   const completedDisposals = new Set<string>();
@@ -214,24 +215,12 @@ export function createAgentRuntime(dependencies: {
     const lifecycle = new AbortController();
     const context = { ...input, signal: AbortSignal.any([input.signal, lifecycle.signal]) };
     const { signal, threadId } = context;
+    const browserId = context.browserId ?? context.threadId;
     let finished!: () => void;
     const done = new Promise<void>((resolve) => {
       finished = resolve;
     });
-    const owner = context.background ? context.turnId : conversation;
-    let browserReady: Promise<void> | undefined;
-    const takeBrowser = () =>
-      (browserReady ??= claims
-        .take(threadId, owner, signal)
-        .then(() => {
-          signal.throwIfAborted();
-          return context.prepareBrowser?.();
-        })
-        .then(() => signal.throwIfAborted())
-        .catch((error: unknown) => {
-          browserReady = undefined;
-          throw error;
-        }));
+    let browsed = false;
     let session: AgentSession | undefined;
     let status: RuntimeResult['status'] = 'succeeded';
     let waitingForUser = false;
@@ -263,10 +252,12 @@ export function createAgentRuntime(dependencies: {
       timeoutMs: dependencies.observationTimeoutMs,
     });
     const observe = observations.record;
+    const children = new Set<AgentSession>();
     const abortSession = () => {
-      void Promise.resolve()
-        .then(() => session?.abort())
-        .catch(() => {});
+      for (const child of [session, ...children])
+        void Promise.resolve()
+          .then(() => child?.abort())
+          .catch(() => {});
     };
     const abort = () => {
       stopped = true;
@@ -317,12 +308,12 @@ export function createAgentRuntime(dependencies: {
     const pause = async (
       reason: 'question' | 'approval' | 'credentials',
       text?: string,
-      { hold = false, post = true } = {},
+      { post = true } = {},
     ) => {
       status = reason === 'credentials' ? 'waiting_credentials' : 'waiting_user';
       waitingFor = reason;
       if (text && reason !== 'credentials') question = text;
-      if (hold) await computer.hold(threadId, Date.now() + holdMs).catch(() => {});
+      if (browsed) await computer.hold(browserId, Date.now() + holdMs).catch(() => {});
       stopped = true;
       if (post && text) {
         if (context.waitForUser) await context.waitForUser(text);
@@ -336,7 +327,7 @@ export function createAgentRuntime(dependencies: {
       if (!result.requiresConfirmation) return result;
       const text =
         'question' in result && typeof result.question === 'string' ? result.question : undefined;
-      await pause('approval', text, { hold: true, post: false });
+      await pause('approval', text, { post: false });
       return confirmationNotice;
     };
 
@@ -541,14 +532,6 @@ export function createAgentRuntime(dependencies: {
             actionSignal,
           ),
       };
-      const turn: Turn = {
-        context,
-        computer: browser,
-        reply,
-        invite: (text) => deliverReply(text),
-        pause,
-        confirm,
-      };
       let exclusive = Promise.resolve();
       const inTurn = (name: string, params: unknown, run: () => Promise<AgentToolResult>) => {
         if (!mixedTools.has(name) || readCall(name, params)) return run();
@@ -559,35 +542,112 @@ export function createAgentRuntime(dependencies: {
         );
         return next;
       };
-      const tools = ottoTools(
-        turn,
-        createBrowserFlows(workspace, browser, threadId, signal),
-        dependencies.skills,
-      ).map(({ name, description, parameters, execute }): AgentTool => ({
-        name,
-        description,
-        parameters,
-        parallel: parallelTools.has(name),
-        execute: async (params) => {
-          if (
-            (!context.readOnly || allowedReadOnly(name, params)) &&
-            (browserTools.has(name) || handsOverBrowser(name, params))
-          )
-            await takeBrowser();
-          return inTurn(name, params, () =>
-            guard(name, params, async () => {
-              if (!Value.Check(parameters, params))
-                throw new Error('The tool arguments do not match its schema.');
-              if (handsOverBrowser(name, params))
-                await computer.currentPage(threadId).catch(() => {
-                  throw new Error('Open the page in your browser before handing it to the user.');
-                });
-              return execute(params);
-            }),
-          );
-        },
-      }));
+      const bind = (turn: Turn, take: () => Promise<unknown>) =>
+        ottoTools(
+          turn,
+          createBrowserFlows(workspace, browser, turn.browserId, signal),
+          dependencies.skills,
+        ).map(({ name, description, parameters, execute }): AgentTool => ({
+          name,
+          description,
+          parameters,
+          parallel: parallelTools.has(name),
+          execute: async (params) => {
+            if (
+              (!context.readOnly || allowedReadOnly(name, params)) &&
+              (browserTools.has(name) || handsOverBrowser(name, params))
+            )
+              await take();
+            return inTurn(name, params, () =>
+              guard(name, params, async () => {
+                if (!Value.Check(parameters, params))
+                  throw new Error('The tool arguments do not match its schema.');
+                if (handsOverBrowser(name, params))
+                  await computer.currentPage(turn.browserId).catch(() => {
+                    throw new Error('Open the page in your browser before handing it to the user.');
+                  });
+                return execute(params);
+              }),
+            );
+          },
+        }));
       const system = systemPrompt(workspace, dependencies.skills);
+      const shared = {
+        context,
+        computer: browser,
+        reply,
+        invite: (text: string) => deliverReply(text),
+        pause,
+        confirm,
+      };
+      let running = 0;
+      const queued: Array<() => void> = [];
+      const delegate = async (title: string, instruction: string) => {
+        if (running < 2) running += 1;
+        else
+          await new Promise<void>((resolve, reject) => {
+            const start = () => {
+              signal.removeEventListener('abort', stop);
+              resolve();
+            };
+            const stop = () => {
+              queued.splice(queued.indexOf(start), 1);
+              reject(signal.reason);
+            };
+            queued.push(start);
+            signal.addEventListener('abort', stop, { once: true });
+          });
+        try {
+          return await subagent(title, instruction);
+        } finally {
+          const next = queued.shift();
+          if (next) next();
+          else running -= 1;
+        }
+      };
+      const subagent = async (title: string, instruction: string) => {
+        signal.throwIfAborted();
+        const childBrowser = `${context.turnId}-${randomUUID().slice(0, 8)}`;
+        let browsed = false;
+        let answer = '';
+        const child = await agent.open({
+          threadId,
+          turnId: context.turnId,
+          systemPrompt: system,
+          systemContext: systemContext(context),
+          tools: bind({ ...shared, browserId: childBrowser }, async () => {
+            browsed = true;
+          }).filter((tool) => !ownBrowserTools.has(tool.name)),
+          workspace,
+          timeZone: context.timeZone,
+          background: true,
+          runTool: guard,
+          shouldStop: () => stopped,
+          onEvent: (event) => {
+            if (event.type === 'model_usage') void observe(event);
+            if (event.type === 'final') answer = event.text;
+          },
+        });
+        children.add(child);
+        try {
+          signal.throwIfAborted();
+          await child.prompt(
+            `${currentUserTime(context.timeZone)}\nYou are a subagent doing one part of the owner's request: ${title}\n${instruction}\nDo this part completely with your tools. Your final answer goes back to the agent that delegated it, not to the owner, so include every result it needs.`,
+            [],
+          );
+        } finally {
+          children.delete(child);
+          await Promise.resolve()
+            .then(() => child.dispose())
+            .catch(() => {});
+          if (browsed) await computer.discard?.(childBrowser).catch(() => {});
+        }
+        signal.throwIfAborted();
+        return answer || 'The subagent finished without an answer.';
+      };
+      const tools = bind({ ...shared, browserId, delegate }, async () => {
+        browsed = true;
+      });
       const inspectedSystem = `${system}\n\n${systemContext({ ...context, memory: '' })}`;
       const instruct = (
         instruction: string,
@@ -729,10 +789,10 @@ export function createAgentRuntime(dependencies: {
       } finally {
         clearTimeout(deadline);
         await Promise.allSettled([...activeToolCalls]);
-        await browserReady?.catch(() => {});
         await Promise.all([observations.flush(), promptCaptures.flush()]);
         activeTurns.delete(context.turnId);
-        claims.release(threadId, owner, waitingForUser);
+        if (browserId !== threadId && !waitingForUser && (browsed || context.resumed))
+          await computer.discard?.(browserId).catch(() => {});
         finished();
       }
     }
@@ -740,7 +800,6 @@ export function createAgentRuntime(dependencies: {
 
   return {
     runTurn,
-    holdBrowserForUser: (threadId: string) => claims.holdForUser(threadId),
     status: () => ({
       browser: computer.status(),
       workspace: dependencies.workspace.status(),

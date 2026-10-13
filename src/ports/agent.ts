@@ -66,6 +66,8 @@ export type ActivityCheckResult =
 export interface RuntimeContext {
   threadId: string;
   turnId: string;
+  browserId?: string;
+  resumed?: boolean;
   prompt: string;
   background?: boolean;
   readOnly?: boolean;
@@ -117,7 +119,6 @@ export interface RuntimeContext {
     connectionId?: string,
   ): Promise<unknown>;
   browserConnection?(request: BrowserConnectionRequest): Promise<unknown>;
-  prepareBrowser?(): Promise<void>;
   waitForUser?(question: string): Promise<void>;
   delta(text: string, streamId?: string, done?: boolean): void;
   publish(path: string, name?: string): Promise<Artifact>;

@@ -253,6 +253,7 @@ test(
     let activityRun: ((context: RuntimeContext) => Promise<void>) | undefined;
 
     const runs: RuntimeContext[] = [];
+    const sessionGates = new Map<string, Promise<void>>();
     const taken = new Map<string, Array<{ id: string; text: string }>>();
     const gates = new Map<string, () => void>();
     const hold = (prompt: string) =>
@@ -283,12 +284,8 @@ test(
     let taskHold = Promise.resolve();
 
     let limitReached = false;
-    const browserHolds: Array<{ threadId: string; until: number | null; runs: number }> = [];
     const dependencies: ThreadDependencies = {
       analytics: captureAnalytics,
-      holdBrowser: async (threadId, until) => {
-        browserHolds.push({ threadId, until, runs: runs.length });
-      },
       connectedApps: readConnectedApps,
       activityCheck: async (turn) => activityLookup?.(turn),
       spendingLimitReached: async () => limitReached,
@@ -335,6 +332,10 @@ test(
       runTurn: async (context) => {
         runs.push(context);
         if (context.prompt === 'limit race fixture') throw new Error(spendingLimitReached);
+        if (context.prompt.startsWith('session-fixture')) {
+          await sessionGates.get(context.prompt);
+          return { status: 'succeeded' };
+        }
         if (context.prompt === 'background-research-fixture') {
           const file = await context.publishBrowserFile!({
             bytes: Buffer.from('synthetic research'),
@@ -907,6 +908,52 @@ test(
         await waitFor(settledThread);
       });
 
+      await t.test(
+        'each session runs one turn at a time while sessions run in parallel',
+        async () => {
+          await waitFor(settledThread);
+          const threadId = (await thread.activeThread(db.pool)).id;
+          let release = () => {};
+          sessionGates.set(
+            'session-fixture-first',
+            new Promise<void>((resolve) => {
+              release = resolve;
+            }),
+          );
+          const first = await thread.enqueueTurn('session-fixture-first', {
+            source: 'event',
+            sourceId: `session-fixture:${randomUUID()}`,
+          });
+          const next = await thread.enqueueTurn('session-fixture-next', {
+            source: 'resume',
+            sourceId: `session-fixture:${randomUUID()}`,
+            background: true,
+            sessionId: first,
+          });
+          const other = await thread.enqueueTurn('session-fixture-other', {
+            source: 'event',
+            sourceId: `session-fixture:${randomUUID()}`,
+          });
+          try {
+            await waitFor(settled(other));
+            const chat = await thread.submitUserMessage('while a session works', [], {
+              channel: 'web',
+            });
+            await waitFor(settled(chat.turnId));
+            assert.equal(await turnStatus(first), 'running');
+            assert.equal(await turnStatus(next), 'queued');
+            assert.equal(ran(chat.turnId)?.browserId, threadId);
+          } finally {
+            release();
+          }
+          await waitFor(settled(next));
+          assert.equal(await turnStatus(next), 'succeeded');
+          assert.equal(ran(first)?.browserId, first);
+          assert.equal(ran(next)?.browserId, first);
+          assert.equal(ran(other)?.browserId, other);
+        },
+      );
+
       await t.test('turns retain owned manual and automatic region preferences', async () => {
         const preferences = createPreferencesStore(db.pool, ownerId);
         const otherOwner = `region-owner-${randomUUID()}`;
@@ -1411,14 +1458,8 @@ test(
 
       await t.test('a waiting question does not block the next user message', async () => {
         await waitFor(settledThread);
-        const holds = browserHolds.length;
         const question = await thread.submitUserMessage('ask-question', [], { channel: 'web' });
         await waitFor(settled(question.turnId));
-        await waitFor(() => browserHolds.length > holds);
-        const held = browserHolds.slice(holds);
-        assert.equal(held.length, 1);
-        assert.equal(held[0]!.threadId, question.threadId);
-        assert.ok(Math.abs(held[0]!.until! - Date.now() - 30 * 60_000) < 60_000);
         const row = (
           await db.pool.query('SELECT status,waiting_reason FROM turns WHERE id=$1', [
             question.turnId,
@@ -1438,13 +1479,6 @@ test(
         const answer = await thread.submitUserMessage('the work account', [], { channel: 'web' });
         await waitFor(settled(answer.turnId));
         assert.equal(await turnStatus(answer.turnId), 'succeeded');
-        assert.deepEqual(browserHolds.slice(holds + 1), [
-          {
-            threadId: question.threadId,
-            until: null,
-            runs: runs.findIndex((context) => context.turnId === answer.turnId),
-          },
-        ]);
         assert.equal(ran(answer.turnId)?.threadId, question.threadId);
         assert.ok(
           ran(answer.turnId)?.history.some(

@@ -2024,22 +2024,86 @@ function context(directory: string): RuntimeContext {
   };
 }
 
-test('concurrent turns on one thread take the browser one turn at a time', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'otto-browser-turns-'));
+test('delegated subagents run two at a time, each in its own browser, and answer as untrusted data', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'otto-delegate-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const order: string[] = [];
-  let entered!: () => void;
-  const holding = new Promise<void>((resolve) => {
-    entered = resolve;
-  });
+  const opened = new Map<string, string>();
+  const discarded: string[] = [];
+  const started: string[] = [];
   let release!: () => void;
-  const held = new Promise<void>((resolve) => {
+  const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
-  let queued!: () => void;
-  const waiting = new Promise<void>((resolve) => {
-    queued = resolve;
+  let results: unknown[] = [];
+  let childTools: string[] = [];
+  const runtime = createAgentRuntime({
+    agent: {
+      open: async (input) => ({
+        resumed: false,
+        abort() {},
+        dispose() {},
+        prompt: async (text) => {
+          const tool = (name: string) => input.tools.find((item) => item.name === name)!;
+          if (!input.tools.some((item) => item.name === 'delegate')) {
+            childTools = input.tools.map((item) => item.name);
+            const shop = /shop-\w/.exec(text)![0];
+            started.push(shop);
+            await tool('browser').execute({ action: 'open', url: `https://${shop}.example/drill` });
+            await gate;
+            input.onEvent({ type: 'final', text: `${shop} sells the drill for 89 EUR` });
+            return;
+          }
+          const pending = Promise.all(
+            ['shop-a', 'shop-b', 'shop-c'].map((shop) =>
+              tool('delegate').execute({ title: shop, instruction: `Price the drill on ${shop}.` }),
+            ),
+          );
+          for (let wait = 0; started.length < 2 && wait < 200; wait++) await setTimeout(5);
+          await setTimeout(50);
+          const first = [...started].sort();
+          release();
+          results = await pending;
+          assert.deepEqual(first, ['shop-a', 'shop-b']);
+        },
+      }),
+      dispose() {},
+    },
+    computer: fakeComputer({
+      act: async (id, action) => {
+        if (action.action === 'open' && action.url) opened.set(action.url, id);
+        return { text: 'Fixture page', url: action.url ?? 'https://example.com' };
+      },
+      discard: async (id) => {
+        discarded.push(id);
+      },
+    }),
+    workspace: fakeWorkspace(),
   });
+  try {
+    const result = await runtime.runTurn({ ...context(directory), turnId: randomUUID() });
+    assert.equal(result.status, 'succeeded');
+    assert.deepEqual(started.sort(), ['shop-a', 'shop-b', 'shop-c']);
+    for (const name of ['delegate', 'sign_in', 'pay', 'browser_session'])
+      assert.equal(childTools.includes(name), false);
+    const browsers = [...opened.values()];
+    assert.equal(new Set(browsers).size, 3);
+    assert.ok(browsers.every((id) => id !== 'fixture'));
+    assert.deepEqual(discarded.sort(), browsers.sort());
+    for (const [index, shop] of ['shop-a', 'shop-b', 'shop-c'].entries()) {
+      const text = JSON.stringify(results[index]);
+      assert.match(text, /untrusted_tool_result/);
+      assert.match(text, new RegExp(`${shop} sells the drill for 89 EUR`));
+    }
+  } finally {
+    release();
+    await runtime.dispose();
+  }
+});
+
+test('a subagent that needs the owner pauses the whole turn', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'otto-delegate-pause-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const replies: string[] = [];
   const runtime = createAgentRuntime({
     agent: {
       open: async (input) => ({
@@ -2047,16 +2111,12 @@ test('concurrent turns on one thread take the browser one turn at a time', async
         abort() {},
         dispose() {},
         prompt: async () => {
-          order.push(`${input.turnId} started`);
-          if (input.turnId === 'schedule') queued();
-          await input.tools
-            .find((tool) => tool.name === 'browser')!
-            .execute({ action: 'snapshot' });
-          order.push(`${input.turnId} browser`);
-          if (input.turnId === 'conversation') {
-            entered();
-            await held;
+          const tool = (name: string) => input.tools.find((item) => item.name === name)!;
+          if (!input.tools.some((item) => item.name === 'delegate')) {
+            await tool('ask_user').execute({ question: 'Which date works for the table?' });
+            return;
           }
+          await tool('delegate').execute({ title: 'Book', instruction: 'Book a table.' });
         },
       }),
       dispose() {},
@@ -2065,22 +2125,16 @@ test('concurrent turns on one thread take the browser one turn at a time', async
     workspace: fakeWorkspace(),
   });
   try {
-    const conversation = runtime.runTurn({ ...context(directory), turnId: 'conversation' });
-    await holding;
-    const schedule = runtime.runTurn({
+    const result = await runtime.runTurn({
       ...context(directory),
-      turnId: 'schedule',
-      background: true,
+      turnId: randomUUID(),
+      reply: async (text) => {
+        replies.push(text);
+      },
     });
-    await waiting;
-    await setTimeout(50);
-    assert.deepEqual(order, ['conversation started', 'conversation browser', 'schedule started']);
-    assert.equal(runtime.status().activeTurns, 2);
-    release();
-    await Promise.all([conversation, schedule]);
-    assert.deepEqual(order.slice(3), ['schedule browser']);
+    assert.equal(result.status, 'waiting_user');
+    assert.deepEqual(replies, ['Which date works for the table?']);
   } finally {
-    release();
     await runtime.dispose();
   }
 });

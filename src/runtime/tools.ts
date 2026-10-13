@@ -195,6 +195,14 @@ export const toolDefinitions = {
       replyToMessageId: Type.Optional(Type.String({ pattern: '^[0-9a-fA-F-]{36}$' })),
     }),
   ),
+  delegate: defineTool(
+    'delegate',
+    "Run one part of the request as a subagent with its own browser, Otto's tools and the shared workspace, and get its final answer back. Call it several times in one step to run independent parts in parallel, such as checking three shops, then combine the answers. The instruction must be complete on its own: the subagent does not see this conversation. Two run at once and further calls wait for a slot. A subagent cannot delegate, sign in, pay or open saved browser sessions; do those yourself.",
+    Type.Object({
+      title: Type.String({ minLength: 1, maxLength: 120 }),
+      instruction: Type.String({ minLength: 1, maxLength: 4000 }),
+    }),
+  ),
   ask_user: defineTool(
     'ask_user',
     'Ask one necessary question and pause until the user answers.',
@@ -508,12 +516,12 @@ export function ottoTools(
   browserFlows: (params: Static<typeof browserFlowParameters>) => Promise<unknown>,
   skills?: SkillLibrary,
 ): OttoTool[] {
-  const { context, computer, pause, confirm } = turn;
-  const { threadId, signal } = context;
+  const { context, computer, pause, confirm, browserId } = turn;
+  const { signal } = context;
   const screenshot = async () => {
-    const bytes = await computer.screenshot(threadId, signal);
+    const bytes = await computer.screenshot(browserId, signal);
     signal.throwIfAborted();
-    if (bytes && computer.screenStatus && computer.screenStatus(threadId).state !== 'live')
+    if (bytes && computer.screenStatus && computer.screenStatus(browserId).state !== 'live')
       throw new Error(
         'A live browser screenshot is unavailable. Reopen the page and take a fresh screenshot before continuing. Do not repeat an action whose result is uncertain.',
       );
@@ -537,10 +545,13 @@ export function ottoTools(
       async (p) =>
         (await turn.reply(p.text, undefined, p.replyToMessageId)) ?? 'Message delivered.',
     ),
+    ...(turn.delegate
+      ? [bind(toolDefinitions.delegate, (p) => turn.delegate!(p.title, p.instruction))]
+      : []),
     bind(toolDefinitions.ask_user, async (p) => {
       const text = p.question.trim();
       if (!text) throw new Error('A question is required.');
-      await pause('question', text, { hold: true });
+      await pause('question', text);
       return 'Waiting for the user to reply.';
     }),
     bind(toolDefinitions.react_to_message, async (p) => {
@@ -577,7 +588,7 @@ export function ottoTools(
         if (!computer.download || !context.publishBrowserFile)
           throw new Error('Browser file delivery is unavailable.');
         const file = await computer.download(
-          threadId,
+          browserId,
           { selector: rest.selector, url: rest.url, name },
           signal,
         );
@@ -593,13 +604,13 @@ export function ottoTools(
         const bytes = await context.readWorkspaceFile(rest.path, browserUploadBytes);
         return pageText(
           await computer.upload(
-            threadId,
+            browserId,
             { selector: rest.selector, name: basename(rest.path), bytes },
             signal,
           ),
         );
       }
-      return pageText(await computer.act(threadId, { action, ...rest } as BrowserAction, signal));
+      return pageText(await computer.act(browserId, { action, ...rest } as BrowserAction, signal));
     }),
     bind(toolDefinitions.browser_flow, browserFlows),
     bind(toolDefinitions.sign_in, async ({ message, action, ...request }) => {
