@@ -22,13 +22,7 @@ import { JSDOM } from 'jsdom';
 import pg from 'pg';
 import { act, createElement, StrictMode, useLayoutEffect } from 'react';
 import { createRoot } from 'react-dom/client';
-import type {
-  Agent,
-  AgentTool,
-  AgentToolResult,
-  RuntimeContext,
-  RuntimeObservation,
-} from '../src/ports/agent.ts';
+import type { Agent, AgentTool, AgentToolResult, RuntimeContext } from '../src/ports/agent.ts';
 import { BrowserActionError, type BrowserAction, type Computer } from '../src/ports/computer.ts';
 import {
   browserSessionId,
@@ -114,11 +108,7 @@ test(
     const controls: unknown[] = [];
     const app = await createApp({
       configuration: () => configuration(),
-      runtime: {
-        status: () => ({ browser: 'Ready', workspace: 'Ready' }),
-      },
       computer: {
-        status: () => 'Ready',
         screenStatus: () => ({ state: 'live', capturedAt }),
         screenshot: async (id) => {
           captures.push(id!);
@@ -506,7 +496,6 @@ function syntheticComputer(): Computer & { canCheckpoint?: () => boolean } {
       act: async () => ({ text: 'Synthetic page', url: 'https://example.test/' }),
       injectCredentials: async () => ({ status: 'submitted' }),
       currentPage: async () => ({ origin: 'https://example.test', url: 'https://example.test/' }),
-      status: () => 'Synthetic browser',
     }),
     canCheckpoint: () => true,
   };
@@ -1454,14 +1443,10 @@ type Execute = (
 async function runtimeFixture(
   computer: Computer,
   run: (execute: Execute) => Promise<void>,
-  options: {
-    controller?: AbortController;
-    observe?: (event: RuntimeObservation) => Promise<void>;
-  } = {},
+  controller = new AbortController(),
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'otto-click-recovery-'));
   const threadId = randomUUID();
-  const observations: RuntimeObservation[] = [];
   const agent: Agent = {
     open: async ({ tools }) => ({
       resumed: false,
@@ -1482,12 +1467,8 @@ async function runtimeFixture(
     history: [],
     attachments: [],
     workspacePath: directory,
-    signal: (options.controller ?? new AbortController()).signal,
+    signal: controller.signal,
     emit: async () => {},
-    observe: async (event) => {
-      observations.push(event);
-      await options.observe?.(event);
-    },
     reply: async () => {},
     delta() {},
     publish: async () => {
@@ -1498,7 +1479,6 @@ async function runtimeFixture(
     manage: async () => ({}),
   };
   return {
-    observations,
     run: () => runtime.runTurn(context),
     async close() {
       try {
@@ -1618,6 +1598,90 @@ test('every session drives its own browser, so background work never waits for t
   }
 });
 
+test('at the browser cap only a browser idle past the window and not held makes room, and a new one waits until then', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'otto-browser-cap-'));
+  const fixture = stagedLoginBrowser();
+  const computer = createBrowserFixture({
+    dataRoot: directory,
+    run: fixture.run,
+    maxLiveSessions: 2,
+    evictIdleMs: 3000,
+    slotWaitMs: 1000,
+  });
+  const open = (id: string, signal?: AbortSignal) =>
+    computer.act(id, { action: 'open', url: 'https://1.1.1.1/login' }, signal);
+  const pages = () => [...fixture.pages.keys()].sort();
+  try {
+    await open('chat');
+    await open('subagent');
+    await assert.rejects(open('scheduled'), /The browser sessions are busy/);
+    assert.deepEqual(pages(), ['chat', 'subagent']);
+    const stop = new AbortController();
+    const stopped = open('event', stop.signal);
+    await delay(200);
+    stop.abort();
+    await assert.rejects(stopped, { name: 'AbortError' });
+    assert.deepEqual(pages(), ['chat', 'subagent']);
+    await computer.hold('chat', Date.now() + 60_000);
+    await delay(3200);
+    await open('scheduled');
+    assert.deepEqual(pages(), ['chat', 'scheduled']);
+  } finally {
+    await computer.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('Stop ends a browser slot wait queued behind a slow close and leaves no phantom browser', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'otto-browser-slot-stop-'));
+  const fixture = stagedLoginBrowser();
+  const closing = deferred();
+  let slowClose = false;
+  const computer = createBrowserFixture({
+    dataRoot: directory,
+    run: fixture.run,
+    maxLiveSessions: 1,
+    evictIdleMs: 1000,
+    slotWaitMs: 1000,
+    onDaemonCommand: async (command) => {
+      if (slowClose && command.action === 'close') await closing.promise;
+    },
+  });
+  const open = (id: string, signal?: AbortSignal) =>
+    computer.act(id, { action: 'open', url: 'https://1.1.1.1/login' }, signal);
+  const settle = (pending: Promise<unknown>) =>
+    Promise.race([
+      pending.then(
+        () => 'opened',
+        (error: Error) => error.name,
+      ),
+      delay(2000).then(() => 'still waiting'),
+    ]);
+  try {
+    await open('idle');
+    await delay(1100);
+    slowClose = true;
+    const stop = new AbortController();
+    const evicting = open('evicting', stop.signal);
+    await delay(100);
+    const queued = open('queued', stop.signal);
+    await delay(100);
+    stop.abort();
+    assert.deepEqual(await Promise.all([settle(evicting), settle(queued)]), [
+      'AbortError',
+      'AbortError',
+    ]);
+    closing.resolve();
+    await delay(200);
+    await open('next');
+    assert.deepEqual([...fixture.pages.keys()], ['next']);
+  } finally {
+    closing.resolve();
+    await computer.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('a browser handoff needs an open page, so Pi reopens it instead of handing over nothing', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'otto-handoff-page-'));
   const replies: string[] = [];
@@ -1709,7 +1773,7 @@ test('a cancelled browser action cannot feed its cached screenshot back to the m
   }
 });
 
-for (const failure of ['unknown', 'forged', 'navigation', 'wrong_action', 'cancelled_observation'])
+for (const failure of ['unknown', 'forged', 'navigation', 'wrong_action', 'cancelled'])
   test(`${failure} browser failure stops the turn without a blocked result`, async () => {
     const controller = new AbortController();
     let calls = 0;
@@ -1717,6 +1781,7 @@ for (const failure of ['unknown', 'forged', 'navigation', 'wrong_action', 'cance
       fakeComputer({
         act: async () => {
           calls++;
+          if (failure === 'cancelled') controller.abort();
           if (failure === 'unknown') throw new Error('Private unknown outcome');
           if (failure === 'forged')
             throw Object.assign(new Error('Private forged error'), {
@@ -1734,12 +1799,7 @@ for (const failure of ['unknown', 'forged', 'navigation', 'wrong_action', 'cance
         });
         assert.fail('An uncertain browser result must not continue.');
       },
-      {
-        controller,
-        observe: async (event) => {
-          if (failure === 'cancelled_observation' && event.type === 'tool_end') controller.abort();
-        },
-      },
+      controller,
     );
     try {
       await assert.rejects(f.run());
@@ -1761,7 +1821,6 @@ function workerComputer() {
   };
   const computer: Computer = {
     ...fakeComputer(),
-    status: () => 'Synthetic workspace browser',
     screenStatus: () => ({ state: 'live', capturedAt: '2026-09-25T12:00:00.000Z' }),
     act: (id, input, signal) => {
       calls.push({ method: 'act', input });
@@ -2014,7 +2073,7 @@ test('malformed methods and namespaces never reach a computer or filesystem path
   const fixture = await harness();
   try {
     for (const request of [
-      { id: randomUUID(), namespace: '../../private', method: 'status' },
+      { id: randomUUID(), namespace: '../../private', method: 'dispose' },
       {
         id: randomUUID(),
         namespace: browserNamespace('/synthetic/invalid'),

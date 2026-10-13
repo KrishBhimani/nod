@@ -23,7 +23,7 @@ A turn is one run of the agent. Each turn is a row in the `turns` table with a `
 | ---------- | ------------------------------------------------------------------------------------------ | ---------------------- |
 | `user`     | A message from you                                                                         | The chat               |
 | `schedule` | A schedule firing                                                                          | A new session          |
-| `event`    | A connected-app event, a reaction to an Otto message, or an internal check                 | A new session          |
+| `event`    | A connected-app event, a check of an app without events, or a reaction to an Otto message  | A new session          |
 | `resume`   | A completed secure form, payment approval, app connection or your answer to a confirmation | The session that asked |
 
 Creating a turn also queues a `thread-drain` job in the same transaction.
@@ -66,13 +66,15 @@ stateDiagram-v2
 
 The composer never blocks. After each Pi step, a running chat turn takes the oldest queued plain messages from its own channel and session and steers them into Pi, all at once, before the next model request. Those messages move to the running turn, and their own turns close.
 
-A message with attachments, a reply target or another channel stops the take. It and every message after it stay queued and run as their own turns. Background and read-only turns never take queued messages.
+A message with attachments, a reply target or another channel stops the take. It and every message after it stay queued and run as their own turns. Background turns never take queued messages.
 
 ## Waiting and resuming
 
 A question, an approval or a credential request ends the turn as `waiting`. Your next message is the next turn in the same Pi session.
 
-Some steps finish outside the Pi session: a completed secure form, a payment approval, a new app connection or your yes or no to a confirmation. Each of these queues a `resume` turn in the session that asked, so a background task's confirmation continues that task. A confirmed action runs once, in that resume turn.
+Some steps finish outside the Pi session: a completed secure form, a payment approval, a new app connection or your yes or no to a confirmation. Each of these queues a `resume` turn in the session that asked, so a background task's confirmation continues that task. A confirmed action runs once, in that resume turn. A resume turn records the turn it continues, so the trust check and approvals trace it back to the work that started it. A completed secure form or payment code queues its resume turn in the same transaction that records the entry.
+
+A secure form closes when a newer turn starts in its session, and a payment request when you send a newer message there. A chat message is in the chat session, so it never closes a background task's form or payment.
 
 ## Sessions
 
@@ -104,16 +106,18 @@ When the next chat turn resumes its Pi session, it receives the messages other s
 
 - **Inside the turn.** Subagents run in the turn that started them, with its authority, trace and spending. **Stop** stops them with it.
 - **Needs you.** A subagent's question or confirmation pauses the whole turn, as the chat's would.
-- **Limits.** Two run at once and further calls wait for a slot. A subagent can't delegate, sign in, pay or open saved browser sessions; the turn does those in its own browser. Read-only turns and activity checks can't delegate.
+- **Limits.** Two run at once and further calls wait for a slot. A subagent can't delegate, sign in, pay or open saved browser sessions; the turn does those in its own browser.
 - **Browsers.** A subagent's browser is deleted when it finishes.
 
 ## Every session has its own browser
 
-A session opens its browser on its first browser call, so a session that never browses never starts one. Nothing waits for another session's browser.
+A session opens its browser on its first browser call, so a session that never browses never starts one. Sessions never share a browser.
 
 - The chat's browser is the one Otto hands to you, and the browser page shows it.
 - A background session's browser is deleted when the session ends without waiting, or when **Stop** or reset cancels it.
-- The browser container keeps at most two browsers live at once. An idle one closes and keeps its profile until it's used again. One waiting for you stays open for 30 minutes.
+- The browser container keeps at most three browsers live at once, enough for the chat and two subagents. At that limit, a new browser replaces the least recently used one that has been idle for five minutes, which closes and keeps its profile until it's used again.
+- A browser used in the last five minutes is never closed for another. One idle for longer can be, even while its session or subagent is still running, for example during a long model step. One waiting for you stays open for 30 minutes.
+- When no browser can close, a new one waits up to two minutes for a free slot, then the browser call fails as busy. **Stop** cancels the wait at once.
 
 ## Stop and failures
 
@@ -127,9 +131,9 @@ When the monthly spending limit is reached, new turns end `failed` with a limit 
 
 Reset is a development tool. In a local development build, **Clear messages** archives the thread and cancels its turns. The next turn starts a new Pi session, workspace and browser.
 
-| Archived                               | Deleted                                                    | Kept                                                                                         |
-| -------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| The thread with its messages and turns | The old browser's throwaway profile, downloads and screens | Accounts, Vault, tasks, schedules, saved browser sessions, saved browser routines and memory |
+| Archived                               | Deleted                                                    | Kept                                                                 |
+| -------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------- |
+| The thread with its messages and turns | The old browser's throwaway profile, downloads and screens | Accounts, Vault, tasks, schedules, saved browser sessions and memory |
 
 The web client sends its `threadId` with each message, so a late message from before the reset is refused.
 

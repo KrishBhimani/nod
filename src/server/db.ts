@@ -41,8 +41,7 @@ export async function initializeDatabase() {
       id uuid PRIMARY KEY, owner_id text NOT NULL, thread_id uuid NOT NULL REFERENCES threads(id),
       source text NOT NULL, source_id text, message_id uuid, prompt text NOT NULL,
       channel text NOT NULL DEFAULT 'web', channel_source_id text, status text NOT NULL DEFAULT 'queued', waiting_reason text,
-      background boolean NOT NULL DEFAULT false, read_only boolean NOT NULL DEFAULT false,
-      error text,
+      background boolean NOT NULL DEFAULT false, error text,
       created_at timestamptz NOT NULL DEFAULT now(), started_at timestamptz, finished_at timestamptz
     );
     ALTER TABLE turns ADD COLUMN IF NOT EXISTS channel_source_id text;
@@ -54,6 +53,7 @@ export async function initializeDatabase() {
         ALTER TABLE turns ALTER COLUMN session_id SET NOT NULL;
       END IF;
     END $$;
+    ALTER TABLE turns ADD COLUMN IF NOT EXISTS parent_turn_id uuid;
     CREATE OR REPLACE FUNCTION turns_session() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
       NEW.session_id := COALESCE(NEW.session_id, CASE WHEN NEW.background THEN NEW.id ELSE NEW.thread_id END);
       RETURN NEW;
@@ -61,7 +61,14 @@ export async function initializeDatabase() {
     DROP TRIGGER IF EXISTS turns_session ON turns;
     CREATE TRIGGER turns_session BEFORE INSERT ON turns FOR EACH ROW EXECUTE FUNCTION turns_session();
     CREATE INDEX IF NOT EXISTS turns_session_queue ON turns(session_id,status);
-    UPDATE turns SET read_only=true WHERE source_id LIKE 'onboarding:%' AND NOT read_only;
+    DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns
+        WHERE table_schema=current_schema() AND table_name='turns' AND column_name='read_only') THEN
+        UPDATE turns SET status='cancelled',finished_at=now()
+          WHERE (read_only OR source_id LIKE 'onboarding:%') AND status IN ('queued','running','waiting');
+        ALTER TABLE turns DROP COLUMN read_only;
+      END IF;
+    END $$;
     CREATE UNIQUE INDEX IF NOT EXISTS turns_owner_source ON turns(owner_id,source_id) WHERE source_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS turns_thread_queue ON turns(thread_id,status,created_at,id);
     CREATE INDEX IF NOT EXISTS turns_owner_time ON turns(owner_id,created_at,id);
@@ -96,20 +103,7 @@ export async function initializeDatabase() {
         UPDATE preferences SET time_zone=NULL WHERE time_zone='Europe/Lisbon';
       END IF;
     END $$;
-    CREATE TABLE IF NOT EXISTS notifications (
-      id uuid PRIMARY KEY, event_id text UNIQUE NOT NULL, owner_id text NOT NULL, summary text NOT NULL,
-      decision text NOT NULL, reason text NOT NULL, feedback text, turn_id uuid REFERENCES turns(id),
-      created_at timestamptz NOT NULL DEFAULT now(),
-      kind text NOT NULL DEFAULT 'external' CHECK (kind IN ('external','review'))
-    );
-    ALTER TABLE notifications ADD COLUMN IF NOT EXISTS intent text NOT NULL DEFAULT 'classify'
-      CHECK (intent IN ('classify','inspect_message'));
-    CREATE TABLE IF NOT EXISTS app_activity_checks (
-      owner_id text NOT NULL,connection_id uuid NOT NULL,turn_id uuid REFERENCES turns(id),
-      attempted_at timestamptz NOT NULL,checked_at timestamptz,recorded_at timestamptz,
-      value text NOT NULL DEFAULT '',summary text NOT NULL DEFAULT '',
-      PRIMARY KEY(owner_id,connection_id)
-    );
+    DROP TABLE IF EXISTS notifications, app_activity_checks;
     CREATE INDEX IF NOT EXISTS messages_owner_time ON messages(owner_id,created_at);
     CREATE INDEX IF NOT EXISTS messages_thread_time ON messages(thread_id,created_at);
     CREATE INDEX IF NOT EXISTS messages_turn_time ON messages(turn_id,created_at);

@@ -16,9 +16,7 @@ import type {
   AgentToolResult,
   AgentSessionOptions,
   AgentTool,
-  ActivityCheckResult,
   RuntimeContext,
-  RuntimeObservation,
 } from '../src/ports/agent.ts';
 import { createSkillLibrary } from '../src/providers/pi/skills.ts';
 import { createPiAgent } from '../src/providers/pi/index.ts';
@@ -38,9 +36,9 @@ async function fixture(
   overrides: Partial<RuntimeContext> = {},
   runtimeOptions: {
     agent?: Agent;
-    observationTimeoutMs?: number;
     computer?: Computer;
     workspace?: Workspace;
+    observe?: () => void;
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'otto-session-'));
@@ -133,7 +131,6 @@ async function browserSessionFixture(
   browserConnection: NonNullable<RuntimeContext['browserConnection']>,
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'otto-browser-session-contract-'));
-  const observed: RuntimeObservation[] = [];
   let returned: Array<{ toolCallId: string; isError: boolean; content: unknown }> = [];
   let step = 0;
   const agent = createPiAgent({
@@ -169,21 +166,8 @@ async function browserSessionFixture(
     },
   });
   try {
-    await fixture(
-      async () => {},
-      {
-        browserConnection,
-        observe: async (entry) => {
-          observed.push(entry);
-        },
-      },
-      { agent },
-    );
-    return {
-      returned,
-      observed,
-      ended: observed.filter((entry) => entry.type === 'tool_end'),
-    };
+    await fixture(async () => {}, { browserConnection }, { agent });
+    return returned;
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -198,7 +182,7 @@ test('browser session action fields fail before dispatch and a corrected save ca
   const requested: unknown[] = [];
   let opened = 0;
   let saved = 0;
-  const { returned, ended } = await browserSessionFixture(
+  const returned = await browserSessionFixture(
     [
       connect,
       { ...save, label: 'Synthetic account' },
@@ -228,14 +212,8 @@ test('browser session action fields fail before dispatch and a corrected save ca
     returned.map((result) => result.isError),
     [false, true, false, true, true, false],
   );
-  assert.deepEqual(
-    ended.map((entry) => entry.status),
-    ['succeeded', 'failed', 'succeeded', 'failed', 'failed', 'succeeded'],
-  );
-  for (const index of [1, 3, 4]) {
+  for (const index of [1, 3, 4])
     assert.match(JSON.stringify(returned[index].content), /Valid forms:/);
-    assert.equal(ended[index].output, undefined);
-  }
 });
 
 test('browser session rejections reach Pi as failures while sign-in continuation stays available', async () => {
@@ -254,7 +232,7 @@ test('browser session rejections reach Pi as failures while sign-in continuation
   ];
   const requested: unknown[] = [];
   let rejected = 0;
-  const { returned, observed, ended } = await browserSessionFixture(
+  const returned = await browserSessionFixture(
     [...codes.map(() => save), connect, use],
     async (request) => {
       requested.push(structuredClone(request));
@@ -271,23 +249,14 @@ test('browser session rejections reach Pi as failures while sign-in continuation
     returned.map((result) => result.isError),
     [true, true, true, true, false, false],
   );
-  assert.deepEqual(
-    ended.map((entry) => entry.status),
-    ['failed', 'failed', 'failed', 'failed', 'succeeded', 'succeeded'],
-  );
-  for (const entry of ended.slice(0, codes.length)) {
-    assert.equal(entry.output, undefined);
-    assert.ok(entry.error);
-  }
   const text = (index: number) => JSON.stringify(returned[index].content);
   assert.match(text(codes.length), /profile_opened/);
   assert.match(text(codes.length + 1), /needs_sign_in/);
   assert.equal(JSON.stringify(returned).includes(privateUrl), false);
   assert.equal(JSON.stringify(returned).includes(privateMarker), false);
-  assert.equal(JSON.stringify(observed).includes(privateMarker), false);
 });
 
-test('verification email codes stay out of app tool results, observations and workspace files', async () => {
+test('verification email codes stay out of app tool results and workspace files', async () => {
   const privateCodes = ['318742', '640193', '729461', '803527', '516294'];
   const encodedBody = Buffer.from(
     `<p>Your sign-in code is <b>${privateCodes[2]}</b>.</p>`,
@@ -374,7 +343,6 @@ test('verification email codes stay out of app tool results, observations and wo
     { data: { messages: mails, unrelated: 'ordinary '.repeat(6000) }, error: null },
   ];
   const returned: unknown[] = [];
-  const observed: RuntimeObservation[] = [];
   const saved: string[] = [];
   await fixture(
     async (tools) => {
@@ -387,14 +355,11 @@ test('verification email codes stay out of app tool results, observations and wo
           saved.push(text);
           return 'private-result.json';
         }),
-      observe: async (entry) => {
-        observed.push(entry);
-      },
     },
   );
   assert.equal(saved.length, 1);
-  assert.equal(observed.filter((entry) => entry.type === 'tool_end').length, 2);
-  for (const record of [...returned, ...observed, ...saved])
+  assert.equal(returned.length, 2);
+  for (const record of [...returned, ...saved])
     for (const code of [...privateCodes, encodedBody])
       assert.ok(!JSON.stringify(record).includes(code));
   const full = JSON.parse(saved[0]);
@@ -472,7 +437,7 @@ test('skill reads cannot escape the trusted library or load workspace instructio
   }
 });
 
-test('a read-only turn can load a trusted skill without changing the workspace', async () => {
+test('a trusted skill loads without touching the workspace', async () => {
   let writes = 0;
   const output = await fixture(
     async (tools) => {
@@ -483,7 +448,7 @@ test('a read-only turn can load a trusted skill without changing the workspace',
       assert.equal(guide.name, 'shopping');
       assert.ok(guide.content.length > 0);
     },
-    { readOnly: true },
+    {},
     {
       workspace: fakeWorkspace({
         open: () => ({
@@ -501,38 +466,56 @@ test('a read-only turn can load a trusted skill without changing the workspace',
   assert.equal(writes, 0);
 });
 
-test('app reads in one batch run together while app changes run one at a time in call order', async () => {
+test('an app call issued after one that asks never runs, unless the ask fails first, and reads run together', async () => {
   const events: string[] = [];
+  const integration: RuntimeContext['integration'] = async (action, _args, _signal, admit) => {
+    const asks = action.endsWith('_SEND_EMAIL');
+    await setTimeout(asks ? 30 : 0);
+    await admit?.(asks);
+    if (action === 'OUTLOOK_SEND_EMAIL') throw new Error('Choose an account for this action.');
+    if (asks) return { [appConfirmation]: 'Send this email?' };
+    events.push(`start ${action}`);
+    await setTimeout(20);
+    events.push(`end ${action}`);
+    return { ok: true };
+  };
+  const batch = (actions: string[]) => async (tools: Map<string, AgentTool>) => {
+    await Promise.allSettled(
+      actions.map((action) => tools.get('apps')!.execute({ action, args: {} })),
+    );
+  };
+  const asked = await fixture(batch(['GMAIL_SEND_EMAIL', 'SLACK_SEND_MESSAGE']), { integration });
+  assert.equal(asked.result.status, 'waiting_user');
+  assert.equal(events.length, 0);
+  await fixture(batch(['GMAIL_FETCH_EMAILS', 'GOOGLECALENDAR_LIST_EVENTS']), { integration });
+  assert.ok(
+    events.indexOf('start GOOGLECALENDAR_LIST_EVENTS') < events.indexOf('end GMAIL_FETCH_EMAILS'),
+  );
+  const failed = await fixture(batch(['OUTLOOK_SEND_EMAIL', 'GMAIL_LIST_LABELS']), {
+    integration,
+  });
+  assert.equal(failed.result.status, 'succeeded');
+  assert.ok(events.includes('end GMAIL_LIST_LABELS'));
+});
+
+test('a failing observer never breaks a tool call', async () => {
+  let result: AgentToolResult | undefined;
   await fixture(
     async (tools) => {
-      const apps = tools.get('apps')!;
-      assert.equal(apps.parallel, true);
-      await Promise.all(
-        [
-          ['GMAIL_FETCH_EMAILS', {}],
-          ['GMAIL_LIST_LABELS', {}],
-          ['GMAIL_CREATE_DRAFT', { subject: 'One' }],
-          ['NOTION_UPDATE_PAGE', { title: 'Two' }],
-        ].map(([action, args]) => apps.execute({ action, args })),
-      );
+      result = await call(tools, 'apps', { action: 'GMAIL_FETCH_EMAILS', args: {} });
     },
+    { integration: async () => ({ messages: ['Receipt'] }) },
     {
-      integration: async (action) => {
-        events.push(`start ${action}`);
-        await setTimeout(20);
-        events.push(`end ${action}`);
-        return { ok: true };
+      observe: () => {
+        throw new Error('Synthetic observer failure');
       },
     },
   );
-  assert.ok(events.indexOf('start GMAIL_LIST_LABELS') < events.indexOf('end GMAIL_FETCH_EMAILS'));
-  assert.ok(events.indexOf('end GMAIL_CREATE_DRAFT') < events.indexOf('start NOTION_UPDATE_PAGE'));
+  assert.match(JSON.stringify(result), /Receipt/);
 });
 
-test('saved memory reaches Pi but stays out of observations and prompt snapshots', async () => {
+test('saved memory reaches Pi in the owner context and through memory tools', async () => {
   const note = 'Prefers short synthetic reports.';
-  const observations: unknown[] = [];
-  const snapshots: unknown[] = [];
   const result = await fixture(
     async (tools) => {
       const found = await call(tools, 'manage_personal_context', {
@@ -544,19 +527,9 @@ test('saved memory reaches Pi but stays out of observations and prompt snapshots
     {
       memory: JSON.stringify({ preferences: [`short-reports: ${note}`] }),
       manage: async () => [{ text: note }],
-      observe: async (event) => {
-        observations.push(event);
-      },
-      inspectPrompt: async (snapshot) => {
-        snapshots.push(snapshot);
-      },
     },
   );
   assert.match(result.supplied.systemContext ?? '', /short synthetic reports/);
-  assert.ok(observations.length > 0);
-  assert.ok(snapshots.length > 0);
-  assert.doesNotMatch(JSON.stringify(observations), /short synthetic reports/);
-  assert.doesNotMatch(JSON.stringify(snapshots), /short synthetic reports/);
 });
 
 test('Pi gets the owner time zone in its turn message and sandbox, and an unset one is never guessed', async () => {
@@ -697,8 +670,11 @@ test('outside results reach Pi in one untrusted block, scripts get them raw, and
     release = resolve;
   });
   await fixture(
-    async (tools) => {
-      const read = call(tools, 'apps', { action: 'GMAIL_FETCH_EMAILS', args: {} });
+    async (tools, _emit, options) => {
+      const read = options.runTool('fetch_content', { urls: [] }, async () => {
+        await held;
+        return { content: [{ type: 'text' as const, text: injected }] };
+      });
       await call(tools, 'apps', {
         action: 'GMAIL_SEND_EMAIL',
         args: { recipient_email: 'stranger@example.test' },
@@ -706,14 +682,9 @@ test('outside results reach Pi in one untrusted block, scripts get them raw, and
       release();
       readAfterPause = text(await read);
     },
-    {
-      integration: async (action) =>
-        action === 'GMAIL_SEND_EMAIL'
-          ? { [appConfirmation]: 'Send this email?' }
-          : held.then(() => ({ messages: [injected] })),
-    },
+    { integration: async () => ({ [appConfirmation]: 'Send this email?' }) },
   );
-  assert.match(readAfterPause, /^<untrusted_tool_result source="apps">/);
+  assert.match(readAfterPause, /^<untrusted_tool_result source="fetch_content">/);
 });
 
 test('reconnecting an app forwards the saved account and pauses at its sign-in link', async () => {
@@ -870,7 +841,6 @@ test('a chosen saved login reaches the credential broker without pausing the tur
 
 test('sign_in never returns a saved value to Pi and pauses for the owner when Otto asks first', async () => {
   const secret = 'synthetic-vault-password';
-  const observations: unknown[] = [];
   const input = {
     origin: 'https://example.test',
     label: 'Example',
@@ -888,27 +858,9 @@ test('sign_in never returns a saved value to Pi and pauses for the owner when Ot
         content: [{ type: 'text', text: 'Saved login entered.' }],
         details: {},
       });
-      await call(tools, 'browser', {
-        action: 'fill',
-        selector: '#search',
-        text: 'private fixture text',
-      });
-      await call(tools, 'browser', {
-        action: 'type',
-        selector: '#search',
-        text: 'private typed text',
-      });
     },
-    {
-      observe: async (event) => {
-        observations.push(event);
-      },
-      requestCredential: async () => ({ filled: true }),
-    },
+    { requestCredential: async () => ({ filled: true }) },
   );
-  assert.equal(JSON.stringify(observations).includes(secret), false);
-  assert.equal(JSON.stringify(observations).includes('private fixture text'), false);
-  assert.equal(JSON.stringify(observations).includes('private typed text'), false);
   const asked = await fixture(
     async (tools) => {
       await call(tools, 'sign_in', input);
@@ -951,469 +903,3 @@ test('pay never returns card data to Pi and waits for the owner on every new pay
   assert.equal(coded.result.status, 'waiting_credentials');
   assert.ok(JSON.stringify(coded.replies).includes(question));
 });
-
-const refusal = 'This turn can only read. Use app reads, and browser open, snapshot or scroll.';
-
-const refused: Array<[string, Record<string, unknown>]> = [
-  ['browser', { action: 'click', selector: '@send' }],
-  ['browser', { action: 'fill', selector: '@reply', text: 'Synthetic reply' }],
-  ['browser', { action: 'type', selector: '@reply', text: 'Synthetic reply' }],
-  ['browser', { action: 'accept_dialog' }],
-  ['browser', { action: 'share_screenshot' }],
-  ['browser_flow', { action: 'run', id: 'fixture' }],
-  [
-    'browser_session',
-    { action: 'use', url: 'https://mail.example.test/', connectionId: randomUUID() },
-  ],
-  ['bash', { command: 'curl https://example.test' }],
-  ['codemode', { code: 'return await tools.bash({ command: "curl https://example.test" })' }],
-  ['write', { path: 'notes.txt', content: 'Synthetic note' }],
-  ['share_file', { path: 'notes.txt' }],
-  ['manage_apps', { action: 'connect', service: 'gmail' }],
-  ['manage_personal_context', { action: 'schedule_create', args: { title: 'Synthetic' } }],
-  [
-    'sign_in',
-    {
-      origin: 'https://mail.example.test',
-      label: 'Sign in',
-      kind: 'password',
-      message: 'Sign in.',
-      action: 'Sign in',
-    },
-  ],
-  [
-    'pay',
-    {
-      amount: '1.00',
-      currency: 'EUR',
-      description: 'Synthetic',
-      fields: { number: '@e1', expiry: '@e2' },
-    },
-  ],
-  ['ask_user', { question: 'Which email should I answer?' }],
-];
-
-test('a read-only turn refuses every outside action with a fixed error and still posts its findings', async () => {
-  let sideEffects = 0;
-  const result = await fixture(
-    async (tools, _emit, options) => {
-      for (const [name, args] of refused)
-        await assert.rejects(
-          tools.has(name)
-            ? call(tools, name, args)
-            : options.runTool(name, args, async () => {
-                sideEffects++;
-                return { content: [] };
-              }),
-          (error: Error) => error.message === refusal,
-          name,
-        );
-      await call(tools, 'apps', { action: 'GMAIL_FETCH_EMAILS', args: {} });
-      await call(tools, 'manage_apps', { action: 'discover', query: 'calendar' });
-      await options.runTool(
-        'fetch_content',
-        { urls: ['https://example.test/source'] },
-        async () => ({
-          content: [{ type: 'text', text: 'Synthetic source' }],
-        }),
-      );
-      await call(tools, 'send_message', { text: 'You have two threads to answer.' });
-    },
-    {
-      readOnly: true,
-      background: true,
-      connections: async (action) => {
-        assert.equal(action, 'discover');
-        return { apps: [] };
-      },
-      requestCredential: async () => {
-        sideEffects++;
-        return { filled: true };
-      },
-      manage: async () => {
-        sideEffects++;
-        return {};
-      },
-      integration: async (action) => {
-        assert.equal(action, 'GMAIL_FETCH_EMAILS');
-        return {};
-      },
-    },
-    {
-      computer: fakeComputer({
-        act: async () => {
-          sideEffects++;
-          return { text: '', url: 'https://mail.example.test/' };
-        },
-      }),
-    },
-  );
-  assert.equal(sideEffects, 0);
-  assert.deepEqual(result.replies, ['You have two threads to answer.']);
-  assert.deepEqual(result.result, { status: 'succeeded' });
-});
-
-test('read-only turns can search memory but not change it', async () => {
-  const actions: string[] = [];
-  await fixture(
-    async (tools) => {
-      for (const action of ['memory_find', 'memory_read'])
-        await call(tools, 'manage_personal_context', { action, args: {} });
-      for (const action of ['memory_save', 'memory_forget'])
-        await assert.rejects(
-          call(tools, 'manage_personal_context', { action, args: {} }),
-          (error: Error) => error.message === refusal,
-          action,
-        );
-    },
-    {
-      readOnly: true,
-      background: true,
-      manage: async (action) => {
-        actions.push(action);
-        return [];
-      },
-    },
-  );
-  assert.deepEqual(actions, ['memory_find', 'memory_read']);
-});
-
-test('activity checks scope reads to one account, deny other tools and record exactly once without chat', async () => {
-  const connectionId = randomUUID();
-  const otherConnectionId = randomUUID();
-  const records: unknown[] = [];
-  const reads: string[] = [];
-  let forbiddenCalls = 0;
-  const result = await fixture(
-    async (tools, emit, options) => {
-      assert.deepEqual([...tools.keys()].sort(), ['apps', 'record_activity_check']);
-      for (const [name, args] of [
-        ...refused,
-        ['send_message', { text: 'Unnecessary check update' }],
-        ['web_search', { query: 'Synthetic query' }],
-        ['fetch_content', { urls: ['https://example.test/source'] }],
-        ['source_check', { source: 'synthetic' }],
-        ['get_search_content', { responseId: 'synthetic' }],
-
-        ['browser', { action: 'open', url: 'https://example.test' }],
-        ['read', { path: '/fixture/workspace/private.txt' }],
-        ['read', { path: '.otto/skills/connected-apps/../../private.txt' }],
-        ['read', { path: '.otto/skills/unknown/SKILL.md' }],
-        ['find', { pattern: '*' }],
-        ['ls', { path: '.' }],
-      ] as Array<[string, Record<string, unknown>]>)
-        await assert.rejects(
-          options.runTool(name, args, async () => {
-            forbiddenCalls++;
-            return { content: [] };
-          }),
-          /Activity checks can only/,
-        );
-      for (const args of [
-        {},
-        { connectionId: otherConnectionId },
-        { connectionId, nested: { connectionId: otherConnectionId } },
-      ])
-        await assert.rejects(
-          call(tools, 'apps', { action: 'FIXTURE_READ', args }),
-          /selected account/,
-        );
-      await assert.rejects(
-        call(tools, 'apps', { action: 'SEARCH_TOOLS', args: { connectionId: otherConnectionId } }),
-        /selected account/,
-      );
-      await call(tools, 'apps', { action: 'SEARCH_TOOLS', args: { query: 'Recent activity' } });
-      await assert.rejects(
-        call(tools, 'record_activity_check', {
-          status: 'verified',
-          value: 'none',
-          summary: 'No change',
-        }),
-        /successful app read/,
-      );
-      await call(tools, 'apps', { action: 'FIXTURE_READ', args: { connectionId } });
-      const recorded = await Promise.allSettled([
-        call(tools, 'record_activity_check', {
-          status: 'verified',
-          value: 'item-1',
-          summary: 'One new request',
-          finding: {
-            id: 'item-1',
-            version: 'revision-1',
-            url: 'https://example.test/item-1',
-            summary: 'A reply is needed',
-          },
-        }),
-        call(tools, 'record_activity_check', {
-          status: 'verified',
-          value: 'duplicate',
-          summary: 'Duplicate',
-        }),
-      ]);
-      assert.equal(recorded.filter((item) => item.status === 'fulfilled').length, 1);
-      assert.equal(options.shouldStop(), true);
-      await assert.rejects(
-        call(tools, 'apps', { action: 'FIXTURE_READ', args: { connectionId } }),
-        /stopped/,
-      );
-      emit({ type: 'text_delta', text: 'Routine check finished.' });
-      emit({ type: 'final', text: 'Routine check finished.' });
-    },
-    {
-      readOnly: true,
-      activityCheck: {
-        connectionId,
-        record: async (result) => {
-          records.push(result);
-        },
-      },
-      integration: async (action, args, signal) => {
-        assert.ok(signal);
-        assert.equal(signal.aborted, false);
-        if (action !== 'SEARCH_TOOLS') assert.equal(args.connectionId, connectionId);
-        reads.push(action);
-        return action === 'SEARCH_TOOLS'
-          ? { tools: ['FIXTURE_READ'] }
-          : { successful: true, data: { items: [{ id: 'item-1', text: 'Synthetic request' }] } };
-      },
-    },
-  );
-  assert.equal(forbiddenCalls, 0);
-  assert.deepEqual(reads, ['SEARCH_TOOLS', 'FIXTURE_READ']);
-  assert.equal(records.length, 1);
-  assert.deepEqual(result.replies, []);
-  assert.deepEqual(result.deltas, []);
-  assert.equal(result.result.status, 'succeeded');
-});
-
-test('failed and omitted app results cannot verify an activity check', async () => {
-  for (const response of [
-    { successful: false, data: { items: [] } },
-    { success: false, data: { items: [] } },
-    { isError: true, content: [{ type: 'text', text: 'Unavailable' }] },
-    { error: 'Unavailable' },
-    { data: { status: 'rejected' } },
-    { successful: true, data: { data: { successful: false } } },
-    { content: [{ type: 'text', text: JSON.stringify({ data: { isError: true } }) }] },
-    { truncated: true, resultOmitted: true, message: 'Response omitted' },
-    { truncated: true, message: 'Response omitted' },
-    { workspaceFile: 'download.txt', id: 'artifact' },
-    { workspaceFile: 'result.json', bytes: 50_000, preview: '{"items":[' },
-    { bytes: 50_000, preview: '{"items":[', message: 'The full result could not be saved.' },
-    { data: { resultOmitted: true, message: 'Response omitted' } },
-    { data: null },
-    { data: {} },
-    { successful: true },
-    { successful: true, data: null },
-    { content: [{ type: 'text', text: '' }] },
-    { content: [{ type: 'text', text: 'null' }] },
-    {},
-    '{}',
-    'null',
-  ]) {
-    const connectionId = randomUUID();
-    const records: unknown[] = [];
-    const result = await fixture(
-      async (tools) => {
-        await call(tools, 'apps', { action: 'FIXTURE_READ', args: { connectionId } });
-        await assert.rejects(
-          call(tools, 'record_activity_check', {
-            status: 'verified',
-            value: 'none',
-            summary: 'No change',
-          }),
-          /successful app read/,
-        );
-        await call(tools, 'record_activity_check', {
-          status: 'unavailable',
-          summary: 'Could not inspect the source',
-        });
-      },
-      {
-        readOnly: true,
-        background: true,
-        activityCheck: {
-          connectionId,
-          record: async (record) => {
-            records.push(record);
-          },
-        },
-        integration: async () => response,
-      },
-    );
-    assert.deepEqual(records, [{ status: 'unavailable', summary: 'Could not inspect the source' }]);
-    assert.equal(result.aborted, false);
-    assert.deepEqual(result.replies, []);
-  }
-});
-
-test('successful app reads accept empty optional content without treating source words as failures', async () => {
-  const payload = {
-    messages: {
-      items: [
-        {
-          id: 'item-1',
-          metadata: {},
-          text: 'Failed build needs a review',
-          blocks: [{ type: 'section', elements: [{ type: 'text', text: '' }] }],
-        },
-      ],
-    },
-  };
-  for (const response of [
-    { successful: true, data: payload },
-    {
-      content: [
-        { type: 'text', text: '' },
-        { type: 'text', text: JSON.stringify(payload) },
-      ],
-    },
-    { successful: true, data: { items: [], metadata: {} } },
-    { successful: true, data: [] },
-    { data: { items: [{ id: 'item-2', status: 'failed', error: 'Synthetic source content' }] } },
-  ]) {
-    const connectionId = randomUUID();
-    const records: ActivityCheckResult[] = [];
-    let reads = 0;
-    const result = await fixture(
-      async (tools) => {
-        await assert.rejects(
-          call(tools, 'record_activity_check', {
-            status: 'verified',
-            value: 'before-read',
-            summary: 'No read yet',
-          }),
-          /successful app read/,
-        );
-        await call(tools, 'apps', { action: 'FIXTURE_READ', args: { connectionId } });
-        await call(tools, 'record_activity_check', {
-          status: 'verified',
-          value: 'revision-1',
-          summary: 'A bounded read completed',
-        });
-      },
-      {
-        readOnly: true,
-        background: true,
-        integration: async () => {
-          reads++;
-          return response;
-        },
-        activityCheck: {
-          connectionId,
-          record: async (record) => {
-            records.push(record);
-          },
-        },
-      },
-    );
-    assert.equal(reads, 1);
-    assert.equal(records.length, 1);
-    assert.equal(records[0].status, 'verified');
-    assert.deepEqual(result.replies, []);
-  }
-});
-
-test('an activity check can report unavailable without a read but cannot silently omit its record', async () => {
-  let records = 0;
-  await fixture(
-    async (tools) => {
-      await call(tools, 'record_activity_check', {
-        status: 'unavailable',
-        summary: 'No suitable read is available',
-      });
-    },
-    {
-      activityCheck: {
-        connectionId: randomUUID(),
-        record: async () => {
-          records++;
-        },
-      },
-    },
-  );
-  await assert.rejects(
-    fixture(async () => {}, {
-      activityCheck: {
-        connectionId: randomUUID(),
-        record: async () => {
-          records++;
-        },
-      },
-    }),
-    /did not record a result/,
-  );
-  assert.equal(records, 1);
-});
-
-test(
-  'activity check deadlines reach verified and unavailable record callbacks before late writes',
-  { timeout: 5000 },
-  async (t) => {
-    t.mock.timers.enable({ apis: ['setTimeout'] });
-    for (const result of [
-      { status: 'verified', value: 'item-1', summary: 'A request was read' },
-      { status: 'unavailable', summary: 'No supported read is available' },
-    ] satisfies ActivityCheckResult[]) {
-      const connectionId = randomUUID();
-      const controller = new AbortController();
-      let release!: () => void;
-      const blocked = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      let entered!: () => void;
-      const callbackEntered = new Promise<void>((resolve) => {
-        entered = resolve;
-      });
-      let finished!: () => void;
-      const callbackFinished = new Promise<void>((resolve) => {
-        finished = resolve;
-      });
-      let recordSignal: AbortSignal | undefined;
-      let writes = 0;
-      const running = fixture(
-        async (tools) => {
-          if (result.status === 'verified')
-            await call(tools, 'apps', { action: 'FIXTURE_READ', args: { connectionId } });
-          await call(tools, 'record_activity_check', result);
-        },
-        {
-          signal: AbortSignal.any([controller.signal, t.signal]),
-          readOnly: true,
-          background: true,
-          limits: { maxToolCalls: 8, timeoutMs: 30 },
-          integration: async () => ({ items: [] }),
-          activityCheck: {
-            connectionId,
-            record: async (_result, signal) => {
-              recordSignal = signal;
-              entered();
-              try {
-                await blocked;
-                signal?.throwIfAborted();
-                writes++;
-              } finally {
-                finished();
-              }
-            },
-          },
-        },
-      );
-      try {
-        await Promise.race([
-          callbackEntered,
-          running.then(() => assert.fail('The turn finished before recording.')),
-        ]);
-        t.mock.timers.tick(30);
-        await assert.rejects(running, /time limit/);
-        assert.equal(recordSignal?.aborted, true);
-      } finally {
-        controller.abort();
-        release();
-        await Promise.allSettled([running]);
-        if (recordSignal) await callbackFinished;
-      }
-      assert.equal(writes, 0);
-    }
-  },
-);

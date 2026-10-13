@@ -12,8 +12,7 @@ import type {
 import { logFailure } from './failure-log.ts';
 import { type createVaultUses, VaultUseError } from './vault-use.ts';
 import type { TurnRef } from './thread.ts';
-import { browserOf } from './turn-chain.ts';
-import type { PaymentPolicy } from './trust.ts';
+import { browserOf, supersededSql } from './turn-chain.ts';
 import { credentialOrigin } from './vault.ts';
 
 export class PaymentError extends Error {}
@@ -74,10 +73,7 @@ const input = z
   .strict();
 
 const currencies = new Set(Intl.supportedValuesOf('currency'));
-const currentTurnSql = `u.status IN ('running','waiting') AND (u.background OR NOT EXISTS(
-  SELECT 1 FROM turns newer WHERE newer.owner_id=u.owner_id AND newer.thread_id=u.thread_id
-    AND newer.id<>u.id AND NOT newer.background AND newer.source='user'
-    AND newer.created_at>=u.created_at))`;
+const currentTurnSql = `u.status IN ('running','waiting') AND NOT ${supersededSql('u', "newer.source='user' AND newer.created_at>=u.created_at")}`;
 
 function digits(currency: string) {
   if (!currencies.has(currency))
@@ -98,7 +94,7 @@ export async function createPayments(
     ownerId: string;
     uses: Awaited<ReturnType<typeof createVaultUses>>;
     local: boolean;
-    policy(turn: TurnRef): Promise<PaymentPolicy>;
+    inOtto(turn: TurnRef): Promise<boolean>;
     page(threadId: string): Promise<BrowserPage>;
     destinations(
       threadId: string,
@@ -147,8 +143,8 @@ export async function createPayments(
   );
 
   await pool.query(
-    `INSERT INTO vault_uses(id,owner_id,thread_id,turn_id,origin,kind,item_id,status)
-    SELECT id::text,owner_id,thread_id,turn_id,origin,'card',card_id,
+    `INSERT INTO vault_uses(id,owner_id,origin,kind,item_id,status)
+    SELECT id::text,owner_id,origin,'card',card_id,
       CASE WHEN status='entered' THEN 'submitted' ELSE 'uncertain' END
     FROM vault_payments WHERE owner_id=$1 AND status IN ('entered','approved','entering','uncertain') ON CONFLICT DO NOTHING`,
     [ownerId],
@@ -198,8 +194,6 @@ export async function createPayments(
       {
         id: row.id,
         ownerId,
-        threadId: row.thread_id,
-        turnId: row.turn_id,
         origin: row.origin,
         kind: 'card',
         itemId: card.id,
@@ -304,12 +298,8 @@ export async function createPayments(
       throw new PaymentError(
         'Hosted Otto does not pay with saved cards. Tell the owner to pay on the site themselves.',
       );
-    const policy = await options.policy(turn);
+    const inOtto = await options.inOtto(turn);
     const origin = credentialOrigin((await options.page(browserOf(turn))).origin);
-    if (!policy.allowed) {
-      await record(turn, { action: 'held', origin, reason: policy.reason, itemKind: 'card' });
-      throw new PaymentError('This turn can only read. Do not pay.');
-    }
     const currency = parsed.currency.toUpperCase();
     const [whole, fraction = ''] = parsed.amount.split('.');
     const places = digits(currency);
@@ -377,7 +367,7 @@ export async function createPayments(
       `Pay ${money(row)} at ${site(origin)} with ${cardName(card)}?`,
       elsewhere.length ? `Card details go to ${elsewhere.join(' and ')}.` : '',
     ];
-    if (!policy.inOtto)
+    if (!inOtto)
       return {
         image,
         question: question.filter(Boolean).join(' '),
@@ -434,8 +424,7 @@ export async function createPayments(
       .strict()
       .parse(raw);
     if (!options.local) throw new PaymentError('Hosted Otto does not pay with saved cards.');
-    const policy = await options.policy(turn);
-    if (!policy.allowed || (parsed.doItForMe && !policy.inOtto))
+    if (parsed.doItForMe && !(await options.inOtto(turn)))
       throw new PaymentError('Do it for me can be turned on only from a message in the Otto app.');
     const card = await choose(parsed.card);
     return {

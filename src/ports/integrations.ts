@@ -36,7 +36,6 @@ export interface IntegrationSession {
     args: Record<string, unknown>,
     accountId?: string,
     signal?: AbortSignal,
-    options?: { files?: boolean },
   ): Promise<unknown>;
   upload?(
     action: string,
@@ -119,7 +118,6 @@ export interface IntegrationProvider {
     accounts: Partial<Record<IntegrationService, string | string[]>>,
     signal?: AbortSignal,
   ): Promise<IntegrationSession>;
-  restoreSession(id: string, signal?: AbortSignal): Promise<IntegrationSession>;
   deleteSession(id: string): Promise<void>;
   reconnectAccount?(
     ownerId: string,

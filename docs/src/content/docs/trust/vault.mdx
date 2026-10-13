@@ -23,6 +23,8 @@ Vault keeps your website logins and cards. Otto can sign in with a saved login, 
 
 **Add one during a task.** When a task needs a login you haven't saved, Otto opens a private **Sign in** form. Enter the details and select **Save and continue**. The values never pass through chat or the model.
 
+A private form stays open for ten minutes. It closes sooner once it's used, when Otto starts on a newer message in the same conversation, or when you select **Stop**. A scheduled run or background task has its own session, so chatting with Otto never closes its form.
+
 ## How sign-in works
 
 ```mermaid
@@ -67,7 +69,6 @@ A login works only on its exact origin: the protocol, host and port. The browser
 - **Whether to sign in.** The same [checker](/trust/approvals/) that decides app actions checks whether your recent messages need this website. If not, Otto asks, for example "Sign in to reports.example.com?". Mentioning a domain isn't consent.
 - **Scheduled runs** are checked against the instruction that created the schedule.
 - **Background work** Otto starts itself asks you first, because no words of yours stand behind it.
-- **Never.** Read-only work and onboarding never sign in.
 
 A yes covers that website and account for the rest of the task. A new task is checked again.
 

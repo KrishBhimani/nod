@@ -4,19 +4,38 @@ import { createPreferencesStore } from './preferences.ts';
 import type { MemoryService } from './memory.ts';
 import type { MemoryUpdate, MemoryView } from '../shared/memory.ts';
 import { memoryFileName, memoryMarkdown } from '../shared/memory-export.ts';
-import { personalSecret } from './memory-tree.ts';
-import { transaction } from './transaction.ts';
 import { activeThreadSql } from './thread.ts';
 import { createSchedules, type ScheduleDependencies } from './schedules.ts';
 
-const profileSchema = z
-  .object({
-    name: z.string().max(100),
-    location: z.string().max(200),
-    phone: z.string().max(40),
-    preferences: z.string().max(4000),
-  })
-  .strict();
+export function profileNotes(profile: Record<string, unknown>) {
+  return Object.entries(profile).flatMap(([field, value]) => {
+    if (typeof value !== 'string') return [];
+    const area = field === 'preferences' ? ('preferences' as const) : ('about' as const);
+    const label = area === 'about' ? `${field[0]!.toUpperCase()}${field.slice(1)}: ` : '';
+    const budget = 120 - label.length;
+    const notes: string[] = [];
+    let current = '';
+    const push = (unit: string) => {
+      if (current && current.length + unit.length + 1 > budget) {
+        notes.push(current);
+        current = '';
+      }
+      current = current ? `${current} ${unit}` : unit;
+    };
+    for (const sentence of value.split(/\n+|(?<=[.!?])\s+/)) {
+      const flat = sentence.replace(/[\s\p{Cc}]+/gu, ' ').trim();
+      if (flat.length <= budget) {
+        if (flat) push(flat);
+      } else
+        for (const word of flat.split(' '))
+          for (let start = 0; start < word.length; start += budget)
+            push(word.slice(start, start + budget));
+    }
+    if (current) notes.push(current);
+    return notes.map((text) => ({ area, text: label + text }));
+  });
+}
+
 type PersonalDependencies = ScheduleDependencies & {
   memory?: MemoryService;
 };
@@ -28,83 +47,12 @@ export function createPersonalService(dependencies: PersonalDependencies) {
   const memory = dependencies.memory;
 
   async function initialize(options: { workers?: boolean } = {}) {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS profiles (owner_id text PRIMARY KEY, data jsonb NOT NULL DEFAULT '{}');
-    `);
+    if (memory && (await pool.query("SELECT to_regclass('profiles') AS name")).rows[0].name) {
+      const { rows } = await pool.query('SELECT data FROM profiles WHERE owner_id=$1', [ownerId]);
+      if (await memory.adopt(profileNotes(rows[0]?.data ?? {})).catch(() => false))
+        await pool.query('DROP TABLE IF EXISTS profiles');
+    }
     await schedules.initialize(options);
-  }
-
-  async function getProfile() {
-    const result = await pool.query('SELECT data FROM profiles WHERE owner_id=$1', [ownerId]);
-    return { name: '', location: '', phone: '', preferences: '', ...result.rows[0]?.data };
-  }
-
-  async function setProfile(raw: unknown) {
-    if (memory && !(await memory.enabled())) throw new Error('Memory is turned off.');
-    const data = profileSchema.parse(raw);
-    await pool.query(
-      'INSERT INTO profiles(owner_id,data) VALUES($1,$2) ON CONFLICT(owner_id) DO UPDATE SET data=$2',
-      [ownerId, data],
-    );
-    refresh();
-    return data;
-  }
-
-  async function learnProfileFact(
-    args: Record<string, unknown>,
-    provenance?: { sourceMessageId: string | null; turnId?: string },
-  ) {
-    if (memory && !(await memory.enabled())) throw new Error('Memory is turned off.');
-    const input = z
-      .object({
-        quote: z.string().trim().min(1).max(2000),
-        field: z.enum(['name', 'location', 'phone']),
-        value: z.string().trim().min(1).max(200),
-      })
-      .strict()
-      .parse(args);
-    const sourceMessageId = z.uuid().parse(provenance?.sourceMessageId);
-    await transaction(async (client) => {
-      const source = (
-        await client.query(
-          "SELECT text,turn_id FROM messages WHERE id=$1 AND owner_id=$2 AND role='user' FOR SHARE",
-          [sourceMessageId, ownerId],
-        )
-      ).rows[0];
-      const sourceText = String(source?.text ?? '').trim();
-      if (
-        !source ||
-        (provenance?.turnId && source.turn_id !== provenance.turnId) ||
-        sourceText !== input.quote
-      )
-        throw Object.assign(
-          new Error(
-            'The complete current user statement is required so its qualifications are preserved.',
-          ),
-          { statusCode: 400 },
-        );
-      if (personalSecret.test(input.quote))
-        throw Object.assign(
-          new Error('Sign-in details and payment secrets cannot be remembered.'),
-          { statusCode: 400 },
-        );
-      const limit = input.field === 'name' ? 100 : input.field === 'phone' ? 40 : 200;
-      if (
-        !input.quote.toLowerCase().includes(input.value.toLowerCase()) ||
-        input.value.length > limit ||
-        (input.field === 'phone' && !/^\+?[\d ()-]{5,40}$/.test(input.value))
-      )
-        throw Object.assign(
-          new Error('This profile value needs an explicit matching user statement.'),
-          { statusCode: 400 },
-        );
-      await client.query(
-        'INSERT INTO profiles(owner_id,data) VALUES($1,$2) ON CONFLICT(owner_id) DO UPDATE SET data=profiles.data || EXCLUDED.data',
-        [ownerId, { [input.field]: input.value }],
-      );
-    }, pool);
-    refresh();
-    return { ok: true };
   }
 
   async function validateReview(
@@ -116,7 +64,6 @@ export function createPersonalService(dependencies: PersonalDependencies) {
         throw Object.assign(new Error('Choose a detail to update.'), { statusCode: 400 });
       return input;
     }
-    if (action === 'profile_update') return changed(profileSchema.partial().parse(args));
     if (action === 'notification_preferences_update') return changed(preferences.validate(args));
     if (action === 'schedule_create') return schedules.validateCreate(args);
     if (action === 'schedule_update') {
@@ -129,10 +76,6 @@ export function createPersonalService(dependencies: PersonalDependencies) {
       await schedules.validateUpdate(input.id, { enabled: false });
       return input;
     }
-    if (action === 'memory_save') {
-      if (!memory) throw new Error('Memory is unavailable.');
-      return memory.validate(args);
-    }
     throw Object.assign(new Error('This personal-data action is not available for review.'), {
       statusCode: 400,
     });
@@ -141,17 +84,14 @@ export function createPersonalService(dependencies: PersonalDependencies) {
   async function manage(
     action: string,
     args: Record<string, unknown>,
-    provenance?: { sourceMessageId: string | null; turnId?: string; sourceTurnId?: string },
+    provenance?: { sourceMessageId: string | null; turnId?: string },
   ) {
-    if (action === 'profile_learn') return learnProfileFact(args, provenance);
     if (action === 'notification_preferences_get') return preferences.get();
     if (action === 'notification_preferences_update') {
       const result = await preferences.update(args);
       refresh();
       return result;
     }
-    if (action === 'profile_get') return getProfile();
-    if (action === 'profile_update') return setProfile({ ...(await getProfile()), ...args });
     if (action === 'schedule_list') return schedules.list();
     if (action === 'schedule_record_observation')
       return schedules.recordObservation(provenance?.turnId ?? '', args);
@@ -170,13 +110,6 @@ export function createPersonalService(dependencies: PersonalDependencies) {
       if (!memory) throw new Error('Memory is unavailable.');
       return memory.read(args);
     }
-    if (action === 'memory_save') {
-      if (!memory) throw new Error('Memory is unavailable.');
-      return memory.save(args, {
-        sourceMessageId: provenance?.sourceMessageId ?? null,
-        turnId: z.uuid().parse(provenance?.turnId),
-      });
-    }
     if (action === 'memory_learn' || action === 'memory_control') {
       if (!memory) throw new Error('Memory is unavailable.');
       const source = {
@@ -185,8 +118,7 @@ export function createPersonalService(dependencies: PersonalDependencies) {
       };
       if (action === 'memory_learn') return memory.learn(args, source);
       const result = await memory.control(args, source);
-      if (result.cleared)
-        await pool.query("UPDATE profiles SET data='{}'::jsonb WHERE owner_id=$1", [ownerId]);
+      if (result.cleared) await pool.query('DROP TABLE IF EXISTS profiles');
       refresh();
       return result;
     }
@@ -213,7 +145,7 @@ export function createPersonalService(dependencies: PersonalDependencies) {
 
   async function memoryView(): Promise<MemoryView> {
     if (!memory) throw Object.assign(new Error('Memory is unavailable.'), { statusCode: 404 });
-    return { ...(await memory.view()), profile: await getProfile() };
+    return memory.view();
   }
 
   function registerRoutes(app: FastifyInstance) {
@@ -253,7 +185,6 @@ export function createPersonalService(dependencies: PersonalDependencies) {
 
   return {
     initialize,
-    getProfile,
     listSchedules: schedules.list,
     getSchedule: schedules.get,
     manage,

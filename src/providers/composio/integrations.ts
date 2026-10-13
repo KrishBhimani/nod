@@ -22,7 +22,6 @@ const toolkitVersions = {
   googlesheets: '20260915_00',
   googledocs: '20260826_00',
   slack: '20260915_00',
-  notion: '20260915_00',
 };
 const toolkits = Object.keys(toolkitVersions);
 const googleOAuthToolkits = new Set([
@@ -42,9 +41,8 @@ const subscriptions = {
     config: { interval: 15, calendarId: 'primary', showDeleted: true },
   },
   slack: { trigger: 'SLACK_DIRECT_MESSAGE_RECEIVED', config: {} },
-  notion: { trigger: 'NOTION_PAGE_CONTENT_UPDATED', config: {} },
 } as const;
-type ManagedSession = Awaited<ReturnType<Composio['sessions']['use']>> &
+type ManagedSession = Awaited<ReturnType<Composio['sessions']['create']>> &
   Pick<InstanceType<typeof ToolRouterSession>, 'search' | 'execute' | 'update' | 'authorize'>;
 type AccountIdentity = { expiresAt: number; accountName?: string; accountEmail?: string };
 const toolSlug = z
@@ -159,7 +157,6 @@ const toolSchemasResponse = z.object({
 const identityTools = {
   gmail: { action: 'GMAIL_GET_PROFILE', args: { user_id: 'me' } },
   slack: { action: 'SLACK_WHO_AM_I', args: {} },
-  notion: { action: 'NOTION_WHO_AM_I', args: {} },
   sentry: { action: 'SENTRY_VALIDATE_CREDENTIAL', args: {} },
   googlecalendar: { action: 'GOOGLECALENDAR_GET_CURRENT_USER', args: {} },
   googledrive: {
@@ -188,13 +185,6 @@ function identityFields(
           .filter((value) => typeof value === 'string' && value.trim())
           .join(' · '),
       };
-      break;
-    }
-    if (
-      service === 'notion' &&
-      (typeof data.workspace_name === 'string' || typeof data.owner_email === 'string')
-    ) {
-      data = { name: data.workspace_name ?? data.name, email: data.owner_email };
       break;
     }
     if (data.user && typeof data.user === 'object') {
@@ -534,19 +524,10 @@ export function createComposioProvider(options: {
   }
   function session(
     value: ManagedSession,
-    selectedToolkits?: string[],
-    sdk = required(),
+    selectedToolkits: string[],
+    sdk: Composio,
   ): IntegrationSession {
-    const savedToolkits = value.config?.toolkits;
-    const enabled = new Set(
-      selectedToolkits ??
-        (savedToolkits && 'enabled' in savedToolkits
-          ? savedToolkits.enabled
-          : [
-              ...legacyServices().map((service) => service.slug),
-              ...Object.keys(value.config?.connected_accounts ?? {}),
-            ].filter((slug) => !savedToolkits?.disabled.includes(slug))),
-    );
+    const enabled = new Set(selectedToolkits);
     function actionToolkit(action: string) {
       toolSlug.parse(action);
       const toolkit = [...enabled]
@@ -679,7 +660,7 @@ export function createComposioProvider(options: {
           throw new Error(`The app tool schemas could not be loaded: ${errorText(error)}`);
         }
       },
-      async execute(action, args, accountId, signal, options) {
+      async execute(action, args, accountId, signal) {
         signal?.throwIfAborted();
         actionToolkit(action);
         const result = await value.execute(
@@ -698,7 +679,7 @@ export function createComposioProvider(options: {
             result.data.successful === false)
         )
           throw new Error(providerFailure(action, result as Record<string, unknown>));
-        return files(result, signal ?? new AbortController().signal, options?.files !== false);
+        return files(result, signal ?? new AbortController().signal);
       },
       async upload(action, file, signal) {
         const operation = signal
@@ -776,7 +757,7 @@ export function createComposioProvider(options: {
     get webhooksConfigured() {
       return Boolean(client && options.webhookSecret);
     },
-    supportsSubscriptions: ['gmail', 'googlecalendar', 'slack', 'notion'],
+    supportsSubscriptions: ['gmail', 'googlecalendar', 'slack'],
     verificationEmails: (accountId, query, signal) =>
       readVerificationEmails(required().tools, accountId, query, signal),
     sentEmails: (accountId, signal) => readSentEmails(required().tools, accountId, signal),
@@ -1079,13 +1060,6 @@ export function createComposioProvider(options: {
         throw new Error('The connection provider changed. Try again.');
       }
       return session(value, selectedToolkits, sdk);
-    },
-    async restoreSession(id, signal) {
-      signal?.throwIfAborted();
-      const sdk = required();
-      const value = await sdk.sessions.use(id, undefined, { signal });
-      if (sdk !== client) throw new Error('The connection provider changed. Try again.');
-      return session(value, undefined, sdk);
     },
     async deleteSession(id) {
       await required().sessions.delete(id, { signal: AbortSignal.timeout(5_000) });

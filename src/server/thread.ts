@@ -11,13 +11,7 @@ import { delta, refresh } from './events.ts';
 import { localArtifacts, type ArtifactService } from './artifacts.ts';
 import type { SpeechService } from './speech.ts';
 import type { Artifact, MessageReaction } from '../shared/contracts.ts';
-import type {
-  BrowserConnectionRequest,
-  PromptSnapshot,
-  RuntimeContext,
-  RuntimeObservation,
-  RuntimeResult,
-} from '../ports/agent.ts';
+import type { BrowserConnectionRequest, RuntimeContext, RuntimeResult } from '../ports/agent.ts';
 import { appConfirmation } from '../ports/agent.ts';
 import { isMessageReaction, reactionEmoji } from '../shared/emoji.ts';
 import { defaultPreferences, isQuietTime } from './preferences.ts';
@@ -26,7 +20,7 @@ import type { AgentReactionInput } from './agent-reactions.ts';
 import type { ChatConfirmationInput, ChatConfirmationResult } from './approvals.ts';
 import type { WorkConsumers } from './work-admission.ts';
 import type { AnalyticsEvent, CaptureAnalytics } from './analytics.ts';
-import { appResultInlineChars, inlineAppResult } from './integration-result.ts';
+import { inlineAppResult } from './integration-result.ts';
 import { saveIntegrationFiles } from './integration-files.ts';
 import { spendingLimitReached } from './ledger.ts';
 
@@ -54,7 +48,7 @@ export interface EnqueueTurnOptions {
   channelSourceId?: string | null;
   background?: boolean;
   sessionId?: string;
-  readOnly?: boolean;
+  parentTurnId?: string;
   client?: PoolClient;
 }
 export interface SubmitUserMessageOptions {
@@ -94,11 +88,9 @@ export interface ThreadDependencies {
     signal: AbortSignal,
   ) => Promise<{ prompt: string } | undefined>;
   spendingLimitReached?: () => Promise<boolean>;
-  observe?: (turnId: string, event: RuntimeObservation) => void;
-  inspectPrompt?: (turnId: string, snapshot: PromptSnapshot) => void;
+  skipTurn?: (sourceId: string) => Promise<boolean>;
   accountProfile?: () => Promise<RuntimeContext['account']>;
   connectedApps?: () => Promise<NonNullable<RuntimeContext['connectedApps']>>;
-  activityCheck?: (turn: TurnRef) => Promise<RuntimeContext['activityCheck']>;
   memoryContext?: () => Promise<RuntimeContext['memory']>;
   task?: (turn: TurnRef, input: unknown) => Promise<unknown>;
   startTurn?: (turn: TurnRef) => Promise<void>;
@@ -121,7 +113,7 @@ export interface ThreadDependencies {
     turn: TurnRef,
     action: string,
     args: Record<string, unknown>,
-    options: { signal: AbortSignal; checkConnectionId?: string },
+    options: { signal: AbortSignal; admit?: (asks: boolean) => Promise<void> },
   ) => Promise<unknown>;
   connections?: (
     action: 'list' | 'discover' | 'connect' | 'propose',
@@ -145,7 +137,7 @@ export interface ThreadDependencies {
     turn: TurnRef,
     action: string,
     args: Record<string, unknown>,
-    provenance: { sourceMessageId: string | null },
+    provenance: { sourceMessageId: string | null; admit?: (asks: boolean) => Promise<void> },
   ) => Promise<unknown>;
 }
 
@@ -276,7 +268,7 @@ export async function enqueueTurn(prompt: string, options: EnqueueTurnOptions) {
     const thread = await lockThread(client);
     const id = randomUUID();
     const inserted = await client.query(
-      `INSERT INTO turns(id,owner_id,thread_id,source,source_id,prompt,channel,background,read_only,channel_source_id,session_id)
+      `INSERT INTO turns(id,owner_id,thread_id,source,source_id,prompt,channel,background,channel_source_id,session_id,parent_turn_id)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
        ON CONFLICT (owner_id,source_id) WHERE source_id IS NOT NULL DO NOTHING RETURNING id`,
       [
@@ -288,9 +280,9 @@ export async function enqueueTurn(prompt: string, options: EnqueueTurnOptions) {
         prompt,
         options.channel ?? 'web',
         options.background ?? options.source !== 'resume',
-        options.readOnly ?? false,
         options.channelSourceId ?? null,
         options.sessionId ?? null,
+        options.parentTurnId ?? null,
       ],
     );
     if (!inserted.rowCount)
@@ -388,16 +380,13 @@ export async function submitUserMessage(
       if (prior) return { threadId: thread.id, turnId: prior.id, messageId: prior.message_id };
     }
     await assertReplyTarget(client, thread.id, options.replyToMessageId);
-    let supersededApprovalId: string | undefined;
     if (confirmAction) {
       const confirmed = await confirmAction.accept(client, {
         ...confirmation,
         threadId: thread.id,
         answer,
       });
-      if (confirmed && 'supersededApprovalId' in confirmed)
-        supersededApprovalId = confirmed.supersededApprovalId;
-      else if (confirmed) return confirmed;
+      if (confirmed) return confirmed;
     }
     const messageId = options.clientMessageId ?? randomUUID();
     const turnId = randomUUID();
@@ -426,11 +415,6 @@ export async function submitUserMessage(
         options.replyToMessageId ?? null,
       ],
     );
-    if (supersededApprovalId)
-      await client.query(
-        "UPDATE approvals SET confirmation_reply_id=$1 WHERE id=$2 AND owner_id=$3 AND thread_id=$4 AND status='expired'",
-        [messageId, supersededApprovalId, ownerId, thread.id],
-      );
     await sendDrain(client, thread.id);
     return { threadId: thread.id, turnId, messageId };
   };
@@ -566,6 +550,7 @@ async function resumeTurn(
       channel: turn?.channel ?? 'web',
       background: turn?.background ?? false,
       sessionId: turn?.session_id,
+      parentTurnId: turnId,
       client,
     });
     return true;
@@ -575,12 +560,13 @@ async function resumeTurn(
   return resumed;
 }
 
-export async function resumeAfterCredentials(turnId: string) {
+export async function resumeAfterCredentials(turnId: string, client?: PoolClient) {
   await resumeTurn(
     turnId,
     `credentials:${turnId}`,
     'The secure credential step has completed. Inspect the current browser and continue the request you were working on. Do not repeat completed external actions.',
     true,
+    client,
   );
 }
 
@@ -795,18 +781,17 @@ type StoredAttachment = { id?: string; name?: string; mimeType?: string };
 async function loadTurnContext(turn: any, dependencies: ThreadDependencies) {
   const threadId = turn.thread_id as string;
   const sourceMessageId: string | null = turn.message_id ?? null;
-  const [source, history, profile, preferences, account, memory, connectedApps, activityCheck] =
-    await Promise.all([
-      sourceMessageId
-        ? pool.query(
-            `SELECT s.attachments,r.id,r.role,r.text,r.attachments AS reply_attachments
+  const [source, history, preferences, account, memory, connectedApps] = await Promise.all([
+    sourceMessageId
+      ? pool.query(
+          `SELECT s.attachments,r.id,r.role,r.text,r.attachments AS reply_attachments
            FROM messages s LEFT JOIN messages r ON r.id=s.reply_to_message_id AND r.owner_id=s.owner_id AND r.thread_id=s.thread_id
            WHERE s.id=$1 AND s.owner_id=$2`,
-            [sourceMessageId, ownerId],
-          )
-        : undefined,
-      pool.query(
-        `WITH seen AS (SELECT max(started_at) AS at FROM turns
+          [sourceMessageId, ownerId],
+        )
+      : undefined,
+    pool.query(
+      `WITH seen AS (SELECT max(started_at) AS at FROM turns
          WHERE owner_id=$1 AND thread_id=$2 AND NOT background AND id<>$4),
        boundary AS (SELECT created_at AS at FROM turns WHERE owner_id=$1 AND thread_id=$2 AND id=$4)
        SELECT role,text,created_at AS "createdAt",reaction,attachments,unseen FROM (
@@ -819,18 +804,16 @@ async function loadTurnContext(turn: any, dependencies: ThreadDependencies) {
          (u.id IS NULL OR u.session_id=$6
           OR (u.status IN ('succeeded','failed','cancelled') AND u.finished_at<=boundary.at))))
        ORDER BY m.created_at DESC,m.id DESC LIMIT 30) m ORDER BY created_at,id`,
-        [ownerId, threadId, sourceMessageId, turn.id, Boolean(turn.background), turn.session_id],
-      ),
-      pool.query('SELECT data FROM profiles WHERE owner_id=$1', [ownerId]),
-      pool.query(
-        'SELECT time_zone,locale,hour_cycle,notification_rule,quiet_hours_enabled,quiet_start,quiet_end FROM preferences WHERE owner_id=$1',
-        [ownerId],
-      ),
-      dependencies.accountProfile?.().catch(() => undefined),
-      dependencies.memoryContext?.().catch(() => ''),
-      turn.background ? dependencies.connectedApps?.() : undefined,
-      turn.background ? dependencies.activityCheck?.({ threadId, turnId: turn.id }) : undefined,
-    ]);
+      [ownerId, threadId, sourceMessageId, turn.id, Boolean(turn.background), turn.session_id],
+    ),
+    pool.query(
+      'SELECT time_zone,locale,hour_cycle,notification_rule,quiet_hours_enabled,quiet_start,quiet_end FROM preferences WHERE owner_id=$1',
+      [ownerId],
+    ),
+    dependencies.accountProfile?.().catch(() => undefined),
+    dependencies.memoryContext?.().catch(() => ''),
+    turn.background ? dependencies.connectedApps?.() : undefined,
+  ]);
   const message = source?.rows[0];
   const replyTo = message?.id
     ? {
@@ -840,7 +823,6 @@ async function loadTurnContext(turn: any, dependencies: ThreadDependencies) {
         attachments: message.reply_attachments,
       }
     : undefined;
-  const stored = profile.rows[0]?.data ?? {};
   const preference = preferences.rows[0];
   const timeZone: string | undefined = preference?.time_zone || undefined;
   return {
@@ -866,15 +848,6 @@ async function loadTurnContext(turn: any, dependencies: ThreadDependencies) {
       ...(account ? { account } : {}),
       memory: memory ?? '',
       ...(connectedApps ? { connectedApps } : {}),
-      ...(activityCheck ? { activityCheck, limits: { maxToolCalls: 20, timeoutMs: 300_000 } } : {}),
-      personalContext: {
-        profile: {
-          name: String(stored.name ?? ''),
-          location: String(stored.location ?? ''),
-          phone: String(stored.phone ?? ''),
-          preferences: String(stored.preferences ?? ''),
-        },
-      },
     },
   };
 }
@@ -909,9 +882,7 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
     <A extends unknown[], R>(call: (...args: A) => Promise<R>) =>
     async (...args: A) => {
       await ensureCurrent();
-      const result = await call(...args);
-      await ensureCurrent();
-      return result;
+      return call(...args);
     };
   const post = async (
     text: string,
@@ -925,6 +896,11 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
     refresh();
   };
   try {
+    if (turn.source_id && (await dependencies.skipTurn?.(turn.source_id))) {
+      await current((client) => finishTurn(client, turnId, 'cancelled'));
+      outcome = 'cancelled';
+      return;
+    }
     await dependencies.startTurn?.(ref);
     const workspacePath = join(dataRoot, 'workspaces', threadId);
     await mkdir(workspacePath, { recursive: true });
@@ -1036,7 +1012,7 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
       await current((client) => insertEvent(client, turnId, type, summary));
       refresh();
     };
-    const { reactToMessage, connections, browserConnection, observe, inspectPrompt } = dependencies;
+    const { reactToMessage, connections, browserConnection } = dependencies;
     if (await dependencies.spendingLimitReached?.()) {
       await current((client) =>
         finishTurn(client, turnId, 'failed', { error: spendingLimitReached }),
@@ -1051,7 +1027,6 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
       resumed: turn.source === 'resume',
       prompt: turn.prompt,
       background: turn.background,
-      readOnly: turn.read_only,
       channel: String(turn.channel).split(':')[0],
       ...loaded.context,
       currentMessageId: loaded.sourceMessageId ?? undefined,
@@ -1060,8 +1035,6 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
       workspacePath,
       signal,
       attachments,
-      observe: observe && (async (event) => observe(turnId, event)),
-      inspectPrompt: inspectPrompt && (async (snapshot) => inspectPrompt(turnId, snapshot)),
       emit,
       reply: (text, streamId, replyToMessageId) => post(text, [], streamId, replyToMessageId),
       waitForUser: (question) => post(question),
@@ -1103,48 +1076,39 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
             paymentSetting: fenced((input: unknown) => dependencies.paymentSetting!(ref, input)),
           }
         : {}),
-      integration: fenced(async (action, args, callSignal?: AbortSignal) => {
+      integration: fenced(async (action, args, callSignal?: AbortSignal, admit?) => {
         const operation = callSignal ? AbortSignal.any([signal, callSignal]) : signal;
         operation.throwIfAborted();
         const result = await dependencies.integration(ref, action, args, {
           signal: operation,
-          checkConnectionId: loaded.context.activityCheck?.connectionId,
+          admit,
         });
         operation.throwIfAborted();
         if (result && typeof result === 'object' && appConfirmation in result) return result;
-        const saved = await saveIntegrationFiles(
-          result,
-          loaded.context.activityCheck
-            ? undefined
-            : (file) => stage(randomUUID(), file.name, file.bytes, operation),
+        const saved = await saveIntegrationFiles(result, (file) =>
+          stage(randomUUID(), file.name, file.bytes, operation),
         );
-        if (
-          loaded.context.activityCheck &&
-          JSON.stringify(saved.value ?? null).length > appResultInlineChars
-        )
-          throw new Error(
-            'Activity check result is too large. Use a smaller page or narrower query.',
-          );
         const value = await inline(action, saved.value, operation);
         return saved.images.length
           ? { content: [{ type: 'text', text: JSON.stringify(value) }, ...saved.images] }
           : value;
       }),
-      manage: fenced((action, args) => dependencies.manage(ref, action, args, { sourceMessageId })),
+      manage: fenced((action, args, admit) =>
+        dependencies.manage(ref, action, args, { sourceMessageId, admit }),
+      ),
       task: dependencies.task && fenced((input) => dependencies.task!(ref, input)),
-      takeMessages:
-        turn.background || turn.read_only
-          ? undefined
-          : async () => {
-              if (signal.aborted) throw turnStopped();
-              if (await dependencies.spendingLimitReached?.()) return [];
-              const taken = await takeQueuedMessages(turnId, turn.session_id, turn.channel);
-              if (taken.length) {
-                sourceMessageId = taken.at(-1)!.id;
-                refresh();
-              }
-              return taken;
-            },
+      takeMessages: turn.background
+        ? undefined
+        : async () => {
+            if (signal.aborted) throw turnStopped();
+            if (await dependencies.spendingLimitReached?.()) return [];
+            const taken = await takeQueuedMessages(turnId, turn.session_id, turn.channel);
+            if (taken.length) {
+              sourceMessageId = taken.at(-1)!.id;
+              refresh();
+            }
+            return taken;
+          },
       createAudio: async (text) => {
         const audio = await fenced(() => dependencies.speech.synthesize(text, signal))();
         return attach(audio.bytes, audio.fileName, audio.mimeType, 'Audio generated by AI.');

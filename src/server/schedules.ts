@@ -100,7 +100,6 @@ interface ScheduleJob {
 
 interface ScheduleProvenance {
   turnId?: string;
-  sourceTurnId?: string;
   sourceMessageId: string | null;
 }
 
@@ -310,6 +309,9 @@ export function createSchedules(dependencies: ScheduleDependencies) {
         UNIQUE(schedule_id,schedule_revision,scheduled_for)
       );
       ALTER TABLE schedule_runs DROP COLUMN IF EXISTS action_prompt;
+      ALTER TABLE schedules ADD COLUMN IF NOT EXISTS baseline_observation jsonb;
+      ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS baseline_observation jsonb,
+        ADD COLUMN IF NOT EXISTS observation jsonb, ADD COLUMN IF NOT EXISTS observed_at timestamptz;
       CREATE INDEX IF NOT EXISTS schedule_runs_owner_time ON schedule_runs(owner_id,created_at DESC,id DESC);
       CREATE INDEX IF NOT EXISTS schedule_runs_schedule ON schedule_runs(owner_id,schedule_id,created_at DESC,id DESC);
       CREATE INDEX IF NOT EXISTS schedule_runs_turn ON schedule_runs(owner_id,turn_id);
@@ -526,15 +528,17 @@ export function createSchedules(dependencies: ScheduleDependencies) {
   }
 
   async function sourceProvenance(client: PoolClient, provenance?: ScheduleProvenance) {
-    if (!provenance?.sourceTurnId) return provenance;
-    const source = await client.query(
-      `SELECT 1 FROM turns u JOIN turns s ON s.thread_id=u.thread_id AND s.owner_id=u.owner_id
-       JOIN threads th ON th.id=u.thread_id AND th.archived_at IS NULL
-       WHERE u.id=$1 AND u.owner_id=$2 AND s.id=$3 FOR SHARE OF u,s`,
-      [z.uuid().parse(provenance.turnId), ownerId, z.uuid().parse(provenance.sourceTurnId)],
-    );
-    if (!source.rowCount) throw invalid('The schedule instruction is unavailable.');
-    return { turnId: provenance.sourceTurnId, sourceMessageId: provenance.sourceMessageId };
+    if (!provenance?.sourceMessageId) return provenance;
+    const source = (
+      await client.query<{ turn_id: string }>(
+        `SELECT m.turn_id FROM turns u JOIN messages m ON m.thread_id=u.thread_id AND m.owner_id=u.owner_id
+         JOIN threads th ON th.id=u.thread_id AND th.archived_at IS NULL
+         WHERE u.id=$1 AND u.owner_id=$2 AND m.id=$3 AND m.role='user' AND m.turn_id IS NOT NULL FOR SHARE OF u`,
+        [z.uuid().parse(provenance.turnId), ownerId, z.uuid().parse(provenance.sourceMessageId)],
+      )
+    ).rows[0];
+    if (!source) throw invalid('The schedule instruction is unavailable.');
+    return { turnId: source.turn_id, sourceMessageId: provenance.sourceMessageId };
   }
 
   async function deliveryRoute(

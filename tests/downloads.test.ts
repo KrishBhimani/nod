@@ -56,6 +56,7 @@ async function createDownloadBrowser(root: string) {
         browserExecutable: process.env.OTTO_TEST_BROWSER_EXECUTABLE,
         privateNetwork: true,
         headless: true,
+        evictIdleMs: 0,
       });
     },
   });
@@ -693,13 +694,6 @@ test('Composio file outputs become private bytes wherever they appear and never 
           bytes: Buffer.from('synthetic /nested'),
         },
       },
-    },
-  });
-  assert.deepEqual(await files({ file: fileObject() }, AbortSignal.timeout(1000), false), {
-    file: {
-      name: '../../invoice.pdf',
-      mimeType: 'application/pdf',
-      message: 'Files are not opened in activity checks.',
     },
   });
   assert.equal(calls.length, 5);
