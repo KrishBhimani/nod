@@ -1,3 +1,4 @@
+import { transaction } from './transaction.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Pool, PoolClient } from 'pg';
@@ -240,9 +241,7 @@ export function waitingTurnSql(alias: string, reason?: 'credentials' | 'question
 const keyCheck = { id: 'key-check', owner_id: owner, origin: 'otto:vault' };
 
 async function verifyKey(pool: Pool, key: Buffer) {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  await transaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
       `otto-vault-key:${owner}`,
     ]);
@@ -258,7 +257,6 @@ async function verifyKey(pool: Pool, key: Buffer) {
     if (row) {
       try {
         openCredential(key, { ...keyCheck, ciphertext: row.ciphertext });
-        await client.query('COMMIT');
         return;
       } catch {
         if (await sealedDataExists(client)) throw new Error('The Vault key does not match.');
@@ -306,13 +304,7 @@ async function verifyKey(pool: Pool, key: Buffer) {
       `INSERT INTO vault_key_check(owner_id,ciphertext) VALUES($1,$2) ON CONFLICT(owner_id) DO UPDATE SET ciphertext=excluded.ciphertext`,
       [owner, sealCredential(key, keyCheck, { username: '', password: '' })],
     );
-    await client.query('COMMIT');
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
-  }
+  }, pool);
 }
 
 export function checkedKeyStore(pool: Pool, keyStore: CredentialKeyStore): CredentialKeyStore {
@@ -660,18 +652,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
 
   async function save(ownerId: string, raw: unknown, database?: PoolClient): Promise<VaultEntry> {
     if (!database) {
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        const result = await save(ownerId, raw, client);
-        await client.query('COMMIT');
-        return result;
-      } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-      } finally {
-        client.release();
-      }
+      return transaction((client) => save(ownerId, raw, client), pool);
     }
     await database.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
       `otto-vault-items:${ownerId}`,
@@ -742,9 +723,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       .strict();
     const credentialKey = await key();
     const result = { imported: 0, existing: 0, skipped: 0 };
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
+    await transaction(async (client) => {
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
         `otto-vault-items:${owner}`,
       ]);
@@ -796,13 +775,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
         );
         result.imported++;
       }
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+    }, pool);
     return result;
   }
 
@@ -811,9 +784,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     const input = updateInput.parse(raw);
     await ownedEntry(id);
     const credentialKey = await key();
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
+    return transaction(async (client) => {
       const { rows } = await client.query<EntryRow>(
         'SELECT * FROM vault_entries WHERE id=$1 AND owner_id=$2 FOR UPDATE',
         [id, owner],
@@ -842,14 +813,8 @@ export async function createVault(pool: Pool, options: VaultOptions) {
           ciphertext,
         ],
       );
-      await client.query('COMMIT');
       return metadata(result.rows[0], input.username);
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+    }, pool);
   }
 
   async function ownedCard(id: string, client?: PoolClient) {
@@ -917,9 +882,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       throw new VaultError('Otto never keeps security codes here.', 400);
     const id = z.uuid().parse(rawId);
     const credentialKey = await key();
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
+    return transaction(async (client) => {
       const entry = (
         await client.query<CardRow>(
           'SELECT * FROM vault_cards WHERE id=$1 AND owner_id=$2 FOR UPDATE',
@@ -931,7 +894,6 @@ export async function createVault(pool: Pool, options: VaultOptions) {
         'code' in change &&
         (entry.do_it_for_me !== true || cardVersion(entry) !== change.version)
       ) {
-        await client.query('COMMIT');
         return cardMetadata(entry);
       }
       const { securityCode: previous, ...secret } = openCard(credentialKey, entry);
@@ -957,14 +919,8 @@ export async function createVault(pool: Pool, options: VaultOptions) {
           },
           client,
         );
-      await client.query('COMMIT');
       return cardMetadata(rows[0]!);
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+    }, pool);
   }
 
   const setDoItForMe = (id: string, on: boolean) => changeCardPermission(id, { on });
@@ -1012,9 +968,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
       input.cardNumber === undefined ? undefined : normalizedCardNumber(input.cardNumber);
     await ownedCard(id);
     const credentialKey = await key();
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
+    return transaction(async (client) => {
       const { rows } = await client.query<CardRow>(
         'SELECT * FROM vault_cards WHERE id=$1 AND owner_id=$2 FOR UPDATE',
         [id, owner],
@@ -1052,14 +1006,8 @@ export async function createVault(pool: Pool, options: VaultOptions) {
                 : null,
         ],
       );
-      await client.query('COMMIT');
       return cardMetadata(result.rows[0]);
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+    }, pool);
   }
 
   async function currentTurn(
@@ -1230,9 +1178,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
     const hash = createHash('sha256').update(token).digest('hex');
     const expiresAt = Date.now() + 10 * 60_000;
     await options.hold?.(browserOf(turn), expiresAt);
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
+    await transaction(async (client) => {
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
         `thread:${ownerId}`,
       ]);
@@ -1263,13 +1209,7 @@ export async function createVault(pool: Pool, options: VaultOptions) {
           browserOf(turn),
         ],
       );
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+    }, pool);
     return { url: `/vault/${token}` };
   }
 

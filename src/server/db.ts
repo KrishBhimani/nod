@@ -61,6 +61,7 @@ export async function initializeDatabase() {
     DROP TRIGGER IF EXISTS turns_session ON turns;
     CREATE TRIGGER turns_session BEFORE INSERT ON turns FOR EACH ROW EXECUTE FUNCTION turns_session();
     CREATE INDEX IF NOT EXISTS turns_session_queue ON turns(session_id,status);
+    UPDATE turns SET read_only=true WHERE source_id LIKE 'onboarding:%' AND NOT read_only;
     CREATE UNIQUE INDEX IF NOT EXISTS turns_owner_source ON turns(owner_id,source_id) WHERE source_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS turns_thread_queue ON turns(thread_id,status,created_at,id);
     CREATE INDEX IF NOT EXISTS turns_owner_time ON turns(owner_id,created_at,id);
@@ -119,19 +120,4 @@ export async function initializeDatabase() {
     defaultPreferences.notificationRule,
     'Only interrupt me for a time-sensitive message that needs my reply, a meaningful calendar change affecting me, or a concrete next step for an active goal. Keep newsletters, routine updates, uncertain relevance and repeated reminders quiet.',
   ]);
-}
-
-export async function transaction<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const value = await fn(client);
-    await client.query('COMMIT');
-    return value;
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
-  }
 }

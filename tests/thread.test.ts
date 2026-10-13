@@ -72,6 +72,7 @@ test(
     process.env.PGBOSS_SCHEMA = bossSchema;
     process.env.OTTO_DATA_ROOT = root;
     const db = await import('../src/server/db.ts');
+    const { transaction } = await import('../src/server/transaction.ts');
     const thread = await import('../src/server/thread.ts');
     const { createApp } = await import('../src/server/app.ts');
     const { configuration, dataRoot, ownerId, port } = await import('../src/server/config.ts');
@@ -160,7 +161,6 @@ test(
       }),
       submitMessage: userMessages.submit,
       configuration: () => ({ ...configuration(), llmReady: true }),
-      onboard: (_timeZone, threadId) => thread.restartOnboarding(threadId),
       startOnboarding: onboarding.complete,
       planningTasks: onboarding.planning,
       messageCosts: async () => {
@@ -169,27 +169,7 @@ test(
       },
     });
     onboarding.registerRoutes(app);
-    type ProgressInput = { steps: string[]; cards: Array<{ id: string; title: string }> };
-    const progressInputs: ProgressInput[] = [];
-    let progressAnswer: (input: ProgressInput) => unknown = () => null;
-    let progressGate: Promise<void> | undefined;
-    let watching = false;
-    const tasks = createTasks({
-      pool: db.pool,
-      ownerId,
-      withTurnLock: thread.withTurnLock,
-      everyMs: 100,
-      curator: {
-        id: 'fixture',
-        configured: true,
-        curate: async ({ input }) => {
-          if (!('cards' in input)) return null;
-          progressInputs.push(structuredClone(input) as ProgressInput);
-          await progressGate;
-          return progressAnswer(input as ProgressInput);
-        },
-      },
-    });
+    const tasks = createTasks({ pool: db.pool, ownerId });
     await tasks.initialize();
     personal.registerRoutes(app);
     tasks.registerRoutes(app);
@@ -317,7 +297,7 @@ test(
       },
       task: (turn, input) =>
         thread.withTurnLock(turn.turnId, (client) => tasks.act(client, turn, input)),
-      watchTurn: (turn) => (watching ? tasks.watch(turn) : () => {}),
+      startTurn: tasks.inherit,
       artifacts: {
         ...localArtifacts,
         storeArtifact: async (...input) => {
@@ -357,10 +337,13 @@ test(
             data: Buffer.from('synthetic screenshot').toString('base64'),
             mimeType: 'image/png',
           });
-          assert.equal(
-            (await db.pool.query('SELECT id FROM messages WHERE turn_id=$1', [context.turnId]))
-              .rowCount,
-            0,
+          assert.deepEqual(
+            (
+              await db.pool.query('SELECT attachments FROM messages WHERE turn_id=$1', [
+                context.turnId,
+              ])
+            ).rows.map((row) => row.attachments.map((item: { name: string }) => item.name)),
+            [['research.png']],
           );
           assert.equal(
             (await readFile(join(context.workspacePath, file.workspaceFile))).toString(),
@@ -593,14 +576,14 @@ test(
         const jobsBefore = await drainJobs(threadId);
         let rolledBackTurn = '';
         await assert.rejects(
-          db.transaction(async (client) => {
+          transaction(async (client) => {
             rolledBackTurn = await thread.enqueueTurn('rollback-fixture', {
               source: 'schedule',
               sourceId: 'rollback-fixture',
               client,
             });
             throw new Error('Injected rollback');
-          }),
+          }, db.pool),
           /Injected rollback/,
         );
         assert.equal(
@@ -1014,7 +997,7 @@ test(
             ]) {
               await preferences.update({ notificationRule: oldRule });
               const ids: string[] = [];
-              await db.transaction(async (client) => {
+              await transaction(async (client) => {
                 for (const [source, prompt] of [
                   ['event', eventPrompt],
                   ['schedule', schedulePrompt],
@@ -1023,7 +1006,7 @@ test(
                 if (rule === undefined)
                   await db.pool.query('DELETE FROM preferences WHERE owner_id=$1', [ownerId]);
                 else await preferences.update({ notificationRule: rule });
-              });
+              }, db.pool);
               for (const [index, id] of ids.entries()) {
                 await waitFor(settled(id));
                 assert.equal(await turnStatus(id), 'succeeded');
@@ -1543,6 +1526,19 @@ test(
           current = await card();
           assert.equal(current.status, 'needs_you');
           assert.equal(current.question, 'Rui quoted 180 EUR for Saturday. Should I book him?');
+          assert.equal(await thread.resumeAfterConnection(asked.turnId, 'synthetic'), true);
+          const resumed = (
+            await db.pool.query('SELECT id FROM turns WHERE source_id=$1', [
+              `connection:${asked.turnId}`,
+            ])
+          ).rows[0].id as string;
+          await waitFor(settled(resumed));
+          await idle();
+          assert.equal(
+            (await db.pool.query('SELECT task_id FROM turns WHERE id=$1', [resumed])).rows[0]
+              .task_id,
+            current.id,
+          );
           const answer = await thread.submitUserMessage('Yes, book Rui');
           await waitFor(settled(answer.turnId));
           await idle();
@@ -1566,247 +1562,6 @@ test(
           assert.equal(current.result, 'Rui is booked for Saturday at 10:00 for 180 EUR.');
           assert.deepEqual([current.nextCheck, current.waitingFor], [null, []]);
           assert.ok(current.closedAt);
-        },
-      );
-
-      await t.test(
-        'the watcher keeps one card per job across checks, replies and Pi reports, and never writes late',
-        async (t) => {
-          const logged = t.mock.method(console, 'error', () => {});
-          watching = true;
-          t.after(() => {
-            watching = false;
-            progressGate = undefined;
-          });
-          const idle = () => waitFor(settledThread);
-          const cards = async () => (await request('GET', '/api/tasks')).json() as Task[];
-          const autoCards = async () =>
-            (
-              await db.pool.query(
-                'SELECT count(*)::int AS count FROM tasks WHERE owner_id=$1 AND auto',
-                [ownerId],
-              )
-            ).rows[0].count as number;
-          const turnTask = async (turnId: string) =>
-            (await db.pool.query('SELECT task_id FROM turns WHERE id=$1', [turnId])).rows[0]
-              .task_id as string | null;
-          const foreignCard = async () =>
-            (
-              await db.pool.query(
-                "SELECT id,now_text,turn_id,state FROM tasks WHERE owner_id='task-other-owner'",
-              )
-            ).rows[0];
-          const foreign = await foreignCard();
-          progressAnswer = (input) => ({
-            title: 'Kayak reviews',
-            now: `Searched ${input.steps.length} times`,
-            task: input.cards.at(0)?.id ?? foreign.id,
-          });
-
-          block('watch-ask-fixture');
-          const asked = await thread.submitUserMessage('watch-ask-fixture');
-          await waitFor(async () =>
-            (await cards()).some(
-              (card) => card.title === 'Kayak reviews' && card.status === 'working',
-            ),
-          );
-          await delay(400);
-          const working = (await cards()).filter((card) => card.title === 'Kayak reviews');
-          assert.equal(working.length, 1);
-          assert.equal(working[0].now, 'Searched 1 times');
-          release('watch-ask-fixture');
-          await waitFor(settled(asked.turnId));
-          await idle();
-          let card = (await cards()).find((item) => item.id === working[0].id)!;
-          assert.deepEqual([card.status, card.question], ['needs_you', 'Which kayak do you mean?']);
-          const answered = await thread.submitUserMessage('the touring one');
-          await waitFor(
-            async () =>
-              (await cards()).find((item) => item.id === working[0].id)?.status === 'done',
-          );
-          card = (await cards()).find((item) => item.id === working[0].id)!;
-          assert.equal(card.result, 'done: the touring one');
-          assert.equal(await turnTask(answered.turnId), working[0].id);
-          assert.equal(await autoCards(), 1);
-
-          block('watch-pi-fixture');
-          const reported = await thread.submitUserMessage('watch-pi-fixture');
-          await waitFor(async () => (await autoCards()) === 2);
-          const auto = (
-            await db.pool.query(
-              "SELECT id FROM tasks WHERE owner_id=$1 AND auto AND state='open'",
-              [ownerId],
-            )
-          ).rows[0].id as string;
-          release('watch-pi-fixture');
-          await waitFor(settled(reported.turnId));
-          await idle();
-          card = (await cards()).find((item) => item.id === auto)!;
-          assert.deepEqual(
-            [card.title, card.doneWhen, card.now, card.status],
-            [
-              'Kayak comparison',
-              'A sourced comparison is shared',
-              'Reading the spec sheets',
-              'stalled',
-            ],
-          );
-          assert.equal((await cards()).filter((item) => item.title.startsWith('Kayak')).length, 2);
-          assert.equal(await autoCards(), 1);
-          assert.equal(await turnTask(reported.turnId), auto);
-
-          let releaseProgress!: () => void;
-          progressGate = new Promise((resolve) => {
-            releaseProgress = resolve;
-          });
-          const asks = progressInputs.length;
-          block('watch-late-fixture');
-          const late = await thread.submitUserMessage('watch-late-fixture');
-          await waitFor(() => progressInputs.length > asks);
-          assert.ok(progressInputs.at(-1)!.cards.some((offered) => offered.id === auto));
-          release('watch-late-fixture');
-          await waitFor(settled(late.turnId));
-          await idle();
-          releaseProgress();
-          await delay(300);
-          assert.equal(await turnTask(late.turnId), null);
-          assert.equal(
-            (await cards()).find((item) => item.id === auto)!.now,
-            'Reading the spec sheets',
-          );
-          assert.equal(await autoCards(), 1);
-
-          progressGate = undefined;
-          progressAnswer = (input) => ({
-            title: 'Kayak trip',
-            now: 'Checking the trip',
-            task: input.cards.find((offered) => offered.title === 'Kayak trip')?.id ?? null,
-          });
-          block('watch-ask-fixture');
-          const trip = await thread.submitUserMessage('watch-ask-fixture');
-          await waitFor(async () =>
-            (await cards()).some(
-              (item) => item.title === 'Kayak trip' && item.status === 'working',
-            ),
-          );
-          release('watch-ask-fixture');
-          await waitFor(settled(trip.turnId));
-          await idle();
-          const tripId = (await cards()).find((item) => item.title === 'Kayak trip')!.id;
-          progressGate = new Promise((resolve) => {
-            releaseProgress = resolve;
-          });
-          const decisions = progressInputs.length;
-          const reply = await thread.submitUserMessage('the sea kayak');
-          await waitFor(() => progressInputs.length > decisions);
-          await waitFor(settled(reply.turnId));
-          await idle();
-          block('watch-update-fixture');
-          const updating = await thread.submitUserMessage('watch-update-fixture');
-          await waitFor(
-            async () =>
-              (await cards()).find((item) => item.id === tripId)?.now ===
-              'Booking the touring kayak',
-          );
-          releaseProgress();
-          await waitFor(async () => (await turnTask(reply.turnId)) === tripId);
-          assert.equal((await cards()).find((item) => item.id === tripId)!.status, 'working');
-          release('watch-update-fixture');
-          await waitFor(settled(updating.turnId));
-          await idle();
-
-          progressAnswer = () => ({ title: 'Daily digest', now: 'Reading the inbox', task: null });
-          block('watch-schedule-fixture');
-          const fired = await thread.enqueueTurn('watch-schedule-fixture', {
-            source: 'schedule',
-            sourceId: `schedule:${randomUUID()}`,
-          });
-          await waitFor(async () =>
-            (await cards()).some(
-              (item) => item.title === 'Daily digest' && item.status === 'working',
-            ),
-          );
-          release('watch-schedule-fixture');
-          await waitFor(settled(fired));
-          await idle();
-          await waitFor(
-            async () =>
-              (
-                await db.pool.query(
-                  "SELECT 1 FROM tasks WHERE owner_id=$1 AND title='Daily digest' AND state='done'",
-                  [ownerId],
-                )
-              ).rowCount === 1,
-          );
-          assert.equal(
-            (await cards()).some((item) => item.title === 'Daily digest'),
-            false,
-          );
-
-          progressAnswer = (input) => ({
-            title: 'Flat hunt',
-            now: 'Reading listings',
-            task: input.cards.find((offered) => offered.title === 'Flat hunt')?.id ?? null,
-          });
-          block('watch-ask-fixture');
-          const hunt = await thread.submitUserMessage('watch-ask-fixture');
-          await waitFor(async () =>
-            (await cards()).some((item) => item.title === 'Flat hunt' && item.status === 'working'),
-          );
-          release('watch-ask-fixture');
-          await waitFor(settled(hunt.turnId));
-          await idle();
-          const huntId = (await cards()).find((item) => item.title === 'Flat hunt')!.id;
-          block('watch-schedule-fixture');
-          const continued = await thread.enqueueTurn('watch-schedule-fixture', {
-            source: 'schedule',
-            sourceId: `schedule:${randomUUID()}`,
-          });
-          await waitFor(async () => (await turnTask(continued)) === huntId);
-          release('watch-schedule-fixture');
-          await waitFor(settled(continued));
-          await idle();
-          await waitFor(
-            async () => (await cards()).find((item) => item.id === huntId)?.status === 'done',
-          );
-
-          progressAnswer = (input) => ({
-            title: 'Garden quote',
-            now: 'Asking for a quote',
-            task: input.cards.find((offered) => offered.title === 'Garden quote')?.id ?? null,
-          });
-          block('watch-ask-fixture');
-          const asking = await thread.enqueueTurn('watch-ask-fixture', {
-            source: 'schedule',
-            sourceId: `schedule:${randomUUID()}`,
-          });
-          await waitFor(async () =>
-            (await cards()).some(
-              (item) => item.title === 'Garden quote' && item.status === 'working',
-            ),
-          );
-          release('watch-ask-fixture');
-          await waitFor(settled(asking));
-          await idle();
-          const quoteId = (await cards()).find((item) => item.title === 'Garden quote')!.id;
-          const chosen = await thread.submitUserMessage('the cheaper one');
-          await waitFor(settled(chosen.turnId));
-          await idle();
-          await waitFor(
-            async () => (await cards()).find((item) => item.id === quoteId)?.status === 'done',
-          );
-
-          assert.ok(
-            progressInputs.every((input) =>
-              input.cards.every((offered) => offered.id !== foreign.id),
-            ),
-          );
-          assert.deepEqual(await foreignCard(), foreign);
-          assert.equal(
-            logged.mock.calls.filter((call) => String(call.arguments[0]).includes('task watcher'))
-              .length,
-            0,
-          );
         },
       );
 
@@ -2345,10 +2100,6 @@ test(
             ).statusCode,
             409,
           );
-          assert.equal(
-            (await request('POST', '/api/onboarding', { threadId: firstThreadId })).statusCode,
-            409,
-          );
           for (const threadId of [undefined, freshThread])
             assert.equal(
               (
@@ -2546,7 +2297,7 @@ test(
         },
       );
       await t.test(
-        'events and saved updates run quietly without an hourly quota, replay or empty reviews',
+        'every app event wakes one quiet turn under a notification rule, and none without one',
         async () => {
           const threadId = (await thread.activeThread()).id;
           await waitFor(
@@ -2560,79 +2311,22 @@ test(
           );
           const preferences = createPreferencesStore(db.pool, ownerId);
           const original = await preferences.get();
-          let classified = 0;
-          const classifiedApps: unknown[] = [];
-          const triage = createTriage({
-            classifier: {
-              id: 'fixture',
-              configured: true,
-              async classify(context) {
-                classified++;
-                classifiedApps.push((context as { connectedApps: unknown }).connectedApps);
-                return 'digest';
-              },
-            },
-            getProfile: async () => ({ location: '', preferences: '' }),
-            connectedApps: readConnectedApps,
-          });
-          const ids = Array.from({ length: 4 }, () => randomUUID());
+          const triage = createTriage({ connectedApps: readConnectedApps });
+          const ids = Array.from({ length: 3 }, () => randomUUID());
           try {
             quietBackgroundWork = true;
             await preferences.update({ quietHoursEnabled: false });
             const emptyReads = integrationReads.length;
-            await triage.reviewHeartbeat(randomUUID());
-            assert.equal(classified, 0);
+            await triage.heartbeat();
             assert.equal(integrationReads.length, emptyReads);
             assert.equal((await db.pool.query('SELECT id FROM notifications')).rowCount, 0);
-            currentApps = [
-              {
-                slug: 'slack',
-                name: 'Slack',
-                status: 'connected',
-                connectionId: randomUUID(),
-                accountName: 'Work',
-                access: ['api'],
-                supportsTriggers: true,
-                triggersEnabled: true,
-                triggerStatus: 'active',
-              },
-            ];
-            const ordinaryId = randomUUID();
-            await triage.triageEvent('A synthetic calendar update', ordinaryId);
-            assert.equal(classified, 1);
-            assert.deepEqual(classifiedApps.at(-1), currentApps);
-            let currentSource = true;
-            let enterSourceCheck = () => {};
-            let releaseSourceCheck = () => {};
-            const sourceCheckEntered = new Promise<void>((resolve) => {
-              enterSourceCheck = resolve;
-            });
-            const sourceCheckReleased = new Promise<void>((resolve) => {
-              releaseSourceCheck = resolve;
-            });
-            const guardedTriage = createTriage({
-              classifier: { id: 'fixture', configured: true, classify: async () => 'wake' },
-              getProfile: async () => {
-                enterSourceCheck();
-                await sourceCheckReleased;
-                return { location: '', preferences: '' };
-              },
-              connectedApps: readConnectedApps,
-            });
             const revokedEvent = randomUUID();
-            const revokedTriage = guardedTriage.triageEvent(
+            await triage.triageEvent(
               'Synthetic event disconnected during triage',
               revokedEvent,
               'inspect_message',
-              async () => currentSource,
+              async () => false,
             );
-            try {
-              await sourceCheckEntered;
-              currentSource = false;
-            } finally {
-              releaseSourceCheck();
-            }
-            await revokedTriage;
             assert.equal(
               (
                 await db.pool.query('SELECT id FROM notifications WHERE event_id=$1', [
@@ -2641,40 +2335,33 @@ test(
               ).rowCount,
               0,
             );
-            const queuedRule = 'Keep synthetic calendar digests for 20:00 only.';
-            await preferences.update({ notificationRule: queuedRule });
-            block('Hold for app inventory change');
-            const held = await thread.submitUserMessage('Hold for app inventory change');
-            await waitFor(() => Boolean(ran(held.turnId)));
-            const readsBeforeInspection = integrationReads.length;
             await Promise.all(
-              [...ids, ids[0], ids[0]].map((id) =>
-                triage.triageEvent(`Synthetic inbox message ${id}`, id, 'inspect_message'),
+              [...ids, ids[0], ids[0]].map((id, index) =>
+                triage.triageEvent(
+                  `Synthetic app event ${id}`,
+                  id,
+                  index % 2 ? 'classify' : 'inspect_message',
+                ),
               ),
             );
-            currentApps = [];
-            release('Hold for app inventory change');
-            assert.equal(classified, 1);
             const dispatched = await db.pool.query(
-              `SELECT n.decision,n.turn_id,u.background,u.source,u.thread_id,u.prompt FROM notifications n
+              `SELECT n.decision,n.turn_id,u.background,u.source,u.thread_id,u.session_id FROM notifications n
              LEFT JOIN turns u ON u.id=n.turn_id WHERE n.event_id=ANY($1::text[]) AND n.owner_id=$2`,
               [ids, ownerId],
             );
-            assert.equal(dispatched.rowCount, 4);
+            assert.equal(dispatched.rowCount, 3);
             for (const row of dispatched.rows) {
               assert.equal(row.decision, 'wake');
               assert.equal(row.background, true);
               assert.equal(row.source, 'event');
               assert.equal(row.thread_id, threadId);
+              assert.equal(row.session_id, row.turn_id);
               await waitFor(settled(row.turn_id));
               assert.equal(await turnStatus(row.turn_id), 'succeeded');
-              assert.deepEqual(ran(row.turn_id)?.connectedApps, []);
             }
-            assert.ok(dispatched.rows.every((row) => !row.prompt.includes(queuedRule)));
             const turnIds = dispatched.rows.map((row) => row.turn_id);
-            await triage.triageEvent('Synthetic inbox duplicate', ids[0], 'inspect_message');
-            assert.equal(runs.filter((run) => turnIds.includes(run.turnId)).length, 4);
-            assert.equal(integrationReads.length - readsBeforeInspection, 4);
+            await triage.triageEvent('Synthetic duplicate', ids[0], 'inspect_message');
+            assert.equal(runs.filter((run) => turnIds.includes(run.turnId)).length, 3);
             assert.equal(
               (
                 await db.pool.query('SELECT id FROM messages WHERE turn_id=ANY($1::uuid[])', [
@@ -2692,7 +2379,7 @@ test(
               quietEnd: `${String((hour + 1) % 24).padStart(2, '0')}:00`,
             });
             const quietId = randomUUID();
-            await triage.triageEvent('Synthetic inbox quiet hours', quietId, 'inspect_message');
+            await triage.triageEvent('Synthetic event in quiet hours', quietId);
             const quiet = await db.pool.query(
               'SELECT decision,turn_id FROM notifications WHERE event_id=$1 AND owner_id=$2',
               [quietId, ownerId],
@@ -2700,11 +2387,9 @@ test(
             assert.equal(quiet.rows[0].decision, 'wake');
             await waitFor(settled(quiet.rows[0].turn_id));
             assert.equal(quietInstructions.get(quiet.rows[0].turn_id)?.quietHours, true);
-            const callsBeforeOptOut = classified;
             await preferences.update({ notificationRule: '', quietHoursEnabled: false });
             const disabledId = randomUUID();
-            await triage.triageEvent('Synthetic inbox disabled', disabledId, 'inspect_message');
-            assert.equal(classified, callsBeforeOptOut);
+            await triage.triageEvent('Synthetic event without a rule', disabledId);
             assert.deepEqual(
               (
                 await db.pool.query(
@@ -2714,76 +2399,8 @@ test(
               ).rows,
               [{ decision: 'digest', turn_id: null }],
             );
-            await preferences.update({ ...original, quietHoursEnabled: false });
-            currentApps = [
-              {
-                slug: 'notion',
-                name: 'Notion',
-                status: 'connected',
-                connectionId: randomUUID(),
-                accountName: 'Research',
-                access: ['api'],
-                supportsTriggers: true,
-                triggersEnabled: true,
-                triggerStatus: 'active',
-              },
-            ];
-            for (let index = 0; index < 8; index++)
-              await triage.triageEvent(`Synthetic informational update ${index}`, randomUUID());
-            assert.deepEqual(classifiedApps.at(-1), currentApps);
-            const callsBeforeReview = classified;
-            const reviewId = randomUUID();
-            await Promise.all([
-              triage.reviewHeartbeat(reviewId),
-              triage.reviewHeartbeat(randomUUID()),
-            ]);
-            assert.equal(classified, callsBeforeReview);
-            const review = (
-              await db.pool.query(
-                "SELECT turn_id FROM notifications WHERE owner_id=$1 AND kind='review' AND turn_id IS NOT NULL",
-                [ownerId],
-              )
-            ).rows;
-            assert.equal(review.length, 1);
-            await waitFor(settled(review[0].turn_id));
-            assert.equal(await turnStatus(review[0].turn_id), 'succeeded');
-            assert.deepEqual(ran(review[0].turn_id)?.connectedApps, currentApps);
-            assert.deepEqual(
-              (
-                await db.pool.query(
-                  'SELECT DISTINCT turn_id FROM notifications WHERE event_id=$1 AND owner_id=$2',
-                  [disabledId, ownerId],
-                )
-              ).rows,
-              review,
-            );
-            const callsAfterReview = classified;
-            await triage.reviewHeartbeat(reviewId);
-            assert.equal(classified, callsAfterReview);
-            await triage.reviewHeartbeat(randomUUID());
-            assert.equal(classified, callsAfterReview + 1);
-            assert.equal(
-              (
-                await db.pool.query(
-                  "SELECT id FROM notifications WHERE owner_id=$1 AND kind='review' AND turn_id IS NOT NULL",
-                  [ownerId],
-                )
-              ).rowCount,
-              1,
-            );
-            turnIds.push(review[0].turn_id);
-            assert.equal(runs.filter((run) => turnIds.includes(run.turnId)).length, 5);
-            assert.equal(
-              (
-                await db.pool.query('SELECT id FROM messages WHERE turn_id=ANY($1::uuid[])', [
-                  turnIds,
-                ])
-              ).rowCount,
-              0,
-            );
           } finally {
             quietBackgroundWork = false;
-            currentApps = [];
             await preferences.update(original);
           }
         },
@@ -2818,17 +2435,7 @@ test(
             connectionId: randomUUID(),
             status: 'disconnected',
           };
-          const triage = createTriage({
-            classifier: {
-              id: 'fixture',
-              configured: true,
-              async classify() {
-                assert.fail('An empty review must not call a model.');
-              },
-            },
-            getProfile: async () => ({ location: '', preferences: '' }),
-            connectedApps: readConnectedApps,
-          });
+          const triage = createTriage({ connectedApps: readConnectedApps });
           const scheduleCount = (await personal.listSchedules()).length;
           let releaseCheck = () => {};
           const checking = new Promise<void>((resolve) => {
@@ -2942,17 +2549,14 @@ test(
                 /already ended/,
               );
             };
-            await Promise.all([
-              triage.reviewHeartbeat(randomUUID()),
-              triage.reviewHeartbeat(randomUUID()),
-            ]);
+            await Promise.all([triage.heartbeat(), triage.heartbeat()]);
             await waitFor(() => entered);
             const first = await receipt();
             assert.ok(first.attempted_at);
             assert.equal(first.checked_at, null);
             assert.equal((await db.pool.query('SELECT * FROM app_activity_checks')).rowCount, 1);
             currentApps.push({ ...app, connectionId: randomUUID() });
-            await triage.reviewHeartbeat(randomUUID());
+            await triage.heartbeat();
             assert.equal((await db.pool.query('SELECT * FROM app_activity_checks')).rowCount, 1);
             currentApps.pop();
             releaseCheck();
@@ -2984,13 +2588,13 @@ test(
               await triage.activityCheck({ threadId: randomUUID(), turnId: first.turn_id }),
               undefined,
             );
-            await triage.reviewHeartbeat(randomUUID());
+            await triage.heartbeat();
             assert.equal((await receipt()).turn_id, first.turn_id);
             await db.pool.query(
               "UPDATE app_activity_checks SET attempted_at=now()-interval '31 minutes' WHERE owner_id=$1",
               [ownerId],
             );
-            await triage.reviewHeartbeat(randomUUID());
+            await triage.heartbeat();
             const second = await receipt();
             assert.notEqual(second.turn_id, first.turn_id);
             await waitFor(settled(second.turn_id));
@@ -3006,7 +2610,7 @@ test(
               "UPDATE app_activity_checks SET attempted_at=now()-interval '31 minutes' WHERE owner_id=$1",
               [ownerId],
             );
-            await triage.reviewHeartbeat(randomUUID());
+            await triage.heartbeat();
             await waitFor(settled((await receipt()).turn_id));
             const versioned = (
               await db.pool.query(
@@ -3023,12 +2627,12 @@ test(
             activityRun = async () => {
               throw new Error('Synthetic connection unavailable.');
             };
-            await triage.reviewHeartbeat(randomUUID());
+            await triage.heartbeat();
             const failed = await receipt();
             await waitFor(settled(failed.turn_id));
             assert.equal(await turnStatus(failed.turn_id), 'failed');
             assert.deepEqual((await receipt()).checked_at, previousCheck);
-            await triage.reviewHeartbeat(randomUUID());
+            await triage.heartbeat();
             assert.equal((await receipt()).turn_id, failed.turn_id);
             activityRun = async (context) => {
               const controller = new AbortController();
@@ -3056,7 +2660,7 @@ test(
               "UPDATE app_activity_checks SET attempted_at=now()-interval '31 minutes' WHERE owner_id=$1",
               [ownerId],
             );
-            await triage.reviewHeartbeat(randomUUID());
+            await triage.heartbeat();
             const aborted = await receipt();
             await waitFor(settled(aborted.turn_id));
             assert.equal((await receipt()).recorded_at, null);
@@ -3079,7 +2683,7 @@ test(
               "UPDATE app_activity_checks SET attempted_at=now()-interval '31 minutes' WHERE owner_id=$1",
               [ownerId],
             );
-            await triage.reviewHeartbeat(randomUUID());
+            await triage.heartbeat();
             assert.equal((await receipt()).turn_id, aborted.turn_id);
             for (const change of ['revoked', 'disabled', 'replaced']) {
               currentApps = [app];
@@ -3092,14 +2696,15 @@ test(
               block(prompt);
               const held = await thread.submitUserMessage(prompt);
               await waitFor(() => Boolean(ran(held.turnId)));
-              await triage.reviewHeartbeat(randomUUID());
+              await triage.heartbeat();
               const queued = await receipt();
               const reads = integrationReads.length;
               if (change === 'revoked') currentApps = [];
               if (change === 'disabled') await preferences.update({ notificationRule: '' });
               if (change === 'replaced')
-                await db.transaction((client) =>
-                  triage.invalidateActivityCheck(connectionId, client),
+                await transaction(
+                  (client) => triage.invalidateActivityCheck(connectionId, client),
+                  db.pool,
                 );
               release(prompt);
               await waitFor(settled(queued.turn_id));
@@ -3140,8 +2745,10 @@ test(
                 research,
               ])
             ).rows;
-            assert.equal(messages.length, 3);
-            const artifact = messages.find((message) => message.attachments.length);
+            assert.equal(messages.length, 4);
+            const artifact = messages.find(
+              (message) => message.attachments[0]?.name === 'finished.txt',
+            );
             assert.equal(artifact.attachments[0].name, 'finished.txt');
             assert.equal(artifact.text, '');
             const unrelated = await thread.enqueueTurn('ask-question', { source: 'event' });
