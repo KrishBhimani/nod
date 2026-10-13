@@ -275,7 +275,7 @@ export function createComposioProvider(options: {
   }
   async function ownedAccount(sdk: Composio, id: string, ownerId: string, signal: AbortSignal) {
     const account = accountRouting.parse(
-      await sdk.getClient().connectedAccounts.retrieve(id, { signal, maxRetries: 0 }),
+      await sdk.getClient().connectedAccounts.retrieve(id, { signal }),
     );
     if (sdk !== client) throw new Error('The connection provider changed. Try again.');
     if (account.id !== id || account.user_id !== ownerId)
@@ -300,7 +300,7 @@ export function createComposioProvider(options: {
               limit: 200,
               ...(cursor ? { cursor } : {}),
             },
-            { signal, maxRetries: 0 },
+            { signal },
           ),
         );
       } catch (error) {
@@ -358,7 +358,7 @@ export function createComposioProvider(options: {
               limit: 1000,
               ...(cursor ? { cursor } : {}),
             },
-            { signal: operation, maxRetries: 0 },
+            { signal: operation },
           ),
         );
         for (const entry of page.items) {
@@ -614,7 +614,6 @@ export function createComposioProvider(options: {
             ([, tool]) =>
               tool.hasFullSchema === false || !schemaFields.safeParse(tool.inputSchema).success,
           );
-          if (missing.length > 20) throw new Error();
           for (const [slug, tool] of missing) {
             const reference = tool.schemaRef;
             const slugs = reference?.args.toolSlugs;
@@ -630,7 +629,8 @@ export function createComposioProvider(options: {
           const tools = Object.fromEntries(
             entries.map(([slug, { schemaRef: _, ...tool }]) => [slug, tool]),
           );
-          if (missing.length) {
+          for (let start = 0; start < missing.length; start += 20) {
+            const batch = missing.slice(start, start + 20);
             const operation = signal
               ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
               : AbortSignal.timeout(15_000);
@@ -641,18 +641,18 @@ export function createComposioProvider(options: {
                 {
                   slug: 'COMPOSIO_GET_TOOL_SCHEMAS',
                   arguments: {
-                    tool_slugs: missing.map(([slug]) => slug),
+                    tool_slugs: batch.map(([slug]) => slug),
                     include: ['input_schema'],
                   },
                 },
-                { signal: operation, maxRetries: 0 },
+                { signal: operation },
               );
             operation.throwIfAborted();
             const envelope = toolSchemasResponse.parse(response).data;
             const schemas =
               'tool_schemas' in envelope ? envelope.tool_schemas : envelope.data.tool_schemas;
-            if (Object.keys(schemas).length !== missing.length) throw new Error();
-            for (const [slug, tool] of missing) {
+            if (Object.keys(schemas).length !== batch.length) throw new Error();
+            for (const [slug, tool] of batch) {
               const schema = schemas[slug];
               if (!schema || schema.tool_slug !== slug || schema.toolkit !== tool.toolkit)
                 throw new Error();
@@ -686,7 +686,7 @@ export function createComposioProvider(options: {
           action,
           args,
           accountId ? { account: accountId } : undefined,
-          { signal },
+          { signal, maxRetries: 0 } as Parameters<typeof value.execute>[3],
         );
         signal?.throwIfAborted();
         if (

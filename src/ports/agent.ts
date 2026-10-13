@@ -38,9 +38,8 @@ export type BrowserConnectionRequest =
       url: string;
       connectionId?: string;
       label?: string;
-      destinations?: string[];
     }
-  | { action: 'use'; url: string; connectionId: string; destinations?: string[] }
+  | { action: 'use'; url: string; connectionId: string }
   | { action: 'save'; url: string; connectionId: string; signedIn: true };
 
 interface MessageAttachment {
@@ -81,6 +80,7 @@ export interface RuntimeContext {
   locale?: string;
   hourCycle?: 'auto' | 'h12' | 'h23';
   notificationRule?: string;
+  quietHours?: boolean;
   account?: RuntimeAccount;
   connectedApps?: ConnectedApp[];
   currentMessageId?: string;
@@ -101,8 +101,6 @@ export interface RuntimeContext {
   signal: AbortSignal;
   attachments: Array<{ path: string; mimeType: string }>;
   emit(type: string, summary: string): Promise<void>;
-  markUntrustedContext?(): Promise<void>;
-  flagInjection?(findings: string[]): Promise<void>;
   observe?(event: RuntimeObservation): Promise<void>;
   inspectPrompt?(snapshot: PromptSnapshot): Promise<void>;
   reply(text: string, streamId?: string, replyToMessageId?: string): Promise<void>;
@@ -162,7 +160,7 @@ export interface PromptSnapshot {
   instruction: string;
   resumed: boolean;
   imageCount: number;
-  reason: 'user' | 'secure_resume' | 'steer';
+  reason: 'user' | 'steer';
   createdAt: string;
 }
 export interface RuntimeResult {

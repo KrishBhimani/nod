@@ -57,7 +57,6 @@ import { readPiSessionEntries } from '../providers/pi/checkpoint.ts';
 import { createPiMemoryCurator } from '../providers/pi/memory-curator.ts';
 import { createPublicLinkPreviewProvider } from '../providers/public-web/link-preview.ts';
 import { createAgentRuntime } from '../runtime/index.ts';
-import { injectionFindings } from '../shared/untrusted.ts';
 import { coreSkills } from '../runtime/prompt.ts';
 import { createApp } from './app.ts';
 import { createWorkAdmission, createWorkConsumers } from './work-admission.ts';
@@ -520,7 +519,6 @@ async function initializeApplication(
     consumers,
     stopConsumer: (id) => boss.offWork('scheduled-task', { id, wait: true }),
   });
-  await memory.initialize();
   await personal.initialize({ workers: options.workers });
   const tasks = createTasks({ pool, ownerId, curator, withTurnLock, refresh });
   await tasks.initialize();
@@ -612,7 +610,6 @@ async function initializeApplication(
         },
         client,
       ),
-    onForget: (origin) => vaultAccess.forget(origin),
   });
   browserConnections = await createBrowserConnections(pool, {
     ownerId,
@@ -631,7 +628,7 @@ async function initializeApplication(
       action === 'OTTO_memory_save'
         ? memory.save(args, { sourceMessageId: provenance.sourceMessageId, approved: true })
         : action === 'OTTO_vault_allow'
-          ? vaultAccess.allow(provenance, args)
+          ? vaultAccess.allow(args)
           : action === 'OTTO_payment_setting'
             ? payments.setting(provenance, args, true)
             : action === 'OTTO_payment_approve'
@@ -661,6 +658,8 @@ async function initializeApplication(
         await personal.validateReview(action.slice('OTTO_'.length), args);
       else await integrations.prepare(ownerId, action, args);
     },
+    async (turn, action, args) => !(await trust.check(turn, action, args)).confirm,
+    (reply) => trust.answer(reply),
   );
   const reactions = createAgentReactionService({ pool, ownerId, refresh });
   const localAccounts = runtimeMode === 'local' ? createAccountStore(pool) : null;
@@ -684,7 +683,6 @@ async function initializeApplication(
           (channel) => channel.provider === 'telegram' && channel.enabled && channel.allowedUserId,
         ),
       ),
-    tripwire: injectionFindings,
   });
   analytics.setUsageData(
     ownerId,
@@ -710,25 +708,17 @@ async function initializeApplication(
       kind: 'sign_in' | 'session' | 'form';
       account?: string;
       itemId?: string;
-      destinations?: string[];
     },
   ): Promise<{ reason: VaultActivityReason } | { question: string }> {
     const access = await vaultAccess.authorize(turn, target);
     if (access.ok) return { reason: access.reason };
     if ('message' in access) throw new Error(access.message);
-    const args = {
-      origin: target.origin,
-      kind: target.kind,
-      ...(target.itemId ? { itemId: target.itemId } : {}),
-      ...(target.destinations?.length ? { destinations: target.destinations } : {}),
-    };
-    const result = await approvals.request(turn, 'OTTO_vault_allow', args, {
+    const result = await approvals.request(turn, 'OTTO_vault_allow', access.args, {
       confirm: true,
       question: access.question,
     });
     if (result && typeof result === 'object' && 'requiresConfirmation' in result)
       return { question: String(result.question) };
-    await vaultAccess.allow(turn, args);
     return { reason: 'allowed' };
   }
   const trust = createTrust({
@@ -739,25 +729,10 @@ async function initializeApplication(
         ? onboardingCurator.curate({ task: 'review', instructions, input })
         : undefined,
   });
-  await trust.initialize();
   vaultAccess = await createVaultAccess(pool, {
     ownerId,
-    check: trust.signIn,
+    check: trust.check,
     refresh,
-    account: async (itemKey) => {
-      const [kind, id] = itemKey.split(':');
-      if (kind === 'sign_in') {
-        const login = (await vault.list(ownerId)).find(
-          (entry) => entry.kind === 'login' && entry.id === id,
-        );
-        return login ? `${login.label} (${login.usernameHint})` : undefined;
-      }
-      return kind === 'session'
-        ? (await browserConnections.sessions()).find(
-            (entry) => entry.id === id && entry.state !== 'disconnecting',
-          )?.label
-        : undefined;
-    },
   });
   payments = await createPayments(pool, {
     ownerId,
@@ -775,7 +750,7 @@ async function initializeApplication(
     resume: resumeAfterPayment,
     record: (turn, entry, client) => vaultAccess.record(turn, entry, client),
   });
-  const userMessages = createUserMessageService({ confirmAction: approvals.acceptChat });
+  const userMessages = createUserMessageService({ confirmAction: approvals.chat });
   if (options.workers !== false) {
     await triage.initializeHeartbeat();
     await initializeMemoryLearning({ boss, consumers, run: learning.run });
@@ -787,13 +762,7 @@ async function initializeApplication(
       readArtifact: workspace.readArtifact?.bind(workspace),
       executeConfirmation: approvals.executeConfirmed,
       reactToMessage: reactions.react,
-      runTurn: async (context) => {
-        try {
-          return await ledger.withTurn(context.turnId, () => runtime.runTurn(context));
-        } finally {
-          await vaultAccess.released(context).catch(() => {});
-        }
-      },
+      runTurn: (context) => ledger.withTurn(context.turnId, () => runtime.runTurn(context)),
       spendingLimitReached: ledger.limitReached,
       observe: adapters.observe,
       inspectPrompt: adapters.inspectPrompt,
@@ -807,8 +776,6 @@ async function initializeApplication(
         return result;
       },
       watchTurn: tasks.watch,
-      markUntrustedContext: (turn) => memory.markUntrusted(turn.threadId),
-      flagInjection: trust.flag,
       holdBrowser: adapters.holdWaitingBrowser,
       connections: integrations.manageConnections,
       prepareBrowser: (turn) =>
@@ -821,8 +788,6 @@ async function initializeApplication(
         if (!target) return browserConnections.request(request, turn, signal, launch);
         const access = await permitVault(turn, target);
         if ('question' in access) return { [appConfirmation]: access.question };
-        for (const origin of [target.origin, ...target.destinations])
-          await vaultAccess.track(turn.threadId, origin, `${target.kind}:${target.itemId}`);
         const result = await browserConnections.request(request, turn, signal, launch);
         if (result.status === 'session_opened')
           await vaultAccess.record(turn, {
@@ -875,6 +840,7 @@ async function initializeApplication(
       },
       paymentSetting: async (turn, input) => {
         const { args, question } = await payments.requestSetting(turn, input);
+        if (!args.doItForMe) return payments.setting(turn, args, true);
         const result = await approvals.request(turn, 'OTTO_payment_setting', args, {
           confirm: true,
           question,
@@ -956,7 +922,10 @@ async function initializeApplication(
         return vault.request(turn, ownerId, request);
       },
       integration: async (turn, action, args, options) => {
-        const verdict = await trust.check(turn, action, args);
+        const verdict =
+          action === 'SEARCH_TOOLS'
+            ? ({ confirm: false } as const)
+            : await trust.check(turn, action, args);
         if (hasWorkspaceFiles(args))
           args = await withTurnLock(turn.turnId, () =>
             integrations.prepare(ownerId, action, args, turn, options.signal),
@@ -1017,19 +986,6 @@ async function initializeApplication(
     startOnboarding: welcome,
     planningTasks: onboardingSuggestions.planning,
     messageCosts: ledger.messageCosts,
-    browserInput: async (threadId, apply) => {
-      const page = () =>
-        computer.currentPage(threadId).then(
-          (current) => current.origin,
-          () => undefined,
-        );
-      const acted = await page();
-      try {
-        await apply();
-      } finally {
-        await vaultAccess.touched(threadId, { acted, landed: await page() });
-      }
-    },
     computer,
     runtime,
     configuration: () =>
@@ -1190,15 +1146,17 @@ async function initializeApplication(
           events.off('event', onEvent);
         };
       },
-      submit: async (text, sourceId, client, channel, messageId) =>
+      submit: async (text, sourceId, client, channel, messageId, answer) =>
         (
           await userMessages.submit(text, [], {
             sourceId,
             channel,
             client,
             clientMessageId: messageId,
+            answer,
           })
         ).turnId,
+      answer: (text, channel) => userMessages.answer(text, { channel }),
     });
     channels.registerRoutes(app);
     await channelSettings?.recover();

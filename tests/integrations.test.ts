@@ -283,11 +283,16 @@ test('notification summaries exclude message bodies, tokens, and unbounded provi
     payload: { password: 'another-secret' },
   });
   assert.equal(summary.match(/<\/?untrusted_tool_result\b/g)?.length, 2);
-  assert.match(summary, /\(ignore_instructions\)/);
   assert.match(summary, /person@example.com/);
   for (const excluded of ['123456', 'private body', 'provider-secret', 'another-secret'])
     assert.equal(summary.includes(excluded), false);
   assert.ok(summary.length < 1500);
+  const webhook = eventOverview('slack', 'SLACK_RECEIVE_MESSAGE', {
+    text: 'Lunch at noon?',
+    headers: [{ name: 'Authorization', value: 'header-secret' }],
+  });
+  assert.match(webhook, /Lunch at noon/);
+  assert.equal(webhook.includes('header-secret'), false);
 });
 
 test(
@@ -3110,7 +3115,7 @@ test(
     await f.service.drain();
     const receipts = (await f.pool.query('SELECT * FROM integration_events')).rows;
     assert.equal(receipts.length, 1);
-    assert.equal(receipts[0].summary.includes('private message body'), false);
+    assert.equal(receipts[0].summary.includes('private message body'), true);
     assert.equal(receipts[0].summary.includes('private-token'), false);
     assert.match(receipts[0].summary, /D-fixture/);
     assert.equal(
@@ -4432,7 +4437,6 @@ test(
           ...(input.cursor ? { cursor: input.cursor } : {}),
         });
         assert.equal(options.signal.aborted, false);
-        assert.equal(options.maxRetries, 0);
         if (authFailure === 'permission')
           throw Object.assign(new Error('synthetic-private-auth-detail'), { status: 403 });
         if (authFailure === 'transport') throw new Error('synthetic-private-auth-detail');
@@ -4703,7 +4707,7 @@ test(
 );
 
 test(
-  'direct Linear OAuth uses read access and keeps tokens encrypted',
+  'direct Linear OAuth asks for read and write access and keeps tokens encrypted',
   { skip: !process.env.TEST_DATABASE_URL },
   async () => {
     const schema = `direct_${randomUUID().replaceAll('-', '')}`;
@@ -4720,11 +4724,11 @@ test(
     let mcpRequests = 0;
     const request: typeof fetch = async (input, init) => {
       const url = String(input);
-      if (url === 'https://mcp.linear.app/mcp/readonly') {
+      if (url === 'https://mcp.linear.app/mcp') {
         mcpRequests += 1;
         throw new Error('The synthetic MCP server is unavailable.');
       }
-      if (url.endsWith('/.well-known/oauth-protected-resource/mcp/readonly'))
+      if (url.endsWith('/.well-known/oauth-protected-resource/mcp'))
         return Response.json({ authorization_servers: ['https://mcp.linear.app'] });
       if (url.endsWith('/.well-known/oauth-authorization-server'))
         return Response.json({
@@ -4736,7 +4740,7 @@ test(
         });
       if (url.endsWith('/register')) {
         const body = JSON.parse(String(init?.body));
-        assert.equal(body.scope, 'read');
+        assert.equal(body.scope, 'read write');
         redirectUris.push(body.redirect_uris[0]);
         return Response.json({ client_id: 'fixture-client' });
       }
@@ -4744,7 +4748,7 @@ test(
         tokenRequests += 1;
         const body = init?.body as URLSearchParams;
         assert.equal(body.get('client_id'), 'fixture-client');
-        assert.equal(body.get('resource'), 'https://mcp.linear.app/mcp/readonly');
+        assert.equal(body.get('resource'), 'https://mcp.linear.app/mcp');
         if (body.get('grant_type') === 'refresh_token') {
           refreshRequests += 1;
           assert.equal(
@@ -4789,8 +4793,8 @@ test(
       );
       const url = new URL(attempt.url);
       assert.equal(url.origin, 'https://mcp.linear.app');
-      assert.equal(url.searchParams.get('scope'), 'read');
-      assert.equal(url.searchParams.get('resource'), 'https://mcp.linear.app/mcp/readonly');
+      assert.equal(url.searchParams.get('scope'), 'read write');
+      assert.equal(url.searchParams.get('resource'), 'https://mcp.linear.app/mcp');
       assert.equal(url.searchParams.get('redirect_uri'), 'http://127.0.0.1:4310/api/apps/callback');
       const hostedState = randomBytes(32).toString('base64url');
       const hosted = await session.authorize(
@@ -5335,7 +5339,7 @@ async function directFixture(t: TestContext) {
   };
   const request: typeof fetch = async (input, init) => {
     const url = String(input);
-    if (url === 'https://mcp.notion.com/mcp' || url === 'https://mcp.linear.app/mcp/readonly') {
+    if (url === 'https://mcp.notion.com/mcp' || url === 'https://mcp.linear.app/mcp') {
       if (server.mcpFailure) throw server.mcpFailure;
       if (server.mcpStatus !== 200) return new Response('revoked', { status: server.mcpStatus });
       if (init?.method === 'GET') return new Response(null, { status: 405 });
@@ -5407,6 +5411,7 @@ async function directFixture(t: TestContext) {
         refreshToken: 'synthetic-refresh-token',
         tokenEndpoint: `https://mcp.${service}.${service === 'notion' ? 'com' : 'app'}/token`,
         expiresAt: Date.now() + 3_600_000,
+        ...(service === 'linear' ? { resource: 'https://mcp.linear.app/mcp' } : {}),
         ...secrets,
       }),
     );
@@ -5423,7 +5428,7 @@ test(
     const id = await f.account('notion');
     const session = await f.provider.createSession(f.owner, { notion: [id] });
     await session.execute(
-      'NOTION_SEARCH_NOTION_PAGE',
+      'NOTION_SEARCH',
       {
         query: 'roadmap',
         page_url: 'https://www.notion.so/team/synthetic-page',
@@ -5432,13 +5437,8 @@ test(
       },
       id,
     );
-    await session.execute(
-      'NOTION_RETRIEVE_PAGE',
-      { id: 'synthetic-page', include_discussions: true },
-      id,
-    );
+    await session.execute('NOTION_FETCH', { id: 'synthetic-page', include_discussions: true }, id);
     assert.deepEqual(f.server.calls, [
-      { name: 'notion-get-tool-access', arguments: {} },
       {
         name: 'notion-search',
         arguments: {
@@ -5473,6 +5473,13 @@ test(
     f.server.mcpFailure = new Error('Synthetic network failure.');
     await assert.rejects(f.provider.inspectAccount(healthy, f.owner), /Synthetic network failure/);
     f.server.mcpFailure = undefined;
+    const readOnly = await f.account('linear', {
+      resource: 'https://mcp.linear.app/mcp/readonly',
+    });
+    assert.deepEqual(await f.provider.inspectAccount(readOnly, f.owner), {
+      active: false,
+      service: 'linear',
+    });
     const uncertain = await f.account('notion', { refreshUncertain: true });
     assert.deepEqual(await f.provider.inspectAccount(uncertain, f.owner), {
       active: false,
@@ -6469,8 +6476,7 @@ test('Composio paginates managed apps and native DCR MCPs with exact slugs for c
   const listing = t.mock.method(
     client.getClient().toolkits,
     'list',
-    async (input: { cursor?: string }, options: { signal: AbortSignal; maxRetries: number }) => {
-      assert.equal(options.maxRetries, 0);
+    async (input: { cursor?: string }, options: { signal: AbortSignal }) => {
       assert.equal(options.signal.aborted, false);
       await gate.promise;
       if (!input.cursor)
@@ -8146,6 +8152,80 @@ test('Composio inbox polling rejects mismatched metadata and stops immediately o
   assert.equal(calls, 4);
 });
 
+test('connected tool search loads missing schemas in batches of twenty', async (t) => {
+  const client = new Composio({
+    apiKey: 'fixture-key-never-live',
+    allowTracking: false,
+    disableVersionCheck: true,
+    fileUploadDirs: false,
+  });
+  t.mock.method(client.getClient().toolkits, 'list', async () => ({
+    items: [],
+    next_cursor: null,
+  }));
+  const slugs = Array.from({ length: 25 }, (_, index) => `GMAIL_FIXTURE_ACTION_${index}`);
+  const managed = {
+    sessionId: 'fixture-session',
+    search: async () => ({
+      success: true,
+      error: null,
+      results: [],
+      toolSchemas: Object.fromEntries(
+        slugs.map((slug, index) => [
+          slug,
+          {
+            toolSlug: slug,
+            toolkit: 'gmail',
+            hasFullSchema: false,
+            schemaRef: {
+              tool: 'COMPOSIO_GET_TOOL_SCHEMAS',
+              args: { toolSlugs: slugs.slice(index < 20 ? 0 : 20, index < 20 ? 20 : 25) },
+            },
+          },
+        ]),
+      ),
+    }),
+  };
+  t.mock.method(client.sessions, 'create', async () => managed);
+  const batches: string[][] = [];
+  t.mock.method(
+    client.getClient().toolRouter.session,
+    'executeMeta',
+    async (_id: string, input: { arguments: { tool_slugs: string[] } }) => {
+      batches.push(input.arguments.tool_slugs);
+      return {
+        error: null,
+        data: {
+          success: true,
+          tool_schemas: Object.fromEntries(
+            input.arguments.tool_slugs.map((slug) => [
+              slug,
+              {
+                tool_slug: slug,
+                toolkit: 'gmail',
+                input_schema: { type: 'object', properties: {} },
+              },
+            ]),
+          ),
+        },
+      };
+    },
+  );
+  const provider = createComposioProvider({ client });
+  const session = await provider.createSession('fixture-owner', { gmail: ['fixture-account'] });
+  const found = await session.search('fixture');
+  assert.deepEqual(
+    batches.map((batch) => batch.length),
+    [20, 5],
+  );
+  const tools = Object.values(found.tools as Record<string, Record<string, unknown>>);
+  assert.equal(tools.length, 25);
+  for (const tool of tools) {
+    assert.equal(tool.hasFullSchema, true);
+    assert.deepEqual(tool.inputSchema, { type: 'object', properties: {} });
+  }
+});
+
 test('connected provider cancellation reaches session creation, search, schemas, and execution', async (t) => {
   const client = new Composio({
     apiKey: 'fixture-key-never-live',
@@ -8193,9 +8273,10 @@ test('connected provider cancellation reaches session creation, search, schemas,
       _action: string,
       _args: unknown,
       account: { account: string },
-      options: { signal?: AbortSignal },
+      options: { signal?: AbortSignal; maxRetries?: number },
     ) => {
       assert.equal(account.account, 'fixture-account');
+      assert.equal(options.maxRetries, 0);
       return block(options.signal);
     },
   };
@@ -8214,14 +8295,8 @@ test('connected provider cancellation reaches session creation, search, schemas,
   t.mock.method(
     client.getClient().toolRouter.session,
     'executeMeta',
-    async (
-      _id: string,
-      _input: unknown,
-      options: { signal?: AbortSignal; maxRetries?: number },
-    ) => {
-      assert.equal(options.maxRetries, 0);
-      return block(options.signal);
-    },
+    async (_id: string, _input: unknown, options: { signal?: AbortSignal }) =>
+      block(options.signal),
   );
   const provider = createComposioProvider({ client });
   const session = await provider.createSession('fixture-owner', { gmail: ['fixture-account'] });
@@ -8304,6 +8379,83 @@ test('direct MCP cancellation aborts pending tool discovery and reads', async ()
     await result;
     assert.equal(pendingSignal?.aborted, true);
   }
+});
+
+test('discovered requests follow redirects only to checked public addresses and drop credentials across origins', async () => {
+  const { PassThrough } = await import('node:stream');
+  const { EventEmitter } = await import('node:events');
+  const sent: Array<{ url: string; authorization?: string }> = [];
+  const routes: Record<string, { status: number; location?: string }> = {
+    'https://api.fixture.example/start': {
+      status: 302,
+      location: 'https://files.fixture.example/data',
+    },
+    'https://files.fixture.example/data': { status: 200 },
+    'https://api.fixture.example/private': {
+      status: 307,
+      location: 'https://internal.fixture.example/',
+    },
+    'https://api.fixture.example/item': {
+      status: 301,
+      location: 'https://api.fixture.example/items/1',
+    },
+    'https://api.fixture.example/items/1': { status: 200 },
+    'https://api.fixture.example/broken': { status: 302, location: 'https://[' },
+  };
+  const methods: string[] = [];
+  const request = ((
+    url: URL,
+    options: { method: string; headers: Record<string, string> },
+    callback: (incoming: unknown) => void,
+  ) => {
+    methods.push(options.method);
+    sent.push({ url: url.href, authorization: options.headers.authorization });
+    const route = routes[url.href]!;
+    const incoming = Object.assign(new PassThrough(), {
+      statusCode: route.status,
+      headers: route.location ? { location: route.location } : { 'content-type': 'text/plain' },
+    });
+    queueMicrotask(() => {
+      callback(incoming);
+      incoming.end(route.status === 200 ? 'synthetic file' : '');
+    });
+    return Object.assign(new EventEmitter(), { end() {} });
+  }) as unknown as NonNullable<Parameters<typeof safeRemoteFetch>[2]>['request'];
+  const validate = async (value: string) => {
+    const url = new URL(value);
+    if (url.hostname === 'internal.fixture.example')
+      throw new Error('Private network destinations are blocked.');
+    return { url, address: '93.184.216.34' };
+  };
+  const response = await safeRemoteFetch(
+    'https://api.fixture.example/start',
+    { headers: { authorization: 'Bearer synthetic-token' } },
+    { validate, request },
+  );
+  assert.equal(await response.text(), 'synthetic file');
+  assert.deepEqual(sent, [
+    { url: 'https://api.fixture.example/start', authorization: 'Bearer synthetic-token' },
+    { url: 'https://files.fixture.example/data', authorization: undefined },
+  ]);
+  await assert.rejects(
+    safeRemoteFetch(
+      'https://api.fixture.example/private',
+      { method: 'POST', body: '{}' },
+      { validate, request },
+    ),
+    /Private network/,
+  );
+  methods.length = 0;
+  await safeRemoteFetch(
+    'https://api.fixture.example/item',
+    { method: 'DELETE' },
+    { validate, request },
+  );
+  assert.deepEqual(methods, ['DELETE', 'DELETE']);
+  await assert.rejects(
+    safeRemoteFetch('https://api.fixture.example/broken', {}, { validate, request }),
+    /invalid address/,
+  );
 });
 
 test('discovered validation cancellation never starts HTTP after a late DNS settlement', async () => {
@@ -8395,6 +8547,7 @@ test(
             expiresAt: 1,
             clientId: 'fixture',
             tokenEndpoint: 'https://fixture.example/token',
+            resource: 'https://mcp.linear.app/mcp',
           }),
         );
       const wait = async (condition: () => boolean) => {
@@ -8753,7 +8906,7 @@ test(
         const { connectionId: _connectionId, ...createArgs } = args;
         assert.deepEqual(calls.at(-1), { name: 'notion-create-pages', args: createArgs });
         const id = [...pages.keys()].at(-1)!;
-        const read = await integrations.execute(ownerId, 'NOTION_RETRIEVE_PAGE', {
+        const read = await integrations.execute(ownerId, 'NOTION_FETCH', {
           connectionId,
           id,
         });
@@ -8769,7 +8922,7 @@ test(
         await integrations.execute(ownerId, 'NOTION_UPDATE_PAGE', update);
         const { connectionId: _updateConnectionId, ...updateArgs } = update;
         assert.deepEqual(calls.at(-1), { name: 'notion-update-page', args: updateArgs });
-        const updated = await integrations.execute(ownerId, 'NOTION_RETRIEVE_PAGE', {
+        const updated = await integrations.execute(ownerId, 'NOTION_FETCH', {
           connectionId,
           id,
         });

@@ -30,16 +30,16 @@ flowchart LR
 
 ## What each part can and can't reach
 
-|                       | Server                   | Sandbox user                        | Connected CLI user        | Browser container                                  |
-| --------------------- | ------------------------ | ----------------------------------- | ------------------------- | -------------------------------------------------- |
-| Provider keys         | Yes                      | No                                  | No                        | No                                                 |
-| Owner access key      | Yes                      | No                                  | No                        | No                                                 |
-| Vault values          | Yes                      | No                                  | No                        | Only a value the server enters in a page           |
-| A connected CLI token | Yes                      | No                                  | Its own token only        | No                                                 |
-| Docker socket         | Yes, locally             | No                                  | No                        | No                                                 |
-| Workspace files       | Through a guarded reader | Yes                                 | Files passed as arguments | No shared mounts                                   |
-| Browser profiles      | Through the bridge       | No                                  | No                        | Yes                                                |
-| Internet              | Yes                      | Yes, no egress firewall from source | Yes                       | Yes. A saved profile reaches only allowed origins. |
+|                       | Server                   | Sandbox user                        | Connected CLI user        | Browser container                               |
+| --------------------- | ------------------------ | ----------------------------------- | ------------------------- | ----------------------------------------------- |
+| Provider keys         | Yes                      | No                                  | No                        | No                                              |
+| Owner access key      | Yes                      | No                                  | No                        | No                                              |
+| Vault values          | Yes                      | No                                  | No                        | Only a value the server enters in a page        |
+| A connected CLI token | Yes                      | No                                  | Its own token only        | No                                              |
+| Docker socket         | Yes, locally             | No                                  | No                        | No                                              |
+| Workspace files       | Through a guarded reader | Yes                                 | Files passed as arguments | No shared mounts                                |
+| Browser profiles      | Through the bridge       | No                                  | No                        | Yes                                             |
+| Internet              | Yes                      | Yes, no egress firewall from source | Yes                       | Public addresses only, saved profiles included. |
 
 ## The workspace container
 
@@ -61,7 +61,7 @@ Both the workspace and browser containers drop all capabilities, set `no-new-pri
 Every command goes through a small supervisor inside the container, in [`src/providers/docker/command.ts`](https://github.com/n8n-io/otto/blob/main/src/providers/docker/command.ts).
 
 - It owns the command's session and signals every process in it, even ones that left the process group.
-- It enforces the timeout: 10 minutes by default, at most one hour for `bash`.
+- It enforces the timeout: 59 minutes for `bash`, both by default and at most.
 - It acknowledges when the command ends. If that acknowledgement is lost, the server fences the workspace: no more commands run until Otto restarts.
 
 ## Command output
@@ -90,7 +90,7 @@ The browser is a separate trusted container. It doesn't share mounts or a networ
 
 Pi reads the page from agent-browser's accessibility snapshot, with `@eN` references, as plain text after the page URL. Otto runs no page-parsing scripts of its own. While a dialog is open, the observation is the dialog, and every action except open is refused until Pi accepts or dismisses it.
 
-Known secret values are removed from tool output and masked in screenshots. Pi uses saved profiles through `browser_session` and never reads their files. The code is in [`src/providers/agent-browser/`](https://github.com/n8n-io/otto/tree/main/src/providers/agent-browser).
+Known secret values (passwords, codes, card numbers and security codes) are removed from tool output and masked in screenshots; usernames and the cardholder name aren't secrets and stay visible. URL parameters that carry credentials, such as tokens and signatures, are hidden; other query parameters stay. When an action fails, Pi sees the browser's own error with known secrets removed. Pi uses saved profiles through `browser_session` and never reads their files. The code is in [`src/providers/agent-browser/`](https://github.com/n8n-io/otto/tree/main/src/providers/agent-browser).
 
 ## Browser handoff
 
@@ -116,7 +116,7 @@ sequenceDiagram
 - Native WebAuthn stays on, but Otto doesn't supply an authenticator. A passkey needs one of yours.
 
 :::caution[Limits]
-In a source install, the workspace has internet access through normal Docker routing. There is no egress firewall, so a command can reach any address the host network can. The desktop app blocks workspace and browser traffic to private and reserved address ranges. Inside the browser container, Chromium runs with its own sandbox turned off; the container is the boundary.
+In a source install, the workspace has internet access through normal Docker routing. There is no egress firewall, so a command can reach any address the host network can. The desktop app blocks workspace traffic to private and reserved address ranges. The browser reaches only public addresses in every mode. Inside the browser container, Chromium runs with its own sandbox turned off; the container is the boundary.
 :::
 
 ## Related resources

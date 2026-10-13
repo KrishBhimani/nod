@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { secretToken } from './redaction.ts';
 import { memoryAreas, type MemorySource, type MemoryView } from '../shared/memory.ts';
 
 export const areas = memoryAreas;
@@ -8,17 +9,17 @@ export const maxEntries = 300;
 export const maxArchive = 40;
 export const indexBudget = 6000;
 
-export const personalSecret =
-  /\b(?:password|passcode|passphrase|otp|pin|2fa|api[ _-]?key|secret|token|bearer|private[ _-]?key|security code|cvv|cvc|verification code|recovery code|palavra[ _-]?passe|senha|código de verificação)\b|\bsk-[A-Za-z0-9_-]{12,}|\b(?:\d[ -]?){14,19}\b/i;
-const injection =
-  /\b(?:ignore|disregard|forget|override)\b[^.\n]{0,40}\b(?:previous|prior|above|earlier|all)\b[^.\n]{0,40}\b(?:instructions?|rules?|prompts?)\b|\bauthorized_keys\b|\bcurl\b[^\n]*\|\s*(?:ba)?sh\b|https?:\/\/[^\s/@]+:[^\s/@]+@|[\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\ufeff]/iu;
+export const personalSecret = new RegExp(
+  String.raw`\b(?:\d[ -]?){14,19}\b|https?:\/\/[^\s/@]+:[^\s/@]+@|` + secretToken.source,
+  'i',
+);
 const slugPattern = '[a-z0-9]+(?:-[a-z0-9]+)*';
 const legacyKinds = { fact: 'about', preference: 'preferences', pattern: 'lessons' } as const;
 const legacy =
   /^## ([0-9a-f-]{36})\nKind: (fact|preference|pattern)\nUpdated: (\d{4}-\d\d-\d\dT[^\n]+)\nSources: ([0-9a-f-, ]+)\n\n([^\n]+)$/;
 
 export function unsafe(...texts: Array<string | undefined>) {
-  return texts.some((text) => !!text && (personalSecret.test(text) || injection.test(text)));
+  return texts.some((text) => !!text && personalSecret.test(text));
 }
 
 export const id = z.uuid();

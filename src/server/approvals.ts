@@ -4,12 +4,7 @@ import { pool } from './db.ts';
 import { ownerId } from './config.ts';
 import { refresh } from './events.ts';
 import { enqueueTurn, withTurnLock, type SubmitUserMessageResult, type TurnRef } from './thread.ts';
-import {
-  confirmationAnswer,
-  explicitlyRequestsAction,
-  isReversiblePlanAction,
-  requestsSchedule,
-} from './action-policy.ts';
+import { isReversiblePlanAction } from './action-policy.ts';
 import { actionConfirmation } from './action-presentation.ts';
 import { untrustedBlock } from '../shared/untrusted.ts';
 
@@ -29,6 +24,7 @@ export interface ChatConfirmationInput {
   clientMessageId?: string;
   sourceId?: string;
   hasAttachments?: boolean;
+  answer?: { approvalId: string; approved: boolean };
 }
 
 export type ChatConfirmationResult =
@@ -72,7 +68,7 @@ async function confirmedBy(client: PoolClient, turn: TurnRow) {
 async function turnChain(client: PoolClient, turn: TurnRow) {
   const chain = [turn];
   let current = turn;
-  for (let depth = 0; depth < 20; depth++) {
+  for (;;) {
     if (current.source !== 'resume') return chain;
     const linked =
       (await confirmedBy(client, current))?.turn_id ??
@@ -81,11 +77,11 @@ async function turnChain(client: PoolClient, turn: TurnRow) {
       )?.[1];
     if (!linked) return chain;
     const next = await turnRow(client, linked);
-    if (!next || next.thread_id !== turn.thread_id) return undefined;
+    if (!next || next.thread_id !== turn.thread_id || chain.some((item) => item.id === next.id))
+      return undefined;
     chain.push(next);
     current = next;
   }
-  return undefined;
 }
 
 async function scheduleAuthority(client: PoolClient, turnId: string) {
@@ -128,15 +124,6 @@ export async function turnOrigin(turnId: string) {
   }
 }
 
-async function resumeKind(client: PoolClient, turn: TurnRow) {
-  if (turn.source !== 'resume') return null;
-  const confirmation = await confirmedBy(client, turn);
-  if (confirmation) return confirmation.status === 'declined' ? null : 'approval';
-  if (turn.source_id?.startsWith('credentials:')) return 'credentials';
-  if (turn.source_id?.startsWith('connection:')) return 'connection';
-  return null;
-}
-
 export async function createApprovals(
   execute: (
     action: string,
@@ -144,6 +131,8 @@ export async function createApprovals(
     context: ApprovalExecutionContext,
   ) => Promise<unknown>,
   preflight?: (action: string, args: Record<string, unknown>) => Promise<void>,
+  decide?: (turn: TurnRef, action: string, args: Record<string, unknown>) => Promise<boolean>,
+  interpret?: (reply: string) => Promise<boolean | undefined>,
 ) {
   await pool.query(`CREATE TABLE IF NOT EXISTS approvals (
     id uuid PRIMARY KEY, owner_id text NOT NULL, thread_id uuid REFERENCES threads(id),
@@ -207,8 +196,12 @@ export async function createApprovals(
     options: { confirm?: boolean; question?: string; sourceMessageId?: string | null } = {},
   ) {
     const encoded = JSON.stringify(args);
-    if (!encoded || encoded.length > 32768) throw new Error('The action is too large.');
+    if (!encoded) throw new Error('The action has no arguments to save.');
     const snapshot = JSON.parse(encoded) as Record<string, unknown>;
+    const allowed =
+      !options.confirm && !options.question && decide
+        ? await decide(turn, action, snapshot).catch(() => false)
+        : false;
     const proposal = await withTurnLock(turn.turnId, async (client) => {
       const current = await turnRow(client, turn.turnId);
       if (!current || current.thread_id !== turn.threadId)
@@ -258,32 +251,6 @@ export async function createApprovals(
         authorInstruction = author.text;
         authorMessageId = author.id;
       }
-      const revision =
-        !background && authorMessageId
-          ? Boolean(
-              (
-                await client.query(
-                  "SELECT 1 FROM approvals WHERE owner_id=$1 AND thread_id=$2 AND confirmation_reply_id=$3 AND status='expired' LIMIT 1",
-                  [ownerId, turn.threadId, authorMessageId],
-                )
-              ).rowCount,
-            )
-          : false;
-      const explicit = explicitlyRequestsAction(action, authorInstruction);
-      const currentSource = Boolean(steering) || authorInstruction === current.prompt;
-      const kind = await resumeKind(client, current);
-      const resumedSource =
-        requestsSchedule(action, authorInstruction) &&
-        (kind === 'connection' ||
-          (kind === 'approval' && (await confirmedBy(client, current))?.status === 'completed'));
-      if (
-        !options.question &&
-        !background &&
-        !currentSource &&
-        !resumedSource &&
-        !(revision && kind !== null)
-      )
-        throw new Error('This action needs a direct request from the user.');
       await preflight?.(action, snapshot);
       if (background)
         await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
@@ -312,7 +279,7 @@ export async function createApprovals(
              JOIN turns u ON u.id=a.turn_id AND u.owner_id=a.owner_id AND u.thread_id=a.thread_id
              JOIN messages m ON m.id=a.confirmation_message_id AND m.owner_id=a.owner_id AND m.thread_id=a.thread_id AND m.role='assistant'
              WHERE a.owner_id=$1 AND a.thread_id=$2 AND a.action=$3 AND a.args=$4::jsonb
-               AND a.status='pending' AND a.expires_at>now() AND u.status IN ('running','waiting') AND u.channel=$5
+               AND a.status='pending' AND u.status IN ('running','waiting') AND u.channel=$5
              ORDER BY a.id LIMIT 1`,
             [ownerId, turn.threadId, action, snapshot, current.channel],
           )
@@ -324,12 +291,7 @@ export async function createApprovals(
             question: pending.question as string,
           };
       }
-      const direct =
-        !options.confirm &&
-        !options.question &&
-        !background &&
-        ((isReversiblePlanAction(action) && (!revision || currentSource)) ||
-          (!revision && explicit));
+      const direct = allowed;
       const id = randomUUID();
       let targetTitle: string | undefined;
       if (!direct && typeof snapshot.id === 'string') {
@@ -347,8 +309,6 @@ export async function createApprovals(
       const question = direct
         ? undefined
         : (options.question ?? actionConfirmation(action, snapshot, targetTitle));
-      if (question && question.length > 6000)
-        throw new Error('This action is too large to confirm clearly. Use a smaller action.');
       const messageId = question ? randomUUID() : null;
       if (messageId)
         await client.query(
@@ -382,15 +342,15 @@ export async function createApprovals(
     return run(proposal.approval);
   }
 
-  async function acceptChat(
-    client: PoolClient,
+  async function confirmationFor(
+    database: Pick<PoolClient, 'query'>,
     input: ChatConfirmationInput,
-  ): Promise<ChatConfirmationResult> {
-    const approved = input.hasAttachments ? undefined : confirmationAnswer(input.text);
+    lock: boolean,
+  ) {
     const target =
       input.replyToMessageId ??
       (
-        await client.query(
+        await database.query(
           `SELECT m.id FROM messages m JOIN turns u ON u.id=m.turn_id WHERE m.owner_id=$1 AND u.owner_id=$1 AND m.thread_id=$2 AND u.channel=$3 AND m.role='assistant'
            AND NOT EXISTS (SELECT 1 FROM messages s WHERE s.id=$4 AND s.owner_id=$1 AND s.thread_id=$2 AND date_trunc('milliseconds',s.created_at)<date_trunc('milliseconds',m.created_at))
            ORDER BY m.created_at DESC,m.id DESC LIMIT 1`,
@@ -398,14 +358,31 @@ export async function createApprovals(
         )
       ).rows[0]?.id;
     if (!target) return undefined;
-    const approval = (
-      await client.query(
+    return (
+      await database.query(
         `SELECT a.*,u.status AS turn_status FROM approvals a JOIN turns u ON u.id=a.turn_id
-       WHERE a.confirmation_message_id=$1 AND a.owner_id=$2 AND u.owner_id=$2 AND a.thread_id=$3 AND u.thread_id=$3 AND u.channel=$4 FOR UPDATE OF a`,
+       WHERE a.confirmation_message_id=$1 AND a.owner_id=$2 AND u.owner_id=$2 AND a.thread_id=$3 AND u.thread_id=$3 AND u.channel=$4${lock ? ' FOR UPDATE OF a' : ''}`,
         [target, ownerId, input.threadId, input.channel],
       )
     ).rows[0];
+  }
+
+  async function answerChat(input: ChatConfirmationInput) {
+    if (input.hasAttachments || !interpret) return undefined;
+    const approval = await confirmationFor(pool, input, false);
     if (!approval) return undefined;
+    const approved = await interpret(input.text).catch(() => undefined);
+    return approved === undefined ? undefined : { approvalId: approval.id as string, approved };
+  }
+
+  async function acceptChat(
+    client: PoolClient,
+    input: ChatConfirmationInput,
+  ): Promise<ChatConfirmationResult> {
+    const approval = await confirmationFor(client, input, true);
+    if (!approval) return undefined;
+    const answer = input.answer;
+    const approved = answer && answer.approvalId === approval.id ? answer.approved : undefined;
     if (approved === undefined) {
       if (approval.status === 'pending') {
         await client.query("UPDATE approvals SET status='expired' WHERE id=$1 AND owner_id=$2", [
@@ -416,12 +393,8 @@ export async function createApprovals(
       }
       return undefined;
     }
-    if (
-      approval.status !== 'pending' ||
-      !['running', 'waiting'].includes(approval.turn_status) ||
-      new Date(approval.expires_at).getTime() <= Date.now()
-    )
-      throw conflict();
+    if (approval.status !== 'pending' || !['running', 'waiting'].includes(approval.turn_status))
+      return undefined;
     if (approved) await preflight?.(approval.action, approval.args);
     const prompt = approved
       ? 'The user confirmed the exact saved action. The trusted worker must execute that snapshot once before continuing. Do not substitute an action or execute it yourself.'
@@ -473,5 +446,5 @@ export async function createApprovals(
     return { prompt };
   }
 
-  return { request, acceptChat, executeConfirmed };
+  return { request, chat: { answer: answerChat, accept: acceptChat }, executeConfirmed };
 }

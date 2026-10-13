@@ -20,78 +20,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import Fastify from 'fastify';
 import pg from 'pg';
 import { accessCookie, accessKey, registerLocalAccess } from '../src/server/access.ts';
-import {
-  confirmationAnswer,
-  explicitlyRequestsAction,
-  requestsSchedule,
-} from '../src/server/action-policy.ts';
 import { actionConfirmation, appActionConfirmation } from '../src/server/action-presentation.ts';
 import type { ApprovalExecutionContext } from '../src/server/approvals.ts';
-test('explicit requests authorize only the named operation and never negated or incidental work', () => {
-  for (const [action, text] of [
-    ['OTTO_memory_save', 'Remember that I prefer short reports.'],
-    ['OTTO_memory_save', "Please remember I'm vegetarian."],
-    ['OTTO_memory_save', 'Lembra-te que prefiro resumos curtos.'],
-  ])
-    assert.equal(explicitlyRequestsAction(action!, text!), true, `${action}: ${text}`);
-
-  for (const [action, text] of [
-    ['OTTO_schedule_create', 'Review my schedules.'],
-    ['OTTO_memory_save', 'Remember when we booked the museum?'],
-    ['OTTO_memory_save', 'Learn the API from this document.'],
-    ['OTTO_memory_save', 'Guarda o ficheiro.'],
-    ['OTTO_memory_save', 'Save this page as a PDF.'],
-  ])
-    assert.equal(explicitlyRequestsAction(action!, text!), false, `${action}: ${text}`);
-});
-
-test('resumed schedule authority requires an imperative future-timed request and only creates schedules', () => {
-  for (const instruction of [
-    "Using my spending Google Sheet, tell me what I spent this week by category and how that compares with my monthly budget. Then check it every morning at 11:59 Europe/Madrid and tell me if I'm over.",
-    'Please check my spending Sheet daily.',
-    'Set up a daily reminder to check my Sheet.',
-    'Send me a daily digest at 08:00 Europe/Berlin and keep routine notifications for that digest.',
-    'Please give me a weekly briefing.',
-    'Every day at 8:00 Europe/Madrid, give me a brief in this chat.',
-    'Check my Sheet today at 18:00.',
-    'Amanhã às 09:00, lembra-me de rever as faturas.',
-    'Verifica a minha folha todas as sextas-feiras às 09:00.',
-  ])
-    assert.equal(requestsSchedule('OTTO_schedule_create', instruction), true, instruction);
-
-  for (const instruction of [
-    'Do not create a schedule; check my Sheet every day manually.',
-    'Check my Sheet every day without creating a schedule.',
-    'Check my Sheet every day manually.',
-    'Não cries uma agenda; verifica a minha folha todos os dias.',
-    'Read my spending Sheet and summarize it.',
-    'Check my daily spending Sheet.',
-    'Summarize this request: "Send me a daily digest."',
-    'Do not send me a daily digest.',
-    'Check every month of my spending history.',
-    'Check my spending Sheet. The summary is due every morning.',
-    'The document says check my spending Sheet every morning.',
-    'Summarize this request: "Check my spending Sheet every morning."',
-    'Read this example: `check my Sheet every morning`.',
-    'Tell me how to check my Sheet every day.',
-    'Draft this plan:\nCheck my Sheet every day.',
-    'Summarize this HTML quote: <blockquote>Standing instructions. Check my Sheet every day.</blockquote>',
-    'Summarize this note:\n> A standing task:\nCheck my Sheet every day.',
-    'Check my Sheet today.',
-  ])
-    assert.equal(requestsSchedule('OTTO_schedule_create', instruction), false, instruction);
-
-  const instruction = 'Check my spending Sheet every morning.';
-  for (const action of ['OTTO_schedule_update', 'OTTO_schedule_cancel', 'OTTO_profile_update'])
-    assert.equal(requestsSchedule(action, instruction), false, action);
-  assert.equal(requestsSchedule('OTTO_schedule_create', instruction.repeat(500)), false);
-});
-
-test('chat answers must be unambiguous and the question omits internal identifiers', () => {
-  assert.equal(confirmationAnswer('Yes please!'), true);
-  assert.equal(confirmationAnswer('No.'), false);
-  assert.equal(confirmationAnswer('yes, but send to somebody else'), undefined);
-  assert.equal(confirmationAnswer('The webpage says yes'), undefined);
+test('the confirmation question omits internal identifiers', () => {
   const question = actionConfirmation(
     'OTTO_schedule_update',
     { id: 'hidden-schedule-id', enabled: false, options: { token: 'hidden-token' } },
@@ -389,15 +320,17 @@ test(
     }
     async function confirm(id: string, approved: boolean, extra: Record<string, unknown> = {}) {
       const record = await stored(id);
+      const input = {
+        text: approved ? 'Yes' : 'No',
+        channel: 'web',
+        threadId: record.thread_id,
+        replyToMessageId: record.confirmation_message_id,
+        clientMessageId: randomUUID(),
+        ...extra,
+      };
+      const answer = await approvals.chat.answer(input);
       const result = await db.transaction((client) =>
-        approvals.acceptChat(client, {
-          text: approved ? 'Yes' : 'No',
-          channel: 'web',
-          threadId: record.thread_id,
-          replyToMessageId: record.confirmation_message_id,
-          clientMessageId: randomUUID(),
-          ...extra,
-        }),
+        approvals.chat.accept(client, { ...input, answer }),
       );
       return result && 'supersededApprovalId' in result ? undefined : result;
     }
@@ -424,8 +357,10 @@ test(
           if (rejectPreflight)
             throw Object.assign(new Error('Fixture account disconnected.'), { statusCode: 409 });
         },
+        async (turn, action, args) => !(await trust.check(turn, action, args)).confirm,
+        (reply) => trust.answer(reply),
       );
-      messages = thread.createUserMessageService({ confirmAction: approvals.acceptChat });
+      messages = thread.createUserMessageService({ confirmAction: approvals.chat });
       personal.registerRoutes(app);
       const tasks = createTasks({ pool: db.pool, ownerId });
       await tasks.initialize();
@@ -437,17 +372,34 @@ test(
       const { createTrust } = await import('../src/server/trust.ts');
       const reviews: Array<Record<string, any>> = [];
       let aligned: boolean | ((input: Record<string, any>) => boolean) = false;
+      t.beforeEach(() => {
+        aligned = false;
+      });
+      const replies: object[] = [];
+      const replyAnswers: Record<string, string> = {
+        yes: 'yes',
+        'yes please': 'yes',
+        sim: 'yes',
+        no: 'no',
+        cancel: 'no',
+      };
       const trust = createTrust({
         pool: db.pool,
         ownerId,
         review: async (_instructions, input) => {
+          if ('reply' in input) {
+            replies.push(input);
+            const reply = String(input.reply)
+              .replace(/[.!]+$/, '')
+              .toLowerCase();
+            return { answer: replyAnswers[reply] ?? 'other' };
+          }
           reviews.push(input as Record<string, any>);
           const yes =
             typeof aligned === 'function' ? aligned(input as Record<string, any>) : aligned;
-          return 'signIn' in input ? { aligned: yes } : { run: yes };
+          return { run: yes };
         },
       });
-      await trust.initialize();
       const email = (to: string) => ({
         recipient_email: to,
         subject: 'Synthetic update',
@@ -643,18 +595,25 @@ test(
       );
 
       await t.test(
-        'Vault grants bind the current task, item and destination, with no authority from a domain mention',
+        'sign-in authority comes from the checker or an owned yes bound to the exact site and item',
         async () => {
           const { createVaultAccess } = await import('../src/server/vault-access.ts');
           const site = 'https://bank.example.test';
           const first = randomUUID();
           const second = randomUUID();
-          const access = await createVaultAccess(db.pool, {
-            ownerId,
-            check: trust.signIn,
-            account: async (key) =>
-              key === `sign_in:${first}` ? 'Personal account' : 'Work account',
-          });
+          const access = await createVaultAccess(db.pool, { ownerId, check: trust.check });
+          const confirmAccess = async (
+            turn: { threadId: string; turnId: string },
+            args: Record<string, unknown>,
+          ) => {
+            const id = await propose(turn, 'OTTO_vault_allow', args);
+            await finish(turn.turnId);
+            await confirm(id, true);
+            await execute(id);
+            const record = await stored(id);
+            assert.equal(record.status, 'completed');
+            return { threadId: turn.threadId, turnId: record.execution_turn_id as string };
+          };
           aligned = false;
           for (const text of [
             'Do not sign in to bank.example.test. Compare public prices.',
@@ -668,68 +627,61 @@ test(
             );
             assert.equal(reviews.length, before + 1);
             assert.equal(reviews.at(-1)?.userMessages.at(-1).text, text);
+            assert.deepEqual(reviews.at(-1)?.action, {
+              name: 'OTTO_sign_in',
+              arguments: { website: site },
+            });
           }
           const group = await begin('Open my work dashboard.');
-          const destinations = [
-            'https://api.workspace.example.test',
-            'https://login.workspace.example.test',
-          ];
           const target = {
             origin: 'https://workspace.example.test',
             kind: 'session' as const,
             itemId: first,
-            destinations,
           };
-          const beforeGroup = reviews.length;
-          assert.ok('question' in (await access.authorize(group, target)));
-          assert.equal(reviews.length, beforeGroup + 1);
-          assert.deepEqual(reviews.at(-1)?.signIn.networkDestinations, destinations);
-          await access.allow(group, target);
+          const session = await access.authorize(group, target);
+          assert.ok('question' in session);
+          assert.deepEqual(reviews.at(-1)?.action.name, 'OTTO_browser_session');
+          const groupResumed = await confirmAccess(group, session.args);
           const afterGroup = reviews.length;
-          assert.deepEqual(await access.authorize(group, target), { ok: true, reason: 'allowed' });
+          assert.deepEqual(await access.authorize(groupResumed, target), {
+            ok: true,
+            reason: 'allowed',
+          });
           assert.equal(reviews.length, afterGroup);
-          assert.ok(
-            'question' in
-              (await access.authorize(group, {
-                ...target,
-                destinations: [...destinations, 'https://other.example.test'],
-              })),
-          );
-          assert.equal(reviews.length, afterGroup + 1);
           const task = await begin('Download my bank statement.');
-          assert.ok(
-            'question' in
-              (await access.authorize(task, { origin: site, kind: 'sign_in', itemId: first })),
-          );
-          await access.allow(task, { origin: site, kind: 'sign_in', itemId: first });
+          const signIn = await access.authorize(task, {
+            origin: site,
+            kind: 'sign_in',
+            itemId: first,
+          });
+          assert.ok('question' in signIn);
+          const resumed = await confirmAccess(task, signIn.args);
           assert.deepEqual(
-            await access.authorize(task, { origin: site, kind: 'sign_in', itemId: first }),
+            await access.authorize(resumed, { origin: site, kind: 'sign_in', itemId: first }),
             { ok: true, reason: 'allowed' },
           );
+          for (const other of [
+            { origin: site, kind: 'sign_in' as const, itemId: second },
+            { origin: site, kind: 'session' as const, itemId: first },
+            { origin: 'https://other.example.test', kind: 'sign_in' as const, itemId: first },
+          ])
+            assert.ok('question' in (await access.authorize(resumed, other)));
           assert.ok(
             'question' in
-              (await access.authorize(task, { origin: site, kind: 'sign_in', itemId: second })),
-          );
-          assert.ok(
-            'question' in
-              (await access.authorize(task, { origin: site, kind: 'session', itemId: first })),
-          );
-          assert.ok(
-            'question' in
-              (await access.authorize(task, {
-                origin: 'https://other.example.test',
+              (await access.authorize(await begin('Check what is due.'), {
+                origin: site,
                 kind: 'sign_in',
                 itemId: first,
               })),
           );
-          await access.record(task, {
+          await access.record(resumed, {
             action: 'sign_in',
             origin: site,
             reason: 'allowed',
             itemId: first,
             itemKind: 'login',
           });
-          await access.record(task, {
+          await access.record(resumed, {
             action: 'sign_in',
             origin: site,
             reason: 'picked',
@@ -746,92 +698,42 @@ test(
             new Set([first, second]),
           );
           assert.equal(history.entries.filter((entry) => entry.action === 'sign_in').length, 2);
-          const cancelled = await begin('Cancel it. Stay signed out.');
-          let signedOut = false;
-          await access.prepare(cancelled, async () => {
-            signedOut = true;
-          });
-          assert.equal(signedOut, true);
-          assert.ok(
-            'question' in
-              (await access.authorize(cancelled, { origin: site, kind: 'sign_in', itemId: first })),
-          );
           aligned = (input) =>
-            input.signIn?.website === site &&
+            input.action?.name === 'OTTO_sign_in' &&
+            input.action.arguments.website === site &&
             input.userMessages?.at(-1)?.text === 'Download my bank statement now.';
           const requested = await begin('Download my bank statement now.');
           assert.deepEqual(
             await access.authorize(requested, { origin: site, kind: 'sign_in', itemId: first }),
             { ok: true, reason: 'asked' },
           );
-          let firstVisit = false;
+          let kept = true;
           await access.prepare(requested, async () => {
-            firstVisit = true;
+            kept = false;
           });
-          assert.equal(firstVisit, false);
-          await access.record(requested, {
-            action: 'sign_in',
-            origin: site,
-            itemId: first,
-            itemKind: 'login',
-            reason: 'asked',
-          });
-          aligned = (input) => input.signIn?.account === 'Work account';
-          const wrongAccount = await begin('Read my work bank account.');
-          let wrongRetained = false;
-          await access.prepare(wrongAccount, async () => {
-            wrongRetained = true;
-          });
-          assert.equal(wrongRetained, true);
-          assert.equal(reviews.at(-1)?.signIn.account, 'Personal account');
-          await db.pool.query(
-            "UPDATE vault_grants SET created_at=now()-interval '8 days' WHERE owner_id=$1 AND root_turn_id=$2",
-            [ownerId, task.turnId],
-          );
+          assert.equal(kept, true);
           aligned = false;
-          assert.ok(
-            'question' in
-              (await access.authorize(task, { origin: site, kind: 'sign_in', itemId: first })),
-          );
-          aligned = true;
-          assert.deepEqual(
-            await access.authorize(task, { origin: site, kind: 'sign_in', itemId: first }),
-            { ok: true, reason: 'asked' },
-          );
-          aligned = false;
-          assert.deepEqual(
-            await access.authorize(task, { origin: site, kind: 'sign_in', itemId: first }),
-            { ok: true, reason: 'asked' },
-          );
-          await access.always({ origin: site });
-          const later = await begin('Check what is due.');
-          assert.deepEqual(
-            await access.authorize(later, { origin: site, kind: 'session', itemId: first }),
-            { ok: true, reason: 'always' },
-          );
-          await trust.flag(later, ['Synthetic injection']);
-          assert.ok(
-            'question' in
-              (await access.authorize(later, { origin: site, kind: 'sign_in', itemId: first })),
-          );
           for (const source of ['event', 'onboarding'] as const) {
             const background = await begin('Synthetic background work', { source });
-            assert.ok(
-              'message' in
-                (await access.authorize(background, {
-                  origin: site,
-                  kind: 'session',
-                  itemId: first,
-                })),
-            );
+            let signedOut = false;
+            await access.prepare(background, async () => {
+              signedOut = true;
+            });
+            assert.equal(signedOut, true);
+            const before = reviews.length;
+            const verdict = await access.authorize(background, {
+              origin: site,
+              kind: 'session',
+              itemId: first,
+            });
+            if (source === 'event') {
+              assert.ok('question' in verdict);
+              assert.equal(reviews.at(-1)?.userMessages, undefined);
+            } else {
+              assert.ok('message' in verdict);
+              assert.equal(reviews.length, before);
+            }
           }
-          await access.forget(site);
-          assert.equal((await access.permissions()).length, 0);
-          const noGrant = await begin('Cancel.');
-          assert.ok(
-            'question' in
-              (await access.authorize(noGrant, { origin: site, kind: 'sign_in', itemId: first })),
-          );
           await db.pool.query(
             `INSERT INTO vault_activity(id,owner_id,at,action,origin,reason)
           SELECT gen_random_uuid(),$1,date_trunc('milliseconds',now()-interval '30 days')+n*interval '1 microsecond',
@@ -850,43 +752,32 @@ test(
         },
       );
 
-      await t.test(
-        'payments never run from background or read-only work and note a task a page tried to steer',
-        async () => {
-          assert.deepEqual(await trust.payment(await begin('Buy hinges at shop.example.test.')), {
-            allowed: true,
-            flagged: false,
-            inOtto: true,
-          });
-          assert.deepEqual(
-            await trust.payment(
-              await begin('Buy hinges at shop.example.test.', { channel: 'telegram:synthetic' }),
-            ),
-            { allowed: true, flagged: false, inOtto: false },
-          );
-          assert.deepEqual(
-            await trust.payment(
-              await begin('Buy hinges at shop.example.test.', { channel: 'whatsapp:synthetic' }),
-            ),
-            { allowed: true, flagged: false, inOtto: false },
-          );
-          const steered = await begin('Buy more hinges.');
-          await trust.flag(steered, ['ignore_instructions']);
-          assert.deepEqual(await trust.payment(steered), {
-            allowed: true,
-            flagged: true,
-            inOtto: true,
-          });
-          assert.deepEqual(
-            await trust.payment(await begin('Synthetic event', { source: 'event' })),
-            { allowed: false, reason: 'background' },
-          );
-          assert.deepEqual(await trust.payment(await begin('', { source: 'onboarding' })), {
-            allowed: false,
-            reason: 'readonly',
-          });
-        },
-      );
+      await t.test('payments never run from read-only work', async () => {
+        assert.deepEqual(await trust.payment(await begin('Buy hinges at shop.example.test.')), {
+          allowed: true,
+          inOtto: true,
+        });
+        assert.deepEqual(
+          await trust.payment(
+            await begin('Buy hinges at shop.example.test.', { channel: 'telegram:synthetic' }),
+          ),
+          { allowed: true, inOtto: false },
+        );
+        assert.deepEqual(
+          await trust.payment(
+            await begin('Buy hinges at shop.example.test.', { channel: 'whatsapp:synthetic' }),
+          ),
+          { allowed: true, inOtto: false },
+        );
+        assert.deepEqual(await trust.payment(await begin('Synthetic event', { source: 'event' })), {
+          allowed: true,
+          inOtto: true,
+        });
+        assert.deepEqual(await trust.payment(await begin('', { source: 'onboarding' })), {
+          allowed: false,
+          reason: 'readonly',
+        });
+      });
 
       await t.test(
         'requests are judged and shown by what they send, and a bare yes answers the question the owner saw',
@@ -906,15 +797,11 @@ test(
             JSON.stringify(reviews.at(-1)?.action.arguments),
             /synthetic-mime-for-an-outsider/,
           );
-          const oversized = reviews.length;
-          await assert.rejects(
-            trust.check(turn, 'CONNECTED_MCP_CALL', {
-              tool: 'post_message',
-              input: { text: 'x'.repeat(40_000), channel: 'C-OUTSIDER' },
-            }),
-            /too large/,
-          );
-          assert.equal(reviews.length, oversized);
+          await trust.check(turn, 'CONNECTED_MCP_CALL', {
+            tool: 'post_message',
+            input: { text: `${'x'.repeat(40_000)} tail`, channel: 'C-OUTSIDER' },
+          });
+          assert.match(reviews.at(-1)?.action.arguments.input.text, / tail$/);
           const hidden = {
             tool: 'post_message',
             input: { text: 'x'.repeat(6000), note: 'y'.repeat(6000), channel: 'C-OUTSIDER' },
@@ -957,7 +844,6 @@ test(
           try {
             const resumed = await execute(seen.id);
             assert.equal(resumed?.prompt.match(/<\/untrusted_tool_result>/g)?.length, 1);
-            assert.match(resumed?.prompt ?? '', /\(ignore_instructions\)/);
           } finally {
             executionResult = undefined;
           }
@@ -989,8 +875,9 @@ test(
       });
 
       await t.test(
-        'an explicitly requested memory save runs directly once without a confirmation',
+        'a memory save the checker matches to the request runs directly once without a confirmation',
         async () => {
+          aligned = true;
           const turn = await begin('Remember that I prefer short reports.');
           const source = (await row(turn.turnId)).message_id;
           const args = { kind: 'preference', text: 'Prefers short reports.' };
@@ -1001,6 +888,7 @@ test(
           assert.equal(calls.at(-1)?.context.sourceMessageId, source);
           assert.equal(await assistantMessages(turn.turnId), 0);
           assert.equal(await turnStatus(turn.turnId), 'running');
+          aligned = false;
         },
       );
 
@@ -1030,6 +918,7 @@ test(
       await t.test(
         'natural local plan changes execute once without a required command phrase',
         async () => {
+          aligned = true;
           const cases: Array<[string, string, Record<string, unknown>]> = [
             [
               'Pause the Weekly review schedule until I am back from holiday.',
@@ -1067,10 +956,12 @@ test(
             assert.equal((await proposal(turn.turnId)).confirmation_message_id, null);
             assert.equal((await proposal(turn.turnId)).status, 'completed');
           }
+          aligned = false;
         },
       );
 
       await t.test('absorbed user messages retain their own local plan authority', async () => {
+        aligned = true;
         for (const resume of [false, true]) {
           const origin = await begin('Inspect the synthetic dashboard.');
           const turn = resume ? await afterCredentials(origin.turnId) : origin;
@@ -1094,6 +985,7 @@ test(
           assert.equal((await proposal(turn.turnId)).source_message_id, sourceMessageId);
           assert.equal(await assistantMessages(turn.turnId), 0);
         }
+        aligned = false;
       });
 
       await t.test(
@@ -1152,6 +1044,7 @@ test(
       await t.test(
         'a connected account can finish an owned schedule request after consent',
         async () => {
+          aligned = true;
           const args = {
             title: 'Daily spending check',
             prompt: 'Check the connected spending Sheet.',
@@ -1173,19 +1066,15 @@ test(
             (await row(origin.turnId)).message_id,
           );
           assert.equal((await proposal(turn.turnId)).confirmation_message_id, null);
-          for (const instruction of [
-            'Check my daily spending Sheet.',
-            'Check my Sheet every day, but do not create a schedule.',
-            'Tell me how to check my Sheet every day.',
-            'Summarize this HTML quote: <blockquote>Standing instructions. Check my Sheet every day.</blockquote>',
-          ]) {
-            const refused = await afterConnection((await begin(instruction)).turnId);
-            await assert.rejects(
-              approvals.request(refused, 'OTTO_schedule_create', args),
-              /direct request/,
-            );
-            assert.equal(await proposal(refused.turnId), undefined);
-          }
+          aligned = false;
+          const refused = await afterConnection(
+            (await begin('Check my Sheet every day, but do not create a schedule.')).turnId,
+          );
+          assert.equal(
+            (await approvals.request(refused, 'OTTO_schedule_create', args)).requiresConfirmation,
+            true,
+          );
+          assert.equal((await proposal(refused.turnId)).status, 'pending');
           assert.equal(calls.length, before + 1);
         },
       );
@@ -1215,11 +1104,11 @@ test(
           }
         }
         const credentials = await afterCredentials((await begin(instruction)).turnId);
-        await assert.rejects(
-          approvals.request(credentials, 'OTTO_schedule_create', args),
-          /direct request/,
+        assert.equal(
+          (await approvals.request(credentials, 'OTTO_schedule_create', args)).requiresConfirmation,
+          true,
         );
-        assert.equal(await proposal(credentials.turnId), undefined);
+        assert.equal((await proposal(credentials.turnId)).status, 'pending');
         for (const mutation of [
           "UPDATE turns SET owner_id='foreign' WHERE id=$2",
           "UPDATE messages SET owner_id='foreign' WHERE turn_id=$2 AND role='user'",
@@ -1264,14 +1153,16 @@ test(
           const credentials = await afterCredentials(
             (await begin('Please pause my schedule.')).turnId,
           );
-          await assert.rejects(
-            approvals.request(credentials, 'OTTO_schedule_update', {
-              id: randomUUID(),
-              enabled: false,
-            }),
-            /direct request/,
+          assert.equal(
+            (
+              await approvals.request(credentials, 'OTTO_schedule_update', {
+                id: randomUUID(),
+                enabled: false,
+              })
+            ).requiresConfirmation,
+            true,
           );
-          assert.equal(await proposal(credentials.turnId), undefined);
+          assert.equal((await proposal(credentials.turnId)).status, 'pending');
           for (const mutation of [
             "UPDATE turns SET owner_id='foreign' WHERE id=$1",
             "UPDATE messages SET owner_id='foreign' WHERE turn_id=$1 AND role='user'",
@@ -1387,21 +1278,6 @@ test(
       );
 
       await t.test(
-        'a confirmation too large to show is refused before anything is saved',
-        async () => {
-          const turn = await begin('Synthetic boundary fixture', { source: 'event' });
-          const before = calls.length;
-          await assert.rejects(
-            approvals.request(turn, 'OTTO_profile_update', { preferences: 'x'.repeat(7000) }),
-            /too large to confirm/,
-          );
-          assert.equal(await proposal(turn.turnId), undefined);
-          assert.equal(await assistantMessages(turn.turnId), 0);
-          assert.equal(calls.length, before);
-        },
-      );
-
-      await t.test(
         'revision replies supersede the addressed proposal before a new user turn',
         async () => {
           for (const explicit of [false, true]) {
@@ -1424,7 +1300,7 @@ test(
             assert.equal((await stored(id)).status, 'expired');
             assert.equal((await stored(id)).confirmation_reply_id, revised.messageId);
             if (unrelated) assert.equal((await stored(unrelated)).status, 'pending');
-            await assert.rejects(confirm(id, true), { statusCode: 409 });
+            assert.equal(await confirm(id, true), undefined);
             const next = await propose(await running(revised.turnId), 'OTTO_profile_update', {
               preferences: 'Shorter preference.',
             });
@@ -1458,7 +1334,7 @@ test(
           assert.equal((await row(result.turnId)).source, 'user');
           assert.equal((await stored(id)).status, 'expired');
           assert.equal((await stored(id)).confirmation_reply_id, result.messageId);
-          await assert.rejects(confirm(id, true), { statusCode: 409 });
+          assert.equal(await confirm(id, true), undefined);
           assert.equal(calls.length, before);
           const revised = await running(result.turnId);
           const update = await propose(revised, 'OTTO_profile_update', {
@@ -1479,6 +1355,7 @@ test(
       await t.test(
         'a user can replace a background pause proposal with a direct local plan change',
         async () => {
+          aligned = (input) => Boolean(input.userMessages?.length);
           for (const absorbed of [false, true]) {
             const current = absorbed ? await begin('Inspect the synthetic dashboard.') : undefined;
             const origin = await begin('Review a paused task.', { source: 'event' });
@@ -1504,8 +1381,9 @@ test(
             assert.equal(calls.at(-1)?.context.sourceMessageId, revised.messageId);
             assert.equal((await proposal(turn.turnId)).status, 'completed');
             assert.equal(await assistantMessages(turn.turnId), 0);
-            await assert.rejects(confirm(id, true), { statusCode: 409 });
+            assert.equal(await confirm(id, true), undefined);
           }
+          aligned = false;
           const current = await begin('Inspect the synthetic dashboard.');
           const origin = await begin('Review a preference.', { source: 'event' });
           const id = await propose(origin, 'OTTO_profile_update', {
@@ -1578,14 +1456,7 @@ test(
             const origin = await begin('A synthetic background pause.', { source: 'event' });
             const args = { id: randomUUID() };
             const id = await propose(origin, 'OTTO_schedule_cancel', args);
-            if (status === 'expired') {
-              await db.pool.query(
-                "UPDATE approvals SET expires_at=now()-interval '1 minute' WHERE id=$1",
-                [id],
-              );
-            } else {
-              await db.pool.query('UPDATE approvals SET status=$2 WHERE id=$1', [id, status]);
-            }
+            await db.pool.query('UPDATE approvals SET status=$2 WHERE id=$1', [id, status]);
             const next = await begin('A later synthetic background pause.', { source: 'schedule' });
             const replacement = await propose(next, 'OTTO_schedule_cancel', args);
             assert.notEqual(replacement, id);
@@ -1625,7 +1496,7 @@ test(
             assert.notEqual(replacement, id);
             assert.equal((await stored(replacement)).status, 'pending');
             assert.equal(await assistantMessages(next.turnId), 1);
-            await assert.rejects(confirm(id, true), { statusCode: 409 });
+            assert.equal(await confirm(id, true), undefined);
           }
           assert.equal(calls.length, before);
         },
@@ -1634,6 +1505,7 @@ test(
       await t.test(
         'a direct execution keeps its exact snapshot and never replays pending or uncertain work',
         async () => {
+          aligned = true;
           const origin = await begin('Remember that I prefer short reports.');
           const args = { kind: 'preference', text: 'Original preference.' };
           const snapshot = structuredClone(args);
@@ -1672,6 +1544,7 @@ test(
             } finally {
               executionGate = undefined;
               failExecution = false;
+              aligned = false;
             }
           }
         },
@@ -1733,25 +1606,31 @@ test(
         },
       );
 
-      await t.test('generic synthetic prompts cannot inherit action authority', async () => {
-        const turn = await begin('Update my preferences.');
-        await db.pool.query(
-          "UPDATE turns SET prompt='Synthetic unrelated continuation' WHERE id=$1",
-          [turn.turnId],
-        );
-        await assert.rejects(approvals.request(turn, 'OTTO_profile_update', {}), /direct request/);
-        const generic = await running(
-          await thread.enqueueTurn('Synthetic unrelated continuation', { source: 'resume' }),
-        );
-        await assert.rejects(
-          approvals.request(generic, 'OTTO_profile_update', {}),
-          /direct request/,
-        );
-        assert.equal(await proposal(generic.turnId), undefined);
-        await db.pool.query(
-          "UPDATE turns SET status='succeeded',finished_at=now() WHERE status IN ('queued','running')",
-        );
-      });
+      await t.test(
+        'generic synthetic prompts ask instead of inheriting action authority',
+        async () => {
+          const turn = await begin('Update my preferences.');
+          await db.pool.query(
+            "UPDATE turns SET prompt='Synthetic unrelated continuation' WHERE id=$1",
+            [turn.turnId],
+          );
+          assert.equal(
+            (await approvals.request(turn, 'OTTO_profile_update', {})).requiresConfirmation,
+            true,
+          );
+          const generic = await running(
+            await thread.enqueueTurn('Synthetic unrelated continuation', { source: 'resume' }),
+          );
+          await assert.rejects(
+            approvals.request(generic, 'OTTO_profile_update', {}),
+            /direct request/,
+          );
+          assert.equal(await proposal(generic.turnId), undefined);
+          await db.pool.query(
+            "UPDATE turns SET status='succeeded',finished_at=now() WHERE status IN ('queued','running')",
+          );
+        },
+      );
 
       await t.test(
         'a channel confirmation preserves the exact snapshot and client retries do not execute twice',
@@ -1808,9 +1687,11 @@ test(
             async (action, args) => {
               await personal.validateReview(action.replace(/^OTTO_/, ''), args);
             },
+            async (turn, action, args) => !(await trust.check(turn, action, args)).confirm,
+            (reply) => trust.answer(reply),
           );
           const digestMessages = thread.createUserMessageService({
-            confirmAction: digestApprovals.acceptChat,
+            confirmAction: digestApprovals.chat,
           });
           const instruction =
             'Every day at 08:00 Europe/Berlin, give me a digest in this chat. Keep routine notifications for that digest.';
@@ -1849,7 +1730,9 @@ test(
             cron: '0 8 * * *',
             timeZone: 'Europe/Berlin',
           };
+          aligned = true;
           const result = await digestApprovals.request(continuation, 'OTTO_schedule_create', args);
+          aligned = false;
           assert.equal(result.requiresConfirmation, undefined);
           assert.deepEqual(
             await digestApprovals.request(continuation, 'OTTO_schedule_create', args),
@@ -1881,7 +1764,7 @@ test(
       );
 
       await t.test(
-        'a schedule request cannot continue before its approval succeeds or after it is declined or uncertain',
+        'a schedule request after a confirmed, declined or uncertain approval asks again',
         async () => {
           for (const outcome of ['confirmed', 'declined', 'uncertain'] as const) {
             const origin = await begin('Send me a daily digest at 08:00 Europe/Berlin.');
@@ -1901,59 +1784,58 @@ test(
             }
             assert.equal((await stored(id)).status, outcome);
             const before = calls.length;
-            await assert.rejects(
-              approvals.request(continuation, 'OTTO_schedule_create', {
-                title: 'Daily digest',
-                prompt: 'Send the daily digest.',
-                kind: 'recurring',
-                cron: '0 8 * * *',
-                timeZone: 'Europe/Berlin',
-              }),
-              /direct request/,
+            assert.equal(
+              (
+                await approvals.request(continuation, 'OTTO_schedule_create', {
+                  title: 'Daily digest',
+                  prompt: 'Send the daily digest.',
+                  kind: 'recurring',
+                  cron: '0 8 * * *',
+                  timeZone: 'Europe/Berlin',
+                })
+              ).requiresConfirmation,
+              true,
             );
-            assert.equal(await proposal(continuation.turnId), undefined);
             assert.equal(calls.length, before);
             await finish(continuation.turnId, 'succeeded');
           }
         },
       );
 
-      await t.test(
-        'completing a preference approval cannot authorize a quoted or negated schedule',
-        async () => {
-          for (const instruction of [
-            'Summarize this request: "Send me a daily digest at 08:00 Europe/Berlin."',
-            'Do not schedule a daily digest. Keep routine notifications quiet.',
-          ]) {
-            const origin = await begin(instruction);
-            const id = await propose(origin, 'OTTO_notification_preferences_update', {
-              notificationRule: 'Keep routine notifications quiet.',
-            });
-            await finish(origin.turnId);
-            await confirm(id, true);
-            await execute(id);
-            assert.equal((await stored(id)).status, 'completed');
-            const continuation = await running((await stored(id)).execution_turn_id);
-            const before = calls.length;
-            await assert.rejects(
-              approvals.request(continuation, 'OTTO_schedule_create', {
+      await t.test('completing a preference approval does not authorize a schedule', async () => {
+        for (const instruction of [
+          'Summarize this request: "Send me a daily digest at 08:00 Europe/Berlin."',
+          'Do not schedule a daily digest. Keep routine notifications quiet.',
+        ]) {
+          const origin = await begin(instruction);
+          const id = await propose(origin, 'OTTO_notification_preferences_update', {
+            notificationRule: 'Keep routine notifications quiet.',
+          });
+          await finish(origin.turnId);
+          await confirm(id, true);
+          await execute(id);
+          assert.equal((await stored(id)).status, 'completed');
+          const continuation = await running((await stored(id)).execution_turn_id);
+          const before = calls.length;
+          assert.equal(
+            (
+              await approvals.request(continuation, 'OTTO_schedule_create', {
                 title: 'Daily digest',
                 prompt: 'Send the daily digest.',
                 kind: 'recurring',
                 cron: '0 8 * * *',
                 timeZone: 'Europe/Berlin',
-              }),
-              /direct request/,
-            );
-            assert.equal(await proposal(continuation.turnId), undefined);
-            assert.equal(calls.length, before);
-            await finish(continuation.turnId, 'succeeded');
-          }
-        },
-      );
+              })
+            ).requiresConfirmation,
+            true,
+          );
+          assert.equal(calls.length, before);
+          await finish(continuation.turnId, 'succeeded');
+        }
+      });
 
       await t.test(
-        'a confirmed change keeps its source and its continuation cannot make a second change',
+        'a confirmed change keeps its source and its continuation asks before a second change',
         async () => {
           const origin = await begin('Synthetic boundary fixture');
           const source = (await row(origin.turnId)).message_id;
@@ -1964,11 +1846,11 @@ test(
           const turn = await running(accepted!.turnId);
           await approvals.executeConfirmed(turn.turnId, new AbortController().signal);
           assert.equal(calls.at(-1)?.context.sourceMessageId, source);
-          await assert.rejects(
-            approvals.request(turn, 'OTTO_schedule_create', { title: 'A second change' }),
-            /direct request/,
+          assert.equal(
+            (await approvals.request(turn, 'OTTO_schedule_create', { title: 'A second change' }))
+              .requiresConfirmation,
+            true,
           );
-          assert.equal(await proposal(turn.turnId), undefined);
           await finish(turn.turnId, 'succeeded');
         },
       );
@@ -2100,9 +1982,14 @@ test(
           const decisions = await Promise.allSettled(
             Array.from({ length: 4 }, () => confirm(id, true)),
           );
-          assert.equal(decisions.filter((result) => result.status === 'fulfilled').length, 1);
-          for (const result of decisions)
-            if (result.status === 'rejected') assert.equal(result.reason.statusCode, 409);
+          assert.deepEqual(
+            decisions.map((result) => result.status),
+            ['fulfilled', 'fulfilled', 'fulfilled', 'fulfilled'],
+          );
+          assert.equal(
+            decisions.filter((result) => result.status === 'fulfilled' && result.value).length,
+            1,
+          );
           assert.equal(calls.length, before);
           const resumedTurns = await resumeTurns(id);
           assert.equal(resumedTurns.length, 1);
@@ -2231,22 +2118,15 @@ test(
       );
 
       await t.test(
-        'cancelled, expired, wrong-channel and foreign confirmations cannot execute',
+        'cancelled, wrong-channel and foreign confirmations cannot execute',
         async () => {
           const before = calls.length;
           const cancelled = await propose(await newTurn(), 'OTTO_profile_update', {
             preferences: 'Synthetic preference',
           });
           await thread.stopThread();
-          await assert.rejects(confirm(cancelled, true), { statusCode: 409 });
-          const expired = await propose(await newTurn(), 'OTTO_profile_update', {
-            preferences: 'Synthetic preference',
-          });
-          await db.pool.query(
-            "UPDATE approvals SET expires_at=now()-interval '1 minute' WHERE id=$1",
-            [expired],
-          );
-          await assert.rejects(confirm(expired, true), { statusCode: 409 });
+          assert.equal(await confirm(cancelled, true), undefined);
+          assert.notEqual((await stored(cancelled)).status, 'confirmed');
           const foreign = await propose(await newTurn(), 'OTTO_profile_update', {
             preferences: 'Synthetic preference',
           });
@@ -2266,6 +2146,61 @@ test(
       );
 
       await t.test(
+        'the reply reader sees only the owner reply and its answer binds to the question it read',
+        async () => {
+          const reply = 'dale, adelante';
+          replyAnswers[reply] = 'yes';
+          const ask = async () => {
+            const turn = await newTurn();
+            const id = await propose(turn, 'OTTO_profile_update', { preferences: 'Read reply' });
+            await finish(turn.turnId);
+            const record = await stored(id);
+            return {
+              id,
+              input: {
+                text: reply,
+                channel: 'web',
+                threadId: record.thread_id as string,
+                replyToMessageId: record.confirmation_message_id as string,
+                clientMessageId: randomUUID(),
+              },
+            };
+          };
+          const first = await ask();
+          const before = replies.length;
+          assert.equal(
+            await approvals.chat.answer({ ...first.input, hasAttachments: true }),
+            undefined,
+          );
+          assert.equal(replies.length, before);
+          const answer = await approvals.chat.answer(first.input);
+          assert.deepEqual(answer, { approvalId: first.id, approved: true });
+          assert.deepEqual(replies.at(-1), { reply });
+          const long = `${'yes '.repeat(400)}but send it elsewhere`;
+          assert.equal(await trust.answer(long), undefined);
+          assert.deepEqual(replies.at(-1), { reply: long });
+          const forged = await db.transaction((client) =>
+            approvals.chat.accept(client, {
+              ...first.input,
+              answer: { approvalId: randomUUID(), approved: true },
+            }),
+          );
+          assert.ok(forged && 'supersededApprovalId' in forged);
+          assert.equal((await stored(first.id)).status, 'expired');
+          const second = await ask();
+          await db.transaction(async (client) =>
+            approvals.chat.accept(client, {
+              ...second.input,
+              answer: await approvals.chat.answer(second.input),
+            }),
+          );
+          assert.equal((await stored(second.id)).status, 'confirmed');
+          delete replyAnswers[reply];
+          await thread.stopThread();
+        },
+      );
+
+      await t.test(
         'a finished turn, changed consent and a stale thread cannot authorize a snapshot',
         async () => {
           const turn = await newTurn();
@@ -2275,7 +2210,7 @@ test(
             undefined,
           );
           assert.equal((await stored(id)).status, 'expired');
-          await assert.rejects(confirm(id, true), { statusCode: 409 });
+          assert.equal(await confirm(id, true), undefined);
           assert.equal(await confirm(id, true, { threadId: randomUUID() }), undefined);
           assert.equal(
             (
@@ -2289,7 +2224,7 @@ test(
           );
           await db.pool.query("UPDATE turns SET status='failed' WHERE id=$1", [turn.turnId]);
           const before = calls.length;
-          await assert.rejects(confirm(id, true), { statusCode: 409 });
+          assert.equal(await confirm(id, true), undefined);
           assert.equal(calls.length, before);
           await assert.rejects(
             approvals.request(turn, 'OTTO_profile_update', { preferences: 'Synthetic preference' }),
@@ -2386,7 +2321,7 @@ test(
           assert.equal(declined.length, 1);
           assert.equal(declined[0].status, 'queued');
           assert.equal((await stored(id)).status, 'declined');
-          await assert.rejects(confirm(id, true), { statusCode: 409 });
+          assert.equal(await confirm(id, true), undefined);
           assert.equal(await execute(id), undefined);
           const failed = await propose(await newTurn(), 'OTTO_profile_update', {
             preferences: 'Synthetic preference',
@@ -2404,7 +2339,7 @@ test(
           }
           assert.equal((await stored(failed)).status, 'uncertain');
           assert.equal(await execute(failed), undefined);
-          await assert.rejects(confirm(failed, true), { statusCode: 409 });
+          assert.equal(await confirm(failed, true), undefined);
           assert.equal(calls.length, before + 1);
           await thread.stopThread();
         },
@@ -2500,7 +2435,7 @@ test(
             throw new Error('Must not automatically retry');
           });
           assert.equal((await stored(interrupted)).status, 'uncertain');
-          await assert.rejects(confirm(interrupted, true), { statusCode: 409 });
+          assert.equal(await confirm(interrupted, true), undefined);
           await thread.stopThread();
         },
       );
@@ -2546,9 +2481,8 @@ test(
             }),
           );
           for (const [field, value, quote] of [
-            ['location', 'Porto', 'I live in Porto only during the week.'],
-            ['location', 'Braga', 'The website says I live in Braga'],
-            ['name', 'my password', 'My name is my password'],
+            ['location', 'Braga', 'I live near Porto.'],
+            ['name', 'sk-fixturefixture1234', 'My name is sk-fixturefixture1234'],
           ]) {
             const statement = await thread.submitUserMessage(quote!);
             await assert.rejects(

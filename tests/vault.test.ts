@@ -314,13 +314,13 @@ test(
       await vault.fillSaved(task2, 'local-development', stored.rows[0].id, input);
       assert.equal(injected, 2);
       assert.equal(resumed, 1);
-      await assert.rejects(
-        vault.fillSaved(task2, 'local-development', stored.rows[0].id, input),
-        /fresh credentials/,
+      assert.equal(
+        await vault.fillSaved(task2, 'local-development', stored.rows[0].id, input),
+        false,
       );
-      await assert.rejects(
-        vault.fillSaved(await resume(task1), 'local-development', stored.rows[0].id, input),
-        /fresh credentials/,
+      assert.equal(
+        await vault.fillSaved(await resume(task1), 'local-development', stored.rows[0].id, input),
+        false,
       );
       assert.equal(injected, 2);
       const requests = await pool.query('SELECT * FROM credential_requests');
@@ -443,7 +443,7 @@ test(
 );
 
 test(
-  'failed autofill requires fresh input and pending forms survive a restart',
+  'a failed or repeated autofill opens the secure form and pending forms survive a restart',
   { skip: !process.env.TEST_DATABASE_URL },
   async () => {
     const schema = `test_vault_${randomUUID().replaceAll('-', '')}`;
@@ -488,9 +488,9 @@ test(
         passwordSelector: '#password',
       };
       await assert.rejects(vault.fillSaved(taskRetry, 'local-development', saved.json().id, input));
-      await assert.rejects(
-        vault.fillSaved(taskRetry, 'local-development', saved.json().id, input),
-        /fresh credentials/,
+      assert.equal(
+        await vault.fillSaved(taskRetry, 'local-development', saved.json().id, input),
+        false,
       );
       assert.equal(attempts, 1);
       const retry = await vault.request(taskRetry, 'local-development', input);
@@ -532,10 +532,35 @@ test(
         true,
       );
       assert.equal(attempts, 4);
-      await assert.rejects(
-        restarted.fillSaved(continued, 'local-development', saved.json().id, input),
-        /fresh credentials/,
+      assert.equal(
+        await restarted.fillSaved(continued, 'local-development', saved.json().id, input),
+        false,
       );
+      const rejected = await turn();
+      assert.equal(
+        await restarted.fillSaved(rejected, 'local-development', saved.json().id, input),
+        true,
+      );
+      assert.equal(
+        await restarted.fillSaved(rejected, 'local-development', saved.json().id, input),
+        false,
+      );
+      assert.equal(attempts, 5);
+      const corrected = await restarted.request(rejected, 'local-development', input);
+      await wait(rejected);
+      const correctedUrl = corrected.url.replace('/vault/', '/api/credential-requests/');
+      assert.equal((await app.inject({ url: correctedUrl })).json().status, 'pending');
+      assert.equal(
+        (
+          await app.inject({
+            method: 'POST',
+            url: correctedUrl,
+            payload: { label: 'Fixture login', username: 'person', password: 'corrected-password' },
+          })
+        ).statusCode,
+        200,
+      );
+      assert.equal(attempts, 6);
     } finally {
       await app.close();
       await pool.end();
@@ -648,9 +673,9 @@ test(
         409,
       );
       const entry = (await vault.list())[0];
-      await assert.rejects(
-        vault.fillSaved(await resume(retryTurn), 'local-development', entry.id, input),
-        /fresh credentials/,
+      assert.equal(
+        await vault.fillSaved(await resume(retryTurn), 'local-development', entry.id, input),
+        false,
       );
       const archived = await vault.request(task2, 'local-development', input);
       await wait(task2);
@@ -985,7 +1010,7 @@ test(
       );
       access = await createVaultAccess(f.pool, {
         ownerId: 'local-development',
-        check: async () => ({ allowed: true, reason: 'asked' }),
+        check: async () => ({ confirm: false }),
       });
       f.recordUse((use, client) =>
         access.used(use, { origin: use.origin, reason: use.reason, itemId: use.entryId }, client),
@@ -1431,18 +1456,22 @@ test(
             injections.slice(before).map((entry) => entry.username),
             ['same-first@example.test', 'same-second@example.test'],
           );
-          await assert.rejects(vault.fillSaved(turn, 'local-development', first.id, combined));
-          await assert.rejects(vault.fillSaved(turn, 'local-development', second.id, combined));
+          assert.equal(await vault.fillSaved(turn, 'local-development', first.id, combined), false);
+          assert.equal(
+            await vault.fillSaved(turn, 'local-development', second.id, combined),
+            false,
+          );
           assert.equal(injections.length, before + 2);
           await addTask('staged-account');
           await vault.fillSaved(task('staged-account'), 'local-development', first.id, input());
-          await assert.rejects(
-            vault.fillSaved(
+          assert.equal(
+            await vault.fillSaved(
               task('staged-account'),
               'local-development',
               second.id,
               input('password'),
             ),
+            false,
           );
           assert.equal(injections.length, before + 3);
         },
@@ -1463,10 +1492,7 @@ test(
           const url = request.url.replace('/vault/', '/api/credential-requests/');
           const available = (await describe(url)).savedEntries;
           assert.ok(available?.some((entry) => entry.id === second.id));
-          assert.equal(
-            available?.some((entry) => entry.id === first.id),
-            false,
-          );
+          assert.ok(available?.some((entry) => entry.id === first.id));
           const before = injections.length;
           const response = await app.inject({
             method: 'POST',
@@ -1975,15 +2001,11 @@ test(
       origin: 'http://localhost:4310',
       cookie: 'otto-access-4310=synthetic-local-access',
     };
-    const forgotten: string[] = [];
     const start = async (getKey: () => Promise<Buffer> = async () => key) => {
       const instance = Fastify({ logger: false });
       registerLocalAccess(instance, 4310, { key: 'synthetic-local-access' });
       const vault = await createVault(pool, {
         keyStore: checkedKeyStore(pool, { id: 'fixture', configured: true, getKey }),
-        onForget: async (origin) => {
-          forgotten.push(origin);
-        },
         inject: async () => assert.fail('Viewing or editing a login must not fill a browser.'),
         resume: async () => assert.fail('Viewing or editing a login must not resume a turn.'),
         retry: async () => assert.fail('Viewing or editing a login must not restart a turn.'),
@@ -2302,30 +2324,6 @@ test(
           );
         },
       );
-
-      await t.test('deleting the last login for a site forgets its grants', async () => {
-        const add = async (label: string) =>
-          (
-            await app.inject({
-              method: 'POST',
-              url: '/api/vault',
-              headers,
-              payload: {
-                label,
-                origin: 'https://forget.example.test',
-                username: `${label}@example.test`,
-                password: `${label}-secret`,
-              },
-            })
-          ).json<VaultLoginEntry>();
-        const [one, two] = [await add('One'), await add('Two')];
-        const remove = (id: string) =>
-          app.inject({ method: 'DELETE', url: `/api/vault/${id}`, headers });
-        assert.equal((await remove(one.id)).statusCode, 200);
-        assert.deepEqual(forgotten, []);
-        assert.equal((await remove(two.id)).statusCode, 200);
-        assert.deepEqual(forgotten, ['https://forget.example.test']);
-      });
     } finally {
       await app.close();
       await pool.end();
@@ -2847,7 +2845,7 @@ test(
       const resumed: string[] = [];
       const recorded: Array<{ action: string; reason: string; origin: string }> = [];
       const remembered: Array<[string, boolean]> = [];
-      let policy: PaymentPolicy = { allowed: true, flagged: false, inOtto: true };
+      let policy: PaymentPolicy = { allowed: true, inOtto: true };
       let url = 'https://shop.fixture.test/checkout';
       let elsewhere: string | undefined;
       let captureFails = false;
@@ -3068,24 +3066,7 @@ test(
       await assert.rejects(payments.request(turn, order), /Synthetic paused page/);
       captureFails = false;
 
-      policy = { allowed: true, flagged: true, inOtto: true };
-      const steered = await payments.request(turn, order);
-      assert.equal(steered.paymentId, undefined);
-      assert.match(steered.question, /^A page in this task had instructions for AI assistants/);
-      assert.equal(
-        (await payments.approve(turn, { paymentId: (await latest()).id })).entered,
-        false,
-      );
-      const changes = remembered.length;
-      assert.equal(await reply('1234'), 'submitted');
-      assert.equal(fills.at(-1)?.card.securityCode, '1234');
-      assert.equal(remembered.length, changes);
-      await assert.rejects(
-        payments.setting(turn, { doItForMe: true }, true),
-        /only from a message/,
-      );
-
-      policy = { allowed: true, flagged: false, inOtto: false };
+      policy = { allowed: true, inOtto: false };
       const linked = await payments.request(turn, order);
       const linkedId = linked.url!.split('/').at(-1)!;
       const securePath = `/api/payment-requests/${linkedId}`;
@@ -3113,9 +3094,9 @@ test(
       );
       assert.match(await payments.setting(turn, { doItForMe: false }, true), /off for Visa ••4242/);
       assert.equal((await vault.paymentCard(card.id)).securityCode, undefined);
-      policy = { allowed: false, reason: 'background' };
-      await assert.rejects(payments.request(turn, order), /never pays/);
-      policy = { allowed: true, flagged: false, inOtto: true };
+      policy = { allowed: false, reason: 'readonly' };
+      await assert.rejects(payments.request(turn, order), /can only read/);
+      policy = { allowed: true, inOtto: true };
 
       await save('Travel card', '5555 5555 5555 4444');
       await assert.rejects(payments.request(turn, order), /Ask the owner which card/);
@@ -3154,15 +3135,13 @@ test(
           ['asked', 'payment'],
           ['uncertain', 'payment'],
           ['asked', 'payment'],
-          ['card', 'code_typed'],
-          ['asked', 'payment'],
           ['card', 'said_yes'],
-          ['held', 'background'],
+          ['held', 'readonly'],
           ['asked', 'payment'],
           ['asked', 'payment'],
         ],
       );
-      policy = { allowed: true, flagged: false, inOtto: false };
+      policy = { allowed: true, inOtto: false };
       const privateCode = await payments.request(turn, { ...order, card: card.id });
       const codeId = privateCode.url!.split('/').at(-1)!;
       const codePath = `/api/payment-requests/${codeId}`;

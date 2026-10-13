@@ -58,7 +58,7 @@ async function dispatch(computer: Computer, request: BrowserRequest, signal: Abo
   switch (request.method) {
     case 'bindProfile':
       if (!computer.bindProfile) throw new Error();
-      return computer.bindProfile(request.threadId, request.profileId, request.origins);
+      return computer.bindProfile(request.threadId, request.profileId);
     case 'deleteProfile':
       if (!computer.deleteProfile) throw new Error();
       return computer.deleteProfile(request.profileId);
@@ -310,6 +310,7 @@ export async function startContainerBrowserWorker(
               : error instanceof Error && 'statusCode' in error && error.statusCode === 423
                 ? 'locked'
                 : 'unavailable',
+          ...(error instanceof BrowserActionError && error.detail ? { detail: error.detail } : {}),
           metadata: metadata(await entry?.computer.catch(() => undefined), input),
         };
       } finally {

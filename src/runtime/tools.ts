@@ -6,9 +6,9 @@ import { browserDownloadBytes } from '../ports/computer.ts';
 import { browserUploadBytes } from '../ports/computer.ts';
 import { basename } from 'node:path';
 import { isMessageReaction } from '../shared/emoji.ts';
-import { requestsPrivateInput, vaultInvitation } from './communication.ts';
+import { vaultInvitation } from './communication.ts';
 import { browserFlowParameters } from './browser-flows.ts';
-import { privateInputNotice, type Turn } from './turn.ts';
+import type { Turn } from './turn.ts';
 
 export const personalActions = [
   'profile_get',
@@ -210,7 +210,7 @@ export const toolDefinitions = {
   ),
   browser: defineTool(
     'browser',
-    'Control your private agent-browser session. open {url}; snapshot (accessibility tree of the page with @eN refs; selector scopes it and offset skips earlier text); click {selector} or {x,y,durationMs?} (hold for durationMs); fill {selector, text} (never secrets); type {selector, text} types as real keystrokes for masked inputs and autocompletes that reject fill (never secrets); select {selector, text} by visible label or value; check/uncheck/hover {selector}; drag {selector,targetSelector} or {points:[{x,y},...],durationMs?} (follow the path with the button held, default 500ms). Coordinates are fractions from 0 to 1 of the full visible screenshot, measured from its top-left; use a fresh screenshot, including for canvas and iframe controls. upload {selector, path} from the task workspace; back/forward/reload; tab_list and tab_switch {tabId}; press {key}: any key agent-browser knows, such as Enter, Backspace, ArrowDown or a character, or a shortcut such as Control+a or Shift+Tab; accept_dialog {text?} (text answers a prompt) and dismiss_dialog close a confirm or prompt dialog that blocks the page; wait {text | url | load} waits up to waitMs when specified for text to appear, the URL to match a pattern such as **/done, or load, domcontentloaded or networkidle; scroll {direction, selector?}; evaluate {script} (one JavaScript expression run in the current page; returns its JSON result with saved secrets redacted); screenshot (image for you); share_screenshot {name?} (send the image to the user); download {url? | selector?, name?} (copy a file into the workspace; foreground downloads also deliver it, while background downloads stay private until share_file; with neither, the open PDF or the last download). If a control opens a document, click it, inspect the page or tabs, then download the document. waitMs waits for slow pages.',
+    'Control your private agent-browser session. open {url}; snapshot (accessibility tree of the page with @eN refs and link URLs; selector scopes it and offset skips earlier text); click {selector} or {x,y,durationMs?} (hold for durationMs); fill {selector, text} (never secrets); type {selector, text} types as real keystrokes for masked inputs and autocompletes that reject fill (never secrets); select {selector, text} by visible label or value; check/uncheck/hover {selector}; drag {selector,targetSelector} or {points:[{x,y},...],durationMs?} (follow the path with the button held, default 500ms). Coordinates are fractions from 0 to 1 of the full visible screenshot, measured from its top-left; use a fresh screenshot, including for canvas and iframe controls. upload {selector, path} from the task workspace; back/forward/reload; tab_list and tab_switch {tabId}; press {key}: any key agent-browser knows, such as Enter, Backspace, ArrowDown or a character, or a shortcut such as Control+a or Shift+Tab; accept_dialog {text?} (text answers a prompt) and dismiss_dialog close a confirm or prompt dialog that blocks the page; wait {text | url | load} waits up to waitMs when specified for text to appear, the URL to match a pattern such as **/done, or load, domcontentloaded or networkidle; scroll {direction, selector?}; evaluate {script} (one JavaScript expression run in the current page; returns its JSON result with saved secrets redacted); screenshot (image for you); share_screenshot {name?} (send the image to the user); download {url? | selector?, name?} (copy a file into the workspace; foreground downloads also deliver it, while background downloads stay private until share_file; with neither, the open PDF or the last download). If a control opens a document, click it, inspect the page or tabs, then download the document. waitMs waits for slow pages.',
     Type.Object({
       action: literals([
         'open',
@@ -268,7 +268,7 @@ export const toolDefinitions = {
   ),
   browser_flow: defineTool(
     'browser_flow',
-    'Reuse known website routines in the current private browser. list {query?} reads the flow registry and ranks matches. get {id} shows a flow. save {flow} stores a checked flow as a file. run {id, inputs?} replays it and checks expectText or expectUrl after each step. It stops with the current page if a check fails. Files live in the owner flow library and remain available after a conversation reset. Start with open and end with a checked snapshot. Use stable selectors and named inputs for entered text. Never store passwords or codes.',
+    'Reuse known website routines in the current private browser. list {query?} reads the flow registry and ranks matches. get {id} shows a flow. save {flow} stores a checked flow as a file. run {id, inputs?} replays it and checks expectText or expectUrl after each step. It stops with the current page if a check fails. Files live in the owner flow library and remain available after a conversation reset. Start with open and end with a checked snapshot. Use stable selectors, and named inputs for text that changes between runs. Never store passwords or codes.',
     browserFlowParameters,
   ),
   sign_in: defineTool(
@@ -321,16 +321,13 @@ export const toolDefinitions = {
   ),
   browser_session: defineTool(
     'browser_session',
-    'Browser profiles for website accounts. connect {url, label?, destinations?} opens a new private profile. use {url, connectionId, destinations?} opens an existing profile without verifying sign-in. destinations lists additional exact origins needed for assets, APIs or sign-in redirects. Network access with a saved profile requires permission for each origin. If a destination is blocked, request it with use. Inspect the page to determine the outcome. save {url, connectionId, signedIn:true} records a successful sign-in on this origin. Only connect accepts label.',
+    'Browser profiles for website accounts. connect {url, label?} opens a new private profile. use {url, connectionId} opens a saved profile after the same permission check as a sign-in, without verifying that it is still signed in. Inspect the page to determine the outcome. save {url, connectionId, signedIn:true} records a successful sign-in on this origin. Only connect accepts label.',
     Type.Union([
       Type.Object(
         {
           action: Type.Literal('connect'),
           url: Type.String({ minLength: 1, maxLength: 2048 }),
           label: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
-          destinations: Type.Optional(
-            Type.Array(Type.String({ minLength: 1, maxLength: 2048 }), { maxItems: 20 }),
-          ),
         },
         { additionalProperties: false },
       ),
@@ -339,9 +336,6 @@ export const toolDefinitions = {
           action: Type.Literal('use'),
           url: Type.String({ minLength: 1, maxLength: 2048 }),
           connectionId: uuid,
-          destinations: Type.Optional(
-            Type.Array(Type.String({ minLength: 1, maxLength: 2048 }), { maxItems: 20 }),
-          ),
         },
         { additionalProperties: false },
       ),
@@ -544,8 +538,6 @@ export function ottoTools(
         (await turn.reply(p.text, undefined, p.replyToMessageId)) ?? 'Message delivered.',
     ),
     bind(toolDefinitions.ask_user, async (p) => {
-      if (requestsPrivateInput(p.question))
-        return { status: 'withheld', message: privateInputNotice };
       const text = p.question.trim();
       if (!text) throw new Error('A question is required.');
       await pause('question', text, { hold: true });
