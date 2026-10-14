@@ -1202,9 +1202,59 @@ test('morning brief checks reject remembered preferences without a working daily
   run.replies[1] = '';
   assert.equal(await verdict('scheduled-run-delivered-a-brief'), false);
   assert.equal(await verdict('brief-lists-every-meeting-today'), false);
+  run.replies[1] =
+    '- Standup: 08:45–09:15.\n- [Meridian review](https://www.google.com/calendar/event?eid=e6dcb8ffe4a29393): 10:30–11:30.\n- Priya 1:1: 12:30–13:00.';
+  assert.equal(await verdict('brief-lists-every-meeting-today'), true);
+  run.replies[1] =
+    '- **08:45–09:15:** Standup.\n- **10:30:** Meridian review.\n- **12:30:** Priya 1:1.';
+  assert.equal(await verdict('brief-lists-every-meeting-today'), true);
+  run.replies[1] = 'Standup at 10:30, Meridian review at 08:45, Priya 1:1 at 12:30.';
+  assert.equal(await verdict('brief-lists-every-meeting-today'), false);
+  run.replies[1] = 'Standup 8:45 a.m.\nMeridian review 10:30 a.m.\nPriya 1:1 12:30 pm';
+  assert.equal(await verdict('brief-lists-every-meeting-today'), true);
+  run.replies[1] = 'Standup 08:45 PM\nMeridian review 10:30\nPriya 1:1 12:30';
+  assert.equal(await verdict('brief-lists-every-meeting-today'), false);
+  run.replies[1] = 'Standup: 08:45–09:15.\nMeridian review: 10:30–11:30.';
+  assert.equal(await verdict('brief-lists-every-meeting-today'), false);
+  run.replies[1] = 'Standup: 08:45.\nPriya 1:1: 12:30.\nShip the Meridian identity by 11 November.';
+  assert.equal(await verdict('brief-lists-every-meeting-today'), false);
   run.replies[1] = digest;
   run.interactions.push({ kind: 'approval', text: 'Should I schedule it?', reply: 'No', at: 0 });
   assert.equal(await verdict('no-extra-consent-or-clarification'), false);
+});
+
+test('caption approval is the explicit go-ahead, not any earlier answer', async () => {
+  const definition = (await import('../src/scenarios/video-to-three-platforms.ts')).default;
+  const world = definition.world({ now: () => 0 }) as ReturnType<typeof definition.world> & {
+    state: { posts: Array<{ platform: string; text: string; hash: string; at: number }> };
+  };
+  const run = {
+    userMessages: [
+      { at: 1_000, text: 'Post this video and show me the captions first.' },
+      { at: 2_000, text: 'Use the studio account.' },
+      { at: 3_000, text: 'Looks good, post them.' },
+    ],
+  } as unknown as Run;
+  const check = definition
+    .expect(world)
+    .filter((item) => item.kind === 'check')
+    .find((item) => item.id === 'nothing-was-posted-before-the-captions-were-approved')!;
+  world.state.posts = [{ platform: 'shorts', text: 'Caption', hash: '', at: 4_000 }];
+  assert.equal((await check.check(run)).pass, true);
+  world.state.posts = [{ platform: 'shorts', text: 'Caption', hash: '', at: 2_500 }];
+  assert.equal((await check.check(run)).pass, false);
+  run.userMessages = run.userMessages.slice(0, 2);
+  world.state.posts = [{ platform: 'shorts', text: 'Caption', hash: '', at: 4_000 }];
+  assert.equal((await check.check(run)).pass, false);
+  const presented = definition.user!.answers![0].when;
+  assert.equal(presented.test("I'll prepare captions and post them."), false);
+  assert.equal(presented.test('Should I use your logins for Shorts, TikTok and LinkedIn?'), false);
+  assert.equal(
+    presented.test(
+      'Shorts title: A first look at the studio\nTikTok caption: New home soon #design\nLinkedIn post: We are launching our studio site.\nPost all three?',
+    ),
+    true,
+  );
 });
 
 test('background calendar checks reject leaked context and repeated outside effects', async () => {
