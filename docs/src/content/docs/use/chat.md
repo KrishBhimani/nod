@@ -50,6 +50,12 @@ The model picker above the message box shows the model Otto uses. Select it to c
 
 Hover over Otto's final reply, or move keyboard focus to it, to see the time and the estimated model cost of that request. **Price unavailable** means part of the usage has no price, for example on a ChatGPT plan. See [Spending and usage](/use/spending/).
 
+## React to messages
+
+To react to one of Otto's replies, double-click it to add 👍, or select **React** under it and pick an emoji. Your reaction sits on the reply's bottom corner. Select it to remove it. Otto takes a reaction as feedback on that reply, never as an answer to a question or an approval.
+
+Otto sometimes reacts to your messages too, such as ✅ when you say yes to something it offered or ❤️ when you thank it. It reacts only now and then, and a reaction never replaces its reply.
+
 ## Replies go back where you wrote
 
 Otto answers each request in the app you sent it from. A message from Telegram gets its reply on Telegram. Everything also appears in the chat in Otto's own app. See [Telegram and WhatsApp](/use/channels/).

@@ -79,6 +79,7 @@ export interface RuntimeContext {
     reaction?: string | null;
     attachments?: MessageAttachment[];
     unseen?: boolean;
+    turnId?: string | null;
   }>;
   memory?: string;
   taskContext?: {

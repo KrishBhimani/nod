@@ -26,6 +26,14 @@ export interface InboundMessage {
   sentAt: Date;
 }
 
+export interface InboundReaction {
+  channelId: string;
+  accountId: string;
+  senderId: string;
+  messageId: string;
+  reaction: string | null;
+}
+
 export interface ChannelPairingRequest {
   channelId: string;
   accountId: string;
@@ -51,6 +59,7 @@ export interface MessagingWebhookResult {
   body: string | Record<string, unknown>;
   contentType?: string;
   messages?: InboundMessage[];
+  reactions?: InboundReaction[];
   pairing?: ChannelPairingRequest;
 }
 
@@ -59,6 +68,7 @@ export interface MessagingTransport {
   poll?(
     accept: (message: InboundMessage) => Promise<void>,
     pair?: (request: ChannelPairingRequest) => Promise<void>,
+    react?: (reaction: InboundReaction) => Promise<void>,
   ): Promise<void>;
   receive(request: MessagingWebhook): Promise<MessagingWebhookResult>;
   post(input: {
@@ -70,5 +80,13 @@ export interface MessagingTransport {
     replyToMessageId?: string;
     attachmentFailure?: (names: string[]) => Promise<string | undefined>;
   }): Promise<{ id: string; ids?: string[] }>;
+  react?(input: {
+    channelId: string;
+    accountId: string;
+    threadId: string;
+    messageId: string;
+    reaction: string | null;
+    signal?: AbortSignal;
+  }): Promise<'sent' | 'unsupported'>;
   close(): Promise<void>;
 }

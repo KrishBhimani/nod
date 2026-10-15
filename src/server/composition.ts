@@ -120,6 +120,7 @@ import {
   createUserMessageService,
   enqueueTurn,
   initializeThreads,
+  reactToAssistantMessage,
   resumeAfterConnection,
   resumeAfterCredentials,
   resumeAfterPayment,
@@ -679,7 +680,14 @@ async function initializeApplication(
     (reply) => trust.answer(reply),
     communication.describe,
   );
-  const reactions = createAgentReactionService({ pool, ownerId, refresh });
+  let channels: Awaited<ReturnType<typeof createChannels>> | undefined;
+  const reactions = createAgentReactionService({
+    pool,
+    ownerId,
+    refresh,
+    deliver: async (messageId, reaction, signal) =>
+      channels ? channels.react(messageId, reaction, signal) : 'absent',
+  });
   const localAccounts = runtimeMode === 'local' ? createAccountStore(pool) : null;
   const accountProfiles = createAccountProfileStore(pool, ownerId);
   await (localAccounts ?? accountProfiles).initialize();
@@ -1138,7 +1146,6 @@ async function initializeApplication(
   onboardingSuggestions.registerRoutes(app);
   tasks.registerRoutes(app);
   triage.registerRoutes(app);
-  let channels: Awaited<ReturnType<typeof createChannels>> | undefined;
   let channelSettings: Awaited<ReturnType<typeof createChannelSettings>> | undefined;
   if (options.channels !== false && (adapters.messaging || adapters.messagingSetup)) {
     const setup = adapters.messagingSetup;
@@ -1171,6 +1178,8 @@ async function initializeApplication(
       ...(channelSettings ? { pair: channelSettings.pair } : {}),
       transport: messaging,
       acceptVerification: (text, input) => chatVerification.accept(text, input),
+      reacted: (messageId, reaction) =>
+        reactToAssistantMessage(messageId, reaction, adapters.model.configured),
       activeThread: (client) => activeThread(client),
       taskCommand: tasks.chatCommand,
       commandReply: async (command, client, threadId) => {
