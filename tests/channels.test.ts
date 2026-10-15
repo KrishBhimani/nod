@@ -1103,6 +1103,18 @@ test('channel presentation isolates private links from the model and preserves o
   const ordinary = 'Consulta [a fatura](https://merchant.example/payments/invoice).';
   assert.equal(await channelReply(ordinary, { threadId: 'owned-thread', present }), ordinary);
   assert.equal(presentation.length, 1);
+  const bare: unknown[] = [];
+  assert.equal(
+    await channelReply('Save it in Otto: /trust?add=login', {
+      threadId: 'owned-thread',
+      present: async (_threadId, input) => {
+        bare.push(input);
+        return 'Continua na aplicação Otto.';
+      },
+    }),
+    'Continua na aplicação Otto.',
+  );
+  assert.doesNotMatch(JSON.stringify(bare), /trust\?add/);
   const imageReply = await channelReply(
     'O ficheiro está anexado. [Imagem](http://localhost:4310/api/artifacts/private-file)',
     { threadId: 'owned-thread', present, deliversAttachments: true },
@@ -1501,7 +1513,7 @@ test(
       assert.equal((await pool.query('SELECT * FROM channel_inbox')).rowCount, 2);
       await addReply(
         'channel:telegram:987:123456:10',
-        'Finish [securely](/credentials/private-token), [approve payment](/payments/private-token) or [add a card](/vault?add=card).',
+        'Finish [securely](/credentials/private-token), [approve payment](/payments/private-token) or [add a card](/trust?add=card).',
       );
       await addReply('channel:whatsapp:555000:wamid.good');
       await pool.query(
@@ -1548,7 +1560,7 @@ test(
         '351910000000',
       );
       assert.equal(JSON.stringify(sent).includes('private-token'), false);
-      assert.equal(JSON.stringify(sent).includes('/vault?add='), false);
+      assert.equal(JSON.stringify(sent).includes('/trust?add='), false);
       assert.equal(JSON.stringify(sent).includes('Unrelated web-only'), false);
       await channels.drain();
       assert.equal(sent.length, 4);
