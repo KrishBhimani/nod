@@ -75,6 +75,7 @@ type ConfirmAction = {
 
 export interface ThreadDependencies {
   analytics?: CaptureAnalytics;
+  observeTurn?: (turnId: string, operation: () => Promise<void>) => Promise<void>;
   consumers?: WorkConsumers;
   artifacts?: ArtifactService;
   writeArtifact?: (
@@ -779,7 +780,8 @@ async function takeQueuedMessages(turnId: string, sessionId: string, channel: st
 async function drainThread(threadId: string, dependencies: ThreadDependencies) {
   if (stopping) return;
   for (const turn of await claimTurns(threadId)) {
-    const work = executeTurn(turn, dependencies)
+    const execute = () => executeTurn(turn, dependencies);
+    const work = (dependencies.observeTurn ? dependencies.observeTurn(turn.id, execute) : execute())
       .catch((error) => console.error(`Turn ${turn.id} did not finish: ${describeFailure(error)}`))
       .then(() => drainNext(threadId))
       .finally(refresh);
@@ -895,6 +897,7 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
   };
   let outcome: Extract<AnalyticsEvent, { event: 'otto_turn_completed' }>['properties']['outcome'] =
     'failed';
+  let waitingReason: 'question' | 'approval' | 'credentials' | undefined;
   dependencies.analytics?.({ event: 'otto_turn_started', properties: analyticsProperties });
   const turnId = turn.id as string;
   const threadId = turn.thread_id as string;
@@ -1200,6 +1203,8 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
       if (!signal.aborted) throw error;
     });
     outcome = signal.aborted ? 'cancelled' : result.status;
+    if (outcome === 'waiting_credentials') waitingReason = 'credentials';
+    else if (outcome === 'waiting_user') waitingReason = result.waitingFor ?? 'question';
   } catch (error) {
     if (stopping) {
       outcome = 'interrupted';
@@ -1219,6 +1224,8 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
         ...analyticsProperties,
         outcome,
         duration_ms: Math.max(0, Date.now() - startedAt),
+        queue_duration_ms: Math.max(0, startedAt - new Date(turn.created_at).getTime()),
+        ...(waitingReason ? { waiting_reason: waitingReason } : {}),
       },
     });
     running.delete(turnId);
