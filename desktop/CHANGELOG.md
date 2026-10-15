@@ -1,11 +1,12 @@
 # Desktop changelog
 
-## 0.1.14 - 2026-10-15
+## 0.1.15 - 2026-10-15
 
 Mac builds are now signed with n8n's Developer ID and notarized by Apple, so macOS opens them without **Open Anyway**. Otto 0.1.12 and earlier can't update to this version on its own: download it and replace Otto in Applications once, or run the Terminal installer. Your data is kept.
 
 ### Features
 
+- **trust:** One Trust page for spending and saved logins, with task check-ins. [#278](https://github.com/n8n-io/otto/pull/278) (b45d012)
 - **desktop:** Download the Windows runtime on first launch. [#276](https://github.com/n8n-io/otto/pull/276) (db98c78)
 - **chat:** LAB-508 standing offers, follow-up messages and reactions in chat apps. [commit](https://github.com/n8n-io/otto/commit/d679dedccb3860115b43d7bb4bd038a16b22acb7) (d679ded)
 - **desktop:** Sign and notarize Mac builds with n8n's Developer ID. [#274](https://github.com/n8n-io/otto/pull/274) (ecfb68e)
@@ -19,6 +20,7 @@ Mac builds are now signed with n8n's Developer ID and notarized by Apple, so mac
 
 ### Fixes
 
+- **release:** Wait up to ten minutes for Apple's staple ticket. [#280](https://github.com/n8n-io/otto/pull/280) (be32b49)
 - **release:** Give notarized Mac builds time to finish. [#277](https://github.com/n8n-io/otto/pull/277) (fcacc67)
 - Use model judgment for confirmations. [#273](https://github.com/n8n-io/otto/pull/273) (7124657)
 - **web:** Stop the web extension from using the server's GitHub login. [#269](https://github.com/n8n-io/otto/pull/269) (6608682)
@@ -54,12 +56,12 @@ Mac builds are now signed with n8n's Developer ID and notarized by Apple, so mac
 
 </details>
 
-[Full changelog](https://github.com/n8n-io/otto/compare/desktop-v0.1.12...fcacc67952279a032131ecd4f734292b26a9d36b)
+[Full changelog](https://github.com/n8n-io/otto/compare/desktop-v0.1.12...be32b497e1d5c86975e4096c8d6d082b5d71dc9f)
 
 <details>
 <summary>Build details</summary>
 
-Source: `fcacc67952279a032131ecd4f734292b26a9d36b`
+Source: `be32b497e1d5c86975e4096c8d6d082b5d71dc9f`
 Previous release: `desktop-v0.1.12`
 
 </details>
