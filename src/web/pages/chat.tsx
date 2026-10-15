@@ -14,6 +14,7 @@ import type { TrustView } from '../../shared/trust';
 import { integrationServices } from '../../shared/integrations';
 import { classifyVerificationReply, securityCodeIn } from '../../shared/verification-code';
 import { Composer, type ComposerHandle, type ComposerSendResult } from '../components/composer';
+import { TaskCard } from './tasks';
 import { MessageBubble } from '../components/message';
 import { ChatTurnRail } from '../components/chat-turn-rail';
 import { BrandMark } from '../components/brand';
@@ -921,6 +922,22 @@ export function Chat({
                     }
                     onStart={(task) => void send(task.title, [], null)}
                   />
+                ) : state.tasks?.some((task) => task.messageId === message.id) ? (
+                  state.tasks
+                    ?.filter((task) => task.messageId === message.id)
+                    .map((task) => (
+                      <TaskCard
+                        key={task.id}
+                        task={task}
+                        onReply={() => {
+                          setReplyTo(
+                            allMessages.find((item) => item.id === task.questionMessageId) ??
+                              message,
+                          );
+                          composer.current?.focus();
+                        }}
+                      />
+                    ))
                 ) : (
                   <MessageBubble
                     message={message}
@@ -1030,7 +1047,12 @@ export function Chat({
             replyTo={replyTo}
             clearReply={() => setReplyTo(null)}
             onSend={send}
-            onStop={working ? () => void stop() : undefined}
+            onStop={
+              working ||
+              state.tasks?.some((task) => ['queued', 'working', 'needs_you'].includes(task.status))
+                ? () => void stop()
+                : undefined
+            }
             stopping={stopping}
           />
         </div>

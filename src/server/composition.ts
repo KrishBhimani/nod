@@ -536,7 +536,12 @@ async function initializeApplication(
     stopConsumer: (id) => boss.offWork('scheduled-task', { id, wait: true }),
   });
   await personal.initialize({ workers: options.workers });
-  const tasks = createTasks({ pool, ownerId, refresh });
+  const tasks = createTasks({
+    pool,
+    ownerId,
+    refresh,
+    discardBrowser: (id) => adapters.computer.discard(id),
+  });
   await tasks.initialize();
   const triage = createTriage({
     consumers,
@@ -793,7 +798,10 @@ async function initializeApplication(
     resume: resumeAfterPayment,
     record: (turn, entry, client) => vaultAccess.record(turn, entry, client),
   });
-  const userMessages = createUserMessageService({ confirmAction: approvals.chat });
+  const userMessages = createUserMessageService({
+    confirmAction: approvals.chat,
+    taskReply: tasks.resolveReply,
+  });
   if (options.workers !== false) {
     await triage.initializeHeartbeat();
     await initializeMemoryLearning({ boss, consumers, run: learning.run });
@@ -813,11 +821,9 @@ async function initializeApplication(
       accountProfile,
       connectedApps: integrations.connectedApps,
       memoryContext: memory.context,
-      task: async (turn, input) => {
-        const result = await withTurnLock(turn.turnId, (client) => tasks.act(client, turn, input));
-        refresh();
-        return result;
-      },
+      taskContext: tasks.context,
+      taskLedger: tasks.read,
+      task: tasks.execute,
       startTurn: tasks.inherit,
       connections: async (...args) => {
         const result = await integrations.manageConnections(...args);
@@ -1042,6 +1048,7 @@ async function initializeApplication(
     submitMessage: userMessages.submit,
     verification: chatVerification,
     startOnboarding: welcome,
+    taskLedger: tasks.read,
     planningTasks: onboardingSuggestions.planning,
     messageCosts: ledger.messageCosts,
     computer,
@@ -1165,6 +1172,7 @@ async function initializeApplication(
       transport: messaging,
       acceptVerification: (text, input) => chatVerification.accept(text, input),
       activeThread: (client) => activeThread(client),
+      taskCommand: tasks.chatCommand,
       commandReply: async (command, client, threadId) => {
         const now = new Date();
         if (command === 'usage') {
@@ -1219,17 +1227,19 @@ async function initializeApplication(
           events.off('event', onEvent);
         };
       },
-      submit: async (text, sourceId, client, channel, messageId, answer) =>
+      submit: async (text, sourceId, client, channel, messageId, answer, replyToMessageId) =>
         (
           await userMessages.submit(text, [], {
             sourceId,
             channel,
             client,
             clientMessageId: messageId,
+            replyToMessageId,
             answer,
           })
         ).turnId,
-      answer: (text, channel) => userMessages.answer(text, { channel }),
+      answer: (text, channel, replyToMessageId) =>
+        userMessages.answer(text, { channel, replyToMessageId }),
     });
     channels.registerRoutes(app);
     await channelSettings?.recover();
