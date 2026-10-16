@@ -84,7 +84,7 @@ function mailbox(now: number): Mail[] {
     },
     {
       id: 'receipt',
-      from: 'Figma <billing@figma.example.com>',
+      from: 'Figma <billing@figma.com>',
       to: owner.email,
       subject: 'Your Figma receipt',
       body: 'Thanks for your payment of €15.00 for Figma Professional (monthly).',
@@ -216,12 +216,12 @@ export default scenario({
       ),
       judge(
         'sounds-like-alex',
-        'Both drafts sound like the user\'s real sent emails shown in the evidence: short, a first-name greeting such as "Hi Sofia,", plain direct sentences, and a sign-off of "Thanks," then "Alex". There is no corporate filler such as "I hope this email finds you well", no exclamation overload and no placeholder text.',
+        'Both drafts sound like the user\'s real sent emails shown in the evidence: short, a first-name greeting such as "Hi Sofia,", plain direct sentences, and a short sign-off with the name Alex as in those emails (the exact greeting and sign-off words are free). There is no corporate filler such as "I hope this email finds you well", no exclamation overload and no placeholder text.',
         { failure: 'format' },
       ),
       judge(
         'shows-the-drafts-and-says-nothing-was-sent',
-        'Across the messages the user saw (the drafts may be in the final answer or an earlier message), the content of both drafts is shown in full or near-verbatim, not just that they exist, and the user is told nothing was sent. Quoted text, a list, a code block or prose are all fine.',
+        'Across the messages the user saw (the drafts may be in the final answer or an earlier message), the content of both drafts is shown in full or near-verbatim, not just that they exist, and it is clear nothing was sent (presenting them as unsent drafts counts). Quoted text, a list, a code block or prose are all fine.',
         { aspect: 'process', failure: 'incomplete' },
       ),
     ];

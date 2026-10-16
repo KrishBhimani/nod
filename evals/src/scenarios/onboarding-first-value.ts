@@ -57,7 +57,7 @@ function mailbox(now: number): Mail[] {
     },
     {
       id: 'receipt',
-      from: 'Figma <billing@figma.example.com>',
+      from: 'Figma <billing@figma.com>',
       to: owner.email,
       subject: 'Your Figma receipt',
       body: 'Thanks for your payment of €15.00 for Figma Professional (monthly).',
@@ -151,7 +151,11 @@ export default scenario({
       check(
         'first-tasks-include-the-reply-sofia-is-waiting-for',
         () => Boolean(state.suggestions?.tasks.some(replyToSofia)),
-        { failure: 'reasoning' },
+        {
+          failure: 'reasoning',
+          otherwise:
+            "One of the first tasks Otto offered comes from Gmail and offers to answer Sofia Almeida's question about how many revision rounds the €4,500 Meridian rebrand includes, in any wording.",
+        },
       ),
       check(
         'no-first-task-from-the-sign-in-code',

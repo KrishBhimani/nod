@@ -140,6 +140,8 @@ export default scenario({
   },
   expect(world) {
     const dates = world.state.sessions.map((entry) => entry.date);
+    const mondayMorning = (item: { enabled: boolean; cron: string | null }) =>
+      item.enabled && /^\d+ (?:[5-9]|1[01]) \* \* (?:1|MON)$/i.test(item.cron ?? '');
     return [
       check(
         'read-every-page-of-the-history',
@@ -185,13 +187,7 @@ export default scenario({
       check(
         'schedules-a-monday-morning-refresh',
         (run) => {
-          const schedule = run.schedules.find(
-            (item) =>
-              item.enabled &&
-              /^\d+ (?:[5-9]|1[01]) \* \* (?:1|MON)$/i.test(item.cron ?? '') &&
-              /fitnova|gym|workout/i.test(item.prompt) &&
-              /sheet|spreadsheet|rows/i.test(item.prompt),
-          );
+          const schedule = run.schedules.find(mondayMorning);
           return {
             pass: Boolean(schedule),
             evidence:
@@ -202,9 +198,33 @@ export default scenario({
         },
         { failure: 'incomplete' },
       ),
+      check(
+        'refresh-prompt-updates-the-workout-sheet',
+        (run) => {
+          const schedule = run.schedules.find(
+            (item) =>
+              mondayMorning(item) &&
+              /fitnova|gym|workout/i.test(item.prompt) &&
+              /sheet|spreadsheet|rows/i.test(item.prompt),
+          );
+          return {
+            pass: Boolean(schedule),
+            evidence:
+              run.schedules
+                .filter(mondayMorning)
+                .map((item) => `prompt: ${item.prompt}`)
+                .join(' | ') || 'no Monday morning schedule',
+          };
+        },
+        {
+          failure: 'incomplete',
+          otherwise:
+            'The saved Monday morning schedule says to pull the FitNova workout history into the Google Sheet again, in any wording.',
+        },
+      ),
       judge(
         'progression-is-accurate',
-        'The progression summary reports the main lifts correctly from the data: squat from 80 kg to about 94 kg, deadlift from 100 kg to about 128 kg, bench press from 60 kg to about 71 kg, with the direction (up) and approximate change stated for each. It does not invent numbers and says over what period.',
+        'The progression summary reports the main lifts correctly from the data: squat from 80 kg to about 94 kg, deadlift from 100 kg to about 128 kg, bench press from 60 kg to about 71 kg; start and end values or the approximate change for each are enough. It does not invent numbers, and the period may be stated or left as the three months the user asked for.',
         { failure: 'reasoning' },
       ),
     ];

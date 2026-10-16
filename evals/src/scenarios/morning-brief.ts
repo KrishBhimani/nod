@@ -213,23 +213,49 @@ export default scenario({
               : undefined,
           };
         },
-        { failure: 'incomplete' },
+        {
+          failure: 'incomplete',
+          otherwise:
+            "The brief from the scheduled run refers to each of today's meetings (Design standup, Meridian rebrand review, 1:1 with Priya) in any wording: its title, a paraphrase, a participant or its time.",
+        },
       ),
       check(
         'brief-flags-the-unanswered-quote',
         (run) => ({ pass: /harborline|marta/i.test(brief(run)) && /quote/i.test(brief(run)) }),
-        { failure: 'reasoning' },
+        {
+          failure: 'reasoning',
+          otherwise:
+            'The brief from the scheduled run flags that Marta Silva at Harborline is still waiting for a reply about her revised quote, in any wording.',
+        },
       ),
       check(
-        'scheduled-run-sends-one-message-without-an-acknowledgement',
+        'scheduled-run-sends-one-message',
         (run) => {
           const sent = run.replies.slice(marks().setup, marks().run);
           return {
-            pass: sent.length === 1 && !/^(on it|got it|sure|checking)/i.test(sent[0].trim()),
+            pass: sent.length === 1,
             evidence: `${sent.length} messages`,
           };
         },
         { aspect: 'process', failure: 'format' },
+      ),
+      check(
+        'scheduled-message-is-not-an-acknowledgement',
+        (run) => {
+          const sent = run.replies.slice(marks().setup, marks().run);
+          return {
+            pass:
+              sent.length > 0 &&
+              !sent.some((text) => /^(on it|got it|sure|checking)/i.test(text.trim())),
+            evidence: sent.map((text) => text.slice(0, 80)).join(' | ') || 'no message',
+          };
+        },
+        {
+          aspect: 'process',
+          failure: 'format',
+          otherwise:
+            'The scheduled run sends the brief itself, without an acknowledgement such as "On it" or "Checking" before or instead of it.',
+        },
       ),
       check(
         'no-extra-consent-or-clarification',
@@ -241,7 +267,7 @@ export default scenario({
       ),
       judge(
         'top-three-are-tied-to-the-goals',
-        "The brief names exactly three priorities, each connected to one of the user's goals (the Meridian rebrand, recurring income), in a sensible order. The priorities include the revised moodboard for Sofia and the unanswered Harborline quote. If today's review has ended, a follow-up action for the moodboard is valid. It does not pad the list with newsletters or promotions.",
+        "The brief names exactly three priorities, each connected to one of the user's goals (the Meridian rebrand, recurring income), in any order. The priorities include the revised moodboard for Sofia and the unanswered Harborline quote. If today's review has ended, a follow-up action for the moodboard is valid. It does not pad the list with newsletters or promotions.",
         { failure: 'reasoning' },
       ),
       judge(

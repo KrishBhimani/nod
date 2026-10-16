@@ -5,8 +5,10 @@ import { runProcess } from '../../../src/providers/process.ts';
 
 export interface Visit {
   host: string;
+  browser?: string;
   method: string;
   path: string;
+  query: string;
   at: number;
 }
 
@@ -26,6 +28,7 @@ export interface SiteContext {
   request: IncomingMessage;
   url: URL;
   form: URLSearchParams;
+  text: string;
   files: UploadedFile[];
   cookie(name: string): string | undefined;
   session<T extends object>(initial: () => T): { id: string; data: T; isNew: boolean };
@@ -103,7 +106,16 @@ export async function serveSites(sites: Record<string, Site>, address = '127.0.0
     const site = sites[host];
     if (!site) return void response.writeHead(404).end('Not found');
     const url = new URL(request.url ?? '/', `https://${host}`);
-    visits.push({ host, method: request.method ?? 'GET', path: url.pathname, at: Date.now() });
+    visits.push({
+      host,
+      ...(typeof request.headers['x-fixture-browser'] === 'string' && {
+        browser: request.headers['x-fixture-browser'],
+      }),
+      method: request.method ?? 'GET',
+      path: url.pathname,
+      query: url.search,
+      at: Date.now(),
+    });
     const chunks: Buffer[] = [];
     let size = 0;
     for await (const chunk of request) {
@@ -128,6 +140,7 @@ export async function serveSites(sites: Record<string, Site>, address = '127.0.0
       request,
       url,
       form,
+      text: raw.toString('utf8'),
       files: parsed.files,
       cookie: (name) => cookies[name],
       session<T extends object>(initial: () => T) {

@@ -51,6 +51,7 @@ export interface UserScript {
   approve?: boolean | ((action: string, args: unknown) => boolean);
   approvalReplies?: string[];
   secrets?: string[] | ((question: string, world: any) => string | undefined);
+  signIn?: { username: string; password: string };
   persona?: string;
 }
 
@@ -65,6 +66,7 @@ interface Meta {
   required: boolean;
   aspect: 'process' | 'outcome';
   failure: FailureClass;
+  otherwise?: string;
 }
 
 export type Expectation =
@@ -76,7 +78,7 @@ export interface Scenario<W extends World = World> {
   title: string;
   linear?: string;
   capabilities: Capability[];
-  tier: 'pr' | 'full' | 'live' | 'canary';
+  tier: 'pr' | 'full' | 'release' | 'live' | 'canary';
   complexity: 'simple' | 'medium' | 'complex';
   stance: 'regression' | 'gap';
   seconds: number;
@@ -99,6 +101,7 @@ interface Options {
   required?: boolean;
   aspect?: 'process' | 'outcome';
   failure?: FailureClass;
+  otherwise?: string;
 }
 
 export const check = (
@@ -111,6 +114,7 @@ export const check = (
   required: options.required ?? true,
   aspect: options.aspect ?? 'outcome',
   failure: options.failure ?? 'incomplete',
+  otherwise: options.otherwise,
   async check(run) {
     const result = await test(run);
     return typeof result === 'boolean' ? { pass: result } : result;

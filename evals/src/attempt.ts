@@ -73,11 +73,12 @@ async function run(spec: AttemptSpec): Promise<AttemptResult> {
   let taskStarted = started;
   const world = definition.world({ now: () => Date.now() });
   const address = await bindAddress();
-  const sites = await serveSites(world.sites ?? {}, address);
-  const unroute = routeFixtureHosts(
-    Object.keys(world.sites ?? {}),
-    `http://${address}:${sites.port}`,
-  );
+  const hosted = {
+    ...Object.fromEntries((world.apps?.remote ?? []).map((item) => [item.host, item.site])),
+    ...world.sites,
+  };
+  const sites = await serveSites(hosted, address);
+  const unroute = routeFixtureHosts(Object.keys(hosted), `http://${address}:${sites.port}`);
   let stack: Stack | undefined;
   let starting: Promise<Stack> | undefined;
   const release = async () => {
@@ -100,7 +101,7 @@ async function run(spec: AttemptSpec): Promise<AttemptResult> {
           { name: 'Alex Rivera', email: 'alex.rivera@riveradesign.example' },
           {},
         ).provider,
-      siteHosts: Object.keys(world.sites ?? {}),
+      siteHosts: Object.keys(hosted),
       siteUpstreamPort: sites.port,
       hermetic: definition.tier !== 'live',
       environment,
@@ -136,14 +137,22 @@ async function run(spec: AttemptSpec): Promise<AttemptResult> {
     ]
       .filter(Boolean)
       .join('\n\n');
-    const { checks, graderFault, judgeFault } = await grade({
-      definition,
-      world,
-      trace,
-      judge: judgeLlm,
-      truth,
-      skipJudges: Boolean(failure),
-    });
+    const scored = () =>
+      grade({
+        definition,
+        world,
+        trace,
+        judge: judgeLlm,
+        truth,
+        skipJudges: Boolean(failure),
+      });
+    let graded = await scored();
+    for (const wait of [20_000, 60_000]) {
+      if (!graded.judgeFault) break;
+      await new Promise((done) => setTimeout(done, wait));
+      graded = await scored();
+    }
+    const { checks, graderFault, judgeFault } = graded;
     const modelFault =
       trace.turns.at(-1)?.status !== 'succeeded' ? trace.modelErrors.at(-1) : undefined;
     const providerFault = trace.turns.find((turn) => turn.error && infra.test(turn.error));

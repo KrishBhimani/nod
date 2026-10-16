@@ -5,9 +5,11 @@ import type { Interaction, Session } from './session.ts';
 import { approvalOrder, type Stack } from './stack.ts';
 import type { World } from './scenario.ts';
 import type { Visit } from './world/sites.ts';
+import { browserSessionId } from '../../src/providers/agent-browser/index.ts';
 
 export interface ToolCall {
   turnId?: string;
+  browser?: string;
   name: string;
   input: any;
   output: string;
@@ -37,6 +39,8 @@ export interface Run {
     source: string;
     error: string | null;
     background: boolean;
+    waiting_reason?: string | null;
+    waiting?: boolean;
     startedAt?: number;
     finishedAt?: number;
   }>;
@@ -121,6 +125,7 @@ function capturedTools(stack: Stack) {
       if (started.has(id)) continue;
       const call: ToolCall = {
         turnId,
+        browser: event.execution?.browserId && browserSessionId(event.execution.browserId),
         name: event.name,
         input: event.input,
         output: '',
@@ -207,6 +212,7 @@ export async function collect(options: {
         const id = `${sessionId}:${block.id}`;
         const call: ToolCall = {
           turnId: currentTurns.get(sessionId),
+          browser: browserSessionId(sessionId),
           name: block.name,
           input: block.arguments,
           output: '',
@@ -251,7 +257,7 @@ export async function collect(options: {
   }));
   const turns = (
     await stack.pool.query(
-      'SELECT id,status,source,error,background,started_at,finished_at FROM turns ORDER BY created_at, id',
+      `SELECT t.id,t.status,t.source,t.error,t.background,t.waiting_reason,t.started_at,t.finished_at,${stack.waiting('t')} AS waiting FROM turns t ORDER BY t.created_at, t.id`,
     )
   ).rows.map(({ started_at, finished_at, ...turn }) => ({
     ...turn,
@@ -311,6 +317,24 @@ export async function collect(options: {
     .map((m) => m.text);
   const files = await session.workspace.list();
   const filePath = (path: string) => path.replace(/^\/workspace\//, '');
+  const sharedPaths = new Set(
+    tools
+      .filter((call) => call.name === 'share_file' && !call.isError)
+      .map((call) => String(call.input?.path ?? '').replace(/^\.\//, ''))
+      .filter((path) => /\.(md|txt|csv|tsv|json|html?|ics|ya?ml|xml)$/i.test(path))
+      .map((path) =>
+        path.startsWith('/workspace/') ? path : files.find((file) => file.endsWith(`/${path}`)),
+      )
+      .filter((path): path is string => Boolean(path)),
+  );
+  const sharedText = (
+    await Promise.all(
+      [...sharedPaths].map(async (path) => {
+        const text = (await session.workspace.read(filePath(path)))?.toString('utf8');
+        return text ? `--- ${path} ---\n${clip(text, 6000)}` : '';
+      }),
+    )
+  ).filter(Boolean);
   const run: Run = {
     task: options.task,
     messages,
@@ -366,7 +390,9 @@ export async function collect(options: {
       return clip(build(800), limit);
     },
     groundTruth() {
-      const failedTurns = turns.filter((turn) => turn.status !== 'succeeded');
+      const failedTurns = turns.filter(
+        (turn) => turn.status !== 'succeeded' && (turn.status !== 'waiting' || turn.waiting),
+      );
       return [
         `Tool calls: ${tools.length} (${tools.filter((call) => call.isError).length} returned an error).`,
         `Assistant messages shown to the user: ${replies.length}.`,
@@ -375,10 +401,13 @@ export async function collect(options: {
           run.writes.length ? run.writes.map((w) => `${w.kind} via ${w.slug}`).join('; ') : 'none'
         }.`,
         `Workspace files: ${files.length ? files.join(', ') : 'none'}.`,
+        ...(sharedText.length
+          ? [`Text of files shared with the user:\n${sharedText.join('\n')}`]
+          : []),
         `Actions the user approved or declined (the server runs these itself, so they never appear as tool calls): ${approvals.length ? approvals.map((item) => `${item.action} ${item.status} ${JSON.stringify(item.args).slice(0, 220)}`).join('; ') : 'none'}.`,
         `Saved memory: ${memory.slice(0, 700)}`,
         failedTurns.length
-          ? `Turns that did not succeed: ${failedTurns.map((turn) => `${turn.status}${turn.error ? ` (${turn.error})` : ''}`).join('; ')}.`
+          ? `Turns that did not succeed: ${failedTurns.map((turn) => `${turn.status} (${turn.background ? 'background ' : ''}${turn.source}${turn.waiting_reason ? `, waiting for ${turn.waiting_reason}` : ''})${turn.error ? ` (${turn.error})` : ''}`).join('; ')}.`
           : 'Every turn finished.',
       ].join('\n');
     },

@@ -86,6 +86,7 @@ export interface Stack {
   directory: string;
   container: string;
   pool: pg.Pool;
+  waiting(alias: string): string;
   bossSchema: string;
   sessionRoot: string;
   observations: Array<{ turnId: string; event: Observation }>;
@@ -111,6 +112,7 @@ export async function startStack(options: {
   environment: Record<string, string | undefined>;
 }): Promise<Stack> {
   const { model, environment } = options;
+  const typesafe = environment.TYPESAFE_API_KEY?.trim();
   const suffix = randomUUID().replaceAll('-', '').slice(0, 12);
   const schema = `eval_${suffix}`;
   const bossSchema = `eval_boss_${suffix}`;
@@ -149,7 +151,13 @@ export async function startStack(options: {
   let databasePool: pg.Pool | undefined;
   async function stop() {
     await application?.app.close().catch(() => {});
-    if (browserStarted) await runProcess('docker', ['rm', '-f', browserContainer]).catch(() => {});
+    if (browserStarted) {
+      const logs = await runProcess('docker', ['logs', '--tail', '200', browserContainer]).catch(
+        () => undefined,
+      );
+      if (logs) process.stderr.write(`Browser container output:\n${logs.stdout}${logs.stderr}\n`);
+      await runProcess('docker', ['rm', '-f', browserContainer]).catch(() => {});
+    }
     if (containerStarted) await runProcess('docker', ['rm', '-f', container]).catch(() => {});
     await databasePool?.end().catch(() => {});
     await admin
@@ -280,6 +288,7 @@ export async function startStack(options: {
       { createContainerBrowserComputer },
       { createDockerWorkspace },
       { createPublicLinkPreviewProvider },
+      { waitingTurnSql },
     ] = await Promise.all([
       load<typeof import('../../src/server/composition.ts')>('src/server/composition.ts'),
       load<typeof import('../../src/server/db.ts')>('src/server/db.ts'),
@@ -295,6 +304,7 @@ export async function startStack(options: {
       load<typeof import('../../src/providers/public-web/link-preview.ts')>(
         'src/providers/public-web/link-preview.ts',
       ),
+      load<{ waitingTurnSql?: (alias: string) => string }>('src/server/vault.ts'),
     ]);
     databasePool = pool;
     const vaultKey = randomBytes(32);
@@ -356,6 +366,24 @@ export async function startStack(options: {
             ).createOpenAIRelevanceClassifier({ apiKey: environment.OPENAI_API_KEY }),
           }
         : {}),
+      ...((typesafe || model.provider !== 'anthropic') &&
+      existsSync(join(appSource, 'src/providers/decisions.ts'))
+        ? {
+            decisions: (
+              await load<typeof import('../../src/providers/decisions.ts')>(
+                'src/providers/decisions.ts',
+              )
+            ).createDecisionModel({
+              resolve: async () =>
+                typesafe
+                  ? { provider: 'typesafe', key: typesafe }
+                  : {
+                      provider: model.provider === 'openrouter' ? 'openrouter' : 'openai',
+                      key: model.apiKey,
+                    },
+            }),
+          }
+        : {}),
       memoryCurator: createPiMemoryCurator({ provider: model.provider, apiKey: model.apiKey }),
       onboardingCurator: createPiMemoryCurator({
         provider: model.provider,
@@ -371,6 +399,7 @@ export async function startStack(options: {
     const cookie = `${accessCookie(port)}=${await accessKey(join(directory, '.local'))}`;
     return {
       request: createStackRequest(baseUrl, cookie),
+      waiting: (alias) => waitingTurnSql?.(alias) ?? `${alias}.status='waiting'`,
       origin: baseUrl,
       directory,
       container,

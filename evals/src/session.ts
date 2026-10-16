@@ -10,7 +10,7 @@ export interface Interaction {
   text: string;
   reply?: string;
   action?: string;
-  requestKind?: 'otp' | 'payment';
+  requestKind?: 'otp' | 'payment' | 'password';
   at: number;
 }
 
@@ -63,15 +63,17 @@ export function createSession(options: {
   const userMessages: Array<{ at: number; text: string }> = [];
   let secretIndex = 0;
   let approvalIndex = 0;
+  const answeredRequests = new Set<string>();
   let threadId: string | undefined;
 
-  async function post(path: string, body: unknown) {
+  async function post(path: string, body: unknown, allowed: number[] = []) {
     const response = await stack.request(path, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
     const text = await response.text();
+    if (!response.ok && allowed.includes(response.status)) return undefined;
     if (!response.ok)
       throw new Error(`POST ${path} failed (${response.status}): ${text.slice(0, 300)}`);
     return text ? JSON.parse(text) : {};
@@ -132,33 +134,96 @@ export function createSession(options: {
     return (result.rows[0]?.text as string | undefined) ?? '';
   }
 
-  async function waiting(scheduled = false) {
-    const id = await thread();
-    const turn = (
-      await pool.query(
-        'SELECT id,status,waiting_reason FROM turns WHERE thread_id=$1 AND ($2 OR NOT background) ORDER BY created_at DESC, id DESC LIMIT 1',
-        [id, scheduled],
-      )
-    ).rows[0];
-    if (turn?.status !== 'waiting') return undefined;
+  async function credentialForm(text: string) {
+    const token = /\]\(\/vault\/([A-Za-z0-9_-]{20,})\)/.exec(text)?.[1];
+    if (!token) return undefined;
+    const response = await stack.request(`/api/credential-requests/${token}`);
+    if (!response.ok) return undefined;
+    const request = await response.json();
+    return request.status === 'pending' && request.kind !== 'otp'
+      ? {
+          token,
+          kind: request.kind as string,
+          label: request.label as string | undefined,
+          fields: (request.fields ?? []) as Array<{ kind: string }>,
+        }
+      : undefined;
+  }
+
+  async function pendingFor(turn: { id: string; waiting_reason: string }, text: string) {
     const approval = (
       await pool.query(
         `SELECT id,action,args,confirmation_message_id FROM approvals WHERE turn_id=$1 AND status='pending' ORDER BY ${await approvalOrder(pool)} DESC LIMIT 1`,
         [turn.id],
       )
     ).rows[0];
-    const text = await lastAssistantText();
     if (approval) return { kind: 'approval' as const, approval, text };
-    if (turn.waiting_reason === 'credentials') {
-      const state = await (await stack.request('/api/state')).json();
-      return { kind: 'secret' as const, request: state.verificationRequests?.[0], text };
-    }
+    if (turn.waiting_reason === 'credentials')
+      for (const started = Date.now(); ; await sleep(250)) {
+        const form = await credentialForm(text);
+        if (form && user.signIn) return { kind: 'form' as const, form, text };
+        if (form) return { kind: 'question' as const, text };
+        const state = await (await stack.request('/api/state')).json();
+        const request = (state.verificationRequests ?? []).find(
+          (item: { id: string }) => !answeredRequests.has(item.id),
+        );
+        if (request || Date.now() - started > 30_000)
+          return { kind: 'secret' as const, request, text };
+        const still = await pool.query(
+          `SELECT 1 FROM turns t WHERE t.id=$1 AND ${stack.waiting('t')}`,
+          [turn.id],
+        );
+        if (!still.rowCount) return { kind: 'resumed' as const, text };
+      }
     return { kind: 'question' as const, text };
   }
 
+  async function waiting(scheduled = false) {
+    const id = await thread();
+    const turn = (
+      await pool.query(
+        `SELECT t.id,t.waiting_reason,${stack.waiting('t')} AS waiting FROM turns t WHERE t.thread_id=$1 AND ($2 OR NOT t.background) ORDER BY t.created_at DESC, t.id DESC LIMIT 1`,
+        [id, scheduled],
+      )
+    ).rows[0];
+    if (!turn?.waiting) return undefined;
+    return pendingFor(turn, await lastAssistantText());
+  }
+
+  async function waitingTask() {
+    const id = await thread();
+    const turn = (
+      await pool.query(
+        `WITH RECURSIVE chain(start, next, source) AS (
+           SELECT t.id, t.parent_turn_id, t.source FROM turns t
+           WHERE t.thread_id=$1 AND t.background AND ${stack.waiting('t')}
+           UNION ALL
+           SELECT chain.start, p.parent_turn_id, p.source FROM chain JOIN turns p ON p.id=chain.next
+           WHERE chain.source='resume'
+         )
+         SELECT t.id,t.waiting_reason FROM turns t
+         WHERE t.id IN (SELECT start FROM chain WHERE source IN ('task','user'))
+         ORDER BY t.created_at, t.id LIMIT 1`,
+        [id],
+      )
+    ).rows[0];
+    if (!turn) return undefined;
+    const message = (
+      await pool.query(
+        "SELECT id,text FROM messages WHERE turn_id=$1 AND role='assistant' ORDER BY created_at DESC, id DESC LIMIT 1",
+        [turn.id],
+      )
+    ).rows[0];
+    return {
+      ...(await pendingFor(turn, (message?.text as string | undefined) ?? '')),
+      replyTo: message?.id as string | undefined,
+    };
+  }
+
   async function respond(scheduled = false): Promise<boolean> {
-    const pending = await waiting(scheduled);
+    const pending = (await waiting(scheduled)) ?? (scheduled ? undefined : await waitingTask());
     if (!pending) return false;
+    if (pending.kind === 'resumed') return true;
     const at = Date.now();
     if (pending.kind === 'approval') {
       const approve =
@@ -188,9 +253,23 @@ export function createSession(options: {
       });
       return true;
     }
+    if (pending.kind === 'form') {
+      const { form } = pending;
+      const login = user.signIn!;
+      interactions.push({ kind: 'secret', requestKind: 'password', text: pending.text, at });
+      await post(`/api/credential-requests/${form.token}`, {
+        ...(form.label ? { label: form.label } : {}),
+        ...(form.kind === 'identifier' || form.fields.some((field) => field.kind === 'identifier')
+          ? { username: login.username }
+          : {}),
+        ...(form.kind === 'password' ? { password: login.password } : {}),
+      });
+      return true;
+    }
     if (pending.kind === 'secret') {
-      const value =
-        typeof user.secrets === 'function'
+      const value = !pending.request
+        ? undefined
+        : typeof user.secrets === 'function'
           ? user.secrets(pending.text, options.world)
           : user.secrets?.[secretIndex++];
       if (!value || !pending.request) {
@@ -203,7 +282,12 @@ export function createSession(options: {
         text: pending.text,
         at,
       });
-      await post('/api/messages', { text: value, verificationRequestId: pending.request.id });
+      answeredRequests.add(pending.request.id);
+      await post('/api/messages', { text: value, verificationRequestId: pending.request.id }).catch(
+        (error: Error) => {
+          if (!/\(409\):.*no longer available/.test(error.message)) throw error;
+        },
+      );
       return true;
     }
     const scripted = user.answers?.find((answer) => answer.when.test(pending.text));
@@ -218,7 +302,10 @@ export function createSession(options: {
     }
     interactions.push({ kind: 'question', text: pending.text, reply, at });
     userMessages.push({ at, text: reply });
-    await post('/api/messages', { text: reply });
+    await post('/api/messages', {
+      text: reply,
+      ...('replyTo' in pending && pending.replyTo ? { replyToMessageId: pending.replyTo } : {}),
+    });
     return true;
   }
 
@@ -237,7 +324,10 @@ export function createSession(options: {
     const at = Date.now();
     const generated = await options.simulator.followUp(
       user.persona,
-      userMessages[taskFrom]?.text ?? '',
+      userMessages
+        .slice(taskFrom)
+        .map((message) => message.text)
+        .join('\n'),
       text,
     );
     if (!generated) return false;
