@@ -67,7 +67,7 @@ import { learnWritingStyle } from './writing-style.ts';
 import { createTenantDrain } from './tenant-drain.ts';
 import { createChatVerification } from './chat-verification.ts';
 import { createAgentReactionService } from './agent-reactions.ts';
-import { createApprovals } from './approvals.ts';
+import { createApprovals, turnOrigin } from './approvals.ts';
 import { createCommunication } from './communication.ts';
 import { createTrust } from './trust.ts';
 import { createArtifactService, localArtifacts } from './artifacts.ts';
@@ -771,6 +771,7 @@ async function initializeApplication(
       kind: 'sign_in' | 'session' | 'form';
       account?: string;
       itemId?: string;
+      sessionOrigin?: string;
     },
   ): Promise<{ reason: VaultActivityReason } | { question: string }> {
     const access = await vaultAccess.authorize(turn, target);
@@ -895,7 +896,20 @@ async function initializeApplication(
               ? await personal.getSchedule(String(input.id))
               : undefined;
           if (action === 'schedule_cancel' && schedule && !schedule.enabled) return schedule;
-          const verdict = await trust.check(turn, `OTTO_${action}`, input);
+          const current = schedule
+            ? {
+                title: schedule.title,
+                prompt: schedule.prompt,
+                cron: schedule.cron,
+                runAt: schedule.runAt,
+                timeZone: schedule.timeZone,
+              }
+            : undefined;
+          const verdict = await trust.check(
+            turn,
+            `OTTO_${action}`,
+            current ? { ...input, currentSchedule: current } : input,
+          );
           return approvals.request(turn, `OTTO_${action}`, input, {
             ...provenance,
             allowed: !verdict.confirm,
@@ -918,24 +932,19 @@ async function initializeApplication(
               : undefined,
             details: {
               ...(verdict.confirm ? { reason: verdict.reason } : {}),
-              ...(schedule
-                ? {
-                    schedule: {
-                      title: schedule.title,
-                      prompt: schedule.prompt,
-                      cron: schedule.cron,
-                      runAt: schedule.runAt,
-                      timeZone: schedule.timeZone,
-                    },
-                  }
-                : {}),
+              ...(current ? { schedule: current } : {}),
             },
           });
         }
         await admit?.(false);
         if (['memory_forget', 'memory_learn', 'memory_control'].includes(action)) {
+          const origin = await turnOrigin(turn.turnId);
           return withTurnLock(turn.turnId, () =>
-            personal.manage(action, args, { ...provenance, turnId: turn.turnId }),
+            personal.manage(action, args, {
+              ...provenance,
+              turnId: turn.turnId,
+              ownerRooted: origin?.source === 'user',
+            }),
           );
         }
         if (action === 'usage_get') return ledger.read();
