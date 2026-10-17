@@ -76,20 +76,14 @@ Mobile web uses the same compact previews. Open a preview to read the steps, rep
 
 ## Telegram without a task page
 
-Telegram shows each task as a text message. The first message shows its name and status. Progress and completion messages reply to that message. A progress message shows the current step. A question or approval request also stays linked to the task.
+Telegram shows each task as messages Otto writes in your language. The first one says what it is starting. Questions, approval requests and the result reply to that message, so they stay linked to the task.
 
-```text
-Working · Compare travel options
-Check the train times
-Step 2/3: Compare travel time and price
-```
-
-Use Telegram's **Reply** control to send an update or answer to a task. Other messages go to the main chat. These commands work without a model request:
+Use Telegram's **Reply** control to send an update or answer to a task. Other messages go to the main chat. These commands answer from Otto's task records, and Otto words the reply:
 
 | Command   | Result                                                                                                  |
 | --------- | ------------------------------------------------------------------------------------------------------- |
 | `/tasks`  | List open tasks and their current state.                                                                |
-| `/status` | List open tasks. Reply to a task message with `/status` to see its goal, steps and current state.       |
+| `/status` | Show each open task's goal, steps and current state. Reply to a task message to see only that task.     |
 | `/stop`   | Stop all active work and close open tasks. Reply to a task message with `/stop` to stop only that task. |
 
 The task list sends one message per task. You can reply to that message, the task's first message, a progress message, a question, a file, a result or a status response. If Otto cannot match a reply to a task, `/stop` asks you to select a task. It does not stop all work.
