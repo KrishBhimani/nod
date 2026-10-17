@@ -50,10 +50,12 @@ export interface Mail {
   body: string;
   at: number;
   labels?: string[];
+  automated?: boolean;
   attachments?: Array<{ filename: string; mimeType: string; size: number; bytes?: Buffer }>;
 }
 
-interface StoredMail extends Required<Omit<Mail, 'attachments'>> {
+interface StoredMail extends Required<Omit<Mail, 'attachments' | 'automated'>> {
+  automated?: boolean;
   attachments: Array<{
     filename: string;
     mimeType: string;
@@ -94,7 +96,7 @@ const instant = (value: string) =>
   /^\d{9,11}$/.test(value) ? Number(value) * 1000 : Date.parse(value.replaceAll('/', '-'));
 
 const addresses = (header: string) =>
-  header.split(',').map((part) => (/<([^>]+)>/.exec(part)?.[1] ?? part).trim().toLowerCase());
+  (header.match(/[^\s<>,;"]+@[^\s<>,;"]+/g) ?? []).map((address) => address.toLowerCase());
 
 function mailMatches(
   mail: StoredMail,
@@ -1793,6 +1795,23 @@ export function createApps(
           }
         },
       };
+    },
+    async sentEmails(accountId) {
+      if (accounts.get(accountId)?.service !== 'gmail') return [];
+      return (world.gmail?.mails ?? [])
+        .filter(
+          (mail) =>
+            mail.labels.includes('SENT') &&
+            !['DRAFT', 'TRASH', 'SPAM'].some((label) => mail.labels.includes(label)),
+        )
+        .sort((a, b) => b.at - a.at)
+        .slice(0, 30)
+        .map((mail) => ({
+          from: addresses(mail.from)[0],
+          to: [mail.to, mail.cc].filter(Boolean).flatMap(addresses),
+          automated: mail.automated ?? false,
+          text: mail.body,
+        }));
     },
     async inboxSnippets(accountId) {
       if (accounts.get(accountId)?.service !== 'gmail') return [];

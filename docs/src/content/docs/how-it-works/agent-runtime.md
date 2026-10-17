@@ -56,7 +56,7 @@ Tool definitions live in [`src/runtime/tools.ts`](https://github.com/n8n-io/otto
 | Tool                                                                | What it does                                                                                                                                 |
 | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `read`, `bash`, `edit`, `write`, `find`, `ls`                       | Pi's native tools. They run inside the workspace container.                                                                                  |
-| `skills`                                                            | Reads a task guide from the trusted [skill library](/how-it-works/skills/).                                                                  |
+| `skills`                                                            | Reads a [guide](/how-it-works/skills/) or [learned skill](/how-it-works/memory/#learned-skills); only owner-started work writes one.         |
 | `send_message`                                                      | Sends a message now. The only delivery in background turns.                                                                                  |
 | `follow_up`                                                         | In a chat or saved task, queues one short line that goes out as its own message right after the reply, such as an offer to keep doing a job. |
 | `ask_user`                                                          | Asks one question and ends the turn as waiting.                                                                                              |
@@ -117,7 +117,7 @@ The prompt has three layers, built in [`src/runtime/prompt.ts`](https://github.c
 | Layer         | Contains                                                                                                                         | Sent                       |
 | ------------- | -------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
 | Static prompt | Otto's personality and rules, the conversation and background rules, the core guides, the skill catalog and Pi's tool guidelines | Once per session           |
-| Owner context | Account details, date format and the memory index                                                                                | Again only when it changes |
+| Owner context | Account details, date format, the memory index and the learned skill index                                                       | Again only when it changes |
 | Turn message  | Mode, time, channel, message ID, reply target, recent conversation and the instruction                                           | Every turn                 |
 
 The core guides are `connected-apps`, `schedules-and-watches`, `artifacts` and `video-links`. Pi's own tool guidelines are appended to the static prompt, because Otto's custom prompt would otherwise drop them.

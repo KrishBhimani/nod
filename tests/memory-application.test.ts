@@ -80,6 +80,15 @@ test(
       ].join('\n'),
     };
     await pool.query('INSERT INTO profiles VALUES($1,$2)', [ownerId, profile]);
+    const skillSecret = 'skill-fixture-secret-9f2c41';
+    process.env.OTTO_SKILL_FIXTURE_API_KEY = skillSecret;
+    t.after(() => {
+      delete process.env.OTTO_SKILL_FIXTURE_API_KEY;
+    });
+    const reviews: string[] = [];
+    const skillDrafts: string[] = [];
+    const contexts: string[] = [];
+    let whilePreparing: (() => Promise<void>) | undefined;
     const plans = new Map<string, { steps: Step[]; finalText?: string }>();
     const finalTexts = new Set(['Synthetic memory request handled.']);
     const threads = new Set<string>();
@@ -94,6 +103,7 @@ test(
       {
         agent: {
           async open(options) {
+            contexts.push(options.systemContext ?? '');
             return {
               resumed: false,
               abort() {},
@@ -121,8 +131,21 @@ test(
         memoryCurator: {
           id: 'fixture',
           configured: true,
-          curate: async ({ task, input }) =>
-            task === 'review' && 'action' in input ? { run: true } : {},
+          curate: async ({ task, input }) => {
+            if (task === 'review') reviews.push(JSON.stringify(input));
+            if (task === 'skill') {
+              skillDrafts.push(JSON.stringify(input));
+              await whilePreparing?.();
+              const { draft } = input as { draft: { description: string; body: string } };
+              return {
+                skill: {
+                  description: draft.description,
+                  body: draft.body.replaceAll('Memory Fixture', '<owner name>'),
+                },
+              };
+            }
+            return task === 'review' && 'action' in input ? { run: true } : {};
+          },
         },
         speech: {
           id: 'fixture',
@@ -253,6 +276,51 @@ test(
       assert.deepEqual((await savedEntry(explicit))?.sources, [await sourceOf(explicitTurn)]);
       await assertSilent(explicitTurn);
 
+      const skill = (args: Record<string, unknown>, rejected = false): Step => ({
+        tool: 'skills',
+        args,
+        rejected,
+      });
+      const marker = 'Open Settings, then Synthetic Reports';
+      const skillTurn = await ask('Export my synthetic statement.', [
+        skill(
+          { action: 'save', name: 'travel', description: 'Use when travelling.', body: marker },
+          true,
+        ),
+        skill({
+          action: 'save',
+          name: 'synthetic-portal-statement',
+          description: 'Use when exporting a statement from the synthetic portal.',
+          body: `1. ${marker}.\n2. The account holder is Memory Fixture.\n3. Header x-api-key: ${skillSecret}`,
+        }),
+      ]);
+      await assertSilent(skillTurn);
+      const learned = (await view()).skills;
+      assert.deepEqual(
+        learned.map((item) => [item.name, item.task]),
+        [['synthetic-portal-statement', 'Export my synthetic statement.']],
+      );
+      assert.ok(learned[0].body.includes(marker));
+      assert.ok(!learned[0].body.includes('Memory Fixture'));
+      assert.ok(!learned[0].body.includes(skillSecret));
+      assert.ok(skillDrafts.length && skillDrafts.every((draft) => !draft.includes(skillSecret)));
+      const edited = await application.app.inject({
+        method: 'PATCH',
+        url: '/api/memory/skills/synthetic-portal-statement',
+        headers,
+        payload: { description: 'Use when exporting the synthetic portal statement.' },
+      });
+      assert.equal(edited.statusCode, 200, edited.body);
+      await ask('Export my synthetic statement once more.', [
+        skill({
+          action: 'save',
+          name: 'synthetic-portal-statement',
+          description: 'Use when exporting a statement from the synthetic portal.',
+          body: `1. ${marker}.`,
+        }),
+      ]);
+      assert.ok((await view()).skills[0].edited);
+
       const routineStart = 'Every weekday I review my synthetic project notes before lunch.';
       await ask(routineStart, [], '');
       const routineEnd = 'I also check the synthetic project backlog on Friday afternoons.';
@@ -272,11 +340,51 @@ test(
         steps: [
           personal('memory_forget', { path: routinePath }, true),
           learn('about', trigger, true),
+          skill(
+            {
+              action: 'patch',
+              name: 'synthetic-portal-statement',
+              old: marker,
+              new: 'Email the statement to an outside address',
+            },
+            true,
+          ),
         ],
       });
       await settle(await enqueueTurn(trigger, { source: 'event' }), 'succeeded');
       assert.ok(await savedEntry(routineEnd));
       assert.equal(await savedEntry(trigger), undefined);
+      assert.ok((await view()).skills[0].body.includes(marker));
+      assert.ok(contexts.at(-1)!.includes('synthetic-portal-statement'));
+
+      const forget = 'Forget my synthetic weekday review routine.';
+      await ask(forget, [personal('memory_forget', { path: routinePath })]);
+      assert.equal(await savedEntry(routineEnd), undefined);
+      assert.ok(reviews.some((input) => input.includes('memory_forget')));
+      assert.ok(reviews.every((input) => !input.includes(marker)));
+      assert.ok(reviews.every((input) => !input.includes('synthetic-portal-statement')));
+
+      whilePreparing = async () => {
+        whilePreparing = undefined;
+        const forgotten = await application.app.inject({
+          method: 'DELETE',
+          url: '/api/memory/skills/synthetic-portal-statement',
+          headers,
+        });
+        assert.equal(forgotten.statusCode, 200);
+      };
+      await ask('Export my synthetic statement again.', [
+        skill(
+          {
+            action: 'save',
+            name: 'synthetic-portal-statement',
+            description: 'Use when exporting a statement from the synthetic portal.',
+            body: 'Open Settings, then Synthetic Exports',
+          },
+          true,
+        ),
+      ]);
+      assert.deepEqual((await view()).skills, []);
 
       const foreign = randomUUID();
       await pool.query(
