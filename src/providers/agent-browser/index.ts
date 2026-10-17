@@ -1477,6 +1477,10 @@ export function createAgentBrowserComputer(options: {
       throw new Error('The security code is needed for this card.');
     const month = String(card.expiryMonth).padStart(2, '0');
     const year = String(card.expiryYear);
+    const monthName = (length: 'long' | 'short', locale = 'en') =>
+      new Intl.DateTimeFormat(locale, { month: length, timeZone: 'UTC' }).format(
+        new Date(Date.UTC(card.expiryYear, card.expiryMonth - 1, 1)),
+      );
     const expiry = (field: CardExpiryField | undefined, defaults: string[]) => {
       if (!field || typeof field === 'string') return defaults;
       return [
@@ -1485,10 +1489,7 @@ export function createAgentBrowserComputer(options: {
           if (token === 'MM') return month;
           if (token === 'YYYY') return year;
           if (token === 'YY') return year.slice(-2);
-          return new Intl.DateTimeFormat(field.locale ?? 'en', {
-            month: token === 'MMM' ? 'short' : 'long',
-            timeZone: 'UTC',
-          }).format(new Date(Date.UTC(card.expiryYear, card.expiryMonth - 1, 1)));
+          return monthName(token === 'MMM' ? 'short' : 'long', field.locale);
         }),
       ];
     };
@@ -1497,7 +1498,12 @@ export function createAgentBrowserComputer(options: {
       { field: 'expiry', values: expiry(fields.expiry, [`${month}/${year.slice(-2)}`]) },
       {
         field: 'expiryMonth',
-        values: expiry(fields.expiryMonth, [month, String(card.expiryMonth)]),
+        values: expiry(fields.expiryMonth, [
+          month,
+          String(card.expiryMonth),
+          monthName('long'),
+          monthName('short'),
+        ]),
       },
       { field: 'expiryYear', values: expiry(fields.expiryYear, [year, year.slice(-2)]) },
       { field: 'securityCode', values: card.securityCode ? [card.securityCode] : [] },
@@ -1917,9 +1923,17 @@ export function createAgentBrowserComputer(options: {
     });
   }
 
+  async function clear(rawId: string): Promise<void> {
+    await remove(threadIdentity(rawId));
+  }
+
   async function discard(rawId: string): Promise<void> {
     const id = threadIdentity(rawId);
     discarded.add(id);
+    await remove(id);
+  }
+
+  async function remove(id: string): Promise<void> {
     await closeBrowser(id);
     await Promise.all([
       rm(resolve(runtimeRoot, 'profiles', id), { recursive: true, force: true }),
@@ -1953,6 +1967,7 @@ export function createAgentBrowserComputer(options: {
     currentPage: tracked(currentPage),
     hold: tracked(hold),
     close: tracked(closeBrowser),
+    clear: tracked(clear),
     discard: tracked(discard),
     dispose: async () => {
       disposed = true;

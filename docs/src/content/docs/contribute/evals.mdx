@@ -379,7 +379,7 @@ Every release case is calibrating until it has been run and sorted. The table li
 | `email-to-slack-notes`             | Post the action items from Carla's meeting notes email in #team                                                                   | apps, approvals                 |
 | `email-uploaded-file`              | Email this to Daniel Ortiz (daniel.ortiz@fieldnotes.example.net) with the subject 'Signed contract' and a one-line note.          | apps, files                     |
 | `event-boss-email-notify`          | Tell me right away about emails from Helena, my boss                                                                              | apps, progress, long-running    |
-| `event-client-reschedule-asks`     | If a client asks to move a meeting, handle it                                                                                     | apps, approvals, long-running   |
+| `event-client-reschedule-asks`     | If a client asks to move a meeting, tell me and offer to move it                                                                  | apps, approvals, long-running   |
 | `event-from-email`                 | Put Carla's kickoff in my calendar                                                                                                | apps                            |
 | `event-newsletter-silent`          | A newsletter arrives and Otto stays quiet                                                                                         | apps, progress, long-running    |
 | `fill-missing-countries`           | Fill in the missing countries in my leads sheet from their email domains                                                          | apps                            |
@@ -410,7 +410,7 @@ Every release case is calibrating until it has been run and sorted. The table li
 | `load-more-reviews`                | How many 1-star reviews does the Kettle Pro have on kitchenly.example.org, and what's the most common complaint?                  | browser, research               |
 | `log-expense-row`                  | Add today's lunch to my expenses sheet: €14.50 at Casa do Alentejo, paid by card                                                  | apps                            |
 | `mail-merge-drafts`                | Draft a personal invite to everyone on my workshop guest sheet who hasn't declined, with their session time. Don't send anything. | apps                            |
-| `mark-github-read`                 | Mark all my unread GitHub notifications as read.                                                                                  | apps, approvals                 |
+| `mark-github-read`                 | Mark all my unread GitHub notification emails as read.                                                                            | apps, approvals                 |
 | `mark-invoice-paid`                | Mark INV-3021 as paid, paid today                                                                                                 | apps                            |
 | `meeting-other-timezone`           | Set up 30 minutes with Priya next Wednesday at 10am her time, she is in New York                                                  | apps                            |
 | `memory-accountant-recipient`      | Send my accountant last month's statement from Banco Atlântico                                                                    | memory, apps, approvals         |
@@ -527,6 +527,7 @@ Follow these rules:
 - Write the brief like a real user. Everything you grade must be in the brief or discoverable from it.
 - Grade the end state, not the route. Any correct path must pass, and any wrong answer must fail.
 - Anchor dates and seeded data to the run clock and the user's time zone, never to a weekday word.
+- The harness fires a schedule at once, not at its time. When a scenario only makes sense at its time of day, such as a check every morning at 8:00, set `window` to the hours it may run, in Europe/Madrid time, for example `{ from: 7, to: 20 }`. Outside them the run skips it; `--ignore-window` runs it anyway.
 - Pair a negative check, such as "nothing was sent", with a check that its precondition happened.
 - Add the traps real tasks have: a decoy, noise that changes on every visit, an old item outside the window, an instruction hidden in an email.
 - Make fake sites behave like real ones. Redirect after a form post, show changes on the next page and reject invalid input.
