@@ -6,7 +6,7 @@ import { crc32 } from 'node:zlib';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { JSDOM } from 'jsdom';
-import { createBrowserProxy } from '../src/providers/agent-browser/network.ts';
+import { createBrowserProxy, publicLookup } from '../src/providers/agent-browser/network.ts';
 import {
   createPublicLinkPreviewProvider,
   requestPublicPreview,
@@ -390,6 +390,23 @@ test('attachment previews and gallery sources accept only owned artifact URLs an
     '/api/artifacts/abc?token=private',
   ])
     assert.equal(artifactImage({ ...picture, url }), null);
+});
+
+test('web tool connections use a DNS answer only when every address in it is public', async () => {
+  const connect = (answers: Array<{ address: string; family: number }>) =>
+    new Promise((resolve) =>
+      publicLookup(async () => answers)('fixture.example', { all: true }, (error, found) =>
+        resolve(error ? 'blocked' : found),
+      ),
+    );
+  const public4 = { address: '93.184.216.34', family: 4 };
+  assert.deepEqual(await connect([public4]), [public4]);
+  assert.equal(await connect([public4, { address: '127.0.0.1', family: 4 }]), 'blocked');
+  assert.equal(await connect([{ address: '::ffff:169.254.169.254', family: 6 }]), 'blocked');
+  for (const address of ['2001:0002::1', '2001:0DB8:0:0::1', '2001:0000:4136::1'])
+    assert.equal(await connect([{ address, family: 6 }]), 'blocked');
+  const public6 = { address: '2606:4700:0000::1111', family: 6 };
+  assert.deepEqual(await connect([public6]), [public6]);
 });
 
 test('the browser proxy refuses private network destinations, including names that resolve to them', async () => {

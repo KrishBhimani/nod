@@ -31,7 +31,7 @@ import type { WorkAdmission } from './work-admission.ts';
 import type { SiteIcon } from '../ports/link-preview.ts';
 import { BrowserConnectionError } from './browser-connections.ts';
 import type { TurnRef } from './thread.ts';
-import { privateEmailResult } from './integration-result.ts';
+import { noMailCheck, privateEmailResult, type MailCheck } from './integration-result.ts';
 import { withoutSecretKeys } from './redaction.ts';
 import type { AnalyticsEvent, CaptureAnalytics } from './analytics.ts';
 import {
@@ -42,7 +42,10 @@ import {
   type AnalyticsConnection,
 } from './analytics-connections.ts';
 import {
+  fileDigest,
   hasWorkspaceFiles,
+  pinnedWorkspaceFiles,
+  pinWorkspaceFiles,
   uploadWorkspaceFiles,
   workspaceFileSchemas,
 } from './integration-files.ts';
@@ -147,6 +150,7 @@ type IntegrationOptions = {
   browserAccounts?: () => Promise<VaultLoginEntry[]>;
   browserConnections?: () => Promise<Connection[]>;
   icon?: (origin: string) => Promise<SiteIcon | null>;
+  mailCheck?: MailCheck;
 };
 
 function browserService(origin: string) {
@@ -185,7 +189,13 @@ function messageIdentity(data: Record<string, unknown>, field: 'message' | 'thre
   return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,200}$/.test(value) ? value : undefined;
 }
 
-export function eventOverview(toolkit: string, trigger: string, data: Record<string, unknown>) {
+export async function eventOverview(
+  toolkit: string,
+  trigger: string,
+  data: Record<string, unknown>,
+  check: MailCheck,
+  signal?: AbortSignal,
+) {
   const fields =
     toolkit === 'gmail'
       ? {
@@ -194,10 +204,11 @@ export function eventOverview(toolkit: string, trigger: string, data: Record<str
           ...data,
         }
       : data;
-  return `Connected-app event from ${toolkit}; trigger ${trigger}. Assess whether there is useful background work to do.\n${untrustedBlock(`${toolkit} event`, JSON.stringify(privateEmailResult(withoutSecretKeys(fields))))}`;
+  return `Connected-app event from ${toolkit}; trigger ${trigger}. Assess whether there is useful background work to do.\n${untrustedBlock(`${toolkit} event`, JSON.stringify(await privateEmailResult(withoutSecretKeys(fields), check, signal)))}`;
 }
 
 export async function createIntegrations(pool: Pool, options: IntegrationOptions) {
+  const mailCheck = options.mailCheck ?? noMailCheck;
   const configuredOwner = z.string().min(1).max(200).parse(options.ownerId);
   const provider = options.provider;
   function connectionAnalytics(app: string): AnalyticsConnection {
@@ -1693,6 +1704,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     args: Record<string, unknown>,
     turn?: TurnRef,
     signal?: AbortSignal,
+    pin = false,
   ) {
     assertOwner(ownerId);
     signal?.throwIfAborted();
@@ -1709,31 +1721,43 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       const row = await selectConnection(ownerId, slug, connectionId);
       if (hasWorkspaceFiles(args)) {
         const read = options.readWorkspaceFile;
+        if (!turn && !pin && pinnedWorkspaceFiles(args)) return { ...args, connectionId: row.id };
         if (!turn || !read) throw new IntegrationError('Workspace file upload is unavailable.');
         let remaining = fileBytes;
+        const load = async (input: { workspaceFile: string; size?: number; sha256?: string }) => {
+          signal?.throwIfAborted();
+          if (!remaining)
+            throw new IntegrationError(
+              `The app files must total between 1 byte and ${fileBytes / 1024 / 1024} MB.`,
+            );
+          const bytes = await read(turn, input.workspaceFile, remaining);
+          if (!bytes.byteLength || bytes.byteLength > remaining)
+            throw new IntegrationError(
+              `The app files must total between 1 byte and ${fileBytes / 1024 / 1024} MB.`,
+            );
+          if (
+            input.sha256 !== undefined &&
+            (bytes.byteLength !== input.size || fileDigest(bytes) !== input.sha256)
+          )
+            throw new IntegrationError(
+              `${input.workspaceFile} changed after this action was confirmed, so nothing was sent.`,
+              409,
+            );
+          remaining -= bytes.byteLength;
+          signal?.throwIfAborted();
+          return bytes;
+        };
+        if (pin)
+          return { ...((await pinWorkspaceFiles(args, load)) as object), connectionId: row.id };
         args = (await withAccountSession(ownerId, [row], signal, async (session) => {
           if (!session.upload) throw new IntegrationError('This app provider cannot upload files.');
           return uploadWorkspaceFiles(
             args,
-            async (input) => {
-              signal?.throwIfAborted();
-              if (!remaining)
-                throw new IntegrationError(
-                  `The app files must total between 1 byte and ${fileBytes / 1024 / 1024} MB.`,
-                );
-              const bytes = await read(turn, input.workspaceFile, remaining);
-              if (!bytes.byteLength || bytes.byteLength > remaining)
-                throw new IntegrationError(
-                  `The app files must total between 1 byte and ${fileBytes / 1024 / 1024} MB.`,
-                );
-              remaining -= bytes.byteLength;
-              signal?.throwIfAborted();
-              return {
-                name: input.name ?? basename(input.workspaceFile),
-                mimeType: input.mimeType,
-                bytes,
-              };
-            },
+            async (input) => ({
+              name: input.name ?? basename(input.workspaceFile),
+              mimeType: input.mimeType,
+              bytes: await load(input),
+            }),
             async (file) => {
               signal?.throwIfAborted();
               const result = await session.upload!(action, file, signal, row.account_id!);
@@ -1892,6 +1916,24 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
               AbortSignal.any([stop.signal, AbortSignal.timeout(30_000)]),
             );
             stop.signal.throwIfAborted();
+            const overviews = await Promise.all(
+              result.messages.map((message) =>
+                eventOverview(
+                  'gmail',
+                  'inbox',
+                  {
+                    message_id: message.id,
+                    thread_id: message.threadId,
+                    subject: message.subject,
+                    sender: message.sender,
+                    timestamp: message.receivedAt,
+                  },
+                  mailCheck,
+                  stop.signal,
+                ),
+              ),
+            );
+            stop.signal.throwIfAborted();
             client = await pool.connect();
             await client.query('BEGIN');
             const saved = await client.query(
@@ -1913,18 +1955,8 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
               ],
             );
             if (saved.rowCount) {
-              for (const message of result.messages) {
-                const summary = `Source connectionId: ${row.id}.\n${eventOverview(
-                  'gmail',
-                  'inbox',
-                  {
-                    message_id: message.id,
-                    thread_id: message.threadId,
-                    subject: message.subject,
-                    sender: message.sender,
-                    timestamp: message.receivedAt,
-                  },
-                )}`;
+              for (const [index, message] of result.messages.entries()) {
+                const summary = `Source connectionId: ${row.id}.\n${overviews[index]}`;
                 await client.query(
                   `INSERT INTO integration_events (id,owner_id,summary,slug,account_id,provider_id,poll_connection_id)
                  VALUES ($1,$2,$3,'gmail',$4,$5,$6) ON CONFLICT(id) DO UPDATE SET poll_connection_id=EXCLUDED.poll_connection_id,
@@ -2226,9 +2258,8 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
               entry.slug === request.params.slug &&
               entry.status === 'disconnected',
           );
-          return options.discovered.signIn(
+          return options.discovered.authorize(
             request.params.slug,
-            undefined,
             expired ? input.connectionId : undefined,
           );
         }
@@ -2407,7 +2438,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         if (!event.id || event.id.length > 200)
           return reply.code(400).send({ error: 'The webhook event has no valid identity.' });
         const messageId = slug.data === 'gmail' && messageIdentity(event.data, 'message');
-        const summary = `Source connectionId: ${row.id}.\n${eventOverview(slug.data, event.trigger, event.data)}`;
+        const summary = `Source connectionId: ${row.id}.\n${await eventOverview(slug.data, event.trigger, event.data, mailCheck)}`;
         await pool.query(
           'INSERT INTO integration_events (id,owner_id,summary,slug,account_id,trigger_id,provider_id) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(id) DO NOTHING',
           [
