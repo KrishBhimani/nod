@@ -365,6 +365,12 @@ export function createBridgeComputer(options: {
           origin: z.string().max(2048),
           url: z.string().max(8192),
           controls: controls.optional(),
+          submits: z
+            .union([
+              z.object({ method: z.string(), to: z.string() }).strict(),
+              z.literal('unknown'),
+            ])
+            .optional(),
           dropTarget: controls.optional(),
           dialog: z.string().max(8192).optional(),
         })

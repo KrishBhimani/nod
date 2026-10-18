@@ -740,12 +740,17 @@ async function initializeApplication(
       page: page.url,
       step: step.action,
       ...(page.controls?.length ? { control: page.controls } : {}),
+      ...(page.submits ? { submits: page.submits } : {}),
       ...(page.dropTarget?.length ? { dropTarget: page.dropTarget } : {}),
       ...(page.dialog !== undefined ? { dialog: page.dialog } : {}),
       ...(step.action === 'upload' ? { file: basename(step.path) } : {}),
       ...(typed.length ? { typedOnPage: typed } : {}),
       command,
     };
+  };
+  const formSent = (value: unknown) => {
+    const form = value as { method?: unknown; to?: unknown } | string | undefined;
+    return typeof form === 'object' ? `${String(form.method)} ${String(form.to)}` : String(form);
   };
   const replayBrowserStep = async (
     args: Record<string, unknown>,
@@ -766,15 +771,13 @@ async function initializeApplication(
       Object.assign(new BrowserActionError('browser_target_changed'), { notRun: true });
     if (!browserId) throw notRun();
     const current = await computer
-      .currentPage(
-        browserId,
-        command.action === 'accept_dialog' ? (command as BrowserAction) : undefined,
-      )
+      .currentPage(browserId, command.action === 'upload' ? undefined : (command as BrowserAction))
       .catch(() => undefined);
     if (
       current?.origin !== expectOrigin ||
       current.url !== args.page ||
-      current.dialog !== args.dialog
+      current.dialog !== args.dialog ||
+      formSent(current.submits) !== formSent(args.submits)
     )
       throw notRun();
     try {

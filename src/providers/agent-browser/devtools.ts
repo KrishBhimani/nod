@@ -12,9 +12,16 @@ type DomNode = {
   contentDocument?: DomNode;
 };
 export type FocusedField = { origin: string; session: string; context: number };
+export type ControlQuery = {
+  selector?: string;
+  point?: { x: number; y: number };
+  pixel?: { x: number; y: number };
+  focused?: boolean;
+};
 
 const active = `(() => { if (!document.hasFocus()) return null; let node = document.activeElement; for (;;) { const root = node && (node.shadowRoot ?? (globalThis.__ottoRoots ?? []).find(root => root.host === node)); if (!root?.activeElement) break; node = root.activeElement; } return node && !['IFRAME', 'FRAME', 'BODY', 'HTML'].includes(node.tagName) ? node : null; })()`;
 const focusScript = `(() => { const node = ${active}; globalThis.__ottoFocused = node; return node ? node.tagName : ''; })()`;
+const submitsScript = `function (enter) { const node = this.nodeType === 1 ? this : this.parentElement; const control = enter ? node : (node?.closest('button, input') ?? node?.closest('label')?.control); const form = control?.form; const button = ['submit', 'image'].includes(control?.type); if (!form || !(button || (enter && control.tagName === 'INPUT'))) return null; const own = (name) => Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, name).get.call(form); const submitter = button ? control : [...own('elements')].find((element) => ['submit', 'image'].includes(element.type)); const method = (submitter?.hasAttribute('formmethod') ? submitter.formMethod : own('method')) || 'get'; if (method === 'dialog') return null; return { method: method.toUpperCase(), to: submitter?.hasAttribute('formaction') ? submitter.formAction : own('action') }; }`;
 const blurScript = `(() => { const node = document.activeElement; if (node && node !== document.body && typeof node.blur === 'function') node.blur(); return ''; })()`;
 const armScript = (privateValue: boolean) =>
   `(() => { const node = ${active}; if (!node || node !== globalThis.__ottoFocused) return ''; globalThis.__ottoField = node; if (${privateValue}) (globalThis.__ottoPrivateFields ??= new Set()).add(node); node.setAttribute('autocomplete', 'off'); if (node.tagName !== 'SELECT') { if (typeof node.select === 'function') node.select(); else document.execCommand('selectAll'); document.execCommand('delete'); } return node.tagName; })()`;
@@ -322,6 +329,139 @@ export async function openDevtools(url: string, targetId: string, signal?: Abort
     return results;
   }
 
+  const locate = async (query: ControlQuery) => {
+    let backendNodeId: number | undefined;
+    let session = page;
+    const describe = async (params: Record<string, unknown>) =>
+      ((await send('DOM.describeNode', params, session)) as { node: { backendNodeId: number } })
+        .node.backendNodeId;
+    if (query.point || query.pixel) {
+      const { cssVisualViewport: view } = (await send('Page.getLayoutMetrics', {}, page)) as {
+        cssVisualViewport: { clientWidth: number; clientHeight: number };
+      };
+      const at = (value: number, size: number) =>
+        Math.max(0, Math.min(Math.ceil(size) - 1, Math.round(value)));
+      const x = at(query.pixel?.x ?? query.point!.x * view.clientWidth, view.clientWidth);
+      const y = at(query.pixel?.y ?? query.point!.y * view.clientHeight, view.clientHeight);
+      ({ backendNodeId } = (await send(
+        'DOM.getNodeForLocation',
+        { x, y, ignorePointerEventsNone: true },
+        page,
+      )) as { backendNodeId?: number });
+      const owner = backendNodeId
+        ? (
+            (await send('DOM.describeNode', { backendNodeId }, page)) as {
+              node: { nodeName: string; frameId?: string };
+            }
+          ).node
+        : undefined;
+      if (owner?.frameId && ['IFRAME', 'FRAME'].includes(owner.nodeName)) {
+        for (const child of [...sessions].filter((item) => item !== page)) {
+          if ((await tree(child).catch(() => []))[0]?.id !== owner.frameId) continue;
+          const { model } = (await send('DOM.getBoxModel', { backendNodeId }, page)) as {
+            model: { content: number[] };
+          };
+          const inner = (await send(
+            'DOM.getNodeForLocation',
+            {
+              x: Math.round(x - model.content[0]!),
+              y: Math.round(y - model.content[1]!),
+              ignorePointerEventsNone: true,
+            },
+            child,
+          ).catch(() => undefined)) as { backendNodeId?: number } | undefined;
+          if (inner?.backendNodeId) {
+            backendNodeId = inner.backendNodeId;
+            session = child;
+          }
+          break;
+        }
+      }
+    } else if (query.selector) {
+      const { root } = (await send('DOM.getDocument', { depth: 0 }, page)) as {
+        root: { nodeId: number };
+      };
+      const { nodeId } = (await send(
+        'DOM.querySelector',
+        { nodeId: root.nodeId, selector: query.selector },
+        page,
+      )) as { nodeId: number };
+      if (nodeId) backendNodeId = await describe({ nodeId });
+    } else if (query.focused) {
+      const hits = (await everyFrame(focusScript, 'focus').catch(() => [])).filter(
+        (item) => item.value,
+      );
+      const hit = hits.length === 1 ? hits[0]! : undefined;
+      if (hit) {
+        session = hit.session;
+        const { result } = (await send(
+          'Runtime.evaluate',
+          {
+            contextId: hit.context,
+            expression: 'globalThis.__ottoFocused',
+            objectGroup: 'otto-control',
+          },
+          session,
+        )) as { result?: { objectId?: string } };
+        if (result?.objectId) backendNodeId = await describe({ objectId: result.objectId });
+        await send('Runtime.releaseObjectGroup', { objectGroup: 'otto-control' }, session);
+      }
+      const [main] = backendNodeId ? [] : await tree(page);
+      if (main) {
+        session = page;
+        const { result } = (await send(
+          'Runtime.evaluate',
+          {
+            contextId: await world(page, main.id),
+            expression:
+              '(() => { let node = document.activeElement; while (node?.shadowRoot?.activeElement) node = node.shadowRoot.activeElement; return node === document.body && !node.isContentEditable ? null : node; })()',
+            objectGroup: 'otto-control',
+          },
+          page,
+        )) as { result?: { objectId?: string } };
+        if (result?.objectId) backendNodeId = await describe({ objectId: result.objectId });
+        await send('Runtime.releaseObjectGroup', { objectGroup: 'otto-control' }, page);
+      }
+    }
+    return backendNodeId ? { backendNodeId, session } : undefined;
+  };
+
+  const formOf = async (found: { backendNodeId: number; session: string }, enter: boolean) => {
+    const [frame] = await tree(found.session);
+    if (!frame) throw new Error('The control is not in an open frame.');
+    const { object } = (await send(
+      'DOM.resolveNode',
+      {
+        backendNodeId: found.backendNodeId,
+        executionContextId: await world(found.session, frame.id),
+        objectGroup: 'otto-control',
+      },
+      found.session,
+    )) as { object: { objectId: string } };
+    try {
+      const { result, exceptionDetails } = (await send(
+        'Runtime.callFunctionOn',
+        {
+          objectId: object.objectId,
+          functionDeclaration: submitsScript,
+          arguments: [{ value: enter }],
+          returnByValue: true,
+        },
+        found.session,
+      )) as {
+        result?: { value?: { method?: unknown; to?: unknown } | null };
+        exceptionDetails?: unknown;
+      };
+      if (exceptionDetails) throw new Error('The control could not be inspected.');
+      const value = result?.value;
+      return typeof value?.method === 'string' && typeof value.to === 'string'
+        ? { method: value.method, to: value.to }
+        : null;
+    } finally {
+      await send('Runtime.releaseObjectGroup', { objectGroup: 'otto-control' }, found.session);
+    }
+  };
+
   return {
     async readOnly(expression: string) {
       const { result, exceptionDetails } = (await send(
@@ -403,105 +543,10 @@ export async function openDevtools(url: string, targetId: string, signal?: Abort
         )) === true
       );
     },
-    async controls(query: {
-      selector?: string;
-      point?: { x: number; y: number };
-      focused?: boolean;
-    }) {
-      let backendNodeId: number | undefined;
-      let session = page;
-      const describe = async (params: Record<string, unknown>) =>
-        ((await send('DOM.describeNode', params, session)) as { node: { backendNodeId: number } })
-          .node.backendNodeId;
-      if (query.point) {
-        const { cssVisualViewport: view } = (await send('Page.getLayoutMetrics', {}, page)) as {
-          cssVisualViewport: { clientWidth: number; clientHeight: number };
-        };
-        const at = (fraction: number, size: number) =>
-          Math.max(0, Math.min(Math.ceil(size) - 1, Math.round(fraction * size)));
-        const x = at(query.point.x, view.clientWidth);
-        const y = at(query.point.y, view.clientHeight);
-        ({ backendNodeId } = (await send(
-          'DOM.getNodeForLocation',
-          { x, y, ignorePointerEventsNone: true },
-          page,
-        )) as { backendNodeId?: number });
-        const owner = backendNodeId
-          ? (
-              (await send('DOM.describeNode', { backendNodeId }, page)) as {
-                node: { nodeName: string; frameId?: string };
-              }
-            ).node
-          : undefined;
-        if (owner?.frameId && ['IFRAME', 'FRAME'].includes(owner.nodeName)) {
-          for (const child of [...sessions].filter((item) => item !== page)) {
-            if ((await tree(child).catch(() => []))[0]?.id !== owner.frameId) continue;
-            const { model } = (await send('DOM.getBoxModel', { backendNodeId }, page)) as {
-              model: { content: number[] };
-            };
-            const inner = (await send(
-              'DOM.getNodeForLocation',
-              {
-                x: Math.round(x - model.content[0]!),
-                y: Math.round(y - model.content[1]!),
-                ignorePointerEventsNone: true,
-              },
-              child,
-            ).catch(() => undefined)) as { backendNodeId?: number } | undefined;
-            if (inner?.backendNodeId) {
-              backendNodeId = inner.backendNodeId;
-              session = child;
-            }
-            break;
-          }
-        }
-      } else if (query.selector) {
-        const { root } = (await send('DOM.getDocument', { depth: 0 }, page)) as {
-          root: { nodeId: number };
-        };
-        const { nodeId } = (await send(
-          'DOM.querySelector',
-          { nodeId: root.nodeId, selector: query.selector },
-          page,
-        )) as { nodeId: number };
-        if (nodeId) backendNodeId = await describe({ nodeId });
-      } else if (query.focused) {
-        const hits = (await everyFrame(focusScript, 'focus').catch(() => [])).filter(
-          (item) => item.value,
-        );
-        const hit = hits.length === 1 ? hits[0]! : undefined;
-        if (hit) {
-          session = hit.session;
-          const { result } = (await send(
-            'Runtime.evaluate',
-            {
-              contextId: hit.context,
-              expression: 'globalThis.__ottoFocused',
-              objectGroup: 'otto-control',
-            },
-            session,
-          )) as { result?: { objectId?: string } };
-          if (result?.objectId) backendNodeId = await describe({ objectId: result.objectId });
-          await send('Runtime.releaseObjectGroup', { objectGroup: 'otto-control' }, session);
-        }
-        const [main] = backendNodeId ? [] : await tree(page);
-        if (main) {
-          session = page;
-          const { result } = (await send(
-            'Runtime.evaluate',
-            {
-              contextId: await world(page, main.id),
-              expression:
-                '(() => { let node = document.activeElement; while (node?.shadowRoot?.activeElement) node = node.shadowRoot.activeElement; return node === document.body && !node.isContentEditable ? null : node; })()',
-              objectGroup: 'otto-control',
-            },
-            page,
-          )) as { result?: { objectId?: string } };
-          if (result?.objectId) backendNodeId = await describe({ objectId: result.objectId });
-          await send('Runtime.releaseObjectGroup', { objectGroup: 'otto-control' }, page);
-        }
-      }
-      if (!backendNodeId) return [];
+    async controls(query: ControlQuery) {
+      const found = await locate(query);
+      if (!found) return [];
+      const { backendNodeId, session } = found;
       const { nodes } = (await send(
         'Accessibility.getPartialAXTree',
         { backendNodeId, fetchRelatives: true },
@@ -527,6 +572,12 @@ export async function openDevtools(url: string, targetId: string, signal?: Abort
         if (!node.ignored && name) controls.push({ role: String(node.role?.value ?? ''), name });
       }
       return controls;
+    },
+    async submits(query: ControlQuery, enter: boolean) {
+      const target = await locate(query);
+      if (target) return formOf(target, enter);
+      if (query.focused) return null;
+      throw new Error('The control could not be found.');
     },
     async document() {
       const [main] = await tree(page);

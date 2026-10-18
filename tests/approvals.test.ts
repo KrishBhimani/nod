@@ -1017,9 +1017,11 @@ test(
           );
           await finish(hotel.turnId, 'succeeded');
           await trust.check(turn, 'GMAIL_SEND_EMAIL', { to: 'hotel@example.test' });
-          assert.deepEqual(
-            reviews.at(-1)!.userMessages.map((item: { text: string }) => item.text),
-            ['Read my fixture flight dates.'],
+          const started = reviews.at(-1)!.userMessages.map((item: { text: string }) => item.text);
+          assert.equal(started.at(-1), 'Read my fixture flight dates.');
+          assert.equal(
+            started.includes('Send the separate hotel request to hotel@example.test.'),
+            false,
           );
           const oldApproval = await propose(turn, 'GMAIL_SEND_EMAIL', { to: 'hotel@example.test' });
           await db.pool.query(
@@ -1054,10 +1056,14 @@ test(
           await db.pool.query("UPDATE approvals SET status='expired' WHERE id=$1", [freshApproval]);
           await trust.check(continued, 'GMAIL_FETCH_EMAILS', {});
           const words = reviews.at(-1)!.userMessages.map((item: { text: string }) => item.text);
-          assert.deepEqual(words, [
+          assert.deepEqual(words.slice(-2), [
             'Read my fixture flight dates.',
             'Use the new fixture flight dates.',
           ]);
+          assert.equal(
+            words.includes('Send the separate hotel request to hotel@example.test.'),
+            false,
+          );
           await tasks.execute(
             continued,
             { action: 'finish', id: task.id, status: 'done', result: 'Dates checked' },
@@ -1071,6 +1077,168 @@ test(
           assert.equal(chatWords.includes('Read my fixture flight dates.'), false);
           assert.equal(chatWords.includes('Use the new fixture flight dates.'), false);
           await finish(chat.turnId, 'succeeded');
+        },
+      );
+
+      await t.test(
+        "an owner update the chat relays to an older task keeps the task's request",
+        async (t) => {
+          const parent = await begin('Track the fixture parcel.');
+          t.after(() => finish(parent.turnId, 'cancelled'));
+          const source = (await row(parent.turnId)).message_id;
+          const task = (await tasks.execute(
+            parent,
+            {
+              action: 'start',
+              title: 'Fixture parcel',
+              message: 'Tracking the fixture parcel.',
+              doneWhen: 'Delivered',
+              now: 'Tracking',
+            },
+            source,
+          )) as { id: string };
+          t.after(async () => {
+            await db.pool.query(
+              "UPDATE turns SET task_id=NULL,status='cancelled',finished_at=now() WHERE task_id=$1",
+              [task.id],
+            );
+            await db.pool.query('DELETE FROM tasks WHERE id=$1', [task.id]);
+          });
+          await finish(parent.turnId, 'succeeded');
+          await db.pool.query(
+            "UPDATE turns SET status='succeeded',finished_at=now() WHERE task_id=$1 AND source='task'",
+            [task.id],
+          );
+          await db.pool.query(
+            "UPDATE messages SET created_at=now()-interval '2 days' WHERE id=$1",
+            [source],
+          );
+          const relay = await begin('Use the new fixture delivery address.');
+          t.after(() => finish(relay.turnId, 'cancelled'));
+          await tasks.execute(
+            relay,
+            { action: 'reply', ids: [task.id] },
+            (await row(relay.turnId)).message_id,
+          );
+          const relayed = await running(
+            (
+              await db.pool.query('SELECT id FROM turns WHERE task_id=$1 AND parent_turn_id=$2', [
+                task.id,
+                relay.turnId,
+              ])
+            ).rows[0].id,
+          );
+          t.after(() => finish(relayed.turnId, 'cancelled'));
+          await tasks.inherit(relayed);
+          await trust.check(relayed, 'GMAIL_FETCH_EMAILS', {});
+          const words = reviews.at(-1)!.userMessages.map((item: { text: string }) => item.text);
+          assert.equal(words.includes('Track the fixture parcel.'), true);
+          assert.equal(words.at(-1), 'Use the new fixture delivery address.');
+        },
+      );
+
+      await t.test(
+        'a task started from an answer keeps the request the answer belongs to',
+        async (t) => {
+          const request = 'Find a fixture table and book it only when I say go.';
+          const asked = await begin(request);
+          t.after(() => finish(asked.turnId, 'cancelled'));
+          await db.pool.query(
+            "INSERT INTO messages(id,owner_id,thread_id,turn_id,role,text) VALUES($1,$2,$3,$4,'assistant','Which fixture city?')",
+            [randomUUID(), ownerId, asked.threadId, asked.turnId],
+          );
+          await db.pool.query(
+            "UPDATE turns SET status='waiting',waiting_reason='question' WHERE id=$1",
+            [asked.turnId],
+          );
+          const answer = await thread.submitUserMessage('Fixture city.');
+          assert.equal((await row(answer.turnId)).parent_turn_id, asked.turnId);
+          const reply = await running(answer.turnId);
+          t.after(() => finish(reply.turnId, 'cancelled'));
+          const task = (await tasks.execute(
+            reply,
+            {
+              action: 'start',
+              title: 'Fixture table',
+              message: 'Looking for fixture tables.',
+              doneWhen: 'Options shown',
+              now: 'Searching',
+            },
+            answer.messageId,
+          )) as { id: string };
+          t.after(async () => {
+            await db.pool.query(
+              "UPDATE turns SET task_id=NULL,status='cancelled',finished_at=now() WHERE task_id=$1",
+              [task.id],
+            );
+            await db.pool.query('DELETE FROM tasks WHERE id=$1', [task.id]);
+          });
+          const worker = await running(
+            (
+              await db.pool.query("SELECT id FROM turns WHERE task_id=$1 AND source='task'", [
+                task.id,
+              ])
+            ).rows[0].id,
+          );
+          await tasks.inherit(worker);
+          await trust.check(worker, 'OTTO_browser', { website: 'https://tables.example.test' });
+          assert.deepEqual(
+            reviews
+              .at(-1)!
+              .userMessages.map((item: { text: string }) => item.text)
+              .slice(-2),
+            [request, 'Fixture city.'],
+          );
+        },
+      );
+
+      await t.test(
+        'a task started after a plain-text question keeps what the chat saw then, and nothing later',
+        async (t) => {
+          const request = 'Find a fixture restaurant and book it only when I say go.';
+          const asked = await begin(request);
+          await db.pool.query(
+            "INSERT INTO messages(id,owner_id,thread_id,turn_id,role,text) VALUES($1,$2,$3,$4,'assistant','Which fixture town?')",
+            [randomUUID(), ownerId, asked.threadId, asked.turnId],
+          );
+          await finish(asked.turnId, 'succeeded');
+          const answer = await thread.submitUserMessage('Fixture town.');
+          assert.equal((await row(answer.turnId)).parent_turn_id, null);
+          const reply = await running(answer.turnId);
+          t.after(() => finish(reply.turnId, 'cancelled'));
+          const task = (await tasks.execute(
+            reply,
+            {
+              action: 'start',
+              title: 'Fixture restaurant',
+              message: 'Looking for fixture restaurants.',
+              doneWhen: 'Options shown',
+              now: 'Searching',
+            },
+            answer.messageId,
+          )) as { id: string };
+          t.after(async () => {
+            await db.pool.query(
+              "UPDATE turns SET task_id=NULL,status='cancelled',finished_at=now() WHERE task_id=$1",
+              [task.id],
+            );
+            await db.pool.query('DELETE FROM tasks WHERE id=$1', [task.id]);
+          });
+          await finish(reply.turnId, 'succeeded');
+          const later = await thread.submitUserMessage('Book any fixture table right away.');
+          await finish(later.turnId, 'succeeded');
+          const worker = await running(
+            (
+              await db.pool.query("SELECT id FROM turns WHERE task_id=$1 AND source='task'", [
+                task.id,
+              ])
+            ).rows[0].id,
+          );
+          await tasks.inherit(worker);
+          await trust.check(worker, 'OTTO_browser', { website: 'https://tables.example.test' });
+          const words = reviews.at(-1)!.userMessages.map((item: { text: string }) => item.text);
+          assert.deepEqual(words.slice(-2), [request, 'Fixture town.']);
+          assert.equal(words.includes('Book any fixture table right away.'), false);
         },
       );
 

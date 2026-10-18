@@ -3656,6 +3656,7 @@ test('a checked browser step is described from its snapshot and runs only on tha
       origin: 'https://1.1.1.1',
       url: 'https://1.1.1.1/login',
       controls: [{ role: 'textbox', name: 'Search' }],
+      submits: 'unknown',
     });
     const next = { action: 'click', selector: '@e2' } as const;
     await assert.rejects(
@@ -3726,3 +3727,105 @@ test('a checked browser step is described from its snapshot and runs only on tha
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test(
+  'a checked step reports the form it would send without sending it',
+  { timeout: 60_000 },
+  async (t) => {
+    const sent: string[] = [];
+    const server = createHttpServer(async (request, response) => {
+      response.setHeader('content-type', 'text/html');
+      if (request.url !== '/' && request.url !== '/favicon.ico') {
+        sent.push(`${request.method} ${request.url}`);
+        response.end('Sent');
+        return;
+      }
+      response.end(
+        '<form method="post" action="/book"><button>19:30</button></form><form action="/search"><input name="q" aria-label="Query"><button>Search</button></form><button id="plain">Plain</button><form method="post" action="/save"><button type="button" id="toggle">Toggle</button><button id="other" formaction="/other" formmethod="get">Other</button></form><form method="post" action="/a"><button>Same</button></form><form method="post" action="/b"><button>Same</button></form><form method="post" action="/reserve"><button>Menu</button></form><form method="post" action="/reserve"><button>Menu</button></form><form action="/find"><input name="city" aria-label="City"><button formaction="/reserve-now" formmethod="post">Go</button></form><form method="post" action="/label"><input type="submit" id="labelled" value="Send"><label for="labelled" id="label">Send it</label></form><form method="post" action="/shadowed"><input type="hidden" name="action" value="other"><input type="radio" name="method" aria-label="Card"><button>Shadowed</button></form>',
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const directory = await mkdtemp(join(tmpdir(), 'otto-submits-'));
+    const computer = createAgentBrowserComputer({
+      dataRoot: directory,
+      browserExecutable: process.env.OTTO_TEST_BROWSER_EXECUTABLE,
+      privateNetwork: true,
+      headless: true,
+    });
+    try {
+      let snapshot: string;
+      try {
+        snapshot = (await computer.act('submits', { action: 'open', url: origin })).text;
+      } catch {
+        t.skip('Chrome is not available here.');
+        return;
+      }
+      const ref = (name: string) => {
+        const found = new RegExp(`button "${name}" \\[ref=(e\\d+)\\]`).exec(snapshot)?.[1];
+        assert.ok(found, `No ${name} button in the snapshot.`);
+        return `@${found}`;
+      };
+      const submits = async (step: BrowserAction) =>
+        (await computer.currentPage('submits', step)).submits;
+      assert.deepEqual(await submits({ action: 'click', selector: ref('19:30') }), {
+        method: 'POST',
+        to: `${origin}/book`,
+      });
+      assert.deepEqual(await submits({ action: 'click', selector: ref('Search') }), {
+        method: 'GET',
+        to: `${origin}/search`,
+      });
+      assert.deepEqual(await submits({ action: 'click', selector: '#other' }), {
+        method: 'GET',
+        to: `${origin}/other`,
+      });
+      assert.equal(await submits({ action: 'click', selector: '#plain' }), undefined);
+      assert.equal(await submits({ action: 'click', selector: '#toggle' }), undefined);
+      assert.deepEqual(await submits({ action: 'click', selector: ref('Same') }), {
+        method: 'POST',
+        to: `${origin}/a`,
+      });
+      assert.deepEqual(await submits({ action: 'click', selector: ref('Shadowed') }), {
+        method: 'POST',
+        to: `${origin}/shadowed`,
+      });
+      assert.deepEqual(await submits({ action: 'click', selector: ref('Menu') }), {
+        method: 'POST',
+        to: `${origin}/reserve`,
+      });
+      await computer.act('submits', { action: 'fill', selector: 'input[name=q]', text: 'tables' });
+      assert.deepEqual(await submits({ action: 'press', key: 'Enter' }), {
+        method: 'GET',
+        to: `${origin}/search`,
+      });
+      await computer.act('submits', {
+        action: 'evaluate',
+        script: "document.querySelector('form button').focus()",
+      });
+      assert.deepEqual(await submits({ action: 'press', key: 'Enter' }), {
+        method: 'POST',
+        to: `${origin}/book`,
+      });
+      await computer.act('submits', {
+        action: 'fill',
+        selector: 'input[name=city]',
+        text: 'Porto',
+      });
+      assert.deepEqual(await submits({ action: 'press', key: 'Enter' }), {
+        method: 'POST',
+        to: `${origin}/reserve-now`,
+      });
+      assert.deepEqual(await submits({ action: 'click', selector: '#label' }), {
+        method: 'POST',
+        to: `${origin}/label`,
+      });
+      assert.deepEqual(sent, []);
+    } finally {
+      await computer.dispose();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);

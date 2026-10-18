@@ -92,7 +92,31 @@ export function amounts(text: string) {
 }
 
 export const showsNumber = (text: string, value: string) =>
-  text.match(/\d+(?:[.,:]\d+)*/g)?.includes(value) ?? false;
+  text
+    .replace(
+      /[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|\b(?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{12,}\b/gi,
+      '',
+    )
+    .match(/\d+(?:[.,:]\d+)*/g)
+    ?.includes(value) ?? false;
+
+export function cardShown(
+  run: Run,
+  cards: Array<{ cardNumber: string; securityCode?: string }>,
+  codes: string[] = [],
+) {
+  const visible = [
+    run.said,
+    ...run.tools.flatMap((call) => [JSON.stringify(call.input), call.output, call.lead]),
+  ].join('\n');
+  return (
+    cards.some(
+      (card) =>
+        new RegExp(card.cardNumber.split('').join('[\\s-]*')).test(visible) ||
+        (card.securityCode !== undefined && showsNumber(visible, card.securityCode)),
+    ) || codes.some((code) => showsNumber(visible, code))
+  );
+}
 
 export const mentions = (text: string, value: number) =>
   amounts(text).some((found) => Math.abs(found - value) < 0.005);
