@@ -841,6 +841,38 @@ describe('filesystem Vault key', { skip: process.platform === 'win32' }, () => {
   });
 });
 
+test('server addresses keep host and port, add http and refuse other schemes, sign-ins, queries and fragments', async () => {
+  const { endpointAddress } = await import('../src/server/models.ts');
+  assert.deepEqual(
+    [
+      'localhost:11434',
+      'localhost:11434/v1/',
+      '192.168.1.5:8080',
+      '[::1]:1234/v1',
+      'ollama.local',
+      'https://api.example.test/openai/v1',
+      'file:/tmp',
+      'ftp://example.test',
+      'http://user:secret@localhost:11434',
+      'http://localhost:11434?',
+      'http://localhost:11434/v1#',
+    ].map(endpointAddress),
+    [
+      'http://localhost:11434',
+      'http://localhost:11434/v1',
+      'http://192.168.1.5:8080',
+      'http://[::1]:1234/v1',
+      'http://ollama.local',
+      'https://api.example.test/openai/v1',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ],
+  );
+});
+
 describe('model connections', { skip: !process.env.TEST_DATABASE_URL }, () => {
   async function fixture(t: import('node:test').TestContext) {
     const { createModelService } = await import('../src/server/models.ts');
@@ -862,7 +894,12 @@ describe('model connections', { skip: !process.env.TEST_DATABASE_URL }, () => {
       },
     });
     const services: ReturnType<typeof createModelService>[] = [];
-    const create = async (ownerId: string, selectedBackend = backend, local = true) => {
+    const create = async (
+      ownerId: string,
+      selectedBackend = backend,
+      local = true,
+      bootstrap?: Parameters<typeof createModelService>[0]['bootstrap'],
+    ) => {
       const service = createModelService({
         database,
         ownerId,
@@ -870,6 +907,7 @@ describe('model connections', { skip: !process.env.TEST_DATABASE_URL }, () => {
         backend: selectedBackend,
         origin: 'http://127.0.0.1:4310',
         local,
+        bootstrap,
       });
       await service.initialize();
       services.push(service);
@@ -956,7 +994,7 @@ describe('model connections', { skip: !process.env.TEST_DATABASE_URL }, () => {
     assert.equal(await captured.read(), undefined);
   });
 
-  test('OpenAI-compatible servers connect only in local Otto and keep their key encrypted', async (t) => {
+  test('OpenAI-compatible servers connect only in local Otto, from Models or server settings, and keep their key out of storage', async (t) => {
     const f = await fixture(t);
     const { createServer } = await import('node:http');
     const { createPiModelBackend } = await import('../src/providers/pi/models.ts');
@@ -974,18 +1012,51 @@ describe('model connections', { skip: !process.env.TEST_DATABASE_URL }, () => {
     await assert.rejects(hosted.addEndpoint(address, 'fixture-endpoint-key'));
     assert.deepEqual(requests, []);
     const owner = await f.create('fixture-owner', createPiModelBackend());
-    const id = await owner.addEndpoint(`${address}/`, 'fixture-endpoint-key');
+    const id = await owner.addEndpoint(
+      `${address.slice('http://'.length)}/`,
+      'fixture-endpoint-key',
+    );
     await owner.select({ connectionId: id, modelId: 'fixture-local', effort: 'off' });
-    assert.deepEqual(await (await owner.resolve()).read(), {
+    const access = await owner.resolve();
+    assert.equal(access.definition.spec.baseUrl, `${address}/v1`);
+    assert.deepEqual(await access.read(), {
       type: 'endpoint',
-      url: `${address}/v1`,
+      url: address,
       key: 'fixture-endpoint-key',
     });
+    assert.equal(await owner.addEndpoint(address, 'fixture-rotated-key'), id);
+    assert.equal(owner.view().connections.length, 1);
+    assert.deepEqual(await (await owner.resolve()).read(), {
+      type: 'endpoint',
+      url: address,
+      key: 'fixture-rotated-key',
+    });
+    const bootstrap = {
+      provider: 'compatible' as const,
+      credentials: {
+        compatible: { type: 'endpoint' as const, url: address, key: 'fixture-server-key' },
+      },
+    };
+    requests.length = 0;
+    await assert.rejects(
+      f.create('fixture-hosted-server', createPiModelBackend(), false, bootstrap),
+    );
+    assert.deepEqual(requests, []);
+    const configured = await f.create('fixture-server', createPiModelBackend(), true, bootstrap);
+    const [managed] = configured.view().connections;
+    assert.deepEqual(
+      [managed.managed, managed.status, configured.view().selection?.modelId],
+      [true, 'connected', 'fixture-local'],
+    );
+    assert.equal((await (await configured.resolve()).read())?.type, 'endpoint');
+    await assert.rejects(configured.remove(managed.id));
     const stored = JSON.stringify([
       (await f.database.query('SELECT * FROM vault_app_grants')).rows,
       (await f.database.query('SELECT * FROM model_connections')).rows,
     ]);
     assert.ok(!stored.includes('fixture-endpoint-key'));
+    assert.ok(!stored.includes('fixture-server-key'));
+    assert.ok(!stored.includes('fixture-rotated-key'));
   });
 
   test('sign-in is single-use; refresh and removal serialize across service instances without restoring a removed key', async (t) => {

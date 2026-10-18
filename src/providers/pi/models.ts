@@ -129,11 +129,37 @@ function ollamaModel(show: z.infer<typeof ollamaShowSchema>) {
             }
           : undefined;
   return {
-    tools: show.capabilities.includes('tools'),
+    usable: show.capabilities.includes('tools'),
     images: show.capabilities.includes('vision'),
     contextWindow: Number.isFinite(contextWindow) ? contextWindow : undefined,
     reasoning: !!thinkingLevelMap,
     thinkingLevelMap,
+  };
+}
+
+const lmStudioModelSchema = z.object({
+  key: z.string(),
+  type: z.string(),
+  max_context_length: z.number().int().positive().optional().catch(undefined),
+  loaded_instances: z
+    .array(z.object({ config: z.object({ context_length: z.number().int().positive() }) }))
+    .catch([]),
+  capabilities: z
+    .object({
+      vision: z.boolean().catch(false),
+      trained_for_tool_use: z.boolean().optional().catch(undefined),
+    })
+    .catch({ vision: false }),
+});
+
+function lmStudioModel(model: z.infer<typeof lmStudioModelSchema>) {
+  return {
+    usable:
+      ['llm', 'vlm'].includes(model.type) && model.capabilities.trained_for_tool_use !== false,
+    images: model.capabilities.vision || model.type === 'vlm',
+    contextWindow: model.loaded_instances[0]?.config.context_length ?? model.max_context_length,
+    reasoning: false,
+    thinkingLevelMap: undefined,
   };
 }
 
@@ -174,11 +200,27 @@ export function createPiModelBackend(options: { fetch?: typeof fetch } = {}): Mo
     const headers: Record<string, string> = credential.key
       ? { Authorization: `Bearer ${credential.key}` }
       : {};
+    let found: { url: string; data: unknown[] } | undefined;
+    for (const url of credential.url.endsWith('/v1')
+      ? [credential.url]
+      : [credential.url, `${credential.url}/v1`]) {
+      const response = await request(`${url}/models`, {
+        headers,
+        redirect: 'error',
+        signal: AbortSignal.timeout(15000),
+      });
+      const list = z
+        .object({ data: z.array(z.unknown()) })
+        .safeParse(response.ok ? await response.json().catch(() => undefined) : undefined);
+      if (list.success) {
+        found = { url, data: list.data.data };
+        break;
+      }
+    }
+    if (!found) throw new Error('The server’s model list could not be loaded.');
     const size = z.number().int().positive().optional().catch(undefined);
     const listed = entries(
-      z
-        .object({ data: z.unknown() })
-        .parse(await json(`${credential.url}/models`, { headers, redirect: 'error' })).data,
+      found.data,
       z.object({
         id: z.string().min(1).max(200),
         context_length: size,
@@ -186,8 +228,8 @@ export function createPiModelBackend(options: { fetch?: typeof fetch } = {}): Mo
         max_model_len: size,
       }),
     );
-    const root = credential.url.replace(/\/v1$/, '');
-    const ollamaJson = (path: string, init: RequestInit = {}) =>
+    const root = found.url.replace(/\/v1$/, '');
+    const serverJson = (path: string, init: RequestInit = {}) =>
       request(`${root}${path}`, {
         ...init,
         headers: { ...headers, ...init.headers },
@@ -198,20 +240,30 @@ export function createPiModelBackend(options: { fetch?: typeof fetch } = {}): Mo
         .catch(() => undefined);
     const ollama = z
       .object({ version: z.string() })
-      .safeParse(await ollamaJson('/api/version')).success;
+      .safeParse(await serverJson('/api/version')).success;
+    const studio = ollama
+      ? undefined
+      : z.object({ models: z.array(z.unknown()) }).safeParse(await serverJson('/api/v1/models'))
+          .data?.models;
+    const studioModels = studio ? entries(studio, lmStudioModelSchema) : [];
     const models = await Promise.all(
       listed.map(async (entry) => {
         const shown = ollama
           ? ollamaShowSchema.safeParse(
-              await ollamaJson('/api/show', {
+              await serverJson('/api/show', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ model: entry.id }),
               }),
             )
           : undefined;
-        const known = shown?.success ? ollamaModel(shown.data) : undefined;
-        if (known && !known.tools) return [];
+        const studioModel = studioModels.find((model) => model.key === entry.id);
+        const known = shown?.success
+          ? ollamaModel(shown.data)
+          : studioModel
+            ? lmStudioModel(studioModel)
+            : undefined;
+        if (known && !known.usable) return [];
         const contextWindow =
           known?.contextWindow ??
           entry.context_length ??
@@ -224,7 +276,7 @@ export function createPiModelBackend(options: { fetch?: typeof fetch } = {}): Mo
             name: entry.id,
             api: 'openai-completions',
             provider: 'compatible',
-            baseUrl: credential.url,
+            baseUrl: found.url,
             compat: {
               supportsStore: false,
               supportsDeveloperRole: false,
@@ -691,6 +743,7 @@ export async function createPiModelRuntime(access: ModelAccess) {
               return fetch(input, {
                 ...init,
                 headers,
+                redirect: 'error',
                 dispatcher: (endpointConnections ??= new Agent({
                   headersTimeout: 0,
                   bodyTimeout: 0,

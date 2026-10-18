@@ -2693,6 +2693,10 @@ test('OpenAI-compatible servers get tool models, a system message and one attemp
         return send(200, { data: Object.keys(shows).map((id) => ({ id })) });
       if (request.url === '/api/version') return send(200, { version: '0.0.0' });
       if (request.url === '/api/show') return send(200, shows[JSON.parse(text).model]);
+      if (request.url === '/moved/v1/chat/completions') {
+        response.writeHead(307, { location: '/v1/chat/completions' });
+        return response.end();
+      }
       if (request.url === '/v1/chat/completions') {
         bodies.push(JSON.parse(text));
         headers.push(request.headers.authorization);
@@ -2761,6 +2765,82 @@ test('OpenAI-compatible servers get tool models, a system message and one attemp
     {},
   );
   assert.deepEqual(headers, ['Bearer fixture-endpoint-key', undefined]);
+  const moved = await createPiModelRuntime({
+    provider: 'compatible',
+    method: 'api_key',
+    definition: {
+      ...definitions[0],
+      spec: { ...definitions[0].spec, baseUrl: `http://127.0.0.1:${address.port}/moved/v1` },
+    },
+    effort: 'low',
+    read: async () => credential,
+  });
+  const redirected = await moved.runtime.completeSimple(
+    moved.model,
+    { messages: [{ role: 'user', content: 'Synthetic fixture', timestamp: 1 }] },
+    {},
+  );
+  assert.equal(redirected.stopReason, 'error');
+  assert.equal(bodies.length, 2);
+});
+
+test('LM Studio servers list tool-trained chat models with their loaded context and vision', async (t) => {
+  const { createServer } = await import('node:http');
+  const { createPiModelBackend } = await import('../src/providers/pi/models.ts');
+  const server = createServer((request, response) => {
+    const body =
+      request.url === '/v1/models'
+        ? {
+            data: [
+              'fixture/vision-chat',
+              'fixture/embed',
+              'fixture/no-tools',
+              'fixture/unlisted',
+            ].map((id) => ({
+              id,
+            })),
+          }
+        : request.url === '/api/v1/models'
+          ? {
+              models: [
+                {
+                  key: 'fixture/vision-chat',
+                  type: 'llm',
+                  max_context_length: 262144,
+                  loaded_instances: [{ config: { context_length: 65536 } }],
+                  capabilities: { vision: true, trained_for_tool_use: true },
+                },
+                { key: 'fixture/embed', type: 'embedding', max_context_length: 2048 },
+                {
+                  key: 'fixture/no-tools',
+                  type: 'llm',
+                  capabilities: { vision: false, trained_for_tool_use: false },
+                },
+              ],
+            }
+          : undefined;
+    response.writeHead(body ? 200 : 404, { 'content-type': 'application/json' });
+    response.end(JSON.stringify(body ?? {}));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const { port } = server.address() as import('node:net').AddressInfo;
+  const definitions = await createPiModelBackend().catalog('compatible', 'api_key', {
+    type: 'endpoint',
+    url: `http://127.0.0.1:${port}`,
+  });
+  assert.deepEqual(
+    definitions.map(({ choice, spec }) => [
+      choice.id,
+      choice.images,
+      choice.contextWindow,
+      spec.baseUrl,
+    ]),
+    [
+      ['fixture/vision-chat', true, 65536, `http://127.0.0.1:${port}/v1`],
+      ['fixture/unlisted', false, 128_000, `http://127.0.0.1:${port}/v1`],
+    ],
+  );
 });
 
 test('the Pi transcript keeps model changes for the next turn and leaves background turns out', async () => {
