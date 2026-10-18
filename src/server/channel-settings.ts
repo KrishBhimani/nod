@@ -359,6 +359,8 @@ export async function createChannelSettings(
         } finally {
           client.release();
         }
+        if (input === undefined)
+          await options.verifier.unregister?.(provider, oldEnvironment).catch(() => {});
         return { ok: true, channel: summary, ...(pairingUrl ? { pairingUrl } : {}) };
       } finally {
         await reconcileClaims().catch(() => false);
@@ -613,5 +615,12 @@ export async function createChannelSettings(
       );
     });
   }
-  return { registerRoutes, environment, status, recover, pair };
+  return {
+    registerRoutes,
+    environment,
+    status,
+    recover,
+    pair,
+    disable: (provider: ChannelProvider) => change(provider),
+  };
 }

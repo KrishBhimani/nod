@@ -136,6 +136,28 @@ export function createCloudflareRuntimeTransport(
         throw new Error('The account runtime could not be prepared for deployment.');
       }
     },
+    async removeStorage(ownerId, dryRun) {
+      try {
+        z.uuid().parse(ownerId);
+        const response = await request('http://otto.runtime/runtime/remove-storage', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ownerId, dryRun }),
+          redirect: 'error',
+          signal: AbortSignal.timeout(300_000),
+        });
+        if (!response.ok) {
+          await response.body?.cancel();
+          throw new Error();
+        }
+        return z
+          .object({ objects: z.number().int().nonnegative() })
+          .strict()
+          .parse(await boundedResponse(response)).objects;
+      } catch {
+        throw new Error('The account files could not be removed.');
+      }
+    },
     fetch(ownerId, input) {
       z.uuid().parse(ownerId);
       const url = new URL(input.url);
