@@ -5,6 +5,7 @@ import { summarize } from './aggregate.ts';
 import { runAnalyticsEval } from './analytics.ts';
 import { runDecisionEval } from './decisions.ts';
 import { parseSetups, runLongMemEval } from './longmemeval.ts';
+import { parseModes, runWhisperBench } from './whisperbench.ts';
 import { cards, comparisonChart } from './chart.ts';
 import { storyCard, type StoryNotes } from './story.ts';
 import { renderImages } from './images.ts';
@@ -34,6 +35,9 @@ export const help = `Otto capability evals
                                (--baseline main, --repeat 3, --label name, --out directory)
     longmemeval --data <file>  run the LongMemEval-S memory benchmark on the real Otto, graded by the official judge
                                (--setups memory,chat, --sample 30, --chat-sample 10, --questions a,b,
+                                --concurrency 6, --budget 50, --label name, --resume)
+    whisperbench --data <folder>  run the WhisperBench memory-poisoning benchmark on the real Otto
+                               (--modes foreground,background, --cases a,b, --model provider/name,
                                 --concurrency 6, --budget 50, --label name, --resume)
 
   Compare
@@ -154,7 +158,7 @@ function open(path: string) {
   }
 }
 
-function questionIds(value: string | undefined) {
+function idList(value: string | undefined, flag: string) {
   if (value === undefined) return undefined;
   const ids = [
     ...new Set(
@@ -164,7 +168,7 @@ function questionIds(value: string | undefined) {
         .filter(Boolean),
     ),
   ];
-  if (!ids.length) throw new Error('--questions needs at least one question ID.');
+  if (!ids.length) throw new Error(`--${flag} needs at least one ID.`);
   return ids;
 }
 
@@ -262,7 +266,26 @@ export async function main(args: Args) {
         sample: text(args, 'sample') === undefined ? undefined : whole(args, 'sample', 1),
         chatSample:
           text(args, 'chat-sample') === undefined ? undefined : whole(args, 'chat-sample', 1),
-        questions: questionIds(text(args, 'questions')),
+        questions: idList(text(args, 'questions'), 'questions'),
+        concurrency: whole(args, 'concurrency', 6),
+        budget: number(args, 'budget', 0),
+        resume: has(args, 'resume'),
+      });
+      return;
+    }
+    case 'whisperbench': {
+      const data = text(args, 'data');
+      if (!data) throw new Error('WhisperBench requires --data <MemGhost-WhisperBench folder>.');
+      const environment = await loadEnvironment();
+      await runWhisperBench({
+        data,
+        root,
+        label:
+          text(args, 'label') ?? `whisperbench-${new Date().toISOString().replace(/[:.]/g, '-')}`,
+        model: text(args, 'model') ?? defaultModel(environment),
+        judge: text(args, 'judge') ?? 'openai/gpt-5.4-nano',
+        modes: parseModes(text(args, 'modes')),
+        cases: idList(text(args, 'cases'), 'cases'),
         concurrency: whole(args, 'concurrency', 6),
         budget: number(args, 'budget', 0),
         resume: has(args, 'resume'),
