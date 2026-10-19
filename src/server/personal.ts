@@ -169,9 +169,31 @@ export function createPersonalService(dependencies: PersonalDependencies) {
       return memory.forget(input.path, input.note);
     }
     if (action === 'history_search') {
-      const { query, before } = z
-        .object({ query: z.string().min(1), before: z.uuid().optional() })
+      const { query, before, from, to, around } = z
+        .object({
+          query: z.string().trim().min(1).optional(),
+          before: z.uuid().optional(),
+          from: z.iso.date().optional(),
+          to: z.iso.date().optional(),
+          around: z.uuid().optional(),
+        })
+        .refine((input) => input.query || input.around || input.from || input.to, {
+          message: 'Search with query, from or to, or read around a result id.',
+        })
         .parse(args);
+      if (around) {
+        const { rows } = await pool.query(
+          `WITH hit AS (SELECT m.created_at,m.id FROM messages m WHERE m.id=$2 AND m.owner_id=$1 AND ${activeThreadSql('m')}),
+           nearby AS (
+             (SELECT m.* FROM messages m,hit WHERE m.owner_id=$1 AND ${activeThreadSql('m')} AND (m.created_at,m.id)<(hit.created_at,hit.id) ORDER BY m.created_at DESC,m.id DESC LIMIT 5)
+             UNION ALL (SELECT m.* FROM messages m,hit WHERE m.id=hit.id)
+             UNION ALL (SELECT m.* FROM messages m,hit WHERE m.owner_id=$1 AND ${activeThreadSql('m')} AND (m.created_at,m.id)>(hit.created_at,hit.id) ORDER BY m.created_at,m.id LIMIT 5))
+           SELECT id,role,CASE WHEN id=$2 THEN text ELSE left(text,6000) END AS text,id<>$2 AND length(text)>6000 AS shortened,turn_id,created_at FROM nearby ORDER BY created_at,id`,
+          [ownerId, around],
+        );
+        if (!rows.length) throw new Error('This history result is unavailable.');
+        return { messages: rows };
+      }
       const cursor = before
         ? (
             await pool.query<{ at: Date }>(
@@ -181,17 +203,81 @@ export function createPersonalService(dependencies: PersonalDependencies) {
           ).rows[0]
         : undefined;
       if (before && !cursor) throw new Error('This history result is unavailable.');
+      const terms = `WITH terms AS (SELECT replace(plainto_tsquery('english',coalesce($2,''))::text,'&','|')::tsquery AS q,
+        coalesce((SELECT time_zone FROM preferences WHERE owner_id=$1),'UTC') AS zone)`;
+      const where = (alias: string, column: string) =>
+        `${alias}.owner_id=$1 AND ${activeThreadSql(alias)} AND ($2::text IS NULL OR to_tsvector('english',${column}) @@ terms.q) AND ($3::timestamptz IS NULL OR (${alias}.created_at,${alias}.id)<($3,$4::uuid)) AND ($5::date IS NULL OR (${alias}.created_at AT TIME ZONE terms.zone)::date>=$5) AND ($6::date IS NULL OR (${alias}.created_at AT TIME ZONE terms.zone)::date<=$6)`;
+      const order = (alias: string, column: string) =>
+        `${query ? `ts_rank_cd(to_tsvector('english',${column}),terms.q,1) DESC,` : ''}${alias}.created_at DESC,${alias}.id DESC`;
+      const values = [
+        ownerId,
+        query ?? null,
+        cursor?.at ?? null,
+        before ?? null,
+        from ?? null,
+        to ?? null,
+      ];
       const turns = await pool.query(
-        `SELECT u.id,left(u.prompt,200) AS title,u.status,u.source,u.created_at,split_part(u.channel,':',1) AS channel FROM turns u WHERE u.owner_id=$1 AND ${activeThreadSql('u')} AND to_tsvector('simple',u.prompt) @@ plainto_tsquery('simple',$2) AND ($3::timestamptz IS NULL OR (u.created_at,u.id)<($3,$4::uuid)) ORDER BY u.created_at DESC,u.id DESC LIMIT 15`,
-        [ownerId, query, cursor?.at ?? null, before ?? null],
+        `${terms} SELECT u.id,left(u.prompt,200) AS title,u.status,u.source,u.created_at,split_part(u.channel,':',1) AS channel FROM turns u CROSS JOIN terms WHERE ${where('u', 'u.prompt')} ORDER BY ${order('u', 'u.prompt')} LIMIT 15`,
+        values,
       );
       const messages = await pool.query(
-        `SELECT m.id,m.role,m.text,m.turn_id,m.created_at,split_part(COALESCE(u.channel,'web'),':',1) AS channel FROM messages m LEFT JOIN turns u ON u.id=m.turn_id AND u.owner_id=m.owner_id WHERE m.owner_id=$1 AND ${activeThreadSql('m')} AND to_tsvector('simple',m.text) @@ plainto_tsquery('simple',$2) AND ($3::timestamptz IS NULL OR (m.created_at,m.id)<($3,$4::uuid)) ORDER BY m.created_at DESC,m.id DESC LIMIT 15`,
-        [ownerId, query, cursor?.at ?? null, before ?? null],
+        `${terms}, docs AS (
+           SELECT m.id,m.created_at,to_tsvector('english',m.text) AS v FROM messages m CROSS JOIN terms
+           WHERE ${where('m', 'm.text')}),
+         weights AS (
+           SELECT w,ln(1+((SELECT count(*) FROM messages m WHERE m.owner_id=$1 AND ${activeThreadSql('m')})-count(*)+0.5)/(count(*)+0.5)) AS idf
+           FROM (SELECT DISTINCT lexeme AS w FROM unnest(tsvector_to_array(to_tsvector('english',coalesce($2,'')))) lexeme) words
+           JOIN docs ON docs.v @@ quote_literal(w)::tsquery GROUP BY w),
+         hits AS (
+           SELECT d.id,row_number() OVER (ORDER BY coalesce(sum(weights.idf),0) DESC,d.created_at DESC,d.id DESC) AS place
+           FROM docs d LEFT JOIN weights ON d.v @@ quote_literal(weights.w)::tsquery
+           GROUP BY d.id,d.created_at ORDER BY place LIMIT 20),
+         thread AS (
+           SELECT m.id,m.role,m.text,m.turn_id,m.created_at,row_number() OVER (ORDER BY m.created_at,m.id) AS n
+           FROM messages m WHERE m.owner_id=$1 AND ${activeThreadSql('m')}),
+         picked AS (SELECT t.n,h.place,h.id FROM hits h JOIN thread t ON t.id=h.id),
+         shown AS (
+           SELECT t.*,bool_or(p.id=t.id) AS match,min(p.place) AS place FROM thread t
+           JOIN picked p ON t.n BETWEEN p.n-${query ? 1 : 0} AND p.n+${query ? 1 : 0} GROUP BY t.id,t.role,t.text,t.turn_id,t.created_at,t.n)
+         SELECT s.id,s.role,CASE WHEN length(s.text)<=1200 THEN s.text
+             ELSE ts_headline('english',s.text,terms.q,'StartSel="",StopSel="",MaxWords=60,MinWords=20,MaxFragments=3,FragmentDelimiter=" … "') END AS text,
+           length(s.text)>1200 AS shortened,s.turn_id,s.created_at,split_part(COALESCE(u.channel,'web'),':',1) AS channel,s.match
+         FROM shown s CROSS JOIN terms LEFT JOIN turns u ON u.id=s.turn_id AND u.owner_id=$1 ORDER BY s.place,s.n`,
+        values,
       );
       return { turns: turns.rows, messages: messages.rows };
     }
     throw new Error('This personal-data action is not available.');
+  }
+
+  async function recall(text: string, before: Date | undefined, exclude: string | null) {
+    const { rows } = await pool.query(
+      `WITH terms AS (SELECT replace(plainto_tsquery('english',$2)::text,'&','|')::tsquery AS q),
+       docs AS (
+         SELECT m.id,m.role,m.text,m.created_at,to_tsvector('english',m.text) AS v FROM messages m CROSS JOIN terms
+         WHERE m.owner_id=$1 AND m.role='user' AND ${activeThreadSql('m')} AND m.id IS DISTINCT FROM $4::uuid
+           AND ($3::timestamptz IS NULL OR m.created_at<$3) AND to_tsvector('english',m.text) @@ terms.q),
+       weights AS (
+         SELECT w,ln(1+((SELECT count(*) FROM messages m WHERE m.owner_id=$1 AND ${activeThreadSql('m')})-count(*)+0.5)/(count(*)+0.5)) AS idf
+         FROM (SELECT DISTINCT lexeme AS w FROM unnest(tsvector_to_array(to_tsvector('english',$2))) lexeme) words
+         JOIN docs ON docs.v @@ quote_literal(w)::tsquery GROUP BY w),
+       best AS (
+         SELECT d.id,d.role,d.text,d.created_at FROM docs d LEFT JOIN weights ON d.v @@ quote_literal(weights.w)::tsquery
+         GROUP BY d.id,d.role,d.text,d.created_at ORDER BY coalesce(sum(weights.idf),0) DESC,d.created_at DESC LIMIT 6)
+       SELECT best.id,best.role,length(best.text)>400 AS shortened,CASE WHEN length(best.text)<=400 THEN best.text
+           ELSE ts_headline('english',best.text,terms.q,'StartSel="",StopSel="",MaxWords=50,MinWords=15,MaxFragments=2,FragmentDelimiter=" … "') END AS text,
+         best.created_at AS "createdAt"
+       FROM best CROSS JOIN terms ORDER BY best.created_at`,
+      [ownerId, text, before ?? null, exclude],
+    );
+    return rows as Array<{
+      id: string;
+      role: string;
+      text: string;
+      shortened: boolean;
+      createdAt: Date;
+    }>;
   }
 
   async function memoryView(): Promise<MemoryView> {
@@ -246,6 +332,7 @@ export function createPersonalService(dependencies: PersonalDependencies) {
     listSchedules: schedules.list,
     getSchedule: schedules.get,
     manage,
+    recall,
     validateReview,
     reviewMemory,
     memoryView,

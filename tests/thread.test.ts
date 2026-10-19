@@ -2522,6 +2522,156 @@ test(
         },
       );
       await t.test(
+        'history search ranks word forms, keeps local dates and reads around a hit inside the owner’s active thread',
+        async () => {
+          const foreignThread = randomUUID();
+          await db.pool.query("INSERT INTO threads(id,owner_id) VALUES($1,'history-other-owner')", [
+            foreignThread,
+          ]);
+          const add = async (text: string, at: string, owner = ownerId, threadId = freshThread) => {
+            const id = randomUUID();
+            await db.pool.query(
+              "INSERT INTO messages(id,owner_id,role,text,thread_id,created_at) VALUES($1,$2,'user',$3,$4,$5)",
+              [id, owner, text, threadId, at],
+            );
+            return id;
+          };
+          const hidden = async (text: string, at: string) => [
+            await add(text, at, 'history-other-owner', foreignThread),
+            await add(text, at, ownerId, firstThreadId),
+          ];
+          const shown = async (args: Record<string, unknown>) =>
+            (
+              (await personal.manage('history_search', args)) as {
+                messages: Array<{ id: string; match?: boolean }>;
+              }
+            ).messages;
+          const search = async (args: Record<string, unknown>) =>
+            (await shown(args))
+              .filter((message) => message.match !== false)
+              .map((message) => message.id);
+
+          const best = await add('I am buying two properties in Brookside', '2019-03-01T10:00:00Z');
+          const newer = await add('The property tax letter arrived', '2019-03-02T10:00:00Z');
+          const after = await add('Lunch with Ana on Friday', '2019-03-03T10:00:00Z');
+          await hidden('We are buying a property near the river', '2019-03-04T10:00:00Z');
+          assert.deepEqual(await search({ query: 'which property did I buy' }), [best, newer]);
+          assert.deepEqual(
+            (await shown({ query: 'which property did I buy' })).map(({ id, match }) => [
+              id,
+              match,
+            ]),
+            [
+              [best, true],
+              [newer, true],
+              [after, false],
+            ],
+          );
+          assert.deepEqual(await search({ query: 'which property did I buy', before: newer }), [
+            best,
+          ]);
+
+          const previousZone = (
+            await db.pool.query('SELECT time_zone FROM preferences WHERE owner_id=$1', [ownerId])
+          ).rows[0];
+          await db.pool.query(
+            "INSERT INTO preferences(owner_id,time_zone) VALUES($1,'Asia/Tokyo') ON CONFLICT (owner_id) DO UPDATE SET time_zone=excluded.time_zone",
+            [ownerId],
+          );
+          try {
+            await add('Dentist booked', '2019-01-15T14:00:00Z');
+            const startOfDay = await add('Gym session moved', '2019-01-15T15:30:00Z');
+            const endOfDay = await add('Paid the plumber', '2019-01-16T14:30:00Z');
+            await add('Library books due', '2019-01-16T15:30:00Z');
+            await hidden('Hidden same-day note', '2019-01-16T03:00:00Z');
+            assert.deepEqual(await search({ from: '2019-01-16', to: '2019-01-16' }), [
+              endOfDay,
+              startOfDay,
+            ]);
+          } finally {
+            if (previousZone)
+              await db.pool.query('UPDATE preferences SET time_zone=$2 WHERE owner_id=$1', [
+                ownerId,
+                previousZone.time_zone,
+              ]);
+            else await db.pool.query('DELETE FROM preferences WHERE owner_id=$1', [ownerId]);
+          }
+
+          const minute = (offset: number) =>
+            new Date(Date.UTC(2019, 1, 1, 10, offset)).toISOString();
+          const chat: string[] = [];
+          for (let i = 0; i < 13; i++) {
+            chat.push(await add(`Synthetic chat line ${i}`, minute(2 * i)));
+            await hidden(`Hidden chat line ${i}`, minute(2 * i + 1));
+          }
+          assert.deepEqual(await search({ around: chat[6] }), chat.slice(1, 12));
+          await db.pool.query(
+            "INSERT INTO messages(id,owner_id,role,text,thread_id,created_at) VALUES($1,$2,'assistant',$3,$4,$5)",
+            [
+              randomUUID(),
+              ownerId,
+              'Your passport renewal form is ready',
+              freshThread,
+              '2019-05-01T10:00:00Z',
+            ],
+          );
+          await add('My passport expires in June', '2019-05-02T10:00:00Z');
+          await hidden('My passport expires next week', '2019-05-03T10:00:00Z');
+          const current = await add('Passport photos are booked', '2019-05-05T10:00:00Z');
+          const recalled = await personal.recall(
+            'when does my passport expire',
+            new Date('2019-05-04T00:00:00Z'),
+            current,
+          );
+          assert.deepEqual(
+            recalled.map(({ role, text, shortened }) => [role, text, shortened]),
+            [['user', 'My passport expires in June', false]],
+          );
+          for (const [index, text] of [
+            'Coffee with the team on Monday',
+            'More coffee before the review',
+            'Coffee machine is broken again',
+            'Bought coffee beans for the office',
+          ].entries())
+            await add(text, `2019-06-0${index + 1}T10:00:00Z`);
+          const rare = await add('The plumber replaced the faucet', '2019-06-01T09:00:00Z');
+          assert.equal((await search({ query: 'coffee faucet' }))[0], rare);
+          const filler = 'Unrelated planning notes about the garden and the weather. '.repeat(40);
+          const long = await add(
+            `${filler}The spare key is with Marisol next door. ${filler}`,
+            '2019-04-01T10:00:00Z',
+          );
+          const excerpt = (
+            (await shown({ query: 'spare key Marisol' })) as Array<{
+              id: string;
+              text: string;
+              shortened?: boolean;
+            }>
+          ).find((message) => message.id === long)!;
+          assert.equal(excerpt.shortened, true);
+          assert.match(excerpt.text, /spare key is with Marisol/);
+          assert.ok(excerpt.text.length < 1200);
+          const whole = (
+            (await personal.manage('history_search', { around: long })) as {
+              messages: Array<{ id: string; text: string }>;
+            }
+          ).messages.find((message) => message.id === long)!;
+          assert.ok(whole.text.length > 4000);
+          const listed = (await shown({ from: '2019-04-01', to: '2019-04-01' })) as Array<{
+            id: string;
+            text: string;
+            shortened?: boolean;
+          }>;
+          assert.deepEqual(
+            listed.map(({ id, shortened }) => [id, shortened]),
+            [[long, true]],
+          );
+          assert.ok(listed[0].text.length > 0 && listed[0].text.length < 1200);
+          for (const id of await hidden('Hidden hit', minute(13)))
+            await assert.rejects(search({ around: id }), /unavailable/);
+        },
+      );
+      await t.test(
         'every app event wakes one quiet turn under a notification rule, and none without one',
         async () => {
           const threadId = (await thread.activeThread()).id;
@@ -2924,7 +3074,7 @@ const memoryFixture = async (tables: string[] = []) => {
   url.searchParams.set('options', `-c search_path=${schema}`);
   const pool = new pg.Pool({ connectionString: url.href });
   await pool.query(
-    "CREATE TABLE messages (id uuid PRIMARY KEY, owner_id text NOT NULL, role text NOT NULL, text text NOT NULL, turn_id uuid, thread_id uuid, suggestions jsonb, attachments jsonb NOT NULL DEFAULT '[]', created_at timestamptz NOT NULL DEFAULT now()); CREATE TABLE turns (id uuid PRIMARY KEY, owner_id text NOT NULL, channel text)",
+    "CREATE TABLE messages (id uuid PRIMARY KEY, owner_id text NOT NULL, role text NOT NULL, text text NOT NULL, turn_id uuid, thread_id uuid, suggestions jsonb, attachments jsonb NOT NULL DEFAULT '[]', created_at timestamptz NOT NULL DEFAULT now()); CREATE TABLE turns (id uuid PRIMARY KEY, owner_id text NOT NULL, channel text); CREATE TABLE preferences (owner_id text PRIMARY KEY, time_zone text)",
   );
   for (const table of tables) await pool.query(table);
   const ownerId = 'memory-fixture-owner';
@@ -3083,6 +3233,7 @@ test(
       );
       assert.deepEqual(JSON.parse(await memory.context()), {
         preferences: ['prefers-email-updates: Prefers email updates.'],
+        lessons: ['often-asks-for-design-first: Often asks for a design first. (tentative)'],
       });
       assert.equal(
         (await memory.view()).notes.find((note) => note.area === 'lessons')?.status,
@@ -3287,6 +3438,10 @@ test(
     t.mock.method(console, 'error', () => {});
     const { pool, ownerId, post, memory, close } = await memoryFixture([approvalsTable]);
     try {
+      await pool.query(
+        "INSERT INTO preferences(owner_id,time_zone) VALUES($1,'America/New_York')",
+        [ownerId],
+      );
       const { calls, state, curator } = scriptedCurator();
       const learning = createMemoryLearning({ pool, ownerId, memory, curator });
       assert.equal(await learning.reflect(), 0);
@@ -3310,7 +3465,7 @@ test(
         at: '2026-01-01T10:02:00Z',
         attachments: '[{"name":"receipt.pdf"}]',
       });
-      await post('filler '.repeat(200), { at: '2026-01-01T10:03:00Z' });
+      await post('filler '.repeat(700), { at: '2026-01-01T10:03:00Z' });
       await post('My card is 4111 1111 1111 1111 and I like jazz.', { at: '2026-01-01T10:04:00Z' });
       for (const [status, text] of [
         ['declined', 'Remember that refunds go to account 1.'],
@@ -3404,8 +3559,8 @@ test(
       assert.equal(calls.length, 1);
       assert.equal(calls[0].task, 'reflect');
       assert.deepEqual(calls[0].input.messages, [
-        { m: 1, text: bullets },
-        { m: 2, text: sister },
+        { m: 1, at: '2026-01-01T05:00:00-05:00', text: bullets },
+        { m: 2, at: '2026-01-01T05:05:00-05:00', text: sister },
       ]);
       assert.equal(calls[0].input.memory, '{}');
       const learned = await memory.load();
@@ -3417,7 +3572,10 @@ test(
           ['ana', 'inferred', 1],
         ],
       );
-      assert.equal(await memory.context(), '{}');
+      assert.deepEqual(JSON.parse(await memory.context()), {
+        preferences: ['meeting-notes: Wants meeting notes as bullet points. (tentative)'],
+        people: ["ana: Ana is the user's sister. (tentative)"],
+      });
       assert.equal(await learning.reflect(), 0);
       assert.equal(calls.length, 1);
 
@@ -3437,13 +3595,16 @@ test(
         ],
       });
       assert.equal(await learning.reflect(), 1);
-      assert.deepEqual(calls[1].input.messages, [{ m: 1, text: again }]);
+      assert.deepEqual(calls[1].input.messages, [
+        { m: 1, at: '2026-01-01T06:00:00-05:00', text: again },
+      ]);
       assert.match(
         calls[1].input.memory ?? '',
         /meeting-notes: Wants meeting notes as bullet points\. \(tentative\)/,
       );
       assert.deepEqual(JSON.parse(await memory.context()), {
         preferences: ['meeting-notes: Wants meeting notes as bullet points.'],
+        people: ["ana: Ana is the user's sister. (tentative)"],
       });
     } finally {
       await close();
