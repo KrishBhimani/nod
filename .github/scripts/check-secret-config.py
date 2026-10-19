@@ -78,8 +78,6 @@ synthetic = f'api_key = "{candidate}"'
 for filename in [
     "tests/app.test.ts",
     "desktop/test/app.test.mjs",
-    "deployment/cloudflare/tests/app.ts",
-    "deployment/e2b/live_boundary_test.py",
     "deployment/n8n/app.test.mjs",
     "tests/fixtures/app.json",
     "evals/src/world/app.ts",
