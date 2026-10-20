@@ -159,6 +159,30 @@ test('managed integration requests bind SDK calls to a private persisted install
     if (url.pathname === '/api/v3.1/tools/execute/proxy')
       return Response.json({ status: 200, data: { messages: [] }, headers: {} });
     if (url.pathname === '/api/v3.1/tool_router/session') {
+      assert.deepEqual(
+        Object.keys(body).filter(
+          (field) =>
+            ![
+              'user_id',
+              'toolkits',
+              'connected_accounts',
+              'auth_configs',
+              'tools',
+              'tags',
+              'multi_account',
+              'manage_connections',
+              'workbench',
+              'sandbox',
+              'premium_usage',
+              'search',
+              'execute',
+              'preload',
+              'expected_config_version',
+              'config_version',
+            ].includes(field),
+        ),
+        [],
+      );
       assert.equal(body.user_id, expectedUser);
       assert.equal(body.manage_connections.enable, false);
       assert.equal(body.workbench.enable, false);
@@ -175,7 +199,12 @@ test('managed integration requests bind SDK calls to a private persisted install
     }
     if (url.pathname.endsWith('/execute')) {
       if (failExecution) return Response.json({ error: 'Synthetic timeout' }, { status: 503 });
-      return Response.json({ data: { labels: [] }, error: null, log_id: 'fixture-log' });
+      return Response.json({
+        data: { labels: [] },
+        error: null,
+        log_id: 'fixture-log',
+        result_type: 'completed',
+      });
     }
     if (url.pathname === '/v1/files/upload') {
       assert.deepEqual(body, {
@@ -490,6 +519,7 @@ test('managed integration requests bind SDK calls to a private persisted install
     data: { labels: [] },
     error: null,
     logId: 'fixture-log',
+    resultType: 'completed',
   });
   failExecution = true;
   const before = calls.length;
@@ -5657,6 +5687,7 @@ async function managedReconnectFixture(t: TestContext, watchRequested = true) {
       data: action === 'GMAIL_GET_PROFILE' ? { emailAddress: emails.get(account) } : { labels: [] },
       error: null,
       log_id: 'synthetic-recovery-log',
+      result_type: 'completed',
     };
     await control.pause('execute', account);
     return response;
@@ -6293,7 +6324,12 @@ test(
           gmail: ['existing-account'],
         });
         assert.equal(input.account, 'existing-account');
-        return { data: { labels: [] }, error: null, log_id: 'synthetic-log' };
+        return {
+          data: { labels: [] },
+          error: null,
+          log_id: 'synthetic-log',
+          result_type: 'completed',
+        };
       },
     );
     const provider = createComposioProvider({
@@ -7265,7 +7301,11 @@ test('Composio uploads file bytes before the app consumes its storage reference'
     execute: async (_action: string, args: { attachment: { s3key: string } }) => {
       const file = files.get(args.attachment.s3key);
       assert.ok(file, 'The app must receive an uploaded file.');
-      return { data: { bytes: file.bytes, mimeType: file.mimeType }, error: null };
+      return {
+        data: { bytes: file.bytes, mimeType: file.mimeType },
+        error: null,
+        resultType: 'completed',
+      };
     },
   }));
   const session = await createComposioProvider({ client, fileUploadRequest: fetch }).createSession(
@@ -7283,6 +7323,7 @@ test('Composio uploads file bytes before the app consumes its storage reference'
   assert.deepEqual(await session.execute('GMAIL_SEND_EMAIL', { attachment }, 'fixture-account'), {
     data: { bytes, mimeType: 'application/octet-stream' },
     error: null,
+    resultType: 'completed',
   });
   status = 503;
   await assert.rejects(
@@ -7650,7 +7691,11 @@ test('Composio catalog failures preserve owned accounts', async (t) => {
   const listing = t.mock.method(client.getClient().toolkits, 'list', async () => {
     throw Object.assign(new Error('private-provider-response'), { status: 403 });
   });
-  const execute = t.mock.fn(async () => ({ data: { ok: true }, error: null }));
+  const execute = t.mock.fn(async () => ({
+    data: { ok: true },
+    error: null,
+    resultType: 'completed',
+  }));
   const create = t.mock.method(client.sessions, 'create', async () => ({
     sessionId: 'new-session',
     execute,
@@ -7689,9 +7734,13 @@ test('Composio failure envelopes reject with the provider error', async (t) => {
     slackbot: 'fixture-slackbot-account',
   });
   for (const failure of [
-    { data: {}, error: 'Fixture rate limit', logId: 'log-fixture' },
-    { data: {}, successful: false },
-    { data: { successful: false, error: 'Fixture rate limit' }, error: null },
+    { data: {}, error: 'Fixture rate limit', logId: 'log-fixture', resultType: 'failed' },
+    { data: {}, error: null, logId: 'log-fixture', resultType: 'failed' },
+    {
+      data: { successful: false, error: 'Fixture rate limit' },
+      error: null,
+      resultType: 'completed',
+    },
   ]) {
     result = failure;
     await assert.rejects(session.execute('GMAIL_SEND_EMAIL', {}, 'fixture-account'));
@@ -7706,10 +7755,18 @@ test('Composio failure envelopes reject with the provider error', async (t) => {
     [
       'Composio failure',
       'SLACK_CREATE_CANVAS',
-      { data: missingScope, successful: false, error: 'missing_scope' },
+      { data: missingScope, error: 'missing_scope', resultType: 'failed' },
     ],
-    ['Slack failure', 'SLACK_CREATE_CANVAS', { data: missingScope, error: null }],
-    ['Slackbot failure', 'SLACKBOT_CREATE_CANVAS', { data: missingScope, error: null }],
+    [
+      'Slack failure',
+      'SLACK_CREATE_CANVAS',
+      { data: missingScope, error: null, resultType: 'completed' },
+    ],
+    [
+      'Slackbot failure',
+      'SLACKBOT_CREATE_CANVAS',
+      { data: missingScope, error: null, resultType: 'completed' },
+    ],
   ] as const) {
     await t.test(`${name} preserves the missing and granted permissions`, async () => {
       result = failure;
@@ -7728,6 +7785,7 @@ test('Composio failure envelopes reject with the provider error', async (t) => {
       needed: `canvases:write,${'y'.repeat(5000)}`,
       provided: `chat:write,channels:read,${'z'.repeat(5000)}`,
     },
+    resultType: 'failed',
   };
   await assert.rejects(
     session.execute('SLACK_CREATE_CANVAS', {}, 'fixture-account'),
@@ -7739,18 +7797,26 @@ test('Composio failure envelopes reject with the provider error', async (t) => {
       return true;
     },
   );
-  result = { data: { ok: false, error: 'invalid_auth' }, successful: true, error: null };
+  result = { data: { ok: false, error: 'invalid_auth' }, error: null, resultType: 'completed' };
   await assert.rejects(
     session.execute('SLACK_SEND_MESSAGE', {}, 'fixture-account'),
     /invalid_auth/,
   );
-  result = { data: { ok: false }, successful: true, error: null };
+  result = { data: { ok: false }, error: null, resultType: 'completed' };
   await assert.rejects(session.execute('SLACK_SEND_MESSAGE', {}, 'fixture-account'));
-  result = { data: { ok: true, canvas_id: 'fixture-canvas' }, error: null };
+  result = {
+    data: { ok: true, canvas_id: 'fixture-canvas' },
+    error: null,
+    resultType: 'completed',
+  };
   assert.deepEqual(await session.execute('SLACK_CREATE_CANVAS', {}, 'fixture-account'), result);
-  result = { data: { ok: false }, error: null };
+  result = { data: { ok: false }, error: null, resultType: 'completed' };
   assert.deepEqual(await session.execute('GMAIL_GET_PROFILE', {}, 'fixture-account'), result);
-  result = { data: { successful: true, id: 'fixture-message' }, error: null };
+  result = {
+    data: { successful: true, id: 'fixture-message' },
+    error: null,
+    resultType: 'completed',
+  };
   await session.execute('GMAIL_SEND_EMAIL', {}, 'fixture-account');
 });
 
