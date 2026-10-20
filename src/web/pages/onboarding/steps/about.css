@@ -30,9 +30,6 @@
 .ob-about-sent[data-new='true'] {
   animation: ob-about-row 400ms var(--ease-reveal);
 }
-.ob-about-sent[data-new='true'] > div {
-  overflow: hidden;
-}
 .ob-about-sent[data-new='true'] .ob-user-bubble {
   animation: ob-about-sent 320ms var(--ease-reveal);
   transform-origin: bottom right;
