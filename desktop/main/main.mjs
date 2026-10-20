@@ -23,11 +23,7 @@ import { hostname } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createSettingsStore } from './settings.mjs';
-import {
-  completeDesktopSetup,
-  createDesktopAnalytics,
-  trackDesktopAnalytics,
-} from './analytics.mjs';
+import { createDesktopAnalytics } from './analytics.mjs';
 import {
   assistantNotificationPreview,
   createReadinessNotice,
@@ -491,7 +487,6 @@ function showSettings(section = 'general', _mode, reset = false) {
     },
   });
   const window = setupWindow;
-  trackDesktopAnalytics(window);
   protectWindow(window);
   window.on('closed', () => {
     if (setupWindow === window) setupWindow = undefined;
@@ -735,7 +730,7 @@ async function finishEnginePreparation() {
     if (pendingFeedback || foregroundWindow()) showEngine();
     const completedWindow = setupWindow;
     setupWindow = undefined;
-    await completeDesktopSetup(completedWindow);
+    if (completedWindow && !completedWindow.isDestroyed()) completedWindow.destroy();
   }
   if (pendingPreload) {
     const assets = pendingPreload;
@@ -1019,8 +1014,10 @@ async function startEngine({ runtime, signal }) {
     OTTO_DESKTOP_OWNER_ID: await profileOwner(),
     OTTO_DESKTOP_AUTH_TOKEN: authToken,
     OTTO_ANALYTICS_ENABLED: String(analytics.enabled),
-    ...(analytics.distinctId ? { OTTO_ANALYTICS_ID: analytics.distinctId.slice(6) } : {}),
-    OTTO_ANALYTICS_ENVIRONMENT: app.isPackaged ? 'production' : 'development',
+    OTTO_ANALYTICS_ENVIRONMENT:
+      app.isPackaged && ottoBuild?.release === true && /^\d+\.\d+\.\d+$/.test(app.getVersion())
+        ? 'production'
+        : 'development',
     OTTO_PUBLIC_URL: engineOrigin,
     OTTO_DATA_ROOT: profileRoot,
     OTTO_WEB_ROOT: join(engineRoot, 'dist', 'web'),
@@ -1331,10 +1328,6 @@ else {
       ipcMain.handle('otto:settings:get', (event) => {
         if (!isSetup(event) && !isEngine(event)) throw new Error('This action is unavailable.');
         return readDesktopSettings();
-      });
-      ipcMain.handle('otto:analytics:configuration', async (event) => {
-        if (!isSetup(event) && !isEngine(event)) throw new Error('This action is unavailable.');
-        return { ...(await analyticsConfiguration()), enabled: false };
       });
       ipcMain.handle('otto:feedback:context', (event) => {
         if (!isEngine(event)) throw new Error('This action is unavailable.');
