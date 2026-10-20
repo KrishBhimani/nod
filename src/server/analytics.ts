@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { link, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { link, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
@@ -152,7 +152,7 @@ export async function createAnalytics(options: {
   appVersion?: string;
 }) {
   const appVersion = analyticsVersion.safeParse(options.appVersion).data;
-  let localId = options.provider
+  const localId = options.provider
     ? await installationId(options.dataRoot, options.installationId).catch(() => null)
     : null;
   const available = Boolean(options.provider && localId);
@@ -270,14 +270,9 @@ export async function createAnalytics(options: {
       );
     } catch {}
   }
-  function setUsageData(
-    owner: string,
-    enabled: boolean,
-    revision = state(owner).revision,
-    force = false,
-  ) {
+  function setUsageData(owner: string, enabled: boolean, revision = state(owner).revision) {
     const current = state(owner);
-    if (!force && current.enabled === enabled && current.revision === revision) return;
+    if (current.enabled === enabled && current.revision === revision) return;
     current.controller.abort();
     const controller = new AbortController();
     if (!enabled) controller.abort();
@@ -328,20 +323,6 @@ export async function createAnalytics(options: {
       };
     },
     setUsageData,
-    async resetInstallation() {
-      if (!available || options.installationId !== undefined)
-        throw new Error('The analytics installation ID cannot be reset here.');
-      const id = randomUUID();
-      const temporary = join(options.dataRoot, `.analytics-${id}`);
-      try {
-        await writeFile(temporary, id, { flag: 'wx', mode: 0o600 });
-        await rename(temporary, join(options.dataRoot, 'analytics-id'));
-      } finally {
-        await rm(temporary, { force: true });
-      }
-      localId = id;
-      for (const [owner, current] of states) setUsageData(owner, current.enabled, undefined, true);
-    },
     forOwner:
       (owner: string): CaptureAnalytics =>
       (event, delivery) =>
