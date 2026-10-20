@@ -165,6 +165,11 @@ export function createAgentRuntime(dependencies: {
     let bufferedText = '';
     let streamedText = '';
     let streamSubmitted = false;
+    let firstMessage = true;
+    let lastSpoke = Date.now();
+    let answered = false;
+    let lastNote = '';
+    let reported = false;
     const activeToolCalls = new Set<Promise<unknown>>();
     const observe = (event: RuntimeObservation) => {
       if (signal.aborted && !(event.type === 'tool_end' && event.status === 'cancelled')) return;
@@ -196,6 +201,7 @@ export function createAgentRuntime(dependencies: {
       await context.reply(trimmed, id, replyToMessageId);
       if (id) persistedStreams.add(id);
       lastReply = trimmed;
+      lastSpoke = Date.now();
     };
     const reply = deliverReply;
     const pause = async (reason: 'question' | 'approval' | 'credentials', message?: string) => {
@@ -216,7 +222,7 @@ export function createAgentRuntime(dependencies: {
 
     const flushText = () => {
       if (bufferedText && !stopped && speaks) {
-        context.delta(bufferedText, (streamId ??= randomUUID()));
+        if (firstMessage) context.delta(bufferedText, (streamId ??= randomUUID()));
         streamedText += bufferedText;
       }
       bufferedText = '';
@@ -232,13 +238,9 @@ export function createAgentRuntime(dependencies: {
         });
       void pendingReplies.catch(() => {});
     };
-    const completeStream = (persist = false) => {
+    const completeStream = () => {
       flushText();
-      if (streamId && speaks) {
-        if (persist && !streamSubmitted && !stopped && streamedText.trim())
-          queueStreamReply(streamedText, streamId);
-        if (!streamSubmitted) context.delta('', streamId, true);
-      }
+      if (streamId && speaks && !streamSubmitted) context.delta('', streamId, true);
       streamId = undefined;
       streamedText = '';
       streamSubmitted = false;
@@ -315,6 +317,11 @@ export function createAgentRuntime(dependencies: {
           assertActive();
           const output = await execute();
           signal.throwIfAborted();
+          if (
+            name === 'send_message' ||
+            (name === 'task' && (params as { action?: unknown } | null)?.action === 'start')
+          )
+            reported = true;
           if (!stopped) await context.emit('tool_complete', label, event());
           result = isToolResult(output) ? output : textResult(output);
           if (
@@ -628,14 +635,32 @@ export function createAgentRuntime(dependencies: {
           if (event.type === 'message_end') {
             if (event.status === 'succeeded') modelFailed = modelIncomplete = false;
             if (event.status === 'incomplete') modelIncomplete = true;
-            completeStream(
-              !modelFailed && (event.status === undefined || event.status === 'succeeded'),
-            );
+            flushText();
+            const text = streamSubmitted || stopped ? '' : streamedText.trim();
+            if (
+              text &&
+              !modelFailed &&
+              (event.status === undefined || event.status === 'succeeded')
+            ) {
+              if (
+                !context.taskContext &&
+                (firstMessage ||
+                  Date.now() - lastSpoke >=
+                    (!context.channel || context.channel === 'web' ? 30_000 : 180_000))
+              ) {
+                queueStreamReply(text, streamId ?? randomUUID());
+                lastSpoke = Date.now();
+                lastNote = '';
+              } else lastNote = text;
+            }
+            firstMessage = false;
+            completeStream();
           }
           if (event.type === 'error') modelFailed = true;
           if (event.type === 'final') {
             modelFailed = modelIncomplete = false;
             if (context.taskContext) taskResult = event.text;
+            answered ||= Boolean(event.text.trim());
           }
           if (stopped || !speaks) return;
           if (event.type === 'text_delta') {
@@ -662,6 +687,8 @@ export function createAgentRuntime(dependencies: {
       if (modelIncomplete && status === 'succeeded')
         throw new Error('The model response was incomplete. Say continue to try again.');
       if (stopped && status === 'succeeded') throw new Error('The turn was stopped.');
+      if (status === 'succeeded' && !answered && !reported && lastNote)
+        await deliverReply(lastNote);
       let result =
         context.taskContext && taskResult && taskResult.trim() !== lastReply
           ? taskResult

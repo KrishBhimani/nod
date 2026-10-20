@@ -115,10 +115,6 @@ export interface ThreadDependencies {
   taskContext?: (turn: TurnRef) => Promise<RuntimeContext['taskContext']>;
   taskLedger?: (threadId: string) => Promise<NonNullable<RuntimeContext['tasks']>>;
   startTurn?: (turn: TurnRef) => Promise<void>;
-  turnFinished?: (
-    turn: TurnRef & { source: TurnSource; background: boolean },
-    outcome: string,
-  ) => void;
   runTurn: (context: RuntimeContext) => Promise<RuntimeResult>;
   speech: Pick<SpeechService, 'synthesize'>;
   requestCredential: (
@@ -1091,6 +1087,7 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
     );
     refresh();
   };
+  const shared: Artifact[] = [];
   try {
     if (turn.source_id && (await dependencies.skipTurn?.(turn.source_id))) {
       await current((client) => finishTurn(client, turnId, 'cancelled'));
@@ -1253,7 +1250,8 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
       signal,
       attachments,
       emit,
-      reply: (text, streamId, replyToMessageId) => post(text, [], streamId, replyToMessageId),
+      reply: (text, streamId, replyToMessageId) =>
+        post(text, shared.splice(0), streamId, replyToMessageId),
       delta: (text, streamId, done) => {
         if (!signal.aborted && !turn.background && turn.channel === 'web')
           delta({ ownerId, channel: turn.channel, threadId, turnId, text, streamId, done });
@@ -1366,7 +1364,7 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
             client,
           ),
         );
-        await post('', [artifact]);
+        shared.push(artifact);
         return artifact;
       },
       readWorkspaceFile:
@@ -1389,7 +1387,10 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
     });
     if (!['succeeded', 'waiting_credentials', 'waiting_user'].includes(result.status))
       throw new Error('Invalid turn result.');
-    if (taskContext && result.status === 'succeeded' && result.result) await post(result.result);
+    if (taskContext && result.status === 'succeeded' && result.result)
+      await post(result.result, shared.splice(0));
+    if (shared.length && (result.status === 'succeeded' || !result.message))
+      await post('', shared.splice(0));
     await current(async (client) => {
       if (result.status === 'succeeded') return finishTurn(client, turnId, 'succeeded');
       const waiting = await finishTurn(client, turnId, 'waiting', {
@@ -1399,7 +1400,8 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
             : (result.waitingFor ?? 'question'),
         handoffBrowserId: result.handoffBrowserId,
       });
-      if (waiting && result.message) await insertAssistantMessage(client, ref, result.message);
+      if (waiting && result.message)
+        await insertAssistantMessage(client, ref, result.message, shared.splice(0));
     }).catch((error) => {
       if (!signal.aborted) throw error;
     });
@@ -1411,6 +1413,7 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
       outcome = 'interrupted';
       return;
     }
+    if (shared.length) await post('', shared.splice(0)).catch(() => {});
     if (signal.aborted) outcome = 'cancelled';
     if (!signal.aborted && error instanceof Error && error.message === spendingLimitReached) {
       limited = true;
@@ -1434,10 +1437,6 @@ async function executeTurn(turn: any, dependencies: ThreadDependencies) {
       },
     });
     running.delete(turnId);
-    dependencies.turnFinished?.(
-      { ...ref, source: turn.source, background: Boolean(turn.background) },
-      outcome,
-    );
   }
 }
 

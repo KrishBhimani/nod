@@ -20,11 +20,11 @@ Type in the message box and press Enter. Press Shift+Enter for a new line.
 
 ## Keep talking while Otto works
 
-You don't have to wait. The message box stays open while Otto works. Next to the typing dots, Otto shows its latest step: the website it's on, or the tool it's using.
+You don't have to wait. The message box stays open while Otto works. For work that takes more than a few seconds, Otto says in one line what it will do, works without narrating, then answers. If you'd otherwise hear nothing for a while (half a minute in Otto web, a few minutes in chat apps), it sends one short line on what it found and what's next. A file Otto shares is attached to its next answer, or sent on its own when none follows.
 
 Reply to a task's message to continue that task. A message without a reply target goes to the main chat. If it clearly changes an existing task, Otto sends your message to that task. If the target is unclear, Otto asks which task you mean.
 
-Short questions stay in the main chat. Independent work with a goal gets a saved task session, so you can discuss other work while it runs. Updates may wait for the current step to finish. Different tasks can continue in parallel. See [Track tasks](/use/tasks/).
+Otto does work it can finish now in the main chat, even when it takes several steps, such as reading your inbox and drafting replies. Work that has to outlive its answer gets a saved task session: it waits on someone or something, runs for a long stretch, or runs alongside other jobs. You can discuss other work while a task runs. Updates may wait for the current step to finish. Different tasks can continue in parallel. See [Track tasks](/use/tasks/).
 
 ## Answer Otto's questions
 

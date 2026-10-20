@@ -7,9 +7,9 @@ sidebar:
 
 The **Tasks** page shows what Otto is working on, what's scheduled and what's done.
 
-Otto starts a saved task session for independent work with a goal and a completion condition. The main chat stays available while the task runs. Quick questions stay in chat. There is no fixed limit of three tasks.
+Otto starts a saved task session for work that has to outlive its answer: work that waits on someone or something, runs for a long stretch, or runs alongside other jobs. The main chat stays available while the task runs. Work Otto can finish now stays in chat, even when it takes several steps. There is no fixed limit of three tasks.
 
-For example, "What does this sentence mean?" can stay in chat. "Compare these options and make a report" can become a task. The task keeps its goal and history while you discuss other work.
+For example, "Compare these options and make a report" stays in chat. "Ask three venues for quotes and tell me when they've all replied" becomes a task. The task keeps its goal and history while you discuss other work.
 
 Tasks share one [workspace](/use/workspace/#one-workspace-for-all-tasks) and owner memory. Each task has its own working folder and saved session. See [Task sessions](/how-it-works/task-sessions/) for the architecture.
 
@@ -25,14 +25,14 @@ Tasks share one [workspace](/use/workspace/#one-workspace-for-all-tasks) and own
 
 ## What a card shows
 
-| Part           | What it tells you                                                                                                                          |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Title          | The task in a few words                                                                                                                    |
-| Status         | Where the task stands, such as **Working** or **Needs you**                                                                                |
-| Now line       | While working, Otto's latest step: the website it's on, or the tool it's using. Otherwise what Otto is doing, or the question it asked you |
-| **Waiting on** | Who Otto is waiting for, and how, such as an email reply                                                                                   |
-| **Next check** | When Otto will look again                                                                                                                  |
-| **Done when**  | What finished looks like                                                                                                                   |
+| Part           | What it tells you                                                                                   |
+| -------------- | --------------------------------------------------------------------------------------------------- |
+| Title          | The task in a few words                                                                             |
+| Status         | Where the task stands, such as **Working** or **Needs you**                                         |
+| Now line       | While Otto browses, the website it's on. Otherwise what Otto is doing, or the question it asked you |
+| **Waiting on** | Who Otto is waiting for, and how, such as an email reply                                            |
+| **Next check** | When Otto will look again                                                                           |
+| **Done when**  | What finished looks like                                                                            |
 
 The same compact task preview appears in chat and on the Tasks page. It shows the title, status, current activity and, when steps are available, a segmented step bar. Select the preview to open its available steps and controls in place. Select it again to close the details. While a task works, its card shows its latest step, such as the website it's on, and the task posts a short update in chat when a new step adds real value. Inside the details, select **Show activity** to read what it said, with the steps in between grouped under each update. This view does not show private model reasoning.
 
