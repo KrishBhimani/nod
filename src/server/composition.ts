@@ -880,6 +880,10 @@ async function initializeApplication(
       channels ? channels.react(messageId, reaction, signal) : 'absent',
   });
   const localAccounts = createAccountStore(pool);
+  const ownerNames = async () =>
+    (await integrations.list(ownerId, { refresh: false }))
+      .filter(connectedGmail)
+      .flatMap((connection) => (connection.accountName ? [connection.accountName] : []));
   await localAccounts.initialize();
   const onboardingSuggestions = createOnboardingSuggestions({
     ownerId,
@@ -912,7 +916,7 @@ async function initializeApplication(
         getPreferences(),
       ]);
       return {
-        names: account.displayName ? [account.displayName] : [],
+        names: await ownerNames(),
         region: preferences.locale
           ? new Intl.Locale(preferences.locale).maximize().region
           : undefined,
@@ -957,7 +961,7 @@ async function initializeApplication(
       name: null,
       givenName: null,
       email: null,
-      preferredName: (await localAccounts.read(ownerId)).displayName,
+      preferredName: (await ownerNames())[0] ?? null,
     });
   async function permitVault(
     turn: TurnRef,
@@ -1326,8 +1330,9 @@ async function initializeApplication(
       },
     });
   }
-  const welcome = async (name?: string) => {
-    if (adapters.model.configured) await onboardingSuggestions.complete(name);
+  const welcome = async () => {
+    if (adapters.model.configured)
+      await onboardingSuggestions.complete((await ownerNames().catch(() => []))[0]);
   };
   const app = await createApp({
     analytics: captureAnalytics,
@@ -1336,7 +1341,6 @@ async function initializeApplication(
     artifacts,
     submitMessage: userMessages.submit,
     verification: chatVerification,
-    startOnboarding: welcome,
     taskLedger: tasks.read,
     planningTasks: onboardingSuggestions.planning,
     messageCosts: ledger.messageCosts,
@@ -1392,7 +1396,7 @@ async function initializeApplication(
     origin: publicOrigin,
     localUser: { id: ownerId, name: 'You', email: null, avatarUrl: null },
     developerIds: desktopMode ? new Set() : new Set([ownerId]),
-    start: (_owner, name) => welcome(name),
+    start: welcome,
     prepare: prepareRuntime,
     onboardingReady: async () =>
       adapters.model.configured &&
