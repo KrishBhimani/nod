@@ -28,6 +28,7 @@ import {
   ensureRuntimeAssets,
   findRuntimeAssets,
   installRuntimeArchive,
+  openRuntimeAssets,
 } from '../runtime/assets.mjs';
 import {
   automaticRelease,
@@ -998,6 +999,34 @@ test('bundle copy includes explicit release assets under .local while excluding 
   ]);
 });
 
+test('engine source imports only production dependencies outside the development server', async () => {
+  const { builtinModules } = await import('node:module');
+  const repository = fileURLToPath(new URL('../../', import.meta.url));
+  const manifest = JSON.parse(await readFile(join(repository, 'package.json'), 'utf8'));
+  const allowed = new Set([...Object.keys(manifest.dependencies), ...builtinModules]);
+  const files = [join(repository, 'desktop/main/engine.mjs')];
+  const walk = async (directory) => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (path !== join(repository, 'src/web')) await walk(path);
+      } else if (/\.(?:ts|tsx|mjs)$/.test(entry.name)) files.push(path);
+    }
+  };
+  await walk(join(repository, 'src'));
+  await walk(join(repository, 'desktop/runtime'));
+  const imported = new Set();
+  for (const file of files) {
+    const source = await readFile(file, 'utf8');
+    for (const [, specifier] of source.matchAll(
+      /(?:^|\n)\s*(?:import(?!\s+type\b)[^'"]*?from\s*|export[^'"]*?from\s*|import\s*\(\s*|import\s+)['"]([^'"./][^'"]*)['"]/g,
+    ))
+      if (!specifier.startsWith('node:')) imported.add(specifier.match(/^(?:@[^/]+\/)?[^/]+/)[0]);
+  }
+  imported.delete('vite');
+  assert.deepEqual([...imported].filter((name) => !allowed.has(name)).sort(), []);
+});
+
 test('packaged engine loads dynamic dependencies and binary links outside the checkout and excludes other platforms', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'otto-packaged-dependencies-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -1020,6 +1049,35 @@ test('packaged engine loads dynamic dependencies and binary links outside the ch
     'import value from "./index.mjs"; console.log(value);',
   );
   await symlink('../synthetic-extension/cli.mjs', join(source, 'node_modules', '.bin', 'probe'));
+  await writeFile(
+    join(source, 'package.json'),
+    JSON.stringify({
+      dependencies: {
+        'synthetic-extension': '1.0.0',
+        'synthetic-linux': '1.0.0',
+        '@synthetic/intel': '1.0.0',
+      },
+      devDependencies: { 'synthetic-tool': '1.0.0' },
+    }),
+  );
+  await writeFile(
+    join(dependency, 'package.json'),
+    JSON.stringify({
+      name: 'synthetic-extension',
+      type: 'module',
+      exports: './index.mjs',
+      dependencies: { 'synthetic-helper': '2.0.0' },
+    }),
+  );
+  for (const [directory, version] of [
+    [join(source, 'node_modules', 'synthetic-helper'), '1.0.0'],
+    [join(dependency, 'node_modules', 'synthetic-helper'), '2.0.0'],
+    [join(source, 'node_modules', 'synthetic-tool'), '1.0.0'],
+  ]) {
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, 'package.json'), JSON.stringify({ version }));
+  }
+  await symlink('../synthetic-tool/package.json', join(source, 'node_modules', '.bin', 'tool'));
   for (const name of ['synthetic-linux', '@synthetic/intel']) {
     const directory = join(source, 'node_modules', name);
     await mkdir(directory, { recursive: true });
@@ -1029,8 +1087,23 @@ test('packaged engine loads dynamic dependencies and binary links outside the ch
     );
   }
   await copyEngineDependencies({ root: source, target });
-  for (const name of ['synthetic-linux', '@synthetic/intel'])
-    await assert.rejects(stat(join(target, 'node_modules', name)), { code: 'ENOENT' });
+  for (const path of [
+    'synthetic-linux',
+    '@synthetic/intel',
+    'synthetic-tool',
+    'synthetic-helper',
+    '.bin/tool',
+  ])
+    await assert.rejects(stat(join(target, 'node_modules', path)), { code: 'ENOENT' });
+  assert.equal(
+    JSON.parse(
+      await readFile(
+        join(target, 'node_modules/synthetic-extension/node_modules/synthetic-helper/package.json'),
+        'utf8',
+      ),
+    ).version,
+    '2.0.0',
+  );
   await rm(source, { recursive: true });
   await writeFile(
     join(target, 'probe.mjs'),
@@ -1195,6 +1268,67 @@ test('runtime download rejects an insecure redirect without fetching it or leavi
   await assert.rejects(ensureRuntimeAssets(options));
   assert.equal(request.mock.callCount(), 1);
   assert.deepEqual(await readdir(options.cacheRoot), []);
+});
+
+test('runtime files become ready only after their own bytes verify, and a mismatched file never does', async (t) => {
+  const options = await fixture(t);
+  const bytes = await readFile(options.archivePath);
+  const assets = await openRuntimeAssets({
+    ...options,
+    downloadUrl: 'https://runtime.example.invalid/fixture.tar.gz',
+    fetch: async () => new Response(bytes),
+  });
+  for (const file of options.release.files) {
+    await assets.ready(file.path);
+    assert.equal(await assetHash(join(assets.root, file.path)), file.sha256);
+  }
+  assert.equal(await assets.done, assets.root);
+  const tampered = await fixture(t);
+  tampered.release.files[1].sha256 = 'f'.repeat(64);
+  tampered.release.id = createHash('sha256')
+    .update(JSON.stringify(tampered.release.files))
+    .digest('hex');
+  const rejected = await openRuntimeAssets({
+    ...tampered,
+    downloadUrl: 'https://runtime.example.invalid/fixture.tar.gz',
+    fetch: async () => new Response(await readFile(tampered.archivePath)),
+  });
+  await assert.rejects(rejected.ready(tampered.release.files[1].path));
+  await assert.rejects(rejected.done);
+  assert.deepEqual(await readdir(tampered.cacheRoot), []);
+});
+
+test('runtime download keeps a slow connection going and stops only when data stops arriving', async (t) => {
+  const options = await fixture(t);
+  const bytes = await readFile(options.archivePath);
+  const size = Math.ceil(bytes.length / 10);
+  let sent = 0;
+  const slow = await openRuntimeAssets({
+    ...options,
+    stallTimeout: 300,
+    downloadUrl: 'https://runtime.example.invalid/fixture.tar.gz',
+    fetch: async () =>
+      new Response(
+        new ReadableStream({
+          async pull(controller) {
+            await new Promise((resolve) => setTimeout(resolve, 120));
+            if (sent >= bytes.length) return controller.close();
+            controller.enqueue(bytes.subarray(sent, sent + size));
+            sent += size;
+          },
+        }),
+      ),
+  });
+  assert.equal(await slow.done, slow.root);
+  const stalled = await fixture(t);
+  const stuck = await openRuntimeAssets({
+    ...stalled,
+    stallTimeout: 300,
+    downloadUrl: 'https://runtime.example.invalid/fixture.tar.gz',
+    fetch: async () => new Response(new ReadableStream({ pull: () => new Promise(() => {}) })),
+  });
+  await assert.rejects(stuck.done, /stopped receiving data/);
+  assert.deepEqual(await readdir(stalled.cacheRoot), []);
 });
 
 test('runtime download rejects corrupt bytes, cleans its download and allows a verified retry', async (t) => {
@@ -1830,13 +1964,13 @@ async function windowsImageFixture(t) {
     ['postgres', 'workspace', 'browser'].map(async (name) => {
       const bytes = Buffer.from(`synthetic-${name}-image`);
       const digest = createHash('sha256').update(bytes).digest('hex');
-      await writeFile(join(root, 'images', `${name}.tar.gz`), bytes);
+      await writeFile(join(root, 'images', `${name}.tar.zst`), bytes);
       return {
         name,
         id: `sha256:${digest}`,
         sha256: digest,
         reference: `synthetic:${name}`,
-        file: `images/${name}.tar.gz`,
+        file: `images/${name}.tar.zst`,
       };
     }),
   );
@@ -1934,7 +2068,10 @@ test('runtime hands off verified storage before browser readiness and fences fai
         assert.deepEqual((await windows.read()).images, {});
         if (outcome === 'windows-failed') await windows.wrong('browser');
         if (outcome === 'windows-damaged')
-          await writeFile(join(windows.root, 'images/browser.tar.gz'), 'corrupt synthetic archive');
+          await writeFile(
+            join(windows.root, 'images/browser.tar.zst'),
+            'corrupt synthetic archive',
+          );
       }
       const calls = [];
       let storage;
@@ -2047,6 +2184,7 @@ test('runtime hands off verified storage before browser readiness and fences fai
         status() {},
         prepareImage: async (name) => {
           calls.push(['prepare-image', name]);
+          if (name !== 'postgres') await handed;
           windows?.run('image', name);
         },
         async onStorageReady(runtime) {
@@ -2113,7 +2251,11 @@ test('runtime hands off verified storage before browser readiness and fences fai
           ]);
           assert.deepEqual(
             calls.filter((command) => Array.isArray(command) && command[0] === 'prepare-image'),
-            [['prepare-image', 'postgres']],
+            [
+              ['prepare-image', 'postgres'],
+              ['prepare-image', 'workspace'],
+              ['prepare-image', 'browser'],
+            ],
           );
           if (outcome === 'aborted-handoff') {
             signal.abort(new Error('Synthetic setup cancelled during handoff'));
@@ -2138,7 +2280,7 @@ test('runtime hands off verified storage before browser readiness and fences fai
             if (outcome === 'windows-damaged')
               assert.equal(
                 (await windows.read()).commands.some(
-                  (command) => command[0] === 'load' && command.at(-1).endsWith('/browser.tar.gz'),
+                  (command) => command[0] === 'load' && command.at(-1).endsWith('/browser.tar.zst'),
                 ),
                 false,
               );
@@ -2189,13 +2331,34 @@ test('runtime hands off verified storage before browser readiness and fences fai
   }
 });
 
-test('runtime fingerprints include root dependencies and complete source and reject symlinked input roots', async (t) => {
+test('runtime fingerprints cover dependencies and every source the images use, and reject symlinked input roots', async (t) => {
   const { cp, realpath } = await import('node:fs/promises');
-  const { runtimeInputs } = await import('../scripts/runtime-inputs.mjs');
+  const { build } = await import('esbuild');
+  const { browserEntries, browserSources, runtimeInputs } =
+    await import('../scripts/runtime-inputs.mjs');
   const root = await realpath(await mkdtemp(join(tmpdir(), 'otto-runtime-inputs-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const repository = fileURLToPath(new URL('../../', import.meta.url));
+  const bundle = await build({
+    entryPoints: browserEntries,
+    absWorkingDir: repository,
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    write: false,
+    metafile: true,
+    outdir: 'out',
+    logLevel: 'silent',
+  });
+  const sources = await browserSources();
+  for (const path of Object.keys(bundle.metafile.inputs))
+    if (!path.startsWith('node_modules/')) assert.ok(sources.includes(path), path);
+  const browserDockerfile = await readFile(join(repository, 'Dockerfile.browser'), 'utf8');
+  assert.ok(browserDockerfile.includes(`esbuild ${browserEntries.join(' ')} `));
   const input = await runtimeInputs();
+  const dockerfiles = `${browserDockerfile}\n${await readFile(join(repository, 'Dockerfile.workspace'), 'utf8')}`;
+  for (const [, path] of dockerfiles.matchAll(/^COPY (?:--\S+ )*(src\/\S+)/gm))
+    assert.ok(input.inputs.includes(path), path);
   const sourcePaths = input.inputs.filter(
     (path) => !path.includes(':') && !path.startsWith('@') && !path.startsWith('signing.'),
   );
@@ -2225,22 +2388,28 @@ test('runtime fingerprints include root dependencies and complete source and rej
   await writeFile(lockPath, `${lockSource}\nsyntheticDependencyChange: true\n`);
   assert.notEqual(JSON.parse((await run()).stdout).fingerprint, before);
   await writeFile(lockPath, lockSource);
-  for (const path of ['src/server/index.ts', 'src/web/pages/chat.tsx']) {
+  for (const path of ['src/shared/public-address.ts', 'src/providers/docker/save-video.py']) {
     const file = join(root, path);
     const source = await readFile(file, 'utf8');
-    await writeFile(file, `${source}\nexport const syntheticRuntimeChange = true;\n`);
+    await writeFile(file, `${source}\n// synthetic runtime change\n`);
     assert.notEqual(JSON.parse((await run()).stdout).fingerprint, before);
     await writeFile(file, source);
+  }
+  for (const path of ['src/server/index.ts', 'src/web/pages/chat.tsx']) {
+    await mkdir(dirname(join(root, path)), { recursive: true });
+    await writeFile(join(root, path), 'export const syntheticAppChange = true;\n');
   }
   assert.equal(JSON.parse((await run()).stdout).fingerprint, before);
   const outside = join(root, 'outside');
   await mkdir(outside);
   await writeFile(join(outside, 'must-not-be-hashed'), 'Synthetic outside-checkout content');
-  await rm(join(root, 'src/ports'), { recursive: true });
-  await symlink(outside, join(root, 'src/ports'));
+  const ports = join(root, 'src/ports');
+  await rm(ports, { recursive: true });
+  await symlink(outside, ports);
   await assert.rejects(run());
-  await rm(join(root, 'src/ports'));
-  await mkdir(join(root, 'src/ports'));
+  await rm(ports);
+  await cp(join(repository, 'src/ports'), ports, { recursive: true });
+  assert.equal(JSON.parse((await run()).stdout).fingerprint, before);
   await rm(join(root, 'Dockerfile.workspace'));
   await symlink(join(outside, 'must-not-be-hashed'), join(root, 'Dockerfile.workspace'));
   await assert.rejects(run());

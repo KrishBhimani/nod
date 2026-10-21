@@ -10,8 +10,8 @@ import { pipeline } from 'node:stream/promises';
 import { guestConfiguration, protectNetworks } from './guest-config.mjs';
 import {
   assetHash,
-  ensureRuntimeAssets,
   findRuntimeAssets,
+  openRuntimeAssets,
   removeUnusedRuntimes,
 } from './assets.mjs';
 
@@ -105,7 +105,7 @@ export async function availablePort() {
   return port;
 }
 
-export async function waitFor(operation, { signal, attempts = 60, interval = 1000 } = {}) {
+export async function waitFor(operation, { signal, attempts = 240, interval = 250 } = {}) {
   let failure;
   for (let attempt = 0; attempt < attempts; attempt++) {
     signal?.throwIfAborted();
@@ -131,17 +131,33 @@ async function prepare(options, onComputerStart) {
   const resourcesPath = resolve(options.resourcesPath || options.resources);
   const onStatus = options.onStatus || options.onProgress || (() => {});
   const signal = options.signal;
-  const status = (phase, message, progress) =>
-    onStatus({ phase, message, ...(progress === undefined ? {} : { progress }) });
   await mkdir(dataRoot, { recursive: true, mode: 0o700 });
   const controlRoot = join(dataRoot, 'desktop-runtime');
   await mkdir(controlRoot, { recursive: true, mode: 0o700 });
-  const assets = await ensureRuntimeAssets({
+  const runtimeAssets = await openRuntimeAssets({
     resourcesPath,
     onStatus,
     signal,
     resolveDownloadUrl: options.resolveDownloadUrl,
   });
+  let downloading = runtimeAssets.paths.length > 0;
+  let waiting;
+  const status = (phase, message, progress) => {
+    const value = { phase, message, ...(progress === undefined ? {} : { progress }) };
+    if (downloading) waiting = value;
+    else onStatus(value);
+  };
+  runtimeAssets.done.then(
+    () => {
+      downloading = false;
+      if (waiting) onStatus(waiting);
+    },
+    () => {},
+  );
+  const assets = runtimeAssets.root;
+  await Promise.all(
+    runtimeAssets.paths.filter((path) => !path.startsWith('images/')).map(runtimeAssets.ready),
+  );
   const manifest = JSON.parse(await readFile(join(assets, 'manifest.json'), 'utf8'));
   if (
     manifest.version !== 1 ||
@@ -153,7 +169,7 @@ async function prepare(options, onComputerStart) {
   for (const entry of [manifest.guest, manifest.dockerGuest, ...manifest.images]) {
     if (
       !/^[a-f0-9]{64}$/.test(entry.sha256) ||
-      !/^(guest\.img|docker-guest\.tar\.gz|images\/(workspace|browser|postgres)\.tar\.gz)$/.test(
+      !/^(guest\.img|docker-guest\.tar\.gz|images\/(workspace|browser|postgres)\.tar\.zst)$/.test(
         entry.file,
       )
     )
@@ -274,18 +290,14 @@ async function prepare(options, onComputerStart) {
   await runLima(['start', '--tty=false', vm], { timeout: 600_000 });
   if (!options.preserveRuntimeCache) await removeUnmountedRuntimes(assets).catch(() => {});
   await waitFor(() => runDocker(['info', '--format', '{{.ServerVersion}}']), { signal });
-  const prepareImage = async (name, progress) => {
+  const prepareImage = async (name) => {
     const item = validImage(manifest.images.find((image) => image.name === name));
     let installed = '';
     try {
       installed = await runDocker(['image', 'inspect', '--format', '{{.Id}}', item.reference]);
     } catch {}
     if (installed === item.id) return;
-    status(
-      'installing',
-      `Preparing ${item.name === 'postgres' ? 'local storage' : `your ${item.name}`}…`,
-      progress,
-    );
+    await runtimeAssets.ready(item.file);
     if ((await fileHash(join(assets, item.file))) !== item.sha256)
       throw new Error('An Otto computer image is damaged. Reinstall this build.');
     await runLima(
@@ -320,6 +332,7 @@ async function prepare(options, onComputerStart) {
     status,
     prepareImage,
     onStorageReady: options.onStorageReady,
+    runtimeReady: runtimeAssets.done,
   });
 }
 
@@ -327,7 +340,7 @@ function validImage(item) {
   if (
     !['workspace', 'browser', 'postgres'].includes(item.name) ||
     !/^sha256:[a-f0-9]{64}$/.test(item.id) ||
-    !/^images\/(workspace|browser|postgres)\.tar\.gz$/.test(item.file)
+    !/^images\/(workspace|browser|postgres)\.tar\.zst$/.test(item.file)
   )
     throw new Error('The Otto computer image is invalid.');
   return item;
@@ -504,8 +517,15 @@ export async function finishRuntime({
   status,
   prepareImage,
   onStorageReady,
+  runtimeReady,
 }) {
   status('starting', 'Preparing secure storage and tools…', 0.24);
+  const images = {};
+  const loadImage = (name) => {
+    images[name] = Promise.resolve().then(() => prepareImage?.(name));
+    images[name].catch(() => {});
+  };
+  loadImage('postgres');
   const names = {
     workspace: `otto-workspace-${identity}`,
     browser: `otto-browser-${identity}`,
@@ -528,7 +548,9 @@ export async function finishRuntime({
   };
   for (const volume of Object.values(volumes)) await runDocker(['volume', 'create', volume]);
   const image = (name) => manifest.images.find((item) => item.name === name).id;
-  await prepareImage?.('postgres', 0.3);
+  await images.postgres;
+  loadImage('workspace');
+  loadImage('browser');
   const postgres = await replaceContainer(
     runDocker,
     names.postgres,
@@ -582,7 +604,7 @@ export async function finishRuntime({
           await client.end().catch(() => {});
         }
       },
-      { signal, attempts: 12 },
+      { signal, attempts: 12, interval: 1000 },
     );
   } catch (error) {
     const storage = storageReady.get(resolve(dataRoot));
@@ -650,8 +672,8 @@ exec "$docker" "$@"
   signal?.throwIfAborted();
   await onStorageReady?.(runtime);
   signal?.throwIfAborted();
-  await prepareImage?.('workspace', 0.8);
   status('starting', 'Preparing your workspace…', 0.82);
+  await images.workspace;
   await replaceContainer(
     runDocker,
     names.workspace,
@@ -679,8 +701,8 @@ exec "$docker" "$@"
     ],
     { command: ['infinity'] },
   );
-  await prepareImage?.('browser', 0.88);
   status('starting', 'Preparing your browser…', 0.9);
+  await images.browser;
   await replaceContainer(runDocker, names.browser, image('browser'), [
     '--network',
     `otto-browser-${identity}`,
@@ -723,6 +745,7 @@ exec "$docker" "$@"
     },
     { signal },
   );
+  await runtimeReady;
   await removeStaleImages(runDocker, runGuest, manifest).catch(() => {});
   status('ready', 'Your private computer is ready.', 1);
   return runtime;
