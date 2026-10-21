@@ -1169,7 +1169,7 @@ function installUpdate() {
   });
 }
 
-async function quit(complete) {
+async function quit(complete, failure = 'Otto could not finish shutting down.') {
   quitting = true;
   stopUpdateChecks?.();
   const stoppingUpdates = updates?.dispose();
@@ -1178,10 +1178,36 @@ async function quit(complete) {
   for (const notification of displayedNotifications) notification.close();
   await stoppingUpdates;
   await chatReadCursors.flush().catch(() => {});
-  await finishQuit(complete);
+  await finishQuit(complete, failure);
 }
 
-async function finishQuit(complete) {
+async function removeAllData() {
+  if (quitting) return;
+  const { response } = await dialog.showMessageBox({
+    type: 'warning',
+    message: 'Remove all Otto data?',
+    detail:
+      'Your conversations, files, memory, logins, cards and settings are deleted from this computer. Otto then quits.',
+    buttons: ['Remove all data', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  });
+  if (response !== 0 || quitting) return;
+  await quit(async () => {
+    const { removeProfile } = await import(
+      pathToFileURL(join(engineRoot, 'desktop', 'runtime', 'index.mjs')).href
+    );
+    app.setLoginItemSettings({ openAtLogin: false });
+    const browser = session.fromPartition('persist:otto-app');
+    await browser.clearStorageData();
+    await browser.clearCache();
+    await removeProfile({ dataRoot: profileRoot, resourcesPath: engineRoot });
+    app.exit();
+  }, 'Otto could not remove all its data.');
+}
+
+async function finishQuit(complete, failure) {
   while (true) {
     try {
       await lifecycle.close();
@@ -1191,7 +1217,7 @@ async function finishQuit(complete) {
       await writeDiagnostic(error.message).catch(() => {});
       const { response } = await dialog.showMessageBox({
         type: 'warning',
-        message: 'Otto could not finish shutting down.',
+        message: failure,
         detail: 'Try again to finish quitting.',
         buttons: ['Try again', 'Quit anyway'],
         defaultId: 0,
@@ -1598,6 +1624,7 @@ else {
                 label: 'Replay onboarding…',
                 click: replayOnboarding,
               },
+              { label: 'Remove all data…', click: () => void removeAllData() },
               { type: 'separator' },
               { role: 'hide' },
               { role: 'hideOthers' },
@@ -1743,6 +1770,10 @@ else {
       ipcMain.handle('otto:external', (event, url) => {
         if (!isEngine(event)) throw new Error('This action is unavailable.');
         return openExternal(url);
+      });
+      ipcMain.handle('otto:data:remove', (event) => {
+        if (!isEngine(event)) throw new Error('This action is unavailable.');
+        return removeAllData();
       });
       ipcMain.handle('otto:settings:open', (event, section = 'general') => {
         if (!isEngine(event)) throw new Error('This action is unavailable.');
