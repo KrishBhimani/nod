@@ -196,9 +196,6 @@
 .ob-grow[data-open='true'] {
   grid-template-rows: 1fr;
 }
-.ob-grow[data-animate='false'][data-open='true'] {
-  transition: none;
-}
 .ob-grow > div {
   min-height: 0;
   overflow: hidden;
