@@ -1,3 +1,11 @@
+import type { ChannelLinkStatus } from '../shared/contracts.ts';
+
+export class MessagingAttachmentError extends Error {
+  constructor(readonly maxBytes: number) {
+    super('The channel file is too large.');
+  }
+}
+
 export interface MessagingChannel {
   id: string;
   status: 'disabled' | 'setup_required' | 'configured';
@@ -6,6 +14,7 @@ export interface MessagingChannel {
   allowedSenderIds: string[];
   replyWindowMs?: number;
   supportsAttachments?: boolean;
+  available?: boolean;
   presenceMs?: number;
 }
 
@@ -13,7 +22,9 @@ export interface MessagingAttachment {
   name: string;
   mimeType: string;
   size: number;
-  read(): Promise<Uint8Array>;
+  voice?: boolean;
+  source?: 'sticker' | 'sticker-preview' | 'location' | 'contact';
+  read(signal?: AbortSignal): Promise<Uint8Array>;
 }
 
 export interface InboundMessage {
@@ -23,6 +34,7 @@ export interface InboundMessage {
   messageId: string;
   threadId: string;
   text: string;
+  attachments?: MessagingAttachment[];
   replyToMessageId?: string;
   sentAt: Date;
 }
@@ -66,6 +78,9 @@ export interface MessagingWebhookResult {
 
 export interface MessagingTransport {
   channels: MessagingChannel[];
+  pairing?(): Promise<ChannelLinkStatus>;
+  cancelPairing?(pairingId: string, restart?: boolean): Promise<boolean>;
+  unlink?(): Promise<void>;
   poll?(
     accept: (message: InboundMessage) => Promise<void>,
     pair?: (request: ChannelPairingRequest) => Promise<void>,
@@ -79,6 +94,7 @@ export interface MessagingTransport {
     text: string;
     attachments?: MessagingAttachment[];
     replyToMessageId?: string;
+    replyToText?: string;
     attachmentFailure?: (names: string[]) => Promise<string | undefined>;
   }): Promise<{ id: string; ids?: string[] }>;
   react?(input: {

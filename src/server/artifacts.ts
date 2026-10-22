@@ -15,6 +15,7 @@ const mimeTypes: Record<string, string> = {
   '.md': 'text/markdown',
   '.csv': 'text/csv',
   '.json': 'application/json',
+  '.vcf': 'text/vcard',
   '.pdf': 'application/pdf',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -105,6 +106,7 @@ export function createArtifactService(options: {
     mimeType: string,
     threadId?: string,
     database: Pick<PoolClient, 'query'> = options.database,
+    onCreated?: (cleanup: () => Promise<void>) => void,
   ): Promise<Artifact> {
     if (!bytes.length || bytes.length > fileBytes)
       throw Object.assign(
@@ -130,6 +132,13 @@ export function createArtifactService(options: {
         'INSERT INTO artifacts(id,owner_id,thread_id,name,mime_type,size,storage_path) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',
         [id, options.ownerId, threadId || null, safeName, mimeType, bytes.length, location(id)],
       );
+      onCreated?.(async () => {
+        const stored = await options.database.query(
+          'SELECT 1 FROM artifacts WHERE id=$1 AND owner_id=$2',
+          [id, options.ownerId],
+        );
+        if (!stored.rowCount) await rm(location(id), { force: true });
+      });
       return artifactView(result.rows[0]);
     } catch (error) {
       await rm(location(id), { force: true }).catch(() => {});

@@ -9,6 +9,8 @@ This page explains what happens inside a turn: the Pi session, the tools the mod
 
 The short version: `src/runtime` runs each turn in a Pi session. Every tool call goes through one turn guard. Results from the outside world reach the model wrapped as untrusted data.
 
+nod has its own warm, direct voice. It uses normal sentence capitalization and preserves names and acronyms. It follows the conversation language and explicit style requests. It does not copy the user's casing, slang or tone. These rules also apply to channel notices and confirmation questions.
+
 ## Pi sessions
 
 Pi is the agent harness nod runs on. It keeps the transcript, calls the model and runs tools. nod's adapter is in [`src/providers/pi/`](https://github.com/n8n-io/nod/tree/main/src/providers/pi). The runtime in [`src/runtime/index.ts`](https://github.com/n8n-io/nod/blob/main/src/runtime/index.ts) runs sessions in parallel. Each session runs one turn at a time:
@@ -31,12 +33,14 @@ All totals come from these ledger rows. Missing prices stay unknown.
 
 ## Keeping the context small
 
-| Mechanism          | Rule                                                                                                                                                                                                                       |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Compaction         | Pi compacts at 256k tokens or 16,384 tokens below the model's context window, whichever is smaller, and keeps the newest third of that in full, which leaves the summary request room even when a chat fills the window.   |
-| Screenshot pruning | Above twelve screenshots, the oldest are replaced in steps of eight with a note to take a new one. The prompt cache breaks only at those steps.                                                                            |
-| Attached images    | PNG, JPEG and WebP images of up to 3.75 MiB each, and 16 MiB together per message, reach the model with the message. Others, and every image for a model that can't read images, stay workspace files marked as not shown. |
-| Provider errors    | Reach Pi with only the connection key redacted, so Pi's overflow recovery and retries see the real error.                                                                                                                  |
+| Mechanism          | Rule                                                                                                                                                                                                                                                                                         |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Compaction         | Pi compacts at 256k tokens or 16,384 tokens below the model's context window, whichever is smaller, and keeps the newest third of that in full, which leaves the summary request room even when a chat fills the window.                                                                     |
+| Screenshot pruning | Above twelve screenshots, the oldest are replaced in steps of eight with a note to take a new one. The prompt cache breaks only at those steps.                                                                                                                                              |
+| Attached images    | PNG, JPEG and WebP images of up to 3.75 MiB each, and 16 MiB together per message, reach the model with the message. If the chat model cannot read images, an image model from a connected service supplies an untrusted description. Other images stay workspace files marked as not shown. |
+| Provider errors    | Reach Pi with only the connection key redacted, so Pi's overflow recovery and retries see the real error.                                                                                                                                                                                    |
+
+Image analysis keeps the selected chat model. It prefers an image model on that model's connection, then checks the owner's other connected services. It reads current credentials for each request. The image model receives the current request and supported images, without the chat history, tool results or Vault data. Its description is untrusted data and cannot approve an action. Analysis has no automatic retry. Its usage belongs to the current session and counts toward the monthly limit and task check-in. A failed analysis leaves the image marked as not shown.
 
 When a loaded session ends with tool calls that have no result, each call gets the result "This action was interrupted. Its outcome is unknown; check before doing it again."
 

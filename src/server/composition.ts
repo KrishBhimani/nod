@@ -46,6 +46,8 @@ import { createOtlpTelemetry } from '../providers/otlp/telemetry.ts';
 import type { UsageTelemetry } from '../ports/provider-usage.ts';
 import { agentModels } from '../shared/model-defaults.ts';
 import { createChatSdkTransport } from '../providers/chat-sdk/index.ts';
+import { createWhatsAppLinkedTransport } from '../providers/chat-sdk/whatsapp.ts';
+import { combineMessagingTransports } from '../providers/chat-sdk/combined.ts';
 import { createChatSdkSetupVerifier } from '../providers/chat-sdk/settings.ts';
 import { createContainerBrowserComputer } from '../providers/container-browser/index.ts';
 import { createComposioProvider } from '../providers/composio/integrations.ts';
@@ -66,6 +68,8 @@ import {
 import { createKeychainKeyStore } from '../providers/keychain/key-store.ts';
 import { createFilesystemKeyStore } from '../providers/filesystem/key-store.ts';
 import { createOpenAISpeechProvider } from '../providers/openai/speech.ts';
+import { createOpenRouterTranscriptionProvider } from '../providers/openrouter/speech.ts';
+import { createImageAnalysis } from './images.ts';
 import { createPiModelBackend } from '../providers/pi/models.ts';
 import { createModelService, endpointAddress } from './models.ts';
 import { createIntegrationBrowser } from './integration-browser.ts';
@@ -90,6 +94,8 @@ import { localArtifacts } from './artifacts.ts';
 import { memoryFileName, memoryMarkdown } from '../shared/memory-export.ts';
 import { createChannels } from './channels.ts';
 import { createChannelSettings, initializeChannelSettings } from './channel-settings.ts';
+import { createChannelMedia } from './channel-media.ts';
+import { createChannelSessionStore } from './channel-session.ts';
 import { configuration, dataRoot, desktopMode, ownerId, publicOrigin } from './config.ts';
 import { createAccountStore } from './account-store.ts';
 import { createModelTraces, type ModelTraceGate } from './traces.ts';
@@ -120,6 +126,7 @@ import {
   createUserMessageService,
   enqueueTurn,
   initializeThreads,
+  lockThread,
   reactToAssistantMessage,
   resumeAfterConnection,
   resumeAfterCredentials,
@@ -153,6 +160,7 @@ export interface ApplicationAdapters {
   integrations: IntegrationProvider;
   keyStore: CredentialKeyStore;
   memoryCurator?: MemoryCurator;
+  imageCurator?: MemoryCurator;
   analyticsCurator?: MemoryCurator;
   onboardingCurator?: MemoryCurator;
   decisions?: DecisionModel;
@@ -234,6 +242,22 @@ export function createDefaultAdapters(
     },
     changed: refresh,
   });
+  const openAISpeech = createOpenAISpeechProvider({
+    apiKey: env.OPENAI_API_KEY || (() => models.apiKey('openai')),
+    configured: () => Boolean(env.OPENAI_API_KEY) || models.hasApiKey('openai'),
+    speechModel: env.TTS_MODEL,
+    transcriptionModel: env.STT_MODEL,
+    voice: env.TTS_VOICE,
+  });
+  const openRouterTranscription = createOpenRouterTranscriptionProvider({
+    apiKey: () =>
+      env.OPENROUTER_API_KEY
+        ? Promise.resolve(env.OPENROUTER_API_KEY)
+        : models.apiKey('openrouter'),
+    configured: () => Boolean(env.OPENROUTER_API_KEY) || models.hasApiKey('openrouter'),
+    model:
+      env.STT_MODEL && (env.STT_MODEL.includes('/') ? env.STT_MODEL : `openai/${env.STT_MODEL}`),
+  });
   const traces = createModelTraces(
     createN8nTraces({
       url: env.NOD_TRACES_URL ?? 'https://internal.users.n8n.cloud/webhook/nod/traces',
@@ -306,21 +330,59 @@ export function createDefaultAdapters(
       container: env.WORKSPACE_CONTAINER || 'nod-workspace',
       workspaceRoot: join(dataRoot, 'workspaces'),
     }),
-    speech: createOpenAISpeechProvider({
-      apiKey: env.OPENAI_API_KEY,
-      speechModel: env.TTS_MODEL,
-      voice: env.TTS_VOICE,
-    }),
+    speech: {
+      ...openAISpeech,
+      get configured() {
+        return openAISpeech.configured;
+      },
+      get transcriptionConfigured() {
+        return openAISpeech.configured || openRouterTranscription.configured;
+      },
+      transcribe: (audio, signal, report) =>
+        openAISpeech.configured
+          ? openAISpeech.transcribe!(audio, signal, report)
+          : openRouterTranscription.transcribe(audio, signal, report),
+    },
     integrations,
     integrationBrowser,
     keyStore,
     memoryCurator: modelCurator,
+    imageCurator: createPiMemoryCurator({
+      get provider() {
+        return models.current.provider;
+      },
+      configured: () => models.hasImageModel(),
+      resolve: () => models.resolveImage(),
+      traces,
+    }),
     analyticsCurator: selectedCurator,
     onboardingCurator: selectedCurator,
     decisions,
     messagingSetup: {
       verifier: createChatSdkSetupVerifier(),
-      create: (environment) => createChatSdkTransport(pool, { ...env, ...environment }),
+      create: (environment) => {
+        const configured = { ...env, ...environment };
+        const mode =
+          environment.WHATSAPP_MODE ??
+          (environment.WHATSAPP_ENABLED === 'true' && environment.WHATSAPP_ACCESS_TOKEN
+            ? 'cloud'
+            : configured.WHATSAPP_MODE);
+        if (
+          configured.WHATSAPP_ENABLED !== 'true' ||
+          configured.WHATSAPP_POLICY_CONFIRMED !== 'true' ||
+          (mode !== 'bot' && mode !== 'self-chat') ||
+          (mode === 'bot' && !/^\d{7,15}$/.test(configured.WHATSAPP_ALLOWED_NUMBER ?? ''))
+        )
+          return createChatSdkTransport(pool, configured);
+        return combineMessagingTransports(
+          createChatSdkTransport(pool, { ...configured, WHATSAPP_ENABLED: 'false' }),
+          createWhatsAppLinkedTransport({
+            mode,
+            allowedNumber: configured.WHATSAPP_ALLOWED_NUMBER,
+            store: createChannelSessionStore({ pool, ownerId, keyStore }),
+          }),
+        );
+      },
     },
     linkPreviews: createPublicLinkPreviewProvider(),
     feedback: createN8nFeedback({
@@ -505,8 +567,14 @@ async function initializeApplication(
     coreSkills,
   );
   const fetches = new Map<string, string[]>();
+  const analyzeImages =
+    adapters.imageCurator && createImageAnalysis(ledger.curator(adapters.imageCurator));
   const runtime = createAgentRuntime({
     agent: ledger.agent(adapters.agent),
+    analyzeImages:
+      analyzeImages &&
+      ((images, request, signal, execution) =>
+        ledger.withExecution(execution, () => analyzeImages(images, request, signal))),
     skills: skillLibrary,
     computer,
     workspace,
@@ -538,7 +606,7 @@ async function initializeApplication(
       adapters.observe?.(turnId, event);
     },
   });
-  const speech = createSpeech(adapters.speech);
+  const speech = createSpeech(ledger.speech(adapters.speech));
   const memoryStore = createPostgresObjectStore({ database: pool, ownerId });
   await memoryStore.initialize();
   await importMemoryFile(memoryStore, join(dataRoot, 'objects', 'memory'));
@@ -1008,6 +1076,7 @@ async function initializeApplication(
       readArtifact: workspace.readArtifact.bind(workspace),
       mailCheck,
       executeConfirmation: approvals.executeConfirmed,
+      bindVerificationQuestion: chatVerification.bindQuestion,
       reactToMessage: reactions.react,
       runTurn: (context) => ledger.withTurn(context.turnId, () => runtime.runTurn(context)),
       spendingLimitReached: ledger.limitReached,
@@ -1436,6 +1505,15 @@ async function initializeApplication(
         ownerId,
         keyStore: adapters.keyStore,
         verifier: setup.verifier,
+        linkStatus: async () => {
+          if (!channels) throw new Error('Messaging is not ready.');
+          return channels.pairing();
+        },
+        unlink: async () => {
+          await channels?.unlink();
+        },
+        cancelPairing: async (pairingId, restart) =>
+          (await channels?.cancelPairing(pairingId, restart)) ?? false,
         apply: async (environment) => {
           if (!channels) throw new Error('Messaging is not ready.');
           await channels.replaceTransport(setup.create(environment));
@@ -1455,12 +1533,16 @@ async function initializeApplication(
       ownerId,
       present: communication.present,
       resolveAttachments: artifacts.readThreadArtifacts,
+      media: createChannelMedia({ artifacts, speech }),
+      modelConfigured: () => adapters.model.configured,
+      verificationPending: async (channel) => (await chatVerification.pending(channel)).length > 0,
+      attributeMediaUsage: ledger.attributeMediaUsage,
       ...(channelSettings ? { pair: channelSettings.pair } : {}),
       transport: messaging,
       acceptVerification: (text, input) => chatVerification.accept(text, input),
       reacted: (messageId, reaction) =>
         reactToAssistantMessage(messageId, reaction, adapters.model.configured),
-      activeThread: (client) => activeThread(client),
+      activeThread: (client) => lockThread(client),
       activity: activity.read,
       taskCommand: tasks.chatCommand,
       commandReply: async (command, client, threadId) => {
@@ -1517,9 +1599,18 @@ async function initializeApplication(
           events.off('event', onEvent);
         };
       },
-      submit: async (text, sourceId, client, channel, messageId, answer, replyToMessageId) =>
+      submit: async (
+        text,
+        sourceId,
+        client,
+        channel,
+        messageId,
+        answer,
+        replyToMessageId,
+        attachments,
+      ) =>
         (
-          await userMessages.submit(text, [], {
+          await userMessages.submit(text, attachments, {
             sourceId,
             channel,
             client,

@@ -1309,6 +1309,59 @@ describe('model connections', { skip: !process.env.TEST_DATABASE_URL }, () => {
     };
   }
 
+  test('image fallback uses owned connected models without changing the chat selection and reads current credentials', async (t) => {
+    const f = await fixture(t);
+    const backend = {
+      ...f.backend,
+      catalog: async (
+        provider: import('../src/shared/models.ts').ModelProvider,
+        method: import('../src/shared/models.ts').ModelMethod,
+        credential?: import('../src/ports/models.ts').ModelCredential,
+      ) => {
+        const definitions = await f.backend.catalog('openai', method, credential);
+        return definitions.map((definition) => ({
+          ...definition,
+          choice: {
+            ...definition.choice,
+            images: credential?.type === 'api_key' && credential.key === 'fixture-vision',
+          },
+        }));
+      },
+    };
+    const owner = await f.create('fixture-images', backend);
+    const other = await f.create('fixture-images-other', backend);
+    await other.addKey('openai', 'fixture-vision');
+    const textId = await owner.addKey('openai', 'fixture-text');
+    const selection = owner.view().selection!;
+    assert.equal(owner.hasImageModel(), false);
+    await assert.rejects(owner.resolveImage(), /Connect a model that accepts images/);
+    const visionId = await owner.addKey('openai', 'fixture-vision');
+    await owner.select({ ...selection, connectionId: textId });
+    assert.equal(owner.hasImageModel(), true);
+    const access = await owner.resolveImage();
+    assert.equal(access.definition.choice.images, true);
+    assert.deepEqual(await access.read(), { type: 'api_key', key: 'fixture-vision' });
+    assert.deepEqual(owner.view().selection, { ...selection, connectionId: textId });
+    const { createDatabaseModelStore } = await import('../src/server/model-store.ts');
+    const store = createDatabaseModelStore({
+      database: f.database,
+      ownerId: 'fixture-images',
+      keyStore: f.keyStore,
+    });
+    await store.initialize();
+    await store.change((state) => {
+      state.connections.find((row) => row.id === visionId)!.credential = {
+        type: 'api_key',
+        key: 'fixture-updated',
+      };
+    });
+    assert.deepEqual(await access.read(), { type: 'api_key', key: 'fixture-updated' });
+    await owner.remove(visionId);
+    assert.equal(await access.read(), undefined);
+    assert.equal(owner.hasImageModel(), false);
+    assert.equal((await owner.resolve()).definition.choice.images, false);
+  });
+
   test('model connections verify credential storage before opening sign-in or calling a provider', async (t) => {
     const f = await fixture(t);
     const { createEnvironmentKeyStore } = await import('../src/providers/environment/key-store.ts');
@@ -1659,10 +1712,17 @@ describe('model connections', { skip: !process.env.TEST_DATABASE_URL }, () => {
     const f = await fixture(t);
     const owner = await f.create('fixture-owner');
     const other = await f.create('fixture-other');
+    assert.equal(owner.hasApiKey('openai'), false);
+    assert.equal(await owner.apiKey('openai'), undefined);
     const first = await owner.addKey('openai', 'fixture-first-api-key');
+    assert.equal(owner.hasApiKey('openai'), true);
+    assert.equal(await owner.apiKey('openai'), 'fixture-first-api-key');
+    assert.equal(other.hasApiKey('openai'), false);
+    assert.equal(await other.apiKey('openai'), undefined);
     const original = owner.view().selection!;
     const captured = await owner.resolve();
     const second = await owner.addKey('openai', 'fixture-second-api-key');
+    assert.equal(await owner.apiKey('openai'), 'fixture-first-api-key');
     await assert.rejects(other.select(original));
     await other.remove(first);
     assert.equal((await captured.read())?.type, 'api_key');
@@ -1674,15 +1734,25 @@ describe('model connections', { skip: !process.env.TEST_DATABASE_URL }, () => {
     assert.ok(!JSON.stringify(owner.view()).includes('fixture-first-api-key'));
     assert.deepEqual(other.view().connections, []);
     await owner.select({ connectionId: second, modelId: 'gpt-6.1-sol', effort: 'medium' });
+    assert.equal(await owner.apiKey('openai'), 'fixture-second-api-key');
     assert.equal(((await captured.read()) as { key: string }).key, 'fixture-first-api-key');
     await owner.remove(second);
     assert.equal(owner.configured, false);
+    assert.equal(await owner.apiKey('openai'), 'fixture-first-api-key');
     assert.equal(
       (await f.database.query('SELECT id FROM vault_app_grants WHERE id=$1', [second])).rowCount,
       0,
     );
+    const third = await owner.addKey('openai', 'fixture-third-api-key');
+    assert.equal(owner.hasApiKey('openai'), false);
+    assert.equal(await owner.apiKey('openai'), undefined);
+    await owner.select(original);
+    assert.equal(await owner.apiKey('openai'), 'fixture-first-api-key');
+    await owner.remove(third);
     await owner.remove(first);
     assert.equal(await captured.read(), undefined);
+    assert.equal(owner.hasApiKey('openai'), false);
+    assert.equal(await owner.apiKey('openai'), undefined);
   });
 
   test('OpenAI-compatible servers connect from Models or server settings, and keep their key out of storage', async (t) => {
@@ -1743,6 +1813,8 @@ describe('model connections', { skip: !process.env.TEST_DATABASE_URL }, () => {
     );
     const access = await owner.resolve();
     assert.equal(access.definition.spec.baseUrl, `${address}/v1`);
+    assert.equal(owner.hasApiKey('openai'), false);
+    assert.equal(await owner.apiKey('openai'), undefined);
     assert.deepEqual(await access.read(), {
       type: 'endpoint',
       url: address,
@@ -1870,6 +1942,8 @@ describe('model connections', { skip: !process.env.TEST_DATABASE_URL }, () => {
     assert.equal(repeated.statusCode, 200);
     assert.equal(exchanges, 1);
     const restored = await f.create('fixture-owner', backend);
+    assert.equal(restored.hasApiKey('openai'), false);
+    assert.equal(await restored.apiKey('openai'), undefined);
     const a = await owner.resolve();
     const b = await restored.resolve();
     const firstRead = a.read();
@@ -1908,7 +1982,8 @@ describe('model connections', { skip: !process.env.TEST_DATABASE_URL }, () => {
       async exchange() {
         exchanging();
         await exchangeGate;
-        return backend.exchange();
+        exchanges++;
+        return { type: 'api_key' as const, key: 'fixture-openrouter-key' };
       },
     });
     const slowApp = Fastify();
@@ -1926,6 +2001,13 @@ describe('model connections', { skip: !process.env.TEST_DATABASE_URL }, () => {
       [200, 200],
     );
     assert.equal(exchanges, exchangesBefore + 1);
+    assert.equal(slow.hasApiKey('openrouter'), true);
+    assert.equal(await slow.apiKey('openrouter'), 'fixture-openrouter-key');
+    assert.equal(slow.hasApiKey('openai'), false);
+    const routerId = slow.view().connections[0].id;
+    await slow.remove(routerId);
+    assert.equal(slow.hasApiKey('openrouter'), false);
+    assert.equal(await slow.apiKey('openrouter'), undefined);
     const failed = await f.create('fixture-failed', {
       ...backend,
       exchange: async () => {

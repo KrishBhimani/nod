@@ -1,12 +1,13 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { FastifyInstance } from 'fastify';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 import type { Agent, AgentSessionOptions } from '../ports/agent.ts';
 import type { ExecutionScope } from '../shared/execution.ts';
 import type { ProviderUsageEvent, UsageTelemetry } from '../ports/provider-usage.ts';
 import type { MemoryCurator } from '../ports/memory-curator.ts';
 import type { DecisionModel } from '../ports/decisions.ts';
+import type { SpeechProvider } from '../ports/speech.ts';
 import type { TrustEntry, TrustSource, TrustView } from '../shared/trust.ts';
 import { actionTitle } from './action-presentation.ts';
 import { formattingLocale, localeRegion, timeZoneRegion } from '../shared/date-locale.ts';
@@ -94,7 +95,9 @@ export function createLedger({
   telemetry?: UsageTelemetry;
 }) {
   const activeTurn = new AsyncLocalStorage<string>();
-  const activeExecution = new AsyncLocalStorage<AgentSessionOptions>();
+  const activeExecution = new AsyncLocalStorage<
+    ExecutionScope & Pick<AgentSessionOptions, 'onEvent'>
+  >();
   async function initialize() {
     await pool.query(`CREATE TABLE IF NOT EXISTS model_usage (
       id text PRIMARY KEY, owner_id text NOT NULL, turn_id uuid REFERENCES turns(id) ON DELETE SET NULL,
@@ -146,10 +149,11 @@ export function createLedger({
 
   function record(
     usage: ProviderUsageEvent,
-    execution: ExecutionScope | undefined = activeExecution.getStore(),
+    execution: ExecutionScope | null | undefined = activeExecution.getStore(),
   ) {
     const { id, costUsd, turnId, ...details } = usage;
-    const attributedTurn = execution?.turnId ?? turnId ?? activeTurn.getStore() ?? null;
+    const attributedTurn =
+      execution === null ? null : (execution?.turnId ?? turnId ?? activeTurn.getStore() ?? null);
     const values = [
       id,
       ownerId,
@@ -228,13 +232,15 @@ export function createLedger({
             const usage: ProviderUsageEvent = {
               provider: value.provider ?? 'model',
               category:
-                request.task === 'review' || request.task === 'access'
-                  ? 'review'
-                  : request.task === 'plan'
-                    ? 'tasks'
-                    : request.task === 'analytics'
-                      ? 'analytics'
-                      : 'memory',
+                request.task === 'vision'
+                  ? 'agent'
+                  : request.task === 'review' || request.task === 'access'
+                    ? 'review'
+                    : request.task === 'plan'
+                      ? 'tasks'
+                      : request.task === 'analytics'
+                        ? 'analytics'
+                        : 'memory',
               operation: request.task,
               status: 'succeeded',
               durationMs: 0,
@@ -276,6 +282,48 @@ export function createLedger({
     );
   }
 
+  function speech(base: SpeechProvider): SpeechProvider {
+    const report = (usage: ProviderUsageEvent, preprocessing = false) => {
+      record(usage, preprocessing ? null : undefined);
+      activeExecution.getStore()?.onEvent({ type: 'provider_usage', usage });
+    };
+    return {
+      ...base,
+      get configured() {
+        return base.configured;
+      },
+      get transcriptionConfigured() {
+        return base.transcriptionConfigured;
+      },
+      async synthesize(text, signal, onUsage) {
+        if (await limitReached()) throw new Error(spendingLimitReached);
+        try {
+          return await base.synthesize(text, signal, (usage) => {
+            report(usage);
+            onUsage?.(usage);
+          });
+        } finally {
+          await flushUsage();
+        }
+      },
+      ...(base.transcribe
+        ? ({
+            async transcribe(audio, signal, onUsage) {
+              if (await limitReached()) throw new Error(spendingLimitReached);
+              try {
+                return await base.transcribe!(audio, signal, (usage) => {
+                  report(usage, true);
+                  onUsage?.(usage);
+                });
+              } finally {
+                await flushUsage();
+              }
+            },
+          } satisfies Pick<SpeechProvider, 'transcribe'>)
+        : {}),
+    };
+  }
+
   async function limits() {
     const row = (
       await pool.query(
@@ -302,15 +350,31 @@ export function createLedger({
     const [{ taskUsd }, spent] = await Promise.all([
       limits(),
       pool.query(
-        `SELECT COALESCE(sum(COALESCE(cost_usd,(details->>'estimateUsd')::float8)),0)::float8 AS spent
-         FROM model_usage WHERE owner_id=$1 AND session_id=$2 AND created_at>=COALESCE(
-           (SELECT max(t.created_at) FROM turns t JOIN turns c ON c.id=$3 AND c.owner_id=$1
+        `WITH boundary AS (
+           SELECT t.id,t.created_at FROM turns t JOIN turns c ON c.id=$3 AND c.owner_id=$1
              WHERE t.owner_id=$1 AND t.session_id=$2 AND t.source IN ('user','task')
-               AND (t.created_at,t.id)<=(c.created_at,c.id)),'-infinity')`,
+               AND (t.created_at,t.id)<=(c.created_at,c.id)
+           ORDER BY t.created_at DESC,t.id DESC LIMIT 1
+         ) SELECT COALESCE(sum(COALESCE(cost_usd,(details->>'estimateUsd')::float8)),0)::float8 AS spent
+         FROM model_usage WHERE owner_id=$1 AND session_id=$2
+           AND (created_at>=COALESCE((SELECT created_at FROM boundary),'-infinity')
+             OR turn_id=(SELECT id FROM boundary))`,
         [ownerId, sessionId, turnId],
       ),
     ]);
     return taskUsd === null ? undefined : { budgetUsd: taskUsd, spentUsd: spent.rows[0].spent };
+  }
+
+  async function attributeMediaUsage(client: PoolClient, ids: string[], turnId: string) {
+    if (!ids.length) return;
+    await client.query(
+      `UPDATE model_usage m SET turn_id=u.id,session_id=u.session_id,
+         run_id=NULL,parent_run_id=NULL,browser_id=NULL
+       FROM turns u WHERE u.id=$1 AND u.owner_id=$2 AND m.owner_id=$2
+         AND m.id=ANY($3::text[]) AND m.turn_id IS NULL
+         AND m.details->>'operation'='transcribe'`,
+      [turnId, ownerId, ids],
+    );
   }
 
   async function messageCosts(turnIds: string[]) {
@@ -474,6 +538,8 @@ export function createLedger({
     agent,
     curator,
     decisions,
+    speech,
+    attributeMediaUsage,
     action,
     limitReached,
     checkIn,
@@ -481,6 +547,10 @@ export function createLedger({
     setLimits,
     messageCosts,
     withTurn: <T>(turnId: string, run: () => T) => activeTurn.run(turnId, run),
+    withExecution: <T>(
+      execution: ExecutionScope & Pick<AgentSessionOptions, 'onEvent'>,
+      run: () => T,
+    ) => activeExecution.run(execution, run),
     read,
     report,
     registerRoutes,

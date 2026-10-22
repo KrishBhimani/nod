@@ -7,6 +7,7 @@ import { classifyVerificationReply, securityCodeIn } from '../shared/verificatio
 import { isMessageReaction } from '../shared/emoji.ts';
 import { transaction } from './transaction.ts';
 import { logFailure } from './failure-log.ts';
+import { ChannelMediaFailure, type ChannelMedia } from './channel-media.ts';
 import type { WorkAdmission } from './work-admission.ts';
 import type { LiveWork } from './activity.ts';
 import type {
@@ -31,6 +32,7 @@ export type ChannelPresentation =
       files?: string[];
     }
   | { kind: 'verification_refused' }
+  | { kind: 'media_failure'; reason: ChannelMediaFailure['reason']; fileLimitMb?: number }
   | { kind: 'verification_failure'; verification: 'otp' }
   | { kind: 'paired'; channel: string }
   | {
@@ -50,6 +52,8 @@ interface ChannelOptions {
     input: {
       clientMessageId: string;
       channel: string;
+      threadId?: string;
+      replyToMessageId?: string;
       receiptOnly?: boolean;
       persistOrdinary: (client: PoolClient) => Promise<void>;
       persistVerification?: (client: PoolClient, response: SubmitMessageResponse) => Promise<void>;
@@ -71,6 +75,7 @@ interface ChannelOptions {
     messageId: string,
     answer?: ChatConfirmationInput['answer'],
     replyToMessageId?: string,
+    attachments?: Artifact[],
   ) => Promise<string>;
   answer?: (
     text: string,
@@ -82,6 +87,10 @@ interface ChannelOptions {
   refresh?: () => void;
   intervalMs?: number;
   resolveAttachments?: (threadId: string, ids: string[]) => Promise<MessagingAttachment[]>;
+  media?: ChannelMedia;
+  modelConfigured?: () => boolean;
+  verificationPending?: (channel: string) => Promise<boolean>;
+  attributeMediaUsage?(client: PoolClient, ids: string[], turnId: string): Promise<void>;
   pair?: (request: ChannelPairingRequest) => Promise<unknown>;
   activeThread?: (client: PoolClient) => Promise<{ id: string }>;
   activity?: () => Promise<LiveWork[]>;
@@ -108,9 +117,13 @@ interface ChannelIdentity {
 }
 interface InboxRow extends ChannelIdentity {
   source_id: string;
+  thread_id: string;
   provider_reply_id: string | null;
   text: string;
   message_id: string | null;
+  attachments: Artifact[];
+  conversation_thread_id: string | null;
+  media_usage_ids: string[];
 }
 interface OutboxRow extends ChannelIdentity {
   message_id: string;
@@ -122,16 +135,31 @@ interface OutboxRow extends ChannelIdentity {
   reply_to_message_id: string | null;
   presentation: ChannelPresentation | null;
 }
-const messageSchema = z.object({
-  channelId: z.string().regex(/^[a-z][a-z0-9_-]{0,50}$/),
-  accountId: z.string().min(1),
-  senderId: z.string().min(1),
-  messageId: z.string().min(1),
-  threadId: z.string().min(1),
-  text: z.string().trim().min(1),
-  sentAt: z.date(),
-  replyToMessageId: z.string().min(1).optional(),
-});
+const messageSchema = z
+  .object({
+    channelId: z.string().regex(/^[a-z][a-z0-9_-]{0,50}$/),
+    accountId: z.string().min(1),
+    senderId: z.string().min(1),
+    messageId: z.string().min(1),
+    threadId: z.string().min(1),
+    text: z.string().trim().max(100_000),
+    attachments: z
+      .array(
+        z.object({
+          name: z.string().min(1).max(255),
+          mimeType: z.string().min(1).max(200),
+          size: z.number().int().nonnegative(),
+          voice: z.boolean().optional(),
+          source: z.enum(['sticker', 'sticker-preview', 'location', 'contact']).optional(),
+          read: z.custom<MessagingAttachment['read']>((value) => typeof value === 'function'),
+        }),
+      )
+      .max(10)
+      .optional(),
+    sentAt: z.date(),
+    replyToMessageId: z.string().min(1).optional(),
+  })
+  .refine((message) => Boolean(message.text || message.attachments?.length));
 const reactionSchema = z.object({
   channelId: z.string().regex(/^[a-z][a-z0-9_-]{0,50}$/),
   accountId: z.string().min(1).max(256),
@@ -256,6 +284,17 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
     status: channel.status,
     missing: channel.missing,
   }));
+  function updateConfiguration() {
+    channels = transport.channels.map((channel) => ({
+      ...channel,
+      allowedSenderIds: [...channel.allowedSenderIds],
+    }));
+    configuration = channels.map((channel) => ({
+      provider: channel.id,
+      status: channel.status,
+      missing: channel.missing,
+    }));
+  }
   await pool.query(`CREATE TABLE IF NOT EXISTS channel_inbox (
     source_id text PRIMARY KEY, provider text NOT NULL, account_id text NOT NULL, sender_id text NOT NULL,
     thread_id text NOT NULL, text text NOT NULL, received_at timestamptz NOT NULL,
@@ -268,6 +307,9 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
     created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
   );
   ALTER TABLE channel_inbox ADD COLUMN IF NOT EXISTS provider_reply_id text;
+  ALTER TABLE channel_inbox ADD COLUMN IF NOT EXISTS attachments jsonb NOT NULL DEFAULT '[]';
+  ALTER TABLE channel_inbox ADD COLUMN IF NOT EXISTS conversation_thread_id uuid;
+  ALTER TABLE channel_inbox ADD COLUMN IF NOT EXISTS media_usage_ids text[] NOT NULL DEFAULT '{}';
   ALTER TABLE channel_outbox ADD COLUMN IF NOT EXISTS provider_message_ids text[] NOT NULL DEFAULT '{}';
   ALTER TABLE channel_outbox ADD COLUMN IF NOT EXISTS presentation jsonb;
   ALTER TABLE channel_outbox ADD COLUMN IF NOT EXISTS claim_id uuid;
@@ -294,7 +336,8 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
   let running: Promise<void> | undefined;
   let drainRequested = false;
   let lastError: string | null = null;
-
+  let receiving = new AbortController();
+  const pendingMedia = new Map<string, Promise<void>>();
   async function saveReply(
     client: PoolClient,
     sourceId: string,
@@ -422,6 +465,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
   }
 
   function permitted(row: ChannelIdentity) {
+    updateConfiguration();
     return channels.some(
       (channel) =>
         channel.id === row.provider &&
@@ -432,23 +476,158 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
   }
 
   async function accept(message: InboundMessage, channelId: string) {
+    if (!message.attachments?.length) return acceptMessage(message, channelId);
+    const source = `${channelId}:${message.accountId}:${message.messageId}`;
+    const existing = pendingMedia.get(source);
+    if (existing) return existing;
+    if (pendingMedia.size >= 4)
+      throw Object.assign(new Error('Channel media is busy. Try again.'), { statusCode: 503 });
+    const pending = acceptMessage(message, channelId);
+    pendingMedia.set(source, pending);
+    try {
+      await pending;
+    } finally {
+      if (pendingMedia.get(source) === pending) pendingMedia.delete(source);
+    }
+  }
+
+  async function nativeReply(
+    identity: { provider: string; account_id: string; sender_id: string },
+    threadId: string,
+    providerId: string,
+  ): Promise<string | undefined> {
+    return (
+      await pool.query(
+        `SELECT o.message_id FROM channel_outbox o JOIN channel_inbox i ON i.source_id=o.source_id
+         JOIN messages m ON m.id=o.message_id AND m.owner_id=i.owner_id
+         WHERE i.owner_id=$1 AND i.provider=$2 AND i.account_id=$3 AND i.sender_id=$4
+           AND i.thread_id=$5 AND $6=ANY(o.provider_message_ids) AND o.state='sent'
+         UNION ALL
+         SELECT message_id FROM channel_inbox WHERE owner_id=$1 AND provider=$2 AND account_id=$3
+           AND sender_id=$4 AND thread_id=$5 AND source_id=$7 AND state='submitted'
+         LIMIT 1`,
+        [
+          ownerId,
+          identity.provider,
+          identity.account_id,
+          identity.sender_id,
+          threadId,
+          providerId,
+          `channel:${identity.provider}:${identity.account_id}:${providerId}`,
+        ],
+      )
+    ).rows[0]?.message_id;
+  }
+
+  async function acceptMessage(message: InboundMessage, channelId: string) {
+    const receiveSignal = receiving.signal;
     const parsed = messageSchema.safeParse(message);
     if (!parsed.success || parsed.data.channelId !== channelId) return;
-    const { accountId, senderId, messageId, threadId, text, sentAt, replyToMessageId } =
-      parsed.data;
+    const { accountId, senderId, messageId, threadId, sentAt, replyToMessageId } = parsed.data;
+    let { text } = parsed.data;
     const identity = { provider: channelId, account_id: accountId, sender_id: senderId };
     if (closed || replacing || !permitted(identity) || sentAt.getTime() > Date.now() + 300000)
       return;
+    let media: Awaited<ReturnType<ChannelMedia['prepare']>> | undefined;
     try {
       const sourceId = `channel:${channelId}:${accountId}:${messageId}`;
-      const verificationReply =
-        classifyVerificationReply(text).kind !== 'ordinary' || Boolean(securityCodeIn(text));
       const recorded = (
         await pool.query('SELECT state FROM channel_inbox WHERE source_id=$1 AND owner_id=$2', [
           sourceId,
           ownerId,
         ])
       ).rows[0];
+      const hasMedia = Boolean(parsed.data.attachments?.length);
+      const modelMissingAtIntake = hasMedia && options.modelConfigured?.() === false;
+      if (recorded && hasMedia) return;
+      const mediaThreadId = hasMedia
+        ? (await transaction(async (client) => options.activeThread?.(client), pool))?.id
+        : undefined;
+      async function currentConversation(client: PoolClient) {
+        if (!mediaThreadId || (await options.activeThread?.(client))?.id === mediaThreadId)
+          return true;
+        await client.query(
+          `INSERT INTO channel_inbox(source_id,provider,account_id,sender_id,thread_id,text,received_at,state,owner_id,channel,conversation_thread_id)
+           VALUES($1,$2,$3,$4,$5,'',$6,'discarded',$7,$8,$9) ON CONFLICT(source_id) DO NOTHING`,
+          [
+            sourceId,
+            channelId,
+            accountId,
+            senderId,
+            threadId,
+            sentAt,
+            ownerId,
+            conversationChannel(identity),
+            mediaThreadId,
+          ],
+        );
+        return false;
+      }
+      if (closed || replacing || receiveSignal.aborted || !permitted(identity)) return;
+      const requestModelSetup = async () => {
+        await transaction(async (client) => {
+          if (!(await currentConversation(client))) return;
+          await replyWithoutTurn(
+            client,
+            { ...identity, sourceId, threadId, sentAt, text: '' },
+            () => ({ text: 'Connect a model service and choose a model in Settings → Models.' }),
+          );
+        }, pool);
+        options.refresh?.();
+      };
+      if (
+        hasMedia &&
+        modelMissingAtIntake &&
+        !(
+          parsed.data.attachments?.some((file) => file.voice) &&
+          (await options.verificationPending?.(conversationChannel(identity)))
+        )
+      ) {
+        await requestModelSetup();
+        return;
+      }
+      if (hasMedia) {
+        try {
+          if (!options.media) throw new ChannelMediaFailure('unavailable');
+          media = await options.media.prepare(
+            parsed.data.attachments!,
+            AbortSignal.any([receiveSignal, AbortSignal.timeout(120_000)]),
+            async () => {
+              if (!(await transaction(currentConversation, pool)))
+                throw new ChannelMediaFailure('unavailable');
+            },
+          );
+          text = [text, media.text].filter(Boolean).join('\n\n');
+          if (text.length > 100_000) throw new ChannelMediaFailure('text_too_long');
+        } catch (error) {
+          if (closed || replacing || receiveSignal.aborted || !permitted(identity)) return;
+          if (modelMissingAtIntake || options.modelConfigured?.() === false) {
+            await requestModelSetup();
+            return;
+          }
+          await transaction(async (client) => {
+            if (!(await currentConversation(client))) return;
+            return replyWithoutTurn(
+              client,
+              { ...identity, sourceId, threadId, sentAt, text: '' },
+              () => ({
+                text: '',
+                presentation: {
+                  kind: 'media_failure',
+                  reason: error instanceof ChannelMediaFailure ? error.reason : 'unavailable',
+                  ...(error instanceof ChannelMediaFailure && error.fileLimitMb
+                    ? { fileLimitMb: error.fileLimitMb }
+                    : {}),
+                },
+              }),
+            );
+          }, pool);
+          options.refresh?.();
+          return;
+        }
+      }
+      const verificationReply =
+        classifyVerificationReply(text).kind !== 'ordinary' || Boolean(securityCodeIn(text));
       if (
         recorded &&
         (recorded.state === 'discarded' || !verificationReply || !options.acceptVerification)
@@ -459,13 +638,32 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
       let ordinaryPersisted = false;
       let verificationPersisted = false;
       const persist = async (database: PoolClient, strict = true) => {
-        if (closed || replacing || !permitted(identity)) {
+        if (closed || replacing || receiveSignal.aborted || !permitted(identity)) {
           if (!strict) return false;
           throw new Error('Channel configuration changed.');
         }
+        if (!(await currentConversation(database))) return true;
+        let attachments: Artifact[] = [];
+        let conversationThreadId: string | undefined;
+        if (media && !verification) {
+          await database.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [sourceId]);
+          if (
+            (
+              await database.query(
+                'SELECT 1 FROM channel_inbox WHERE source_id=$1 AND owner_id=$2',
+                [sourceId, ownerId],
+              )
+            ).rowCount
+          )
+            return true;
+          conversationThreadId = mediaThreadId;
+          attachments = await media.save(database, mediaThreadId);
+        }
+        if (verification?.turnId && media?.usageIds.length)
+          await options.attributeMediaUsage?.(database, media.usageIds, verification.turnId);
         await database.query(
-          `INSERT INTO channel_inbox(source_id,provider,account_id,sender_id,thread_id,text,received_at,message_id,state,turn_id,owner_id,channel,provider_reply_id)
-           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(source_id) DO NOTHING`,
+          `INSERT INTO channel_inbox(source_id,provider,account_id,sender_id,thread_id,text,received_at,message_id,state,turn_id,owner_id,channel,provider_reply_id,attachments,conversation_thread_id,media_usage_ids)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT(source_id) DO NOTHING`,
           [
             sourceId,
             channelId,
@@ -480,15 +678,18 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
             ownerId,
             conversationChannel(identity),
             replyToMessageId ?? null,
+            JSON.stringify(attachments),
+            conversationThreadId ?? null,
+            media?.usageIds ?? [],
           ],
         );
-        if (strict && (closed || replacing || !permitted(identity)))
+        if (strict && (closed || replacing || receiveSignal.aborted || !permitted(identity)))
           throw new Error('Channel configuration changed.');
         return true;
       };
       const commandReply = options.commandReply;
       const command = replyCommand.exec(text.trim())?.[1]?.toLowerCase();
-      if (command && commandReply) {
+      if (command && commandReply && !hasMedia) {
         const name = command === 'usage' ? 'usage' : 'memory';
         await transaction(
           (client) =>
@@ -503,12 +704,25 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
       }
       if (verificationReply && options.acceptVerification) {
         try {
+          const target = replyToMessageId
+            ? await nativeReply(identity, threadId, replyToMessageId)
+            : undefined;
+          if (replyToMessageId && !target)
+            throw Object.assign(new Error('The verification reply is unavailable.'), {
+              statusCode: 409,
+            });
           verification = await options.acceptVerification(text, {
             clientMessageId: acceptedMessageId,
             channel: conversationChannel(identity),
+            ...(mediaThreadId ? { threadId: mediaThreadId } : {}),
+            ...(target ? { replyToMessageId: target } : {}),
             ...(recorded ? { receiptOnly: true } : {}),
             persistOrdinary: async (client) => {
-              if (recorded) return;
+              if (
+                recorded ||
+                (hasMedia && (modelMissingAtIntake || options.modelConfigured?.() === false))
+              )
+                return;
               await persist(client);
               ordinaryPersisted = true;
             },
@@ -522,6 +736,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
                 response.messageId !== acceptedMessageId
               )
                 return;
+              if (!(await currentConversation(client))) return;
               const current = await client.query(
                 `SELECT 1 FROM messages m JOIN turns u ON u.id=m.turn_id JOIN threads th ON th.id=m.thread_id
                  WHERE m.id=$1 AND m.owner_id=$2 AND m.thread_id=$3 AND m.turn_id=$4
@@ -573,32 +788,51 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
               await client.query('RELEASE SAVEPOINT channel_verification_receipt');
             },
           });
-          if (!verification && !ordinaryPersisted && !recorded)
+          if (!verification && !ordinaryPersisted && !recorded) {
+            if (hasMedia && (modelMissingAtIntake || options.modelConfigured?.() === false)) {
+              await requestModelSetup();
+              return;
+            }
             throw new Error('Verification did not persist its receipt.');
+          }
         } catch (cause) {
           const conflict =
             cause instanceof Error && 'statusCode' in cause && cause.statusCode === 409;
           if (!conflict) throw cause;
           if (recorded) return;
-          await transaction(
-            (client) =>
-              replyWithoutTurn(
-                client,
-                { ...identity, sourceId, threadId, sentAt, text: '' },
-                () => ({ text: '', presentation: { kind: 'verification_refused' } }),
-              ),
-            pool,
-          );
+          if (hasMedia && (modelMissingAtIntake || options.modelConfigured?.() === false)) {
+            await requestModelSetup();
+            return;
+          }
+          await transaction(async (client) => {
+            if (!(await currentConversation(client))) return;
+            return replyWithoutTurn(
+              client,
+              { ...identity, sourceId, threadId, sentAt, text: '' },
+              () => ({ text: '', presentation: { kind: 'verification_refused' } }),
+            );
+          }, pool);
           return;
         }
       }
       if (recorded) return;
+      if (
+        !verification &&
+        !ordinaryPersisted &&
+        hasMedia &&
+        (modelMissingAtIntake || options.modelConfigured?.() === false)
+      ) {
+        await requestModelSetup();
+        return;
+      }
       if (!ordinaryPersisted && !verificationPersisted) await transaction(persist, pool);
     } catch (cause) {
       logFailure('channel_accept_failed', cause);
       throw Object.assign(new Error('Channel processing is temporarily unavailable. Try again.'), {
         statusCode: 503,
       });
+    } finally {
+      await media?.dispose().catch((error) => logFailure('channel_media_cleanup_failed', error));
     }
   }
 
@@ -657,29 +891,15 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
     const channel = conversationChannel(pending);
     if (closed || replacing) return false;
     const replyToMessageId = pending.provider_reply_id
-      ? ((
-          await pool.query(
-            `SELECT o.message_id FROM channel_outbox o JOIN channel_inbox i ON i.source_id=o.source_id
-       WHERE i.owner_id=$1 AND i.provider=$2 AND i.account_id=$3 AND i.sender_id=$4 AND i.thread_id=(SELECT thread_id FROM channel_inbox WHERE source_id=$5)
-         AND $6=ANY(o.provider_message_ids) AND o.state='sent' LIMIT 1`,
-            [
-              ownerId,
-              pending.provider,
-              pending.account_id,
-              pending.sender_id,
-              pending.source_id,
-              pending.provider_reply_id,
-            ],
-          )
-        ).rows[0]?.message_id as string | undefined)
+      ? await nativeReply(pending, pending.thread_id, pending.provider_reply_id)
       : undefined;
     const command =
-      pending.provider === 'telegram' && options.taskCommand
+      !pending.attachments?.length && options.taskCommand
         ? (taskCommand.exec(pending.text.trim())?.[1]?.toLowerCase() as
             'tasks' | 'status' | 'stop' | undefined)
         : undefined;
     const answer =
-      command || (pending.provider_reply_id && !replyToMessageId)
+      command || pending.attachments?.length || (pending.provider_reply_id && !replyToMessageId)
         ? undefined
         : await options.answer?.(pending.text, channel, replyToMessageId).catch(() => undefined);
     let afterCommit: (() => Promise<void>) | undefined;
@@ -690,7 +910,13 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
       );
       const row = result.rows[0];
       if (!row) return;
-      if (!permitted(row)) {
+      const currentThread = row.conversation_thread_id
+        ? await options.activeThread?.(client)
+        : undefined;
+      if (
+        !permitted(row) ||
+        (row.conversation_thread_id && currentThread?.id !== row.conversation_thread_id)
+      ) {
         await client.query(
           "UPDATE channel_inbox SET state='discarded' WHERE source_id=$1 AND owner_id=$2",
           [row.source_id, ownerId],
@@ -722,7 +948,9 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
         messageId,
         answer,
         replyToMessageId,
+        row.attachments ?? [],
       );
+      await options.attributeMediaUsage?.(client, row.media_usage_ids ?? [], turnId);
       await client.query(
         "UPDATE channel_inbox SET state='submitted',turn_id=$2,message_id=$3,channel=$5 WHERE source_id=$1 AND owner_id=$4",
         [row.source_id, turnId, messageId, ownerId, channel],
@@ -769,15 +997,19 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
 
   async function outboxStep() {
     if (closed || replacing) return false;
+    updateConfiguration();
+    const unavailable = channels
+      .filter((channel) => channel.available === false)
+      .map((channel) => channel.id);
     const claimId = randomUUID();
     const result = await pool.query<OutboxRow>(
       `WITH claimed AS (
       UPDATE channel_outbox SET state='preparing',claim_id=$2,updated_at=now() WHERE message_id=(
-        SELECT o.message_id FROM channel_outbox o JOIN channel_inbox i ON i.source_id=o.source_id JOIN messages m ON m.id=o.message_id WHERE o.state='pending' AND i.owner_id=$1 AND m.owner_id=$1 ORDER BY m.created_at,m.id FOR UPDATE OF o SKIP LOCKED LIMIT 1
+        SELECT o.message_id FROM channel_outbox o JOIN channel_inbox i ON i.source_id=o.source_id JOIN messages m ON m.id=o.message_id WHERE o.state='pending' AND i.owner_id=$1 AND m.owner_id=$1 AND NOT(i.provider=ANY($3::text[])) ORDER BY m.created_at,m.id FOR UPDATE OF o SKIP LOCKED LIMIT 1
       ) RETURNING message_id,source_id,presentation
     ) SELECT c.message_id,m.owner_id,m.thread_id AS message_thread_id,i.provider,i.account_id,i.sender_id,i.thread_id,m.text,m.attachments,m.reply_to_message_id,c.presentation
       FROM claimed c JOIN channel_inbox i ON i.source_id=c.source_id JOIN messages m ON m.id=c.message_id`,
-      [ownerId, claimId],
+      [ownerId, claimId, unavailable],
     );
     const row = result.rows[0];
     if (!row) return false;
@@ -927,7 +1159,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
       const target = row.reply_to_message_id
         ? ((
             await pool.query(
-              `SELECT o.provider_message_id FROM channel_outbox o JOIN channel_inbox i ON i.source_id=o.source_id
+              `SELECT o.provider_message_id,m.text FROM channel_outbox o JOIN channel_inbox i ON i.source_id=o.source_id JOIN messages m ON m.id=o.message_id AND m.owner_id=i.owner_id
          WHERE o.message_id=$1 AND o.state='sent' AND i.owner_id=$2 AND i.provider=$3 AND i.account_id=$4 AND i.sender_id=$5 AND i.thread_id=$6`,
               [
                 row.reply_to_message_id,
@@ -938,10 +1170,17 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
                 row.thread_id,
               ],
             )
-          ).rows[0]?.provider_message_id as string | undefined)
+          ).rows[0] as { provider_message_id: string; text: string } | undefined)
         : undefined;
       const sent = await transport.post({
-        ...(target ? { replyToMessageId: target } : {}),
+        ...(target
+          ? {
+              replyToMessageId: target.provider_message_id,
+              ...(row.provider === 'whatsapp'
+                ? { replyToText: channelText(target.text).text }
+                : {}),
+            }
+          : {}),
         channelId: row.provider,
         accountId: row.account_id,
         threadId: row.thread_id,
@@ -1129,9 +1368,11 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
   async function close() {
     if (closed) return;
     closed = true;
+    receiving.abort();
     clearInterval(timer);
     unsubscribe();
     await running;
+    await Promise.allSettled(pendingMedia.values());
     await transport.close();
   }
 
@@ -1141,8 +1382,10 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
       throw new Error('Channel configuration is unavailable.');
     }
     replacing = true;
+    receiving.abort();
     try {
       await running;
+      await Promise.allSettled(pendingMedia.values());
       await transport.close();
       transport = next;
       channels = next.channels.map((channel) => ({
@@ -1156,6 +1399,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
       }));
       lastError = null;
     } finally {
+      receiving = new AbortController();
       replacing = false;
     }
     void drain();
@@ -1163,22 +1407,25 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
 
   function registerRoutes(app: FastifyInstance) {
     app.addHook('onClose', close);
-    app.get('/api/channels', async () => ({
-      channels: configuration,
-      error: lastError,
-      inbox: (
-        await pool.query(
-          'SELECT state,count(*)::int AS count FROM channel_inbox WHERE owner_id=$1 GROUP BY state',
-          [ownerId],
-        )
-      ).rows,
-      deliveries: (
-        await pool.query(
-          'SELECT o.state,count(*)::int AS count FROM channel_outbox o JOIN channel_inbox i ON i.source_id=o.source_id WHERE i.owner_id=$1 GROUP BY o.state',
-          [ownerId],
-        )
-      ).rows,
-    }));
+    app.get('/api/channels', async () => {
+      updateConfiguration();
+      return {
+        channels: configuration,
+        error: lastError,
+        inbox: (
+          await pool.query(
+            'SELECT state,count(*)::int AS count FROM channel_inbox WHERE owner_id=$1 GROUP BY state',
+            [ownerId],
+          )
+        ).rows,
+        deliveries: (
+          await pool.query(
+            'SELECT o.state,count(*)::int AS count FROM channel_outbox o JOIN channel_inbox i ON i.source_id=o.source_id WHERE i.owner_id=$1 GROUP BY o.state',
+            [ownerId],
+          )
+        ).rows,
+      };
+    });
     app.register(async (scope) => {
       scope.removeAllContentTypeParsers();
       scope.addContentTypeParser(
@@ -1221,5 +1468,24 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
     });
   }
 
-  return { registerRoutes, drain, close, replaceTransport, announcePairing, react };
+  return {
+    registerRoutes,
+    drain,
+    close,
+    replaceTransport,
+    announcePairing,
+    react,
+    async pairing() {
+      if (closed || replacing || !transport.pairing) throw new Error('QR pairing is unavailable.');
+      return transport.pairing();
+    },
+    async unlink() {
+      if (closed || replacing) throw new Error('Channel configuration is unavailable.');
+      await transport.unlink?.();
+    },
+    async cancelPairing(pairingId: string, restart = false) {
+      if (closed || replacing) return false;
+      return (await transport.cancelPairing?.(pairingId, restart)) ?? false;
+    },
+  };
 }

@@ -6,7 +6,7 @@ export interface Artifact {
   mimeType: string;
   size: number;
   url: string;
-  source?: 'browser_screenshot';
+  source?: 'browser_screenshot' | 'sticker' | 'sticker-preview' | 'location' | 'contact';
 }
 export type MessageReaction = string;
 export type AgentReactionResult =
@@ -337,12 +337,29 @@ export interface Preferences {
   quietEnd: string;
 }
 export type ChannelProvider = 'telegram' | 'whatsapp';
+export interface ChannelLinkStatus {
+  pairingId?: string;
+  state:
+    | 'connecting'
+    | 'awaiting_scan'
+    | 'connected'
+    | 'disconnected'
+    | 'logged_out'
+    | 'expired'
+    | 'failed';
+  qr?: string;
+  expiresAt?: string;
+  accountHandle?: string;
+  accountName?: string;
+}
 export interface ChannelSetupSummary {
   provider: ChannelProvider;
   enabled: boolean;
   accountName?: string;
   accountHandle?: string;
-  mode?: 'polling' | 'webhook';
+  mode?: 'polling' | 'webhook' | 'linked';
+  linkMode?: 'bot' | 'self-chat';
+  connectionState?: ChannelLinkStatus['state'];
   webhookStatus?: 'registered' | 'manual_setup' | 'registration_pending';
   webhookUrl?: string;
   pairedUser?: string;

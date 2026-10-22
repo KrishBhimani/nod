@@ -7547,6 +7547,54 @@ test(
         4,
       );
       assert.equal(Math.round((await ledger.messageCosts([chat]))[chat].costUsd! * 100) / 100, 0.9);
+      const imageIds = [randomUUID(), randomUUID()];
+      const imageEvents: AgentEvent[] = [];
+      for (const id of imageIds)
+        await ledger.withExecution(
+          {
+            threadId,
+            sessionId,
+            turnId: chat,
+            runId: chat,
+            browserId: sessionId,
+            onEvent: (event) => imageEvents.push(event),
+          },
+          () =>
+            ledger
+              .curator({
+                id: 'fixture-vision',
+                configured: true,
+                curate: async (_request, _signal, report) => {
+                  report?.({ id, provider: 'openrouter', model: 'fixture-vision', costUsd: 0.03 });
+                  return { description: 'Synthetic label' };
+                },
+              })
+              .curate({ task: 'vision', instructions: 'Synthetic image input', input: {} }),
+        );
+      assert.equal(imageEvents.length, 2);
+      assert.ok(
+        imageEvents.every(
+          (event) =>
+            event.type === 'provider_usage' &&
+            event.usage.category === 'agent' &&
+            event.usage.operation === 'vision',
+        ),
+      );
+      const imageRows = (
+        await pool.query(
+          'SELECT turn_id,run_id,session_id,browser_id FROM model_usage WHERE owner_id=$1 AND id=ANY($2::text[])',
+          ['owner', imageIds],
+        )
+      ).rows;
+      assert.deepEqual(
+        imageRows,
+        imageIds.map(() => ({
+          turn_id: chat,
+          run_id: chat,
+          session_id: sessionId,
+          browser_id: sessionId,
+        })),
+      );
       assert.equal(
         (await pool.query("SELECT count(*)::int AS n FROM model_usage WHERE details ? 'costUsd'"))
           .rows[0].n,
@@ -7573,6 +7621,27 @@ test(
       );
       assert.deepEqual(await ledger.checkIn(task, started), { budgetUsd: 5, spentUsd: 4.75 });
       assert.deepEqual(await ledger.checkIn(task, resumed), { budgetUsd: 5, spentUsd: 0.75 });
+      const preprocessing = randomUUID();
+      await pool.query(
+        `INSERT INTO model_usage(id,owner_id,cost_usd,details,created_at)
+         VALUES($1,'owner',0.4,'{"operation":"transcribe"}',now()-interval '31 minutes')`,
+        [preprocessing],
+      );
+      const attribution = await pool.connect();
+      try {
+        await ledger.attributeMediaUsage(attribution, [preprocessing], started);
+        await ledger.attributeMediaUsage(attribution, [preprocessing], resumed);
+      } finally {
+        attribution.release();
+      }
+      assert.deepEqual(await ledger.checkIn(task, started), { budgetUsd: 5, spentUsd: 5.15 });
+      assert.equal(
+        (await pool.query('SELECT turn_id FROM model_usage WHERE id=$1', [preprocessing])).rows[0]
+          .turn_id,
+        started,
+      );
+      assert.deepEqual(await ledger.checkIn(task, resumed), { budgetUsd: 5, spentUsd: 0.75 });
+
       await pool.query(
         `INSERT INTO turns(id,owner_id,source,prompt,session_id,created_at)
          VALUES($1,'owner','task','Also compare buses',$2,now()-interval '6 minutes')`,
@@ -7588,6 +7657,63 @@ test(
         taskUsd: null,
       });
       assert.equal(await ledger.checkIn(task, resumed), undefined);
+      const speechLedger = createLedger({ pool, ownerId: 'speech-owner' });
+      await pool.query(
+        "INSERT INTO spending_limits(owner_id,monthly_usd) VALUES('speech-owner',1)",
+      );
+      let transcriptionRequests = 0;
+      let speechReady = false;
+      const speech = speechLedger.speech({
+        id: 'fixture',
+        configured: false,
+        get transcriptionConfigured() {
+          return speechReady;
+        },
+        async synthesize() {
+          throw new Error('Not used.');
+        },
+        async transcribe(_audio, _signal, report) {
+          transcriptionRequests++;
+          const usage = {
+            id: randomUUID(),
+            provider: 'fixture',
+            category: 'agent' as const,
+            operation: 'transcribe',
+            model: 'fixture',
+            status: 'succeeded' as const,
+            durationMs: 1,
+            costUsd: 0.6,
+          };
+          report?.(usage);
+          report?.(usage);
+          return 'Synthetic transcript';
+        },
+      });
+      const { createSpeech } = await import('../src/server/speech.ts');
+      const service = createSpeech(speech);
+      const audio = { bytes: new Uint8Array([1]), mimeType: 'audio/ogg', name: 'voice.ogg' };
+      await assert.rejects(service.transcribe(audio));
+      speechReady = true;
+      await speechLedger.withTurn(chat, () => service.transcribe(audio));
+      speechReady = false;
+      await assert.rejects(service.transcribe(audio));
+      assert.equal(transcriptionRequests, 1);
+      speechReady = true;
+      await service.transcribe(audio);
+      await assert.rejects(service.transcribe(audio), /spending limit was reached/);
+      assert.equal(transcriptionRequests, 2);
+      const billedSpeech = await pool.query(
+        "SELECT count(*)::int AS n,sum(cost_usd)::float8 AS spent FROM model_usage WHERE owner_id='speech-owner'",
+      );
+      assert.deepEqual(billedSpeech.rows[0], { n: 2, spent: 1.2 });
+      assert.equal(
+        (
+          await pool.query(
+            "SELECT count(*)::int AS n FROM model_usage WHERE owner_id='speech-owner' AND turn_id IS NOT NULL",
+          )
+        ).rows[0].n,
+        0,
+      );
     } finally {
       await app.close();
       await pool.end();
