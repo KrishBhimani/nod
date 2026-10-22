@@ -25,7 +25,7 @@ import { threadIdentity } from '../../ports/thread-identity.ts';
 import { runProcess, serviceEnvironment } from '../process.ts';
 import { createBrowserProxy, browserUrl } from './network.ts';
 import { credentialFields } from './credentials.ts';
-import { openDevtools } from './devtools.ts';
+import { openDevtools, type BoundSignInControl } from './devtools.ts';
 import {
   createScreenStore,
   daemonDeadline,
@@ -54,6 +54,7 @@ interface BrowserState {
   refs: Map<string, BrowserControl>;
   typed?: { value: string; origin: string; field: number; fresh: boolean };
   pageSize?: [number, number];
+  signInMethods?: { document: string; origin: string; controls: Map<string, BoundSignInControl> };
   privateDocument?: string;
   sealedDocument?: string;
   uploads: Set<string>;
@@ -81,7 +82,11 @@ const streamFrame = z.object({
   type: z.literal('frame'),
   seq: z.number().int(),
   data: z.string().max(4 * 1024 * 1024),
-  metadata: z.object({ deviceWidth: z.number().positive(), deviceHeight: z.number().positive() }),
+  metadata: z.object({
+    deviceWidth: z.number().positive(),
+    deviceHeight: z.number().positive(),
+    pageScaleFactor: z.number().positive().default(1),
+  }),
 });
 
 const holdMs = 30 * 60_000;
@@ -1741,6 +1746,114 @@ export function createAgentBrowserComputer(options: {
     });
   }
 
+  async function signInMethods(
+    id: string,
+    origin: string,
+    methods: { label: string; selector: string }[],
+    signal?: AbortSignal,
+  ) {
+    signal?.throwIfAborted();
+    if (browserUrl(origin).origin !== origin || !methods.length || methods.length > 10)
+      throw new BrowserActionError('browser_target_changed');
+    const state = await recoverBrowser(id);
+    if (!state?.started || state.saved.navigationFailed)
+      throw new BrowserActionError('browser_target_changed');
+    return serialize(state, async () => {
+      state.signInMethods = undefined;
+      signal?.throwIfAborted();
+      if (state.injecting || (await privateDocumentOpen(state, signal)))
+        throw new BrowserLockedError();
+      if (originOf(await currentUrl(state, signal)) !== origin)
+        throw new BrowserActionError('browser_target_changed');
+      const devtools = await inspector(state, signal);
+      try {
+        const document = await checkout(state, devtools);
+        const controls = new Map<string, BoundSignInControl>();
+        const observed: { id: string; label: string; page: BrowserPage }[] = [];
+        for (const method of methods) {
+          signal?.throwIfAborted();
+          const target = selector(method.selector);
+          if (referenceOf(target))
+            throw new BrowserActionError(
+              'browser_target_changed',
+              'Sign-in method choices need concrete CSS selectors. Inspect the current page and use a selector for each visible control.',
+            );
+          const control = await devtools.signInControl({ selector: target });
+          if (
+            control.origin !== origin ||
+            [...controls.values()].some(
+              (previous) => previous.backendNodeId === control.backendNodeId,
+            )
+          )
+            throw new BrowserActionError('browser_target_changed');
+          const methodId = randomUUID();
+          controls.set(methodId, control);
+          const page: BrowserPage = {
+            origin,
+            url: redactBrowserUrl(control.url, state.secrets),
+            controls: control.controls.map((item) => ({
+              role: item.role,
+              name: redactBrowserText(item.name, state.secrets).slice(0, 300),
+            })),
+            ...(control.submits
+              ? {
+                  submits: {
+                    method: control.submits.method,
+                    to: redactBrowserUrl(control.submits.to, state.secrets),
+                  },
+                }
+              : {}),
+          };
+          observed.push({ id: methodId, label: page.controls![0]!.name, page });
+        }
+        if ((await devtools.document()) !== document)
+          throw new BrowserActionError('browser_target_changed');
+        state.signInMethods = { document, origin, controls };
+        return { document, methods: observed };
+      } finally {
+        devtools.close();
+      }
+    });
+  }
+
+  async function selectSignInMethod(
+    id: string,
+    input: { origin: string; document: string; methodId: string },
+    signal?: AbortSignal,
+  ) {
+    signal?.throwIfAborted();
+    const state = browsers.get(threadIdentity(id));
+    if (!state?.started) throw new BrowserActionError('browser_target_changed');
+    await serialize(state, async () => {
+      signal?.throwIfAborted();
+      const batch = state.signInMethods;
+      state.signInMethods = undefined;
+      const control = batch?.controls.get(input.methodId);
+      if (
+        !batch ||
+        !control ||
+        batch.origin !== input.origin ||
+        batch.document !== input.document ||
+        state.saved.navigationFailed
+      )
+        throw new BrowserActionError('browser_target_changed');
+      if (state.injecting || (await privateDocumentOpen(state, signal)))
+        throw new BrowserLockedError();
+      const devtools = await inspector(state, signal);
+      try {
+        if (
+          (await checkout(state, devtools)) !== batch.document ||
+          originOf(await currentUrl(state, signal)) !== batch.origin
+        )
+          throw new BrowserActionError('browser_target_changed');
+        signal?.throwIfAborted();
+        await devtools.selectSignInControl(control);
+      } finally {
+        devtools.close();
+      }
+    });
+  }
+
   async function hold(id: string, held: boolean): Promise<void> {
     const state = browsers.get(threadIdentity(id));
     if (!state?.started) return;
@@ -1896,7 +2009,10 @@ export function createAgentBrowserComputer(options: {
           await new Promise<void>((resolve) => (wake = resolve));
           continue;
         }
-        state.pageSize = [frame.metadata.deviceWidth, frame.metadata.deviceHeight];
+        state.pageSize = [
+          frame.metadata.deviceWidth / frame.metadata.pageScaleFactor,
+          frame.metadata.deviceHeight / frame.metadata.pageScaleFactor,
+        ];
         if (!state.injecting && !(await privateDocumentOpen(state, signal)))
           yield Buffer.from(frame.data, 'base64');
         if (socket.readyState === WebSocket.OPEN)
@@ -2065,6 +2181,8 @@ export function createAgentBrowserComputer(options: {
     cardDestinations: tracked(cardDestinations),
     checkoutImage: tracked(checkoutImage),
     currentPage: tracked(currentPage),
+    signInMethods: tracked(signInMethods),
+    selectSignInMethod: tracked(selectSignInMethod),
     hold: tracked(hold),
     close: tracked(closeBrowser),
     clear: tracked(clear),

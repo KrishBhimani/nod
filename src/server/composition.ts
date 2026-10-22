@@ -74,6 +74,7 @@ import { createPublicLinkPreviewProvider } from '../providers/public-web/link-pr
 import { createAgentRuntime } from '../runtime/index.ts';
 import { coreSkills } from '../runtime/prompt.ts';
 import { createApp } from './app.ts';
+import { credentialRequestKey } from './access.ts';
 import { createWorkAdmission, createWorkConsumers } from './work-admission.ts';
 import { learnWritingStyle } from './writing-style.ts';
 import { createChatVerification } from './chat-verification.ts';
@@ -698,10 +699,27 @@ async function initializeApplication(
     analytics: captureAnalytics,
     refresh,
     keyStore: adapters.keyStore,
+    requestKey: Buffer.from(await credentialRequestKey(dataRoot), 'base64url'),
     resume: resumeAfterCredentials,
     retry: retryCredentials,
     inject: computer.injectCredentials,
     page: computer.currentPage,
+    signInMethods: computer.signInMethods,
+    selectSignInMethod: computer.selectSignInMethod,
+    checkMethods: async (turn, methods) => {
+      for (const { selector, page } of methods) {
+        const step = { action: 'click' as const, selector };
+        const verdict = await trust.check(
+          turn,
+          'OTTO_browser',
+          browserStepArgs({ step, page, typed: [], subagent: false }),
+        );
+        if (verdict.confirm)
+          throw new Error(
+            'This control needs the normal browser confirmation before it can run. Choose only sign-in methods covered by the owner’s request.',
+          );
+      }
+    },
     emailCode: (input, signal) => integrations.emailCode(ownerId, input, signal),
     icon,
     onOwnerUse: (entry, client) => vaultAccess.ownerUse(entry, client),
@@ -997,7 +1015,6 @@ async function initializeApplication(
     analytics: captureAnalytics,
     present: (turn, input) => communication.present(turn.threadId, input),
     uses: vault.uses,
-    inOtto: trust.inOtto,
     page: (threadId) => computer.currentPage(threadId),
     destinations: (threadId, fields) => computer.cardDestinations(threadId, fields),
     capture: (threadId) => computer.checkoutImage(threadId),
@@ -1229,6 +1246,17 @@ async function initializeApplication(
         return result;
       },
       requestCredential: async (turn, input) => {
+        if (input.kind === 'method') {
+          const origin = credentialOrigin(input.origin);
+          const access = await permitVault(turn, { origin, kind: 'sign_in' });
+          if ('question' in access) return { [appConfirmation]: access.question };
+          return vault.request(turn, ownerId, {
+            origin,
+            label: input.label,
+            kind: 'method',
+            methods: input.methods,
+          });
+        }
         const { savedLoginId, ...request } = input;
         if (savedLoginId !== undefined && request.kind === 'otp')
           throw new Error('Saved logins cannot supply verification codes.');

@@ -187,10 +187,23 @@ export function Trust({ onAsk }: { onAsk?(text: string): void }) {
   }
 
   function removed(id: string) {
+    const entry = entries?.find((value) => value.id === id);
+    const remaining =
+      entry?.kind === 'login'
+        ? entries?.filter(
+            (value) => value.id !== id && value.kind === 'login' && value.origin === entry.origin,
+          )
+        : undefined;
+    const next =
+      remaining?.find((value) => value.kind === 'login' && !value.unreadable) ??
+      (entry?.kind === 'login'
+        ? sessions.data?.find((value) => value.origin === entry.origin)
+        : undefined) ??
+      remaining?.[0];
     update((current) => current?.filter((value) => value.id !== id) ?? current);
     sessions.update((current) => current?.filter((value) => value.id !== id) ?? current);
-    returnTo.current = 'new';
-    setSelectedId(null);
+    returnTo.current = next?.id ?? 'new';
+    setSelectedId(next?.id ?? null);
     void refresh();
     void sessions.refresh();
   }
@@ -223,8 +236,7 @@ export function Trust({ onAsk }: { onAsk?(text: string): void }) {
   }
 
   const sessionsFor = (origin: string) =>
-    sessions.data?.filter((value) => value.origin === origin && value.state !== 'disconnecting') ??
-    [];
+    sessions.data?.filter((value) => value.origin === origin) ?? [];
 
   const detail = adding ? (
     <VaultSurface
