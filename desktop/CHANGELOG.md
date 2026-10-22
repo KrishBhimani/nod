@@ -2,6 +2,27 @@
 
 Releases from before the rename to nod are the `desktop-v*` [GitHub releases](https://github.com/n8n-io/nod/releases).
 
+## 0.2.0 - 2026-10-22
+
+### Features
+
+- Streamline app connections and onboarding. [#394](https://github.com/n8n-io/nod/pull/394) (b9178f9)
+- **n8n:** Build, test and publish n8n workflows and Agents through n8n's MCP server. [#395](https://github.com/n8n-io/nod/pull/395) (32b8873)
+
+### Fixes
+
+- **privacy:** Scrub feedback reports, make them opt-in, drop computer name and weekly ID. [#414](https://github.com/n8n-io/nod/pull/414) (3d87f3d)
+
+[Full changelog](https://github.com/n8n-io/nod/compare/nod-v0.1.1...cc64f5b2b9846912ff47a1089428a12f6d115b78)
+
+<details>
+<summary>Build details</summary>
+
+Source: `cc64f5b2b9846912ff47a1089428a12f6d115b78`
+Previous release: `nod-v0.1.1`
+
+</details>
+
 ## 0.1.1 - 2026-10-22
 
 ### Breaking changes
