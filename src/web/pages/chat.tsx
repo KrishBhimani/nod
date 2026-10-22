@@ -896,7 +896,7 @@ export function Chat({
           </>
         ) : (
           <header className="chat-report-action">
-            <h1 className="chat-title">Chat</h1>
+            <h1 className="sr-only">Chat</h1>
             {chatActions}
           </header>
         )}

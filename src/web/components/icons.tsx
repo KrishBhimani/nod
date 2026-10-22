@@ -9,6 +9,7 @@ import {
   Hand as LucideHand,
   Heart as LucideHeart,
   Highlighter as LucideHighlighter,
+  KeyRound as LucideKeyRound,
   Leaf as LucideLeaf,
   Merge as LucideMerge,
   ListOrdered as LucideListOrdered,
@@ -119,7 +120,6 @@ export const Hash = n8n('hash');
 export const History = n8n('history');
 export const Hourglass = n8n('hourglass');
 export const Italic = n8n('text-italics');
-export const KeyRound = n8n('key');
 export const LayoutGrid = n8n('grid');
 export const Lightbulb = n8n('lightbulb');
 export const Link2 = n8n('link');
@@ -186,6 +186,7 @@ export const Gamepad2 = lucide(LucideGamepad2);
 export const Hand = lucide(LucideHand);
 export const Heart = lucide(LucideHeart);
 export const Highlighter = lucide(LucideHighlighter);
+export const KeyRound = lucide(LucideKeyRound);
 export const Leaf = lucide(LucideLeaf);
 export const ListOrdered = lucide(LucideListOrdered);
 export const MapPin = lucide(LucideMapPin);

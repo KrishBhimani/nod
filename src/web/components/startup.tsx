@@ -32,11 +32,7 @@ export function ChatSkeleton({
   const conversation = readUiPreference('nod.chat-layout') === 'conversation';
   return (
     <div className="chat-page chat-skeleton" aria-busy="true">
-      {!desktopSettingsAvailable() && (
-        <div className="chat-report-action" aria-hidden="true">
-          <span className="chat-title">Chat</span>
-        </div>
-      )}
+      {!desktopSettingsAvailable() && <div className="chat-report-action" aria-hidden="true" />}
       <div className="conversation-scroll">
         <div className="conversation-column" aria-hidden="true">
           {conversation ? (
