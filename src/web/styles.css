@@ -700,6 +700,7 @@ input[type='range']:disabled {
 }
 .chat-page > .chat-bottom {
   grid-row: 3;
+  margin-top: -16px;
 }
 .conversation-scroll {
   flex: 1;
@@ -1128,6 +1129,8 @@ input[type='range']:disabled {
   flex: none;
 }
 .composer {
+  position: relative;
+  z-index: 3;
   border: 1px solid var(--border);
   border-radius: 24px;
   background: var(--surface);
@@ -1241,7 +1244,7 @@ input[type='range']:disabled {
 .jump-latest {
   position: absolute;
   left: 50%;
-  bottom: calc(100% + 10px);
+  bottom: 100%;
   translate: -50% 0;
   height: 32px;
   padding: 0 12px 0 12px;
@@ -1260,15 +1263,33 @@ input[type='range']:disabled {
 .jump-latest.has-unseen:hover:not(:disabled) {
   background: var(--accent);
 }
-.jump-latest-fade {
+.chat-bottom-fade {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 100%;
-  height: 80px;
-  background: linear-gradient(to bottom, transparent, var(--canvas) 55%);
+  bottom: calc(100% - 16px);
+  height: 48px;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    color-mix(in srgb, var(--canvas) 2%, transparent) 10%,
+    color-mix(in srgb, var(--canvas) 7.4%, transparent) 19.1%,
+    color-mix(in srgb, var(--canvas) 15.6%, transparent) 27.4%,
+    color-mix(in srgb, var(--canvas) 25.9%, transparent) 35.3%,
+    color-mix(in srgb, var(--canvas) 37.6%, transparent) 42.7%,
+    color-mix(in srgb, var(--canvas) 50%, transparent) 50%,
+    color-mix(in srgb, var(--canvas) 62.4%, transparent) 57.3%,
+    color-mix(in srgb, var(--canvas) 74.1%, transparent) 64.7%,
+    color-mix(in srgb, var(--canvas) 84.4%, transparent) 72.6%,
+    color-mix(in srgb, var(--canvas) 92.6%, transparent) 80.9%,
+    color-mix(in srgb, var(--canvas) 98%, transparent) 90%,
+    var(--canvas) 100%
+  );
   pointer-events: none;
   z-index: 2;
+}
+.chat-bottom-fade[data-away] {
+  height: 88px;
 }
 @keyframes jump-latest-in {
   from {

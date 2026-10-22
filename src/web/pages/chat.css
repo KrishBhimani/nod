@@ -603,7 +603,7 @@
 }
 .chat-page .messages {
   gap: 24px;
-  padding-block: 24px;
+  padding-block: 24px 48px;
 }
 .chat-page .message-grouped {
   margin-top: -16px;

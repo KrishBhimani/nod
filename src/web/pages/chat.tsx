@@ -1099,7 +1099,11 @@ export function Chat({
                 : 'Back to latest'}
             </Button>
           )}
-          {away?.shown && <div className="jump-latest-fade" aria-hidden="true" />}
+          <div
+            className="chat-bottom-fade"
+            data-away={away?.shown || undefined}
+            aria-hidden="true"
+          />
           {error && <Notice>{error}</Notice>}
           {connectionNotice && (
             <Notice kind={connectionNotice.kind} onDismiss={() => setConnectionNotice(null)}>
