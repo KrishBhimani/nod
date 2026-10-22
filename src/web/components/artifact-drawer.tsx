@@ -21,7 +21,7 @@ import {
   Maximize2,
   Minimize2,
   X,
-} from 'lucide-react';
+} from './icons';
 import { attachmentKind, fileSize, fileType, vectorImage } from '../lib/attachment-kind';
 import { localPreviewUrl, ownedArtifactUrl } from '../lib/attachment-url';
 import { readUiPreference, writeUiPreference } from '../lib/ui-preferences';

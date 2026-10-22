@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { Download, LoaderCircle, Pause, Play } from 'lucide-react';
+import { Download, LoaderCircle, Pause, Play } from './icons';
 import { loadAudioWaveform } from '../lib/audio-waveform';
 import { ownedArtifactUrl } from '../lib/attachment-url';
 import type { ImagePreview } from './attachment-images';

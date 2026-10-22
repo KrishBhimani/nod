@@ -7,7 +7,7 @@ import {
   type DragEvent,
   type FormEvent,
 } from 'react';
-import { Bug, Check, Copy, Lightbulb, MessageCircle, Paperclip, Send, X } from 'lucide-react';
+import { Bug, Check, Copy, Lightbulb, MessageCircle, Paperclip, Send, X } from './icons';
 import {
   feedbackAttachmentAccept,
   feedbackAttachmentMimeType,

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { CalendarClock, Sparkles } from 'lucide-react';
+import { CalendarClock, Sparkles } from '../components/icons';
 import type { Schedule, ScheduleHistory, ScheduleRun } from '../../shared/contracts';
 import { StatusIcon, statusLabels } from '../components/turn-status';
 import { usePageData } from '../hooks/use-page-data';

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
-import { Globe2, KeyRound, Link2, MonitorSmartphone } from 'lucide-react';
+import { Globe2, KeyRound, Link2, MonitorSmartphone } from './icons';
 import type { AppSetupStatus, CredentialRequest } from '../../shared/contracts';
 import { api, ApiError } from '../lib/api';
 import { captureAnalytics } from '../lib/analytics';

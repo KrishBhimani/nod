@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { Check, LoaderCircle } from 'lucide-react';
+import { Check, LoaderCircle } from '../../../components/icons';
 import type { ModelConnection, ModelProvider, ModelsResponse } from '../../../../shared/models';
 import { modelProviderNames, modelSource } from '../../../../shared/models';
 import { agentModels } from '../../../../shared/model-defaults';

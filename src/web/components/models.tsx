@@ -10,7 +10,7 @@ import {
   SlidersHorizontal,
   UserRound,
   X,
-} from 'lucide-react';
+} from './icons';
 import type { ModelConnection, ModelProvider, ModelsResponse } from '../../shared/models';
 import { modelProviderNames, modelSource } from '../../shared/models';
 import { agentModels } from '../../shared/model-defaults';

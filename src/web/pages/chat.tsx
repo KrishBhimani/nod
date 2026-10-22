@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import Markdown from 'react-markdown';
-import { ArrowDown, Check, Globe2, LoaderCircle, Trash2, User } from 'lucide-react';
+import { ArrowDown, Check, Globe2, LoaderCircle, Trash2, User } from '../components/icons';
 import type {
   Activity,
   AppState,

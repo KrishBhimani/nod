@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, KeyRound, Maximize2, Minimize2, RotateCw } from 'lucide-react';
+import { ArrowLeft, KeyRound, Maximize2, Minimize2, RotateCw } from './icons';
 import type { BrowserHandoffInput } from '../../shared/browser-handoff';
 import { ApiError, apiStream, errorMessage, post } from '../lib/api';
 import { browserFrames } from '../lib/browser-frames';

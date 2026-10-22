@@ -13,7 +13,7 @@ import {
   LoaderCircle,
   MessageCircle,
   MessageSquare,
-} from 'lucide-react';
+} from '../components/icons';
 import type {
   Activity,
   Schedule,

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowUp, Paperclip } from 'lucide-react';
+import { ArrowUp, Paperclip } from './icons';
 import { BrandMark } from './brand';
 import { Skeleton } from './ui';
 import { readUiPreference } from '../lib/ui-preferences';

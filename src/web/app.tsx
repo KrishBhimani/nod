@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft } from './components/icons';
 import { Chat } from './pages/chat';
 import { Usage } from './pages/usage';
 import { Vault } from './pages/vault';

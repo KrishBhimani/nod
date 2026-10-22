@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, ChevronLeft, Eye, EyeOff, KeyRound, LockKeyhole, ArrowUpRight } from 'lucide-react';
+import {
+  Check,
+  ChevronLeft,
+  Eye,
+  EyeOff,
+  KeyRound,
+  LockKeyhole,
+  ArrowUpRight,
+} from '../components/icons';
 import type { CredentialRequest, PaymentRequest } from '../../shared/contracts';
 import { api } from '../lib/api';
 import { originLabel } from '../lib/vault-name';

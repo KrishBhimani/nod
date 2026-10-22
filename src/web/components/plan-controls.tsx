@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { ArrowUp, ChevronDown, LoaderCircle, Sparkles } from 'lucide-react';
+import { ArrowUp, ChevronDown, LoaderCircle, Sparkles } from './icons';
 import type { Schedule } from '../../shared/contracts';
 import { Button, Field, Input, Notice, Switch } from './ui';
 import { SearchPicker, TimeZonePicker, type PickerOption } from './time-zone-picker';

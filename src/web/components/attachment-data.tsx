@@ -10,7 +10,7 @@ import {
 } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Download, ExternalLink, FileText, Folder } from 'lucide-react';
+import { Download, ExternalLink, FileText, Folder } from './icons';
 import { safeMessageLink } from '../lib/message-links';
 import { formatNumber } from '../lib/date-format';
 import { fileSize, textPreviewBytes } from '../lib/attachment-kind';

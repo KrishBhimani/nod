@@ -98,8 +98,8 @@ body {
   height: 40px;
 }
 :root[data-desktop='true'] .main-nav .nav-link > svg {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
 }
 :root[data-desktop='true'] .main-workspace {
   padding-top: var(--desktop-titlebar-height);
@@ -471,6 +471,7 @@ input[type='range']:disabled {
   width: 224px;
   flex: none;
   background: var(--sidebar);
+  font-weight: 500;
   padding: 24px 12px 12px;
   display: flex;
   flex-direction: column;
@@ -538,8 +539,8 @@ input[type='range']:disabled {
 }
 .nav-link > svg {
   flex-shrink: 0;
-  width: 24px;
-  height: 24px;
+  width: 20px;
+  height: 20px;
   stroke-width: 2;
 }
 .nav-link:focus-visible,
@@ -608,7 +609,6 @@ input[type='range']:disabled {
 .sidebar .nav-link-active:hover {
   background: var(--accent-soft);
   color: var(--foreground);
-  font-weight: 500;
 }
 .nav-link-active svg,
 .sidebar .nav-link:hover svg {
@@ -674,7 +674,11 @@ input[type='range']:disabled {
   min-width: 0;
   flex: 1;
   overflow: auto;
+  scrollbar-gutter: stable;
   position: relative;
+}
+.main-workspace:has(> .chat-route:not([hidden])) {
+  scrollbar-gutter: auto;
 }
 .main-workspace:focus {
   outline: none;

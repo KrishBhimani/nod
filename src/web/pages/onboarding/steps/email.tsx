@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
-import { Check, LoaderCircle } from 'lucide-react';
+import { Check, LoaderCircle } from '../../../components/icons';
 import type { AppSetupStatus, Configuration, Connection } from '../../../../shared/contracts';
 import { connectedGmail } from '../../../../shared/onboarding';
 import { Rise } from '../../../components/motion';

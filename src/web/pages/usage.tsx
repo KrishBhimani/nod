@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import * as Popover from '@radix-ui/react-popover';
-import { CalendarClock, MessageCircle, ScanSearch, Undo2, Zap } from 'lucide-react';
+import { CalendarClock, MessageCircle, ScanSearch, Undo2, Zap } from '../components/icons';
 import type { TrustEntry, TrustPage, TrustSource, TrustView } from '../../shared/trust';
 import type { AccountPreferences } from '../../shared/account';
 import type {
