@@ -117,7 +117,7 @@ The **Build desktop release** workflow runs on `main` by hand for a draft or a r
 
 Release builds run one at a time, and up to 100 runs can wait in the queue. A failed build can reuse its matching draft. Published assets are never replaced.
 
-The container images, the Windows runtime, Mac signing and notarization, the Mac update checks and the publishing steps run on Blacksmith runners. Both Mac apps build on Apple silicon; the Intel app builds and runs its checks with x64 Node under Rosetta. The Windows jobs run on GitHub's Windows runners, because the installer check needs WSL 2, which Blacksmith's Windows runners can't run. The Mac update checks run alongside the builds, and the Windows job runs its update checks while the Windows runtime builds. Each Mac app job signs its own runtime before packaging the app, and the release uploads its assets in parallel.
+The container images, the Windows runtime, Mac signing and notarization, the Mac update checks and the publishing steps run on Blacksmith runners. Both Mac apps build on Apple silicon; the Intel app builds and runs its checks with x64 Node under Rosetta. The Windows jobs run on GitHub's Windows runners, because the installer check needs WSL 2, which Blacksmith's Windows runners can't run. The Mac and Windows update checks run alongside the builds, and the Windows job installs and builds while the Windows runtime builds or downloads. Each Mac app job signs its own runtime before packaging the app, and the release uploads its assets in parallel.
 
 ## How installed apps update
 
@@ -131,7 +131,9 @@ Drafts are never offered to the installer or the updater.
 - An automatic check announces a ready update with a notification when notifications are on, and with a **Restart** or **Later** dialog otherwise. The menu offers **Restart to update** until you restart.
 - If a reply, schedule or background check is running, or nod can't tell, it asks before restarting.
 - If the runtime hasn't changed, nod reuses it and downloads only the app or installer.
-- A Mac runtime changes only when what it ships changes: the browser worker and the source it imports, the scripts the images copy, dependencies, Dockerfiles, pinned downloads and the runtime build scripts. Other app changes reuse the published runtime.
+- A Mac runtime is rebuilt when one of its inputs changes, or by the first release built in a new week (below). Its inputs are the browser worker and the source it imports, the scripts the images copy, dependencies, Dockerfiles, pinned downloads, the runtime build scripts and the release workflow. Other app changes reuse the published runtime. A test fails when a runtime build script or Dockerfile reads a repository file the fingerprint doesn't cover.
+- A Windows runtime follows the same rule, plus its own Dockerfile, guest script and build script. When it hasn't changed, the release build downloads the published one, checks it against its manifest and GitHub's asset digest, and runs the full Windows install check on it. A Windows install that already has that runtime then updates with only the installer.
+- The first release built in a new week (from Monday, UTC) rebuilds both runtimes and refetches the images' system packages, such as Chromium, instead of reusing Docker's cached layers. Later releases that week reuse them. A week without a release build ships no refresh.
 - On Windows, the restart runs the verified installer silently over the current install, then opens nod again. The profile is kept.
 
 ## Help private-alpha testers
