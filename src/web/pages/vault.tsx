@@ -1,7 +1,7 @@
 import { PageTitle } from '../components/page-title';
 import { useEffect, useRef, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
-import { ChevronRight, CreditCard, Globe, Plus, Upload } from 'lucide-react';
+import { ChevronRight, CreditCard, Globe, Plus, Upload } from '../components/icons';
 import type { VaultListEntry, VaultSession } from '../../shared/contracts';
 import { usePageData } from '../hooks/use-page-data';
 import { usePhone } from '../hooks/use-phone';

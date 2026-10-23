@@ -80,13 +80,13 @@ Page padding changes with the available width. Pages share one title size, and a
 
 ## Icons and brand details
 
-| Item               | Rule                                                                                                                  |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| Icon set           | Lucide, with a 2 px stroke in a 24 px view box                                                                        |
-| Icon sizes         | 16 px inline and for status, 24 px for navigation and page titles, 32 or 48 px for large empty states                 |
-| Icon color         | Neutral by default, pink for selected navigation, state colors on status icons                                        |
-| Connected services | Logos keep their official colors                                                                                      |
-| Dot grid           | 24 px, only on the sign-in story and the empty conversation. Never in messages, tables, forms, app lists or Settings. |
+| Item               | Rule                                                                                                                                                                       |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Icon set           | [n8n icons](https://n8n-icons.vercel.app/) from `src/web/components/icons.tsx`; Lucide only where the set has no icon yet                                                  |
+| Icon sizes         | The 12 px drawing at 14 px and below, the 16 px drawing up to 18 px, scaled up for navigation (20 px, 24 px in the desktop app) and empty states; page titles have no icon |
+| Icon style         | Outline by default, Solid for the selected navigation item; neutral color, pink for selected navigation, state colors on status icons                                      |
+| Connected services | Logos keep their official colors                                                                                                                                           |
+| Dot grid           | 24 px, only on the sign-in story and the empty conversation. Never in messages, tables, forms, app lists or Settings.                                                      |
 
 Don't show a construction grid. Keep the existing reduced-motion behaviour. The brand guide doesn't define motion for product interfaces yet.
 

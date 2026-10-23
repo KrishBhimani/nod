@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { CreditCard, Globe } from 'lucide-react';
+import { CreditCard, Globe } from './icons';
 import type { VaultEntry, VaultEntryDetails, VaultListEntry } from '../../shared/contracts';
 import { api } from '../lib/api';
 import { Button, Field, Input, Notice } from './ui';

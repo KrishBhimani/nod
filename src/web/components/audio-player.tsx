@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { Download, LoaderCircle, Pause, Play } from 'lucide-react';
+import { Download, LoaderCircle, Pause, Play } from './icons';
 import { loadAudioWaveform } from '../lib/audio-waveform';
 import { ownedArtifactUrl } from '../lib/attachment-url';
 import type { ImagePreview } from './attachment-images';
@@ -137,7 +137,7 @@ export function AudioPlayer({
         ) : playing ? (
           <Pause size={20} fill="currentColor" aria-hidden="true" />
         ) : (
-          <Play size={20} fill="currentColor" aria-hidden="true" />
+          <Play size={20} solid aria-hidden="true" />
         )}
       </button>
       <div className="audio-player-track" data-waveform-ready={Boolean(peaks)}>

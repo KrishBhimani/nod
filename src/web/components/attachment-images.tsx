@@ -1,4 +1,4 @@
-import { Play } from 'lucide-react';
+import { Play } from './icons';
 import { useEffect, useRef } from 'react';
 import type { Artifact } from '../../shared/contracts';
 import { ownedArtifactUrl } from '../lib/attachment-url';

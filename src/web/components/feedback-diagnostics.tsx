@@ -1,5 +1,5 @@
 import { useId, useMemo } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown } from './icons';
 import type { FeedbackReport } from '../../shared/feedback';
 import { Button, Checkbox } from './ui';
 

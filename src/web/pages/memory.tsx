@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
-import { Check, ChevronLeft, Copy, Download, Plus, Undo2, Upload, X } from 'lucide-react';
+import { Check, ChevronLeft, Copy, Download, Plus, Undo2, Upload, X } from '../components/icons';
 import {
   areaLabels,
   memoryAreas,

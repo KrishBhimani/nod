@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { CircleHelp, CreditCard, Hash, KeyRound, Pause } from 'lucide-react';
+import { CircleHelp, CreditCard, Hash, KeyRound, Pause } from './icons';
 import type {
   VaultActivity,
   VaultActivityEntry,

@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import Markdown from 'react-markdown';
-import { ArrowDown, Check, Globe2, LoaderCircle, Trash2, User } from 'lucide-react';
+import { ArrowDown, Check, Globe2, LoaderCircle, Trash2, User } from '../components/icons';
 import type {
   Activity,
   AppState,
@@ -896,7 +896,7 @@ export function Chat({
           </>
         ) : (
           <header className="chat-report-action">
-            <h1 className="chat-title">Chat</h1>
+            <h1 className="sr-only">Chat</h1>
             {chatActions}
           </header>
         )}
@@ -1099,7 +1099,11 @@ export function Chat({
                 : 'Back to latest'}
             </Button>
           )}
-          {away?.shown && <div className="jump-latest-fade" aria-hidden="true" />}
+          <div
+            className="chat-bottom-fade"
+            data-away={away?.shown || undefined}
+            aria-hidden="true"
+          />
           {error && <Notice>{error}</Notice>}
           {connectionNotice && (
             <Notice kind={connectionNotice.kind} onDismiss={() => setConnectionNotice(null)}>

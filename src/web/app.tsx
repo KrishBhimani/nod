@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft } from './components/icons';
 import { Chat } from './pages/chat';
 import { Usage } from './pages/usage';
 import { Vault } from './pages/vault';
@@ -100,6 +100,7 @@ function Workspace({
   useSavedDateFormat();
   useBrowserTimeZone();
   const [collapsed, setCollapsed] = useState(() => readUiPreference('nod.sidebar') !== 'expanded');
+  const [sidebarMotion, setSidebarMotion] = useState(false);
   const [toolbarActions, setToolbarActions] = useState<HTMLDivElement | null>(null);
   const [pendingMessageFocus, setPendingMessageFocus] = useState<string>();
   const [notificationTarget, setNotificationTarget] = useState<{
@@ -161,9 +162,13 @@ function Workspace({
   useEffect(() => {
     writeUiPreference('nod.sidebar', collapsed ? 'collapsed' : 'expanded');
   }, [collapsed]);
+  function toggleSidebar(animate: boolean) {
+    setSidebarMotion(animate);
+    setCollapsed((value) => !value);
+  }
   return (
     <div
-      className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''} ${entering ? 'shell-entering' : ''}`}
+      className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''} ${sidebarMotion ? 'sidebar-motion' : ''} ${entering ? 'shell-entering' : ''}`}
     >
       <a href="#workspace" className="skip-link">
         Skip to content
@@ -171,7 +176,7 @@ function Workspace({
       {desktopSettingsAvailable() && (
         <DesktopToolbar
           collapsed={collapsed}
-          onToggle={() => setCollapsed((value) => !value)}
+          onToggle={() => toggleSidebar(true)}
           actionsRef={setToolbarActions}
         />
       )}
@@ -179,13 +184,13 @@ function Workspace({
         path={currentPath}
         unreadCount={unread.count}
         unreadPending={unread.pending}
-        onToggle={() => setCollapsed((value) => !value)}
+        onToggle={() => toggleSidebar(false)}
         onNavigate={navigate}
         account={account}
       />
       <div className="workspace-frame">
         {!desktopSettingsAvailable() && (
-          <SidebarToggle collapsed={collapsed} onToggle={() => setCollapsed((value) => !value)} />
+          <SidebarToggle collapsed={collapsed} onToggle={() => toggleSidebar(true)} />
         )}
         <div className="workspace-body">
           <main id="workspace" className="main-workspace" tabIndex={-1}>

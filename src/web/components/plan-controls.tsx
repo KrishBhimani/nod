@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { ArrowUp, ChevronDown, LoaderCircle, Sparkles } from 'lucide-react';
+import { ArrowUp, ChevronDown, LoaderCircle, Plus } from './icons';
 import type { Schedule } from '../../shared/contracts';
 import { Button, Field, Input, Notice, Switch } from './ui';
 import { SearchPicker, TimeZonePicker, type PickerOption } from './time-zone-picker';
@@ -719,7 +719,7 @@ export function NewPlan({ onAsk }: { onAsk(text: string): void }) {
   return (
     <>
       <Button size="sm" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <Sparkles size={16} aria-hidden="true" />
+        <Plus size={16} aria-hidden="true" />
         New schedule
       </Button>
       {open && (

@@ -11,7 +11,7 @@ import {
   LoaderCircle,
   Plus,
   X,
-} from 'lucide-react';
+} from '../components/icons';
 import type { AppSetupStatus, Configuration, Connection } from '../../shared/contracts';
 import { SetupNotice } from '../components/setup-notice';
 import { ServiceLogo } from '../components/service-logo';

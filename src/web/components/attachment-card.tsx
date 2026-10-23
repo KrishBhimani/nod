@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Download } from 'lucide-react';
+import { Download } from './icons';
 import type { Artifact, Message } from '../../shared/contracts';
 import { attachmentKind, fileSize, fileType } from '../lib/attachment-kind';
 import { Button } from './ui';

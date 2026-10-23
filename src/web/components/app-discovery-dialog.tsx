@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { ExternalLink } from 'lucide-react';
+import { ExternalLink } from './icons';
 import { api, ApiError, errorMessage } from '../lib/api';
 import { connectionUrl } from '../lib/connection-url';
 import { desktopLinksAvailable, openConnection } from '../lib/desktop';

@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { Copy, Eye, EyeOff } from 'lucide-react';
+import { Copy, Eye, EyeOff } from './icons';
 import type {
   VaultEntry,
   VaultEntryDetails,

@@ -1,6 +1,6 @@
 import { lazy, memo, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronDown, Copy, Check, CornerUpLeft, SmilePlus } from 'lucide-react';
+import { ChevronDown, Copy, Check, CornerUpLeft, SmilePlus } from './icons';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';

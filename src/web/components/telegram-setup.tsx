@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check, ExternalLink, LoaderCircle } from 'lucide-react';
+import { Check, ExternalLink, LoaderCircle } from './icons';
 import { QRCodeSVG } from 'qrcode.react';
 import type { ChannelSetupSummary } from '../../shared/contracts';
 import { telegramState } from '../hooks/use-channel-settings';
