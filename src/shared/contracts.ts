@@ -115,6 +115,7 @@ export type VaultActivityReason =
   | 'background'
   | 'injection'
   | 'unrequested'
+  | 'rule'
   | 'payment'
   | 'code_typed'
   | 'said_yes'
@@ -329,6 +330,7 @@ export interface ScheduleHistory {
 export type HourCycle = 'auto' | 'h12' | 'h23';
 export interface Preferences {
   notificationRule: string;
+  rules: string;
   timeZone: string | null;
   locale: string | null;
   hourCycle: HourCycle;
