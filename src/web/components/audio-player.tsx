@@ -137,7 +137,7 @@ export function AudioPlayer({
         ) : playing ? (
           <Pause size={20} fill="currentColor" aria-hidden="true" />
         ) : (
-          <Play size={20} fill="currentColor" aria-hidden="true" />
+          <Play size={20} solid aria-hidden="true" />
         )}
       </button>
       <div className="audio-player-track" data-waveform-ready={Boolean(peaks)}>

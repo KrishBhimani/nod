@@ -24,7 +24,7 @@ export function SidebarToggle({ collapsed, onToggle }: { collapsed: boolean; onT
       {collapsed ? (
         <PanelLeftOpen size={16} aria-hidden="true" />
       ) : (
-        <PanelLeftClose size={16} aria-hidden="true" />
+        <PanelLeftClose size={16} solid aria-hidden="true" />
       )}
     </Button>
   );
