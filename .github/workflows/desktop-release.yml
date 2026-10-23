@@ -200,10 +200,14 @@ jobs:
           persist-credentials: false
       - name: Set up pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+      - name: Install Rosetta for the Intel build
+        if: matrix.arch == 'x64'
+        run: /usr/bin/arch -x86_64 /usr/bin/true || sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.21.0'
+          architecture: ${{ matrix.node_arch }}
           cache: pnpm
           cache-dependency-path: |
             pnpm-lock.yaml
@@ -259,10 +263,14 @@ jobs:
           persist-credentials: false
       - name: Set up pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+      - name: Install Rosetta for the Intel build
+        if: matrix.arch == 'x64'
+        run: /usr/bin/arch -x86_64 /usr/bin/true || sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.21.0'
+          architecture: ${{ matrix.node_arch }}
           cache: pnpm
           cache-dependency-path: |
             pnpm-lock.yaml
@@ -378,7 +386,7 @@ jobs:
     name: Build the Windows runtime
     needs: plan
     if: needs.plan.outputs.release_needed == 'true'
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     timeout-minutes: 60
     env:
       NOD_DESKTOP_TARGET: win32-x64
@@ -442,12 +450,16 @@ jobs:
 
   windows:
     name: Package and check the Windows installer
-    needs: [plan, windows-runtime]
+    needs: plan
+    if: needs.plan.outputs.release_needed == 'true'
     runs-on: windows-2025
-    timeout-minutes: 45
+    timeout-minutes: 60
     environment:
       name: release
       deployment: false
+    permissions:
+      actions: read
+      contents: read
     env:
       NOD_DESKTOP_VERSION: ${{ needs.plan.outputs.version }}
       NOD_RELEASE_BUILD: 'true'
@@ -470,10 +482,6 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm --dir desktop install --frozen-lockfile
           choco install nsis --yes --no-progress
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-        with:
-          name: desktop-windows-runtime
-          path: .local/windows-runtime-assets
       - name: Verify native Windows updates and profile preservation
         run: node desktop/scripts/check-windows-updates.mjs
       - name: Preserve Windows update acceptance
@@ -487,6 +495,21 @@ jobs:
       - name: Check Windows workspace paths
         run: pnpm exec tsx --test --test-name-pattern="workspace paths cannot|workspace artifact reads" tests/sandbox.test.ts
       - run: pnpm run build
+      - name: Wait for the Windows runtime
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          runs="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          until [ "$(gh api "$runs/artifacts?name=desktop-windows-runtime" --jq .total_count)" = 1 ]; do
+            result=$(gh api "$runs/attempts/$GITHUB_RUN_ATTEMPT/jobs" --paginate --jq '.jobs[] | select(.name == "Build the Windows runtime") | .conclusion')
+            if [ -n "$result" ] && [ "$result" != success ]; then echo "The Windows runtime build ended with $result." >&2; exit 1; fi
+            sleep 10
+          done
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: desktop-windows-runtime
+          path: .local/windows-runtime-assets
       - name: Package the Windows installer
         env:
           NOD_TRACES_TOKEN: ${{ secrets.NOD_TRACES_TOKEN }}
@@ -509,7 +532,7 @@ jobs:
     name: Verify uploaded assets and prepare the release
     needs: [plan, mac, mac-checks, windows]
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.mac.result == 'success' && needs.mac-checks.result == 'success' && needs.windows.result == 'success' }}
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     timeout-minutes: 30
     environment: release
     env:
