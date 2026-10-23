@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
-import { ArrowUp, Paperclip, X, RotateCcw, CornerUpLeft, Square } from 'lucide-react';
+import { ArrowUp, Paperclip, X, RotateCcw, CornerUpLeft, Square } from './icons';
 import type { Artifact, Message } from '../../shared/contracts';
 import { fileBytes } from '../../shared/files';
 import { api, errorMessage } from '../lib/api';

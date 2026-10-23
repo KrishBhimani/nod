@@ -1,5 +1,5 @@
 import { useRef, type ComponentProps } from 'react';
-import { ExternalLink } from 'lucide-react';
+import { ExternalLink } from './icons';
 import { NodGlyph } from './motion';
 import { ServiceLogo } from './service-logo';
 import { Button, Dialog, DialogContent, DialogDescription, DialogTitle, Notice } from './ui';

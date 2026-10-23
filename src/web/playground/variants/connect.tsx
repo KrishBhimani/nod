@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { Check, LoaderCircle } from 'lucide-react';
+import { Check, LoaderCircle } from '../../components/icons';
 import type { ModelConnection, ModelProvider, ModelsResponse } from '../../../shared/models';
 import { modelProviderNames, modelSource } from '../../../shared/models';
 import { agentModels } from '../../../shared/model-defaults';
@@ -159,11 +159,7 @@ export function useConnect() {
 
   function signIn(provider: 'openai' | 'openrouter') {
     setKeyError('');
-    const reconnect = connections.find(
-      (item) =>
-        item.provider === provider && item.status === 'reconnect' && item.method !== 'api_key',
-    );
-    void flow.connect(provider, reconnect?.id);
+    void flow.connect(provider);
   }
 
   return {

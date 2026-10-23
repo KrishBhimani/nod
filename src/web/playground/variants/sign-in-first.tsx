@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft } from '../../components/icons';
 import type { ModelProvider } from '../../../shared/models';
 import {
   Connected,

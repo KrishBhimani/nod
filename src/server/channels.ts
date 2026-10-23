@@ -19,6 +19,7 @@ import type {
 } from '../ports/messaging.ts';
 import { loopbackHost } from '../shared/loopback.ts';
 import type { ChatConfirmationInput } from './approvals.ts';
+import { appPagePath, appPages, appPageUrl } from '../shared/app-links.ts';
 
 const replyCommand = /^\/(memory|context|usage)(?:@[A-Za-z0-9_]+)?$/i;
 const taskCommand = /^\/(tasks|status|stop)(?:@[A-Za-z0-9_]+)?$/i;
@@ -134,6 +135,7 @@ interface OutboxRow extends ChannelIdentity {
   attachments: unknown[];
   reply_to_message_id: string | null;
   presentation: ChannelPresentation | null;
+  browser_handoff: boolean;
 }
 const messageSchema = z
   .object({
@@ -206,6 +208,7 @@ function channelText(text: string) {
     }
     if (
       /^\/(?:vault|credentials|payments|approvals)\//.test(url.pathname) ||
+      url.pathname === '/browser' ||
       (['/vault', '/trust'].includes(url.pathname) && url.searchParams.has('add'))
     ) {
       if (!/^https?:\/\//.test(value)) {
@@ -218,10 +221,15 @@ function channelText(text: string) {
   const safe = text
     .replace(
       /\[([^\]]*)\]\((https?:\/\/[^\s)]+|\/[^\s)]+)\)/g,
-      (match, label: string, url: string) => (privateUrl(url) ? label : match),
+      (match, label: string, url: string) => {
+        const path = appPagePath(url);
+        if (path)
+          return `${label === appPages[path] ? label : `${label} (${appPages[path]})`}: ${appPageUrl(path)}`;
+        return privateUrl(url) ? label : match;
+      },
     )
     .replace(
-      /https?:\/\/[^\s)]+|\/(?:api\/artifacts|vault|trust|credentials|payments|approvals)[^\s)]*/g,
+      /https?:\/\/[^\s)]+|\/(?:api\/artifacts|vault|trust|browser|credentials|payments|approvals)[^\s)]*/g,
       (url) => (privateUrl(url) ? '' : url),
     );
   return { text: safe.trim(), secureAction, artifact };
@@ -238,9 +246,10 @@ async function presentChannelText(
     .trim()
     .min(1)
     .parse(await present(threadId, input));
-  if (channelText(text).text !== text)
+  const safe = channelText(text);
+  if (safe.secureAction || safe.artifact)
     throw new Error('Channel presentation contains a private link.');
-  return text;
+  return safe.text;
 }
 
 export async function channelReply(
@@ -249,10 +258,12 @@ export async function channelReply(
     threadId: string | null;
     hasAttachments?: boolean;
     deliversAttachments?: boolean;
+    browserHandoff?: boolean;
     present?: ChannelOptions['present'];
   },
 ) {
   const safe = channelText(text);
+  safe.secureAction ||= options.browserHandoff === true;
   const attachments = options.deliversAttachments
     ? 'pending'
     : options.hasAttachments || safe.artifact
@@ -1007,7 +1018,9 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
       UPDATE channel_outbox SET state='preparing',claim_id=$2,updated_at=now() WHERE message_id=(
         SELECT o.message_id FROM channel_outbox o JOIN channel_inbox i ON i.source_id=o.source_id JOIN messages m ON m.id=o.message_id WHERE o.state='pending' AND i.owner_id=$1 AND m.owner_id=$1 AND NOT(i.provider=ANY($3::text[])) ORDER BY m.created_at,m.id FOR UPDATE OF o SKIP LOCKED LIMIT 1
       ) RETURNING message_id,source_id,presentation
-    ) SELECT c.message_id,m.owner_id,m.thread_id AS message_thread_id,i.provider,i.account_id,i.sender_id,i.thread_id,m.text,m.attachments,m.reply_to_message_id,c.presentation
+    ) SELECT c.message_id,m.owner_id,m.thread_id AS message_thread_id,i.provider,i.account_id,i.sender_id,i.thread_id,m.text,m.attachments,m.reply_to_message_id,c.presentation,
+      EXISTS (SELECT 1 FROM turns u WHERE u.id=m.turn_id AND u.owner_id=m.owner_id AND u.handoff_browser_id IS NOT NULL
+        AND m.id=(SELECT id FROM messages WHERE turn_id=u.id AND owner_id=u.owner_id AND role='assistant' ORDER BY created_at DESC,id DESC LIMIT 1)) AS browser_handoff
       FROM claimed c JOIN channel_inbox i ON i.source_id=c.source_id JOIN messages m ON m.id=c.message_id`,
       [ownerId, claimId, unavailable],
     );
@@ -1092,6 +1105,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
         threadId: row.message_thread_id,
         hasAttachments: !row.presentation && Boolean(row.attachments?.length),
         deliversAttachments: !row.presentation && Boolean(attachments),
+        browserHandoff: row.browser_handoff,
         present: options.present,
       });
     } catch (cause) {

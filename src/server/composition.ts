@@ -9,7 +9,7 @@ import {
   type BrowserStep,
   type RuntimeObservation,
 } from '../ports/agent.ts';
-import { lightestEffort, type ModelProvider } from '../shared/models.ts';
+import { lightestEffort, modelSource, type ModelProvider } from '../shared/models.ts';
 import type { ProductAnalytics } from '../ports/analytics.ts';
 import { createPostHogAnalytics } from '../providers/posthog/analytics.ts';
 import {
@@ -32,6 +32,7 @@ import type { IntegrationProvider, IntegrationService } from '../ports/integrati
 import { hasWorkspaceFiles, saveIntegrationFiles } from './integration-files.ts';
 import { privateEmailResult, type MailCheck } from './integration-result.ts';
 import type { CredentialKeyStore } from '../ports/key-store.ts';
+import type { PasswordManager } from '../ports/password-manager.ts';
 import type { MemoryCurator } from '../ports/memory-curator.ts';
 import type { DecisionModel, DecisionQuestion, ModelReview } from '../ports/decisions.ts';
 import { createDecisionModel } from '../providers/decisions.ts';
@@ -50,6 +51,11 @@ import { createWhatsAppLinkedTransport } from '../providers/chat-sdk/whatsapp.ts
 import { combineMessagingTransports } from '../providers/chat-sdk/combined.ts';
 import { createChatSdkSetupVerifier } from '../providers/chat-sdk/settings.ts';
 import { createContainerBrowserComputer } from '../providers/container-browser/index.ts';
+import {
+  createOnePassword,
+  desktopOnePassword,
+  forkedOnePassword,
+} from '../providers/onepassword/index.ts';
 import { createComposioProvider } from '../providers/composio/integrations.ts';
 import { createComposioProxy } from '../providers/composio/proxy.ts';
 import {
@@ -90,6 +96,7 @@ import { createAgentReactionService } from './agent-reactions.ts';
 import { createApprovals, turnOrigin } from './approvals.ts';
 import { createCommunication, publicText } from './communication.ts';
 import { createTrust } from './trust.ts';
+import type { TrustBasis } from './trust-basis.ts';
 import { localArtifacts } from './artifacts.ts';
 import { memoryFileName, memoryMarkdown } from '../shared/memory-export.ts';
 import { createChannels } from './channels.ts';
@@ -159,6 +166,7 @@ export interface ApplicationAdapters {
   speech: SpeechProvider;
   integrations: IntegrationProvider;
   keyStore: CredentialKeyStore;
+  passwordManager?: PasswordManager;
   memoryCurator?: MemoryCurator;
   imageCurator?: MemoryCurator;
   analyticsCurator?: MemoryCurator;
@@ -173,7 +181,7 @@ export interface ApplicationAdapters {
     verifier: ChannelSetupVerifier;
     create(environment: Record<string, string>): MessagingTransport;
   };
-  model: { provider: string; name: string; configured: boolean };
+  model: { provider: string; name: string; configured: boolean; reconnect?: boolean };
 }
 
 export function createDefaultAdapters(
@@ -326,6 +334,9 @@ export function createDefaultAdapters(
       traces,
     }),
     computer: createContainerBrowserComputer({ dataRoot, container: env.BROWSER_CONTAINER }),
+    passwordManager: createOnePassword({
+      open: desktopMode ? desktopOnePassword() : forkedOnePassword(env.NOD_APP_VERSION || 'source'),
+    }),
     workspace: createDockerWorkspace({
       container: env.WORKSPACE_CONTAINER || 'nod-workspace',
       workspaceRoot: join(dataRoot, 'workspaces'),
@@ -648,8 +659,10 @@ async function initializeApplication(
     refresh,
     memory,
     learnedSkills,
+    models: adapters.models,
     consumers,
     stopConsumer: (id) => boss.offWork('scheduled-task', { id, wait: true }),
+    sessionCosts: ledger.sessionCosts,
   });
   await personal.initialize({ workers: options.workers });
   const tasks = createTasks({
@@ -758,6 +771,7 @@ async function initializeApplication(
     },
     emailCode: (input, signal) => integrations.emailCode(ownerId, input, signal),
     icon,
+    passwordManager: adapters.passwordManager,
     onOwnerUse: (entry, client) => vaultAccess.ownerUse(entry, client),
     onUse: (use, client) =>
       vaultAccess.used(
@@ -873,7 +887,7 @@ async function initializeApplication(
           ? vaultAccess.allow(args)
           : action === 'NOD_limits_update'
             ? ledger.setLimits(args)
-            : action.startsWith('NOD_memory_')
+            : action.startsWith('NOD_memory_') || action === 'NOD_model_select'
               ? withTurnLock(provenance.turnId, () =>
                   personal.manage(action.slice('NOD_'.length), args, provenance),
                 )
@@ -892,7 +906,7 @@ async function initializeApplication(
                           })
                       : args;
                     const result = await integrations.executeApproved(ownerId, action, ready, turn);
-                    await ledger.action(provenance.turnId, action);
+                    await ledger.action(provenance.turnId, action, { kind: 'approved' });
                     return privateEmailResult(
                       (
                         await saveIntegrationFiles(result, async (file) => {
@@ -1024,15 +1038,16 @@ async function initializeApplication(
       itemId?: string;
       sessionOrigin?: string;
     },
-  ): Promise<{ reason: VaultActivityReason } | { question: string }> {
+  ): Promise<{ reason: VaultActivityReason; basis?: TrustBasis } | { question: string }> {
     const access = await vaultAccess.authorize(turn, target);
-    if (access.ok) return { reason: access.reason };
+    if (access.ok)
+      return { reason: access.reason, ...(access.basis ? { basis: access.basis } : {}) };
     const result = await approvals.request(turn, 'NOD_vault_allow', access.args, {
       details: access.details,
     });
     if (result && typeof result === 'object' && appConfirmation in result)
       return { question: result[appConfirmation] };
-    return { reason: 'allowed' };
+    return { reason: 'allowed', basis: { kind: 'approved' } };
   }
   const trust = createTrust({
     pool,
@@ -1160,6 +1175,7 @@ async function initializeApplication(
             reason: access.reason,
             itemId: result.connectionId,
             itemKind: 'session',
+            ...(access.basis ? { basis: access.basis } : {}),
           });
         return result;
       },
@@ -1181,6 +1197,7 @@ async function initializeApplication(
         if (
           [
             'notification_preferences_update',
+            'model_select',
             'schedule_create',
             'schedule_update',
             'schedule_cancel',
@@ -1207,8 +1224,20 @@ async function initializeApplication(
               : undefined;
           const rule = 'notificationRule' in input ? preferences?.notificationRule : undefined;
           const rules = 'rules' in input ? preferences?.rules : undefined;
+          const connection =
+            action === 'model_select'
+              ? adapters.models?.view().connections.find((item) => item.id === input.connectionId)
+              : undefined;
+          const targetModel = connection
+            ? {
+                service: modelSource(connection),
+                account: connection.label,
+                model: connection.models.find((item) => item.id === input.modelId)!.name,
+              }
+            : undefined;
           const verdict = await trust.check(turn, `NOD_${action}`, {
             ...input,
+            ...(targetModel ? { targetModel } : {}),
             ...(current ? { currentSchedule: current } : {}),
             ...(rule === undefined ? {} : { currentNotificationRule: rule }),
             ...(rules === undefined ? {} : { currentRules: rules }),
@@ -1234,6 +1263,7 @@ async function initializeApplication(
                 }
               : undefined,
             details: {
+              ...(targetModel ? { targetModel } : {}),
               ...(verdict.confirm ? { reason: verdict.reason } : {}),
               ...(current ? { schedule: current } : {}),
               ...(rule === undefined ? {} : { currentNotificationRule: rule }),
@@ -1298,9 +1328,30 @@ async function initializeApplication(
           });
         }
         const { savedLoginId, ...request } = input;
-        if (savedLoginId !== undefined && request.kind === 'otp')
-          throw new Error('Saved logins cannot supply verification codes.');
         const origin = credentialOrigin(request.origin);
+        if (request.kind === 'otp' && !request.emailCode) {
+          const login = await vault.authenticatorLogin(turn, ownerId, origin, savedLoginId);
+          if (login) {
+            const access = await permitVault(turn, {
+              origin,
+              kind: 'sign_in',
+              itemId: login.id,
+              ...(login.usernameHint ? { account: login.usernameHint } : {}),
+            });
+            if ('question' in access) return { [appConfirmation]: access.question };
+            if (await vault.fillAuthenticatorCode(turn, ownerId, login.id, request)) {
+              await vaultAccess.record(turn, {
+                action: 'code',
+                origin,
+                reason: access.reason,
+                itemId: login.id,
+                itemKind: 'login',
+                ...(access.basis ? { basis: access.basis } : {}),
+              });
+              return { filled: true as const };
+            }
+          }
+        }
         const saved = (await vault.list(ownerId)).filter((entry) => entry.origin === origin);
         const chosen =
           savedLoginId !== undefined
@@ -1332,6 +1383,7 @@ async function initializeApplication(
             origin,
             reason: request.kind === 'otp' ? 'mailbox' : access.reason,
             ...(itemId ? { itemId, itemKind: 'login' as const } : {}),
+            ...(access.basis ? { basis: access.basis } : {}),
           });
           return { filled: true as const };
         };
@@ -1381,7 +1433,11 @@ async function initializeApplication(
               turn,
               options.signal,
             );
-            await ledger.action(turn.turnId, action);
+            await ledger.action(
+              turn.turnId,
+              action,
+              verdict.confirm ? { kind: 'approved' } : verdict.basis,
+            );
             analytics.actionExecuted(ownerId, action);
             return result;
           },
@@ -1416,13 +1472,14 @@ async function initializeApplication(
     taskLedger: tasks.read,
     activity: activity.current,
     planningTasks: onboardingSuggestions.planning,
-    messageCosts: ledger.messageCosts,
+    receipts: ledger.receipts,
     computer,
     configuration: () =>
       configuration({
         provider: adapters.model.provider,
         model: adapters.model.name,
         llmReady: adapters.model.configured,
+        modelReconnect: adapters.model.reconnect === true,
         integrationsReady: adapters.integrations.configured,
       }),
   });
@@ -1471,9 +1528,12 @@ async function initializeApplication(
     developerIds: desktopMode ? new Set() : new Set([ownerId]),
     start: welcome,
     prepare: prepareRuntime,
-    onboardingReady: async () =>
-      adapters.model.configured &&
-      (await integrations.list(ownerId, { refresh: false })).some(connectedGmail),
+    onboardingMissing: async () =>
+      !adapters.model.configured
+        ? 'brain'
+        : (await integrations.list(ownerId, { refresh: false })).some(connectedGmail)
+          ? null
+          : 'email',
     traces: adapters.traces?.available ?? false,
     onTraces: (enabled) => adapters.traces?.configure({ enabled }),
   }).register(app);
@@ -1656,6 +1716,7 @@ async function initializeApplication(
     const failures: unknown[] = [];
     for (const close of [
       () => adapters.integrationBrowser?.close(),
+      () => adapters.passwordManager?.close(),
       () => channels?.close(),
       () => activity.close(),
       () => stopThreadWorkers(),

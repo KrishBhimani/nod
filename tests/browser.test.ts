@@ -1392,7 +1392,9 @@ test('every session drives its own browser, so background work never waits for t
     const conversation = turn(undefined, async (tools) => {
       await open(tools, 'https://example.com/conversation');
       await busy.promise;
-      await tools.get('ask_user')!.execute({ question: 'Sign in in [Open browser](/browser).' });
+      await tools
+        .get('browser')!
+        .execute({ action: 'handoff', text: 'Sign in on the current page.' });
     });
     const finished = randomUUID();
     const asking = randomUUID();
@@ -1409,7 +1411,10 @@ test('every session drives its own browser, so background work never waits for t
     assert.equal(done.status, 'succeeded');
     assert.equal((await waiting).status, 'waiting_user');
     busy.resolve();
-    assert.equal((await conversation).status, 'waiting_user');
+    const handedOver = await conversation;
+    assert.equal(handedOver.status, 'waiting_user');
+    assert.equal(handedOver.handoffBrowserId, threadId);
+    assert.equal(handedOver.message, 'Sign in on the current page.');
     assert.deepEqual(
       Object.fromEntries(opened),
       Object.fromEntries([
@@ -3387,7 +3392,7 @@ test('automatic feedback captures exclude remote handoffs and unsent editable co
   assert.equal(result.exitCode, 0, result.stderr);
 });
 
-test('browser handoff retains pointer input while the next frame is loading', async () => {
+test('browser handoff retains pending-frame input and allows handback after an input timeout', async () => {
   const result = await runProcess(process.execPath, ['--import', 'tsx', '--input-type=module'], {
     timeoutMs: 20_000,
     input: `
@@ -3398,9 +3403,16 @@ test('browser handoff retains pointer input while the next frame is loading', as
       Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
       const writes = [];
       let frames;
+      let stallInput = false;
+      const timeout = AbortSignal.timeout;
+      const expiry = new AbortController();
       globalThis.fetch = async (path, options = {}) => {
         if (path.startsWith('/api/browser-handoff/stream')) return new Response(new ReadableStream({ start(controller) { frames = controller; } }));
         writes.push([path, JSON.parse(options.body)]);
+        if (stallInput && path === '/api/browser-handoff') return new Promise((resolve, reject) => {
+          assert.ok(options.signal);
+          options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+        });
         return Response.json({ ok: true });
       };
       const { act, createElement } = await import('react');
@@ -3429,7 +3441,21 @@ test('browser handoff retains pointer input while the next frame is loading', as
           ['/api/browser-handoff', { turnId: 'synthetic-turn', inputs: [{ type: 'mouse', event: 'down', x: 0.5, y: 0.5, button: 'left' }] }],
           ['/api/browser-handoff', { turnId: 'synthetic-turn', inputs: [{ type: 'mouse', event: 'up', x: 0.5, y: 0.5, button: 'left' }] }],
         ]);
+        stallInput = true;
+        AbortSignal.timeout = () => expiry.signal;
+        await act(async () => document.querySelector('.browser-handoff-screen').dispatchEvent(new dom.window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter' })));
+        const handback = document.querySelector('.browser-handoff-actions:last-child button');
+        await act(async () => handback.click());
+        assert.equal(handback.disabled, true);
+        assert.equal(writes.some(([path]) => path.endsWith('/done')), false);
+        await act(async () => expiry.abort(new DOMException('Synthetic timeout', 'TimeoutError')));
+        assert.equal(handback.disabled, false);
+        assert.ok(document.querySelector('[role="alert"]'));
+        AbortSignal.timeout = timeout;
+        await act(async () => handback.click());
+        assert.deepEqual(writes.slice(2).map(([path]) => path), ['/api/browser-handoff', '/api/browser-handoff/done']);
       } finally {
+        AbortSignal.timeout = timeout;
         await act(async () => root.unmount());
         dom.window.close();
       }

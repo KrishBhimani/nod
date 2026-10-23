@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Download, ExternalLink, MapPin, UserRound } from 'lucide-react';
+import { Download, ExternalLink, MapPin, UserRound } from './icons';
 import { contactCards, sharedLocation, type SharedLocation } from '../../shared/channel-content';
 import { textPreviewBytes } from '../lib/attachment-kind';
 import { apiBytes } from '../lib/api';

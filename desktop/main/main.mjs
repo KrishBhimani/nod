@@ -5,6 +5,7 @@ import {
   dialog,
   ipcMain,
   Menu,
+  MessageChannelMain,
   nativeImage,
   nativeTheme,
   Notification,
@@ -16,6 +17,7 @@ import {
   utilityProcess,
 } from 'electron';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { appendFile, mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
@@ -35,11 +37,22 @@ import { saveArtifactDownload } from './downloads.mjs';
 import { createDesktopLifecycle } from './lifecycle.mjs';
 import { createDesktopUpdater, createUpdateSource, startDesktopUpdateChecks } from './updates.mjs';
 import { windowsInstallCommand } from './windows-update.mjs';
+import { appOpenPath } from './app-links.mjs';
 
 const desktopRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const engineRoot = app.isPackaged
   ? join(process.resourcesPath, 'engine')
   : resolve(desktopRoot, '..');
+const appPages = JSON.parse(readFileSync(join(engineRoot, 'src/shared/app-pages.json'), 'utf8'));
+let pendingAppPath = process.argv.map((value) => appOpenPath(value, appPages)).find(Boolean);
+let appLinksReady = false;
+app.on('open-url', (event, value) => {
+  event.preventDefault();
+  const path = appOpenPath(value, appPages);
+  if (!path) return;
+  pendingAppPath = path;
+  if (appLinksReady) showEngine();
+});
 const setupPath = app.isPackaged
   ? join(desktopRoot, 'ui', 'index.html')
   : join(engineRoot, 'dist', 'desktop-ui', 'index.html');
@@ -383,24 +396,10 @@ function trustedAppURL(value) {
     const url = new URL(value);
     return (
       url.origin === engineOrigin &&
-      ([
-        '/',
-        '/onboarding',
-        '/apps',
-        '/channels',
-        '/settings',
-        '/settings/models',
-        '/settings/memory',
-        '/you',
-        '/tasks',
-        '/memory',
-        '/usage',
-        '/vault',
-        '/trust',
-        '/browser',
-        '/privacy',
-        '/privacy/',
-      ].includes(url.pathname) ||
+      (Object.hasOwn(appPages, url.pathname) ||
+        ['/onboarding', '/you', '/memory', '/trust', '/browser', '/privacy', '/privacy/'].includes(
+          url.pathname,
+        ) ||
         /^\/(vault|credentials|payments|approvals|browser-connect)\/[A-Za-z0-9_-]+\/?$/.test(
           url.pathname,
         ))
@@ -613,6 +612,7 @@ function showEngine({ focus = true } = {}) {
       engineWindow.focus();
     } else engineWindow.showInactive();
     deliverFeedbackRequest(engineWindow);
+    deliverAppLink(engineWindow);
     return;
   }
   const previousSetup = setupWindow;
@@ -670,13 +670,17 @@ function showEngine({ focus = true } = {}) {
         else window.showInactive();
       }
       deliverFeedbackRequest(window);
+      deliverAppLink(window);
       void loaded.then(() => {
         if (!quitting && !window.isDestroyed() && replayingProductOnboarding) showEngine();
       });
     },
     failed,
   );
-  window.webContents.on('did-finish-load', () => deliverFeedbackRequest(window));
+  window.webContents.on('did-finish-load', () => {
+    deliverFeedbackRequest(window);
+    deliverAppLink(window);
+  });
   engineWindow.on('closed', () => {
     pendingRenderers.delete(window);
     engineWindows.delete(window);
@@ -698,6 +702,20 @@ function showFeedback() {
   if (quitting) return;
   pendingFeedback = true;
   showEngine();
+}
+
+function deliverAppLink(window) {
+  if (
+    quitting ||
+    !pendingAppPath ||
+    !onboardingCompleted ||
+    window.isDestroyed() ||
+    pendingRenderers.has(window) ||
+    window.webContents.isLoadingMainFrame()
+  )
+    return;
+  window.webContents.send('nod:navigate', pendingAppPath);
+  pendingAppPath = undefined;
 }
 
 function deliverFeedbackRequest(window) {
@@ -800,6 +818,29 @@ function baseEnvironment() {
       .filter((key) => typeof process.env[key] === 'string')
       .map((key) => [key, process.env[key]]),
   );
+}
+
+function openOnePassword(owner) {
+  const helper = utilityProcess.fork(
+    join(engineRoot, 'desktop', 'main', 'onepassword.mjs'),
+    [app.getVersion()],
+    {
+      cwd: engineRoot,
+      env: Object.fromEntries(
+        ['HOME', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'SYSTEMROOT', 'TMPDIR', 'TEMP', 'TMP']
+          .concat(['PATH', 'LANG'])
+          .filter((key) => typeof process.env[key] === 'string')
+          .map((key) => [key, process.env[key]]),
+      ),
+      stdio: 'ignore',
+      serviceName: 'nod 1Password',
+      allowLoadingUnsignedLibraries: true,
+    },
+  );
+  const { port1, port2 } = new MessageChannelMain();
+  helper.postMessage({ type: 'nod-1password-port' }, [port2]);
+  owner.postMessage({ type: 'nod-1password-port' }, [port1]);
+  owner.once('exit', () => helper.kill());
 }
 
 async function profileOwner() {
@@ -1325,6 +1366,7 @@ async function startEngine({ runtime, signal, pending = false }) {
     if (engine === child && message?.type === 'nod-ready' && message.port === port) {
       engineBound = true;
     }
+    if (engine === child && message?.type === 'nod-1password-open') openOnePassword(child);
   });
   child.stdout?.resume();
   let diagnostics = '';
@@ -1464,7 +1506,11 @@ async function importRuntime() {
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   if (testInstall) process.on('SIGTERM', () => app.quit());
-  app.on('second-instance', () => showEngine());
+  app.on('second-instance', (_event, argv) => {
+    const path = argv.map((value) => appOpenPath(value, appPages)).find(Boolean);
+    if (path) pendingAppPath = path;
+    showEngine();
+  });
   app.on('activate', () => showEngine());
   app.on('window-all-closed', () => {});
   app.on('before-quit', (event) => {
@@ -1478,6 +1524,8 @@ else {
   void app
     .whenReady()
     .then(async () => {
+      appLinksReady = true;
+      if (app.isPackaged && !testInstall) app.setAsDefaultProtocolClient('nod');
       if (
         app.isPackaged &&
         !testInstall &&
@@ -1693,6 +1741,7 @@ else {
         onboardingCompleted = saved.onboardingCompleted;
         if (onboardingCompleted) nativePreferencesPending = false;
         applyPreferences(saved);
+        for (const window of engineWindows) deliverAppLink(window);
         if (!['preparing', 'starting', 'error'].includes(status.phase))
           update({ message: 'Ready.' });
         return readDesktopSettings();

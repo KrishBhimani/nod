@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import { Moon, RotateCcw, Sun } from 'lucide-react';
+import { Moon, RotateCcw, Sun } from '../components/icons';
 import { modelProviderNames, modelSource } from '../../shared/models';
 import { ModelPicker, ModelSettings } from '../components/models';
 import { Button } from '../components/ui';

@@ -1,6 +1,6 @@
 import { lazy, memo, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronDown, Copy, Check, CornerUpLeft, SmilePlus } from 'lucide-react';
+import { ChevronDown, Copy, Check, CornerUpLeft, SmilePlus } from './icons';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
@@ -29,6 +29,8 @@ import { TelegramChatLink, useTelegramChatUrl } from './telegram-chat-link';
 import { BrowserHandoff } from './browser-handoff';
 import { MessageAttachments } from './attachment-card';
 import { formatFullDateTime, formatTime, useDateFormat } from '../lib/date-format';
+import { money } from '../lib/money';
+import { navigate } from '../lib/navigation';
 
 const ReactionPicker = lazy(() => import('./emoji-picker'));
 const analyticsReactions: Record<string, ReactionAnalytics['reaction']> = {
@@ -92,6 +94,7 @@ export const MessageText = memo(function MessageText({
                 <a
                   href={link.kind === 'external' ? href : link.href}
                   target={
+                    link.kind === 'navigation' ||
                     setup?.href.startsWith('/apps?connect=') ||
                     link.href.startsWith('/e2e/connect/')
                       ? undefined
@@ -120,12 +123,8 @@ export const MessageText = memo(function MessageText({
         >
           {text}
         </Markdown>
-        <SetupActions
-          actions={actions.filter(
-            (action) => action.setup !== 'browser' && !connected(action.href),
-          )}
-        />
-        {handoff && handoffTurnId && actions.some((action) => action.setup === 'browser') && (
+        <SetupActions actions={actions.filter((action) => !connected(action.href))} />
+        {handoff && handoffTurnId && (
           <BrowserHandoff key={handoffTurnId} turnId={handoffTurnId} paused={handoffPaused} />
         )}
       </div>
@@ -520,6 +519,33 @@ export function MessageBubble({
             )}
           </div>
         </div>
+        {message.receipt && !streaming && (
+          <a
+            className="message-receipt"
+            href={`/usage?session=${message.receipt.sessionId}`}
+            onClick={(event) => {
+              if (
+                event.button !== 0 ||
+                event.metaKey ||
+                event.ctrlKey ||
+                event.shiftKey ||
+                event.altKey
+              )
+                return;
+              event.preventDefault();
+              navigate(`/usage?session=${message.receipt!.sessionId}`);
+            }}
+          >
+            {[
+              ...message.receipt.actions.map((action) =>
+                action.count > 1 ? `${action.label} ×${action.count}` : action.label,
+              ),
+              message.receipt.costUsd === null ? '' : money(message.receipt.costUsd),
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          </a>
+        )}
         {error && <Notice>{error}</Notice>}
         {copied && (
           <span className="sr-only" role="status">

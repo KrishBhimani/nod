@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowUpRight, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ArrowUpRight, ChevronDown, ChevronLeft, ChevronRight } from '../../components/icons';
 import { Button } from '../../components/ui';
 import { Connected, ExpiredNotice, Logo, Step, useConnect } from './connect';
 import { Card, Setup, depth, firstUncommon, rest, type Entry, type View } from './one-card';

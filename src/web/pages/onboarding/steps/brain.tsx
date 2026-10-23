@@ -6,7 +6,13 @@ import {
   type FormEvent,
   type ReactNode,
 } from 'react';
-import { Check, ChevronDown, ChevronLeft, ChevronRight, LoaderCircle } from 'lucide-react';
+import {
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  LoaderCircle,
+} from '../../../components/icons';
 import type { ModelConnection, ModelProvider, ModelsResponse } from '../../../../shared/models';
 import { modelSource } from '../../../../shared/models';
 import { agentModels } from '../../../../shared/model-defaults';
@@ -172,11 +178,7 @@ function useConnect() {
 
   function signIn(provider: SignInProvider) {
     setKeyError('');
-    const reconnect = connections.find(
-      (item) =>
-        item.provider === provider && item.status === 'reconnect' && item.method !== 'api_key',
-    );
-    void flow.connect(provider, reconnect?.id);
+    void flow.connect(provider);
   }
 
   return {

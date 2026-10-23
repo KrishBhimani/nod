@@ -9,10 +9,9 @@ import {
   MapPin,
   Monitor,
   Moon,
-  Settings,
   Sun,
   X,
-} from 'lucide-react';
+} from './icons';
 import type { AccountPreferences, AccountTheme } from '../../shared/account';
 import type { HourCycle } from '../../shared/contracts';
 import type { AccountControls, AccountTab } from './account-menu';
@@ -462,7 +461,6 @@ export function AccountSettings({
             tabIndex={-1}
             data-analytics-public
           >
-            <Settings size={24} aria-hidden="true" />
             Settings
           </h1>
         </div>

@@ -417,16 +417,10 @@
 .chat-report-action {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 16px;
   min-height: 60px;
   padding: 12px 32px 12px max(32px, var(--sidebar-toggle-space, 0px));
-}
-.chat-title {
-  margin-right: auto;
-  font-size: var(--text-control);
-  font-weight: 500;
-  letter-spacing: -0.2px;
 }
 .chat-report-button {
   color: var(--muted-foreground);
@@ -603,7 +597,7 @@
 }
 .chat-page .messages {
   gap: 24px;
-  padding-block: 24px;
+  padding-block: 24px 48px;
 }
 .chat-page .message-grouped {
   margin-top: -16px;
@@ -898,4 +892,17 @@
   .task-planning .ob-glyph-orbit[data-phase] {
     animation: none;
   }
+}
+
+.message-receipt {
+  align-self: flex-start;
+  margin-top: 4px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  text-decoration: none;
+}
+.message-receipt:hover {
+  color: var(--foreground);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }

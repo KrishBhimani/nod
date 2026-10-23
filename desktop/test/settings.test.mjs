@@ -29,6 +29,27 @@ import { createChatReadCursorStore } from '../main/chat-read-cursors.mjs';
 import { createReadinessNotice, isQuietTime } from '../main/notifications.mjs';
 import { saveArtifactDownload } from '../main/downloads.mjs';
 import { createDesktopLifecycle } from '../main/lifecycle.mjs';
+import { appOpenPath } from '../main/app-links.mjs';
+import appPages from '../../src/shared/app-pages.json' with { type: 'json' };
+
+test('external app links can only open named screens without action data', () => {
+  for (const path of Object.keys(appPages))
+    assert.equal(appOpenPath(`nod://open${path}`, appPages), path);
+  for (const value of [
+    undefined,
+    'https://example.test/settings/models',
+    'nod://other/settings/models',
+    'nod://open/settings/models?key=synthetic',
+    'nod://open/settings/models#synthetic',
+    'nod://open/settings/unknown',
+    'nod://open/api/account',
+    'nod://open/trust?add=card',
+    'nod://open/settings/../apps',
+    'nod://open/credentials/request-id',
+    'nod://open@evil.test/apps',
+  ])
+    assert.equal(appOpenPath(value, appPages), null);
+});
 import {
   createDesktopUpdater,
   createUpdateSource,
@@ -363,6 +384,7 @@ async function runningDesktop(
   }
   const windows = [];
   const children = [];
+  const helpers = [];
   const paths = new Map();
   const handlers = new Map();
   const rendererReady = (window) =>
@@ -371,6 +393,7 @@ async function runningDesktop(
       senderFrame: window.webContents.mainFrame,
     });
   const notifications = [];
+  const appEvents = new EventEmitter();
   const externalURLs = [];
   const updateMenu = {};
   const ipc = Object.assign(new EventEmitter(), {
@@ -386,7 +409,10 @@ async function runningDesktop(
     },
   });
   const context = {
+    readFileSync: () => JSON.stringify(appPages),
+    appOpenPath,
     app: {
+      on: (name, listener) => appEvents.on(name, listener),
       isPackaged: packaged,
       setName() {},
       setPath: (name, path) => paths.set(name, path),
@@ -494,15 +520,32 @@ async function runningDesktop(
         notifications.push(this);
       }
     },
+    MessageChannelMain: class {
+      port1 = { end: 'engine' };
+      port2 = { end: 'helper' };
+    },
     utilityProcess: {
-      fork(file, _args, options) {
+      fork(file, args, options) {
+        if (/[\\/]onepassword\.mjs$/.test(file)) {
+          const helper = Object.assign(new EventEmitter(), { file, args, options, sent: [] });
+          helper.postMessage = (message, transfer) => helper.sent.push({ message, transfer });
+          helper.kill = () => {
+            helper.killed = true;
+          };
+          helpers.push(helper);
+          return helper;
+        }
         assert.ok(allowStart, 'The healthy engine must not restart.');
         assert.ok(Object.values(options.env).every((value) => typeof value === 'string'));
         const child = new EventEmitter();
         assert.ok(file.endsWith('/engine.mjs') || file.endsWith('\\engine.mjs'));
         child.kind = 'engine';
         child.sent = [];
-        child.postMessage = (message) => child.sent.push(message);
+        child.transfers = [];
+        child.postMessage = (message, transfer) => {
+          child.sent.push(message);
+          if (transfer) child.transfers.push({ message, transfer });
+        };
         child.environment = options.env;
         child.port = options.env.PORT;
         child.stdout = { resume() {} };
@@ -628,6 +671,7 @@ async function runningDesktop(
   await runInNewContext(
     `(async () => {
     ${source}
+    appLinksReady = true;
     engine = {};
     enginePreferencesReady = true;
     engineRuntimeReady = true;
@@ -666,8 +710,10 @@ async function runningDesktop(
   );
   return {
     ...context.running,
+    openLink: (value) => appEvents.emit('open-url', { preventDefault() {} }, value),
     windows,
     children,
+    helpers,
     storage,
     handlers,
     notifications,
@@ -1256,6 +1302,34 @@ test('runtime handoff and readiness respect closed, minimized and background win
         await f.close();
       }
     });
+  }
+});
+
+test('app links wait for the owned renderer and open only a named screen', async (t) => {
+  const f = await runningDesktop(t, async () => Response.json({ ok: true }), {
+    readyRenderers: false,
+  });
+  try {
+    f.openLink('nod://open/settings/models');
+    const window = f.windows.at(-1);
+    await new Promise(setImmediate);
+    assert.equal(
+      window.sent.some(([name]) => name === 'nod:navigate'),
+      false,
+    );
+    await f.rendererReady(window);
+    assert.deepEqual(
+      window.sent.filter(([name]) => name === 'nod:navigate'),
+      [['nod:navigate', '/settings/models']],
+    );
+    f.openLink('nod://open/trust?add=card');
+    f.showEngine();
+    assert.equal(window.sent.filter(([name]) => name === 'nod:navigate').length, 1);
+    f.openLink('nod://open/channels');
+    assert.deepEqual(window.sent.at(-1), ['nod:navigate', '/channels']);
+  } finally {
+    f.crash();
+    await f.close();
   }
 });
 
@@ -1857,6 +1931,11 @@ test('partial onboarding restart keeps acknowledged consent and normal app progr
     assert.equal(new URL(window.url).pathname, '/onboarding');
     assert.equal(new URL(window.url).searchParams.get('welcome'), 'complete');
     assert.equal((await next.storage.store.get()).welcome.acknowledged, true);
+    next.openLink('nod://open/settings/models');
+    assert.equal(
+      window.sent.some(([name]) => name === 'nod:navigate'),
+      false,
+    );
     await next.storage.store.save({ notifications: true, launchAtLogin: true });
     completed = true;
     await next.handlers.get('nod:settings:save')(
@@ -1865,6 +1944,10 @@ test('partial onboarding restart keeps acknowledged consent and normal app progr
     );
     assert.equal((await next.storage.store.get()).welcome, undefined);
     assert.equal(writes, 1);
+    assert.deepEqual(
+      window.sent.filter(([name]) => name === 'nod:navigate'),
+      [['nod:navigate', '/settings/models']],
+    );
   } finally {
     await next.close();
   }
@@ -2383,6 +2466,43 @@ test('the engine token waits for the engine nod started to report its port', asy
   f.children[0].emit('exit', 1);
   assert.equal((await prepared).phase, 'error');
   assert.deepEqual(requests, []);
+});
+
+test('the engine reaches 1Password only through a separate helper that may load its library', async (t) => {
+  const f = await runningDesktop(t, async () => Response.json({ ok: true }), {
+    allowStart: true,
+    environment: { HOME: '/Users/synthetic', OPENAI_API_KEY: 'sk-synthetic-provider-key' },
+  });
+  f.crash();
+  assert.equal((await f.prepare()).phase, 'ready');
+  const [engine] = f.children;
+  assert.equal(f.helpers.length, 0);
+  engine.emit('message', { type: 'nod-1password-open' });
+  assert.equal(f.helpers.length, 1);
+  const [helper] = f.helpers;
+  assert.match(helper.file, /[\\/]desktop[\\/]main[\\/]onepassword\.mjs$/);
+  assert.equal(helper.options.allowLoadingUnsignedLibraries, true);
+  assert.equal(helper.options.serviceName, 'nod 1Password');
+  assert.deepEqual(JSON.parse(JSON.stringify(helper.options.env)), { HOME: '/Users/synthetic' });
+  assert.deepEqual(JSON.parse(JSON.stringify(helper.args)), ['0.0.0-test']);
+  assert.deepEqual(JSON.parse(JSON.stringify(helper.sent)), [
+    { message: { type: 'nod-1password-port' }, transfer: [{ end: 'helper' }] },
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(engine.transfers)), [
+    { message: { type: 'nod-1password-port' }, transfer: [{ end: 'engine' }] },
+  ]);
+  engine.emit('exit', 1);
+  assert.equal(helper.killed, true);
+});
+
+test('a stale engine cannot open a 1Password helper', async (t) => {
+  const f = await runningDesktop(t, async () => Response.json({ ok: true }), { allowStart: true });
+  f.crash();
+  assert.equal((await f.prepare()).phase, 'ready');
+  const [stale] = f.children;
+  stale.emit('exit', 1);
+  stale.emit('message', { type: 'nod-1password-open' });
+  assert.equal(f.helpers.length, 0);
 });
 
 async function fixture(t, platform = 'win32') {
@@ -3050,6 +3170,20 @@ test('engine preload exposes no credential reveal and withholds privileged IPC e
   const status = { phase: 'preparing', runtime: { phase: 'starting' } };
   listeners.get('nod:status')({ sender: 'privileged-synthetic-ipc' }, status);
   assert.deepEqual(received, [status]);
+  listeners.get('nod:navigate')({ sender: 'privileged-synthetic-ipc' }, '/settings/models');
+  let navigationCalls = 0;
+  const stop = bridge.onNavigate((...values) => {
+    navigationCalls++;
+    received = values;
+  });
+  assert.deepEqual(received, ['/settings/models']);
+  stop();
+  listeners.get('nod:navigate')({ sender: 'privileged-synthetic-ipc' }, '/trust');
+  assert.equal(navigationCalls, 1);
+  bridge.onNavigate((...values) => {
+    received = values;
+  });
+  assert.deepEqual(received, ['/trust']);
 });
 
 async function chatReadFixture(t) {

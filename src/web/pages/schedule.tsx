@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { CalendarClock, Sparkles } from 'lucide-react';
+import { CalendarClock, Sparkles } from '../components/icons';
 import type { Schedule, ScheduleHistory, ScheduleRun } from '../../shared/contracts';
 import { StatusIcon, statusLabels } from '../components/turn-status';
 import { usePageData } from '../hooks/use-page-data';
@@ -16,6 +16,7 @@ import {
   useDirectChange,
 } from '../components/plan-controls';
 import { Button } from '../components/ui';
+import { money } from '../lib/money';
 
 const historyPath = '/api/schedule-runs?limit=20';
 
@@ -56,6 +57,7 @@ export function ScheduleRow({
           <span>Next {date(schedule.nextRun)}</span>
         )}
         {schedule.timeZone !== dateFormat.timeZone && <span>{schedule.timeZone}</span>}
+        {schedule.monthlyUsd !== null && <span>≈{money(schedule.monthlyUsd)} a month</span>}
       </p>
       <PlanDetails
         label={schedule.title}
@@ -91,7 +93,7 @@ export function ScheduleRow({
       </PlanDetails>
       {asking && (
         <AskNod
-          subject={{ title: schedule.title }}
+          subject={{ kind: 'schedule', title: schedule.title }}
           onAsk={onAsk}
           onClose={() => setAsking(false)}
         />

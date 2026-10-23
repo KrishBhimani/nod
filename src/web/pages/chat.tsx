@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import Markdown from 'react-markdown';
-import { ArrowDown, Check, Globe2, LoaderCircle, Trash2, User } from 'lucide-react';
+import { ArrowDown, Check, Globe2, LoaderCircle, Trash2, User } from '../components/icons';
 import type {
   Activity,
   AppState,
@@ -215,7 +215,6 @@ export function Chat({
   onRequestHandled,
   onFeedback,
   onDismissFeedbackDiscovery,
-  onModels,
 }: {
   ownerId: string;
   state: AppState;
@@ -230,7 +229,6 @@ export function Chat({
   onRequestHandled?(id: string): void;
   onFeedback?(): void;
   onDismissFeedbackDiscovery?(): void;
-  onModels?(trigger: HTMLElement): void;
 }) {
   const dateFormat = useDateFormat();
   const { data: connections } = usePageData<Connection[]>('/api/apps');
@@ -240,9 +238,13 @@ export function Chat({
   const modelSetup = (
     <div className="welcome model-setup">
       <BrandMark />
-      <h2>Choose a model to start chatting</h2>
-      <Button variant="outline" onClick={(event) => onModels?.(event.currentTarget)}>
-        Open settings
+      <h2>
+        {state.configuration.modelReconnect
+          ? 'Reconnect your model to keep chatting'
+          : 'Choose a model to start chatting'}
+      </h2>
+      <Button variant="outline" asChild>
+        <a href="/settings/models">Open Settings &gt; Models</a>
       </Button>
     </div>
   );
@@ -896,7 +898,7 @@ export function Chat({
           </>
         ) : (
           <header className="chat-report-action">
-            <h1 className="chat-title">Chat</h1>
+            <h1 className="sr-only">Chat</h1>
             {chatActions}
           </header>
         )}
@@ -1099,7 +1101,11 @@ export function Chat({
                 : 'Back to latest'}
             </Button>
           )}
-          {away?.shown && <div className="jump-latest-fade" aria-hidden="true" />}
+          <div
+            className="chat-bottom-fade"
+            data-away={away?.shown || undefined}
+            aria-hidden="true"
+          />
           {error && <Notice>{error}</Notice>}
           {connectionNotice && (
             <Notice kind={connectionNotice.kind} onDismiss={() => setConnectionNotice(null)}>

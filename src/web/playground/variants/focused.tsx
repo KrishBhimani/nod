@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown } from '../../components/icons';
 import type { ModelProvider } from '../../../shared/models';
 import { modelProviderNames } from '../../../shared/models';
 import {

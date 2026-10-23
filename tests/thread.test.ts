@@ -182,7 +182,7 @@ test(
       submitMessage: userMessages.submit,
       configuration: () => ({ ...configuration(), llmReady: true }),
       planningTasks: onboarding.planning,
-      messageCosts: async () => ({}),
+      receipts: async () => ({}),
     });
     onboarding.registerRoutes(app);
     const tasks = createTasks({ pool: db.pool, ownerId });
@@ -3043,13 +3043,25 @@ test(
             await checkResume(`credentials-retry:${resumed}`);
             assert.equal(await thread.resumeAfterConnection(research, 'Synthetic source'), true);
             const connected = await checkResume(`connection:${research}`);
-            await db.pool.query(
-              "UPDATE turns SET status='waiting',waiting_reason='question',handoff_browser_id=session_id::text WHERE id=$1",
-              [connected],
-            );
-            assert.equal(await thread.resumeAfterHandoff(connected), true);
-            await checkResume(`handoff:${connected}`);
-            assert.equal(await thread.resumeAfterHandoff(connected), false);
+            let handoffTurn = connected;
+            for (const channel of ['telegram:synthetic', 'whatsapp:synthetic']) {
+              await db.pool.query(
+                "UPDATE turns SET status='waiting',waiting_reason='question',handoff_browser_id=session_id::text,channel=$2 WHERE id=$1",
+                [handoffTurn, channel],
+              );
+              assert.equal(await thread.resumeAfterHandoff(handoffTurn), true);
+              const continued = await checkResume(`handoff:${handoffTurn}`);
+              const resumed = (
+                await db.pool.query('SELECT session_id,channel FROM turns WHERE id=$1', [continued])
+              ).rows[0];
+              const original = (
+                await db.pool.query('SELECT session_id FROM turns WHERE id=$1', [handoffTurn])
+              ).rows[0];
+              assert.equal(resumed.session_id, original.session_id);
+              assert.equal(resumed.channel, channel);
+              assert.equal(await thread.resumeAfterHandoff(handoffTurn), false);
+              handoffTurn = continued;
+            }
           } finally {
             quietBackgroundWork = false;
             dependencies.readArtifact = previousRead;
@@ -3808,7 +3820,7 @@ async function feedbackFixture(t: TestContext) {
     source: 'desktop' as const,
     appModified: false,
   };
-  const open = async (ownerId = randomUUID()) => {
+  const open = async (ownerId = randomUUID(), buildReport = async () => state.content) => {
     const app = Fastify();
     apps.push(app);
     await registerFeedback(app, {
@@ -3816,7 +3828,7 @@ async function feedbackFixture(t: TestContext) {
       ownerId,
       context,
       delivery,
-      buildReport: async () => state.content,
+      buildReport,
     });
     return { app, ownerId };
   };
@@ -4048,6 +4060,87 @@ test(
     assert.equal(truncated.coverage.truncated, true);
     assert.equal(truncated.messages.at(-1).id, newest);
     assert.ok(truncated.messages.length > 30);
+
+    const { SessionManager } = await import('@earendil-works/pi-coding-agent');
+    const { openLocalSession, readPiSessionEntries } =
+      await import('../src/providers/pi/checkpoint.ts');
+    const sessionRoot = await mkdtemp(join(tmpdir(), 'feedback-session-'));
+    t.after(() => rm(sessionRoot, { recursive: true, force: true }));
+    const directory = join(sessionRoot, threadId);
+    const session = SessionManager.create(directory, directory);
+    session.appendMessage({ role: 'user', content: 'Synthetic request', timestamp: Date.now() });
+    session.appendMessage({
+      role: 'assistant',
+      content: [{ type: 'text', text: 'Synthetic response' }],
+      api: 'openai-responses',
+      provider: 'openai',
+      model: 'synthetic',
+      usage: {
+        input: 1,
+        output: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 2,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: 'stop',
+      timestamp: Date.now(),
+    });
+    await writeFile(session.getSessionFile()!, '\n{"type":"message",', { flag: 'a' });
+    const reopened = openLocalSession(directory);
+    reopened.appendMessage({
+      role: 'user',
+      content: 'Synthetic request after interruption',
+      timestamp: Date.now(),
+    });
+    assert.equal(reopened.getEntries().length, 3);
+    const readSession = () => readPiSessionEntries({ threadId, sessionRoot });
+    await assert.rejects(readSession);
+    const recoveredFile = await readFile(session.getSessionFile()!, 'utf8');
+    for (const unavailable of ['session', 'profile'] as const) {
+      await t.test(`feedback remains sendable when ${unavailable} is unavailable`, async () => {
+        const runtime = await f.open(ownerId, () =>
+          buildFeedbackReport({
+            ...options,
+            ...(unavailable === 'session'
+              ? { sessionEntries: readSession }
+              : {
+                  profile: async () => {
+                    throw new Error('synthetic-private-profile-failure');
+                  },
+                }),
+          }),
+        );
+        const prepared = await runtime.app.inject({ method: 'POST', url: '/api/feedback/report' });
+        assert.equal(prepared.statusCode, 200);
+        const snapshot = prepared.json<{ id: string; content: string }>();
+        const limited = JSON.parse(snapshot.content);
+        assert.equal(limited.coverage.contentOmitted, true);
+        assert.equal(limited.coverage.toolTraceSource, 'unavailable');
+        assert.equal(limited.messages.at(-1).id, newest);
+        assert.equal(limited.turns[0].status, 'failed');
+        assert.deepEqual(limited.trace, []);
+        assert.ok(limited.messages.every((row: object) => !('text' in row)));
+        assert.ok(
+          limited.turns.every((row: object) => !('error' in row) && !('waiting_reason' in row)),
+        );
+        for (const omitted of [secret, username, apiKey, 'Marta', 'Visible diagnostic', 'private'])
+          assert.ok(!snapshot.content.includes(omitted), omitted);
+        assert.ok(Buffer.byteLength(snapshot.content) <= feedbackLimits.reportBytes);
+        const submission = f.submission({ reportId: snapshot.id });
+        const sent = await runtime.app.inject({
+          method: 'POST',
+          url: '/api/feedback',
+          payload: submission,
+        });
+        assert.equal(sent.json().status, 'submitted');
+        assert.equal(
+          Buffer.from(f.state.envelopes.at(-1)!.report!.data, 'base64').toString(),
+          snapshot.content,
+        );
+      });
+    }
+    assert.equal(await readFile(session.getSessionFile()!, 'utf8'), recoveredFile);
   },
 );
 
