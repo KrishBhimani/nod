@@ -4,13 +4,18 @@ import type { ModelConnection, ModelProvider, ModelsResponse } from '../../../..
 import { modelProviderNames, modelSource } from '../../../../shared/models';
 import { agentModels } from '../../../../shared/model-defaults';
 import { Button, Input } from '../../../components/ui';
-import { ModelPicker } from '../../../components/models';
+import { CloudKeyFields, ModelPicker } from '../../../components/models';
 import {
+  keyConnection,
+  keySettingsReady,
   localServerAddress,
+  modelProviders,
   modelReady,
   modelSelection,
+  noKeySettings,
   useModelSignIn,
   useModels,
+  type KeySettings,
 } from '../../../hooks/use-models';
 import { api, ApiError, errorMessage } from '../../../lib/api';
 import type { StepProps } from '..';
@@ -61,17 +66,42 @@ const providers: Record<
     placeholder: localServerAddress,
     hint: '',
   },
+  'amazon-bedrock': {
+    methods: ['API key'],
+    placeholder: '',
+    hint: 'console.aws.amazon.com/bedrock',
+  },
+  'google-vertex': {
+    methods: ['API key'],
+    placeholder: '',
+    hint: 'console.cloud.google.com/apis/credentials',
+  },
+  azure: {
+    methods: ['API key'],
+    placeholder: '',
+    hint: 'ai.azure.com',
+  },
 };
 
-const order: ModelProvider[] = ['openai', 'anthropic', 'openrouter', 'compatible'];
 const invalidKey = 'That key didn’t work. Check it and try again.';
+
+function noDefault(source: ModelConnection) {
+  return (
+    (source.provider === 'amazon-bedrock' || source.provider === 'google-vertex') &&
+    source.models.length > 1
+  );
+}
+
+function ownerChooses(source: ModelConnection) {
+  return noDefault(source) || (source.provider === 'compatible' && source.models.length > 1);
+}
 
 function recommended(source: ModelConnection) {
   const subscription = source.method === 'subscription';
   return (
     (subscription && source.models.find((item) => item.id === 'gpt-6-sol')) ||
     source.models.find((item) => item.id === agentModels[source.provider]) ||
-    source.models[0]
+    (noDefault(source) ? undefined : source.models[0])
   );
 }
 
@@ -104,15 +134,18 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
   const [choice, setChoice] = useState<ModelProvider>();
   const [key, setKey] = useState('');
   const [url, setUrl] = useState(localServerAddress);
+  const [keySettings, setKeySettings] = useState<KeySettings>(noKeySettings);
   const [keyError, setKeyError] = useState('');
   const [checking, setChecking] = useState(false);
   const [callback, setCallback] = useState('');
   const keyField = useRef<HTMLInputElement>(null);
+  const submitting = useRef(false);
   const connections = data?.connections ?? [];
   const selected = connections.find((item) => item.id === data?.selection?.connectionId);
   const usable = (provider: ModelProvider) =>
     connections.filter((item) => item.provider === provider && item.status !== 'reconnect');
-  const provider = choice ?? selected?.provider ?? order.find((item) => usable(item).length);
+  const provider =
+    choice ?? selected?.provider ?? modelProviders.find((item) => usable(item).length);
   const here = provider ? usable(provider) : [];
   const source = here.find((item) => item.status === 'connected' && recommended(item));
   const selectedReady = modelReady(data);
@@ -140,7 +173,7 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
       checking ||
       flow.signIn ||
       flow.pending ||
-      (shown?.provider === 'compatible' && shown.models.length > 1)
+      (shown && ownerChooses(shown))
     )
       return;
     setConnected(null);
@@ -192,9 +225,11 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
     setChoice(next);
     setKey('');
     setUrl(localServerAddress);
+    setKeySettings(noKeySettings);
     setKeyError('');
     setCallback('');
-    if (next === 'anthropic') requestAnimationFrame(() => keyField.current?.focus());
+    if (next === 'anthropic' || next === 'google-vertex')
+      requestAnimationFrame(() => keyField.current?.focus());
   }
 
   function startSignIn() {
@@ -209,14 +244,17 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
 
   async function saveKey(event: FormEvent) {
     event.preventDefault();
-    if (checking || !provider) return;
+    if (submitting.current || !provider) return;
     const value = key.trim();
     const endpoint = provider === 'compatible';
+    const detailed = endpoint || provider === 'amazon-bedrock' || provider === 'azure';
     if (endpoint && !url.trim()) return setKeyError('Enter the server address first.');
+    if (!keySettingsReady(provider, keySettings)) return setKeyError('Fill in every field first.');
     if (!endpoint && !value) return setKeyError('Paste your API key first.');
     if (!endpoint && value.length < 8) return setKeyError(invalidKey);
     setKeyError('');
     models.setError('');
+    submitting.current = true;
     setChecking(true);
     try {
       const result = await api<ModelsResponse>(
@@ -224,7 +262,9 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
         {
           method: 'POST',
           body: JSON.stringify(
-            endpoint ? { url: url.trim(), key: value } : { provider, key: value },
+            endpoint
+              ? { url: url.trim(), key: value }
+              : keyConnection(provider, value, keySettings),
           ),
         },
       );
@@ -232,13 +272,15 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
       setConnected(provider);
       setKey('');
       setUrl(localServerAddress);
+      setKeySettings(noKeySettings);
     } catch (cause) {
       setKeyError(
-        cause instanceof ApiError && cause.status === 400 && !endpoint
+        cause instanceof ApiError && cause.status === 400 && !detailed
           ? invalidKey
           : errorMessage(cause),
       );
     } finally {
+      submitting.current = false;
       setChecking(false);
     }
   }
@@ -273,10 +315,12 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
                 : 'You can add more later in Settings.'}
             </p>
           </div>
-          {shown.provider === 'compatible' && ready && (
+          {((shown.provider === 'compatible' && ready) || ownerChooses(shown)) && (
             <ModelPicker manageConnections={false} surface="onboarding" />
           )}
-          {(shown.status === 'loading' || (!ready && !recommendation) || models.error) && (
+          {(shown.status === 'loading' ||
+            (!ready && !recommendation && !ownerChooses(shown)) ||
+            models.error) && (
             <Button
               variant="outline"
               disabled={models.busy}
@@ -288,7 +332,7 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
               Refresh models
             </Button>
           )}
-          {shown.status === 'connected' && !ready && !recommendation && (
+          {shown.status === 'connected' && !ready && !recommendation && !ownerChooses(shown) && (
             <Problem>
               The default model isn’t available for this account. Refresh the models or choose
               another provider.
@@ -425,6 +469,15 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
           </>
         )}
         <form className="ob-brain-form" onSubmit={(event) => void saveKey(event)} noValidate>
+          <CloudKeyFields
+            provider={provider}
+            value={keySettings}
+            onChange={(next) => {
+              setKeySettings(next);
+              setKeyError('');
+            }}
+            disabled={checking}
+          />
           {!settings.oauth && (
             <label
               className="ob-brain-label"
@@ -481,7 +534,7 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
         ]}
       />
       <div className="ob-brain-list" data-analytics-public>
-        {order.map((item, index) => {
+        {modelProviders.map((item, index) => {
           const open = item === provider;
           return (
             <Rise
@@ -545,7 +598,7 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
         show={revealed >= 4}
         onBack={onBack}
         onNext={onNext}
-        nextDisabled={!ready || models.busy || checking || !!flow.signIn}
+        nextDisabled={!selectedReady || models.busy || checking || !!flow.signIn}
       />
     </section>
   );
