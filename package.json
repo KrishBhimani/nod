@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "node scripts/start.mjs",
     "dev:server": "tsx watch src/server/index.ts",
+    "playground": "vite --port 4321 --open /playground.html",
     "desktop:dev": "node desktop/scripts/build-ui.mjs && pnpm --dir desktop start",
     "desktop:prepare": "node desktop/scripts/prepare-runtime.mjs",
     "desktop:build": "pnpm --dir desktop run build",

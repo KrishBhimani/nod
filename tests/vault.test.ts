@@ -4289,6 +4289,7 @@ Object.defineProperty(globalThis, 'navigator', {configurable:true,value:dom.wind
 globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
 globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
 globalThis.location = window.location;
+globalThis.ResizeObserver = class { observe() {} disconnect() {} };
 globalThis.EventSource = window.EventSource = class { static CLOSED = 2; readyState = 0; close() {} addEventListener() {} };
 window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} });
 let finishPreparation;
@@ -4442,6 +4443,7 @@ Object.defineProperty(globalThis, 'navigator', {configurable:true,value:dom.wind
 globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
 globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
 globalThis.location = window.location;
+globalThis.ResizeObserver = class { observe() {} disconnect() {} };
 const requests=[];
 window.XMLHttpRequest = undefined;
 globalThis.XMLHttpRequest = undefined;
@@ -4611,7 +4613,7 @@ test(
   },
 );
 
-test('onboarding advances only after a newly confirmed connection with ready owned state', async () => {
+test('onboarding continues only after a confirmed connection with a ready owned model', async () => {
   const result = await runProcess(process.execPath, ['--import', 'tsx', '--input-type=module'], {
     timeoutMs: 25_000,
     input: String.raw`
@@ -4765,8 +4767,10 @@ window.fetch=globalThis.fetch=async(url,options={})=>{
   }
   throw new Error('Unexpected fixture request '+path);
 };
+const provider=name=>act(async()=>[...document.querySelectorAll('.ob-brain-provider')].find(item=>item.textContent.includes(name)).click());
+const canContinue=()=>button('Continue')&&!button('Continue').disabled;
 await mount(Brain);
-await act(async()=>[...document.querySelectorAll('.ob-brain-option')].find(item=>item.textContent.includes('Anthropic')).click());
+await provider('Anthropic');
 await waitFor(()=>document.querySelector('#ob-brain-key-anthropic'));
 await act(async()=>{const input=document.querySelector('#ob-brain-key-anthropic');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'synthetic-model-key');input.dispatchEvent(new Event('input',{bubbles:true}));});
 await click('Connect');
@@ -4775,25 +4779,32 @@ assert.match(document.body.textContent,/Fixture key rejected/);
 failKey=false;
 await click('Connect');
 await waitFor(()=>select);
-assert.equal(advances,0,'connection alone cannot advance before model selection is ready');
+assert.equal(canContinue(),false,'connection alone cannot continue before model selection is ready');
 await act(async()=>select());
-await waitFor(()=>advances===1);
+await waitFor(canContinue);
+await settle(50);
+assert.equal(advances,0,'a ready model waits for Continue');
+await click('Continue');
+assert.equal(advances,1);
 await act(async()=>pageDataCache.refresh('/api/models',true));
 assert.equal(advances,1);
 for(const direction of ['forward','back']){
   await mount(Brain,direction);
-  await waitFor(()=>button('Continue')&&!button('Continue').disabled);
+  await waitFor(canContinue);
   assert.equal(advances,0,'cached model must not bounce '+direction);
 }
 models={connections:[],selection:null};
 await mount(Brain);
-await act(async()=>[...document.querySelectorAll('.ob-brain-option')].find(item=>item.textContent.includes('OpenAI')).click());
+await provider('OpenAI');
 await click('Sign in with ChatGPT');
 await waitFor(()=>oauth);
-assert.equal(advances,0);
+assert.equal(canContinue(),false);
 models={connections:[{...connection,provider:'openai',method:'subscription'}],selection:{connectionId:connection.id,modelId:connection.models[0].id,effort:'off'}};
 await act(async()=>oauth());
-await waitFor(()=>advances===1);
+await waitFor(canContinue);
+assert.equal(advances,0,'a finished sign-in waits for Continue');
+await click('Continue');
+assert.equal(advances,1);
 disconnectPending=true;
 await mount(Email);
 await waitFor(()=>button('Retry disconnection'));
@@ -5122,8 +5133,8 @@ await waitFor(()=>document.querySelector('.ob')?.dataset.step==='brain');
 assert.equal(window.location.search,'');
 assert.ok(calls.includes('/api/account/prepare'));
 assert.equal(calls.some(path=>path.startsWith('/api/desktop/setup')),false);
-await waitFor(()=>[...document.querySelectorAll('.ob-brain-option')].some(item=>item.textContent.includes('Anthropic')));
-await act(async()=>[...document.querySelectorAll('.ob-brain-option')].find(item=>item.textContent.includes('Anthropic')).click());
+await waitFor(()=>[...document.querySelectorAll('.ob-brain-provider')].some(item=>item.textContent.includes('Anthropic')));
+await act(async()=>[...document.querySelectorAll('.ob-brain-provider')].find(item=>item.textContent.includes('Anthropic')).click());
 await waitFor(()=>document.querySelector('#ob-brain-key-anthropic'));
 async function recoverWithDraft(input, draft) {
   const fill=value=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,value);input.dispatchEvent(new Event('input',{bubbles:true}))};

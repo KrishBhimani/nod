@@ -129,6 +129,10 @@ flowchart TD
 - Confirm the fonts load, text contrast holds and the page doesn't scroll sideways.
 - Run `pnpm run check`, `pnpm run test:integration` and `pnpm run build`. Add screenshots with synthetic data to your pull request.
 
+### Model selection playground
+
+`pnpm run playground` opens the onboarding model step, the model picker and the model settings panel against a fake model service, with no server, database or real provider. Pick a starting state, then set latency, sign-in results and failures in the side panel. The **Design** list compares the real onboarding step with alternative designs that run against the same fake service. The playground runs only in development and isn't part of the build.
+
 ## Related resources
 
 - [Contribute to nod](/contribute/)
