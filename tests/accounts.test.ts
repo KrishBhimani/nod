@@ -143,6 +143,17 @@ test('settings Escape preserves nested interactions and pending changes before r
       try {
         await act(async () => root.render(createElement(Fixture)));
         await settle(() => document.querySelector('button[aria-label="Settings"]'));
+        const link = document.createElement('a');
+        link.href = '/settings/models';
+        link.textContent = 'Synthetic screen link';
+        document.querySelector('#workspace').append(link);
+        link.focus();
+        await click(link);
+        await settle(() => window.location.pathname === '/settings/models');
+        await escape();
+        await settle(() => window.location.pathname === '/apps');
+        await settle(() => document.activeElement === link);
+        link.remove();
         const trigger = await open();
         await click(document.querySelector('[role="tab"][aria-label="Memory"]'));
         await escape();
@@ -231,6 +242,39 @@ test('settings Escape preserves nested interactions and pending changes before r
         await escape();
         await settle(() => window.location.pathname === '/');
         await settle(() => document.activeElement === document.querySelector('#workspace'));
+        await act(async () => root.render(null));
+        const { readFileSync } = await import('node:fs');
+        const { runInNewContext } = await import('node:vm');
+        const { sessionStore } = await import('./src/web/lib/session.ts');
+        const listeners = new Map();
+        const desktopPreferences = { theme: 'system', resolvedTheme: 'light',
+          notifications: true, launchAtLogin: true, onboardingPreferenceStep: 'complete' };
+        runInNewContext(readFileSync('./desktop/preload/engine.cjs', 'utf8'), {
+          require: () => ({
+            contextBridge: { exposeInMainWorld: (name, value) => { window[name] = value; } },
+            ipcRenderer: {
+              on: (name, listener) => listeners.set(name, listener),
+              removeListener: name => listeners.delete(name),
+              invoke: async name => name === 'nod:status' ? { phase: 'ready' } : desktopPreferences,
+            },
+          }),
+        });
+        session = { ...session, settings: { ...session.settings, onboardingCompleted: false } };
+        await act(async () => {
+          await sessionStore.refresh();
+          root.render(createElement(Fixture));
+        });
+        await settle(() => window.location.pathname === '/onboarding');
+        await act(async () => listeners.get('nod:navigate')({}, '/settings/models'));
+        await settle(() => window.location.pathname === '/onboarding');
+        session = { ...session, settings: { ...session.settings, onboardingCompleted: true } };
+        await act(async () => {
+          await sessionStore.refresh();
+          window.history.replaceState(null, '', '/');
+          window.dispatchEvent(new PopStateEvent('popstate'));
+        });
+        await settle(() => window.location.pathname === '/settings/models');
+        await settle(() => document.querySelector('[role="tab"][aria-label="Models"][aria-selected="true"]'));
       } finally {
         await act(async () => root.unmount());
         dom.window.close();
