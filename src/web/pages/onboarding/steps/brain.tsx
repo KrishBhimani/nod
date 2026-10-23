@@ -200,6 +200,12 @@ function useConnect() {
       models.setError('');
       setAnother(true);
     },
+    existing: (provider: ModelProvider) => usable.find((item) => item.provider === provider),
+    open: (id: string) => {
+      models.setError('');
+      setAnother(false);
+      setFresh(id);
+    },
     keepCurrent: another && usable.length > 0 ? () => setAnother(false) : undefined,
   };
 }
@@ -429,7 +435,7 @@ function SignInFirst({ c, provider }: { c: Connect; provider: SignInProvider }) 
   return (
     <div className="ob-brain-signin">
       <div className="ob-brain-oauth">
-        <Button disabled={c.locked} onClick={() => c.signIn(provider)}>
+        <Button disabled={c.locked} autoFocus onClick={() => c.signIn(provider)}>
           <Logo provider={provider} size={18} />
           {provider === 'openai' ? 'Sign in with ChatGPT' : 'Sign in to OpenRouter'}
         </Button>
@@ -555,7 +561,8 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
   const c = useConnect();
   const [picked, setPicked] = useState<ModelProvider>();
   const [expanded, setExpanded] = useState(false);
-  const firstMore = useRef<HTMLButtonElement>(null);
+  const [restore, setRestore] = useState<ModelProvider>();
+  const rows = useRef(new Map<ModelProvider, HTMLButtonElement>());
   const entry = providers.find((item) => item.provider === picked);
   const view: View = c.shown ? 'done' : entry ? 'setup' : 'list';
   const page = view === 'setup' ? `setup:${entry!.provider}` : view;
@@ -570,12 +577,19 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
   }
 
   useEffect(() => {
-    if (expanded) firstMore.current?.focus();
+    if (expanded) rows.current.get(uncommon[0].provider)?.focus();
   }, [expanded]);
+
+  useEffect(() => {
+    if (view !== 'list' || !restore) return;
+    rows.current.get(restore)?.focus();
+    setRestore(undefined);
+  }, [view, restore]);
 
   function back() {
     c.clearError();
     if (c.flow.signIn) void c.flow.cancel();
+    setRestore(picked);
     setPicked(undefined);
   }
 
@@ -619,7 +633,7 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
                       disabled={c.flow.pending || c.checking}
                       onClick={back}
                     >
-                      <ChevronLeft size={20} aria-hidden="true" />
+                      <ChevronLeft size={16} aria-hidden="true" />
                     </button>
                     <h3>
                       <Logo provider={entry!.provider} />
@@ -632,35 +646,46 @@ export function Brain({ arrived, onNext, onBack }: StepProps) {
                 </>
               ) : (
                 <ul className="ob-brain-providers" aria-label="AI providers">
-                  {(expanded ? providers : common).map((item) => (
-                    <li key={item.provider}>
-                      <button
-                        ref={item.provider === uncommon[0].provider ? firstMore : undefined}
-                        type="button"
-                        className="ob-brain-provider"
-                        disabled={c.locked}
-                        onClick={() => {
-                          c.clearError();
-                          setPicked(item.provider);
-                        }}
-                      >
-                        <Logo provider={item.provider} />
-                        <span className="ob-brain-provider-name">{item.name}</span>
-                        <ChevronRight size={16} strokeWidth={1.75} aria-hidden="true" />
-                      </button>
-                    </li>
-                  ))}
+                  {(expanded ? providers : common).map((item) => {
+                    const existing = c.existing(item.provider);
+                    return (
+                      <li key={item.provider}>
+                        <button
+                          ref={(node) => {
+                            if (node) rows.current.set(item.provider, node);
+                            else rows.current.delete(item.provider);
+                          }}
+                          type="button"
+                          className="ob-brain-provider"
+                          disabled={c.locked}
+                          onClick={() => {
+                            c.clearError();
+                            if (existing) c.open(existing.id);
+                            else setPicked(item.provider);
+                          }}
+                        >
+                          <Logo provider={item.provider} />
+                          <span className="ob-brain-provider-name">{item.name}</span>
+                          {existing && (
+                            <span className="ob-brain-check" role="img" aria-label="Connected">
+                              <Check size={12} aria-hidden="true" />
+                            </span>
+                          )}
+                          <ChevronRight size={12} aria-hidden="true" />
+                        </button>
+                      </li>
+                    );
+                  })}
                   {!expanded && (
                     <li>
                       <button
                         type="button"
                         className="ob-brain-provider ob-brain-more"
-                        aria-expanded={false}
                         disabled={c.locked}
                         onClick={() => setExpanded(true)}
                       >
                         <span className="ob-brain-lead" aria-hidden="true">
-                          <ChevronDown size={16} strokeWidth={1.75} />
+                          <ChevronDown size={12} />
                         </span>
                         <span className="ob-brain-provider-name">More providers</span>
                         <span className="ob-brain-more-logos" aria-hidden="true">
