@@ -3119,6 +3119,7 @@ test('composer uploads preserve retry bytes, cancellation, previews and failed-s
       Object.assign(globalThis, {
         window: dom.window,
         document: dom.window.document,
+        localStorage: dom.window.localStorage,
         IS_REACT_ACT_ENVIRONMENT: true,
         getComputedStyle: dom.window.getComputedStyle.bind(dom.window),
         requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window),
@@ -3157,11 +3158,11 @@ test('composer uploads preserve retry bytes, cancellation, previews and failed-s
       URL.revokeObjectURL = (url) => revoked.push(url);
       fetch = (url, options) =>
         new Promise((resolve, reject) => {
-          assert.equal(url, '/api/uploads');
+          assert.ok(url === '/api/uploads' || url.endsWith('/metadata'));
           assert.equal(options.headers.get('X-nod-Account'), 'synthetic-owner');
           const request = { url, options, resolve, reject };
           requests.push(request);
-          options.signal.addEventListener(
+          options.signal?.addEventListener(
             'abort',
             () => reject(new DOMException('Aborted', 'AbortError')),
             { once: true },
@@ -3178,12 +3179,13 @@ test('composer uploads preserve retry bytes, cancellation, previews and failed-s
       const setDrafts = (value) => {
         drafts = value;
       };
-      function Fixture() {
-        const [text, setText] = useState('Synthetic review request');
+      function Fixture({ draftKey } = {}) {
+        const [text, setText] = useState(draftKey ? '' : 'Synthetic review request');
         return createElement(
           ArtifactDrawerContext.Provider,
           { value: { selectedId: null, open: (...args) => opened.push(args), setDrafts } },
           createElement(Composer, {
+            draftKey,
             ready: true,
             text,
             setText,
@@ -3196,7 +3198,7 @@ test('composer uploads preserve retry bytes, cancellation, previews and failed-s
           }),
         );
       }
-      const root = createRoot(document.getElementById('root'));
+      let root = createRoot(document.getElementById('root'));
       const settle = async (check) => {
         for (let i = 0; i < 100 && !check(); i++)
           await act(async () => {
@@ -3232,6 +3234,13 @@ test('composer uploads preserve retry bytes, cancellation, previews and failed-s
       try {
         await act(async () => root.render(createElement(Fixture)));
         await settle(() => document.querySelector('[contenteditable]'));
+        const storage = Object.getOwnPropertyDescriptor(window, 'localStorage');
+        Object.defineProperty(window, 'localStorage', { configurable: true, get() { throw new Error('Synthetic storage failure'); } });
+        await act(async () => document.querySelector('.composer-send-preference').click());
+        await act(async () => document.querySelector('[contenteditable]').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
+        assert.equal(sends.length, 0);
+        await act(async () => document.querySelector('.composer-send-preference').click());
+        Object.defineProperty(window, 'localStorage', storage);
         const first = new File(['Synthetic review file'], 'Review.txt', { type: 'text/plain' });
         const second = new File(['Queued file'], 'Queued.txt', { type: 'text/plain' });
         await choose([first, second]);
@@ -3264,6 +3273,14 @@ test('composer uploads preserve retry bytes, cancellation, previews and failed-s
         }
         await act(async () => requests[1].resolve(Response.json(artifact)));
         await settle(() => drafts[0]?.downloadUrl === artifact.url);
+        const native = [];
+        window.nodDesktop = { fileAction: async (...args) => { native.push(args); } };
+        const { prepareFile, reuseFile } = await import('./src/web/components/file-actions.tsx');
+        prepareFile(drafts[0]);
+        assert.deepEqual(native, [[artifact.id, 'prepare']]);
+        await act(async () => reuseFile(drafts[0]));
+        assert.equal(drafts.length, 1);
+        delete window.nodDesktop;
         assert.equal(document.querySelector('[aria-label="Send message"]').disabled, false);
         await submit();
         await settle(
@@ -3303,7 +3320,35 @@ test('composer uploads preserve retry bytes, cancellation, previews and failed-s
         assert.equal(drafts.length, 0);
         assert.deepEqual([...new Set(revoked)].sort(), created.map((item) => item.url).sort());
         for (const item of created) assert.equal(revoked.filter((url) => url === item.url).length, 1);
-
+        const restoredFiles = Array.from({ length: 5 }, (_, index) => {
+          const id = '00000000-0000-4000-8000-' + String(index + 1).padStart(12, '0');
+          return { ...artifact, id, url: '/api/artifacts/' + id, name: index === 0 ? artifact.name : 'Restored-' + index + '.txt' };
+        });
+        localStorage.setItem('synthetic-owner.thread', JSON.stringify({ version: 1, text: 'Restored synthetic request', reply: null, attachments: restoredFiles, missing: [] }));
+        root = createRoot(document.getElementById('root'));
+        closed = false;
+        await act(async () => root.render(createElement(Fixture, { draftKey: 'synthetic-owner.thread' })));
+        await settle(() => requests.length === 8);
+        assert.equal(requests[4].url, artifact.url + '/metadata');
+        assert.equal(document.querySelector('[aria-label="Send message"]').disabled, true);
+        await submit();
+        assert.equal(sends.length, 2);
+        assert.equal(requests.length, 8);
+        await act(async () => requests[4].resolve(Response.json({ error: 'Synthetic offline check' }, { status: 503 })));
+        assert.equal(requests.length, 8);
+        await act(async () => {
+          for (let index = 1; index < 4; index++) requests[4 + index].resolve(Response.json(restoredFiles[index]));
+        });
+        await settle(() => requests.length === 9);
+        await act(async () => requests[8].resolve(Response.json(restoredFiles[4])));
+        await settle(() => document.querySelector('[aria-label="Retry checking Review.txt"]'));
+        assert.equal(JSON.parse(localStorage.getItem('synthetic-owner.thread')).attachments[0].id, artifact.id);
+        await click('Retry checking Review.txt');
+        await settle(() => requests.length === 10);
+        await act(async () => requests[9].resolve(Response.json(artifact)));
+        await settle(() => !document.querySelector('[aria-label="Send message"]').disabled);
+        await submit();
+        assert.deepEqual(sends[2], { text: 'Restored synthetic request', attachments: restoredFiles });
       } finally {
         if (!closed) await act(async () => root.unmount());
         dom.window.close();
@@ -4710,3 +4755,39 @@ test(
     }
   },
 );
+
+test('chat draft recovery isolates owners and excludes private verification replies', async () => {
+  const result = await runProcess(process.execPath, ['--import', 'tsx', '--input-type=module'], {
+    timeoutMs: 10000,
+    input: String.raw`
+      import assert from 'node:assert/strict';
+      import { JSDOM } from 'jsdom';
+      const dom = new JSDOM('', { url: 'https://nod.fixture.invalid' });
+      globalThis.localStorage = dom.window.localStorage;
+      const { readChatDraft, writeChatDraft } = await import('./src/web/lib/chat-draft.ts');
+      const draft = { text: 'Budget is 1450', reply: { id: 'synthetic-source', role: 'assistant', text: 'A quoted passage' }, attachments: [], missing: ['report.pdf'] };
+      assert.equal(writeChatDraft('owner-a.thread-a', draft), true);
+      assert.deepEqual(readChatDraft('owner-a.thread-a'), draft);
+      assert.equal(readChatDraft('owner-b.thread-a'), null);
+      assert.equal(readChatDraft('owner-a.thread-b'), null);
+      const replyOnly = { ...draft, text: '', attachments: [], missing: [] };
+      writeChatDraft('owner-a.thread-a', replyOnly);
+      assert.deepEqual(readChatDraft('owner-a.thread-a'), replyOnly);
+      const file = { id: '00000000-0000-4000-8000-000000000001', name: 'report.pdf', mimeType: 'application/pdf', size: 5, url: '/api/artifacts/00000000-0000-4000-8000-000000000001' };
+      localStorage.setItem('owner-a.thread-a', JSON.stringify({ ...draft, version: 1, attachments: [null, {}, file] }));
+      assert.deepEqual(readChatDraft('owner-a.thread-a'), { ...draft, attachments: [file] });
+      const large = { ...draft, text: 'Synthetic long draft '.repeat(6000), attachments: Array.from({ length: 51 }, (_, index) => ({ ...file, id: String(index) })), missing: Array.from({ length: 51 }, (_, index) => 'file-' + index) };
+      writeChatDraft('owner-a.thread-a', large);
+      assert.deepEqual(readChatDraft('owner-a.thread-a'), large);
+      writeChatDraft('owner-a.thread-a', { ...draft, text: 'The code is 731408' }, true);
+      assert.equal(readChatDraft('owner-a.thread-a'), null);
+      writeChatDraft('owner-a.thread-a', { ...draft, text: '731408' });
+      assert.equal(readChatDraft('owner-a.thread-a'), null);
+      writeChatDraft('owner-a.thread-a', draft);
+      writeChatDraft('owner-a.thread-a', null);
+      assert.equal(readChatDraft('owner-a.thread-a'), null);
+      dom.window.close();
+    `,
+  });
+  assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+});

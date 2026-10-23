@@ -2503,7 +2503,15 @@ test(
           for (let i = 0; i < 65; i++)
             await db.pool.query(
               "INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id,created_at) VALUES($1,$2,'assistant',$3,$4,$5,'2026-09-20 12:00:00.123456+00'::timestamptz)",
-              [randomUUID(), ownerId, `Fixture ${i}`, freshThread, turn],
+              [
+                randomUUID(),
+                ownerId,
+                i === 0
+                  ? `Fixture ${i} ${'preface '.repeat(100)}crimson seats beside sapphire curtains`
+                  : `Fixture ${i}`,
+                freshThread,
+                turn,
+              ],
             );
           const foreignThread = randomUUID(),
             foreign = randomUUID(),
@@ -2516,7 +2524,7 @@ test(
             [foreignTurn, foreignThread],
           );
           await db.pool.query(
-            "INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id) VALUES($1,'other-owner','assistant','private content',$2,$3)",
+            "INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id) VALUES($1,'other-owner','assistant','Fixture private content',$2,$3)",
             [foreign, foreignThread, foreignTurn],
           );
           const archived = (
@@ -2525,6 +2533,10 @@ test(
               [firstThreadId],
             )
           ).rows[0] as { id: string; turn_id: string };
+          await db.pool.query(
+            "UPDATE messages SET text='Fixture archived content',created_at=now() WHERE id=$1",
+            [archived.id],
+          );
           const state = (await request('GET', '/api/state')).json<{
             messages: Array<{ id: string; turnId: string | null }>;
             turns: Array<{ id: string; status: string }>;
@@ -2546,6 +2558,27 @@ test(
               state.turns.some((entry) => entry.id === id),
               false,
             );
+          const matches = (await request('GET', '/api/messages/search?q=Fixture')).json<
+            Array<{ id: string }>
+          >();
+          assert.ok(matches.length > 0);
+          assert.equal(
+            matches.some((message) => message.id === foreign || message.id === archived.id),
+            false,
+          );
+          const separated = (
+            await request('GET', '/api/messages/search?q=crimson%20sapphire')
+          ).json<Array<{ snippet: string }>>();
+          assert.equal(separated.length, 1);
+          assert.match(separated[0].snippet, /crimson seats beside sapphire curtains/);
+          assert.equal(separated[0].snippet.includes('<b>'), false);
+          for (const id of [foreign, archived.id])
+            assert.equal((await request('GET', `/api/messages/around/${id}`)).statusCode, 404);
+          const around = await request('GET', `/api/messages/around/${matches[0].id}`);
+          assert.equal(around.statusCode, 200);
+          assert.ok(
+            around.json<Array<{ id: string }>>().some((message) => message.id === matches[0].id),
+          );
           const expected = new Set(
             (
               await db.pool.query('SELECT id FROM messages WHERE thread_id=$1', [freshThread])
@@ -2568,6 +2601,38 @@ test(
             cursor = `?before=${encodeURIComponent(page.messages[0].createdAt)}&beforeId=${page.messages[0].id}&threadId=${freshThread}`;
           }
           assert.deepEqual(seen, expected);
+          const quoted = await db.pool.connect();
+          try {
+            await quoted.query('BEGIN');
+            const clientMessageId = randomUUID();
+            const options = {
+              client: quoted,
+              threadId: freshThread,
+              clientMessageId,
+              replyToMessageId: matches[0].id,
+              replyQuote: 'Fixture',
+            };
+            const posted = await thread.submitUserMessage('Use November here.', [], options);
+            const stored = (
+              await quoted.query('SELECT text,reply_quote FROM messages WHERE id=$1', [
+                posted.messageId,
+              ])
+            ).rows[0];
+            assert.deepEqual(stored, { text: 'Use November here.', reply_quote: 'Fixture' });
+            assert.equal(
+              (await thread.submitUserMessage('Use November here.', [], options)).messageId,
+              posted.messageId,
+            );
+            await assert.rejects(
+              thread.submitUserMessage('Use November here.', [], {
+                ...options,
+                replyQuote: 'Changed passage',
+              }),
+            );
+          } finally {
+            await quoted.query('ROLLBACK');
+            quoted.release();
+          }
           const message = [...seen][0];
           const react = (id: string, reaction: string) =>
             request('POST', `/api/messages/${id}/reaction`, { reaction });
