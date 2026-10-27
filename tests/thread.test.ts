@@ -359,7 +359,8 @@ test(
             ),
         },
         telegram: async () => false,
-        mailCheck: async (email) => /verification code/i.test(`${email.subject}\n${email.text}`),
+        mailCheck: async (emails) =>
+          emails.map((email) => /verification code/i.test(`${email.subject}\n${email.text}`)),
       });
     const onboarding = onboardingFor(ownerId);
     await onboarding.initialize();
@@ -3006,7 +3007,8 @@ test(
               signal: closing.signal,
               answers: async () => [],
               telegram: async () => false,
-              mailCheck: async ({ subject }) => subject === 'Verification code',
+              mailCheck: async (emails) =>
+                emails.map(({ subject }) => subject === 'Verification code'),
               curator: {
                 id: 'fixture',
                 configured: true,
