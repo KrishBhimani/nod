@@ -12,7 +12,7 @@ import { ModelRuntime, type ProviderModelConfig } from '@earendil-works/pi-codin
 import { Agent, Dispatcher1Wrapper } from 'undici';
 import { z } from 'zod';
 import { createRemoteJWKSet, customFetch, jwtVerify } from 'jose';
-import { ModelAuthError } from '../../ports/models.ts';
+import { ModelAuthError, ModelWorkspaceSelectionError } from '../../ports/models.ts';
 import { ElevenLabsConnectionError, readElevenLabsVoices } from '../elevenlabs/speech.ts';
 import type {
   ModelAccess,
@@ -133,6 +133,8 @@ class TokenRejected extends Error {
     super('The ChatGPT token request was rejected.');
   }
 }
+
+class AnthropicBadRequest extends ModelAuthError {}
 
 function chatgptCredential(value: unknown) {
   const parsed = chatgptCredentialSchema.safeParse(value);
@@ -677,6 +679,69 @@ export function createPiModelBackend(options: { fetch?: typeof fetch } = {}): Mo
       result.catch(() => {});
       return { url: url.toString(), state, result, complete };
     },
+    async connectKey(provider, credential) {
+      try {
+        return { credential, models: await this.catalog(provider, 'api_key', credential) };
+      } catch (error) {
+        if (
+          provider !== 'anthropic' ||
+          credential.type !== 'api_key' ||
+          credential.workspaceId ||
+          !(error instanceof AnthropicBadRequest)
+        )
+          throw error;
+      }
+      let workspaces;
+      try {
+        const response = await request(
+          'https://api.anthropic.com/v1/organizations/workspaces?include_default=true&limit=1000',
+          {
+            headers: { 'x-api-key': credential.key, 'anthropic-version': '2023-06-01' },
+            signal: AbortSignal.timeout(15000),
+            redirect: 'error',
+          },
+        );
+        if (!response.ok) {
+          await response.body?.cancel();
+          if ([400, 401, 403, 404].includes(response.status))
+            throw new ModelAuthError(
+              'Nod couldn’t discover a workspace for this key. Enter its Workspace ID from the Claude Console.',
+            );
+          throw new Error(`Anthropic workspace discovery failed (${response.status}).`);
+        }
+        workspaces = z
+          .object({
+            data: z
+              .array(
+                z.object({
+                  id: z
+                    .string()
+                    .min(1)
+                    .max(100)
+                    .regex(/^[\x21-\x7e]+$/),
+                  name: z.string().min(1).max(200),
+                  archived_at: z.null(),
+                }),
+              )
+              .max(1000),
+            has_more: z.boolean(),
+          })
+          .parse(await response.json());
+      } catch (cause) {
+        if (cause instanceof ModelAuthError) throw cause;
+        throw new Error('The model list couldn’t be loaded. Try again.', { cause });
+      }
+      if (!workspaces.data.length)
+        throw new ModelAuthError(
+          'Nod couldn’t discover a workspace for this key. Enter its Workspace ID from the Claude Console.',
+        );
+      if (workspaces.has_more || workspaces.data.length !== 1)
+        throw new ModelWorkspaceSelectionError(
+          workspaces.data.map(({ id, name }) => ({ id, name })),
+        );
+      const resolved = { ...credential, workspaceId: workspaces.data[0].id };
+      return { credential: resolved, models: await this.catalog(provider, 'api_key', resolved) };
+    },
     async catalog(provider: ModelProvider, method: ModelMethod, credential?: ModelCredential) {
       if (provider === 'elevenlabs') {
         if (credential?.type !== 'api_key' || method !== 'api_key')
@@ -717,9 +782,27 @@ export function createPiModelBackend(options: { fetch?: typeof fetch } = {}): Mo
             : `${resource}/models`;
       const headers: Record<string, string> =
         provider === 'anthropic'
-          ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' }
+          ? {
+              'x-api-key': key,
+              'anthropic-version': '2023-06-01',
+              ...(credential.type === 'api_key' && credential.workspaceId
+                ? { 'anthropic-workspace-id': credential.workspaceId }
+                : {}),
+            }
           : { Authorization: `Bearer ${key}` };
       const accepted = async (response: Response) => {
+        if (provider === 'anthropic' && response.status === 400) {
+          await response.body?.cancel();
+          throw new AnthropicBadRequest(
+            'Anthropic didn’t accept this connection. Check the API key and Workspace ID in the Claude Console. Keys that aren’t scoped to one workspace need a Workspace ID.',
+          );
+        }
+        if (provider === 'anthropic' && [403, 404].includes(response.status)) {
+          await response.body?.cancel();
+          throw new ModelAuthError(
+            'Anthropic denied access. Check that the key can use this workspace and list its models.',
+          );
+        }
         if (response.status !== 401) return response;
         await response.body?.cancel();
         throw method === 'subscription'
@@ -971,6 +1054,12 @@ export async function createPiModelRuntime(
       if (credential.type === 'oauth')
         throw new Error('The selected model connection is unavailable.');
       if (credential.key) secrets.add(credential.key);
+      if (provider === 'anthropic' && credential.type === 'api_key')
+        return {
+          type: 'api_key',
+          key: credential.key,
+          env: { ANTHROPIC_WORKSPACE_ID: credential.workspaceId ?? '' },
+        };
       if (provider === 'cloudflare-workers-ai' || provider === 'cloudflare-ai-gateway') {
         const value = cloudflareCredential(provider, credential);
         return {
@@ -1012,6 +1101,24 @@ export async function createPiModelRuntime(
     refreshOnCreate: false,
     allowModelNetwork: false,
   });
+  if (provider === 'anthropic') {
+    const getAuth = runtime.getAuth.bind(runtime);
+    runtime.getAuth = async (target, overrides) => {
+      const result =
+        typeof target === 'string'
+          ? await getAuth(target, overrides)
+          : await getAuth(target, overrides);
+      const workspaceId = result?.env?.ANTHROPIC_WORKSPACE_ID;
+      if (!result || !workspaceId) return result;
+      return {
+        ...result,
+        auth: {
+          ...result.auth,
+          headers: { ...result.auth.headers, 'anthropic-workspace-id': workspaceId },
+        },
+      };
+    };
+  }
   runtime.registerProvider(provider, {
     models: [access.definition, ...(access.textModel ? [access.textModel.definition] : [])].map(
       ({ spec }) => ({

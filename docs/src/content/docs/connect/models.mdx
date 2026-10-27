@@ -83,9 +83,14 @@ ChatGPT sign-in listens on port `1455` where Nod's server runs. If another progr
 <Steps>
 
 1. Next to **Anthropic**, select **Add API key**.
-2. Paste your key into **Anthropic API key**, then select **Save connection**.
+2. Paste your key into **Anthropic API key**.
+3. Select **Save connection**.
 
 </Steps>
+
+Nod uses keys limited to one workspace directly. For other keys, Nod connects automatically when it finds exactly one workspace that accepts the key. If it finds several, choose a named **Workspace** and save again.
+
+If discovery isn't available, expand **Enter workspace ID manually**. Enter the **Workspace ID (optional)** from [Anthropic's workspace settings](https://platform.claude.com/settings/workspaces), then save again. Your API key stays in the form while you choose. No environment variable is needed when connecting in Nod.
 
 </TabItem>
 <TabItem label="OpenRouter">
@@ -300,6 +305,7 @@ Additional settings:
 
 | Service           | Settings                                                                                                                                                   |
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Anthropic         | `ANTHROPIC_WORKSPACE_ID`, required for organization keys that aren't limited to one workspace. Leave empty for keys limited to one workspace.              |
 | Amazon Bedrock    | `AWS_REGION`, such as `us-east-1`. Set `LLM_MODEL` to select a model or inference profile when several are available.                                      |
 | Azure OpenAI      | `AZURE_OPENAI_ENDPOINT` and `AZURE_OPENAI_MODEL`, the model ID your deployment runs. Set `AZURE_OPENAI_DEPLOYMENT` if the deployment has a different name. |
 | Cloudflare        | `CLOUDFLARE_ACCOUNT_ID`, the 32-character hexadecimal account ID. AI Gateway also requires `CLOUDFLARE_GATEWAY_ID`.                                        |

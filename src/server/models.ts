@@ -8,7 +8,7 @@ import type {
   ModelCredential,
   ModelDefinition,
 } from '../ports/models.ts';
-import { ModelAuthError } from '../ports/models.ts';
+import { ModelAuthError, ModelWorkspaceSelectionError } from '../ports/models.ts';
 import type { CredentialKeyStore } from '../ports/key-store.ts';
 import type {
   ModelMethod,
@@ -48,6 +48,7 @@ const keySchema = z
     deployment: z.string().trim().max(200).optional(),
     accountId: z.string().trim().max(100).optional(),
     gatewayId: z.string().trim().max(100).optional(),
+    workspaceId: z.string().trim().max(100).optional(),
   })
   .strict();
 export const modelSelectionInput = z
@@ -100,8 +101,15 @@ export function modelKeyCredential(
     deployment?: string;
     accountId?: string;
     gatewayId?: string;
+    workspaceId?: string;
   },
 ): ModelCredential {
+  if (provider === 'anthropic') {
+    const workspaceId = settings.workspaceId?.trim();
+    if (workspaceId && (workspaceId.length > 100 || !/^[\x21-\x7e]+$/.test(workspaceId)))
+      throw new ConnectionError('Enter a Workspace ID from the Claude Console.');
+    return { type: 'api_key', key, ...(workspaceId ? { workspaceId } : {}) };
+  }
   if (provider === 'amazon-bedrock') {
     if (!settings.region || !bedrockRegionPattern.test(settings.region))
       throw new ConnectionError('Enter an AWS Region, such as us-east-1.');
@@ -148,6 +156,8 @@ function sameAccount(
 }
 
 function connectionLabel(provider: ModelProvider, method: ModelMethod, value: ModelCredential) {
+  if (provider === 'anthropic' && value.type === 'api_key' && value.workspaceId)
+    return value.workspaceId;
   if (value.type === 'oauth') return value.email ?? 'ChatGPT account';
   if (value.type === 'endpoint') return new URL(value.url).host;
   if (value.type === 'bedrock') return value.region;
@@ -808,6 +818,7 @@ export function createModelService(options: {
         deployment?: string;
         accountId?: string;
         gatewayId?: string;
+        workspaceId?: string;
       } = {},
     ) {
       key = key.trim();
@@ -817,6 +828,17 @@ export function createModelService(options: {
       remember(value);
       return tracked(provider, 'api_key', async () => {
         await checkStorage();
+        if (backend.connectKey) {
+          const connected = await backend.connectKey(provider, value).catch((error) => {
+            if (error instanceof ModelWorkspaceSelectionError) throw error;
+            throw new ConnectionError(
+              error instanceof ModelAuthError
+                ? error.message
+                : 'The model list couldn’t be loaded. Try again.',
+            );
+          });
+          return save(provider, 'api_key', connected.credential, connected.models);
+        }
         return save(provider, 'api_key', value, await catalog(provider, 'api_key', value));
       });
     },
@@ -965,6 +987,9 @@ export function createModelService(options: {
               error instanceof ConnectionError || error instanceof ModelAuthError
                 ? error.message
                 : 'The model connection request failed. Check the service and try again.',
+            ...(error instanceof ModelWorkspaceSelectionError
+              ? { workspaces: error.workspaces }
+              : {}),
           }),
         );
         routes.get('/api/models', async () => service.view());

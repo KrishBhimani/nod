@@ -4983,3 +4983,398 @@ test('the runtime sends a recording caption natively while retaining its trusted
     assert.ok(prompts[1].text.includes('Answer this typed follow-up.'));
   }
 });
+
+test('Anthropic workspace connections keep discovery and inference bound to the current owned key', async (t) => {
+  const { createPiModelBackend, createPiModelRuntime } =
+    await import('../src/providers/pi/models.ts');
+  const { modelKeyCredential } = await import('../src/server/models.ts');
+  const workspaceA = 'wrkspc_011SyntheticWorkspaceA';
+  const workspaceB = 'wrkspc_011SyntheticWorkspace-B';
+  const accounts = new Map<string, string | null>([
+    ['sk-ant-api-fixture-scoped', null],
+    ['sk-ant-api-fixture-first', workspaceA],
+    ['sk-ant-api-fixture-second', workspaceB],
+  ]);
+  const previous = process.env.ANTHROPIC_WORKSPACE_ID;
+  process.env.ANTHROPIC_WORKSPACE_ID = 'wrkspc_011UnrelatedAmbient';
+  t.after(() => {
+    if (previous === undefined) delete process.env.ANTHROPIC_WORKSPACE_ID;
+    else process.env.ANTHROPIC_WORKSPACE_ID = previous;
+  });
+  const requests: { path: string; key: string; workspace: string | null }[] = [];
+  const transport: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    assert.equal(url.origin, 'https://api.anthropic.com');
+    const headers = new Headers(init?.headers);
+    const key = headers.get('x-api-key')!;
+    const workspace = headers.get('anthropic-workspace-id');
+    requests.push({ path: url.pathname, key, workspace });
+    if (!accounts.has(key))
+      return Response.json(
+        { error: { type: 'authentication_error', message: key } },
+        { status: 401 },
+      );
+    if (url.pathname === '/v1/organizations/workspaces') {
+      assert.equal(url.search, '?include_default=true&limit=1000');
+      assert.equal(headers.get('anthropic-version'), '2023-06-01');
+      assert.equal(init?.redirect, 'error');
+      assert.equal(workspace, null);
+      assert.equal(key, 'sk-ant-api-fixture-first');
+      return Response.json({
+        data: [{ id: workspaceA, name: 'Synthetic workspace A', archived_at: null }],
+        has_more: false,
+      });
+    }
+    if (workspace !== accounts.get(key))
+      return Response.json(
+        {
+          error: {
+            type: 'invalid_request_error',
+            message: 'This request requires the anthropic-workspace-id header.',
+          },
+        },
+        { status: 400 },
+      );
+    if (url.pathname === '/v1/models') {
+      assert.equal(init?.redirect, 'error');
+      return Response.json({ data: [{ id: 'claude-sonnet-5-5' }] });
+    }
+    assert.equal(url.pathname, '/v1/messages');
+    assert.equal(JSON.parse(String(init?.body)).model, 'claude-sonnet-5-5');
+    const events = [
+      {
+        type: 'message_start',
+        message: {
+          id: 'msg_fixture',
+          type: 'message',
+          role: 'assistant',
+          model: 'claude-sonnet-5-5',
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 8, output_tokens: 0 },
+        },
+      },
+      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Connected.' } },
+      { type: 'content_block_stop', index: 0 },
+      {
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn', stop_sequence: null },
+        usage: { output_tokens: 2 },
+      },
+      { type: 'message_stop' },
+    ];
+    return new Response(
+      events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''),
+      { headers: { 'content-type': 'text/event-stream' } },
+    );
+  };
+  const backend = createPiModelBackend({ fetch: transport });
+  let credential = modelKeyCredential('anthropic', 'sk-ant-api-fixture-scoped', {});
+  const [definition] = await backend.catalog('anthropic', 'api_key', credential);
+  assert.ok(definition);
+  const { runtime, model } = await createPiModelRuntime({
+    provider: 'anthropic',
+    method: 'api_key',
+    definition,
+    effort: 'off',
+    read: async () => credential,
+  });
+  for (const [key, workspaceId] of accounts) {
+    const supplied = modelKeyCredential('anthropic', key, {
+      workspaceId: workspaceId === workspaceB ? workspaceId : undefined,
+    });
+    const before = requests.length;
+    const connected = await backend.connectKey!('anthropic', supplied);
+    credential = connected.credential;
+    const { models } = connected;
+    assert.deepEqual(
+      credential,
+      modelKeyCredential('anthropic', key, { workspaceId: workspaceId ?? undefined }),
+    );
+    assert.deepEqual(
+      supplied,
+      modelKeyCredential('anthropic', key, {
+        workspaceId: workspaceId === workspaceB ? workspaceId : undefined,
+      }),
+    );
+    assert.deepEqual(
+      requests.slice(before),
+      workspaceId === workspaceA
+        ? [
+            { path: '/v1/models', key, workspace: null },
+            { path: '/v1/organizations/workspaces', key, workspace: null },
+            { path: '/v1/models', key, workspace: workspaceA },
+          ]
+        : [{ path: '/v1/models', key, workspace: workspaceId }],
+    );
+    assert.deepEqual(
+      models.map(({ choice }) => choice.id),
+      ['claude-sonnet-5-5'],
+    );
+    assert.ok(!JSON.stringify(models).includes('wrkspc_'));
+    const result = await runtime.completeSimple(
+      model,
+      { messages: [{ role: 'user', content: 'Say hello.', timestamp: 1 }] },
+      { fetch: transport },
+    );
+    assert.equal(result.stopReason, 'stop', result.errorMessage);
+    assert.deepEqual(result.content, [{ type: 'text', text: 'Connected.' }]);
+    assert.deepEqual(requests.at(-1), { path: '/v1/messages', key, workspace: workspaceId });
+  }
+  const count = requests.length;
+  credential = { type: 'api_key', key: 'sk-ant-api-fixture-invalid', workspaceId: workspaceA };
+  const refused = await runtime.completeSimple(
+    model,
+    { messages: [{ role: 'user', content: 'Say hello.', timestamp: 1 }] },
+    { fetch: transport, maxRetries: 5 },
+  );
+  assert.equal(refused.stopReason, 'error');
+  assert.ok(!JSON.stringify(refused).includes('sk-ant-api-fixture-invalid'));
+  assert.equal(requests.length, count + 1);
+});
+
+test('Anthropic workspace discovery offers named choices and separates retryable failures from manual recovery', async (t) => {
+  const { createPiModelBackend } = await import('../src/providers/pi/models.ts');
+  const { ModelAuthError, ModelWorkspaceSelectionError } = await import('../src/ports/models.ts');
+  const key = 'sk-ant-api-fixture-discovery-private';
+  const workspace = {
+    id: 'wrkspc_011SyntheticDiscovery',
+    name: 'Synthetic workspace',
+    archived_at: null,
+  };
+  const otherWorkspace = { id: 'wrkspc_other', name: 'Other workspace', archived_at: null };
+  const choice = { id: workspace.id, name: workspace.name };
+  const bodies: [
+    name: string,
+    body: unknown,
+    choices?: { id: string; name: string }[],
+    manual?: boolean,
+  ][] = [
+    [
+      'two workspaces',
+      { data: [workspace, otherWorkspace], has_more: false },
+      [choice, { id: otherWorkspace.id, name: otherWorkspace.name }],
+    ],
+    ['truncated page', { data: [workspace], has_more: true }, [choice]],
+    ['empty page', { data: [], has_more: false }, undefined, true],
+    ['missing pagination', { data: [workspace] }],
+    ['invalid pagination', { data: [workspace], has_more: 'false' }],
+    ['missing workspace list', { has_more: false }],
+    ['invalid workspace list', { data: workspace, has_more: false }],
+    ['missing archive status', { data: [choice], has_more: false }],
+    ['missing name', { data: [{ id: workspace.id, archived_at: null }], has_more: false }],
+    [
+      'archived workspace',
+      { data: [{ ...workspace, archived_at: '2026-10-27T00:00:00Z' }], has_more: false },
+    ],
+    [
+      'too many workspaces',
+      { data: Array.from({ length: 1001 }, () => workspace), has_more: false },
+    ],
+    ['non-string ID', { data: [{ ...workspace, id: 123 }], has_more: false }],
+    ...['', 'wrkspc_\r\nx-private: injected', 'wrkspc_\tinvalid', 'wrkspc_é', 'x'.repeat(101)].map(
+      (id, index): [string, unknown] => [
+        `unsafe workspace ${index + 1}`,
+        { data: [{ ...workspace, id }], has_more: false },
+      ],
+    ),
+  ];
+  const cases: {
+    name: string;
+    choices?: { id: string; name: string }[];
+    manual?: boolean;
+    status?: number;
+    response(): Response;
+  }[] = [
+    ...bodies.map(([name, body, choices, manual]) => ({
+      name,
+      choices,
+      manual,
+      response: () => Response.json(body),
+    })),
+    ...[400, 401, 403, 404].map((status) => ({
+      name: `discovery status ${status}`,
+      manual: true,
+      response: () => Response.json({ error: { message: key } }, { status }),
+    })),
+    ...[429, 500, 503].map((status) => ({
+      name: `discovery status ${status}`,
+      status,
+      response: () => Response.json({ error: { message: key } }, { status }),
+    })),
+    { name: 'invalid JSON', response: () => new Response('{') },
+    {
+      name: 'network failure',
+      response: () => {
+        throw new Error(key);
+      },
+    },
+  ];
+  for (const scenario of cases)
+    await t.test(scenario.name, { timeout: 30_000 }, async () => {
+      const requests: { url: string; headers: Headers; redirect?: string }[] = [];
+      const backend = createPiModelBackend({
+        fetch: async (input, init) => {
+          const url = new URL(String(input));
+          requests.push({
+            url: url.href,
+            headers: new Headers(init?.headers),
+            redirect: init?.redirect,
+          });
+          if (requests.length === 1)
+            return Response.json({ error: { message: key } }, { status: 400 });
+          assert.equal(requests.length, 2);
+          return scenario.response();
+        },
+      });
+      await assert.rejects(
+        backend.connectKey!('anthropic', { type: 'api_key', key }),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          if (scenario.choices) {
+            assert.ok(error instanceof ModelWorkspaceSelectionError);
+            assert.deepEqual(error.workspaces, scenario.choices);
+          } else if (scenario.manual) {
+            assert.ok(error instanceof ModelAuthError);
+            assert.ok(!(error instanceof ModelWorkspaceSelectionError));
+          } else {
+            assert.ok(!(error instanceof ModelAuthError));
+            assert.ok(error.cause instanceof Error);
+            if (scenario.status) {
+              assert.ok(error.cause.message.includes(String(scenario.status)));
+              assert.ok(!error.message.includes(String(scenario.status)));
+            }
+          }
+          assert.ok(!error.message.includes(key));
+          assert.ok(!JSON.stringify(error).includes(key));
+          return true;
+        },
+      );
+      assert.deepEqual(
+        requests.map(({ url }) => url),
+        [
+          'https://api.anthropic.com/v1/models?limit=1000',
+          'https://api.anthropic.com/v1/organizations/workspaces?include_default=true&limit=1000',
+        ],
+      );
+      for (const { headers, redirect } of requests) {
+        assert.equal(headers.get('x-api-key'), key);
+        assert.equal(headers.get('anthropic-version'), '2023-06-01');
+        assert.equal(headers.get('anthropic-workspace-id'), null);
+        assert.equal(redirect, 'error');
+      }
+    });
+});
+
+test('Anthropic workspace discovery runs only for an unscoped Anthropic bad request', async (t) => {
+  const { createPiModelBackend } = await import('../src/providers/pi/models.ts');
+  const { ModelAuthError } = await import('../src/ports/models.ts');
+  for (const [provider, status, workspaceId] of [
+    ['anthropic', 401, undefined],
+    ['anthropic', 403, undefined],
+    ['anthropic', 404, undefined],
+    ['anthropic', 400, 'wrkspc_011ExplicitWorkspace'],
+    ['openai', 400, undefined],
+  ] as const)
+    await t.test(`${provider} ${status} ${workspaceId ?? 'key only'}`, async () => {
+      const requests: { origin: string; path: string; workspace: string | null }[] = [];
+      const backend = createPiModelBackend({
+        fetch: async (input, init) => {
+          const url = new URL(String(input));
+          const headers = new Headers(init?.headers);
+          requests.push({
+            origin: url.origin,
+            path: url.pathname,
+            workspace: headers.get('anthropic-workspace-id'),
+          });
+          return Response.json({ error: { message: 'Synthetic provider failure' } }, { status });
+        },
+      });
+      await assert.rejects(
+        backend.connectKey!(provider, { type: 'api_key', key: 'sk-fixture-key', workspaceId }),
+        provider === 'anthropic' ? ModelAuthError : Error,
+      );
+      assert.deepEqual(requests, [
+        {
+          origin: `https://api.${provider}.com`,
+          path: '/v1/models',
+          workspace: workspaceId ?? null,
+        },
+      ]);
+    });
+});
+
+test('Anthropic workspace discovery validates the sole candidate and stops when access is denied', async () => {
+  const { createPiModelBackend } = await import('../src/providers/pi/models.ts');
+  const { ModelAuthError } = await import('../src/ports/models.ts');
+  const key = 'sk-ant-api-fixture-discovery-denied';
+  const workspaceId = 'wrkspc_011InaccessibleWorkspace';
+  const requests: { path: string; workspace: string | null }[] = [];
+  const backend = createPiModelBackend({
+    fetch: async (input, init) => {
+      const url = new URL(String(input));
+      const headers = new Headers(init?.headers);
+      const workspace = headers.get('anthropic-workspace-id');
+      requests.push({ path: url.pathname, workspace });
+      assert.equal(headers.get('x-api-key'), key);
+      if (url.pathname === '/v1/organizations/workspaces')
+        return Response.json({
+          data: [{ id: workspaceId, name: 'Inaccessible workspace', archived_at: null }],
+          has_more: false,
+        });
+      assert.equal(url.pathname, '/v1/models');
+      return Response.json({ error: { message: key } }, { status: workspace ? 403 : 400 });
+    },
+  });
+  const supplied = { type: 'api_key', key } as const;
+  await assert.rejects(backend.connectKey!('anthropic', supplied), (error: unknown) => {
+    assert.ok(error instanceof ModelAuthError);
+    assert.ok(!error.message.includes(key));
+    return true;
+  });
+  assert.deepEqual(supplied, { type: 'api_key', key });
+  assert.deepEqual(requests, [
+    { path: '/v1/models', workspace: null },
+    { path: '/v1/organizations/workspaces', workspace: null },
+    { path: '/v1/models', workspace: workspaceId },
+  ]);
+});
+
+test('Anthropic connection failures explain workspace access without leaking provider responses', async () => {
+  const { createPiModelBackend } = await import('../src/providers/pi/models.ts');
+  const { ModelAuthError } = await import('../src/ports/models.ts');
+  for (const [status, message, expected] of [
+    [
+      400,
+      'The anthropic-workspace-id header is required. sk-ant-api-fixture-private',
+      /Workspace ID/,
+    ],
+    [400, 'sk-ant-api-fixture-private', /Workspace ID/],
+    [401, 'sk-ant-api-fixture-private', /API key/],
+    [403, 'sk-ant-api-fixture-private', /access/],
+    [404, 'sk-ant-api-fixture-private', /access/],
+  ] as const) {
+    let calls = 0;
+    const backend = createPiModelBackend({
+      fetch: async () => {
+        calls++;
+        return Response.json({ error: { type: 'invalid_request_error', message } }, { status });
+      },
+    });
+    await assert.rejects(
+      backend.catalog('anthropic', 'api_key', {
+        type: 'api_key',
+        key: 'sk-ant-api-fixture-private',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof ModelAuthError);
+        assert.match(error.message, expected);
+        assert.ok(!error.message.includes('sk-ant-api-fixture-private'));
+        return true;
+      },
+    );
+    assert.equal(calls, 1);
+  }
+});
