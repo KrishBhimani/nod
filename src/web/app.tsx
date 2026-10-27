@@ -10,6 +10,7 @@ import { Tasks } from './pages/tasks';
 import { PreparedWork } from './pages/prepared';
 import { useAppState } from './hooks/use-app-state';
 import { useChatUnread } from './hooks/use-chat-unread';
+import { useBrowserNotifications } from './hooks/use-browser-notifications';
 import { prefetchPageData } from './hooks/use-page-data';
 import { Button, Notice } from './components/ui';
 import { ChatSkeleton } from './components/startup';
@@ -90,6 +91,8 @@ function Workspace({
   account,
   onFeedback,
   onDismissFeedbackDiscovery,
+  initialFocusMessageId,
+  onFocusMessageHandled,
   settings,
 }: {
   path: string;
@@ -97,18 +100,24 @@ function Workspace({
   account: AccountControls;
   onFeedback(): void;
   onDismissFeedbackDiscovery?(): void;
+  initialFocusMessageId?: string;
+  onFocusMessageHandled(): void;
   settings: ReactNode;
 }) {
   const { state, streams, error, connected, refresh, resetConversation } = useAppState(
     session.user!.id,
   );
   const unread = useChatUnread(session.user!.id, state);
+  useBrowserNotifications(session.user!.id, state);
   useSavedDateFormat();
   useBrowserTimeZone();
   const [collapsed, setCollapsed] = useState(() => readUiPreference('nod.sidebar') !== 'expanded');
   const [sidebarMotion, setSidebarMotion] = useState(false);
   const [toolbarActions, setToolbarActions] = useState<HTMLDivElement | null>(null);
-  const [pendingMessageFocus, setPendingMessageFocus] = useState<string>();
+  const [pendingMessageFocus, setPendingMessageFocus] = useState(initialFocusMessageId);
+  useEffect(() => {
+    if (initialFocusMessageId) onFocusMessageHandled();
+  }, [initialFocusMessageId]);
   const [notificationTarget, setNotificationTarget] = useState<{
     threadId: string;
     messageId: string;
@@ -267,6 +276,29 @@ function Workspace({
     </div>
   );
 }
+function BrowserNotificationWindow({
+  ownerId,
+  onFocusMessage,
+}: {
+  ownerId: string;
+  onFocusMessage(messageId: string): void;
+}) {
+  const { state } = useAppState(ownerId);
+  useBrowserNotifications(ownerId, state);
+  useEffect(() => {
+    const focusMessage = (event: Event) => {
+      const detail = (event as CustomEvent<{ messageId?: unknown }>).detail;
+      if (typeof detail?.messageId === 'string') {
+        onFocusMessage(detail.messageId);
+        navigate('/');
+      }
+    };
+    window.addEventListener('nod:focus-message', focusMessage);
+    return () => window.removeEventListener('nod:focus-message', focusMessage);
+  }, [onFocusMessage]);
+  return <BrowserWindow />;
+}
+
 function AuthenticatedApp({
   path,
   session,
@@ -327,6 +359,7 @@ function AuthenticatedApp({
   useEffect(() => {
     if (!settingsOpen && path !== '/memory') settingsReturn.current = { path, trigger: null };
   }, [path, settingsOpen]);
+  const [browserNotificationTarget, setBrowserNotificationTarget] = useState<string>();
   const [finishingOnboarding, setFinishingOnboarding] = useState(false);
   const onboarding =
     finishingOnboarding || !session.settings!.onboardingCompleted || replayingOnboarding(path);
@@ -463,7 +496,15 @@ function AuthenticatedApp({
           </Button>
         </main>
       ) : path === '/browser' ? (
-        <BrowserWindow />
+        desktopSettingsAvailable() ? (
+          <BrowserWindow />
+        ) : (
+          <BrowserNotificationWindow
+            key={session.user!.id}
+            ownerId={session.user!.id}
+            onFocusMessage={setBrowserNotificationTarget}
+          />
+        )
       ) : match ? (
         match[1] === 'payments' ? (
           <Payment key={match[2]} id={match[2]} />
@@ -491,6 +532,8 @@ function AuthenticatedApp({
           path={path}
           session={session}
           account={account}
+          initialFocusMessageId={browserNotificationTarget}
+          onFocusMessageHandled={() => setBrowserNotificationTarget(undefined)}
           settings={
             <AccountSettings
               account={account}
