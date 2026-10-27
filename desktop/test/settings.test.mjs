@@ -36,6 +36,8 @@ import appPages from '../../src/shared/app-pages.json' with { type: 'json' };
 test('external app links can only open named screens without action data', () => {
   for (const path of Object.keys(appPages))
     assert.equal(appOpenPath(`nod://open${path}`, appPages), path);
+  const prepared = `/prepared/${randomUUID()}`;
+  assert.equal(appOpenPath(`nod://open${prepared}`, appPages), prepared);
   for (const value of [
     undefined,
     'https://example.test/settings/models',
@@ -48,6 +50,10 @@ test('external app links can only open named screens without action data', () =>
     'nod://open/settings/../apps',
     'nod://open/credentials/request-id',
     'nod://open@evil.test/apps',
+    'nod://open/prepared/not-an-id',
+    `nod://open${prepared}?action=send`,
+    `nod://open${prepared}#secret`,
+    `nod://open${prepared}/../apps`,
   ])
     assert.equal(appOpenPath(value, appPages), null);
 });
@@ -3280,6 +3286,20 @@ test('the remote desktop starts without a local runtime and fences tokens to its
       requestHeaders: { authorization: 'forged', 'X-Nod-Desktop-Token': 'forged' },
     };
     assert.equal((await f.headers(request)).requestHeaders.Authorization, `Bearer ${token}`);
+    const prepared = `/prepared/${randomUUID()}`;
+    f.openLink(`nod://open${prepared}`);
+    assert.deepEqual(window.sent.at(-1), ['nod:navigate', prepared]);
+    frame.url = `${url}${prepared}`;
+    const preparedRequest = { ...request, url: `${url}/api${prepared}` };
+    assert.equal(
+      (await f.headers(preparedRequest)).requestHeaders.Authorization,
+      `Bearer ${token}`,
+    );
+    for (const path of ['/prepared/not-an-id', `${prepared}/extra`, '/api/artifacts/synthetic']) {
+      frame.url = `${url}${path}`;
+      assert.equal(Object.keys((await f.headers(preparedRequest)).requestHeaders).length, 0);
+    }
+    frame.url = url;
     for (const change of [
       { url: 'https://other.example.test/api/session' },
       { url: 'http://assistant.example.test/api/session' },
