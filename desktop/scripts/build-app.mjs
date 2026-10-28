@@ -209,6 +209,11 @@ const paths = await packager({
   },
 });
 const application = join(paths[0], `${configuration.productName}.app`);
+await run('/usr/libexec/PlistBuddy', [
+  '-c',
+  `Set :CFBundleDisplayName ${configuration.productName}`,
+  join(application, 'Contents/Info.plist'),
+]);
 await rename(engine, join(application, 'Contents', 'Resources', 'engine'));
 const licenses = join(application, 'Contents', 'Resources', 'licenses');
 await mkdir(licenses, { recursive: true });
