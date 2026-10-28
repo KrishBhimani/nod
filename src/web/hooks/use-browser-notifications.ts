@@ -21,6 +21,8 @@ export function useBrowserNotifications(ownerId: string, state: AppState | null)
       active: true,
       initialized: false,
       epoch: sessionStore.getSnapshot().epoch,
+      consent: browserNotificationStatus(ownerId),
+      consentGeneration: 0,
       pending: undefined as Message | undefined,
       seen: new Set<string>(),
       displayed: new Set<Notification>(),
@@ -36,11 +38,15 @@ export function useBrowserNotifications(ownerId: string, state: AppState | null)
       for (const notification of scope.displayed) notification.close();
       scope.displayed.clear();
     };
-    const unsubscribe = subscribeBrowserNotifications(() => {
-      if (!browserNotificationStatus(ownerId).enabled) {
+    const unsubscribe = subscribeBrowserNotifications(ownerId, (revoked) => {
+      const consent = browserNotificationStatus(ownerId);
+      if (revoked || !consent.enabled) {
+        if (revoked || scope.consent.enabled || scope.consent.choice !== consent.choice)
+          scope.consentGeneration++;
         scope.pending = undefined;
         clear();
       }
+      scope.consent = consent;
     });
     return () => {
       scope.active = false;
@@ -64,9 +70,11 @@ export function useBrowserNotifications(ownerId: string, state: AppState | null)
     if (!scope.pending || !preferences) return;
     const message = scope.pending;
     scope.pending = undefined;
+    const consentGeneration = scope.consentGeneration;
     const isCurrent = () =>
       scope.active &&
       current.current.scope === scope &&
+      scope.consentGeneration === consentGeneration &&
       sessionStore.getSnapshot().epoch === scope.epoch &&
       sessionStore.getSnapshot().session?.user?.id === ownerId;
     const canDeliver = () =>

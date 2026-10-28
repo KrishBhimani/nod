@@ -579,6 +579,10 @@ async function runningDesktop(
       show() {
         notifications.push(this);
       }
+      close() {
+        this.closed = true;
+        this.emit('close');
+      }
     },
     MessageChannelMain: class {
       port1 = { end: 'engine' };
@@ -2944,6 +2948,80 @@ test('native settings reject foreign windows, subframes, AI credentials, and web
     await assert.rejects(invoke('nod:runtime:install-wsl', rejected));
 });
 
+test('native notification confirmation follows only successful owned enable transitions', async (t) => {
+  const f = await runningDesktop(t, async () => Response.json({ ok: true }), {
+    initialState: 'fresh',
+    allowStart: true,
+    notificationsSupported: true,
+    webPreferences: { quietHoursEnabled: true, quietStart: '00:00', quietEnd: '23:59' },
+  });
+  try {
+    await f.storage.store.save({
+      notifications: true,
+      launchAtLogin: true,
+      onboardingCompleted: true,
+    });
+    await f.launch();
+    await f.settle();
+    f.showEngine();
+    const window = f.windows.at(-1);
+    window.focus();
+    const event = { sender: window.webContents, senderFrame: window.webContents.mainFrame };
+    const save = (value, target = event) => f.handlers.get('nod:settings:save')(target, value);
+    assert.equal(f.notifications.length, 0);
+    await save({ notifications: true });
+    await save({ notifications: false });
+    await save({ theme: 'dark' });
+    assert.equal(f.notifications.length, 0);
+    await assert.rejects(save({ notifications: true }, { ...event, sender: {} }));
+    await assert.rejects(
+      save({ notifications: true }, { ...event, senderFrame: { url: window.url } }),
+    );
+    const failedSave = t.mock.method(f.storage.store, 'save', async () => {
+      throw new Error('Synthetic settings write failure.');
+    });
+    await assert.rejects(save({ notifications: true }), /settings write failure/);
+    failedSave.mock.restore();
+    assert.equal((await f.storage.reopen().get()).notifications, false);
+    assert.equal(f.notifications.length, 0);
+    await Promise.all([save({ notifications: true }), save({ notifications: true })]);
+    assert.equal((await f.storage.reopen().get()).notifications, true);
+    assert.equal(f.notifications.length, 1);
+    const first = f.notifications[0];
+    first.emit('show');
+    assert.notEqual(first.closed, true);
+    await save({ notifications: true });
+    await save({ theme: 'light' });
+    assert.equal(f.notifications.length, 1);
+    await save({ notifications: false });
+    assert.equal(first.closed, true);
+    assert.equal(f.notifications.length, 1);
+    await save({ notifications: true });
+    assert.equal(f.notifications.length, 2);
+    const delayed = f.notifications.at(-1);
+    const close = delayed.close.bind(delayed);
+    let shown = false;
+    t.mock.method(delayed, 'close', () => {
+      if (shown) close();
+    });
+    await save({ notifications: false });
+    assert.notEqual(delayed.closed, true);
+    await save({ notifications: true });
+    assert.equal(f.notifications.length, 3);
+    const last = f.notifications.at(-1);
+    shown = true;
+    delayed.emit('show');
+    assert.equal(delayed.closed, true);
+    last.emit('show');
+    assert.notEqual(last.closed, true);
+    await f.close();
+    last.emit('show');
+    assert.equal(last.closed, true);
+  } finally {
+    await f.close();
+  }
+});
+
 test('an engine crash retires every stale chat window before recovery opens the new engine', async (t) => {
   const requests = [];
   const f = await runningDesktop(
@@ -4785,13 +4863,16 @@ test('background update readiness respects notification permission and quiet tim
       { sender: window.webContents, senderFrame: window.webContents.mainFrame },
       { notifications: scenario.enabled },
     );
+    const confirmationCount = Number(scenario.enabled && scenario.supported);
+    assert.equal(f.notifications.length, confirmationCount);
     await f.checkUpdates(updater, false);
     await f.checkUpdates(updater, false);
     assert.equal(prompts.length, 0);
-    assert.equal(f.notifications.length, scenario.expected);
+    assert.equal(f.notifications.length, confirmationCount + scenario.expected);
+    const updateNotifications = f.notifications.slice(confirmationCount);
     assert.equal(updater.ready, candidate);
     assert.equal(f.updateMenu.enabled, true);
-    if (scenario.expected) f.notifications[0].emit('click');
+    if (scenario.expected) updateNotifications[0].emit('click');
     await f.checkUpdates(updater);
     assert.equal(prompts.length, 1);
     assert.equal(selections, 1);

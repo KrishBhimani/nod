@@ -243,6 +243,10 @@ const readinessNotice = createReadinessNotice({
         : 'Your computer is ready. Come back to finish setup.',
     });
     displayedNotifications.add(notification);
+    notification.on('show', () => {
+      if (!displayedNotifications.has(notification) || !preferences.notifications || quitting)
+        notification.close();
+    });
     notification.on('click', () => {
       if (!quitting) showEngine();
     });
@@ -347,6 +351,8 @@ function synchronizeNotifications() {
     if (clear) {
       unreadBadge?.stop();
       unreadBadge = undefined;
+      for (const notification of displayedNotifications) notification.close();
+      displayedNotifications.clear();
     }
     return;
   }
@@ -399,6 +405,10 @@ async function notifyAssistantMessage(message, threadId) {
     body: assistantNotificationPreview(message, knownSecrets),
   });
   displayedNotifications.add(notification);
+  notification.on('show', () => {
+    if (!displayedNotifications.has(notification) || !preferences.notifications || quitting)
+      notification.close();
+  });
   notification.on('click', () => {
     if (quitting) return;
     showEngine();
@@ -417,6 +427,23 @@ async function notifyAssistantMessage(message, threadId) {
   notification.on('close', () => displayedNotifications.delete(notification));
   notification.on('failed', () => displayedNotifications.delete(notification));
   app.dock?.bounce('informational');
+  notification.show();
+}
+
+function showNotificationConfirmation() {
+  if (!preferences.notifications || quitting || !Notification.isSupported()) return;
+  const notification = new Notification({
+    title: 'Nod',
+    icon: notificationIcon,
+    body: 'Notifications are on.',
+  });
+  displayedNotifications.add(notification);
+  notification.on('show', () => {
+    if (!displayedNotifications.has(notification) || !preferences.notifications || quitting)
+      notification.close();
+  });
+  notification.on('close', () => displayedNotifications.delete(notification));
+  notification.on('failed', () => displayedNotifications.delete(notification));
   notification.show();
 }
 
@@ -1400,6 +1427,10 @@ async function notifyUpdate(candidate) {
     body: 'Restart Nod to use the new version.',
   });
   displayedNotifications.add(notification);
+  notification.on('show', () => {
+    if (!displayedNotifications.has(notification) || !preferences.notifications || quitting)
+      notification.close();
+  });
   notification.on('click', () => {
     if (!quitting && updates?.ready) void checkForUpdates();
   });
@@ -2115,7 +2146,9 @@ else {
         }
         onboardingCompleted = remoteConnection ? true : saved.onboardingCompleted;
         if (onboardingCompleted) nativePreferencesPending = false;
+        const confirmNotifications = value.notifications === true && !preferences.notifications;
         applyPreferences(saved);
+        if (confirmNotifications) showNotificationConfirmation();
         for (const window of engineWindows) deliverAppLink(window);
         if (!['preparing', 'starting', 'error'].includes(status.phase))
           update({ message: 'Ready.' });

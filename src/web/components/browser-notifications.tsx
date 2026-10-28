@@ -20,6 +20,8 @@ function useNotificationChoice(ownerId: string) {
       active: true,
       pending: false,
       epoch: sessionStore.getSnapshot().epoch,
+      consent: browserNotificationStatus(ownerId),
+      consentGeneration: 0,
       confirmations: new Set<Notification>(),
     }),
     [ownerId],
@@ -35,11 +37,15 @@ function useNotificationChoice(ownerId: string) {
     scope.active = true;
     setBusy(false);
     setError('');
-    const unsubscribe = subscribeBrowserNotifications(() => {
-      if (!browserNotificationStatus(ownerId).enabled) {
+    const unsubscribe = subscribeBrowserNotifications(ownerId, (revoked) => {
+      const consent = browserNotificationStatus(ownerId);
+      if (revoked || !consent.enabled) {
+        if (revoked || scope.consent.enabled || scope.consent.choice !== consent.choice)
+          scope.consentGeneration++;
         for (const notification of scope.confirmations) notification.close();
         scope.confirmations.clear();
       }
+      scope.consent = consent;
       refresh((value) => value + 1);
     });
     return () => {
@@ -53,10 +59,12 @@ function useNotificationChoice(ownerId: string) {
     scope.pending = true;
     setBusy(true);
     setError('');
+    const consentGeneration = scope.consentGeneration;
+    const isAllowed = () => isCurrent() && scope.consentGeneration === consentGeneration;
     try {
-      const notification = await setBrowserNotifications(ownerId, enabled, isCurrent);
+      const notification = await setBrowserNotifications(ownerId, enabled, isAllowed);
       if (notification) {
-        if (!isCurrent()) notification.close();
+        if (!isAllowed()) notification.close();
         else {
           scope.confirmations.add(notification);
           notification.onclose = () => scope.confirmations.delete(notification);
@@ -118,20 +126,18 @@ export function BrowserNotificationPrompt({ ownerId }: { ownerId: string }) {
 
 export function BrowserNotificationSettings({ ownerId }: { ownerId: string }) {
   const choice = useNotificationChoice(ownerId);
-  const optedIn = choice.choice === 'enabled';
   if (desktopSettingsAvailable()) return null;
   return (
-    <section className="account-region" aria-label="Browser notifications">
+    <section className="account-region" aria-label="Notifications">
+      <h2 data-analytics-public>Notifications</h2>
       <div className="account-preference-row">
         <span data-analytics-public>
           <Bell size={16} aria-hidden="true" />
           Browser notifications
         </span>
         <Switch
-          checked={optedIn}
-          disabled={
-            choice.busy || (!optedIn && (!choice.available || choice.permission === 'denied'))
-          }
+          checked={choice.enabled}
+          disabled={choice.busy || !choice.available || choice.permission === 'denied'}
           aria-label="Browser notifications"
           onCheckedChange={(enabled) => void choice.change(enabled)}
         />
@@ -140,9 +146,25 @@ export function BrowserNotificationSettings({ ownerId }: { ownerId: string }) {
         {!choice.available
           ? 'Notifications need a supported browser and a secure connection.'
           : choice.permission === 'denied'
-            ? 'Allow notifications for this site in your browser settings to enable them.'
-            : 'Get notified by Nod while you’re away. Keep this tab open to receive replies.'}
+            ? 'Blocked by your browser. Allow notifications for this site in your browser settings.'
+            : choice.permission === 'default'
+              ? 'Turn on to allow Nod to notify you about new replies.'
+              : choice.enabled
+                ? 'On in this browser. Nod will notify you about new replies while you’re away. Keep this tab open.'
+                : 'Get notified by Nod while you’re away. Keep this tab open to receive replies.'}
       </p>
+      {choice.enabled && (
+        <div className="account-settings-actions">
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={choice.busy}
+            onClick={() => void choice.change(true)}
+          >
+            Send test notification
+          </Button>
+        </div>
+      )}
       {choice.error && <Notice>{choice.error}</Notice>}
     </section>
   );

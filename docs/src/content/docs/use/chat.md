@@ -104,6 +104,10 @@ Quick answers, single lookups, brief summaries of supplied content and simple ac
 
 Choose **Enable notifications** after the first introduction, or turn them on in **Settings → General**. **Not now** dismisses the offer. Nod only asks your browser for permission after you choose to enable notifications. If you block the request, allow notifications in the browser’s site settings before trying again.
 
+If your browser resets or blocks permission, the switch turns off. Once your browser allows requests again, turn on **Browser notifications** in **Settings → General** to ask for permission. The switch stays off until permission is granted. Dismissing the request leaves it off; you can try again with the same switch. When enabled, **Send test notification** lets you check delivery.
+
+On desktop, enabling notifications sends a confirmation. If it does not appear, allow Nod in your computer’s notification settings and check Focus or Do Not Disturb.
+
 Notifications use Nod's name and icon. In the web app, they announce a new reply without showing its contents. Keep the Nod tab open to receive them while it is in the background. Select a notification to return to its message. Ordinary browser tabs may also show the browser’s name; the operating system controls that attribution.
 
 The web choice applies to this account in this browser. Turning it off does not revoke the browser’s site permission. Quiet hours apply to web and desktop notifications.
