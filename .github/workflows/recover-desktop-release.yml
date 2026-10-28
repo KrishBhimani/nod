@@ -27,6 +27,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       NOD_SIGNING_MODE: ${{ vars.NOD_SIGNING_MODE || 'self-signed' }}
+      NOD_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
       NOD_SIGNING_CERTIFICATE_SHA256: ${{ vars.APPLE_CERTIFICATE_SHA256 }}
       NOD_DESKTOP_UPDATE_SOURCE_URL: ${{ vars.NOD_DESKTOP_UPDATE_SOURCE_URL }}
       NOD_RELEASE_PLAN: .local/desktop-release-plan.json
