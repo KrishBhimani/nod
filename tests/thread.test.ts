@@ -3910,6 +3910,81 @@ test(
             await quoted.query('ROLLBACK');
             quoted.release();
           }
+          const fullReplyText = `**${'Launch scope '.repeat(10_000).trim()}**`;
+          await db.pool.query('UPDATE messages SET text=$1 WHERE id=$2', [
+            fullReplyText,
+            matches[0].id,
+          ]);
+          for (const replyQuote of [null, '<button data-x="1"> *literal*']) {
+            const id = randomUUID();
+            await db.pool.query(
+              "INSERT INTO messages(id,owner_id,role,text,thread_id,reply_to_message_id,reply_quote) VALUES($1,$2,'user','About this passage',$3,$4,$5)",
+              [id, ownerId, freshThread, matches[0].id, replyQuote],
+            );
+            const response = await request('GET', `/api/messages/around/${id}`);
+            assert.equal(response.statusCode, 200);
+            const reply = response
+              .json<
+                Array<{ id: string; replyTo: { id: string; text: string; isQuote: boolean } }>
+              >()
+              .find((item) => item.id === id)!.replyTo;
+            assert.equal(reply.id, matches[0].id);
+            assert.equal(reply.isQuote, replyQuote !== null);
+            if (replyQuote) assert.equal(reply.text, replyQuote);
+            else {
+              assert.ok(reply.text.startsWith('**Launch scope '));
+              assert.ok(reply.text.trimEnd().endsWith('**'));
+              assert.ok(reply.text.length <= 4000);
+            }
+          }
+          const original = await request('GET', `/api/messages/around/${matches[0].id}`);
+          assert.equal(
+            original
+              .json<Array<{ id: string; text: string }>>()
+              .find(({ id }) => id === matches[0].id)!.text,
+            fullReplyText,
+          );
+          const repeated = await db.pool.query<{ id: string }>(
+            "INSERT INTO messages(id,owner_id,role,text,thread_id,reply_to_message_id) SELECT gen_random_uuid(),$1,'user','Repeated reply',$2,$3 FROM generate_series(1,150) RETURNING id",
+            [ownerId, freshThread, matches[0].id],
+          );
+          const repeatedIds = repeated.rows.map(({ id }) => id);
+          try {
+            const response = await request('GET', '/api/state');
+            assert.equal(response.statusCode, 200);
+            const replies = response
+              .json<{ messages: Array<{ id: string; replyTo: { text: string } }> }>()
+              .messages.filter(({ id }) => repeatedIds.includes(id));
+            assert.equal(replies.length, 150);
+            assert.ok(replies.every(({ replyTo }) => replyTo.text.length <= 4000));
+            assert.ok(response.rawPayload.length < 700_000);
+          } finally {
+            await db.pool.query('DELETE FROM messages WHERE id=ANY($1::uuid[])', [repeatedIds]);
+          }
+          for (const [source, expected] of [
+            [`${'<div>'.repeat(6000)}Nested content${'</div>'.repeat(6000)}`, /Nested content/],
+            [`${'> '.repeat(1800)}Nested content`, /Nested content/],
+            [`<div>${'<p></p>'.repeat(10000)}Visible final text</div>`, /Visible final text/],
+            [
+              `<div data-padding="${'x'.repeat(1000)}">First block<br>Second block</div>`,
+              /First block\s+Second block/,
+            ],
+            [`**${'a'.repeat(999)}😀**`, /^\*\*a/],
+          ] as const) {
+            await db.pool.query('UPDATE messages SET text=$1 WHERE id=$2', [source, matches[0].id]);
+            const response = await request('GET', '/api/state');
+            assert.equal(response.statusCode, 200);
+            const reply = response
+              .json<{
+                messages: Array<{ replyTo?: { id: string; text: string; isQuote: boolean } }>;
+              }>()
+              .messages.find(
+                ({ replyTo }) => replyTo?.id === matches[0].id && !replyTo.isQuote,
+              )!.replyTo!;
+            assert.match(reply.text, expected);
+            assert.doesNotMatch(reply.text, /\p{Surrogate}/u);
+            assert.ok(reply.text.length <= 4000);
+          }
           const message = [...seen][0];
           const react = (id: string, reaction: string) =>
             request('POST', `/api/messages/${id}/reaction`, { reaction });

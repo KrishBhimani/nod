@@ -83,6 +83,90 @@ const messageSchema = {
   tagNames: [...(defaultSchema.tagNames ?? []), 'u'],
 };
 
+function QuoteBlock({ children }: { children?: React.ReactNode }) {
+  return <span> {children} </span>;
+}
+
+export function MessageQuote({
+  message,
+  composing = false,
+}: {
+  message: NonNullable<Message['replyTo']>;
+  composing?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      className="message-reply-quote"
+      title="Go to original message"
+      onClick={() =>
+        window.dispatchEvent(
+          new CustomEvent('nod:focus-message', { detail: { messageId: message.id } }),
+        )
+      }
+    >
+      <strong>
+        {composing ? 'Replying to ' : ''}
+        {message.role === 'assistant' ? 'Nod' : composing ? 'yourself' : 'You'}
+      </strong>
+      <span
+        className="message-excerpt"
+        style={{ whiteSpace: message.isQuote ? 'pre-wrap' : 'normal' }}
+      >
+        {message.isQuote ? (
+          message.text
+        ) : (
+          <Markdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeRaw, rehypeMessageBreaks, [rehypeSanitize, messageSchema]]}
+            allowedElements={[
+              'p',
+              'div',
+              'blockquote',
+              'pre',
+              'li',
+              'td',
+              'th',
+              'h1',
+              'h2',
+              'h3',
+              'h4',
+              'h5',
+              'h6',
+              'strong',
+              'em',
+              'del',
+              'code',
+              'u',
+              'br',
+              'img',
+            ]}
+            unwrapDisallowed
+            components={{
+              p: QuoteBlock,
+              div: QuoteBlock,
+              blockquote: QuoteBlock,
+              pre: QuoteBlock,
+              li: QuoteBlock,
+              td: QuoteBlock,
+              th: QuoteBlock,
+              h1: QuoteBlock,
+              h2: QuoteBlock,
+              h3: QuoteBlock,
+              h4: QuoteBlock,
+              h5: QuoteBlock,
+              h6: QuoteBlock,
+              img: ({ alt }) => <span>{alt || 'Image'}</span>,
+            }}
+          >
+            {message.text || 'Attachment'}
+          </Markdown>
+        )}
+      </span>
+    </button>
+  );
+}
+
 export const MessageText = memo(function MessageText({
   text,
   previews = false,
@@ -508,33 +592,7 @@ export function MessageBubble({
                 });
               }}
             >
-              {visibleReply && (
-                <blockquote
-                  className="message-reply-quote"
-                  role="button"
-                  tabIndex={0}
-                  title="Go to original message"
-                  onClick={() =>
-                    window.dispatchEvent(
-                      new CustomEvent('nod:focus-message', {
-                        detail: { messageId: visibleReply.id },
-                      }),
-                    )
-                  }
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault();
-                      window.dispatchEvent(
-                        new CustomEvent('nod:focus-message', {
-                          detail: { messageId: visibleReply.id },
-                        }),
-                      );
-                    }
-                  }}
-                >
-                  <span>{visibleReply.text || 'Attachment'}</span>
-                </blockquote>
-              )}
+              {visibleReply && <MessageQuote message={visibleReply} />}
               {message.role === 'user' && message.attachments.length > 0 && (
                 <MessageAttachments attachments={message.attachments} />
               )}
@@ -572,6 +630,17 @@ export function MessageBubble({
                 >
                   {formatTime(message.createdAt, dateFormat)}
                 </time>
+                {onReply && (
+                  <button
+                    type="button"
+                    className="message-trigger message-reply-trigger"
+                    aria-label="Reply to message"
+                    title="Reply"
+                    onClick={() => reply('button')}
+                  >
+                    <CornerUpLeft size={17} aria-hidden="true" />
+                  </button>
+                )}
                 {message.role === 'assistant' && (
                   <button
                     type="button"
