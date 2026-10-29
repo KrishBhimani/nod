@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict';
-import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  pbkdf2Sync,
+  randomBytes,
+  randomUUID,
+} from 'node:crypto';
 import {
   appendFile,
   mkdir,
@@ -34,7 +41,9 @@ import { createAppPreferencesStore } from '../main/app-preferences.mjs';
 import { createChatReadCursorStore } from '../main/chat-read-cursors.mjs';
 import { createReadinessNotice, createUnreadBadge, isQuietTime } from '../main/notifications.mjs';
 import { saveArtifactDownload } from '../main/downloads.mjs';
+import { createArtifactFiles } from '../main/artifact-files.mjs';
 import { createDesktopLifecycle } from '../main/lifecycle.mjs';
+import { createMacEncryption } from '../main/mac-encryption.mjs';
 import { appOpenPath } from '../main/app-links.mjs';
 import appPages from '../../src/shared/app-pages.json' with { type: 'json' };
 
@@ -389,6 +398,7 @@ async function runningDesktop(
     updateLoginItems = () => true,
     loginItemStatus = () => ({}),
     webPreferences = { quietHoursEnabled: false },
+    createFiles = createArtifactFiles,
     openFile = open,
     environment = {},
     platform = process.platform === 'win32' ? 'win32' : 'darwin',
@@ -542,6 +552,7 @@ async function runningDesktop(
     clearTimeout,
     fetch: request,
     createSettingsStore: () => storage.store,
+    createMacEncryption,
     serverOrigin,
     setupResource,
     desktopContentPolicy,
@@ -552,6 +563,7 @@ async function runningDesktop(
       get: async () => ({ preferences: webPreferences }),
     }),
     createChatReadCursorStore,
+    createArtifactFiles: createFiles,
     saveArtifactDownload,
     createReadinessNotice,
     createUnreadBadge,
@@ -736,8 +748,14 @@ async function runningDesktop(
       'import.meta.url',
       JSON.stringify(new URL('../main/main.mjs', import.meta.url).href),
     );
+  const artifactHandlers = (
+    await readFile(new URL('../main/artifact-file-handlers.mjs', import.meta.url), 'utf8')
+  )
+    .replace(/^import[\s\S]*?;\n/gm, '')
+    .replace('export function', 'function');
   await runInNewContext(
     `(async () => {
+    ${artifactHandlers}
     ${source}
     appLinksReady = true;
     engine = {};
@@ -778,6 +796,8 @@ async function runningDesktop(
       status: () => status,
       notifyReady: updateReadinessNotice,
       checkUpdates: (updater, manual = true) => { updates = updater; return checkForUpdates(manual); },
+      registerFiles: () => { ${source.slice(source.indexOf('      disposeArtifactFiles = registerArtifactFileHandlers('), source.indexOf("      ipcMain.handle('nod:renderer-ready'"))} },
+      quit,
       crash: () => { engine = undefined; enginePreferencesReady = false; },
     };
     })()`,
@@ -795,6 +815,7 @@ async function runningDesktop(
     externalURLs,
     rendererReady,
     updateMenu,
+    willQuit: (event) => appEvents.emit('will-quit', event),
     appSessions,
     headers: (details) => new Promise((resolve) => requestHeaders(details, resolve)),
     checkPermission: (...args) => permissionCheck?.(...args) ?? true,
@@ -2499,6 +2520,88 @@ test('native quit aborts storage startup without creating a late engine', async 
   );
 });
 
+test('quit removes temporary files and stops downloads before the updater can quit', async (t) => {
+  for (const retry of [false, true])
+    await t.test(retry ? 'cleanup retry' : 'cleanup success', async (t) => {
+      const readyId = randomUUID();
+      const pendingId = randomUUID();
+      let downloadSignal;
+      let preparedPath;
+      let cleanupAttempts = 0;
+      let prompts = 0;
+      let installed = false;
+      const f = await runningDesktop(
+        t,
+        async (url, options) => {
+          const path = new URL(url).pathname;
+          if (path.endsWith('/metadata')) return Response.json({});
+          if (path === `/api/artifacts/${readyId}`) return new Response('Synthetic file');
+          assert.equal(path, `/api/artifacts/${pendingId}`);
+          downloadSignal = options.signal;
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode('Partial file'));
+                options.signal.addEventListener('abort', () =>
+                  controller.error(options.signal.reason),
+                );
+              },
+            }),
+          );
+        },
+        {
+          reveal: (path) => (preparedPath = path),
+          createFiles: (options) => {
+            const files = createArtifactFiles(options);
+            return {
+              ...files,
+              async dispose() {
+                cleanupAttempts++;
+                if (retry && cleanupAttempts === 1)
+                  throw new Error('Synthetic file cleanup failure');
+                await files.dispose();
+              },
+            };
+          },
+          prompt: async () => {
+            prompts++;
+            assert.equal(retry, true);
+            assert.equal(cleanupAttempts, 1);
+            assert.equal(installed, false);
+            assert.equal(await readFile(preparedPath, 'utf8'), 'Synthetic file');
+            return { response: 0 };
+          },
+        },
+      );
+      t.after(() => f.close());
+      f.showEngine();
+      f.registerFiles();
+      const window = f.windows.at(-1);
+      const event = {
+        sender: window.webContents,
+        senderFrame: window.webContents.mainFrame,
+      };
+      const action = f.handlers.get('nod:file:action');
+      await action(event, readyId, 'show');
+      assert.equal(await readFile(preparedPath, 'utf8'), 'Synthetic file');
+      const pending = assert.rejects(action(event, pendingId, 'prepare'), { name: 'AbortError' });
+      for (let attempt = 0; !downloadSignal && attempt < 100; attempt++)
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.ok(downloadSignal);
+      f.crash();
+      await f.quit(async () => {
+        assert.equal(downloadSignal.aborted, true);
+        await assert.rejects(readFile(preparedPath), { code: 'ENOENT' });
+        f.willQuit({ preventDefault: () => assert.fail('File cleanup must not cancel quit.') });
+        installed = true;
+      });
+      await pending;
+      assert.equal(installed, true);
+      assert.equal(cleanupAttempts, retry ? 2 : 1);
+      assert.equal(prompts, retry ? 1 : 0);
+    });
+});
+
 test('desktop proxy overrides reach only isolated source engines and retain origin validation', async (t) => {
   const root = fileURLToPath(new URL('../../', import.meta.url));
   for (const scenario of [
@@ -3625,7 +3728,7 @@ test('server token recovery distinguishes a locked store from unreadable ciphert
       await assert.rejects(storedProfile.store.connection(), (error) => {
         assert.equal(
           error.code,
-          failure === 'ciphertext' ? 'NOD_SERVER_TOKEN_UNAVAILABLE' : undefined,
+          failure === 'ciphertext' ? 'NOD_SERVER_TOKEN_UNAVAILABLE' : 'NOD_KEY_STORE_UNAVAILABLE',
         );
         if (failure === 'locked') assert.match(error.message, /Unlock your Mac keychain/);
         return true;
@@ -3966,6 +4069,74 @@ test('macOS settings unlock asynchronously without rewriting existing ciphertext
   }
 });
 
+test('macOS settings migrate each key from the previous app name without changing other secrets', async (t) => {
+  for (const failure of [null, 'denied', 'wrong-key', 'invalid-value']) {
+    await t.test(failure || 'migration', async (t) => {
+      const f = await fixture(t, 'darwin');
+      const environment = await f.store.environment();
+      const token = randomBytes(32).toString('base64url');
+      await f.store.saveConnection({ url: 'https://server.example', token });
+      const original = JSON.parse(await readFile(f.path, 'utf8'));
+      const password = randomBytes(16).toString('base64');
+      const key = pbkdf2Sync(password, 'saltysalt', 1003, 16, 'sha1');
+      const legacy = (value) => {
+        const cipher = createCipheriv('aes-128-cbc', key, Buffer.alloc(16, 32));
+        return Buffer.concat([Buffer.from('v10'), cipher.update(value), cipher.final()]).toString(
+          'base64',
+        );
+      };
+      original.secrets.vaultKey = legacy(
+        failure === 'invalid-value' ? 'invalid key' : environment.NOD_VAULT_KEY,
+      );
+      await writeFile(f.path, JSON.stringify(original));
+      const before = await readFile(f.path, 'utf8');
+      let reads = 0;
+      const encryption = createMacEncryption(f.encryption, {
+        readPreviousPassword: async (name) => {
+          assert.equal(name, 'Nod');
+          reads++;
+          if (failure === 'denied')
+            throw Object.assign(new Error('Synthetic denial'), {
+              code: 'NOD_KEY_STORE_UNAVAILABLE',
+            });
+          return Buffer.from(`${failure === 'wrong-key' ? 'wrong' : password}\n`);
+        },
+      });
+      const store = createSettingsStore(f.path, encryption, 'darwin');
+      if (failure) {
+        await assert.rejects(store.environment());
+        assert.equal(await readFile(f.path, 'utf8'), before);
+        assert.deepEqual(await store.connection(), { url: 'https://server.example', token });
+        if (failure === 'denied') {
+          original.secrets.serverToken = legacy(token);
+          await writeFile(f.path, JSON.stringify(original));
+          const denied = createSettingsStore(f.path, encryption, 'darwin');
+          await assert.rejects(denied.connection(), { code: 'NOD_KEY_STORE_UNAVAILABLE' });
+          assert.deepEqual(JSON.parse(await readFile(f.path, 'utf8')), original);
+          await assert.rejects(denied.connection(), { code: 'NOD_KEY_STORE_UNAVAILABLE' });
+          assert.ok(reads >= 2);
+        }
+        return;
+      }
+      assert.deepEqual(await store.environment(), environment);
+      const migrated = JSON.parse(await readFile(f.path, 'utf8'));
+      assert.equal(migrated.secrets.serverToken, original.secrets.serverToken);
+      assert.notEqual(migrated.secrets.vaultKey, original.secrets.vaultKey);
+      assert.deepEqual(await f.reopen().environment(), environment);
+      migrated.secrets.serverToken = legacy(token);
+      await writeFile(f.path, JSON.stringify(migrated));
+      const reopened = createSettingsStore(f.path, encryption, 'darwin');
+      assert.deepEqual(await reopened.connection(), { url: 'https://server.example', token });
+      const after = await readFile(f.path, 'utf8');
+      assert.equal(JSON.parse(after).secrets.vaultKey, migrated.secrets.vaultKey);
+      assert.deepEqual(await f.reopen().connection(), { url: 'https://server.example', token });
+      assert.equal(await readFile(f.path, 'utf8'), after);
+      assert.equal(reads, 1);
+      assert.equal((await stat(f.path)).mode & 0o777, 0o600);
+    });
+  }
+});
+
 test('macOS settings reject async decryption through a key other than the OS key', async (t) => {
   const f = await fixture(t, 'darwin');
   await f.store.environment();
@@ -4062,7 +4233,7 @@ test('unavailable or plaintext key stores refuse secret persistence and decrypti
         await assert.rejects(store.environment());
         await assert.rejects(fresh.saveConnection(connection));
         await assert.rejects(store.connection(), (error) => {
-          assert.equal(error.code, undefined);
+          assert.equal(error.code, 'NOD_KEY_STORE_UNAVAILABLE');
           assert.match(error.message, /Unlock/);
           return true;
         });

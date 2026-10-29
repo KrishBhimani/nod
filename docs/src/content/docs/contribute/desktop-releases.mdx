@@ -136,6 +136,8 @@ There's no daily release. Only a merged release pull request, which changes `des
 
 Pull requests and normal merges to `main` run source checks and isolated native update fixtures on Windows and both Mac architectures when desktop files change. These fixtures check secure storage, installer failures and saved-profile preservation without publishing a release. Packaging the complete desktop apps and verifying their release assets runs in **Build desktop release**.
 
+The required **Checks, tests and build** result waits for both Mac update checks. If either Mac check fails, that required result fails too.
+
 ## Inspect or recover a build
 
 The **Build desktop release** workflow runs on `main` by hand for a draft or a recovery run.
@@ -236,6 +238,8 @@ Mac builds are signed with n8n's Developer ID and notarized by Apple. Windows bu
 Updates check the new build against n8n's Apple team, or the Windows certificate profile, not one certificate, so a renewed certificate doesn't break them. macOS can still ask for Keychain approval. Nod explains that prompt before it reads saved API keys.
 
 GitHub-hosted Mac runners can't run nested virtualization. CI checks binaries and packaging, but it can't prove Nod's private computer boots on a real Mac.
+
+The native update checks cover both Mac key storage names in a disposable Keychain. They check an upgrade from the original name and migration of values saved by 0.4.0. Both paths must keep the vault key, server token, and integration identity. A second read must leave the saved settings unchanged.
 
 <details>
 

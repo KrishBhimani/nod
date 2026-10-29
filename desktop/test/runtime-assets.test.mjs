@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import {
   copyFile,
+  access,
   mkdtemp,
   mkdir,
   readFile,
@@ -17,7 +18,7 @@ import {
 } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join, posix, relative, resolve } from 'node:path';
+import { delimiter, dirname, join, posix, relative, resolve } from 'node:path';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { createDesktopLifecycle } from '../main/lifecycle.mjs';
@@ -2334,6 +2335,78 @@ test('runtime retries reuse only the same owned PostgreSQL container with unchan
   }
 });
 
+test('native runtime can stop after the streaming runtime pack is removed', async (t) => {
+  if (process.platform === 'win32') return t.skip('This fixture uses a Mac shell program.');
+  const root = await mkdtemp(join(tmpdir(), 'nod-stop-runtime-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dataRoot = join(root, 'profile');
+  const controlRoot = join(dataRoot, 'desktop-runtime');
+  const assets = join(root, 'partial-runtime');
+  const identity = createHash('sha256').update(dataRoot).digest('hex').slice(0, 12);
+  const expected = join(root, '.nod-desktop', identity);
+  await mkdir(join(expected, 'nod'), { recursive: true });
+  await mkdir(controlRoot, { recursive: true });
+  await mkdir(assets);
+  await writeFile(join(expected, 'nod/lima.yaml'), '{}');
+  await writeFile(join(expected, 'status'), 'Running');
+  const lima = join(assets, 'limactl');
+  await writeFile(
+    lima,
+    '#!/bin/sh\ncase "$1" in\nstop) printf Stopped > "$LIMA_HOME/status";;\nlist) cat "$LIMA_HOME/status";;\nesac\n',
+  );
+  const { retainStopExecutable, execute, waitFor } = await import('../runtime/index.mjs');
+  const hash = await retainStopExecutable(lima, controlRoot);
+  await writeFile(
+    join(controlRoot, 'state.json'),
+    JSON.stringify({ version: 1, limaHome: expected, stopExecutableSha256: hash }),
+  );
+  await rm(assets, { recursive: true });
+  let lookups = 0;
+  const source = await readFile(new URL('../runtime/index.mjs', import.meta.url), 'utf8');
+  const stop = runInNewContext(
+    `${source.slice(source.indexOf('async function stopComputer('))}; stopComputer`,
+    {
+      process: { platform: 'darwin' },
+      resolve,
+      join,
+      delimiter,
+      homedir: () => root,
+      createHash,
+      access,
+      readFile,
+      fileHash: async (path) =>
+        createHash('sha256')
+          .update(await readFile(path))
+          .digest('hex'),
+      findRuntimeAssets: () => {
+        lookups++;
+        return undefined;
+      },
+      execute,
+      waitFor,
+    },
+  );
+  await stop({ dataRoot, resourcesPath: root });
+  assert.equal(await readFile(join(expected, 'status'), 'utf8'), 'Stopped');
+  assert.equal(lookups, 0);
+  await writeFile(join(controlRoot, 'limactl-stop'), 'changed binary');
+  await assert.rejects(stop({ dataRoot, resourcesPath: root }), (error) => {
+    assert.equal(error.code, 'NOD_RUNTIME_STOP_FAILED');
+    assert.match(error.cause.message, /could not find/);
+    return true;
+  });
+  assert.equal(lookups, 1);
+  await writeFile(
+    join(controlRoot, 'state.json'),
+    JSON.stringify({ version: 1, limaHome: root, stopExecutableSha256: hash }),
+  );
+  await assert.rejects(stop({ dataRoot, resourcesPath: root }), (error) => {
+    assert.equal(error.code, 'NOD_RUNTIME_STOP_FAILED');
+    assert.match(error.cause.message, /identity changed/);
+    return true;
+  });
+});
+
 test('native runtime wrapper preserves handed-off storage through failed preparation and explicit retry until quit', async () => {
   const source = await readFile(new URL('../runtime/index.mjs', import.meta.url), 'utf8');
   const wrapper = source
@@ -2342,11 +2415,19 @@ test('native runtime wrapper preserves handed-off storage through failed prepara
       source.indexOf('async function stopComputer('),
     )
     .replaceAll('export ', '');
-  for (const terminal of ['retry', 'quit', 'abort']) {
+  for (const terminal of ['retry', 'quit', 'abort', 'cleanup-failed']) {
     let attempts = 0;
     let stops = 0;
     let engineStops = 0;
     let retired = false;
+    const startupError = Object.assign(new Error('Synthetic startup failure'), {
+      details: 'Synthetic startup command details',
+    });
+    const stopError = new Error('Synthetic stop command failure');
+    const cleanupError = Object.assign(new Error('Synthetic stop failure', { cause: stopError }), {
+      code: 'NOD_RUNTIME_STOP_FAILED',
+      details: 'Synthetic stop command details',
+    });
     const pending = [];
     let handed;
     const storageHanded = new Promise((accept) => {
@@ -2363,6 +2444,7 @@ test('native runtime wrapper preserves handed-off storage through failed prepara
       prepare: async (options, started) => {
         started();
         attempts++;
+        if (terminal === 'cleanup-failed') throw startupError;
         if (retired) throw new Error('Synthetic new attempt before storage');
         if (attempts === 2) throw new Error('Synthetic retry before storage handshake');
         await options.onStorageReady(storage);
@@ -2378,6 +2460,7 @@ test('native runtime wrapper preserves handed-off storage through failed prepara
       },
       stopComputer: async () => {
         stops++;
+        if (terminal === 'cleanup-failed' && stops === 1) throw cleanupError;
       },
     });
     const lifecycle = createDesktopLifecycle({
@@ -2388,8 +2471,27 @@ test('native runtime wrapper preserves handed-off storage through failed prepara
       stopEngine: async () => {
         engineStops++;
       },
+      stopRuntime: () => runtime.stopRuntime({ dataRoot: resolve('synthetic-profile') }),
       onRuntimeStatus() {},
     });
+    if (terminal === 'cleanup-failed') {
+      await assert.rejects(lifecycle.start(), (error) => {
+        assert.equal(error.code, cleanupError.code);
+        assert.equal(error.errors[0], startupError);
+        assert.equal(error.errors[1], cleanupError);
+        assert.equal(error.cause, cleanupError);
+        assert.equal(error.cause.cause, stopError);
+        assert.ok(error.details.includes(startupError.details));
+        assert.ok(error.details.includes('Synthetic stop command details'));
+        return true;
+      });
+      assert.equal(stops, 1);
+      assert.deepEqual(pending, []);
+      await lifecycle.close();
+      assert.equal(stops, 2);
+      assert.equal(engineStops, 1);
+      continue;
+    }
     if (terminal === 'abort') {
       const starting = assert.rejects(lifecycle.start(), /Synthetic abort/);
       await storageHanded;
