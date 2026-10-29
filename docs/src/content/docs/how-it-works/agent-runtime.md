@@ -55,13 +55,16 @@ Tools and model usage keep this scope. `turn_events` records execution and tool 
 
 `model_usage` is the only cost ledger. Each model request reports one usage ID, including subagent, compaction, review, and memory requests.
 Repeated reports with the same ID create no extra charge record. Parent runs never add child costs again.
-All totals come from these ledger rows. Missing prices stay unknown.
+All totals come from these ledger rows. Missing prices stay unknown. Shutdown waits for pending usage writes after the model sessions close. A failed write makes shutdown fail.
+Usage that arrives after a conversation reset stays on the owner's ledger without a turn link. A reference to another owner's turn is refused.
+Checks linked to a turn count toward that session's task check-in, even when the agent is not running.
+A stopped turn does not wait for a source check that ignores cancellation. A late result cannot mark the turn complete.
 
 ## Keeping the context small
 
 Optional next steps belong in the result message. There is no separate offer tool, queue or delivery delay.
 
-App tool search returns account IDs with the schemas. It needs no separate account list. When a search returns more than six tools, the first three keep full schemas and the rest form an index. Search an exact tool name to read its full schema, or separate several names with commas to read them together. A missing exact app tool name returns an explicit schema error with the available tool index. The agent must choose a returned name. Each action still uses the same account binding, validation and trust check.
+App tool search returns account IDs with the schemas. It needs no separate account list. When a search returns more than six tools, the first three keep full schemas and the rest form an index. Search an exact tool name to read its full schema, or separate several names with commas to read them together. A missing exact app tool name returns an explicit schema error with the available tool index. The agent must choose a returned name. Each action still uses the same account binding, validation and trust check. The observer also receives the names of tools whose schemas are deferred, so it can ask for an exact schema. A name alone cannot run a tool.
 
 Tool descriptions state the call contract. Codemode uses tool discovery instead of a second inline copy of workspace and web schemas. It runs tool scripts without a separate model API. Nested script calls return text; use direct tool calls to show images to the model. Shared behaviour stays in the system prompt. The artifacts guide is for document formats and layout checks; simple text files and copies do not need an extra guide read. The observer uses the supplied issue, source and memory indexes, and reads more context only for a specific need.
 
@@ -187,7 +190,7 @@ For Anthropic API models, Nod moves the system text's cache marker to that same 
 
 ChatGPT subscriptions and other model APIs keep their existing cache settings.
 
-When a model's cache lifetime is known, as for Anthropic, the chat's Pi session stays open after a turn so Pi can keep a large conversation's cache warm for up to 30 minutes. Each refresh is recorded in Usage.
+When a model's cache lifetime is known, as for Anthropic, the chat's Pi session stays open after a turn so Pi can keep a large conversation's cache warm for up to 30 minutes. Each refresh gets one Usage record, even if it fails or is cancelled. A cancelled refresh stays unknown if its usage has not arrived. Stop does not wait for a later reply.
 
 The owner context is a message of its own, never part of the system prompt, so a memory change leaves the system prompt and the conversation before it untouched:
 

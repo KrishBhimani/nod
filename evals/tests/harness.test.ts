@@ -26,6 +26,7 @@ import {
 } from '../src/aggregate.ts';
 import {
   decisionAuthorization,
+  decisionEffort,
   evaluateDecision,
   validDecisionTerms,
   selectDecisionCases,
@@ -57,7 +58,7 @@ import { facts, leaderboard } from '../src/writeup.ts';
 import { meetsMinimumPassRate } from '../src/commands.ts';
 import { rejudge } from '../src/rejudge.ts';
 import type { AttemptResult, RunManifest } from '../src/results.ts';
-import { collect, requireBackgroundPrompts, type Run } from '../src/trace.ts';
+import { collect, collectUsage, requireBackgroundPrompts, type Run } from '../src/trace.ts';
 import { changes, compareTable, html, markdown, runsTable, terminal } from '../src/report.ts';
 import { fingerprint, scenarios } from '../src/scenarios/index.ts';
 import { createSession, type Session } from '../src/session.ts';
@@ -625,6 +626,27 @@ test('decision budget and unknown usage stop between stages without scoring part
     assert.deepEqual(outcome.stages?.[1]?.usage, []);
     assert.equal(outcome.usage.length, 1);
   }
+});
+
+test('decision reviews select effort from each source revision', async () => {
+  const baseline = `export function lightestEffort(efforts: string[]) {
+    return efforts.find(level => ['off', 'minimal', 'low', 'medium'].includes(level)) ?? efforts[0];
+  }`;
+  const candidate = `export function lightestEffort(efforts: string[]) {
+    return efforts.includes('low') ? 'low' : efforts[0];
+  }`;
+  const supported = ['off', 'low', 'high'] as const;
+  const main = await decisionEffort(baseline, [...supported]);
+  const branch = await decisionEffort(candidate, [...supported]);
+  assert.equal(main.effort, 'off');
+  assert.equal(branch.effort, 'low');
+  assert.notEqual(main.sourceHash, branch.sourceHash);
+  assert.equal((await decisionEffort(candidate, ['off'])).effort, 'off');
+  await assert.rejects(decisionEffort('', ['off']), /Missing review effort selector/);
+  await assert.rejects(
+    decisionEffort("function lightestEffort() { return 'max'; }", ['off']),
+    /unsupported review effort/,
+  );
 });
 
 test('decision baselines bind only the validator revisions their source invokes', async () => {
@@ -1804,6 +1826,45 @@ test('asking the user to sign in in the browser is not asking for a secret in ch
   for (const text of asks) assert.equal(asksForSecret(text), true, text);
 });
 
+test('the backlog check requires source reads in both event turns', async () => {
+  const definition = scenarios.find((item) => item.id === 'proactivity-backlog-silent')!;
+  for (const phases of [[0], [1], [0, 1]]) {
+    const world = definition.world({ now: Date.now });
+    const run = quietRun(world);
+    let phase = 0;
+    const session = {
+      api: async () => ({ body: [{ slug: 'linear', connectionId: 'synthetic-linear' }] }),
+      event: async () => {
+        const turnId = `event-${phase}`;
+        if (phases.includes(phase)) {
+          const result = world
+            .apps!.linear!.tools.find((tool) => tool.name === 'list_issues')!
+            .run({});
+          run.tools.push({
+            turnId,
+            name: 'read_source',
+            input: {},
+            output: JSON.stringify(result),
+            isError: false,
+            at: Date.now(),
+            lead: '',
+          });
+        }
+        phase++;
+        return turnId;
+      },
+      waitForTurn: async () => undefined,
+      settle: async () => undefined,
+      proactivity: { view: async () => ({ issues: [] }) },
+    } as unknown as Session;
+    await definition.play(session, world);
+    const rule = definition.expect(world).find((item) => item.id === 'read-the-connected-backlog');
+    assert.equal(rule?.kind, 'check');
+    if (rule?.kind !== 'check') throw new Error('Missing backlog source check');
+    assert.equal((await rule.check(run)).pass, phases.length === 2);
+  }
+});
+
 test('a cut-off background check does not fail a finished task', async () => {
   const turn = (status: string, background: boolean) => ({
     id: status,
@@ -2705,6 +2766,18 @@ test('persisted background sessions and child captures count each request and to
   const { requests: unpriced, ...unknown } = (await read()).usage;
   assert.deepEqual(unknown, { modelCalls: 4, tokens: 36, costUsd: null });
   assert.ok(unpriced?.some((request) => request.costUsd === null));
+  ledger[0].cost_usd = 0.1;
+  ledger.push({
+    cost_usd: 0.25,
+    details: { inputTokens: 10, outputTokens: 2 },
+  });
+  const final = await collectUsage(stack.pool);
+  assert.equal(final.modelCalls, 5);
+  assert.equal(final.tokens, 48);
+  assert.equal(final.costUsd, 1.75);
+  assert.equal(run.usage.costUsd, 1.5);
+  ledger.at(-1)!.cost_usd = null;
+  assert.equal((await collectUsage(stack.pool)).costUsd, null);
 });
 
 test('saved model tools expose synthetic secret regressions despite redacted captures', async (t) => {

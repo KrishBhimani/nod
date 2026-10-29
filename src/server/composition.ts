@@ -37,7 +37,7 @@ import { fileBytes } from '../shared/files.ts';
 import type { ObservationProvider, ObservationSource } from '../ports/proactivity.ts';
 import type { IntegrationProvider, IntegrationService } from '../ports/integrations.ts';
 import { hasWorkspaceFiles, saveIntegrationFiles } from './integration-files.ts';
-import { cacheMailChecks, privateEmailResult } from './integration-result.ts';
+import { privateEmailResult } from './integration-result.ts';
 import { createMailCheck } from './mail-check.ts';
 import type { CredentialKeyStore } from '../ports/key-store.ts';
 import type { PasswordManager } from '../ports/password-manager.ts';
@@ -379,12 +379,6 @@ export function createDefaultAdapters(
     traces,
   });
   const decisions = createDecisionModel({
-    canBatch: () => {
-      if (env.TYPESAFE_API_KEY?.trim() || !models.configured) return false;
-      const { connections, selection } = models.view();
-      const connection = connections.find((entry) => entry.id === selection?.connectionId);
-      return connection?.provider === 'openai' && connection.method === 'api_key';
-    },
     configured: () => {
       if (env.TYPESAFE_API_KEY?.trim()) return true;
       if (!models.configured) return false;
@@ -739,7 +733,7 @@ async function initializeApplication(
       ? onboardingCurator.curate({ task: 'review', instructions, input }, signal)
       : undefined;
   };
-  const mailCheck = cacheMailChecks(createMailCheck({ curator, decisions }));
+  const mailCheck = createMailCheck({ curator, decisions });
   const skillLibrary = createSkillLibrary(
     fileURLToPath(new URL('../runtime/skills/', import.meta.url)),
     coreSkills,
@@ -749,6 +743,7 @@ async function initializeApplication(
     adapters.imageCurator && createImageAnalysis(ledger.curator(adapters.imageCurator));
   const runtime = createAgentRuntime({
     agent: ledger.agent(adapters.agent),
+    withExecution: ledger.withExecution,
     analyzeImages:
       analyzeImages &&
       ((images, request, signal, execution) =>
@@ -968,8 +963,8 @@ async function initializeApplication(
     baseUrl: publicOrigin,
     callbackReturnTo: desktopMode ? 'window' : undefined,
     discovered,
-    browserAccounts: () => vault.list(ownerId),
-    browserConnections: () => browserConnections.list(),
+    browserAccounts: (client) => vault.list(ownerId, client),
+    browserConnections: (client) => browserConnections.list(client),
     icon,
   });
   vault = await createVault(pool, {
@@ -1164,7 +1159,7 @@ async function initializeApplication(
       analytics.actionExecuted(ownerId, action);
       return result;
     },
-    async (action, args, expectedRevision) => {
+    async (action, args, expectedRevision, client) => {
       if (['NOD_browser', 'NOD_vault_allow'].includes(action)) return;
       if (action === 'NOD_limits_update') limitsInput.parse(args);
       else if (action.startsWith('NOD_')) {
@@ -1175,8 +1170,8 @@ async function initializeApplication(
           throw Object.assign(new Error('This schedule needs a fresh approval.'), {
             statusCode: 409,
           });
-        await personal.validateReview(action.slice('NOD_'.length), args, expectedRevision);
-      } else await integrations.prepare(ownerId, action, args);
+        await personal.validateReview(action.slice('NOD_'.length), args, expectedRevision, client);
+      } else await integrations.prepare(ownerId, action, args, undefined, undefined, false, client);
     },
     (reply) => trust.answer(reply),
     communication.describe,
@@ -1197,8 +1192,8 @@ async function initializeApplication(
       .flatMap((connection) => (connection.accountName ? [connection.accountName] : []));
   await localAccounts.initialize();
   const appReads = {
-    accounts: async () => {
-      const connected = (await integrations.list(ownerId, { refresh: false })).filter(
+    accounts: async (client?: import('pg').PoolClient) => {
+      const connected = (await integrations.list(ownerId, { refresh: false, client })).filter(
         (account) =>
           account.status === 'connected' &&
           !account.savedLogin &&
@@ -1207,7 +1202,7 @@ async function initializeApplication(
       );
       const accounts = await Promise.all(
         connected.map(async (account) => {
-          const binding = await integrations.binding(account.connectionId!);
+          const binding = await integrations.binding(account.connectionId!, client);
           return binding
             ? {
                 connectionId: account.connectionId!,
@@ -1851,8 +1846,8 @@ async function initializeApplication(
         const verdict = await trust.check(turn, action, args);
         await options.admit?.(verdict.confirm);
         const prepared = hasWorkspaceFiles(args)
-          ? await withTurnLock(turn.turnId, () =>
-              integrations.prepare(ownerId, action, args, turn, options.signal, true),
+          ? await withTurnLock(turn.turnId, (client) =>
+              integrations.prepare(ownerId, action, args, turn, options.signal, true, client),
             )
           : await integrations.prepare(ownerId, action, args);
         const account = verdict.confirm
@@ -2173,6 +2168,7 @@ async function initializeApplication(
       () => stopThreadWorkers(),
       finishWork,
       () => runtime.dispose(),
+      () => ledger.flush(),
       () => artifacts.close(),
       () => analytics.shutdown(),
       () => adapters.telemetry?.shutdown(),
