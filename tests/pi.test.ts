@@ -90,6 +90,7 @@ test('models and routers complete tool discovery inside the endpoint context', a
   const { coreSkills } = await import('../src/runtime/prompt.ts');
   for (const { provider, id, window, limit } of [
     { provider: 'compatible', id: 'fixture-small', window: 8192, limit: 8192 },
+    { provider: 'compatible', id: 'fixture-memory-small', window: 8192, limit: 8192 },
     { provider: 'openrouter', id: 'openrouter/free', window: 200_000, limit: 8192 },
     { provider: 'openrouter', id: 'openrouter/auto', window: 2_000_000, limit: 8192 },
     { provider: 'compatible', id: 'fixture-medium', window: 16_384, limit: 16_384 },
@@ -294,6 +295,22 @@ test('models and routers complete tool discovery inside the endpoint context', a
         prompt: 'Return the text report named report.txt.',
         rules: 'Do not contact anyone.',
         memory: 'Synthetic earlier memory. '.repeat(2000),
+        ...(id === 'fixture-memory-small'
+          ? {
+              memoryBrief: {
+                mode: 'recall' as const,
+                facts: [],
+                searches: [],
+                messages: Array.from({ length: 100 }, () => ({
+                  id: randomUUID(),
+                  role: 'user',
+                  text: 'Earlier source evidence. '.repeat(50),
+                  at: new Date().toISOString(),
+                  shortened: false,
+                })),
+              },
+            }
+          : {}),
         history: Array.from({ length: 20 }, () => ({
           role: 'assistant',
           text: 'Synthetic older conversation. '.repeat(200),
@@ -2589,6 +2606,50 @@ test('each model call yields one chat-format trace without image data', async ()
   ])
     assert.ok(!sent.includes(value), value);
   assert.ok(sent.includes('Synthetic built-in guide') && sent.includes('synthetic-guide'));
+  const { ownerContext, compactOwnerContext, firstInstruction } =
+    await import('../src/runtime/prompt.ts');
+  const privateFact = 'Synthetic private memory detail: the blue parcel is in the attic.';
+  const selectedContext: RuntimeContext = {
+    ...context('/fixture'),
+    prompt: 'Give advice from what I told you.',
+    memoryBrief: {
+      mode: 'recall',
+      facts: [],
+      searches: [],
+      messages: [
+        {
+          id: randomUUID(),
+          role: 'user',
+          text: privateFact,
+          at: new Date().toISOString(),
+          shortened: false,
+        },
+      ],
+    },
+  };
+  for (const owned of [ownerContext(selectedContext), compactOwnerContext(selectedContext)]) {
+    assert.ok(owned.includes(privateFact));
+    const selectedTrace = piModelTrace(
+      {
+        ...calls[0],
+        context: {
+          ...calls[0].context,
+          messages: [
+            { role: 'user', content: owned, timestamp: 1 },
+            {
+              role: 'user',
+              content: firstInstruction(selectedContext, false, new Set()),
+              timestamp: 2,
+            },
+          ],
+        },
+      },
+      { source: 'agent' },
+      owned,
+    );
+    assert.ok(!JSON.stringify(selectedTrace).includes(privateFact));
+    assert.ok(JSON.stringify(selectedTrace).includes(selectedContext.prompt));
+  }
 });
 
 test('a long tool call does not send model requests without usage records', async (t) => {

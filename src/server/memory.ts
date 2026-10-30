@@ -8,6 +8,7 @@ import {
   area,
   areaEntries,
   find,
+  fold,
   freeSlug,
   id,
   indexLayout,
@@ -164,7 +165,13 @@ export function createMemoryService(options: {
           fail('The note changed. Review it before asking again.', 409);
         const entry = locate(tree, target);
         const archived = tree.archive.length;
-        tree.archive = tree.archive.filter((item) => pathOf(item) !== target && item.by !== target);
+        const versions = new Set([target]);
+        for (let size = 0; size !== versions.size;) {
+          size = versions.size;
+          for (const item of tree.archive)
+            if (item.by && versions.has(item.by)) versions.add(pathOf(item));
+        }
+        tree.archive = tree.archive.filter((item) => !versions.has(pathOf(item)));
         if (!entry && tree.archive.length === archived)
           fail('This note is no longer in memory.', 404);
         tree.entries = tree.entries.filter((item) => item !== entry);
@@ -303,6 +310,8 @@ export function createMemoryService(options: {
           slug: entry.slug,
           text,
           ...(!rewritten && entry.abstract ? { abstract: entry.abstract } : {}),
+          ...(!rewritten && entry.fact ? { fact: entry.fact } : {}),
+          ...(!rewritten && entry.quote ? { quote: entry.quote } : {}),
           origin: rewritten || input.confirm ? 'stated' : entry.origin,
           updated: now,
           edited: now,
@@ -332,6 +341,8 @@ export function createMemoryService(options: {
         slug: current && !replaces ? freeSlug(tree, item.area, item.slug) : item.slug,
         text: item.text,
         ...(item.abstract ? { abstract: item.abstract } : {}),
+        ...(item.fact ? { fact: item.fact } : {}),
+        ...(item.quote ? { quote: item.quote } : {}),
         origin: 'stated',
         updated: now,
         edited: now,
@@ -346,11 +357,16 @@ export function createMemoryService(options: {
   async function forgetArchived(raw: unknown) {
     const input = archivedInput.parse(raw);
     await owned((tree) => {
+      const removed = tree.archive.find(
+        (entry) => pathOf(entry) === input.path && entry.archived === input.archived,
+      );
       const kept = tree.archive.filter(
         (entry) => !(pathOf(entry) === input.path && entry.archived === input.archived),
       );
       if (kept.length === tree.archive.length) fail('This note is no longer in the archive.', 404);
-      tree.archive = kept;
+      tree.archive = kept.map((entry) =>
+        entry.by === input.path && removed?.by ? { ...entry, by: removed.by } : entry,
+      );
     });
   }
 
@@ -367,21 +383,25 @@ export function createMemoryService(options: {
     });
   }
 
-  async function view() {
-    const { tree } = await load();
-    const ids = [...new Set([...tree.entries, ...tree.archive].flatMap((entry) => entry.sources))];
+  async function sources(ids: string[]) {
     const { rows } = await options.pool.query(
       `SELECT m.id,m.text,m.created_at,split_part(COALESCE(u.channel,'web'),':',1) AS channel
        FROM messages m LEFT JOIN turns u ON u.id=m.turn_id AND u.owner_id=m.owner_id
        WHERE m.owner_id=$1 AND m.role='user' AND m.id=ANY($2::uuid[])`,
       [options.ownerId, ids],
     );
-    const found = new Map(
+    return new Map(
       rows.map((row) => [
         row.id as string,
         { id: row.id, text: row.text, at: row.created_at.toISOString(), channel: row.channel },
       ]),
     );
+  }
+
+  async function view() {
+    const { tree } = await load();
+    const ids = [...new Set([...tree.entries, ...tree.archive].flatMap((entry) => entry.sources))];
+    const found = await sources(ids);
     const learnedIn = tree.skills.flatMap((skill) => skill.turn ?? []);
     const turns = new Map(
       learnedIn.length
@@ -422,7 +442,23 @@ export function createMemoryService(options: {
       const input = findInput.parse(raw);
       return find((await load()).tree, input.query, input.area);
     },
-    read: async (raw: unknown) => open((await load()).tree, readInput.parse(raw).path),
+    read: async (raw: unknown) => {
+      const { tree } = await load();
+      const result = open(tree, readInput.parse(raw).path);
+      if (!('sources' in result)) return result;
+      const quote = locate(tree, result.path)?.quote;
+      const found = await sources(result.sources);
+      return {
+        ...result,
+        sources: result.sources.map((id) => {
+          const source = found.get(id) ?? { id, text: null, at: null, channel: null };
+          return {
+            ...source,
+            text: quote && source.text && fold(source.text).includes(fold(quote)) ? quote : null,
+          };
+        }),
+      };
+    },
     note: async (raw: unknown) => noteText((await load()).tree, path.parse(raw)),
   };
 }

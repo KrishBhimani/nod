@@ -12,6 +12,7 @@ export function repair(tree: Tree, now: Date) {
     if (entry.expires && entry.expires < iso.slice(0, 10)) archive(tree, entry, 'expired', iso);
     else if (
       entry.origin === 'inferred' &&
+      (!entry.fact || entry.fact.kind === 'plan') &&
       entry.sources.length < 2 &&
       now.getTime() - Date.parse(entry.updated) > staleMs
     )
@@ -27,6 +28,7 @@ export function repair(tree: Tree, now: Date) {
         if (!tree.entries.includes(second) || !same(first.text, second.text)) continue;
         const [keep, drop] = better(first, second) >= 0 ? [first, second] : [second, first];
         keep.sources = [...new Set([...keep.sources, ...drop.sources])].slice(-5);
+        keep.quote ??= drop.quote;
         keep.expires =
           keep.expires && drop.expires ? [keep.expires, drop.expires].sort().at(-1) : undefined;
         archive(tree, drop, 'duplicate', iso, pathOf(keep));
