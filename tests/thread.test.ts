@@ -53,27 +53,6 @@ test(
     const root = await mkdtemp(join(tmpdir(), 'thread-test-'));
     const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
     await admin.query(`CREATE SCHEMA ${schema}`);
-    await admin.query(
-      `CREATE TABLE ${schema}.turns (
-        id uuid PRIMARY KEY, owner_id text NOT NULL, thread_id uuid NOT NULL,
-        source text NOT NULL, source_id text, message_id uuid, prompt text NOT NULL,
-        channel text NOT NULL DEFAULT 'web', status text NOT NULL DEFAULT 'queued', waiting_reason text,
-        background boolean NOT NULL DEFAULT false, read_only boolean NOT NULL DEFAULT false,
-        error text,
-        created_at timestamptz NOT NULL DEFAULT now(), started_at timestamptz, finished_at timestamptz
-      )`,
-    );
-    await admin.query(`
-      CREATE TABLE ${schema}.preferences (
-        owner_id text PRIMARY KEY, notification_rule text NOT NULL DEFAULT '', time_zone text,
-        quiet_start text NOT NULL DEFAULT '22:00', quiet_end text NOT NULL DEFAULT '08:00',
-        quiet_hours_enabled boolean NOT NULL DEFAULT true, locale text,
-        hour_cycle text NOT NULL DEFAULT 'auto',
-        speech_reply text NOT NULL DEFAULT 'voice' CHECK (speech_reply IN ('voice','always','never'))
-      );
-      INSERT INTO ${schema}.preferences(owner_id,speech_reply)
-        VALUES ('speech-existing-voice','voice'),('speech-existing-always','always'),('speech-existing-never','never');
-    `);
     const environment = {
       DATABASE_URL: process.env.DATABASE_URL,
       PGBOSS_SCHEMA: process.env.PGBOSS_SCHEMA,
@@ -94,7 +73,8 @@ test(
     const thread = await import('../src/server/thread.ts');
     const { createApp } = await import('../src/server/app.ts');
     const { configuration, dataRoot, ownerId, port } = await import('../src/server/config.ts');
-    const { localArtifacts, storeArtifact } = await import('../src/server/artifacts.ts');
+    const { localArtifacts } = await import('../src/server/artifacts.ts');
+    const { storeArtifact } = localArtifacts;
     const { createPersonalService } = await import('../src/server/personal.ts');
     const { createVault } = await import('../src/server/vault.ts');
     const { createApprovals } = await import('../src/server/approvals.ts');
@@ -106,30 +86,15 @@ test(
     const { createOnboardingSuggestions } = await import('../src/server/onboarding-suggestions.ts');
     assert.equal(dataRoot, root);
 
+    await db.initializeDatabase();
     await t.test(
       'legacy upload retention is migrated once with a fresh owned grace period',
       async () => {
         const legacyThread = randomUUID();
         const ids = Array.from({ length: 4 }, () => randomUUID());
-        await db.pool.query(`
-        CREATE TABLE threads (
-          id uuid PRIMARY KEY, owner_id text NOT NULL,
-          created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
-          archived_at timestamptz
+        await db.pool.query(
+          'ALTER TABLE artifacts DROP COLUMN expires_at, DROP COLUMN deleting_at',
         );
-        CREATE TABLE messages (
-          id uuid PRIMARY KEY, owner_id text NOT NULL, role text NOT NULL, text text NOT NULL,
-          thread_id uuid REFERENCES threads(id), turn_id uuid REFERENCES turns(id),
-          attachments jsonb NOT NULL DEFAULT '[]', created_at timestamptz NOT NULL DEFAULT now(),
-          stream_id text, reaction text, assistant_reaction text, assistant_reacted_at timestamptz,
-          reaction_revision integer NOT NULL DEFAULT 0, reply_to_message_id uuid REFERENCES messages(id)
-        );
-        CREATE TABLE artifacts (
-          id uuid PRIMARY KEY, owner_id text NOT NULL, thread_id uuid REFERENCES threads(id), name text NOT NULL,
-          mime_type text NOT NULL, size integer NOT NULL, storage_path text NOT NULL,
-          created_at timestamptz NOT NULL DEFAULT now()
-        )
-      `);
         await db.pool.query('INSERT INTO threads(id,owner_id,archived_at) VALUES($1,$2,now())', [
           legacyThread,
           ownerId,
@@ -1103,12 +1068,6 @@ test(
             assert.equal((await foreign.get()).speechReply, 'auto');
             assert.equal((await foreign.get()).proactivePaused, false);
             assert.equal((await foreign.update({ quietHoursEnabled: false })).speechReply, 'auto');
-            for (const mode of ['voice', 'always', 'never'] as const)
-              assert.equal(
-                (await createPreferencesStore(db.pool, `speech-existing-${mode}`).get())
-                  .speechReply,
-                mode,
-              );
             await preferences.update({ speechReply: 'auto' });
             assert.equal((await preferences.get()).speechReply, 'auto');
             assert.equal((await preferences.get()).proactivePaused, true);
@@ -4075,9 +4034,9 @@ test(
           const message = [...seen][0];
           const react = (id: string, reaction: string) =>
             request('POST', `/api/messages/${id}/reaction`, { reaction });
-          assert.equal((await react(message, 'heart')).statusCode, 200);
+          assert.equal((await react(message, '❤️')).statusCode, 200);
           for (const id of [foreign, archived.id])
-            assert.equal((await react(id, 'heart')).statusCode, 404);
+            assert.equal((await react(id, '❤️')).statusCode, 404);
         },
       );
       await t.test(
@@ -6030,27 +5989,6 @@ test(
         Buffer.from((await memoryObject()).bytes).toString('utf8'),
         /sk-fixture|broken/,
       );
-
-      await store.write(
-        'memory/MEMORY.md',
-        Buffer.from(
-          `# Memory\n\n## ${randomUUID()}\nKind: preference\nUpdated: 2026-01-01T00:00:00.000Z\nSources: ${randomUUID()}\n\nPrefers email updates.\n\n## ${randomUUID()}\nKind: pattern\nUpdated: 2026-01-02T00:00:00.000Z\nSources: ${randomUUID()}\n\nOften asks for a design first.\n\n## not-an-id\nKind: fact\n\nBroken entry.\n`,
-        ),
-        { expectedVersion: (await memoryObject()).version },
-      );
-      assert.deepEqual((await memory.context()).split('\n'), [
-        'preferences/prefers-email-updates: Prefers email updates.',
-        'lessons/often-asks-for-design-first: Often asks for a design first. (tentative)',
-      ]);
-      assert.equal(
-        (await memory.view()).notes.find((note) => note.area === 'lessons')?.status,
-        'tentative',
-      );
-      await remember([add('about', 'chess', chess)], await post(chess));
-      const migrated = Buffer.from((await memoryObject()).bytes).toString('utf8');
-      assert.match(migrated, /^\{/);
-      assert.doesNotMatch(migrated, /Broken entry/);
-      assert.match(migrated, /Often asks for a design first/);
     } finally {
       await close();
     }

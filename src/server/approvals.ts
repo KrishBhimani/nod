@@ -201,8 +201,7 @@ export async function createApprovals(
     result jsonb
   );
     ALTER TABLE approvals ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
-      ADD COLUMN IF NOT EXISTS expected_revision integer,
-      DROP COLUMN IF EXISTS expires_at, DROP COLUMN IF EXISTS confirmation_reply_id;
+      ADD COLUMN IF NOT EXISTS expected_revision integer;
     CREATE INDEX IF NOT EXISTS approvals_turn ON approvals(turn_id);
     CREATE INDEX IF NOT EXISTS approvals_execution_turn ON approvals(execution_turn_id);
     CREATE INDEX IF NOT EXISTS approvals_confirmation_message ON approvals(confirmation_message_id);
@@ -604,18 +603,5 @@ export async function createApprovals(
     };
   }
 
-  async function states(messageIds: string[]) {
-    if (!messageIds.length) return {};
-    const { rows } = await pool.query<{
-      id: string;
-      status:
-        'pending' | 'confirmed' | 'executing' | 'completed' | 'uncertain' | 'declined' | 'expired';
-    }>(
-      'SELECT confirmation_message_id AS id,status FROM approvals WHERE owner_id=$1 AND confirmation_message_id=ANY($2::uuid[])',
-      [ownerId, messageIds],
-    );
-    return Object.fromEntries(rows.map((row) => [row.id, row.status]));
-  }
-
-  return { request, chat: { answer: answerChat, accept: acceptChat }, executeConfirmed, states };
+  return { request, chat: { answer: answerChat, accept: acceptChat }, executeConfirmed };
 }

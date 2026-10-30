@@ -13,19 +13,9 @@ import { memoryObjectStore } from './fixtures/object-store.ts';
 import { createIntegrationFixture } from '../scripts/e2e-fixtures.ts';
 import { repair } from '../src/server/memory-lint.ts';
 import { applyOps } from '../src/server/memory-ops.ts';
-import {
-  emptyTree,
-  fits,
-  parse,
-  render,
-  type Entry,
-  type Tree,
-} from '../src/server/memory-tree.ts';
-import Fastify from 'fastify';
+import { emptyTree, parse, render, type Entry, type Tree } from '../src/server/memory-tree.ts';
 import type { MemoryCurator } from '../src/ports/memory-curator.ts';
 import { createMemoryService, importMemoryFile } from '../src/server/memory.ts';
-import { createOnboardingInterview } from '../src/server/onboarding-interview.ts';
-import { openVaultValue, sealVaultValue } from '../src/server/vault-crypto.ts';
 import { createWritingStyleLearning } from '../src/server/writing-style.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 import { accessCookie, accessKey } from '../src/server/access.ts';
@@ -37,7 +27,7 @@ type Step = {
 };
 
 test(
-  'memory keeps only the owner’s own words, silently, and moves a saved profile or a pasted import into notes',
+  'memory keeps only the owner’s own words, silently, and moves a pasted import into notes',
   { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
   async (t) => {
     const suffix = randomUUID().replaceAll('-', '').slice(0, 16);
@@ -61,24 +51,6 @@ test(
     const { createApplication } = await import('../src/server/composition.ts');
     const { pool } = await import('../src/server/db.ts');
     const { dataRoot, port, ownerId } = await import('../src/server/config.ts');
-    await pool.query(
-      "CREATE TABLE profiles (owner_id text PRIMARY KEY, data jsonb NOT NULL DEFAULT '{}')",
-    );
-    const profile = {
-      name: 'Memory Fixture',
-      location: 'Lisbon',
-      phone: '4111 1111 1111 1111',
-      preferences: [
-        'Short synthetic replies.',
-        'Metric units and euros. Always send the synthetic weekly digest on Monday mornings before the first meeting starts, with the three most important items at the top and a link to every source next to the claim it supports.',
-        ...Array.from(
-          { length: 12 },
-          (_, index) =>
-            `Synthetic preference number ${index + 1} keeps travel, meetings and invoices in their usual order.`,
-        ),
-      ].join('\n'),
-    };
-    await pool.query('INSERT INTO profiles VALUES($1,$2)', [ownerId, profile]);
     const skillSecret = 'skill-fixture-secret-9f2c41';
     process.env.NOD_SKILL_FIXTURE_API_KEY = skillSecret;
     t.after(() => {
@@ -339,23 +311,6 @@ test(
         );
         assert.deepEqual(await notices(), []);
       };
-      const migrated = (await view()).notes;
-      assert.deepEqual(
-        migrated
-          .filter((note) => note.area === 'preferences')
-          .flatMap((note) => note.text.split(' '))
-          .sort(),
-        profile.preferences.split(/\s+/).sort(),
-      );
-      assert.deepEqual(
-        migrated
-          .filter((note) => note.area === 'about')
-          .map((note) => note.text)
-          .sort(),
-        ['Location: Lisbon', 'Name: Memory Fixture'],
-      );
-      assert.equal((await pool.query("SELECT to_regclass('profiles') AS name")).rows[0].name, null);
-
       rememberAnswer = () => ({
         ops: [
           {
@@ -369,15 +324,17 @@ test(
           },
         ],
       });
+      const before = await memoryFile();
       const unsupported = await ask('Review my synthetic project notes.', [
         { tool: 'fetch_content', args: { urls: ['https://example.test/refunds'] } },
         learn(),
         learn([randomUUID()], true),
       ]);
-      assert.equal(JSON.parse(await memoryFile()).entries.length, migrated.length);
+      assert.equal(await memoryFile(), before);
       assert.equal(rememberInputs.length, 1);
       assert.doesNotMatch(rememberInputs[0], /refunds/i);
       await assertSilent(unsupported);
+      await application.memory.add({ area: 'about', text: 'Location: Lisbon' });
       const imported = await application.app.inject({
         method: 'POST',
         url: '/api/memory/import',
@@ -538,52 +495,9 @@ test(
       assert.deepEqual([guess.status, guess.sources[0].text], ['tentative', null]);
       assert.deepEqual(await notices(), []);
 
-      const full = emptyTree();
-      let filled = 0;
-      const filler = (words: number) => ({
-        area: 'lessons' as const,
-        slug: `filler-${filled}`,
-        text: `Synthetic filler ${filled++} ${'lesson '.repeat(words)}`.trim(),
-        origin: 'stated' as const,
-        updated: new Date().toISOString(),
-        edited: new Date().toISOString(),
-        sources: [],
-      });
-      for (let words = 500; words > 0; words = Math.floor(words / 2))
-        for (;;) {
-          full.entries.push(filler(words));
-          if (fits(full)) continue;
-          full.entries.pop();
-          break;
-        }
-      const kept = full.entries.length;
-      await writeMemory(render(full));
-      const legacy = async () => {
-        await pool.query(
-          "CREATE TABLE profiles (owner_id text PRIMARY KEY, data jsonb NOT NULL DEFAULT '{}')",
-        );
-        await pool.query('INSERT INTO profiles VALUES($1,$2)', [ownerId, profile]);
-        await application.personal.initialize({ workers: false });
-      };
-      const profileTable = async () =>
-        (await pool.query("SELECT to_regclass('profiles') AS name")).rows[0].name;
-      const remembered = async () =>
-        (await view()).notes.some((note) => note.text === 'Name: Memory Fixture');
-      await legacy();
-      assert.equal(
-        (await pool.query('SELECT data FROM profiles WHERE owner_id=$1', [ownerId])).rows[0].data
-          .name,
-        'Memory Fixture',
-      );
-      assert.equal(JSON.parse(await memoryFile()).entries.length, kept);
       const clear = 'Clear everything you saved about me.';
       await ask(clear, [personal('memory_control', { clear: true, quote: clear })]);
-      assert.equal(await profileTable(), null);
-      await application.personal.initialize({ workers: false });
-      assert.equal(await remembered(), false);
-      await legacy();
-      assert.equal(await profileTable(), null);
-      assert.equal(await remembered(), true);
+      assert.deepEqual((await view()).notes, []);
       await t.test('setup requires a model and finishes without a connected inbox', async () => {
         await pool.query('DELETE FROM messages WHERE owner_id=$1', [ownerId]);
         const session = async () =>
@@ -769,439 +683,6 @@ test('repair archives expired, stale and duplicate entries, keeps distinct numbe
   ]);
   assert.equal(repair(tree, now), 0);
 });
-
-test(
-  'retired interview records stay encrypted and owner-bound until save, reset or expiry',
-  { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
-  async (t) => {
-    const schema = `test_interview_${randomUUID().replaceAll('-', '')}`;
-    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
-    await admin.query(`CREATE SCHEMA ${schema}`);
-    const database = new pg.Pool({
-      connectionString: process.env.TEST_DATABASE_URL,
-      options: `-c search_path=${schema}`,
-      application_name: schema,
-    });
-    t.after(async () => {
-      await database.end();
-      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
-      await admin.end();
-    });
-    const ownerId = 'synthetic-interview-owner';
-    const key = Buffer.alloc(32, 41);
-    const store = createPostgresObjectStore({ database, ownerId });
-    await store.initialize();
-    const memory = createMemoryService({ pool: database, ownerId, store });
-    let failSeal = false;
-    let keyUnavailable = false;
-    let keyReads = 0;
-    const create = (owner = ownerId, secret = key) => {
-      const app = Fastify();
-      createOnboardingInterview({
-        ownerId: owner,
-        pool: database,
-        keyStore: {
-          id: 'draft-fixture',
-          configured: true,
-          getKey: async () => {
-            if (keyUnavailable) throw new Error('Synthetic key temporarily unavailable');
-            if (failSeal && ++keyReads === 2)
-              throw new Error('Synthetic key temporarily unavailable');
-            return secret;
-          },
-        },
-      }).registerRoutes(app);
-      t.after(() => app.close());
-      return app;
-    };
-    const path = '/api/onboarding/interview';
-    const first = create();
-    const initial = (await first.inject(path)).json();
-    const { generation } = initial;
-    assert.deepEqual(initial, {
-      generation,
-      completed: false,
-      answers: [],
-      turns: [],
-      done: false,
-    });
-    assert.deepEqual((await create().inject(path)).json(), initial);
-    assert.equal(
-      (await first.inject({ method: 'POST', url: path, payload: { generation, talk: [] } }))
-        .statusCode,
-      404,
-    );
-    const seed = async (draft: object) => {
-      const previous = await store.read('onboarding/interview', 128 * 1024);
-      await store.write(
-        'onboarding/interview',
-        Buffer.from(
-          sealVaultValue(
-            key,
-            ['nod-onboarding-interview-v1', ownerId],
-            JSON.stringify({ ...draft, expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 }),
-          ),
-        ),
-        { expectedVersion: previous?.version ?? null },
-      );
-    };
-    const question = 'What synthetic project are you working on?';
-    const answer = 'A synthetic client project with weekly reports.';
-    await seed({
-      generation,
-      completed: false,
-      answers: [answer],
-      turns: [[question]],
-      done: false,
-    });
-    await first.close();
-    const restarted = create();
-    const pending = await restarted.inject(path);
-    assert.equal(pending.headers['cache-control'], 'no-store');
-    assert.deepEqual(pending.json(), {
-      generation,
-      completed: false,
-      answers: [answer],
-      turns: [[question]],
-      done: false,
-    });
-    const stored = (await store.read('onboarding/interview', 128 * 1024))!;
-    assert.equal(Buffer.from(stored.bytes).includes(answer), false);
-    assert.equal(Buffer.from(stored.bytes).includes(question), false);
-    await seed({
-      generation,
-      completed: false,
-      answers: [answer],
-      turns: [[question], ['Synthetic closing.']],
-      done: true,
-    });
-    const resumed = (await restarted.inject(path)).json();
-    assert.equal(resumed.done, true);
-    assert.deepEqual((await create().inject(path)).json(), resumed);
-    const other = create('synthetic-other-owner');
-    const otherDraft = (await other.inject(path)).json();
-    assert.deepEqual(otherDraft.answers, []);
-    assert.notEqual(otherDraft.generation, generation);
-    await database.query('UPDATE private_objects SET bytes=$2 WHERE owner_id=$1', [
-      'synthetic-other-owner',
-      stored.bytes,
-    ]);
-    const otherStore = createPostgresObjectStore({ database, ownerId: 'synthetic-other-owner' });
-    const otherObject = (await otherStore.read('onboarding/interview', 128 * 1024))!;
-    assert.deepEqual((await other.inject(path)).json(), { resetVersion: otherObject.version });
-    assert.deepEqual(await otherStore.read('onboarding/interview', 128 * 1024), otherObject);
-    const beforeWrongKey = (await store.read('onboarding/interview', 128 * 1024))!;
-    const wrongKey = await create(ownerId, Buffer.alloc(32, 42)).inject(path);
-    assert.equal(wrongKey.statusCode, 200);
-    assert.deepEqual(wrongKey.json(), { resetVersion: beforeWrongKey.version });
-    assert.deepEqual(await store.read('onboarding/interview', 128 * 1024), beforeWrongKey);
-    assert.equal(
-      (await restarted.inject({ method: 'DELETE', url: path, payload: wrongKey.json() }))
-        .statusCode,
-      409,
-    );
-    assert.deepEqual(await store.read('onboarding/interview', 128 * 1024), beforeWrongKey);
-    keyUnavailable = true;
-    const unavailable = await restarted.inject(path);
-    assert.equal(unavailable.statusCode, 500);
-    assert.equal('resetVersion' in unavailable.json(), false);
-    assert.deepEqual(await store.read('onboarding/interview', 128 * 1024), beforeWrongKey);
-    keyUnavailable = false;
-    assert.equal((await restarted.inject(path)).json().answers[0], answer);
-    failSeal = true;
-    assert.equal(
-      (
-        await restarted.inject({
-          method: 'PUT',
-          url: path,
-          payload: { generation, answers: [answer] },
-        })
-      ).statusCode,
-      500,
-    );
-    failSeal = false;
-    assert.equal((await restarted.inject(path)).json().answers[0], answer);
-    assert.deepEqual((await memory.load()).entries, []);
-    assert.equal(
-      (
-        await restarted.inject({
-          method: 'PUT',
-          url: path,
-          payload: { generation, answers: [answer] },
-        })
-      ).statusCode,
-      200,
-    );
-    assert.deepEqual(
-      (await memory.load()).entries.map((entry) => entry.text),
-      [`Told Nod during setup: ${answer}`],
-    );
-    const completed = { generation, completed: true, answers: [], turns: [], done: true };
-    assert.deepEqual((await create().inject(path)).json(), completed);
-    const receipt = JSON.parse(
-      openVaultValue(
-        key,
-        ['nod-onboarding-interview-v1', ownerId],
-        Buffer.from((await store.read('onboarding/interview', 128 * 1024))!.bytes).toString(),
-      ),
-    );
-    assert.deepEqual(Object.keys(receipt).sort(), ['completed', 'expiresAt', 'generation']);
-    assert.equal(receipt.generation, generation);
-    assert.equal(receipt.completed, true);
-    assert.ok(receipt.expiresAt <= Date.now() + 30 * 24 * 60 * 60 * 1000);
-    await memory.restate([
-      { area: 'about', slug: 'onboarding', text: 'A later synthetic correction.' },
-    ]);
-    assert.equal(
-      (
-        await create().inject({
-          method: 'PUT',
-          url: path,
-          payload: { generation, answers: [answer] },
-        })
-      ).statusCode,
-      200,
-    );
-    assert.equal((await memory.load()).entries[0].text, 'A later synthetic correction.');
-    let current = (
-      await restarted.inject({ method: 'DELETE', url: path, payload: { generation } })
-    ).json();
-    assert.notEqual(current.generation, generation);
-    assert.deepEqual(current.answers, []);
-    for (const [method, payload] of [
-      ['PUT', { generation, answers: [answer] }],
-      ['DELETE', { generation }],
-      ['PUT', { answers: [answer] }],
-      ['DELETE', {}],
-    ] as const) {
-      assert.equal((await restarted.inject({ method, url: path, payload })).statusCode, 409);
-    }
-    assert.deepEqual((await restarted.inject(path)).json(), current);
-    const newerAnswer = 'A newer synthetic project.';
-    await seed({
-      generation: current.generation,
-      completed: false,
-      answers: [newerAnswer],
-      turns: [[question], ['Synthetic closing.']],
-      done: true,
-    });
-    assert.equal(
-      (
-        await restarted.inject({
-          method: 'PUT',
-          url: path,
-          payload: { generation: current.generation, answers: [newerAnswer] },
-        })
-      ).statusCode,
-      200,
-    );
-    assert.equal(
-      (
-        await restarted.inject({
-          method: 'PUT',
-          url: path,
-          payload: { generation, answers: [answer] },
-        })
-      ).statusCode,
-      409,
-    );
-    assert.equal((await memory.load()).entries[0].text, `Told Nod during setup: ${newerAnswer}`);
-    const expired = sealVaultValue(
-      key,
-      ['nod-onboarding-interview-v1', ownerId],
-      JSON.stringify({
-        generation: current.generation,
-        completed: true,
-        expiresAt: Date.now() - 1,
-      }),
-    );
-    await store.write('onboarding/interview', Buffer.from(expired), {
-      expectedVersion: (await store.read('onboarding/interview', 128 * 1024))!.version,
-    });
-    const expiredGeneration = current.generation;
-    current = (await restarted.inject(path)).json();
-    assert.notEqual(current.generation, expiredGeneration);
-    assert.deepEqual(current.answers, []);
-    assert.equal(current.completed, false);
-    assert.equal(
-      (
-        await restarted.inject({
-          method: 'PUT',
-          url: path,
-          payload: { generation: expiredGeneration, answers: [newerAnswer] },
-        })
-      ).statusCode,
-      409,
-    );
-    const beforeForbidden = await store.read('onboarding/interview', 128 * 1024);
-    for (const answers of [['4111 1111 1111 1111'], ['4111 1111', '1111 1111']]) {
-      assert.equal(
-        (
-          await restarted.inject({
-            method: 'PUT',
-            url: path,
-            payload: { generation: current.generation, answers },
-          })
-        ).statusCode,
-        400,
-      );
-    }
-    assert.deepEqual(await store.read('onboarding/interview', 128 * 1024), beforeForbidden);
-    assert.equal(
-      (
-        await restarted.inject({
-          method: 'PUT',
-          url: path,
-          payload: { generation: current.generation, answers: ['a'.repeat(128 * 1024)] },
-        })
-      ).statusCode,
-      413,
-    );
-    await seed({
-      generation: current.generation,
-      completed: false,
-      answers: [answer],
-      turns: [[question], ['Synthetic closing.']],
-      done: true,
-    });
-    const blocker = await database.connect();
-    await blocker.query('BEGIN');
-    await blocker.query(
-      "SELECT 1 FROM private_objects WHERE owner_id=$1 AND object_key='memory/MEMORY.md' FOR UPDATE",
-      [ownerId],
-    );
-    const waitForLocks = async (count: number) => {
-      for (let attempt = 0; attempt < 200; attempt++) {
-        const result = await admin.query(
-          "SELECT count(*) FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock'",
-          [schema],
-        );
-        if (Number(result.rows[0].count) >= count) return;
-        await delay(10);
-      }
-      assert.fail(`Expected ${count} blocked interview transactions`);
-    };
-    let saving;
-    let resetting;
-    try {
-      saving = Promise.resolve(
-        restarted.inject({
-          method: 'PUT',
-          url: path,
-          payload: { generation: current.generation, answers: [answer] },
-        }),
-      );
-      await waitForLocks(1);
-      resetting = Promise.resolve(
-        create().inject({
-          method: 'DELETE',
-          url: path,
-          payload: { generation: current.generation },
-        }),
-      );
-      await waitForLocks(2);
-      assert.equal((await memory.load()).entries[0].text, `Told Nod during setup: ${newerAnswer}`);
-    } finally {
-      await blocker.query('ROLLBACK');
-      blocker.release();
-    }
-    assert.equal((await saving)!.statusCode, 200);
-    const reset = (await resetting)!;
-    assert.equal(reset.statusCode, 200);
-    assert.notEqual(reset.json().generation, current.generation);
-    assert.deepEqual((await restarted.inject(path)).json(), reset.json());
-    assert.equal(
-      (
-        await create().inject({
-          method: 'PUT',
-          url: path,
-          payload: { generation: current.generation, answers: [answer] },
-        })
-      ).statusCode,
-      409,
-    );
-    await store.write(`artifacts/${randomUUID()}`, Buffer.from('Synthetic private artifact.'), {
-      expectedVersion: null,
-    });
-    const otherObjects = async () =>
-      (
-        await database.query(
-          'SELECT owner_id,object_key,version,bytes FROM private_objects WHERE owner_id<>$1 OR object_key<>$2 ORDER BY owner_id,object_key',
-          [ownerId, 'onboarding/interview'],
-        )
-      ).rows;
-    const preserved = await otherObjects();
-    for (const malformed of [
-      'Synthetic malformed ciphertext.',
-      sealVaultValue(key, ['nod-onboarding-interview-v1', ownerId], '{'),
-      sealVaultValue(
-        key,
-        ['nod-onboarding-interview-v1', ownerId],
-        JSON.stringify({ answers: [] }),
-      ),
-    ]) {
-      const before = (await restarted.inject(path)).json();
-      const original = (await store.read('onboarding/interview', 128 * 1024))!;
-      await store.write('onboarding/interview', Buffer.from(malformed), {
-        expectedVersion: original.version,
-      });
-      const unreadable = (await store.read('onboarding/interview', 128 * 1024))!;
-      const recovery = await restarted.inject(path);
-      assert.equal(recovery.statusCode, 200);
-      assert.deepEqual(recovery.json(), { resetVersion: unreadable.version });
-      assert.deepEqual(await store.read('onboarding/interview', 128 * 1024), unreadable);
-      for (const [app, payload] of [
-        [restarted, { generation: before.generation }],
-        [restarted, { resetVersion: randomUUID() }],
-        [other, recovery.json()],
-      ] as const) {
-        assert.equal((await app.inject({ method: 'DELETE', url: path, payload })).statusCode, 409);
-        assert.deepEqual(await store.read('onboarding/interview', 128 * 1024), unreadable);
-      }
-      keyUnavailable = true;
-      const unavailable = await restarted.inject(path);
-      assert.equal(unavailable.statusCode, 500);
-      assert.equal('resetVersion' in unavailable.json(), false);
-      assert.equal(
-        (await restarted.inject({ method: 'DELETE', url: path, payload: recovery.json() }))
-          .statusCode,
-        500,
-      );
-      assert.deepEqual(await store.read('onboarding/interview', 128 * 1024), unreadable);
-      keyUnavailable = false;
-      await store.write('onboarding/interview', Buffer.from(malformed), {
-        expectedVersion: unreadable.version,
-      });
-      assert.equal(
-        (await restarted.inject({ method: 'DELETE', url: path, payload: recovery.json() }))
-          .statusCode,
-        409,
-      );
-      const currentRecovery = (await restarted.inject(path)).json();
-      const cleared = await restarted.inject({
-        method: 'DELETE',
-        url: path,
-        payload: currentRecovery,
-      });
-      assert.equal(cleared.statusCode, 200);
-      assert.deepEqual(cleared.json(), {
-        generation: cleared.json().generation,
-        completed: false,
-        answers: [],
-        turns: [],
-        done: false,
-      });
-      assert.notEqual(cleared.json().generation, before.generation);
-      assert.deepEqual((await create().inject(path)).json(), cleared.json());
-      assert.equal(
-        (await restarted.inject({ method: 'DELETE', url: path, payload: currentRecovery }))
-          .statusCode,
-        409,
-      );
-      assert.deepEqual(await otherObjects(), preserved);
-    }
-  },
-);
 
 test('style learning sends only the owner’s own sent text and keeps one replaceable entry', async (t) => {
   const requests: Parameters<MemoryCurator['curate']>[0][] = [];

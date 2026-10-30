@@ -202,7 +202,6 @@ mkdir "$temporary/mount"
 hdiutil attach "$temporary/nod.dmg" -mountpoint "$temporary/mount" -readonly -nobrowse -noautoopen -quiet || fail 'The Nod disk image could not be opened.'
 mounted=true
 candidate="$temporary/mount/Nod.app"
-if [ ! -e "$candidate" ]; then candidate="$temporary/mount/nod.app"; fi
 check_app "$candidate"
 ditto "$candidate" "$temporary/nod.app" || fail 'The Nod app could not be copied.'
 check_app "$temporary/nod.app"

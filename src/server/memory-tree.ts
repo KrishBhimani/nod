@@ -17,10 +17,6 @@ export const personalSecret = new RegExp(
   'i',
 );
 const slugPattern = '[a-z0-9]+(?:-[a-z0-9]+)*';
-const legacyKinds = { fact: 'about', preference: 'preferences', pattern: 'lessons' } as const;
-const legacy =
-  /^## ([0-9a-f-]{36})\nKind: (fact|preference|pattern)\nUpdated: (\d{4}-\d\d-\d\dT[^\n]+)\nSources: ([0-9a-f-, ]+)\n\n([^\n]+)$/;
-
 export function unsafe(...texts: Array<string | undefined>) {
   return texts.some((text) => !!text && personalSecret.test(text));
 }
@@ -96,7 +92,7 @@ const watermark = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z\/[0-9a-f-]{36}$/;
 export type Area = z.infer<typeof area>;
 export type Entry = z.infer<typeof entrySchema>;
 export type Archived = z.infer<typeof archivedSchema>;
-export type Reason = Archived['reason'];
+type Reason = Archived['reason'];
 export type Skill = z.infer<typeof skillSchema>;
 export interface Tree {
   enabled: boolean;
@@ -126,7 +122,7 @@ export const isEmpty = (tree: Tree) =>
   !tree.skills.length;
 
 export const pathOf = (entry: { area: Area; slug: string }) => `${entry.area}/${entry.slug}`;
-export const bySlug = (a: Entry, b: Entry) => a.slug.localeCompare(b.slug);
+const bySlug = (a: Entry, b: Entry) => a.slug.localeCompare(b.slug);
 export const locate = (tree: Tree, target: string) =>
   tree.entries.find((entry) => pathOf(entry) === target);
 export const fold = (value: string) => value.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
@@ -134,14 +130,14 @@ const segmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
 const cjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 const tokens = (value: string) =>
   [...segmenter.segment(fold(value))].filter((part) => part.isWordLike).map((part) => part.segment);
-export const words = (value: string) =>
+const words = (value: string) =>
   tokens(value).filter((word) => word.length > 1 || /\p{N}/u.test(word) || cjk.test(word));
 export const same = (a: string, b: string) => {
   const left = tokens(a).join(' ');
   return !!left && left === tokens(b).join(' ');
 };
 
-export const abstractOf = (entry: Entry) => entry.abstract ?? entry.text;
+const abstractOf = (entry: Entry) => entry.abstract ?? entry.text;
 export const statusOf = (entry: Entry) =>
   entry.origin === 'stated'
     ? 'stated'
@@ -188,23 +184,6 @@ export function parse(bytes?: Uint8Array): Tree {
     seen.add(pathOf(entry));
     tree.entries.push(entry);
   };
-  if (body.startsWith('# Memory')) {
-    for (const part of body.split(/\n(?=## )/)) {
-      const match = legacy.exec(part.trim());
-      if (!match) continue;
-      const target = legacyKinds[match[2] as keyof typeof legacyKinds];
-      const entry = entrySchema.safeParse({
-        area: target,
-        slug: slugFor(tree, target, match[5]),
-        text: match[5],
-        origin: match[2] === 'pattern' ? 'inferred' : 'stated',
-        updated: match[3],
-        sources: match[4].split(', '),
-      });
-      if (entry.success) keep(entry.data);
-    }
-    return tree;
-  }
   let doc: Record<string, unknown>;
   try {
     doc = z.record(z.string(), z.unknown()).parse(JSON.parse(body));
@@ -301,7 +280,7 @@ const matches = (tokens: string[], term: string) =>
     (token) => token === term || ((term.length > 2 || cjk.test(term)) && token.startsWith(term)),
   );
 
-export const brief = (entry: Entry) => ({
+const brief = (entry: Entry) => ({
   path: pathOf(entry),
   abstract: abstractOf(entry),
   status: statusOf(entry),

@@ -12,7 +12,7 @@ function versionParts(value) {
   return parts;
 }
 
-export function compareVersions(left, right) {
+function compareVersions(left, right) {
   const a = versionParts(left);
   const b = versionParts(right);
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return Math.sign(a[i] - b[i]);
@@ -131,15 +131,10 @@ export function createUpdateSource({
       throw new Error('The desktop runtime metadata is incompatible.');
     if (
       runtime.platform !== platform ||
-      (runtime.releaseTag !== undefined &&
-        !/^nod-v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(runtime.releaseTag))
+      !/^nod-v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(runtime.releaseTag)
     )
       throw new Error('The desktop runtime target is incompatible.');
-    return releaseAssetUrl(
-      runtime.releaseTag || `runtime-${platform}-${runtime.fingerprint}`,
-      runtime.archive,
-      signal,
-    );
+    return releaseAssetUrl(runtime.releaseTag, runtime.archive, signal);
   };
   const newest = async (currentVersion, signal, resolve) => {
     versionParts(currentVersion);

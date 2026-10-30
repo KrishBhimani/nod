@@ -9,7 +9,7 @@ import type { ProviderUsageEvent, UsageTelemetry } from '../ports/provider-usage
 import type { MemoryCurator } from '../ports/memory-curator.ts';
 import type { DecisionModel } from '../ports/decisions.ts';
 import type { SpeechProvider } from '../ports/speech.ts';
-import type { TrustAction, TrustEntry, TrustSource, TrustView } from '../shared/trust.ts';
+import type { TrustAction, TrustEntry, TrustView } from '../shared/trust.ts';
 import { becauseOf, type TrustBasis } from './trust-basis.ts';
 import { actionTitle } from './action-presentation.ts';
 import { formattingLocale, localeRegion, timeZoneRegion } from '../shared/date-locale.ts';
@@ -19,7 +19,7 @@ import { analyticsModel, type CaptureAnalytics } from './analytics.ts';
 
 export const spendingLimitReached =
   'Paused because this month’s spending limit was reached. Raise the limit in Usage to resume.';
-export const defaultTaskUsd = 5;
+const defaultTaskUsd = 5;
 const usd = z
   .number()
   .min(1)
@@ -120,14 +120,12 @@ export function createLedger({
       turn_id uuid NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
       action text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
     );
-    ALTER TABLE app_actions DROP COLUMN IF EXISTS effect;
     ALTER TABLE app_actions ADD COLUMN IF NOT EXISTS basis jsonb;
     CREATE INDEX IF NOT EXISTS app_actions_owner_time ON app_actions(owner_id,created_at);
     CREATE INDEX IF NOT EXISTS app_actions_turn ON app_actions(turn_id);
     CREATE TABLE IF NOT EXISTS spending_limits (
       owner_id text PRIMARY KEY, monthly_usd double precision CHECK (monthly_usd > 0)
     );
-    ALTER TABLE spending_limits ALTER COLUMN monthly_usd DROP NOT NULL;
     ALTER TABLE spending_limits ADD COLUMN IF NOT EXISTS task_usd double precision
       DEFAULT ${defaultTaskUsd} CHECK (task_usd > 0);`);
   }

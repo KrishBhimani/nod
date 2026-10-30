@@ -6895,7 +6895,7 @@ test(
         CREATE TABLE preferences(owner_id text PRIMARY KEY,time_zone text,locale text,hour_cycle text);
         CREATE TABLE schedules(id uuid,owner_id text,title text);
         CREATE TABLE app_actions(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),owner_id text NOT NULL,
-          turn_id uuid NOT NULL REFERENCES turns(id) ON DELETE CASCADE,action text NOT NULL,effect text NOT NULL,
+          turn_id uuid NOT NULL REFERENCES turns(id) ON DELETE CASCADE,action text NOT NULL,
           created_at timestamptz NOT NULL DEFAULT now())`);
       await pool.query(
         `INSERT INTO turns(id,owner_id,source,source_id,prompt,created_at) VALUES
@@ -6911,7 +6911,7 @@ test(
       await pool.query('UPDATE turns SET thread_id=id,session_id=id WHERE id=$1', [foreign]);
       await pool.query("INSERT INTO schedules VALUES($1,'owner','Morning brief')", [schedule]);
       await pool.query(
-        "INSERT INTO app_actions(owner_id,turn_id,action,effect,created_at) VALUES('owner',$1,'NOTION_UPDATE_PAGE','change',now()-interval '90 minutes')",
+        "INSERT INTO app_actions(owner_id,turn_id,action,created_at) VALUES('owner',$1,'NOTION_UPDATE_PAGE',now()-interval '90 minutes')",
         [scheduled],
       );
       await pool.query(

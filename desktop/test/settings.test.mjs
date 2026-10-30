@@ -21,7 +21,6 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
-import { readFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -2477,13 +2476,7 @@ test('native upgrades preserve the existing settings and vault through successfu
         theme: 'dark',
       });
       const environment = await storage.store.environment();
-      const saved = JSON.parse(await readFile(storage.path, 'utf8'));
-      saved.secrets.composioApiKey = 'retired-ciphertext-must-not-be-unlocked';
-      saved.keyMetadata = {
-        composioApiKey: { suffix: 'test', source: 'manual', updatedAt: '2026-01-01T00:00:00.000Z' },
-      };
-      const previous = JSON.stringify(saved, null, 2);
-      await writeFile(storage.path, previous);
+      const previous = await readFile(storage.path, 'utf8');
       const f = await runningDesktop(t, async () => Response.json({ ok: true }), {
         initialState: 'upgrade',
         allowStart: true,
@@ -3985,19 +3978,8 @@ test('startup reads preserve older settings for rollback until an owner preferen
   });
   const expected = await f.store.environment();
   const saved = JSON.parse(await readFile(f.path, 'utf8'));
-  saved.secrets.composioApiKey = 'unreadable-retired-ciphertext';
-  saved.notificationRequest = 'requested';
-  saved.secrets.integrationConfiguration = 'unreadable-retired-config';
-  saved.keyMetadata = {
-    composioApiKey: { suffix: 'test', source: 'manual', updatedAt: '2026-01-01T00:00:00.000Z' },
-  };
-  const previous = JSON.stringify(saved, null, 2);
-  await writeFile(f.path, previous);
-  const store = createSettingsStore(f.path, {
-    ...f.encryption,
-    decryptString: () => assert.fail('Reading preferences must not decrypt retired app keys.'),
-    decryptStringAsync: () => assert.fail('Reading preferences must not decrypt retired app keys.'),
-  });
+  const previous = await readFile(f.path, 'utf8');
+  const store = createSettingsStore(f.path, f.encryption);
   const settings = await store.get();
   assert.equal(settings.theme, 'dark');
   assert.equal(settings.notifications, true);
@@ -4016,9 +3998,7 @@ test('startup reads preserve older settings for rollback until an owner preferen
   const current = JSON.parse(await readFile(f.path, 'utf8'));
   assert.equal(current.theme, 'light');
   assert.equal(current.notifications, true);
-  assert.equal(Object.hasOwn(current, 'notificationRequest'), false);
   assert.deepEqual(current.secrets, { vaultKey: saved.secrets.vaultKey });
-  assert.equal(Object.hasOwn(current, 'keyMetadata'), false);
   assert.deepEqual(await f.reopen().environment(), expected);
 });
 
@@ -4741,7 +4721,7 @@ test('native preferences reject unsupported fields and invalid values before per
   assert.equal((await f.store.get()).preferences.locale, 'en-GB');
 });
 
-function updateReleaseFixture(sourceUrl, arch = 'arm64', official = false) {
+function updateReleaseFixture(sourceUrl, arch = 'arm64') {
   const platform = `darwin-${arch}`;
   const name = (kind) => (arch === 'arm64' ? `${kind}.json` : `${kind}-darwin-x64.json`);
   const archive = {
@@ -4751,7 +4731,7 @@ function updateReleaseFixture(sourceUrl, arch = 'arm64', official = false) {
   };
   const runtime = {
     platform,
-    ...(official ? { releaseTag: 'nod-v0.1.9' } : {}),
+    releaseTag: 'nod-v0.1.9',
     id: 'b'.repeat(64),
     fingerprint: 'd'.repeat(64),
     archive,
@@ -4777,7 +4757,7 @@ function updateReleaseFixture(sourceUrl, arch = 'arm64', official = false) {
   };
   const pack = {
     id: 18,
-    tag_name: runtime.releaseTag || `runtime-${platform}-${runtime.fingerprint}`,
+    tag_name: runtime.releaseTag,
     draft: false,
     assets: [item(201, archive.file, archive.bytes)],
   };
@@ -5991,7 +5971,7 @@ test('Windows downloads stage the verified installer and fetch the runtime pack 
 });
 
 test('Intel updates use their own app assets and an official Nod runtime release', async () => {
-  const f = updateReleaseFixture('https://updates.example.invalid/nod-desktop', 'x64', true);
+  const f = updateReleaseFixture('https://updates.example.invalid/nod-desktop', 'x64');
   const candidate = await f.source.latest('0.1.0');
   assert.equal(candidate.runtime.platform, 'darwin-x64');
   assert(candidate.feedUrl.endsWith('platform=darwin-x64'));

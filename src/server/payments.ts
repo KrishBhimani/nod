@@ -16,7 +16,7 @@ import { browserOf, supersededSql } from './turn-chain.ts';
 import { credentialOrigin } from './vault.ts';
 import { lockKey, locksTable } from './locks.ts';
 
-export class PaymentError extends Error {}
+class PaymentError extends Error {}
 
 type Row = {
   id: string;
@@ -82,7 +82,7 @@ function digits(currency: string) {
     .maximumFractionDigits!;
 }
 
-export function formatAmount(minor: number, currency: string) {
+function formatAmount(minor: number, currency: string) {
   return new Intl.NumberFormat('en', { style: 'currency', currency }).format(
     minor / 10 ** digits(currency),
   );
@@ -129,30 +129,11 @@ export async function createPayments(
       status text NOT NULL DEFAULT 'pending',
       created_at timestamptz NOT NULL DEFAULT now()
     );
-    ALTER TABLE vault_payments DROP COLUMN IF EXISTS flagged;
-    ALTER TABLE vault_payments DROP COLUMN IF EXISTS expires_at;
-    ALTER TABLE vault_payments DROP COLUMN IF EXISTS keep_notice;
     ALTER TABLE vault_payments ADD COLUMN IF NOT EXISTS submit_selector text;
     ALTER TABLE vault_payments ADD COLUMN IF NOT EXISTS card_version text;
     ALTER TABLE vault_payments ADD COLUMN IF NOT EXISTS browser_id text;
     CREATE INDEX IF NOT EXISTS vault_payments_owner ON vault_payments(owner_id,created_at DESC);
   `);
-  await pool.query(
-    "UPDATE vault_payments SET status='superseded' WHERE owner_id=$1 AND status='pending' AND card_version IS NULL",
-    [ownerId],
-  );
-
-  await pool.query(
-    `INSERT INTO vault_uses(id,owner_id,origin,kind,item_id,status)
-    SELECT id::text,owner_id,origin,'card',card_id,
-      CASE WHEN status='entered' THEN 'submitted' ELSE 'uncertain' END
-    FROM vault_payments WHERE owner_id=$1 AND status IN ('entered','approved','entering','uncertain') ON CONFLICT DO NOTHING`,
-    [ownerId],
-  );
-  await pool.query(
-    "UPDATE vault_payments SET status='consumed' WHERE owner_id=$1 AND status IN ('entered','approved','entering','uncertain')",
-    [ownerId],
-  );
   const site = (origin: string) => new URL(origin).host;
   const money = (row: Pick<Row, 'amount_minor' | 'currency'>) =>
     formatAmount(Number(row.amount_minor), row.currency);

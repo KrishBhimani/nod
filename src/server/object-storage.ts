@@ -37,7 +37,8 @@ export function createPostgresObjectStore(options: {
         bytes bytea NOT NULL, PRIMARY KEY(owner_id,object_key)
       )`);
           await client.query(
-            'ALTER TABLE private_objects DROP CONSTRAINT IF EXISTS private_objects_bytes_check',
+            "DELETE FROM private_objects WHERE owner_id=$1 AND object_key='onboarding/interview'",
+            [options.ownerId],
           );
         }),
       ),

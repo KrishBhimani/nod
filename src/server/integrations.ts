@@ -51,7 +51,6 @@ import {
 } from './integration-files.ts';
 import { fileBytes } from '../shared/files.ts';
 import { IntegrationError, verifyIntegrationCompletion } from './integration-connection.ts';
-export { IntegrationError } from './integration-connection.ts';
 import {
   normalizedEmail,
   verificationCode,
@@ -200,7 +199,7 @@ function messageIdentity(data: Record<string, unknown>, field: 'message' | 'thre
   return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,200}$/.test(value) ? value : undefined;
 }
 
-export async function eventOverview(
+async function eventOverview(
   toolkit: string,
   trigger: string,
   data: Record<string, unknown>,
@@ -249,7 +248,6 @@ export async function initializeIntegrationSchema(pool: Pool) {
     ALTER TABLE app_connections ADD COLUMN IF NOT EXISTS inbox_cursor text,
       ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
       ADD COLUMN IF NOT EXISTS callback_verifier text,
-      DROP COLUMN IF EXISTS pairing_code,
       ADD COLUMN IF NOT EXISTS callback_claim_id text,
       ADD COLUMN IF NOT EXISTS configuration_id text,
       ADD COLUMN IF NOT EXISTS setup_link_hash text,
@@ -267,16 +265,7 @@ export async function initializeIntegrationSchema(pool: Pool) {
     INSERT INTO app_setup_links(owner_id,link_hash,slug)
       SELECT owner_id,setup_link_hash,slug FROM app_connections WHERE setup_link_hash IS NOT NULL
       ON CONFLICT DO NOTHING;
-    DO $$ BEGIN
-      IF to_regclass('direct_oauth_accounts') IS NOT NULL THEN
-        IF to_regclass('vault_app_grants') IS NOT NULL THEN
-          DELETE FROM vault_app_grants WHERE id IN (SELECT id FROM direct_oauth_accounts);
-        END IF;
-        DROP TABLE direct_oauth_accounts;
-      END IF;
-    END $$;
-    ALTER TABLE integration_events ADD COLUMN IF NOT EXISTS poll_connection_id uuid,
-      DROP COLUMN IF EXISTS intent;
+    ALTER TABLE integration_events ADD COLUMN IF NOT EXISTS poll_connection_id uuid;
   `);
 }
 

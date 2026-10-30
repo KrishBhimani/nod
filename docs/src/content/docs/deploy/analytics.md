@@ -97,7 +97,7 @@ Every event is checked against an explicit schema before it's sent. Unknown even
 | `nod_chat_message_sent`        | The server accepts a message you sent from the app | `has_attachments`, `is_reply`; `source`: `composer`, `task_card`, `ask_nod`, `task_reply`                                                                                                           |
 | `nod_chat_stop_requested`      | You select stop                                    | None                                                                                                                                                                                                |
 | `nod_task_card_started`        | You start a first-chat task card                   | `kind`: `immediate`, `ongoing`; `position`: `0` to `5`                                                                                                                                              |
-| `nod_setup_link_clicked`       | You open a setup link in a reply                   | `setup`: `app`, `vault`, `website`, `browser`                                                                                                                                                       |
+| `nod_setup_link_clicked`       | You open a setup link in a reply                   | `setup`: `app`, `vault`, `browser`                                                                                                                                                                  |
 | `nod_link_opened`              | You open a link from a reply                       | Registrable `domain`; `source`: `text` or `tooltip`. Older clients may send `preview` or `player` with a row `position`, 1 to 20. Never the address                                                 |
 | `nod_browser_handoff_action`   | You use a control on a browser Nod handed to you   | `action`: `done`, `back`, `reload`, `expand`, `collapse`                                                                                                                                            |
 | `nod_message_reaction_changed` | You add, change or remove a reaction               | `operation`: `add`, `remove`, `change`; `reaction`: `thumbs_up`, `heart`, `joy`, `party`, `wow`, `pray`, `thumbs_down`, `other`; `method`: `quick`, `picker`, `double_click`, `menu`, `pin`; `role` |
@@ -143,11 +143,11 @@ Provider IDs come from the fixed [supported connection list](/connect/models/#se
 
 Settings, memory and schedules:
 
-| Event                  | When                                                              | Properties                                                                                                                                                                      |
-| ---------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `nod_settings_updated` | A settings change succeeds, including a model selection from chat | `section`: `account`, `preferences`, `channels`, `models`, `trust`, `memory`, `apps`; `operation`: `update`, `connect_started`, `disconnect`; `channel`: `telegram`, `whatsapp` |
-| `nod_memory_changed`   | A memory note or learned skill is saved or removed                | `kind`: `note`, `skill`; `operation`: `save`, `forget`, `archive`, `clear`; `actor`: `owner`, `agent`, `background`. Never the note                                             |
-| `nod_schedule_changed` | A schedule change commits                                         | `operation`: `create`, `update`, `delete`; `schedule_kind`: `once`, `recurring`; bounded `cadence`; `actor`: `user`, `agent`                                                    |
+| Event                  | When                                                              | Properties                                                                                                                                                              |
+| ---------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `nod_settings_updated` | A settings change succeeds, including a model selection from chat | `section`: `account`, `preferences`, `channels`, `models`, `trust`, `memory`; `operation`: `update`, `connect_started`, `disconnect`; `channel`: `telegram`, `whatsapp` |
+| `nod_memory_changed`   | A memory note or learned skill is saved or removed                | `kind`: `note`, `skill`; `operation`: `save`, `forget`, `archive`, `clear`; `actor`: `owner`, `agent`, `background`. Never the note                                     |
+| `nod_schedule_changed` | A schedule change commits                                         | `operation`: `create`, `update`, `delete`; `schedule_kind`: `once`, `recurring`; bounded `cadence`; `actor`: `user`, `agent`                                            |
 
 Apps, connections and Vault:
 
@@ -197,7 +197,7 @@ These are pseudonymous measurements from owners who share usage data. Installati
 Recordings show navigation, layout, controls, scrolling and clicks, with private content removed.
 
 - **Masked:** all input values and all text, except product labels marked as public.
-- **Blocked:** chat messages and drafts, reply quotes, link previews, attachments and file previews, task titles, steps and results, the Usage summary and the text of each Usage row, connected account and channel names, model connection labels and errors, credential and model-key forms, Vault values, the remote browser view, images, media, iframes and canvases.
+- **Blocked:** chat messages and drafts, reply quotes, link tooltips, attachments and file previews, task titles, steps and results, the Usage summary and the text of each Usage row, connected account and channel names, model connection labels and errors, credential and model-key forms, Vault values, the remote browser view, images, media, iframes and canvases.
 - **Replaced:** every URL becomes a fixed `https://nod.invalid` route, without query strings, fragments or external destinations.
 - **Never collected:** console output, request headers and bodies, network payloads, autocapture, automatic exceptions, feature-flag events and person profiles.
 

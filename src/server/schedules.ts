@@ -326,7 +326,6 @@ export function createSchedules(dependencies: ScheduleDependencies) {
         baseline_observation jsonb, observation jsonb, observed_at timestamptz,
         UNIQUE(schedule_id,schedule_revision,scheduled_for)
       );
-      ALTER TABLE schedule_runs DROP COLUMN IF EXISTS action_prompt;
       ALTER TABLE schedules ADD COLUMN IF NOT EXISTS baseline_observation jsonb;
       ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS baseline_observation jsonb,
         ADD COLUMN IF NOT EXISTS observation jsonb, ADD COLUMN IF NOT EXISTS observed_at timestamptz;
@@ -383,15 +382,6 @@ export function createSchedules(dependencies: ScheduleDependencies) {
       } catch {
         throw invalid('This history cursor is invalid.');
       }
-    }
-    if (scheduleId) {
-      z.uuid().parse(scheduleId);
-      const owned = await pool.query(
-        'SELECT id FROM schedules WHERE id=$1 AND owner_id=$2 UNION ALL SELECT id FROM schedule_runs WHERE schedule_id=$1 AND owner_id=$2 LIMIT 1',
-        [scheduleId, ownerId],
-      );
-      if (!owned.rowCount)
-        throw Object.assign(new Error('Schedule not found.'), { statusCode: 404 });
     }
     const rows = (
       await pool.query<RunRow>(
@@ -854,9 +844,6 @@ export function createSchedules(dependencies: ScheduleDependencies) {
       remove(request.params.id),
     );
     app.get('/api/schedule-runs', (request) => history(request.query));
-    app.get<{ Params: { id: string } }>('/api/schedules/:id/runs', (request) =>
-      history(request.query, request.params.id),
-    );
   }
 
   return {

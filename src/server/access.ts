@@ -71,7 +71,6 @@ export function registerLocalAccess(
     '/onboarding',
     '/connected.html',
     '/channels',
-    '/you',
     '/settings',
     '/settings/models',
     '/settings/apps',
@@ -115,8 +114,7 @@ export function registerLocalAccess(
     }
     const pageNavigation =
       request.method === 'GET' &&
-      (pages.has(path) ||
-        /^\/(vault|credentials|payments|browser-connect)\/[A-Za-z0-9_-]+\/?$/.test(path)) &&
+      (pages.has(path) || /^\/(vault|credentials|payments)\/[A-Za-z0-9_-]+\/?$/.test(path)) &&
       request.headers['sec-fetch-mode'] === 'navigate' &&
       request.headers['sec-fetch-dest'] === 'document';
     const state = new URLSearchParams(request.url.split('?')[1]).getAll('state');
