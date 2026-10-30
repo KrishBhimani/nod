@@ -14,7 +14,6 @@ import {
   Merge as LucideMerge,
   ListOrdered as LucideListOrdered,
   MapPin as LucideMapPin,
-  Mic as LucideMic,
   Monitor as LucideMonitor,
   MonitorSmartphone as LucideMonitorSmartphone,
   Moon as LucideMoon,
@@ -79,6 +78,7 @@ export const ArrowRight = n8n('arrow-right');
 export const ArrowUp = n8n('arrow-up');
 export const ArrowUpRight = n8n('arrow-up-right');
 export const Bell = n8n('bell');
+export const Blocks = n8n('blocks');
 export const Bold = n8n('text-b');
 export const Bot = n8n('robot');
 export const Brain = n8n('brain');
@@ -115,11 +115,12 @@ export const FileText = n8n('file-text');
 export const Filter = n8n('filter');
 export const Flag = n8n('flag');
 export const Folder = n8n('folder');
+export const Gauge = n8n('gauge');
 export const Globe = n8n('globe');
 export const Globe2 = n8n('globe');
 export const Hash = n8n('hash');
-export const History = n8n('history');
 export const Hourglass = n8n('hourglass');
+export const Import = n8n('arrow-block-down');
 export const Italic = n8n('text-italics');
 export const LayoutGrid = n8n('grid');
 export const Lightbulb = n8n('lightbulb');
@@ -134,6 +135,7 @@ export const MessageCircle = n8n('chat-bubble');
 export const MessageSquare = n8n('chat-bubble');
 export const MessageSquarePlus = n8n('chat-bubble-plus');
 export const MessageSquareText = n8n('chat-bubble');
+export const Mic = n8n('microphone');
 export const Minimize2 = n8n('arrows-in');
 export const Minus = n8n('minus');
 export const MousePointer2 = n8n('mouse-pointer');
@@ -144,10 +146,8 @@ export const Paperclip = n8n('paperclip');
 export const PenLine = n8n('pencil');
 export const Pencil = n8n('pencil');
 export const Play = n8n('play');
-export const PlugZap = n8n('plug');
 export const Plus = n8n('plus');
 export const Power = n8n('power');
-export const Radio = n8n('satellite-dish');
 export const Redo2 = n8n('arrow-u-up-right');
 export const RefreshCw = n8n('arrows-cw');
 export const RotateCcw = n8n('arrows-ccw');
@@ -156,7 +156,7 @@ export const ScanSearch = n8n('binoculars');
 export const Search = n8n('magnifying-glass');
 export const Send = n8n('paperplane');
 export const Server = n8n('hard-drive');
-export const Settings = n8n('wrench');
+export const Settings = n8n('gear');
 export const ShieldCheck = n8n('shield');
 export const SlidersHorizontal = n8n('toggles');
 export const Smile = n8n('smiley-square');
@@ -169,7 +169,6 @@ export const Trash2 = n8n('trash');
 export const Underline = n8n('text-underline');
 export const Undo2 = n8n('arrow-u-up-left');
 export const Unlink = n8n('link-slash');
-export const Upload = n8n('cloud-arrow-up');
 export const User = n8n('person');
 export const UserRound = n8n('person');
 export const Vault = n8n('vault');
@@ -191,7 +190,6 @@ export const KeyRound = lucide(LucideKeyRound);
 export const Leaf = lucide(LucideLeaf);
 export const ListOrdered = lucide(LucideListOrdered);
 export const MapPin = lucide(LucideMapPin);
-export const Mic = lucide(LucideMic);
 export const Merge = lucide(LucideMerge);
 export const Monitor = lucide(LucideMonitor);
 export const MonitorSmartphone = lucide(LucideMonitorSmartphone);

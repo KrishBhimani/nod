@@ -4,9 +4,8 @@ import type { SpeechVoice } from '../../shared/speech';
 import { usePageData } from '../hooks/use-page-data';
 import { api, apiResponse, errorMessage } from '../lib/api';
 import { savePreferences } from '../lib/preferences';
-import { Check, ChevronDown, Download, LoaderCircle, Mic, Sparkles } from './icons';
+import { Check, ChevronDown, LoaderCircle } from './icons';
 import { ConnectionMenu } from './connection-menu';
-import { ModelProviderLogo } from './models';
 import { VoiceConnections } from './voice-connections';
 import { VoicePicker, VoiceSample, voiceProvider } from './voice-picker';
 import { Button, Notice } from './ui';
@@ -19,18 +18,6 @@ const providerNames = {
   openai: 'OpenAI',
 } as const;
 type VoiceProvider = keyof typeof providerNames;
-
-function VoiceProviderIcon({ provider }: { provider: VoiceProvider }) {
-  return provider === 'auto' ? (
-    <Sparkles size={18} aria-hidden="true" />
-  ) : provider === 'local' ? (
-    <Download size={18} aria-hidden="true" />
-  ) : provider === 'elevenlabs' ? (
-    <Mic size={18} aria-hidden="true" />
-  ) : (
-    <ModelProviderLogo provider={provider} size={18} />
-  );
-}
 
 interface SpeechSettings {
   transcription: boolean;
@@ -300,7 +287,6 @@ export function VoiceSettings({ onBusyChange }: { onBusyChange(busy: boolean): v
                 disabled={saving || setupBusy || catalogRefreshing}
                 trigger={
                   <>
-                    <VoiceProviderIcon provider={providerSelection} />
                     <span className="voice-provider-name">{providerNames[providerSelection]}</span>
                     <ChevronDown size={16} aria-hidden="true" />
                   </>
@@ -319,7 +305,6 @@ export function VoiceSettings({ onBusyChange }: { onBusyChange(busy: boolean): v
                         void chooseProvider(value as VoiceProvider);
                       }}
                     >
-                      <VoiceProviderIcon provider={value as VoiceProvider} />
                       <span className="voice-provider-name voice-picker-label">
                         <span>{name}</span>
                         {value === 'auto' && automaticVoice && (

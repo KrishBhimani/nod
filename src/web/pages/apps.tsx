@@ -760,7 +760,7 @@ export function Apps({
                 {selectedCategories.length > 0 && (
                   <span className="app-category-count">{selectedCategories.length}</span>
                 )}
-                <ChevronDown size={16} aria-hidden="true" />
+                <ChevronDown size={12} aria-hidden="true" />
               </Popover.Trigger>
               <Popover.Portal>
                 <Popover.Content

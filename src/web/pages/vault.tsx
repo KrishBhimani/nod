@@ -1,7 +1,7 @@
 import { PageTitle } from '../components/page-title';
 import { useEffect, useRef, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
-import { ChevronRight, CreditCard, Globe, KeyRound, Plus, Upload } from '../components/icons';
+import { ChevronRight, CreditCard, Globe, Import, KeyRound, Plus } from '../components/icons';
 import type { VaultListEntry, VaultSession } from '../../shared/contracts';
 import { usePageData } from '../hooks/use-page-data';
 import { usePhone } from '../hooks/use-phone';
@@ -332,7 +332,7 @@ export function Vault({ hidden = false, onAsk }: { hidden?: boolean; onAsk?(text
                       setImporting(true);
                     }}
                   >
-                    <Upload size={16} aria-hidden="true" />
+                    <Import size={16} aria-hidden="true" />
                     Import passwords
                   </button>
                 </Popover.Content>
@@ -361,7 +361,7 @@ export function Vault({ hidden = false, onAsk }: { hidden?: boolean; onAsk?(text
             <div className="vault-doors">
               {[
                 {
-                  icon: Upload,
+                  icon: Import,
                   label: 'Import passwords',
                   detail: 'From Chrome, 1Password or another manager',
                   run: () => setImporting(true),
