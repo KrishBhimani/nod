@@ -1,27 +1,25 @@
 ---
 title: Analytics and recordings
-description: What usage data Nod collects when you opt in, how to turn it off, and the rules for masked session recordings.
+description: What usage data Nod collects, how to turn it off, and the rules for masked session recordings.
 sidebar:
   order: 4
 ---
 
 This page explains what usage data Nod collects, how to turn it on or off, and what session recordings never show.
 
-Usage data is opt-in for each owner and off by default. Nod sends product events and masked session recordings to the Nod team's n8n-owned PostHog project in the EU (`eu.i.posthog.com`), including from independent source installations. The ingestion project identifier is public; there is no runtime override for another analytics project.
+Usage data is on by default for each new owner, and you can turn it off at any time. Nod sends product events and masked session recordings to the Nod team's n8n-owned PostHog project in the EU (`eu.i.posthog.com`), including from independent source installations. The ingestion project identifier is public; there is no runtime override for another analytics project.
 
 Nod never sends what you write, what Nod replies, what your apps return, or what you type into a form. Events describe what kind of thing happened, using fixed lists of values, counts and durations.
 
 ## Turn usage data on or off
 
-You turn on **Share usage data** in the introduction, or later in **Settings → General**. Opt-in usage events and recordings start only in the app after your choice is saved; the native Welcome window sends neither.
-
-Next to the switch, Nod says: "Help us make Nod better by sharing how you use it. Never your messages." It links to this page, which lists everything that is sent.
+**Share usage data** is on for a new owner. Turn it off, or back on, in **Settings → General**. Onboarding doesn't ask; its privacy step says that usage data is shared and links to this page, which lists everything that is sent. Owners who already saved a choice keep it. Usage events and recordings start only in the app; the native Welcome window sends neither.
 
 The deployment has a switch too. Nod collects only when both are on, and `NOD_ANALYTICS_ENABLED=false` always wins.
 
 ```mermaid
 flowchart LR
-  deploy{{Deployment<br/>allows it?}} -- yes --> owner{{You turned on<br/>Share usage data?}}
+  deploy{{Deployment<br/>allows it?}} -- yes --> owner{{Share usage data<br/>still on?}}
   deploy -- no --> off[Nothing sent]:::stop
   owner -- no --> off
   owner -- yes --> on[Events and<br/>masked recordings]:::go
@@ -47,7 +45,7 @@ Nod counts installations, not people. Two installations count as two, and a shar
 
 Web and desktop clients connected to the same server use that server's installation identity. A separate local desktop assistant has its own identity.
 
-"Available" still needs the owner's opt-in. PostHog creates no person profile and doesn't look up your location from your IP address.
+"Available" still needs the owner's **Share usage data** switch to be on. PostHog creates no person profile and doesn't look up your location from your IP address.
 
 ### Stop sharing or delete past data
 
@@ -92,13 +90,13 @@ Every event is checked against an explicit schema before it's sent. Unknown even
 | ------------------------------ | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `$pageview`                    | A page becomes visible                             | `route`: `/`, `/onboarding`, `/apps`, `/channels`, `/tasks`, `/prepared`, `/usage`, `/vault`, `/settings`, `/browser`, `/credentials`, `/payments` or `/not-found`                                  |
 | `$snapshot`                    | Masked full or incremental recording               | PostHog replay metadata and masked snapshot data                                                                                                                                                    |
-| `nod_onboarding_step_viewed`   | An onboarding step appears                         | `step`: `welcome`, `intro`, `email`, `calendar`, `brain`, `apps`, `launch_at_login`; `direction`: `forward`, `back`                                                                                 |
-| `nod_onboarding_step_skipped`  | You skip an onboarding step                        | `step`: `email`, `calendar`                                                                                                                                                                         |
+| `nod_onboarding_step_viewed`   | An onboarding step appears                         | `step`: `welcome`, `email`, `brain`, `privacy`; `direction`: `forward`, `back`                                                                                                                      |
+| `nod_onboarding_step_skipped`  | You skip an onboarding step                        | `step`: `email`                                                                                                                                                                                     |
 | `nod_settings_viewed`          | A settings tab appears                             | `tab`: `general`, `models`, `app_connections`, `memory`                                                                                                                                             |
 | `nod_tab_viewed`               | A tab inside a page appears or you switch to it    | `page`: `tasks`, `apps`; `tab`: `current`, `scheduled`, `previous`, `all`, `connected`                                                                                                              |
 | `nod_chat_message_sent`        | The server accepts a message you sent from the app | `has_attachments`, `is_reply`; `source`: `composer`, `task_card`, `ask_nod`, `task_reply`                                                                                                           |
 | `nod_chat_stop_requested`      | You select stop                                    | None                                                                                                                                                                                                |
-| `nod_task_card_started`        | You start a first-chat task card                   | `kind`: `immediate`, `ongoing`; `position`: `0`, `1`, `2`                                                                                                                                           |
+| `nod_task_card_started`        | You start a first-chat task card                   | `kind`: `immediate`, `ongoing`; `position`: `0` to `5`                                                                                                                                              |
 | `nod_setup_link_clicked`       | You open a setup link in a reply                   | `setup`: `app`, `vault`, `website`, `browser`                                                                                                                                                       |
 | `nod_link_opened`              | You open a link from a reply                       | Registrable `domain`; `source`: `text` or `tooltip`. Older clients may send `preview` or `player` with a row `position`, 1 to 20. Never the address                                                 |
 | `nod_browser_handoff_action`   | You use a control on a browser Nod handed to you   | `action`: `done`, `back`, `reload`, `expand`, `collapse`                                                                                                                                            |
@@ -110,7 +108,7 @@ Every event is checked against an explicit schema before it's sent. Unknown even
 | `nod_model_selected`           | A model choice you made is saved                   | `provider`: a supported provider ID or `other`; `entry`: `settings`, `onboarding`; `recommended`. Never the model name                                                                              |
 | `nod_ui_error`                 | An instrumented UI action or render fails          | `area`: `application`, `onboarding`, `chat`, `settings`, `apps`, `models`; `action`: `load`, `save`, `send`, `connect`, `disconnect`, `prepare`, `stop`, `render`. Never the error itself           |
 
-Onboarding asks about **Share usage data** in the introduction. Step events are sent only after you turn it on, so the welcome screen and introduction are usually not recorded. The native welcome is not recorded. The introduction is recorded if sharing was already enabled when it appears; enabling sharing there does not backfill earlier events. The Open at login question is reported when it appears. Setup finishes after the last required step. If you leave usage sharing off, onboarding sends nothing. Email and calendar can be skipped. The apps step always lets you continue without connecting a tool.
+Usage data is on by default, so onboarding step events are sent from the welcome screen on. The native welcome is not recorded. Setup finishes after the last required step. If you turned usage sharing off, onboarding sends nothing. Email can be skipped.
 
 ### What Nod does
 
@@ -136,7 +134,7 @@ Tools, confirmations and models:
 | `nod_confirmation_changed`      | Nod asks for your yes, or the question closes                                           | `status`: `asked`, `approved`, `declined`, `executed`, `expired`, `uncertain`; `action_kind`: `app`, `browser`, `sign_in`, `settings`, `memory`; `source` of the turn that asked                                                                                                                                   |
 | `nod_model_used`                | A model request finishes                                                                | `provider`: a supported provider ID, `typesafe`, or `other`; `model`; `purpose`: `agent`, `memory`, `review`, `tasks`, `analytics` (retired conversation analysis); `outcome`; `input_tokens`, `output_tokens`, `cached_input_tokens`, `cost_usd`; `pricing`: `api`, `plan_estimate`, `unavailable`; `duration_ms` |
 | `nod_model_connection_changed`  | A model connection is saved, removed, or its save or sign-in fails                      | `provider`: a supported provider ID; `method`: `api_key`, `subscription`, `oauth`; `status`: `connected`, `disconnected`, `failed`. Never the key, address or account                                                                                                                                              |
-| `nod_model_connection_observed` | Each model connection, after opt-in, at startup and after model changes                 | `provider`, `method`, `selected`; `model` and `effort`: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` on the selected connection only                                                                                                                                                                  |
+| `nod_model_connection_observed` | Each model connection, when sharing turns on, at startup and after model changes        | `provider`, `method`, `selected`; `model` and `effort`: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` on the selected connection only                                                                                                                                                                  |
 | `nod_website_visited`           | Nod's browser shows a page, or a web fetch reads one, at most once per website per turn | Registrable `domain`; `via`: `browser`, `fetch`; `subagent`. Never the address, page or search text                                                                                                                                                                                                                |
 
 Provider IDs come from the fixed [supported connection list](/connect/models/#set-connections-in-server-settings), plus `compatible` for owner-configured endpoints. Arbitrary provider names, endpoints, cloud account IDs, gateway IDs, and credentials are never analytics properties. A model connection's `connected` status means its configuration was saved; providers using a bundled catalog check access on first use.
@@ -157,7 +155,7 @@ Apps, connections and Vault:
 | -------------------------- | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `nod_connection_changed`   | A connection is attempted, saved, fails, is removed                                                        | Validated public catalog `app` or `custom`, public `domain` when available, `connection_method`, `status`, bounded `failure_reason`                                                                                                                                                                                                                                        |
 | `nod_service_used`         | A managed app, HTTP, MCP, CLI or saved browser session operation finishes                                  | App, domain, method, outcome, `duration_ms`, bounded `failure_reason`, optional `operation_phase`; no arguments, action names or results                                                                                                                                                                                                                                   |
-| `nod_connection_observed`  | A connected app or access path is observed at startup, opt-in or after changes                             | Validated public app, normalized domain when available, and connection method                                                                                                                                                                                                                                                                                              |
+| `nod_connection_observed`  | A connected app or access path is observed at startup, when sharing turns on or after changes              | Validated public app, normalized domain when available, and connection method                                                                                                                                                                                                                                                                                              |
 | `nod_vault_changed`        | A Vault item is actually created, changed or removed                                                       | `item_type`: `login`, `card`; `operation`; `source` when known; normalized public `domain` for logins. No values, labels, account names or card details                                                                                                                                                                                                                    |
 | `nod_vault_imported`       | New logins are committed by an import                                                                      | Batches of up to 100 normalized `domains`, one entry per imported login; `unavailable` when no public domain can be derived. No login values or names                                                                                                                                                                                                                      |
 | `nod_secure_entry_changed` | A sign-in, payment or verification code request opens, is entered, fails, becomes uncertain or is replaced | `kind`: `sign_in`, `payment`, `code`; `status`: `requested`, `superseded` (a newer request replaced it), `submitted`, `failed`, `uncertain` for every kind, plus `approved` when you approve a payment with the card's security code; registrable `domain` of the sign-in page or shop; exact `amount` and `currency` of a payment. Never the card, order, item or account |
@@ -184,7 +182,7 @@ Connection and Vault login domains identify public services: `team.example.com/p
 
 `connected` means an access path was durably saved; saved CLI credentials don't prove a command works. A connection supporting both HTTP and MCP emits one event per method. `nod_service_used` success means that the instrumented provider call returned successfully, not that the user's task succeeded. Background Gmail polling, verification-mail lookup and writing-style reads are outside that metric. Failure reasons come from structured provider metadata, never raw error text.
 
-Connection observations run after opt-in, at startup and after connection changes. Count distinct opted-in identities reporting each connection in the selected period. These are observations, not a live account inventory.
+Connection observations run when sharing turns on, at startup and after connection changes. Count distinct identities that share usage data reporting each connection in the selected period. These are observations, not a live account inventory.
 
 Vault imports batch domain entries so a 5,000-login import emits at most 50 events. Count entries in `domains`, not import events.
 
@@ -192,7 +190,7 @@ Opt-out drops unsent events and recordings. Turning sharing back on cannot reviv
 
 Website domains, sign-in domains and purchase amounts let the Nod team see which kinds of websites Nod is used on and how much is spent through it.
 
-These are pseudonymous, opt-in measurements. Installation IDs and service domains are not anonymous, and opted-in users may not represent the whole user base.
+These are pseudonymous measurements from owners who share usage data. Installation IDs and service domains are not anonymous, and owners who share may not represent the whole user base.
 
 ## What recordings show
 

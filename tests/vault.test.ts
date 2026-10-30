@@ -3508,7 +3508,7 @@ test('analytics routes collapse private paths to known pages', async () => {
   );
 });
 
-test('desktop onboarding persists explicit native choices and resumes without repeating them', async () => {
+test('desktop onboarding turns on open at login once and resumes without repeating it', async () => {
   const result = await runProcess(process.execPath, ['--import', 'tsx', '--input-type=module'], {
     timeoutMs: 30_000,
     input: String.raw`
@@ -3531,16 +3531,16 @@ window.matchMedia=()=>({matches:true,addEventListener(){},removeEventListener(){
 let store=createSettingsStore(join(directory,'settings.json'),{});
 let failRead=true;
 let failSave=true;
+let failLogin=false;
 let saves=0;
 let reads=0;
 let statusListener;
-let runtimeRetries=0;
 window.nodDesktop={
   status:async()=>({phase:'ready',runtime:{phase:'preparing'}}),
   onStatus:listener=>{statusListener=listener;return()=>{statusListener=undefined}},
-  prepare:async()=>{runtimeRetries++;const ready={phase:'ready',runtime:{phase:'ready'}};statusListener(ready);return ready},
+  prepare:async()=>{const ready={phase:'ready',runtime:{phase:'ready'}};statusListener(ready);return ready},
   getSettings:async()=>{reads++;if(failRead)throw new Error('Synthetic native read failed');return store.get()},
-  saveSettings:async change=>{saves++;if(failSave)throw new Error('Synthetic native save failed');return store.save(change)},
+  saveSettings:async change=>{saves++;if(failSave)throw new Error('Synthetic native save failed');if(failLogin&&change.launchAtLogin)return store.save({onboardingPreferenceStep:'complete'});return store.save(change)},
 };
 const calls=[];
 window.fetch=globalThis.fetch=async(url,options={})=>{
@@ -3570,58 +3570,23 @@ assert.equal(saves,0);
 assert.equal(document.querySelector('[role="switch"]'),null);
 failRead=false;
 await act(async()=>button('Try again').click());
-await waitFor(()=>button('Enable open at login'));
-const preferenceAction=()=>document.querySelector('.ob-preference-action button');
-assert.equal((await store.get()).notifications,false);
-assert.ok(preferenceAction());
-assert.equal(saves,0);
-assert.equal(button('Start chatting').disabled,true);
-await act(async()=>button('Start chatting').click());
-assert.equal((await store.get()).onboardingPreferenceStep,'launchAtLogin');
-const loginAction=preferenceAction();
-await act(async()=>statusListener({phase:'ready',runtime:{phase:'error',error:'Synthetic runtime interrupted'}}));
-await waitFor(()=>button('Try again'));
-assert.equal(preferenceAction(),loginAction);
-await act(async()=>button('Try again').click());
-await waitFor(()=>runtimeRetries===1&&!button('Try again'));
-assert.equal(preferenceAction(),loginAction);
-assert.equal(saves,0);
-await act(async()=>{preferenceAction().click();preferenceAction().click()});
 await waitFor(()=>document.body.textContent.includes('Synthetic native save failed'));
 assert.equal(saves,1);
-assert.equal((await store.get()).onboardingPreferenceStep,'launchAtLogin');
+assert.notEqual((await store.get()).onboardingPreferenceStep,'complete');
 failSave=false;
-await act(async()=>preferenceAction().click());
-await waitFor(()=>!preferenceAction()&&!button('Start chatting').disabled);
-assert.equal((await store.get()).launchAtLogin,true);
-assert.equal((await store.get()).notifications,false,'onboarding does not request notification permission');
-assert.equal((await store.get()).onboardingPreferenceStep,'launchAtLogin');
-await act(async()=>button('Back').click());
-await waitFor(()=>document.querySelector('.ob')?.dataset.step==='apps');
-await act(async()=>button('Continue').click());
-await waitFor(()=>document.querySelector('.ob')?.dataset.step==='launchAtLogin'&&!button('Start chatting').disabled);
-assert.equal(preferenceAction(),null,'returning from apps preserves the saved native choice');
-assert.equal(saves,2,'navigating through apps never repeats the native setting write');
-await act(async()=>root.unmount());
-store=createSettingsStore(join(directory,'settings.json'),{});
-root=createRoot(document.getElementById('root'));
-await render();
-await waitFor(()=>button('Start chatting')&&!button('Start chatting').disabled);
-assert.equal(document.querySelector('.ob').dataset.step,'launchAtLogin');
-assert.equal(preferenceAction(),null);
-assert.equal((await store.get()).launchAtLogin,true);
-await act(async()=>button('Start chatting').click());
+await act(async()=>button('Try again').click());
 await waitFor(()=>document.querySelector('main [role="status"]'));
 assert.equal((await store.get()).launchAtLogin,true);
+assert.equal((await store.get()).notifications,false,'onboarding does not request notification permission');
 assert.equal((await store.get()).onboardingPreferenceStep,'complete');
-assert.equal(saves,3);
+assert.equal(saves,2);
 await act(async()=>root.unmount());
 store=createSettingsStore(join(directory,'settings.json'),{});
 root=createRoot(document.getElementById('root'));
 await render();
 await waitFor(()=>document.querySelector('main [role="status"]'));
 assert.equal(document.querySelector('[role="switch"]'),null);
-assert.equal(saves,3);
+assert.equal(saves,2,'a completed native step is never written again');
 await act(async()=>root.unmount());
 await store.save({onboardingCompleted:true});
 const {DesktopOptions,useDesktopSettings}=await import('./src/web/components/desktop-settings.tsx');
@@ -3650,6 +3615,26 @@ await waitFor(()=>!login().disabled);
 assert.equal(login().getAttribute('aria-checked'),'false');
 assert.equal((await store.get()).launchAtLogin,false);
 failSave=false;
+await act(async()=>root.unmount());
+const blockedPath=join(directory,'blocked-settings.json');
+store=createSettingsStore(blockedPath,{});
+failLogin=true;
+const beforeBlocked=saves;
+root=createRoot(document.getElementById('root'));
+await render();
+await waitFor(()=>document.querySelector('main [role="status"]'));
+assert.equal(saves,beforeBlocked+1);
+assert.equal((await store.get()).launchAtLogin,false);
+assert.equal((await store.get()).onboardingPreferenceStep,'complete');
+await act(async()=>root.unmount());
+store=createSettingsStore(blockedPath,{});
+root=createRoot(document.getElementById('root'));
+await render();
+await waitFor(()=>document.querySelector('main [role="status"]'));
+assert.equal(saves,beforeBlocked+1);
+await store.save({onboardingCompleted:true});
+assert.equal((await store.get()).onboardingCompleted,true);
+assert.equal((await store.get()).launchAtLogin,false);
 await act(async()=>root.unmount());
 assert.equal(calls.some(path=>path.startsWith('/api/desktop/setup')),false);
 await rm(directory,{recursive:true,force:true});

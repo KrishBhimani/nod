@@ -1290,7 +1290,7 @@ async function finishEnginePreparation(pending = false) {
     const response = await engineRequest('/api/session');
     if (response.ok && (await response.json()).settings?.onboardingCompleted === true) {
       const saved = await settings.get();
-      if (saved.launchAtLogin) {
+      if (saved.onboardingPreferenceStep === 'complete' || saved.launchAtLogin) {
         applyPreferences(await settings.save({ onboardingCompleted: true }));
         onboardingCompleted = true;
         nativePreferencesPending = false;
@@ -2154,19 +2154,33 @@ else {
           )
             throw new Error('Finish onboarding before continuing.');
         }
-        const loginChanged = typeof value.launchAtLogin === 'boolean';
-        const previousLogin = loginChanged ? app.getLoginItemSettings().openAtLogin : undefined;
+        let loginChanged = typeof value.launchAtLogin === 'boolean';
+        let previousLogin;
         if (loginChanged) {
-          app.setLoginItemSettings({ openAtLogin: value.launchAtLogin });
-          const login = app.getLoginItemSettings();
-          if (
-            (process.platform === 'win32'
-              ? login.executableWillLaunchAtLogin
-              : login.openAtLogin) !== value.launchAtLogin
-          )
-            throw new Error(
-              'Open at login could not be updated. Check Nod in your computer’s login items, then try again.',
-            );
+          try {
+            previousLogin = app.getLoginItemSettings().openAtLogin;
+            app.setLoginItemSettings({ openAtLogin: value.launchAtLogin });
+            const login = app.getLoginItemSettings();
+            if (
+              (process.platform === 'win32'
+                ? login.executableWillLaunchAtLogin
+                : login.openAtLogin) !== value.launchAtLogin
+            )
+              throw new Error(
+                'Open at login could not be updated. Check Nod in your computer’s login items, then try again.',
+              );
+          } catch (error) {
+            if (value.onboardingPreferenceStep !== 'complete' || value.launchAtLogin !== true)
+              throw error;
+            if (typeof previousLogin === 'boolean') {
+              try {
+                app.setLoginItemSettings({ openAtLogin: previousLogin });
+              } catch {}
+            }
+            value = { ...value };
+            delete value.launchAtLogin;
+            loginChanged = false;
+          }
         }
         let saved;
         try {
@@ -2200,6 +2214,13 @@ else {
         if (engineRuntimeReady || (!options?.retry && enginePreferencesReady && preparing))
           return status;
         return prepare(options);
+      });
+      ipcMain.handle('nod:warmup', async (event) => {
+        allowSetup(event);
+        const saved = await settings.get();
+        if (onboardingCompleted || status.remote || quitting || saved.serverUrl) return;
+        if (!(await settings.hasSavedKeys())) lifecycle.allowEngine();
+        void lifecycle.warmup().catch(() => {});
       });
       ipcMain.handle('nod:runtime:import', (event) => {
         allowSetup(event);

@@ -7,10 +7,10 @@ import { feedbackActivity } from './feedback-activity';
 
 type AnalyticsEvents = {
   nod_onboarding_step_viewed: {
-    step: 'welcome' | 'intro' | 'brain' | 'email' | 'calendar' | 'apps' | 'launch_at_login';
+    step: 'welcome' | 'email' | 'brain' | 'privacy';
     direction: 'forward' | 'back';
   };
-  nod_onboarding_step_skipped: { step: 'email' | 'calendar' };
+  nod_onboarding_step_skipped: { step: 'email' };
   nod_settings_viewed: {
     tab: 'general' | 'models' | 'app_connections' | 'memory';
   };
@@ -65,10 +65,10 @@ export type AnalyticsProperties<Event extends keyof AnalyticsEvents> = NonNullab
 const roles = ['assistant', 'user'];
 const eventProperties: Record<keyof AnalyticsEvents, Record<string, readonly unknown[]>> = {
   nod_onboarding_step_viewed: {
-    step: ['welcome', 'intro', 'brain', 'email', 'calendar', 'apps', 'launch_at_login'],
+    step: ['welcome', 'email', 'brain', 'privacy'],
     direction: ['forward', 'back'],
   },
-  nod_onboarding_step_skipped: { step: ['email', 'calendar'] },
+  nod_onboarding_step_skipped: { step: ['email'] },
   nod_settings_viewed: {
     tab: ['general', 'models', 'app_connections', 'memory'],
   },
@@ -78,7 +78,7 @@ const eventProperties: Record<keyof AnalyticsEvents, Record<string, readonly unk
     source: ['composer', 'task_card', 'ask_nod', 'task_reply'],
   },
   nod_chat_stop_requested: {},
-  nod_task_card_started: { kind: ['immediate', 'ongoing'], position: [0, 1, 2] },
+  nod_task_card_started: { kind: ['immediate', 'ongoing'], position: [0, 1, 2, 3, 4, 5] },
   nod_setup_link_clicked: { setup: ['app', 'vault', 'website', 'browser'] },
   nod_browser_handoff_action: { action: ['done', 'back', 'reload', 'expand', 'collapse'] },
   nod_message_reaction_changed: {

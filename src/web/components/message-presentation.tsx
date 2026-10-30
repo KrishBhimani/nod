@@ -2,6 +2,7 @@ import { useId, useState } from 'react';
 import { mapLocationUrl, presentationSchema, type Presentation } from '../../shared/presentation';
 import { ArrowRight, ExternalLink, MapPin } from './icons';
 import { useArtifactDrawer } from './artifact-context';
+import { ConnectApps } from './presentation-apps';
 import { Booking } from './presentation-booking';
 import { PresentationChart } from './presentation-chart';
 import { Flights, Seats } from './presentation-travel';
@@ -27,6 +28,7 @@ export function MessagePresentation({ value }: { value: unknown }) {
       </p>
     );
   const visual = parsed.data;
+  if (visual.type === 'apps') return <ConnectApps visual={visual} />;
   return (
     <section
       className={`message-presentation presentation-${visual.type}`}
