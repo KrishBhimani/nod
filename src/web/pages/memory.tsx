@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
-import { Check, ChevronLeft, Copy, Download, Plus, Undo2, Upload, X } from '../components/icons';
+import { Check, ChevronLeft, Copy, Download, Import, Plus, Undo2, X } from '../components/icons';
 import {
   areaLabels,
   memoryAreas,
@@ -1108,7 +1108,7 @@ export function Memory({
               title="Import"
               onClick={() => setImporting(true)}
             >
-              <Upload size={16} aria-hidden="true" />
+              <Import size={16} aria-hidden="true" />
               <span className="memory-bar-label">Import</span>
             </Button>
             <Button

@@ -1,11 +1,11 @@
-import { History, ListChecks, MessageCircle, PlugZap, Radio, Vault } from '../components/icons';
+import { Blocks, Gauge, ListChecks, MessageCircle, Send, Vault } from '../components/icons';
 
 export const sidebarItems = [
   { path: '/', label: 'Chat', key: '1', icon: MessageCircle },
   { path: '/tasks', label: 'Tasks', key: '2', icon: ListChecks },
-  { path: '/apps', label: 'Apps', key: '3', icon: PlugZap },
-  { path: '/channels', label: 'Channels', key: '4', icon: Radio },
-  { path: '/usage', label: 'Usage', key: '5', icon: History },
+  { path: '/apps', label: 'Apps', key: '3', icon: Blocks },
+  { path: '/channels', label: 'Channels', key: '4', icon: Send },
+  { path: '/usage', label: 'Usage', key: '5', icon: Gauge },
   { path: '/vault', label: 'Vault', key: '6', icon: Vault },
 ] as const;
 
