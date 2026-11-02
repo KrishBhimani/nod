@@ -146,7 +146,7 @@ export function Onboarding({
         viewed.current.direction !== arrived)
     ) {
       viewed.current = { owner: user.id, step, direction: arrived };
-      captureAnalytics('nod_onboarding_step_viewed', {
+      captureAnalytics('onboarding_step_viewed', {
         step,
         direction: arrived,
       });
@@ -205,7 +205,7 @@ export function Onboarding({
         clearStored();
       })
       .catch((cause) => {
-        capture('nod_ui_error', { area: 'onboarding', action: 'save' });
+        capture('ui_error', { area: 'onboarding', action: 'save' });
         if (active.current) {
           setCompletionFailed(true);
           setError(errorMessage(cause));
@@ -264,7 +264,7 @@ export function Onboarding({
     } catch {
       if (!request.signal.aborted) {
         setPreparation('failed');
-        capture('nod_ui_error', { area: 'onboarding', action: 'prepare' });
+        capture('ui_error', { area: 'onboarding', action: 'prepare' });
       }
     } finally {
       if (preparationRequest.current === request) preparationRequest.current = null;
@@ -311,7 +311,7 @@ export function Onboarding({
   function skipped() {
     if (step === 'email') {
       emailSkipped.current = true;
-      captureAnalytics('nod_onboarding_step_skipped', { step });
+      captureAnalytics('onboarding_step_skipped', { step });
     }
   }
 
