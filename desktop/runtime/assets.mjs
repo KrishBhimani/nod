@@ -370,6 +370,7 @@ function unpackRuntime(
     failure,
     onStatus,
     onBytes = () => {},
+    verifySource,
     finish = async () => {},
     signal,
     cacheRoot,
@@ -389,6 +390,7 @@ function unpackRuntime(
     const writeSignal = signal ? AbortSignal.any([signal, writing.signal]) : writing.signal;
     try {
       signal?.throwIfAborted();
+      await verifySource?.();
       await mkdir(dirname(root), { recursive: true, mode: 0o700 });
       const published = await reusableFiles(root, release, signal);
       for (const path of published) files.get(path).resolve();
@@ -717,6 +719,45 @@ export async function openRuntimeAssets(options) {
   const release = options.release
     ? validateRuntimeRelease(options.release)
     : await runtimeRelease(options.resourcesPath);
+  if (release) {
+    const root = runtimeCacheRoot(release, options.cacheRoot);
+    if (pending.has(root)) return pending.get(root);
+    const archivePath = `${root}.${release.archive.sha256.slice(0, 12)}.download`;
+    const metadata = await lstat(archivePath).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+    if (pending.has(root)) return pending.get(root);
+    const cached = await verifiedCache(release, options.signal, options.cacheRoot);
+    if (cached)
+      return { root: cached, paths: [], ready: async () => {}, done: Promise.resolve(cached) };
+    if (pending.has(root)) return pending.get(root);
+    if (metadata?.isFile() && metadata.size >= release.archive.bytes) {
+      return unpackRuntime(release, () => createReadStream(archivePath), {
+        message: 'Installing your local computer…',
+        failure: 'The Nod runtime download did not complete. Try again.',
+        onStatus: options.onStatus || (() => {}),
+        signal: options.signal,
+        cacheRoot: options.cacheRoot,
+        inspectDisk: options.inspectDisk,
+        verifySource: async () => {
+          options.signal?.throwIfAborted();
+          options.onStatus?.({ phase: 'verifying', message: 'Checking your local computer…' });
+          if (
+            metadata.size !== release.archive.bytes ||
+            (await assetHash(archivePath, options.signal)) !== release.archive.sha256
+          ) {
+            await rm(archivePath, { force: true });
+            throw new Error(
+              'The saved Nod runtime download failed its integrity check. Try again.',
+            );
+          }
+        },
+        finish: async (error) => {
+          if (!error) await rm(archivePath, { force: true });
+        },
+      });
+    }
+  }
   let downloadUrl = options.downloadUrl || release?.url;
   if (release && !downloadUrl && options.resolveDownloadUrl) {
     options.signal?.throwIfAborted();

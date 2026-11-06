@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFile, execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -6,6 +7,7 @@ import {
   copyFile,
   access,
   chmod,
+  lstat,
   mkdtemp,
   mkdir,
   readFile,
@@ -19,6 +21,8 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
+import { Readable } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, posix, relative, resolve } from 'node:path';
 import test from 'node:test';
@@ -2054,6 +2058,358 @@ test('runtime download keeps a slow connection going and resumes its saved bytes
   }
 });
 
+test('a complete saved runtime installs offline after a late connection failure or cancellation', async (t) => {
+  for (const interruption of ['connection', 'cancelled']) {
+    for (const retry of ['known-url', 'resolver']) {
+      await t.test(`${interruption}: ${retry}`, async (t) => {
+        const options = await fixture(t);
+        const bytes = await readFile(options.archivePath);
+        const controller = new AbortController();
+        let connection;
+        let requests = 0;
+        const download = await openRuntimeAssets({
+          ...options,
+          signal: controller.signal,
+          downloadUrl: 'https://runtime.example.invalid/fixture.tar.gz',
+          fetch: async (url, { signal }) => {
+            requests++;
+            return new Response(
+              new ReadableStream({
+                start(stream) {
+                  connection = stream;
+                  stream.enqueue(bytes);
+                  signal.addEventListener('abort', () => stream.error(signal.reason), {
+                    once: true,
+                  });
+                },
+              }),
+            );
+          },
+        });
+        await Promise.all(options.release.files.map((file) => download.ready(file.path)));
+        const failure = new Error('Synthetic late connection failure');
+        if (interruption === 'connection') connection.error(failure);
+        else controller.abort(failure);
+        await assert.rejects(download.done);
+        const partial = join(
+          options.cacheRoot,
+          `${options.release.id}.${options.release.archive.sha256.slice(0, 12)}.download`,
+        );
+        assert.equal((await stat(partial)).size, options.release.archive.bytes);
+        assert.equal(await assetHash(partial), options.release.archive.sha256);
+        assert.equal(requests, 1);
+        let resolutions = 0;
+        const installed = await ensureRuntimeAssets({
+          ...options,
+          ...(retry === 'known-url'
+            ? { downloadUrl: 'https://runtime.example.invalid/fixture.tar.gz' }
+            : {}),
+          resolveDownloadUrl: async () => {
+            resolutions++;
+            throw new Error('Synthetic offline release lookup');
+          },
+          fetch: async () => {
+            requests++;
+            throw new Error('Synthetic offline download');
+          },
+        });
+        assert.equal(requests, 1);
+        assert.equal(resolutions, 0);
+        assert.equal(await findRuntimeAssets(options), installed);
+        for (const file of options.release.files)
+          assert.equal(await assetHash(join(installed, file.path)), file.sha256);
+        await assert.rejects(stat(partial), { code: 'ENOENT' });
+      });
+    }
+  }
+});
+
+test('a corrupt complete saved runtime is refused before network work and keeps other caches', async (t) => {
+  for (const corruption of ['hash', 'size']) {
+    const options = await fixture(t);
+    const bytes = await readFile(options.archivePath);
+    const bad =
+      corruption === 'size' ? Buffer.concat([bytes, Buffer.from('extra')]) : Buffer.from(bytes);
+    if (corruption === 'hash') bad[30] ^= 1;
+    const partial = join(
+      options.cacheRoot,
+      `${options.release.id}.${options.release.archive.sha256.slice(0, 12)}.download`,
+    );
+    const kept = join(options.cacheRoot, 'previous-runtime');
+    await mkdir(kept, { recursive: true });
+    await writeFile(join(kept, 'saved'), 'Synthetic previous runtime');
+    await writeFile(partial, bad);
+    let requests = 0;
+    await assert.rejects(
+      ensureRuntimeAssets({
+        ...options,
+        resolveDownloadUrl: async () => {
+          requests++;
+          throw new Error('The saved bytes must be checked before a lookup.');
+        },
+        fetch: async () => {
+          requests++;
+          throw new Error('The saved bytes must be checked before a download.');
+        },
+      }),
+      /integrity check/,
+    );
+    assert.equal(requests, 0);
+    await assert.rejects(stat(partial), { code: 'ENOENT' });
+    assert.equal(await findRuntimeAssets(options), undefined);
+    assert.equal(await readFile(join(kept, 'saved'), 'utf8'), 'Synthetic previous runtime');
+  }
+});
+
+test('a verified saved archive survives a storage error or cancellation until an explicit retry', async (t) => {
+  for (const interruption of ['storage', 'cancelled']) {
+    const options = await fixture(t);
+    const partial = join(
+      options.cacheRoot,
+      `${options.release.id}.${options.release.archive.sha256.slice(0, 12)}.download`,
+    );
+    await mkdir(options.cacheRoot);
+    await copyFile(options.archivePath, partial);
+    const controller = new AbortController();
+    const failure = new Error('Synthetic saved archive cancellation');
+    const offline = async () => assert.fail('A complete saved archive must not use the network.');
+    await assert.rejects(
+      ensureRuntimeAssets({
+        ...options,
+        signal: controller.signal,
+        resolveDownloadUrl: offline,
+        fetch: offline,
+        ...(interruption === 'storage'
+          ? { inspectDisk: async () => ({ bavail: 0n, bsize: 4096n }) }
+          : { onStatus: (value) => value.phase === 'installing' && controller.abort(failure) }),
+      }),
+      interruption === 'storage' ? { code: 'RUNTIME_DISK_SPACE' } : (error) => error === failure,
+    );
+    assert.equal(await assetHash(partial), options.release.archive.sha256);
+    assert.equal(await findRuntimeAssets(options), undefined);
+    const installed = await ensureRuntimeAssets({
+      ...options,
+      resolveDownloadUrl: offline,
+      fetch: offline,
+    });
+    assert.equal(await findRuntimeAssets(options), installed);
+    await assert.rejects(stat(partial), { code: 'ENOENT' });
+  }
+});
+
+test('a saved archive still needs every file hash to pass before the runtime is ready', async (t) => {
+  const options = await fixture(t);
+  options.release.files[1].sha256 = 'f'.repeat(64);
+  options.release.id = createHash('sha256')
+    .update(JSON.stringify(options.release.files))
+    .digest('hex');
+  const partial = join(
+    options.cacheRoot,
+    `${options.release.id}.${options.release.archive.sha256.slice(0, 12)}.download`,
+  );
+  await mkdir(options.cacheRoot);
+  await copyFile(options.archivePath, partial);
+  const offline = () => assert.fail('File verification must use the saved archive.');
+  const assets = await openRuntimeAssets({
+    ...options,
+    resolveDownloadUrl: offline,
+    fetch: offline,
+  });
+  await assert.rejects(assets.ready(options.release.files[1].path));
+  await assert.rejects(assets.done);
+  assert.equal(await findRuntimeAssets(options), undefined);
+  await assert.rejects(stat(join(assets.root, '.ready.json')), { code: 'ENOENT' });
+  await assert.rejects(stat(join(assets.root, options.release.files[1].path)), { code: 'ENOENT' });
+});
+
+test('a short saved download survives an offline lookup and resumes only on an explicit retry', async (t) => {
+  const options = await fixture(t);
+  const bytes = await readFile(options.archivePath);
+  const half = Math.floor(bytes.length / 2);
+  const partial = join(
+    options.cacheRoot,
+    `${options.release.id}.${options.release.archive.sha256.slice(0, 12)}.download`,
+  );
+  await mkdir(options.cacheRoot);
+  await writeFile(partial, bytes.subarray(0, half));
+  let resolutions = 0;
+  let requests = 0;
+  await assert.rejects(
+    ensureRuntimeAssets({
+      ...options,
+      resolveDownloadUrl: async () => {
+        resolutions++;
+        throw new Error('Synthetic offline lookup');
+      },
+      fetch: async () => {
+        requests++;
+        assert.fail('A failed lookup must not start a download.');
+      },
+    }),
+    /Synthetic offline lookup/,
+  );
+  assert.deepEqual(await readFile(partial), bytes.subarray(0, half));
+  assert.equal(resolutions, 1);
+  assert.equal(requests, 0);
+  const installed = await ensureRuntimeAssets({
+    ...options,
+    resolveDownloadUrl: async () => {
+      resolutions++;
+      return 'https://runtime.example.invalid/fixture.tar.gz';
+    },
+    fetch: async (url, { headers }) => {
+      requests++;
+      assert.equal(headers.range, `bytes=${half}-`);
+      return new Response(bytes.subarray(half), {
+        status: 206,
+        headers: { 'content-range': `bytes ${half}-${bytes.length - 1}/${bytes.length}` },
+      });
+    },
+  });
+  assert.equal(resolutions, 2);
+  assert.equal(requests, 1);
+  assert.equal(await findRuntimeAssets(options), installed);
+});
+
+test('a complete saved archive must be a regular file before offline recovery can use it', async (t) => {
+  for (const kind of ['link', 'directory']) {
+    const options = await fixture(t);
+    const partial = join(
+      options.cacheRoot,
+      `${options.release.id}.${options.release.archive.sha256.slice(0, 12)}.download`,
+    );
+    await mkdir(options.cacheRoot);
+    if (kind === 'link') await symlink(options.archivePath, partial, 'file');
+    else await mkdir(partial);
+    const inode = (await stat(options.archivePath)).ino;
+    let lookups = 0;
+    await assert.rejects(
+      ensureRuntimeAssets({
+        ...options,
+        resolveDownloadUrl: async () => {
+          lookups++;
+          throw new Error('Synthetic offline lookup');
+        },
+        fetch: () => assert.fail('An unavailable lookup must not start a request.'),
+      }),
+      /Synthetic offline lookup/,
+    );
+    assert.equal(lookups, 1);
+    const metadata = await lstat(partial);
+    assert.equal(kind === 'link' ? metadata.isSymbolicLink() : metadata.isDirectory(), true);
+    assert.equal((await stat(options.archivePath)).ino, inode);
+    assert.equal(await assetHash(options.archivePath), options.release.archive.sha256);
+    assert.equal(await findRuntimeAssets(options), undefined);
+  }
+});
+
+test('concurrent offline retries do not open a saved archive after another caller consumes it', async (t) => {
+  const options = await fixture(t);
+  const partial = join(
+    options.cacheRoot,
+    `${options.release.id}.${options.release.archive.sha256.slice(0, 12)}.download`,
+  );
+  await mkdir(options.cacheRoot);
+  await copyFile(options.archivePath, partial);
+  const offline = () => assert.fail('A complete saved archive must not use the network.');
+  const filesystem = createRequire(import.meta.url)('node:fs');
+  const original = filesystem.createReadStream;
+  const gate = Promise.withResolvers();
+  const caller = new AsyncLocalStorage();
+  const readers = new Set();
+  let held = false;
+  const read = t.mock.method(filesystem, 'createReadStream', (path, settings) => {
+    if (path === partial && !readers.has(caller.getStore())) {
+      readers.add(caller.getStore());
+      if (readers.size === 2) {
+        held = true;
+        return Readable.from(
+          (async function* () {
+            await gate.promise;
+            yield* original(path, settings);
+          })(),
+          { objectMode: false },
+        );
+      }
+    }
+    return original(path, settings);
+  });
+  syncBuiltinESMExports();
+  try {
+    const install = (id) =>
+      caller
+        .run(id, () =>
+          ensureRuntimeAssets({ ...options, resolveDownloadUrl: offline, fetch: offline }),
+        )
+        .then(
+          (value) => ({ value }),
+          (error) => ({ error }),
+        );
+    const first = install('first');
+    const second = install('second');
+    await Promise.race([first, second]);
+    gate.resolve();
+    const results = await Promise.all([first, second]);
+    for (const result of results) assert.ifError(result.error);
+    const installed = results[0].value;
+    assert.equal(results[1].value, installed);
+    assert.equal(readers.size, 1);
+    assert.equal(held, false);
+    assert.equal(await findRuntimeAssets(options), installed);
+    assert.deepEqual(await readdir(options.cacheRoot), [options.release.id]);
+    for (const file of options.release.files)
+      assert.equal(await assetHash(join(installed, file.path)), file.sha256);
+  } finally {
+    gate.resolve();
+    read.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+test('an offline retry uses the installed cache if another caller already consumed the saved archive', async (t) => {
+  const options = await fixture(t);
+  const partial = join(
+    options.cacheRoot,
+    `${options.release.id}.${options.release.archive.sha256.slice(0, 12)}.download`,
+  );
+  await mkdir(options.cacheRoot);
+  await copyFile(options.archivePath, partial);
+  const filesystem = createRequire(import.meta.url)('node:fs/promises');
+  const original = filesystem.lstat;
+  const gate = Promise.withResolvers();
+  const entered = Promise.withResolvers();
+  const caller = new AsyncLocalStorage();
+  const inspect = t.mock.method(filesystem, 'lstat', async (path, settings) => {
+    if (path === partial && caller.getStore() === 'waiting') {
+      entered.resolve();
+      await gate.promise;
+    }
+    return original(path, settings);
+  });
+  syncBuiltinESMExports();
+  try {
+    const offline = () => assert.fail('A completed concurrent install must not use the network.');
+    const install = () =>
+      ensureRuntimeAssets({ ...options, resolveDownloadUrl: offline, fetch: offline });
+    const waiting = caller.run('waiting', install).then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    await entered.promise;
+    const installed = await caller.run('winner', install);
+    gate.resolve();
+    const result = await waiting;
+    assert.ifError(result.error);
+    assert.equal(result.value, installed);
+    assert.equal(await findRuntimeAssets(options), installed);
+    assert.deepEqual(await readdir(options.cacheRoot), [options.release.id]);
+  } finally {
+    gate.resolve();
+    inspect.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
 test('runtime download rejects corrupt bytes, cleans its download and allows a verified retry', async (t) => {
   const options = await fixture(t);
   options.release.url = 'https://runtime.example.invalid/fixture.tar.gz';
@@ -2483,7 +2839,7 @@ test('Mac image loading keeps verified files through late pack failure and expli
         assert.equal((await stat(join(assets.root, file))).ino, inode);
         assert.equal(await assetHash(join(assets.root, file)), image.sha256);
         assert.equal(await findRuntimeAssets(options), assets.root);
-        assert.equal(requests, retry === 'download' ? 2 : 1);
+        assert.equal(requests, retry === 'download' && outcome === 'checksum' ? 2 : 1);
       });
     }
   }
