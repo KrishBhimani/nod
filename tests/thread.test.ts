@@ -7243,6 +7243,172 @@ test(
           }
         },
       );
+      await t.test(
+        'task Stop and reset release a blocked publication without crossing its scope',
+        async (t) => {
+          const previousRun = dependencies.runTurn;
+          const previousRead = dependencies.readArtifact;
+          let archivedThread = '';
+          try {
+            for (const mode of [
+              'task',
+              'reset',
+              'stale reset',
+              'task rollback',
+              'reset rollback',
+              'stop rollback',
+            ])
+              await t.test(mode, async () => {
+                const taskMode = mode.startsWith('task');
+                const resetting = mode.startsWith('reset');
+                const rollback = mode.endsWith('rollback');
+                const publications: Promise<unknown>[] = [];
+                const title = `Synthetic blocked publication ${mode}`;
+                let started!: () => void;
+                const reading = new Promise<void>((resolve) => {
+                  started = resolve;
+                });
+                let releaseRead!: () => void;
+                const readGate = new Promise<void>((resolve) => {
+                  releaseRead = resolve;
+                });
+                let active: RuntimeContext | undefined;
+                dependencies.readArtifact = async () => {
+                  started();
+                  await readGate;
+                  return Buffer.from('Synthetic late file');
+                };
+                const runtime = createAgentRuntime({
+                  workspace: fakeWorkspace(),
+                  computer: fakeComputer(),
+                  agent: {
+                    open: async (input) => ({
+                      resumed: false,
+                      async prompt() {
+                        if (taskMode && input.sessionId === input.threadId) {
+                          await input.tools
+                            .find((tool) => tool.name === 'task')!
+                            .execute({
+                              action: 'start',
+                              title,
+                              doneWhen: 'The synthetic file is delivered.',
+                              now: 'Reading the synthetic file.',
+                              message: 'The synthetic task is starting.',
+                            });
+                          return;
+                        }
+                        await input.tools
+                          .find((tool) => tool.name === 'send_message')!
+                          .execute({
+                            text: `Read [the file](/workspace/${input.threadId}/blocked.txt).`,
+                            intent: 'final',
+                          });
+                      },
+                      abort() {},
+                      dispose() {},
+                    }),
+                    dispose() {},
+                  },
+                });
+                dependencies.runTurn = (context) => {
+                  if (!taskMode || context.background) active = context;
+                  return runtime.runTurn({
+                    ...context,
+                    reply(...args) {
+                      const publication = context.reply(...args);
+                      publications.push(publication);
+                      return publication;
+                    },
+                  });
+                };
+                const submitted = await sendJson({ text: title });
+                assert.equal(submitted.statusCode, 200, submitted.body);
+                let stopping: Promise<unknown> | undefined;
+                try {
+                  await reading;
+                  assert.ok(active);
+                  if (rollback)
+                    await db.pool.query(`
+                      CREATE SEQUENCE cancellation_fail_once;
+                      CREATE FUNCTION reject_first_cancellation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+                        IF nextval('cancellation_fail_once')=1 THEN RAISE EXCEPTION 'Synthetic cancellation commit failure'; END IF;
+                        RETURN NEW;
+                      END $$;
+                      CREATE CONSTRAINT TRIGGER reject_first_cancellation AFTER UPDATE ON turns
+                        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+                        WHEN (NEW.id='${active.turnId}' AND NEW.status='cancelled')
+                        EXECUTE FUNCTION reject_first_cancellation();
+                    `);
+                  if (mode === 'stale reset') {
+                    const stale = await request('POST', '/api/conversation/reset', {
+                      threadId: archivedThread,
+                    });
+                    assert.equal(stale.statusCode, 409);
+                    assert.equal(active.signal.aborted, false);
+                    assert.equal(await turnStatus(active.turnId), 'running');
+                  }
+                  if (mode === 'reset') archivedThread = active.threadId;
+                  const task = taskMode
+                    ? (await db.pool.query('SELECT id FROM tasks WHERE title=$1', [title])).rows[0]
+                    : undefined;
+                  const response = request(
+                    'POST',
+                    task
+                      ? `/api/tasks/${task.id}/stop`
+                      : resetting
+                        ? '/api/conversation/reset'
+                        : '/api/thread/stop',
+                    resetting ? { threadId: active.threadId } : undefined,
+                  );
+                  stopping = response;
+                  assert.equal(
+                    await Promise.race([response.then(() => true), delay(1000).then(() => false)]),
+                    true,
+                    'The stop request waited for the workspace file read.',
+                  );
+                  assert.equal((await response).statusCode, rollback ? 500 : 200);
+                  assert.equal(active.signal.aborted, true);
+                  if (rollback) await waitFor(settled(active.turnId), 2000);
+                  assert.equal(await turnStatus(active.turnId), 'cancelled');
+                } finally {
+                  releaseRead();
+                  await stopping;
+                  await runtime.dispose();
+                  await Promise.allSettled(publications);
+                  if (rollback) {
+                    await db.pool.query(`
+                      DROP TRIGGER IF EXISTS reject_first_cancellation ON turns;
+                      DROP FUNCTION IF EXISTS reject_first_cancellation();
+                      DROP SEQUENCE IF EXISTS cancellation_fail_once;
+                    `);
+                    await request('POST', '/api/thread/stop');
+                  }
+                }
+                assert.equal(
+                  (
+                    await db.pool.query(
+                      "SELECT 1 FROM messages WHERE turn_id=$1 AND role='assistant'",
+                      [active!.turnId],
+                    )
+                  ).rowCount,
+                  0,
+                );
+                assert.equal(
+                  (
+                    await db.pool.query(
+                      "SELECT 1 FROM artifacts WHERE thread_id=$1 AND name='blocked.txt'",
+                      [active!.threadId],
+                    )
+                  ).rowCount,
+                  0,
+                );
+              });
+          } finally {
+            dependencies.runTurn = previousRun;
+            dependencies.readArtifact = previousRead;
+          }
+        },
+      );
     } finally {
       for (const resolve of gates.values()) resolve();
       events.off('event', onEvent);
