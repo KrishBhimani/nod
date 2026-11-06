@@ -1855,7 +1855,7 @@ test(
       'watch-disabled',
       'two-accounts',
       'restart',
-      'claimed-restart',
+      'expired-claim-restart',
       'cancel',
       'authorize-failure',
       'wrong-email',
@@ -1863,7 +1863,8 @@ test(
       'unknown-identity',
       'foreign-target',
       'superseded',
-      'superseded-during-callback',
+      'restart-during-callback',
+      'claim-during-start',
       'concurrent',
       'callback-race',
       'expired',
@@ -1877,9 +1878,10 @@ test(
           'watch-disabled',
           'two-accounts',
           'restart',
-          'claimed-restart',
+          'expired-claim-restart',
           'superseded',
-          'superseded-during-callback',
+          'restart-during-callback',
+          'claim-during-start',
           'concurrent',
           'callback-race',
         ].includes(variant);
@@ -1898,6 +1900,14 @@ test(
           releaseParsing = resolve;
         });
         let holdingParse = false;
+        let releaseAuthorization = () => {};
+        let authorizing = () => {};
+        const authorizationStarted = new Promise<void>((resolve) => {
+          authorizing = resolve;
+        });
+        const authorizationHeld = new Promise<void>((resolve) => {
+          releaseAuthorization = resolve;
+        });
         let releaseInspection = () => {};
         let inspected = () => {};
         const inspectionStarted = new Promise<void>((resolve) => {
@@ -1910,6 +1920,7 @@ test(
         const completedTokens = new Set<string>();
         t.after(async () => {
           releaseParsing();
+          releaseAuthorization();
           releaseInspection();
           for (const app of apps) await app.close();
           await database.close();
@@ -1936,6 +1947,10 @@ test(
               active: false,
               owner: variant === 'wrong-owner' ? 'another-owner' : owner,
             });
+            if (variant === 'claim-during-start' && authorizations === 2) {
+              authorizing();
+              await authorizationHeld;
+            }
             return {
               accountId: `pending_${new URL(callback).searchParams.get('state')}`,
               verificationSecret: 'synthetic-local-challenge',
@@ -2042,7 +2057,10 @@ test(
             const account = remote.get(query.account_ref);
             assert.ok(account);
             if (query.outcome === 'ok') account.active = true;
-            if (variant === 'superseded-during-callback' && !holdingParse) {
+            if (
+              ['restart-during-callback', 'claim-during-start'].includes(variant) &&
+              !holdingParse
+            ) {
               holdingParse = true;
               parsed();
               await parsingHeld;
@@ -2144,7 +2162,7 @@ test(
             await app.close();
             ({ integrations, app } = await start());
           }
-          if (variant === 'claimed-restart') {
+          if (variant === 'expired-claim-restart') {
             await database.pool.query(
               'UPDATE app_connections SET callback_claim_id=$1 WHERE account_id IS NULL',
               [randomUUID()],
@@ -2154,6 +2172,11 @@ test(
             const stale = await complete('new-account-1');
             assert.doesNotMatch(String(stale.headers.location), /connection=connected/);
             assert.equal(completedTokens.size, 0);
+            assert.equal((await begin()).statusCode, 409);
+            assert.equal(authorizations, 1);
+            await database.pool.query(
+              "UPDATE app_connections SET callback_expires=now()-interval '1 second' WHERE account_id IS NULL",
+            );
             assert.equal((await begin()).statusCode, 200);
           }
           if (variant === 'superseded') {
@@ -2162,7 +2185,7 @@ test(
             const stale = await complete('new-account-1');
             assert.doesNotMatch(String(stale.headers.location), /connection=connected/);
           }
-          let currentAccount = ['superseded', 'claimed-restart'].includes(variant)
+          let currentAccount = ['superseded', 'expired-claim-restart'].includes(variant)
             ? 'new-account-2'
             : 'new-account-1';
           if (variant === 'concurrent') {
@@ -2192,17 +2215,25 @@ test(
             });
             assert.equal(disconnect.statusCode, 200, disconnect.body);
           }
-          if (variant === 'superseded-during-callback') {
-            const previous = complete(currentAccount);
+          let retainedCompletion: ReturnType<typeof complete> | undefined;
+          if (variant === 'claim-during-start') {
+            const replacement = begin();
+            await authorizationStarted;
+            retainedCompletion = complete(currentAccount);
             await parsingStarted;
-            assert.equal((await begin()).statusCode, 200);
+            releaseAuthorization();
+            assert.equal((await replacement).statusCode, 409);
             releaseParsing();
-            assert.doesNotMatch(String((await previous).headers.location), /connection=connected/);
-            assert.equal(remote.has(currentAccount), false);
-            currentAccount = 'new-account-2';
+          } else if (variant === 'restart-during-callback') {
+            retainedCompletion = complete(currentAccount);
+            await parsingStarted;
+            assert.equal((await begin()).statusCode, 409);
+            assert.equal(authorizations, 1);
+            releaseParsing();
           }
           const accountId = currentAccount;
-          const completion = complete(accountId, variant === 'cancel' ? 'cancel' : 'ok');
+          const completion =
+            retainedCompletion ?? complete(accountId, variant === 'cancel' ? 'cancel' : 'ok');
           if (variant === 'callback-race') {
             await inspectionStarted;
             const replay = await complete(accountId);
@@ -3747,6 +3778,441 @@ test(
         );
       },
     );
+  },
+);
+
+test(
+  'managed sign-in restarts replace only an unclaimed attempt and preserve a finishing callback',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async (t) => {
+    for (const outcome of ['unclaimed', 'connected', 'failed'])
+      await t.test(outcome, async (t) => {
+        const finishing = outcome !== 'unclaimed';
+        const f = await appsFixture(t);
+        const begin = (restartAttempt?: string) =>
+          f.app.inject({
+            method: 'POST',
+            url: '/api/apps/gmail/connect',
+            payload: { returnTo: 'window', restartAttempt },
+          });
+        const started = await begin();
+        assert.equal(started.statusCode, 200, started.body);
+        const attempt = started.json<{ url: string; attempt: string }>();
+        const hash = createHash('sha256').update(attempt.url).digest('hex');
+        const callback = new URL(f.callbacks.at(-1)!);
+        callback.searchParams.set('account', [...f.accounts.keys()].at(-1)!);
+        let release = () => {};
+        let entered = () => {};
+        const held = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const checking = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        t.after(release);
+        const inspect = f.provider.inspectAccount;
+        let inspections = 0;
+        f.provider.inspectAccount = async (...args) => {
+          inspections++;
+          if (finishing) {
+            entered();
+            await held;
+            if (outcome === 'failed') throw new Error('Synthetic account inspection failure.');
+          }
+          return inspect(...args);
+        };
+        const complete = () => f.app.inject({ url: callback.pathname + callback.search });
+        const completion = finishing ? complete() : undefined;
+        if (finishing) await checking;
+        try {
+          const restarted = await begin(attempt.attempt);
+          assert.equal(restarted.statusCode, finishing ? 409 : 200, restarted.body);
+          if (finishing) {
+            const duplicateStart = await begin();
+            assert.equal(duplicateStart.statusCode, 409, duplicateStart.body);
+            assert.equal(f.callbacks.length, 1);
+            const cancel = await f.app.inject({
+              method: 'POST',
+              url: '/api/apps/setup-cancel',
+              payload: { hash },
+            });
+            assert.equal(cancel.statusCode, 200, cancel.body);
+            const duplicate = await complete();
+            assert.equal(
+              new URL(duplicate.headers.location!).searchParams.get('connection'),
+              'expired',
+            );
+            assert.equal(inspections, 1);
+            release();
+            assert.equal(
+              new URL((await completion!).headers.location!).searchParams.get('connection'),
+              outcome === 'connected' ? 'connected' : 'failed',
+            );
+            const again = await begin(attempt.attempt);
+            assert.equal(again.statusCode, 409, again.body);
+            const status = await f.app.inject({
+              method: 'POST',
+              url: '/api/apps/setup-status',
+              payload: { hashes: [hash], pairingUrl: attempt.url },
+            });
+            assert.deepEqual(status.json().completed, outcome === 'connected' ? [hash] : []);
+            if (outcome === 'failed') assert.equal(status.json().apps[0].available, false);
+          } else {
+            const stale = await complete();
+            assert.equal(
+              new URL(stale.headers.location!).searchParams.get('connection'),
+              'expired',
+            );
+            assert.equal(inspections, 0);
+            const wrong = await begin(attempt.attempt);
+            assert.equal(wrong.statusCode, 409, wrong.body);
+          }
+          assert.equal(
+            (await f.pool.query('SELECT count(*)::int AS n FROM app_connections')).rows[0].n,
+            outcome === 'failed' ? 0 : 1,
+          );
+        } finally {
+          release();
+        }
+      });
+  },
+);
+
+test(
+  'a settled OAuth callback survives a delayed restart refusal',
+  { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
+  async (t) => {
+    const dom = new JSDOM('<!doctype html><div id="root"></div>', {
+      url: 'http://localhost:4310/',
+      pretendToBeVisual: true,
+    });
+    const channels: Array<{ onmessage?: (event: { data: Record<string, string> }) => void }> = [];
+    const globals = {
+      window: dom.window,
+      document: dom.window.document,
+      navigator: dom.window.navigator,
+      HTMLElement: dom.window.HTMLElement,
+      IS_REACT_ACT_ENVIRONMENT: true,
+      BroadcastChannel: class {
+        onmessage?: (event: { data: Record<string, string> }) => void;
+        constructor() {
+          channels.push(this);
+        }
+        close() {}
+      },
+      fetch: globalThis.fetch,
+    };
+    const originals = new Map(
+      Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
+    );
+    for (const [key, value] of Object.entries(globals))
+      Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+    dom.window.open = () =>
+      ({ closed: false, close() {}, location: { href: '' } }) as unknown as Window;
+    const { act, createElement } = await import('react');
+    const { createRoot } = await import('react-dom/client');
+    const { useAppSignIn } = await import('../src/web/hooks/use-app-sign-in.ts');
+    try {
+      for (const outcome of ['connected', 'failed', 'opener-failed'])
+        await t.test(outcome, async (t) => {
+          const f = await appsFixture(t);
+          const openerFailure = new Error('Synthetic desktop opener failure.');
+          let opened = 0;
+          if (outcome === 'opener-failed')
+            Object.defineProperty(dom.window, 'nodDesktop', {
+              configurable: true,
+              value: {
+                async openExternal() {
+                  if (++opened === 2) throw openerFailure;
+                },
+              },
+            });
+          let release = () => {};
+          let entered = () => {};
+          let respond = () => {};
+          let received = (_status: number) => {};
+          let statusReady = () => {};
+          const statusRead = new Promise<void>((resolve) => {
+            statusReady = resolve;
+          });
+          const held = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          const checking = new Promise<void>((resolve) => {
+            entered = resolve;
+          });
+          const responseHeld = new Promise<void>((resolve) => {
+            respond = resolve;
+          });
+          const responseReady = new Promise<number>((resolve) => {
+            received = resolve;
+          });
+          const inspect = f.provider.inspectAccount;
+          f.provider.inspectAccount = async (...args) => {
+            entered();
+            await held;
+            if (outcome === 'failed') throw new Error('Synthetic provider failure.');
+            return inspect(...args);
+          };
+          globalThis.fetch = async (path, options = {}) => {
+            const response = await f.app.inject({
+              method: (options.method ?? 'GET') as 'GET' | 'POST',
+              url: String(path),
+              ...(options.body
+                ? { payload: String(options.body), headers: { 'content-type': 'application/json' } }
+                : {}),
+            });
+            if (String(path) === '/api/apps/setup-status') statusReady();
+            if (
+              String(path) === '/api/apps/gmail/connect' &&
+              outcome !== 'opener-failed' &&
+              JSON.parse(String(options.body)).restartAttempt
+            ) {
+              received(response.statusCode);
+              await responseHeld;
+            }
+            return new Response(response.body, { status: response.statusCode });
+          };
+          let signIn!: ReturnType<typeof useAppSignIn>;
+          let settled = 0;
+          function SignIn() {
+            signIn = useAppSignIn({
+              entry: 'onboarding',
+              name: (service) => service,
+              onSettled() {
+                settled++;
+              },
+            });
+            return null;
+          }
+          const root = createRoot(dom.window.document.getElementById('root')!);
+          let restarting: Promise<void> | undefined;
+          try {
+            await act(async () => root.render(createElement(SignIn)));
+            await act(async () => {
+              await signIn.connect({ service: 'gmail' });
+              await statusRead;
+            });
+            if (outcome === 'opener-failed') {
+              await act(async () => signIn.connect({ service: 'gmail' }));
+              assert.equal(opened, 2);
+              assert.equal(f.callbacks.length, 2);
+              assert.equal(signIn.error, openerFailure.message);
+              assert.equal(signIn.signInUrl, undefined);
+              assert.equal(signIn.pending, undefined);
+              assert.equal(signIn.completed, undefined);
+              return;
+            }
+            const callback = new URL(f.callbacks.at(-1)!);
+            callback.searchParams.set('account', [...f.accounts.keys()].at(-1)!);
+            const completion = f.app.inject({ url: callback.pathname + callback.search });
+            await checking;
+            await act(async () => {
+              restarting = signIn.connect({ service: 'gmail' });
+              assert.equal(await responseReady, 409);
+            });
+            release();
+            const returned = new URL((await completion).headers.location!);
+            assert.equal(returned.searchParams.get('connection'), outcome);
+            await act(async () => {
+              channels.at(-1)!.onmessage?.({
+                data: {
+                  connection: outcome,
+                  service: 'gmail',
+                  attempt: callback.searchParams.get('state')!,
+                },
+              });
+            });
+            const completed = signIn.completed;
+            const error = signIn.error;
+            assert.equal(Boolean(completed), outcome === 'connected');
+            assert.equal(settled, 1);
+            await act(async () => {
+              respond();
+              await restarting;
+            });
+            assert.equal(signIn.completed, completed);
+            assert.equal(signIn.error, error);
+            assert.equal(signIn.pending, undefined);
+            assert.equal(settled, 1);
+            assert.equal(f.callbacks.length, 1);
+          } finally {
+            release();
+            respond();
+            await act(async () => {
+              await restarting;
+              root.unmount();
+            });
+            Reflect.deleteProperty(dom.window, 'nodDesktop');
+          }
+        });
+    } finally {
+      dom.window.close();
+      for (const [key, value] of originals)
+        if (value) Object.defineProperty(globalThis, key, value);
+        else Reflect.deleteProperty(globalThis, key);
+    }
+  },
+);
+
+test(
+  'an executing callback stays protected past expiry and an expired restart claim can be replaced without replay',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async (t) => {
+    await t.test('executing callback', async (t) => {
+      const f = await appsFixture(t);
+      const begin = () =>
+        f.app.inject({
+          method: 'POST',
+          url: '/api/apps/gmail/connect',
+          payload: { returnTo: 'window' },
+        });
+      const first = await begin();
+      const callback = new URL(f.callbacks.at(-1)!);
+      callback.searchParams.set('account', [...f.accounts.keys()].at(-1)!);
+      let release = () => {};
+      let entered = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const checking = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const inspect = f.provider.inspectAccount;
+      f.provider.inspectAccount = async (...args) => {
+        entered();
+        await held;
+        return inspect(...args);
+      };
+      const completion = f.app.inject({ url: callback.pathname + callback.search });
+      await checking;
+      try {
+        await f.pool.query("UPDATE app_connections SET callback_expires=now()-interval '1 minute'");
+        const blocked = await begin();
+        assert.equal(blocked.statusCode, 409, blocked.body);
+        assert.equal(f.callbacks.length, 1);
+        assert.equal(
+          (
+            await f.pool.query(
+              'SELECT count(*)::int AS n FROM app_connections WHERE callback_claim_id IS NOT NULL',
+            )
+          ).rows[0].n,
+          1,
+        );
+        release();
+        assert.equal(
+          new URL((await completion).headers.location!).searchParams.get('connection'),
+          'failed',
+        );
+        const fresh = await begin();
+        assert.equal(fresh.statusCode, 200, fresh.body);
+        const old = await f.app.inject({ url: callback.pathname + callback.search });
+        assert.equal(new URL(old.headers.location!).searchParams.get('connection'), 'expired');
+        assert.equal(f.callbacks.length, 2);
+        assert.notEqual(fresh.json().attempt, first.json().attempt);
+      } finally {
+        release();
+      }
+    });
+    await t.test('new-account claim after restart', async (t) => {
+      const f = await appsFixture(t);
+      const first = await f.app.inject({
+        method: 'POST',
+        url: '/api/apps/gmail/connect',
+        payload: { returnTo: 'window' },
+      });
+      const attempt = first.json<{ attempt: string }>().attempt;
+      const callback = new URL(f.callbacks.at(-1)!);
+      callback.searchParams.set('account', [...f.accounts.keys()].at(-1)!);
+      await f.pool.query(
+        "UPDATE app_connections SET callback_claim_id='synthetic-stopped-process'",
+      );
+      const service = await createIntegrations(f.pool, {
+        ownerId: 'local-development',
+        provider: f.provider,
+        baseUrl: 'http://localhost:4310',
+        wake: async () => {},
+      });
+      const app = Fastify();
+      service.registerRoutes(app);
+      t.after(() => app.close());
+      const retry = () =>
+        app.inject({
+          method: 'POST',
+          url: '/api/apps/gmail/connect',
+          payload: { returnTo: 'window', restartAttempt: attempt },
+        });
+      assert.equal((await retry()).statusCode, 409);
+      const now = Date.now();
+      const clock = t.mock.method(Date, 'now', () => now + 20 * 60_000);
+      try {
+        assert.equal((await retry()).statusCode, 409);
+        assert.equal(f.callbacks.length, 1);
+        assert.equal(
+          (await f.pool.query('SELECT callback_hash FROM app_connections')).rows[0].callback_hash,
+          createHash('sha256').update(attempt).digest('hex'),
+        );
+      } finally {
+        clock.mock.restore();
+      }
+      await f.pool.query("UPDATE app_connections SET callback_expires=now()-interval '1 minute'");
+      const fresh = await retry();
+      assert.equal(fresh.statusCode, 200, fresh.body);
+      assert.notEqual(fresh.json().attempt, attempt);
+      const stale = await app.inject({ url: callback.pathname + callback.search });
+      assert.equal(new URL(stale.headers.location!).searchParams.get('connection'), 'expired');
+      assert.equal(
+        (await f.pool.query('SELECT count(*)::int AS n FROM app_connections')).rows[0].n,
+        1,
+      );
+    });
+    await t.test('saved-account claim after restart', async (t) => {
+      const f = await managedReconnectFixture(t);
+      const started = await f.reconnect();
+      assert.equal(started.statusCode, 200, started.body);
+      const first = f.links.at(-1)!;
+      await f.pool.query(
+        "UPDATE app_connections SET callback_claim_id='synthetic-stopped-process' WHERE id=$1",
+        [f.connectionId],
+      );
+      const service = await createIntegrations(f.pool, {
+        ownerId: f.ownerId,
+        provider: f.provider,
+        baseUrl: 'http://localhost:4310',
+        wake: async () => {},
+      });
+      const app = Fastify();
+      service.registerRoutes(app);
+      t.after(() => app.close());
+      const retry = () =>
+        app.inject({
+          method: 'POST',
+          url: '/api/apps/gmail/connect',
+          payload: { connectionId: f.connectionId },
+        });
+      assert.equal((await retry()).statusCode, 409);
+      assert.equal(f.links.length, 1);
+      const now = Date.now();
+      const clock = t.mock.method(Date, 'now', () => now + 20 * 60_000);
+      try {
+        assert.equal((await retry()).statusCode, 409);
+        assert.equal(f.links.length, 1);
+        assert.equal((await f.row()).callback_claim_id, 'synthetic-stopped-process');
+      } finally {
+        clock.mock.restore();
+      }
+      await f.pool.query(
+        "UPDATE app_connections SET callback_expires=now()-interval '1 minute' WHERE id=$1",
+        [f.connectionId],
+      );
+      const fresh = await retry();
+      assert.equal(fresh.statusCode, 200, fresh.body);
+      assert.equal(f.links.length, 2);
+      assert.equal((await f.row()).account_id, 'old-account');
+      assert.equal(await f.complete(first), 'expired');
+      assert.equal(f.accounts.has('old-account'), true);
+      assert.equal(f.removed.includes(first.accountId), true);
+    });
   },
 );
 
