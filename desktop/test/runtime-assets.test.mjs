@@ -1944,7 +1944,11 @@ test('runtime files become ready only after their own bytes verify, and a mismat
     downloadUrl: 'https://runtime.example.invalid/fixture.tar.gz',
     fetch: async () => new Response(await readFile(tampered.archivePath)),
   });
-  await assert.rejects(rejected.ready(tampered.release.files[1].path));
+  await assert.rejects(rejected.ready(tampered.release.files[1].path), (error) => {
+    assert.match(error.cause.message, /SHA-256/);
+    assert.ok(error.cause.message.includes(tampered.release.files[1].path));
+    return true;
+  });
   await assert.rejects(rejected.done);
   assert.deepEqual(await readdir(tampered.cacheRoot), []);
 });
@@ -2038,6 +2042,27 @@ test('runtime download rejects corrupt bytes, cleans its download and allows a v
   const installed = await ensureRuntimeAssets(options);
   assert.equal(await findRuntimeAssets(options), installed);
   assert.deepEqual(await readdir(options.cacheRoot), [options.release.id]);
+  for (const mismatch of ['bytes', 'sha256']) {
+    const damaged = await fixture(t);
+    if (mismatch === 'bytes') damaged.release.archive.bytes++;
+    else damaged.release.archive.sha256 = 'f'.repeat(64);
+    await assert.rejects(
+      ensureRuntimeAssets({
+        ...damaged,
+        downloadUrl: 'https://runtime.example.invalid/fixture.tar.gz',
+        fetch: async () => new Response(await readFile(damaged.archivePath)),
+      }),
+      (error) => {
+        assert.match(error.cause.message, mismatch === 'bytes' ? /size/ : /SHA-256/);
+        return true;
+      },
+    );
+    assert.equal(await findRuntimeAssets(damaged), undefined);
+    await assert.rejects(stat(join(damaged.cacheRoot, damaged.release.id, '.ready.json')), {
+      code: 'ENOENT',
+    });
+    assert.ok((await readdir(damaged.cacheRoot)).every((name) => name === damaged.release.id));
+  }
 });
 
 test(
