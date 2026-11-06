@@ -33,7 +33,7 @@
     "@audio/decode-opus": "1.3.3",
     "@audio/decode-vorbis": "1.3.4",
     "@audio/decode-wav": "2.0.0",
-    "@audio/decode-webm": "1.4.1",
+    "@audio/decode-webm": "1.6.1",
     "@chat-adapter/state-pg": "^4.43.0",
     "@chat-adapter/telegram": "^4.43.0",
     "@chat-adapter/whatsapp": "^4.43.0",
