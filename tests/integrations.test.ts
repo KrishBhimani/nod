@@ -7702,7 +7702,10 @@ test(
       await admin.end();
     });
     const owner = 'fixture-owner';
-    const token = 'synthetic-secret-token';
+    const token = 'synthetic/secret token';
+    const encoded = 'synthetic%2Fsecret%20token';
+    const mixedCaseEncoded = 'synthetic%2fsecret%20token';
+    const formEncoded = 'synthetic%2Fsecret+token';
     const key = randomBytes(32);
     const keyStore = { id: 'fixture', configured: true, getKey: async () => key };
     const grantVault = await createAppGrantVault(pool, { ownerId: owner, keyStore });
@@ -7711,7 +7714,7 @@ test(
     const transport = createDiscoveredTransport(async (input, init) => {
       if (String(input) === 'https://fixture.example/api/records')
         return Response.json(
-          { error: { code: 'invalid_field', detail: `Rejected ${token}` } },
+          { error: { code: 'invalid_field', detail: `Rejected ${encoded}` } },
           { status: 422 },
         );
       if (String(input) === 'https://fixture.example/api/files/agenda')
@@ -7731,7 +7734,7 @@ test(
       if (String(input) === 'https://fixture.example/api/files/log')
         return new Response('x'.repeat(20_000), { headers: { 'content-type': 'text/plain' } });
       if (String(input) === 'https://fixture.example/api/files/echo')
-        return new Response(Buffer.from(`echo ${token}`), {
+        return new Response(Buffer.from(`echo ${mixedCaseEncoded}`), {
           headers: { 'content-type': 'application/octet-stream' },
         });
       if (init?.method === 'GET') return new Response(null, { status: 405 });
@@ -7757,7 +7760,7 @@ test(
                 }
               : {
                   isError: true,
-                  content: [{ type: 'text', text: `Unknown record for ${token}` }],
+                  content: [{ type: 'text', text: `Unknown record for ${formEncoded}` }],
                 },
       });
     });
@@ -7803,6 +7806,7 @@ test(
       (error) => {
         assert.match(failure(error), /\(422\).*invalid_field.*Rejected \[redacted\]/);
         assert.doesNotMatch(failure(error), new RegExp(token));
+        assert.ok(!failure(error).includes(encoded));
         return true;
       },
     );
@@ -7811,6 +7815,7 @@ test(
       (error) => {
         assert.match(failure(error), /Unknown record for \[redacted\]/);
         assert.doesNotMatch(failure(error), new RegExp(token));
+        assert.ok(!failure(error).includes(formEncoded));
         return true;
       },
     );
