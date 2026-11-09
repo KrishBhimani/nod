@@ -889,10 +889,10 @@ async function initializeApplication(
           submit: (profile) => analytics.setOnboardingProfileAnswers(ownerId, profile),
         }
       : undefined,
-    researchContact: analytics.personProfileAvailable
+    updatesEmail: analytics.personProfileAvailable
       ? {
           enabled: () => analytics.consent(ownerId).enabled,
-          submit: (email) => analytics.setResearchContactEmail(ownerId, email),
+          submit: (email) => analytics.setUpdatesEmail(ownerId, email),
         }
       : undefined,
   });
@@ -2169,7 +2169,7 @@ async function initializeApplication(
     onboardingMissing: async () => (adapters.model.configured ? null : 'brain'),
     traces: adapters.traces?.available ?? false,
     onTraces: (enabled) => adapters.traces?.configure({ enabled }),
-    researchContact: onboardingProfile.available,
+    updatesEmail: onboardingProfile.available,
   }).register(app);
   ledger.registerRoutes(app);
   registerSpeechSettings(app, {
