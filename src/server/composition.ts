@@ -1043,6 +1043,7 @@ async function initializeApplication(
     trash: adapters.trash,
     available: !authToken,
     analytics: captureAnalytics,
+    consentRevision: () => analyticsConsent().revision,
   });
   const integrations = await createIntegrations(pool, {
     localFiles,

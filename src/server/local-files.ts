@@ -28,7 +28,7 @@ import type { Trash } from '../ports/trash.ts';
 import { fileBytes, fileMimeType } from '../shared/files.ts';
 import type { CaptureAnalytics } from './analytics.ts';
 import { captureConnection } from './analytics-connections.ts';
-import { workspaceFileReference } from './integration-files.ts';
+import { workspaceFileInput, workspaceFileReference } from './integration-files.ts';
 import { IntegrationError } from './integration-connection.ts';
 
 const readBytes = 256 * 1024;
@@ -43,7 +43,8 @@ const absolute = z
   .min(1)
   .max(4096)
   .refine(
-    (value) => nodePath.posix.isAbsolute(value) || nodePath.win32.isAbsolute(value),
+    (value) =>
+      nodePath.isAbsolute(value) && (process.platform !== 'win32' || !value.slice(2).includes(':')),
     'Use an absolute path.',
   );
 const onePath = z.object({ path: absolute }).strict();
@@ -85,8 +86,13 @@ const windowsHidden = new Set([
   '$recycle.bin',
   'system volume information',
 ]);
-const windowsExecutable =
-  /\.(exe|com|bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|msi|msp|lnk|scr|cpl|hta|reg|dll|url|appref-ms)$/i;
+const programs: Partial<Record<NodeJS.Platform, RegExp>> = {
+  win32:
+    /\.(exe|com|bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|msi|msp|msc|lnk|pif|scr|cpl|hta|reg|dll|url|appref-ms|jar|chm|scf|library-ms|searchconnector-ms|settingcontent-ms)$/i,
+  darwin:
+    /\.(command|tool|terminal|app|pkg|mpkg|workflow|scpt|scptd|applescript|sh|bash|zsh|jar|webloc|inetloc|fileloc)$/i,
+  linux: /\.(sh|bash|desktop|run|appimage|jar)$/i,
+};
 const run = promisify(execFile);
 const maybeLstat = (path: string) => lstat(path).catch(() => undefined);
 
@@ -144,7 +150,7 @@ export function localFileRules(
         : undefined;
   return {
     inside,
-    same: (left: string, right: string) => key(path.resolve(left)) === key(path.resolve(right)),
+    same: (left: string, right: string) => key(left) === key(right),
     hiddenName,
     hiddenBelow,
     privateFolder(real: string) {
@@ -158,8 +164,9 @@ export function localFileRules(
         hiddenBelow(anchor, real)
       );
     },
+    program: (name: string) => programs[platform]?.test(name) ?? false,
     executable: (name: string, mode: number) =>
-      platform === 'win32' ? windowsExecutable.test(name) : (mode & 0o111) !== 0,
+      (programs[platform]?.test(name) ?? false) || (platform !== 'win32' && (mode & 0o111) !== 0),
   };
 }
 
@@ -172,6 +179,7 @@ export function createLocalFiles(
     trash?: Trash;
     available?: boolean;
     analytics?: CaptureAnalytics;
+    consentRevision?: () => string | undefined;
   },
 ) {
   const available = options.available ?? true;
@@ -182,6 +190,14 @@ export function createLocalFiles(
   ]).then(([realHome, realData]) =>
     localFileRules(process.platform, realHome, realData, process.env.SystemDrive),
   );
+
+  function track(status: 'connected' | 'disconnected') {
+    captureConnection(
+      options.analytics,
+      { connection_method: 'local', consentRevision: options.consentRevision?.() },
+      status,
+    );
+  }
 
   function shaped(row?: { local_folders: string[]; local_folders_read_only: string[] }) {
     return (row?.local_folders ?? []).map((path) => ({
@@ -221,6 +237,7 @@ export function createLocalFiles(
       throw new IntegrationError(
         "Choose a specific folder in your home folder or on an external drive. Nod can't share your whole disk, home folder, Library, hidden folders or its own data.",
       );
+    const before = (await folders()).length;
     const { rows } = await pool.query(
       `INSERT INTO preferences(owner_id,local_folders,local_folders_read_only)
        VALUES($1,ARRAY[$2]::text[],CASE WHEN $3::boolean THEN ARRAY[$2]::text[] ELSE '{}'::text[] END)
@@ -233,19 +250,22 @@ export function createLocalFiles(
        RETURNING local_folders,local_folders_read_only`,
       [ownerId, real, readOnly],
     );
-    captureConnection(options.analytics, { connection_method: 'local' }, 'connected');
-    return shaped(rows[0]);
+    const shared = shaped(rows[0]);
+    if (!before && shared.length) track('connected');
+    return shared;
   }
 
   async function remove(path: string) {
+    const before = (await folders()).length;
     const { rows } = await pool.query(
       `UPDATE preferences SET local_folders=array_remove(local_folders,$2),
          local_folders_read_only=array_remove(local_folders_read_only,$2)
        WHERE owner_id=$1 RETURNING local_folders,local_folders_read_only`,
       [ownerId, path],
     );
-    captureConnection(options.analytics, { connection_method: 'local' }, 'disconnected');
-    return shaped(rows[0]);
+    const shared = shaped(rows[0]);
+    if (before && !shared.length) track('disconnected');
+    return shared;
   }
 
   async function contained(
@@ -484,10 +504,27 @@ export function createLocalFiles(
     const { signal } = context;
     const input = validate(action, args) as Input;
     const roots = await folders();
-    const target = resolver(action, roots);
+    const rule = await rules;
+    const resolve = resolver(action, roots);
+    const bound = (resolved: string, requested: string) => {
+      if (!rule.same(resolved, requested))
+        throw new IntegrationError(
+          `${requested} now leads somewhere else than when this action was checked. Nothing was changed.`,
+          409,
+        );
+      return resolved;
+    };
+    const target = async (path: string) => bound(await resolve(path), path);
+    const destination = async (path: string) => {
+      const resolved = await target(path);
+      if (rule.program(resolved))
+        throw new IntegrationError(
+          `${path} would be a program or shortcut. Nod only creates plain files.`,
+        );
+      return resolved;
+    };
     if (action === 'LOCAL_FILES_LIST') {
       const path = await target(input.path);
-      const rule = await rules;
       const names = (await readdir(path, { withFileTypes: true })).filter(
         (item) => !rule.hiddenName(item.name),
       );
@@ -530,21 +567,21 @@ export function createLocalFiles(
     }
     if (action === 'LOCAL_FILES_IMPORT') {
       const path = await target(input.path);
-      const { size, bytes } = await readFile(path, fileBytes + 1);
-      if (size > fileBytes)
+      if (((await maybeLstat(path))?.size ?? 0) > fileBytes)
         throw new IntegrationError(`Files up to ${fileBytes / 1024 / 1024} MB can be copied.`);
+      const { size, bytes } = await readFile(path, fileBytes);
       const name = nodePath.basename(path);
       const file: IntegrationFile = { name, mimeType: fileMimeType(name), bytes };
       return { path, size, file };
     }
     if (action === 'LOCAL_FILES_CREATE_FOLDER') {
-      const path = await target(input.path);
+      const path = await destination(input.path);
       await absent(path);
       await mkdir(path);
       return { created: path };
     }
     if (action === 'LOCAL_FILES_WRITE' || action === 'LOCAL_FILES_EXPORT') {
-      const path = await target(input.path);
+      const path = await destination(input.path);
       const previous = await regularFile(path);
       if (previous && !input.overwrite)
         throw new IntegrationError(`${path} already exists. Set overwrite to replace it.`, 409);
@@ -585,10 +622,10 @@ export function createLocalFiles(
       const { done, failed } = await each(
         input.moves,
         async ({ from, to }) => {
-          const source = await present(from, roots);
-          const destination = await target(to);
-          await place(source, destination, roots);
-          return { from: source, to: destination };
+          const source = bound(await present(from, roots), from);
+          const moved = await destination(to);
+          await place(source, moved, roots);
+          return { from: source, to: moved };
         },
         signal,
       );
@@ -597,7 +634,7 @@ export function createLocalFiles(
     const { done, failed } = await each(
       input.paths,
       async (path) => {
-        const source = await present(path, roots);
+        const source = bound(await present(path, roots), path);
         await toTrash(source, signal);
         return source;
       },
@@ -652,7 +689,11 @@ export function createLocalFiles(
           action,
           {
             description: `${descriptions[action]} ${where}`,
-            inputSchema: z.toJSONSchema(schemas[action]),
+            inputSchema: z.toJSONSchema(
+              action === 'LOCAL_FILES_EXPORT'
+                ? schemas[action].extend({ file: workspaceFileInput })
+                : schemas[action],
+            ),
           },
         ]),
     );

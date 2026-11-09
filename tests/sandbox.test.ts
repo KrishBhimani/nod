@@ -640,6 +640,7 @@ test('local files stay inside the shared folders and never overwrite', async () 
     trash: {
       ready: async () => true,
       put: async (path) => {
+        if (basename(path) === 'stuck.txt') throw new Error('Synthetic Trash failure');
         await mkdir(trash, { recursive: true });
         await rename(path, join(trash, basename(path)));
       },
@@ -766,7 +767,44 @@ test('local files stay inside the shared folders and never overwrite', async () 
       ),
       /exists/,
     );
+    for (const path of [join(shared, 'run.sh'), join(shared, 'sorted', 'tool.sh')])
+      await assert.rejects(
+        files.execute('LOCAL_FILES_WRITE', { path, text: 'echo hi' }),
+        /program or shortcut/,
+      );
+    const renamed = (await files.execute('LOCAL_FILES_MOVE', {
+      moves: [{ from: note, to: join(shared, 'note.sh') }],
+    })) as { failed: Array<{ error: string }> };
+    assert.match(renamed.failed[0]!.error, /program or shortcut/);
+    await assert.rejects(
+      files.execute('LOCAL_FILES_LIST', { path: `${shared}/sorted/..` }),
+      /leads somewhere else/,
+    );
+    const stuck = join(shared, 'stuck.txt');
+    await writeFile(stuck, 'old');
+    const kept = (await files.execute('LOCAL_FILES_EDIT', {
+      path: stuck,
+      edits: [{ oldText: 'old', newText: 'new' }],
+    })) as { previousVersion: string };
+    assert.equal(await readFile(stuck, 'utf8'), 'new');
+    assert.equal(await readFile(kept.previousVersion.replace(/^kept at /, ''), 'utf8'), 'old');
     readOnly = [shared];
+    const blocked = (await files.execute('LOCAL_FILES_MOVE', {
+      moves: [
+        { from: note, to: join(shared, 'sorted', 'note.txt') },
+        { from: join(outside, 'secret.txt'), to: join(shared, 'secret.txt') },
+      ],
+    })) as { failed: Array<{ error: string }> };
+    assert.equal(blocked.failed.length, 2);
+    assert.match(blocked.failed[0]!.error, /read-only/);
+    for (const [action, args] of [
+      ['LOCAL_FILES_CREATE_FOLDER', { path: join(shared, 'new') }],
+      ['LOCAL_FILES_EXPORT', { file, path: join(shared, 'copy.pdf') }],
+    ] as const)
+      await assert.rejects(
+        files.execute(action, args, { read: async () => new Uint8Array([1]) }),
+        /read-only/,
+      );
     await assert.rejects(files.prepare('LOCAL_FILES_TRASH', { paths: [exported] }), /read-only/);
     await assert.rejects(
       files.execute('LOCAL_FILES_WRITE', { path: join(shared, 'new.txt'), text: 'x' }),

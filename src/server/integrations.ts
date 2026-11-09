@@ -1506,6 +1506,24 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     return row;
   }
 
+  async function assertOwnerRequested(turn?: TurnRef) {
+    const root = turn
+      ? await pool.query<{ source: string; message_id: string | null }>(
+          `WITH RECURSIVE lineage AS (
+            SELECT id,parent_turn_id,source,message_id,0 AS depth FROM turns WHERE id=$1 AND owner_id=$2 AND thread_id=$3
+            UNION ALL SELECT p.id,p.parent_turn_id,p.source,p.message_id,c.depth+1 FROM turns p JOIN lineage c ON c.parent_turn_id=p.id WHERE p.owner_id=$2 AND c.depth<100
+          ) SELECT source,message_id FROM lineage ORDER BY depth DESC LIMIT 1`,
+          [turn.turnId, configuredOwner, turn.threadId],
+        )
+      : undefined;
+    const origin = root?.rows[0];
+    if (origin?.source !== 'user' || !origin.message_id)
+      throw new IntegrationError(
+        "Nod copies files from the owner's computer into its workspace only in work the owner asked for.",
+        403,
+      );
+  }
+
   async function workspaceBytes(
     turn: TurnRef | undefined,
     input: { workspaceFile: string; size?: number; sha256?: string },
@@ -1542,6 +1560,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       assertOwner(ownerId);
       const localFiles = options.localFiles;
       if (!localFiles) throw new IntegrationError('Local files are unavailable.', 503);
+      if (action === 'LOCAL_FILES_IMPORT') await assertOwnerRequested(turn);
       return withServiceAnalytics(
         options.analytics,
         { connection_method: 'local', consentRevision: options.analyticsConsent?.().revision },
@@ -1551,6 +1570,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
             read: (input) => workspaceBytes(turn, input, signal),
           }),
         signal,
+        (result) => !(result as { failed?: unknown[] }).failed?.length,
       );
     }
     if (
@@ -1796,6 +1816,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     signal?.throwIfAborted();
     if (isLocalFilesAction(action)) {
       if (!options.localFiles) throw new IntegrationError('Local files are unavailable.', 503);
+      if (action === 'LOCAL_FILES_IMPORT') await assertOwnerRequested(turn);
       const prepared = (await options.localFiles.prepare(action, args)) as Record<string, unknown>;
       if (!hasWorkspaceFiles(prepared)) return prepared;
       return (await pinWorkspaceFiles(prepared, (input) =>

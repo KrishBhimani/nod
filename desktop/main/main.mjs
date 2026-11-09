@@ -1035,7 +1035,8 @@ async function moveToTrash(child, { id, path }) {
     () => undefined,
     () => 'The item could not be moved to the Trash.',
   );
-  child.postMessage({ type: 'nod-trash-result', id, ...(error ? { error } : {}) });
+  if (engine === child)
+    child.postMessage({ type: 'nod-trash-result', id, ...(error ? { error } : {}) });
 }
 
 async function profileOwner() {
