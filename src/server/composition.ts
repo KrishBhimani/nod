@@ -2073,7 +2073,9 @@ async function initializeApplication(
             ? withTurnLock(turn.turnId, (client) =>
                 integrations.prepare(ownerId, action, args, turn, options.signal, true, client),
               )
-            : integrations.prepare(ownerId, action, args);
+            : isLocalFilesAction(action)
+              ? integrations.prepare(ownerId, action, args, turn, options.signal)
+              : integrations.prepare(ownerId, action, args);
         const resolved = isLocalFilesAction(action) ? await prepare() : undefined;
         const verdict = await trust.check(turn, action, resolved ?? args, options.signal);
         await options.admit?.(verdict.confirm);

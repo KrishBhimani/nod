@@ -31,7 +31,7 @@ export function LocalFilesCard({
           body: JSON.stringify({ path: value, ...(readOnly === undefined ? {} : { readOnly }) }),
         }),
       );
-      setPath('');
+      if (method === 'POST' && readOnly === undefined) setPath('');
     } catch (failure) {
       setError(errorMessage(failure));
     } finally {

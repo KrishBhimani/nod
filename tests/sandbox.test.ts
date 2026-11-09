@@ -9,6 +9,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   realpath,
   rename,
   rm,
@@ -782,12 +783,38 @@ test('local files stay inside the shared folders and never overwrite', async () 
     );
     const stuck = join(shared, 'stuck.txt');
     await writeFile(stuck, 'old');
-    const kept = (await files.execute('LOCAL_FILES_EDIT', {
-      path: stuck,
-      edits: [{ oldText: 'old', newText: 'new' }],
-    })) as { previousVersion: string };
-    assert.equal(await readFile(stuck, 'utf8'), 'new');
-    assert.equal(await readFile(kept.previousVersion.replace(/^kept at /, ''), 'utf8'), 'old');
+    await assert.rejects(
+      files.execute('LOCAL_FILES_EDIT', {
+        path: stuck,
+        edits: [{ oldText: 'old', newText: 'new' }],
+      }),
+      /Trash failure/,
+    );
+    assert.equal(await readFile(stuck, 'utf8'), 'old');
+    assert.deepEqual(
+      (await readdir(shared)).filter((name) => name.startsWith('.nod-')),
+      [],
+    );
+    await assert.rejects(
+      files.execute('LOCAL_FILES_READ', { path: join(outside, 'missing.txt') }),
+      /outside the folders/,
+    );
+    const case_ = join(shared, 'Case.txt');
+    await writeFile(join(shared, 'case.txt'), 'c');
+    await files.execute('LOCAL_FILES_MOVE', {
+      moves: [{ from: join(shared, 'case.txt'), to: case_ }],
+    });
+    assert.ok((await readdir(shared)).includes('Case.txt'));
+    await mkdir(join(shared, 'box'));
+    const folderMoves = (await files.execute('LOCAL_FILES_MOVE', {
+      moves: [
+        { from: join(shared, 'box'), to: join(shared, 'sorted') },
+        { from: join(shared, 'box'), to: join(shared, 'crate') },
+      ],
+    })) as { moved: unknown[]; failed: Array<{ error: string }> };
+    assert.match(folderMoves.failed[0]!.error, /already exists/);
+    assert.equal(folderMoves.moved.length, 1);
+    assert.ok(existsSync(join(shared, 'sorted', 'a.txt')));
     readOnly = [shared];
     const blocked = (await files.execute('LOCAL_FILES_MOVE', {
       moves: [

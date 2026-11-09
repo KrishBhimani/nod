@@ -39,9 +39,10 @@ export function desktopTrash(): Trash {
   });
   return {
     ready: async () => Boolean(parent),
-    put: (path) =>
+    put: (path, signal) =>
       new Promise<void>((resolve, reject) => {
         if (!parent) return reject(new Error('The Trash needs Nod desktop.'));
+        if (signal?.aborted) return reject(signal.reason);
         const id = randomUUID();
         const timer = setTimeout(() => {
           waiting.delete(id);

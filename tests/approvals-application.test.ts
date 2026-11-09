@@ -2328,6 +2328,17 @@ test(
           const added = await request('POST', '/api/local-files', { path: shared });
           assert.equal(added.statusCode, 200, added.body);
           assert.deepEqual(added.json().folders, [{ path: shared, readOnly: false }]);
+          await writeFile(join(shared, 'scan.pdf'), '%PDF-synthetic');
+          const importText = `Copy the synthetic scan ${randomUUID()}`;
+          asked.add(importText);
+          const imported = await propose(
+            'LOCAL_FILES_IMPORT',
+            { path: join(shared, 'scan.pdf') },
+            'apps',
+            importText,
+          );
+          assert.deepEqual(await approvalsFor(imported), []);
+          assert.match(JSON.stringify(results.get(imported)), /workspaceFile/);
           const checked = fallbackChecks.length;
           const held = await propose(
             'LOCAL_FILES_MOVE',

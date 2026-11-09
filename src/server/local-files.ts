@@ -14,6 +14,7 @@ import {
   realpath,
   rename,
   rm,
+  rmdir,
   stat,
   writeFile,
 } from 'node:fs/promises';
@@ -215,7 +216,7 @@ export function createLocalFiles(
     return shaped(rows[0]);
   }
 
-  async function add(path: string, readOnly = false) {
+  async function add(path: string, readOnly?: boolean) {
     if (!available)
       throw new IntegrationError(
         'Local files work only when Nod runs on your own computer, not on a hosted server.',
@@ -240,15 +241,15 @@ export function createLocalFiles(
     const before = (await folders()).length;
     const { rows } = await pool.query(
       `INSERT INTO preferences(owner_id,local_folders,local_folders_read_only)
-       VALUES($1,ARRAY[$2]::text[],CASE WHEN $3::boolean THEN ARRAY[$2]::text[] ELSE '{}'::text[] END)
+       VALUES($1,ARRAY[$2]::text[],CASE WHEN $3::boolean IS TRUE THEN ARRAY[$2]::text[] ELSE '{}'::text[] END)
        ON CONFLICT(owner_id) DO UPDATE SET
          local_folders=CASE WHEN $2=ANY(preferences.local_folders) THEN preferences.local_folders
            ELSE array_append(preferences.local_folders,$2) END,
-         local_folders_read_only=CASE WHEN $3::boolean
-           THEN array_append(array_remove(preferences.local_folders_read_only,$2),$2)
+         local_folders_read_only=CASE WHEN $3::boolean IS NULL THEN preferences.local_folders_read_only
+           WHEN $3::boolean THEN array_append(array_remove(preferences.local_folders_read_only,$2),$2)
            ELSE array_remove(preferences.local_folders_read_only,$2) END
        RETURNING local_folders,local_folders_read_only`,
-      [ownerId, real, readOnly],
+      [ownerId, real, readOnly ?? null],
     );
     const shared = shaped(rows[0]);
     if (!before && shared.length) track('connected');
@@ -284,11 +285,7 @@ export function createLocalFiles(
             (allowRoot || !rule.same(root.path, real)) &&
             !rule.hiddenBelow(root.path, real),
         );
-    if (!matches.length)
-      throw new IntegrationError(
-        `${shown} is outside the folders the owner shared with Nod, or is hidden.`,
-        403,
-      );
+    if (!matches.length) throw outside(shown);
     if (write && matches.some((root) => root.readOnly))
       throw new IntegrationError(
         `${shown} is in a folder the owner shared read-only. Nothing was changed.`,
@@ -297,7 +294,23 @@ export function createLocalFiles(
     return real;
   }
 
+  function outside(path: string) {
+    return new IntegrationError(
+      `${path} is outside the folders the owner shared with Nod, or is hidden.`,
+      403,
+    );
+  }
+
   async function existing(path: string, roots: LocalFolder[], allowRoot: boolean, write: boolean) {
+    const fold = (value: string) => (process.platform === 'linux' ? value : value.toLowerCase());
+    const lexical = fold(nodePath.resolve(path));
+    if (
+      !roots.some((root) => {
+        const rel = nodePath.relative(fold(root.path), lexical);
+        return rel === '' || (!rel.startsWith('..') && !nodePath.isAbsolute(rel));
+      })
+    )
+      throw outside(path);
     try {
       return await contained(await realpath(path), roots, allowRoot, path, write);
     } catch (error) {
@@ -352,34 +365,48 @@ export function createLocalFiles(
     await options.trash!.put(source, signal);
   }
 
+  function taken(target: string) {
+    return new IntegrationError(`${target} already exists.`, 409);
+  }
+
   async function place(source: string, target: string, roots: LocalFolder[]) {
     await unchanged(target, roots);
-    if ((await lstat(source)).isFile()) {
+    const info = await lstat(source);
+    const current = await maybeLstat(target);
+    if (current?.ino === info.ino && current.dev === info.dev) return rename(source, target);
+    const fail = (error: NodeJS.ErrnoException) => {
+      throw error.code === 'EEXIST' ? taken(target) : error;
+    };
+    if (info.isFile()) {
       const linked = await link(source, target).then(
         () => true,
-        (error: NodeJS.ErrnoException) => {
-          if (error.code === 'EEXIST') throw new IntegrationError(`${target} already exists.`, 409);
-          return false;
-        },
+        (error: NodeJS.ErrnoException) => (error.code === 'EEXIST' ? fail(error) : false),
       );
-      if (linked)
-        return rm(source).catch(async (error) => {
-          await rm(target, { force: true });
+      if (!linked) await copyFile(source, target, constants.COPYFILE_EXCL).catch(fail);
+      return rm(source).catch(async (error) => {
+        await rm(target, { force: true });
+        throw error;
+      });
+    }
+    if (info.isDirectory() && process.platform !== 'win32') {
+      await mkdir(target).catch(fail);
+      return rename(source, target).catch(async (error: NodeJS.ErrnoException) => {
+        if (error.code !== 'EXDEV') {
+          await rmdir(target).catch(() => undefined);
           throw error;
+        }
+        await cp(source, target, {
+          recursive: true,
+          errorOnExist: true,
+          force: false,
+          verbatimSymlinks: true,
+          preserveTimestamps: true,
         });
+        await rm(source, { recursive: true });
+      });
     }
     await absent(target);
-    await rename(source, target).catch(async (error: NodeJS.ErrnoException) => {
-      if (error.code !== 'EXDEV') throw error;
-      await cp(source, target, {
-        recursive: true,
-        errorOnExist: true,
-        force: false,
-        verbatimSymlinks: true,
-        preserveTimestamps: true,
-      });
-      await rm(source, { recursive: true });
-    });
+    await rename(source, target);
   }
 
   async function regularFile(path: string) {
@@ -407,26 +434,37 @@ export function createLocalFiles(
         throw error;
       });
     let backupFolder = '';
+    let kept = '';
     try {
       backupFolder = await mkdtemp(nodePath.join(folder, '.nod-'));
-      const kept = nodePath.join(backupFolder, nodePath.basename(path));
+      kept = nodePath.join(backupFolder, nodePath.basename(path));
       await chmod(temporary, previous.mode & 0o7777);
       await link(path, kept).catch(() => copyFile(path, kept));
       await unchanged(path, roots);
-      await rename(temporary, path);
+      await toTrash(path, signal);
     } catch (error) {
       await rm(temporary, { force: true });
       if (backupFolder) await rm(backupFolder, { recursive: true, force: true });
       throw error;
     }
-    const backup = nodePath.join(backupFolder, nodePath.basename(path));
     try {
-      await toTrash(backup, signal);
-      await rm(backupFolder, { recursive: true });
-      return 'moved to the Trash';
+      await place(temporary, path, roots);
     } catch {
-      return `kept at ${backup}`;
+      await rm(temporary, { force: true });
+      const restored = await place(kept, path, roots).then(
+        () => true,
+        () => false,
+      );
+      if (restored) await rm(backupFolder, { recursive: true, force: true });
+      throw new IntegrationError(
+        restored
+          ? `${path} was not replaced and is unchanged. A copy of it is in the Trash.`
+          : `${path} was not replaced. Its previous version is in the Trash.`,
+        409,
+      );
     }
+    await rm(backupFolder, { recursive: true, force: true });
+    return 'moved to the Trash';
   }
 
   async function quarantine(path: string) {
@@ -517,7 +555,7 @@ export function createLocalFiles(
     const target = async (path: string) => bound(await resolve(path), path);
     const destination = async (path: string) => {
       const resolved = await target(path);
-      if (rule.program(resolved))
+      if (rule.program(resolved) || (process.platform === 'win32' && /[. ]$/.test(resolved)))
         throw new IntegrationError(
           `${path} would be a program or shortcut. Nod only creates plain files.`,
         );
@@ -591,7 +629,7 @@ export function createLocalFiles(
         data = await context.read(input.file);
       }
       const previousVersion = await replace(path, data, previous, roots, signal);
-      if (action === 'LOCAL_FILES_EXPORT') await quarantine(path);
+      await quarantine(path);
       return { written: path, ...(previousVersion ? { previousVersion } : {}) };
     }
     if (action === 'LOCAL_FILES_EDIT') {
@@ -616,7 +654,11 @@ export function createLocalFiles(
           );
         text = text.slice(0, at) + newText + text.slice(at + oldText.length);
       }
-      return { edited: path, previousVersion: await replace(path, text, info, roots, signal) };
+      if (Buffer.byteLength(text) > writeBytes)
+        throw new IntegrationError('The edited file would be over 1 MB. Nothing was changed.');
+      const previousVersion = await replace(path, text, info, roots, signal);
+      await quarantine(path);
+      return { edited: path, previousVersion };
     }
     if (action === 'LOCAL_FILES_MOVE') {
       const { done, failed } = await each(

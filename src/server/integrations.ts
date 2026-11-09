@@ -1816,7 +1816,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     signal?.throwIfAborted();
     if (isLocalFilesAction(action)) {
       if (!options.localFiles) throw new IntegrationError('Local files are unavailable.', 503);
-      if (action === 'LOCAL_FILES_IMPORT') await assertOwnerRequested(turn);
+      if (action === 'LOCAL_FILES_IMPORT' && turn) await assertOwnerRequested(turn);
       const prepared = (await options.localFiles.prepare(action, args)) as Record<string, unknown>;
       if (!hasWorkspaceFiles(prepared)) return prepared;
       return (await pinWorkspaceFiles(prepared, (input) =>
