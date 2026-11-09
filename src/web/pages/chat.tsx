@@ -41,8 +41,9 @@ import {
   suggestedTaskStatus,
 } from '../lib/chat-messages';
 import { formatDayLabel, isSameDay, useDateFormat } from '../lib/date-format';
-import { NodGlyph, Rise } from '../components/motion';
-import { LiveLine, liveSummary } from '../components/live-line';
+import { NodGlyph, Rise, prefersReducedMotion } from '../components/motion';
+import { LiveLine } from '../components/live-line';
+import { TaskDots } from '../components/task-dots';
 import { recordingSource } from '../lib/recording';
 import type { ImagePreview } from '../components/attachment-images';
 import { reuseFile } from '../components/file-actions';
@@ -118,30 +119,21 @@ function Working({
   sending?: boolean;
   quiet?: boolean;
 }) {
-  const work = items.filter((item) => !item.background);
-  const described = work.filter((item) => liveSummary(item).described);
-  const shown = described.length ? described : work.slice(0, 1);
-  if (!work.length && !label && !sending) return null;
+  const chat = items.find((item) => !item.background && !item.taskId);
   const receipt = sending
     ? 'Sending…'
-    : work.some((item) => item.received)
+    : items.some((item) => !item.background && item.received)
       ? 'Got your message. I’ll read it after this step.'
       : null;
+  if (!chat && !label && !receipt) return null;
   return (
     <div className="thinking" role="status">
       <NodGlyph size={28} mode="thinking" />
       <div className="working-details">
-        {shown.length ? (
-          shown.map((item) => (
-            <span className="working-text" key={item.turnId}>
-              {item.title && <strong>{item.title}</strong>}
-              <LiveLine item={item} quiet={quiet} />
-            </span>
-          ))
-        ) : (
-          <span className="working-text">{label ?? 'Sending…'}</span>
-        )}
-        {work.length > 0 && receipt && <span className="working-receipt">{receipt}</span>}
+        <span className="working-text">
+          {chat ? <LiveLine item={chat} quiet={quiet} /> : (label ?? receipt)}
+        </span>
+        {chat && receipt && <span className="working-receipt">{receipt}</span>}
       </div>
     </div>
   );
@@ -815,6 +807,26 @@ export function Chat({
     };
     window.addEventListener('nod:focus-message', focusMessage);
     return () => window.removeEventListener('nod:focus-message', focusMessage);
+  }, []);
+  useEffect(() => {
+    const openTask = (event: Event) => {
+      const id = (event as CustomEvent<{ taskId?: unknown }>).detail?.taskId;
+      const element = scroll.current;
+      const card = Array.from(element?.querySelectorAll<HTMLElement>('[data-task-id]') ?? []).find(
+        (item) => item.dataset.taskId === id,
+      );
+      if (!element || !card?.getClientRects().length) return;
+      const view = element.getBoundingClientRect();
+      const box = card.getBoundingClientRect();
+      if (box.top >= view.top && box.bottom <= view.bottom) return;
+      stickToBottom.current = false;
+      card.scrollIntoView({
+        block: 'center',
+        behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+      });
+    };
+    window.addEventListener('nod:open-task', openTask);
+    return () => window.removeEventListener('nod:open-task', openTask);
   }, []);
   useEffect(() => {
     if (!visible || !focusTarget || loadingHistory) return;
@@ -1711,6 +1723,7 @@ export function Chat({
           </div>
         </div>
         <div className="chat-bottom conversation-column">
+          {connected && <TaskDots tasks={state.tasks ?? []} />}
           {(canReturn || away || onReturnToMemory) && (
             <div className="chat-jump-actions">
               {onReturnToMemory && (
@@ -1806,6 +1819,7 @@ export function Chat({
               privateReply={Boolean(state.verificationRequests?.length)}
               restoreReply={setReplyTo}
               ready={state.configuration.llmReady && !welcoming && !spendingPaused}
+              busy={connected && working}
               text={text}
               setText={setText}
               replyTo={replyTo}

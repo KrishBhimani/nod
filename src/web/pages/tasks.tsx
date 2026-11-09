@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import {
   CalendarClock,
@@ -108,6 +108,25 @@ export function TaskCard({
   useEffect(() => {
     if (stuck) setExpanded(true);
   }, [stuck]);
+  const card = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!onReply) return;
+    const open = (event: Event) => {
+      const element = card.current;
+      if (
+        (event as CustomEvent<{ taskId?: unknown }>).detail?.taskId !== task.id ||
+        !element?.getClientRects().length
+      )
+        return;
+      event.preventDefault();
+      setExpanded(true);
+      element.classList.remove('task-preview-pulse');
+      void element.offsetWidth;
+      element.classList.add('task-preview-pulse');
+    };
+    window.addEventListener('nod:open-task', open);
+    return () => window.removeEventListener('nod:open-task', open);
+  }, [onReply, task.id]);
   const [showActivity, setShowActivity] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState('');
@@ -133,8 +152,14 @@ export function TaskCard({
   const showLive = live && (task.status === 'working' || task.status === 'queued') ? live : null;
   return (
     <article
+      ref={card}
       className="task-preview"
       data-status={task.status}
+      data-task-id={task.id}
+      onAnimationEnd={(event) => {
+        if (event.animationName === 'task-preview-pulse')
+          event.currentTarget.classList.remove('task-preview-pulse');
+      }}
       aria-labelledby={headingId}
       tabIndex={-1}
       data-message-id={onReply ? task.messageId : undefined}
