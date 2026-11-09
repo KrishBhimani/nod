@@ -109,8 +109,9 @@ export function TaskCard({
     if (stuck) setExpanded(true);
   }, [stuck]);
   const card = useRef<HTMLElement>(null);
+  const inChat = Boolean(onReply);
   useEffect(() => {
-    if (!onReply) return;
+    if (!inChat) return;
     const open = (event: Event) => {
       const element = card.current;
       if (
@@ -120,13 +121,14 @@ export function TaskCard({
         return;
       event.preventDefault();
       setExpanded(true);
+      element.focus({ preventScroll: true });
       element.classList.remove('task-preview-pulse');
       void element.offsetWidth;
       element.classList.add('task-preview-pulse');
     };
     window.addEventListener('nod:open-task', open);
     return () => window.removeEventListener('nod:open-task', open);
-  }, [onReply, task.id]);
+  }, [inChat, task.id]);
   const [showActivity, setShowActivity] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState('');

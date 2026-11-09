@@ -20,12 +20,14 @@ export function TaskDots({ tasks }: { tasks: Task[] }) {
             }
             style={{ '--dot-delay': `${index * -0.6}s` } as CSSProperties}
             onClick={() => {
-              const shown = !window.dispatchEvent(
+              const cardOpened = !window.dispatchEvent(
                 new CustomEvent('nod:open-task', { detail: { taskId: task.id }, cancelable: true }),
               );
-              if (!shown)
+              if (!cardOpened)
                 window.dispatchEvent(
-                  new CustomEvent('nod:focus-message', { detail: { messageId: task.messageId } }),
+                  new CustomEvent('nod:focus-message', {
+                    detail: { messageId: task.messageId, taskId: task.id },
+                  }),
                 );
             }}
           />

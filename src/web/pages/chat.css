@@ -513,7 +513,7 @@
 .task-pip {
   display: grid;
   place-items: center;
-  width: 20px;
+  width: 24px;
   height: var(--chat-action-size, 32px);
   padding: 0;
   border: 0;
@@ -544,7 +544,7 @@
   width: 14px;
   height: 14px;
   background: var(--accent);
-  color: var(--white);
+  color: var(--background);
   font-size: 10px;
   font-weight: 700;
   line-height: 14px;
@@ -566,6 +566,7 @@
 @media (prefers-reduced-motion: reduce) {
   .task-pip::before {
     animation: none;
+    transition: none;
   }
 }
 

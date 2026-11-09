@@ -6060,7 +6060,10 @@ test('chat shows pending sends and active work before a model step', async () =>
           state = { ...state, activity: [{ ...activity, ...detail }] };
           await render();
           if (line) assert.equal(document.querySelector('.thinking')?.textContent, line);
-          else assert.equal(document.querySelector('.thinking .sr-only')?.textContent, 'Working…');
+          else {
+            assert.equal(document.querySelector('.thinking .sr-only')?.textContent, 'Working…');
+            assert.ok(document.querySelector('.thinking .working-text [aria-hidden="true"]')?.textContent.trim());
+          }
           assert.ok(document.querySelector('[aria-label="Stop all work"]'));
         }
         const task = { ...activity, turnId: 'synthetic-task-turn', taskId: 'synthetic-task', title: 'Synthetic task',

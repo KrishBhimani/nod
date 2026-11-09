@@ -80,7 +80,8 @@ export function LiveLine({ item, quiet = true }: { item: Activity; quiet?: boole
   const step = item.step?.trim();
   const site = item.doing === 'tool' ? item.site : null;
   const described = step || site;
-  const word = useIdleWord(!described);
+  const queued = item.doing === 'queued';
+  const word = useIdleWord(!described && !queued);
   const minutes = useQuietMinutes(item.quietSince, quiet);
   const meta = [step ? site : null, minutes ? `${minutes} min` : null].filter(Boolean).join(' · ');
   return (
@@ -89,6 +90,8 @@ export function LiveLine({ item, quiet = true }: { item: Activity; quiet?: boole
         <Markdown allowedElements={[]} unwrapDisallowed>
           {described}
         </Markdown>
+      ) : queued ? (
+        'Working…'
       ) : (
         <>
           <span className="sr-only">Working…</span>
