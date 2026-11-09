@@ -32,7 +32,7 @@ import { FeedbackLauncher } from '../components/feedback-discovery';
 import { Button, Notice } from '../components/ui';
 import { desktopSettingsAvailable } from '../lib/desktop';
 import { usePageData } from '../hooks/use-page-data';
-import { api, apiResponse, errorMessage, post } from '../lib/api';
+import { api, apiResponse, ApiError, errorMessage, post } from '../lib/api';
 import { analyticsForCurrentSession, captureAnalytics } from '../lib/analytics';
 import {
   collapseScreenshotMessages,
@@ -59,6 +59,7 @@ type ComposerReply = NonNullable<Message['replyTo']> & { answerQuestion?: true }
 type UnreadVisit = {
   ownerId: string;
   threadId: string;
+  hiddenCount: number;
   cursor: ChatReadCursor | null;
   messages: Message[];
   hasEarlier: boolean;
@@ -99,6 +100,13 @@ function restoreScrollPosition(element: HTMLElement, position: ReturnType<typeof
     element.scrollTop +=
       anchor.getBoundingClientRect().top - element.getBoundingClientRect().top - position.offset;
   else element.scrollTop = position.top;
+}
+function atOrBefore(
+  message: Pick<Message, 'id' | 'createdAt'>,
+  boundary: Pick<Message, 'id' | 'createdAt'>,
+) {
+  const difference = Date.parse(message.createdAt) - Date.parse(boundary.createdAt);
+  return difference < 0 || (difference === 0 && message.id <= boundary.id);
 }
 function Welcome() {
   return (
@@ -374,14 +382,55 @@ export function Chat({
     id: string;
     threadId: string;
     signature: string;
+    plainSignature: string;
+    replyId?: string;
+    retired?: boolean;
+    warned?: boolean;
     recording?: File;
-    body: string;
+    body?: string;
   } | null>(null);
   const recordingIds = useRef(new WeakMap<File, string>());
   const handledRequest = useRef<string | null>(null);
   const requestedSends = useRef<Array<{ text: string; result?: ComposerSendResult }>>([]);
   const historyVersion = useRef(0);
   const threadId = state.threadId;
+  const hiddenCount = state.hiddenMessageCount ?? state.hiddenMessageIds?.length ?? 0;
+  const hiddenIds = useMemo(() => new Set(state.hiddenMessageIds ?? []), [state.hiddenMessageIds]);
+  const hiddenMessageIds = useRef<ReadonlySet<string>>(hiddenIds);
+  hiddenMessageIds.current = hiddenIds;
+  const activeReplySends = useRef(new Map<string, Set<{ retired: boolean }>>());
+  function retireReplyTarget(id: string) {
+    for (const send of activeReplySends.current.get(id) ?? []) send.retired = true;
+    if (taskReply.current === id) taskReply.current = null;
+    if (retry.current?.replyId === id)
+      retry.current = {
+        ...retry.current,
+        replyId: undefined,
+        body: undefined,
+        retired: true,
+      };
+    setReplyTo((current) => (current?.id === id ? null : current));
+    setOptimistic((current) => {
+      const next = current.map((item) =>
+        item.threadId === threadId && item.message.replyTo?.id === id
+          ? { ...item, message: { ...item.message, replyTo: undefined } }
+          : item,
+      );
+      return next.some((item, index) => item !== current[index]) ? next : current;
+    });
+  }
+  useLayoutEffect(() => {
+    const hidden = hiddenMessageIds.current;
+    const targets = new Set([
+      replyTo?.id,
+      taskReply.current,
+      retry.current?.replyId,
+      ...optimistic
+        .filter((item) => item.threadId === threadId)
+        .map((item) => item.message.replyTo?.id),
+    ]);
+    for (const id of targets) if (id && hidden.has(id)) retireReplyTarget(id);
+  }, [replyTo?.id, hiddenIds, optimistic, threadId]);
   const chatVisible = useRef(visible);
   chatVisible.current = visible;
   const preserveUnreadPosition = useRef(false);
@@ -410,20 +459,25 @@ export function Chat({
   const unreadVisit = useMemo(() => {
     const previous = retainedUnreadVisit.current;
     if (!visible || readCursor === undefined) return null;
-    if (previous?.ownerId === ownerId && previous.threadId === threadId) {
+    if (
+      previous?.ownerId === ownerId &&
+      previous.threadId === threadId &&
+      previous.hiddenCount === hiddenCount
+    ) {
       if (previous.messageId || !foreground) return previous;
     }
     const visit: UnreadVisit | null = foreground
       ? {
           ownerId,
           threadId,
+          hiddenCount,
           cursor: readCursor,
           messages: state.messages,
           hasEarlier: state.hasEarlierMessages === true,
         }
       : null;
     return visit;
-  }, [ownerId, threadId, visible, foreground, readCursor !== undefined]);
+  }, [ownerId, threadId, visible, foreground, readCursor !== undefined, hiddenCount]);
   retainedUnreadVisit.current = unreadVisit;
   if (unreadVisit && !unreadVisit.cursor && readCursor) unreadVisit.cursor = readCursor;
   const currentUnreadVisit = useRef(unreadVisit);
@@ -457,15 +511,14 @@ export function Chat({
   threadRef.current = threadId;
   const [historyPage, setHistoryPage] = useState<{
     threadId: string;
+    epoch: number;
     messages: Message[];
     hasMore?: boolean;
   }>({
     threadId,
+    epoch: 0,
     messages: [],
   });
-  const hasEarlier =
-    (historyPage.threadId === threadId ? historyPage.hasMore : undefined) ??
-    state.hasEarlierMessages === true;
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [historyError, setHistoryError] = useState('');
   const historyRequest = useRef<{
@@ -473,6 +526,7 @@ export function Chat({
     cursor: string;
     controller: AbortController;
   } | null>(null);
+  const historyReload = useRef<{ epoch: number; controller: AbortController } | null>(null);
   const historyCursor = useRef<string | null>(null);
   const historyAnchor = useRef<{
     version: number;
@@ -494,10 +548,59 @@ export function Chat({
   latestScrollUpdate.current = updateAway;
   const streamTimes = useRef(new Map<string, string>());
   const known = useRef<{ threadId: string; messages: Message[] }>({ threadId, messages: [] });
+  const hiddenHistory = useRef<{
+    threadId: string;
+    count: number;
+    epoch: number;
+    oldest: Pick<Message, 'id' | 'createdAt'> | null;
+  }>({ threadId, count: hiddenCount, epoch: 0, oldest: null });
+  if (hiddenHistory.current.threadId !== threadId)
+    hiddenHistory.current = { threadId, count: hiddenCount, epoch: 0, oldest: null };
+  else if (hiddenHistory.current.count !== hiddenCount) {
+    const capped = hiddenCount > (state.hiddenMessageIds?.length ?? 0);
+    const currentIds = new Set(state.messages.map((message) => message.id));
+    hiddenHistory.current = {
+      ...hiddenHistory.current,
+      count: hiddenCount,
+      ...(capped
+        ? {
+            epoch: hiddenHistory.current.epoch + 1,
+            oldest:
+              known.current.threadId === threadId
+                ? (known.current.messages.find((message) => !currentIds.has(message.id)) ?? null)
+                : null,
+          }
+        : {}),
+    };
+    if (capped) known.current = { threadId, messages: [] };
+  }
+  const historyEpoch = hiddenHistory.current.epoch;
+  const [failedReplyValidation, setFailedReplyValidation] = useState<{
+    threadId: string;
+    epoch: number;
+    id: string;
+  } | null>(null);
+  const replyValidationFailed = (id: string) =>
+    failedReplyValidation?.threadId === threadId &&
+    failedReplyValidation.epoch === historyEpoch &&
+    failedReplyValidation.id === id;
+  const [confirmedReplyTargets, setConfirmedReplyTargets] = useState<{
+    threadId: string;
+    epoch: number;
+    ids: ReadonlySet<string>;
+  }>({ threadId, epoch: historyEpoch, ids: new Set() });
+  const confirmedTargetIds =
+    confirmedReplyTargets.threadId === threadId && confirmedReplyTargets.epoch === historyEpoch
+      ? confirmedReplyTargets.ids
+      : new Set<string>();
+  const activeHistoryPage =
+    historyPage.threadId === threadId && historyPage.epoch === historyEpoch ? historyPage : null;
+  const hasEarlier = activeHistoryPage?.hasMore ?? state.hasEarlierMessages === true;
   const persistedMessages = useMemo(() => {
     const merged = mergeMessages(
       known.current.threadId === threadId ? known.current.messages : [],
-      [...(historyPage.threadId === threadId ? historyPage.messages : []), ...state.messages],
+      [...(activeHistoryPage?.messages ?? []), ...state.messages],
+      hiddenIds,
     );
     const pending = state.pendingAnswerChoiceMessageIds
       ? new Set(state.pendingAnswerChoiceMessageIds)
@@ -517,18 +620,75 @@ export function Chat({
   }, [
     threadId,
     historyPage,
+    historyEpoch,
     state.messages,
+    hiddenIds,
     state.pendingAnswerChoiceMessageIds,
     unavailableQuestions,
   ]);
   const persistedIds = new Set(persistedMessages.map((message) => message.id));
+  const targetValidation = useRef({
+    capped: hiddenCount > (state.hiddenMessageIds?.length ?? 0),
+    persistedIds,
+    confirmedTargetIds,
+  });
+  targetValidation.current = {
+    capped: hiddenCount > (state.hiddenMessageIds?.length ?? 0),
+    persistedIds,
+    confirmedTargetIds,
+  };
+  const replyNeedsValidation = (id: string) =>
+    targetValidation.current.capped &&
+    !targetValidation.current.persistedIds.has(id) &&
+    !targetValidation.current.confirmedTargetIds.has(id) &&
+    !hiddenMessageIds.current.has(id);
+  function confirmReplyTarget(id: string, epoch: number) {
+    if (threadRef.current !== threadId || hiddenHistory.current.epoch !== epoch) return;
+    if (targetValidation.current.confirmedTargetIds.has(id)) return;
+    const confirmedTargetIds = new Set(targetValidation.current.confirmedTargetIds);
+    confirmedTargetIds.add(id);
+    const active = new Set([
+      replyTo?.id,
+      taskReply.current,
+      retry.current?.replyId,
+      focusTarget?.id,
+      ...optimistic
+        .filter((item) => item.threadId === threadId)
+        .map((item) => item.message.replyToMessageId),
+      ...activeReplySends.current.keys(),
+    ]);
+    for (const candidate of confirmedTargetIds) {
+      if (confirmedTargetIds.size <= 150) break;
+      if (!active.has(candidate)) confirmedTargetIds.delete(candidate);
+    }
+    targetValidation.current = { ...targetValidation.current, confirmedTargetIds };
+    setConfirmedReplyTargets({ threadId, epoch, ids: confirmedTargetIds });
+  }
   const acknowledgedIds = useRef(persistedIds);
   acknowledgedIds.current = persistedIds;
+  const retiredHistoryEpoch = useRef({ threadId, epoch: historyEpoch });
+  useLayoutEffect(() => {
+    if (
+      retiredHistoryEpoch.current.threadId === threadId &&
+      retiredHistoryEpoch.current.epoch === historyEpoch
+    )
+      return;
+    retiredHistoryEpoch.current = { threadId, epoch: historyEpoch };
+    if (historyEpoch === 0) return;
+    setUnreadHistory(null);
+    setUnreadFailure(null);
+  }, [threadId, historyEpoch]);
   const allMessages = [
     ...persistedMessages,
     ...optimistic
       .filter((item) => item.threadId === threadId && !persistedIds.has(item.message.id))
-      .map((item) => item.message),
+      .map((item) =>
+        item.message.replyToMessageId &&
+        (hiddenMessageIds.current.has(item.message.replyToMessageId) ||
+          replyNeedsValidation(item.message.replyToMessageId))
+          ? { ...item.message, replyTo: undefined }
+          : item.message,
+      ),
   ];
   const live = state.activity ?? [];
   const working = live.some((item) => !item.background);
@@ -721,10 +881,12 @@ export function Chat({
     setCanReturn(false);
     historyVersion.current++;
     cancelHistory();
+    historyReload.current?.controller.abort();
+    historyReload.current = null;
     historyCursor.current = null;
     focusLoading.current = false;
     setHistoryError('');
-    setHistoryPage({ threadId, messages: [] });
+    setHistoryPage({ threadId, epoch: historyEpoch, messages: [] });
     setLoadingHistory(false);
     setAway(null);
     setReplyTo(null);
@@ -784,24 +946,46 @@ export function Chat({
         unreadPositioned.current = 'target';
         returnPosition.current = scrollPosition(scroll.current);
         cancelHistory();
+        setFocusTarget(null);
         focusLoading.current = true;
         setCanReturn(true);
         const expectedThread = threadRef.current;
+        const expectedEpoch = hiddenHistory.current.epoch;
         const version = ++focusRequest.current;
         const id = detail.messageId;
         const taskId = typeof detail.taskId === 'string' ? detail.taskId : undefined;
         void api<Message[]>(`/api/messages/around/${id}`)
           .then((messages) => {
-            if (expectedThread !== threadRef.current || version !== focusRequest.current) return;
+            if (
+              expectedThread !== threadRef.current ||
+              expectedEpoch !== hiddenHistory.current.epoch ||
+              version !== focusRequest.current
+            )
+              return;
             focusLoading.current = false;
             setHistoryPage((current) => ({
-              ...current,
-              messages: mergeMessages(current.messages, messages),
+              threadId: expectedThread,
+              epoch: expectedEpoch,
+              messages: mergeMessages(
+                current.threadId === expectedThread && current.epoch === expectedEpoch
+                  ? current.messages
+                  : [],
+                messages,
+                hiddenMessageIds.current,
+              ),
+              hasMore:
+                current.threadId === expectedThread && current.epoch === expectedEpoch
+                  ? current.hasMore
+                  : undefined,
             }));
             setFocusTarget({ id, pages: 0, taskId });
           })
           .catch((cause) => {
-            if (expectedThread === threadRef.current && version === focusRequest.current) {
+            if (
+              expectedThread === threadRef.current &&
+              expectedEpoch === hiddenHistory.current.epoch &&
+              version === focusRequest.current
+            ) {
               focusLoading.current = false;
               setError(errorMessage(cause));
             }
@@ -833,6 +1017,13 @@ export function Chat({
   }, []);
   useEffect(() => {
     if (!visible || !focusTarget || loadingHistory) return;
+    if (hiddenIds.has(focusTarget.id)) {
+      setFocusTarget(null);
+      setCanReturn(false);
+      returnPosition.current = null;
+      return;
+    }
+    if (replyNeedsValidation(focusTarget.id)) return;
     if (focusTarget.pages && historyError) {
       setFocusTarget(null);
       return;
@@ -842,8 +1033,10 @@ export function Chat({
     ).find((element) => element.dataset.messageId === focusTarget.id);
     if (target) {
       stickToBottom.current = false;
+      const version = focusRequest.current;
       const { taskId } = focusTarget;
       requestAnimationFrame(() => {
+        if (version !== focusRequest.current || !target.isConnected) return;
         target.scrollIntoView({ block: 'center', behavior: 'instant' });
         target.focus({ preventScroll: true });
         target.classList.add('message-focused');
@@ -889,6 +1082,8 @@ export function Chat({
     const directAnswer = source === 'answer_choice';
     const captureAnalytics = analyticsForCurrentSession();
     const sentThread = threadId;
+    const activeReply = { retired: false };
+    const replyRetired = () => activeReply.retired;
     const verificationRequests = (
       questionAnswer && 'choiceIds' in questionAnswer ? [] : (state.verificationRequests ?? [])
     ).filter(
@@ -913,21 +1108,44 @@ export function Chat({
     const recordingKey = recording && recordingSource(recording);
     if (recordingKey && !recordingIds.current.has(recordingKey))
       recordingIds.current.set(recordingKey, crypto.randomUUID());
+    const attachmentIds = attachments.map((item) => item.id);
+    const recordingId = recordingKey ? recordingIds.current.get(recordingKey) : null;
+    const plainSignature = privateVerification
+      ? null
+      : JSON.stringify([value, attachmentIds, null, null, false, recordingId, null]);
     const signature = privateVerification
       ? null
       : JSON.stringify([
           value,
-          attachments.map((item) => item.id),
+          attachmentIds,
           reply?.id ?? null,
           reply?.text ?? null,
           reply?.isQuote === true,
-          recordingKey ? recordingIds.current.get(recordingKey) : null,
+          recordingId,
           questionAnswer ?? null,
         ]);
     if (privateVerification) retry.current = null;
+    const unresolvedReply =
+      !reply &&
+      retry.current?.threadId === sentThread &&
+      (retry.current.replyId || retry.current.retired)
+        ? retry.current
+        : null;
+    if (unresolvedReply) {
+      if (acknowledgedIds.current.has(unresolvedReply.id) || unresolvedReply.warned)
+        retry.current = null;
+      else {
+        retry.current = { ...unresolvedReply, warned: true };
+        setError(
+          'The previous reply may have been sent. Check this chat before sending a new message.',
+        );
+        return { sent: false, restoreText: true, restoreRecording: true };
+      }
+    }
     const previousAttempt =
       signature !== null &&
       retry.current?.threadId === sentThread &&
+      retry.current.retired !== true &&
       retry.current.signature === signature
         ? retry.current
         : null;
@@ -958,6 +1176,8 @@ export function Chat({
     let failed = false;
     let retryableFailure = false;
     let questionUnavailable = false;
+    let replyUnavailable = false;
+    let responseConflict = false;
     let submittedBody = previousAttempt?.body;
     if (reply && !directAnswer) {
       taskReply.current = null;
@@ -987,6 +1207,11 @@ export function Chat({
     if (!directAnswer) setError('');
     stickToBottom.current = true;
     const seenMessageId = persistedMessages.findLast((item) => item.role === 'assistant')?.id;
+    if (replyId) {
+      const sends = activeReplySends.current.get(replyId) ?? new Set<{ retired: boolean }>();
+      sends.add(activeReply);
+      activeReplySends.current.set(replyId, sends);
+    }
     try {
       if (!(await previous)) {
         failed = true;
@@ -997,13 +1222,62 @@ export function Chat({
           restoreRecording: !privateVerification,
         };
       }
+      if (replyId && (hiddenMessageIds.current.has(replyId) || replyRetired())) {
+        failed = true;
+        retry.current = previousAttempt
+          ? { ...previousAttempt, replyId: undefined, body: undefined, retired: true }
+          : null;
+        setOptimistic((current) => current.filter((item) => item.message.id !== id));
+        setError('The reply is unavailable in this conversation.');
+        return {
+          sent: false,
+          restoreText: !privateVerification || !explicitVerification,
+          restoreRecording: !privateVerification,
+        };
+      }
+      if (replyId && replyNeedsValidation(replyId)) {
+        const expectedEpoch = hiddenHistory.current.epoch;
+        try {
+          const nearby = await api<Message[]>(
+            `/api/messages/around/${encodeURIComponent(replyId)}`,
+            { signal: AbortSignal.timeout(15_000) },
+          );
+          if (threadRef.current !== sentThread) return { sent: true };
+          if (hiddenHistory.current.epoch !== expectedEpoch) {
+            failed = true;
+            setOptimistic((current) => current.filter((item) => item.message.id !== id));
+            setError('The reply changed while sending. Try again.');
+            return { sent: false, restoreText: true, restoreRecording: true };
+          }
+          if (!nearby.some((message) => message.id === replyId)) {
+            replyUnavailable = true;
+            retireReplyTarget(replyId);
+          } else confirmReplyTarget(replyId, expectedEpoch);
+        } catch (cause) {
+          if (threadRef.current !== sentThread) return { sent: true };
+          if (cause instanceof ApiError && cause.status === 404) {
+            replyUnavailable = true;
+            retireReplyTarget(replyId);
+          } else setError(errorMessage(cause));
+          failed = true;
+          setOptimistic((current) => current.filter((item) => item.message.id !== id));
+          if (replyUnavailable) setError('The reply is unavailable in this conversation.');
+          return { sent: false, restoreText: true, restoreRecording: true };
+        }
+        if (replyUnavailable) {
+          failed = true;
+          setOptimistic((current) => current.filter((item) => item.message.id !== id));
+          setError('The reply is unavailable in this conversation.');
+          return { sent: false, restoreText: true, restoreRecording: true };
+        }
+      }
       const messageBody =
         submittedBody ??
         JSON.stringify({
           threadId: sentThread,
           clientMessageId: id,
           text: value,
-          attachmentIds: attachments.map((item) => item.id),
+          attachmentIds,
           ...(replyId
             ? {
                 replyToMessageId: replyId,
@@ -1037,6 +1311,12 @@ export function Chat({
       privateVerification ||= verificationStatus !== undefined;
       if (!response.ok) {
         retryableFailure = result.retryable === true;
+        responseConflict = response.status === 409;
+        replyUnavailable =
+          Boolean(replyId) &&
+          (response.status === 404 ||
+            (response.status === 400 &&
+              result.error === 'The reply is unavailable in this conversation.'));
         questionUnavailable =
           response.status === 409 &&
           result.code === 'question_unavailable' &&
@@ -1093,12 +1373,16 @@ export function Chat({
       return { sent: true };
     } catch (cause) {
       if (threadRef.current !== sentThread) return { sent: true };
-      if (acknowledgedIds.current.has(id)) {
+      const acknowledged = acknowledgedIds.current.has(id);
+      if (acknowledged && !responseConflict) {
         retry.current = null;
         return { sent: true };
       }
       failed = true;
-      if (questionUnavailable && replyId) {
+      const retiredReply = Boolean(
+        replyId && (replyUnavailable || hiddenMessageIds.current.has(replyId) || replyRetired()),
+      );
+      if (questionUnavailable && replyId && !retiredReply) {
         retry.current = null;
         setOptimistic((current) => current.filter((item) => item.message.id !== id));
         setUnavailableQuestions((current) => new Set([...current, replyId]));
@@ -1113,17 +1397,43 @@ export function Chat({
           questionUnavailable: true,
         };
       }
-      if (retryableFailure && recordingKey) recordingIds.current.delete(recordingKey);
+      if (retryableFailure && recordingKey && !retiredReply)
+        recordingIds.current.delete(recordingKey);
+      if (retiredReply && replyId) retireReplyTarget(replyId);
       retry.current =
-        !privateVerification && !retryableFailure && signature !== null && submittedBody
-          ? {
-              id,
-              threadId: sentThread,
-              signature,
-              recording: submittedRecording,
-              body: submittedBody,
-            }
-          : null;
+        responseConflict && acknowledged
+          ? null
+          : retiredReply &&
+              !replyUnavailable &&
+              !questionUnavailable &&
+              !privateVerification &&
+              signature !== null &&
+              plainSignature !== null &&
+              submittedBody
+            ? {
+                id,
+                threadId: sentThread,
+                signature,
+                plainSignature,
+                retired: true,
+                recording: submittedRecording,
+              }
+            : !retiredReply &&
+                !privateVerification &&
+                !retryableFailure &&
+                signature !== null &&
+                plainSignature !== null &&
+                submittedBody
+              ? {
+                  id,
+                  threadId: sentThread,
+                  signature,
+                  plainSignature,
+                  replyId,
+                  recording: submittedRecording,
+                  body: submittedBody,
+                }
+              : null;
       setOptimistic((current) => current.filter((item) => item.message.id !== id));
       const failure = privateVerification
         ? attachments.length
@@ -1139,9 +1449,22 @@ export function Chat({
         error: failure,
       };
     } finally {
+      if (replyId) {
+        const sends = activeReplySends.current.get(replyId);
+        sends?.delete(activeReply);
+        if (!sends?.size) activeReplySends.current.delete(replyId);
+      }
       outstandingSends.current--;
       finished(!failed);
-      if (failed && reply && !directAnswer && sequence === sendCount.current)
+      if (
+        failed &&
+        reply &&
+        !directAnswer &&
+        !replyUnavailable &&
+        !hiddenMessageIds.current.has(reply.id) &&
+        !replyRetired() &&
+        sequence === sendCount.current
+      )
         setReplyTo((current) => current ?? reply);
       if (threadRef.current === sentThread && --pendingSends.current === 0) {
         sendQueue.current = Promise.resolve(true);
@@ -1182,10 +1505,158 @@ export function Chat({
     setLoadingHistory(false);
   }
   useEffect(() => {
+    if (historyEpoch === 0 || hiddenHistory.current.threadId !== threadId) return;
+    historyVersion.current++;
+    cancelHistory();
+    historyReload.current?.controller.abort();
+    historyReload.current = null;
+    historyCursor.current = null;
+    historyAnchor.current = null;
+    focusRequest.current++;
+    focusLoading.current = false;
+    setHistoryError('');
+    setHistoryPage({ threadId, epoch: historyEpoch, messages: [] });
+    const oldest = hiddenHistory.current.oldest;
+    if (!oldest) return;
+    const controller = new AbortController();
+    const request = { epoch: historyEpoch, controller };
+    historyReload.current = request;
+    setLoadingHistory(true);
+    void (async () => {
+      let before = state.messages[0];
+      let messages: Message[] = [];
+      let hasMore = false;
+      for (let page = 0; before && page < 5; page++) {
+        const query = new URLSearchParams({
+          threadId,
+          before: before.createdAt,
+          beforeId: before.id,
+        });
+        const result = await api<MessageHistoryPage>(`/api/messages?${query}`, {
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted || hiddenHistory.current.epoch !== historyEpoch) return;
+        messages = mergeMessages(messages, result.messages, hiddenMessageIds.current);
+        hasMore = result.hasMore;
+        const first = messages[0];
+        if (!first || !hasMore || atOrBefore(first, oldest) || atOrBefore(before, first)) break;
+        before = first;
+      }
+      if (controller.signal.aborted || hiddenHistory.current.epoch !== historyEpoch) return;
+      setHistoryPage((current) => ({
+        threadId,
+        epoch: historyEpoch,
+        messages: mergeMessages(
+          current.threadId === threadId && current.epoch === historyEpoch ? current.messages : [],
+          messages,
+          hiddenMessageIds.current,
+        ),
+        hasMore,
+      }));
+    })()
+      .catch((cause) => {
+        if (!controller.signal.aborted && hiddenHistory.current.epoch === historyEpoch)
+          setHistoryError(errorMessage(cause));
+      })
+      .finally(() => {
+        if (historyReload.current !== request) return;
+        historyReload.current = null;
+        if (hiddenHistory.current.epoch === historyEpoch) setLoadingHistory(false);
+      });
+    return () => controller.abort();
+  }, [historyEpoch, threadId]);
+  useEffect(() => {
+    if (hiddenCount <= (state.hiddenMessageIds?.length ?? 0)) return;
+    const targets = new Set([
+      replyTo?.id,
+      taskReply.current,
+      retry.current?.replyId,
+      focusTarget?.id,
+      ...optimistic
+        .filter((item) => item.threadId === threadId)
+        .map((item) => item.message.replyTo?.id),
+    ]);
+    const unchecked = [...targets].filter((id): id is string =>
+      Boolean(id && replyNeedsValidation(id) && !replyValidationFailed(id)),
+    );
+    if (!unchecked.length) return;
+    const controller = new AbortController();
+    const focusVersion = focusRequest.current;
+    for (const id of unchecked)
+      void api<Message[]>(`/api/messages/around/${encodeURIComponent(id)}`, {
+        signal: controller.signal,
+      })
+        .then((messages) => {
+          if (
+            controller.signal.aborted ||
+            threadRef.current !== threadId ||
+            hiddenHistory.current.epoch !== historyEpoch
+          )
+            return;
+          if (!messages.some((message) => message.id === id)) {
+            retireReplyTarget(id);
+            return;
+          }
+          confirmReplyTarget(id, historyEpoch);
+          if (
+            (focusTarget?.id === id && focusRequest.current === focusVersion) ||
+            replyTo?.id === id
+          )
+            setHistoryPage((current) => ({
+              threadId,
+              epoch: historyEpoch,
+              messages: mergeMessages(
+                current.threadId === threadId && current.epoch === historyEpoch
+                  ? current.messages
+                  : [],
+                messages,
+                hiddenMessageIds.current,
+              ),
+              hasMore:
+                current.threadId === threadId && current.epoch === historyEpoch
+                  ? current.hasMore
+                  : undefined,
+            }));
+        })
+        .catch((cause) => {
+          if (
+            controller.signal.aborted ||
+            threadRef.current !== threadId ||
+            hiddenHistory.current.epoch !== historyEpoch
+          )
+            return;
+          if (cause instanceof ApiError && cause.status === 404) {
+            retireReplyTarget(id);
+            if (focusTarget?.id === id && focusRequest.current === focusVersion) {
+              setFocusTarget((current) => (current?.id === id ? null : current));
+              setCanReturn(false);
+              returnPosition.current = null;
+            }
+          } else {
+            if (replyTo?.id === id) setFailedReplyValidation({ threadId, epoch: historyEpoch, id });
+            if (focusTarget?.id === id && focusRequest.current === focusVersion) {
+              setFocusTarget((current) => (current?.id === id ? null : current));
+              setError(errorMessage(cause));
+            }
+          }
+        });
+    return () => controller.abort();
+  }, [
+    threadId,
+    hiddenCount,
+    historyEpoch,
+    replyTo?.id,
+    failedReplyValidation,
+    retry.current?.replyId,
+    focusTarget?.id,
+    optimistic,
+  ]);
+  useEffect(() => {
     if (!foreground || !unreadVisit?.cursor || !unreadPending || unreadError) return;
     cancelHistory();
     const controller = new AbortController();
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]);
+    const epoch = historyEpoch;
     void loadUnreadChatBoundary(
       unreadVisit.messages,
       unreadVisit.hasEarlier,
@@ -1201,7 +1672,12 @@ export function Chat({
       signal,
     )
       .then((result) => {
-        if (controller.signal.aborted || currentUnreadVisit.current !== unreadVisit) return;
+        if (
+          controller.signal.aborted ||
+          currentUnreadVisit.current !== unreadVisit ||
+          hiddenHistory.current.epoch !== epoch
+        )
+          return;
         const element = scroll.current;
         if (element)
           historyAnchor.current = {
@@ -1212,24 +1688,42 @@ export function Chat({
           };
         flushSync(() => {
           setHistoryPage((current) => {
-            const previous = current.threadId === threadId ? current.messages : [];
-            const messages = mergeMessages(previous, result.messages);
+            const previous =
+              current.threadId === threadId && current.epoch === epoch ? current.messages : [];
+            const messages = mergeMessages(previous, result.messages, hiddenMessageIds.current);
             return {
               threadId,
+              epoch,
               messages,
               hasMore:
-                messages[0]?.id === result.messages[0]?.id ? result.hasMore : current.hasMore,
+                messages[0]?.id === result.messages[0]?.id
+                  ? result.hasMore
+                  : current.threadId === threadId && current.epoch === epoch
+                    ? current.hasMore
+                    : undefined,
             };
           });
           setUnreadHistory({ visit: unreadVisit, messageId: result.messageId });
         });
       })
       .catch((cause) => {
-        if (!controller.signal.aborted && currentUnreadVisit.current === unreadVisit)
+        if (
+          !controller.signal.aborted &&
+          currentUnreadVisit.current === unreadVisit &&
+          hiddenHistory.current.epoch === epoch
+        )
           setUnreadFailure({ visit: unreadVisit, error: errorMessage(cause) });
       });
     return () => controller.abort();
-  }, [unreadVisit, unreadVisit?.cursor, unreadPending, unreadError, unreadAttempt, foreground]);
+  }, [
+    unreadVisit,
+    unreadVisit?.cursor,
+    unreadPending,
+    unreadError,
+    unreadAttempt,
+    foreground,
+    historyEpoch,
+  ]);
   useEffect(() => {
     if (!visible || historyRequest.current?.version !== historyVersion.current) cancelHistory();
   });
@@ -1255,7 +1749,9 @@ export function Chat({
       !element?.clientHeight ||
       !element.getClientRects().length ||
       document.visibilityState !== 'visible' ||
-      historyRequest.current
+      historyRequest.current ||
+      historyReload.current ||
+      historyPage.epoch !== historyEpoch
     )
       return;
     const cursor = `${threadId}:${first.createdAt}:${first.id}`;
@@ -1265,6 +1761,7 @@ export function Chat({
       cursor,
       controller: new AbortController(),
     };
+    const epoch = historyEpoch;
     historyRequest.current = request;
     historyCursor.current = cursor;
     setLoadingHistory(true);
@@ -1277,6 +1774,7 @@ export function Chat({
       if (
         request.controller.signal.aborted ||
         request.version !== historyVersion.current ||
+        hiddenHistory.current.epoch !== epoch ||
         threadRef.current !== threadId
       )
         return;
@@ -1286,14 +1784,18 @@ export function Chat({
         height: element.scrollHeight,
         following: stickToBottom.current,
       };
-      const progressed = mergeMessages(persistedMessages, result.messages)[0]?.id !== first.id;
+      const progressed =
+        mergeMessages(persistedMessages, result.messages, hiddenMessageIds.current)[0]?.id !==
+        first.id;
       historyRequest.current = null;
       flushSync(() => {
         setHistoryPage((current) => ({
           threadId,
+          epoch,
           messages: mergeMessages(
-            current.threadId === threadId ? current.messages : [],
+            current.threadId === threadId && current.epoch === epoch ? current.messages : [],
             result.messages,
+            hiddenMessageIds.current,
           ),
           hasMore: result.hasMore && progressed,
         }));
@@ -1303,6 +1805,7 @@ export function Chat({
       if (
         !request.controller.signal.aborted &&
         request.version === historyVersion.current &&
+        hiddenHistory.current.epoch === epoch &&
         threadRef.current === threadId
       )
         setHistoryError(errorMessage(cause));
@@ -1311,7 +1814,7 @@ export function Chat({
         historyRequest.current = null;
         if (request.controller.signal.aborted || request.version !== historyVersion.current)
           historyCursor.current = null;
-        setLoadingHistory(false);
+        if (hiddenHistory.current.epoch === epoch) setLoadingHistory(false);
       }
     }
   }
@@ -1334,6 +1837,15 @@ export function Chat({
   function cancelReturn() {
     returning.current = false;
     unreadPositioned.current = currentUnreadVisit.current;
+  }
+  function cancelFocusedMessage() {
+    focusRequest.current++;
+    focusLoading.current = false;
+    setFocusTarget(null);
+    cancelHistory();
+    returnPosition.current = null;
+    unreadPositioned.current = currentUnreadVisit.current;
+    setCanReturn(false);
   }
   function reportRead() {
     const element = scroll.current;
@@ -1740,7 +2252,7 @@ export function Chat({
                   variant="outline"
                   size="sm"
                   onClick={() => {
-                    setCanReturn(false);
+                    cancelFocusedMessage();
                     onReturnToMemory();
                   }}
                 >
@@ -1758,7 +2270,7 @@ export function Chat({
                       stickToBottom.current = false;
                       restoreScrollPosition(scroll.current, returnPosition.current);
                     }
-                    setCanReturn(false);
+                    cancelFocusedMessage();
                   }}
                 >
                   <CornerUpLeft size={16} />
@@ -1825,12 +2337,22 @@ export function Chat({
               ref={composer}
               draftKey={`nod.chat-draft.${ownerId}.${threadId}`}
               privateReply={Boolean(state.verificationRequests?.length)}
-              restoreReply={setReplyTo}
+              restoreReply={(saved) => {
+                if (!saved || !hiddenMessageIds.current.has(saved.id)) setReplyTo(saved);
+              }}
               ready={state.configuration.llmReady && !welcoming && !spendingPaused}
               busy={connected && working}
               text={text}
               setText={setText}
               replyTo={replyTo}
+              replyPreviewPending={Boolean(
+                replyTo && replyNeedsValidation(replyTo.id) && !replyValidationFailed(replyTo.id),
+              )}
+              retryReplyPreview={
+                replyTo && replyNeedsValidation(replyTo.id) && replyValidationFailed(replyTo.id)
+                  ? () => setFailedReplyValidation(null)
+                  : undefined
+              }
               clearReply={() => {
                 taskReply.current = null;
                 setReplyTo(null);

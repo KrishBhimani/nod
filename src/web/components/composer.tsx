@@ -65,6 +65,8 @@ interface ComposerProps {
   text: string;
   setText(value: string): void;
   replyTo: Message['replyTo'];
+  replyPreviewPending?: boolean;
+  retryReplyPreview?(): void;
   clearReply(): void;
   onSend(text: string, attachments: Artifact[], recording?: File): Promise<ComposerSendResult>;
   onStop?(): void;
@@ -85,6 +87,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     stopping = false,
     draftKey,
     restoreReply,
+    replyPreviewPending = false,
+    retryReplyPreview,
     privateReply = false,
   },
   ref,
@@ -820,7 +824,24 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       {replyTo && (
         <div className="reply-context composer-reply">
           <CornerUpLeft size={16} />
-          <MessageQuote message={replyTo} composing />
+          {replyPreviewPending ? (
+            <span role="status">Checking reply availability…</span>
+          ) : retryReplyPreview ? (
+            <>
+              <span role="status">Couldn’t check this reply.</span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={retryReplyPreview}
+                aria-label="Retry reply availability"
+              >
+                Try again
+              </Button>
+            </>
+          ) : (
+            <MessageQuote message={replyTo} composing />
+          )}
           <Button
             type="button"
             variant="ghost"

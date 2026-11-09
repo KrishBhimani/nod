@@ -1276,6 +1276,64 @@ test(
         );
       });
 
+      await t.test('a reply retired during approval handling creates no turn', async () => {
+        const targetId = randomUUID();
+        const sourceId = `channel:telegram:fixture:${randomUUID()}`;
+        await db.pool.query(
+          "INSERT INTO messages(id,owner_id,thread_id,role,text) VALUES($1,$2,$3,'assistant','Cancel the scheduled task?')",
+          [targetId, ownerId, (await thread.activeThread()).id],
+        );
+        let enter!: () => void;
+        const entered = new Promise<void>((resolve) => {
+          enter = resolve;
+        });
+        let release!: () => void;
+        const proceed = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const submission = thread.submitUserMessage(
+          'Yes',
+          [],
+          { channel: 'telegram:fixture', sourceId, replyToMessageId: targetId },
+          {
+            answer: async () => undefined,
+            accept: async () => {
+              enter();
+              await proceed;
+              return undefined;
+            },
+          },
+        );
+        try {
+          await entered;
+          await db.pool.query('UPDATE messages SET hidden_at=now() WHERE id=$1 AND owner_id=$2', [
+            targetId,
+            ownerId,
+          ]);
+          release();
+          await assert.rejects(
+            submission,
+            (cause: unknown) => (cause as { statusCode?: number }).statusCode === 404,
+          );
+          assert.equal(
+            (
+              await db.pool.query('SELECT 1 FROM turns WHERE owner_id=$1 AND source_id=$2', [
+                ownerId,
+                sourceId,
+              ])
+            ).rowCount,
+            0,
+          );
+        } finally {
+          release();
+          await Promise.allSettled([submission]);
+          await db.pool.query('DELETE FROM messages WHERE id=$1 AND owner_id=$2', [
+            targetId,
+            ownerId,
+          ]);
+        }
+      });
+
       await t.test(
         'client message IDs dedupe concurrent sends and reject changed payloads',
         async () => {
@@ -5390,6 +5448,16 @@ test(
           assert.equal((await react(message, '❤️')).statusCode, 200);
           for (const id of [foreign, archived.id])
             assert.equal((await react(id, '❤️')).statusCode, 404);
+          const retiredReaction = randomUUID();
+          await db.pool.query(
+            "INSERT INTO messages(id,owner_id,role,text,thread_id,hidden_at) VALUES($1,$2,'assistant','Retired reaction target',$3,now())",
+            [retiredReaction, ownerId, freshThread],
+          );
+          try {
+            assert.equal((await react(retiredReaction, '❤️')).statusCode, 404);
+          } finally {
+            await db.pool.query('DELETE FROM messages WHERE id=$1', [retiredReaction]);
+          }
         },
       );
       await t.test(
@@ -7482,6 +7550,53 @@ test(
           }
         },
       );
+
+      await t.test('retired confirmations stay out of later agent context', async () => {
+        const activeId = (await thread.activeThread(db.pool)).id;
+        const visibleId = randomUUID();
+        const retiredId = randomUUID();
+        const visibleText = `Visible context ${randomUUID()}`;
+        const retiredText = `Retired confirmation ${randomUUID()}`;
+        const holdPrompt = `Hold context ${randomUUID()}`;
+        block(holdPrompt);
+        let follow: Awaited<ReturnType<typeof thread.submitUserMessage>> | undefined;
+        try {
+          const held = await thread.submitUserMessage(holdPrompt);
+          await waitFor(() => Boolean(ran(held.turnId)));
+          await db.pool.query(
+            "INSERT INTO messages(id,owner_id,role,text,thread_id) VALUES($1,$2,'assistant',$3,$5),($4,$2,'assistant',$6,$5)",
+            [visibleId, ownerId, visibleText, retiredId, activeId, retiredText],
+          );
+          follow = await thread.submitUserMessage('Check the synthetic follow-up', [], {
+            replyToMessageId: retiredId,
+          });
+          assert.equal(await turnStatus(follow.turnId), 'queued');
+          await db.pool.query('UPDATE messages SET hidden_at=now() WHERE id=$1', [retiredId]);
+          release(holdPrompt);
+          await waitFor(settled(follow.turnId));
+          const context = ran(follow.turnId)!;
+          assert.equal(context.replyTo, undefined);
+          assert.equal(
+            context.history.some((message) => message.text === retiredText),
+            false,
+          );
+          assert.equal(
+            context.history.some((message) => message.text === visibleText),
+            true,
+          );
+        } finally {
+          release(holdPrompt);
+          if (follow) {
+            await waitFor(settled(follow.turnId));
+            await db.pool.query('UPDATE messages SET reply_to_message_id=NULL WHERE id=$1', [
+              follow.messageId,
+            ]);
+          }
+          await db.pool.query('DELETE FROM messages WHERE id=ANY($1::uuid[])', [
+            [visibleId, retiredId],
+          ]);
+        }
+      });
     } finally {
       for (const resolve of gates.values()) resolve();
       events.off('event', onEvent);

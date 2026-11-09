@@ -1773,7 +1773,7 @@ test(
       await admin.end();
     });
     await pool.query(`CREATE TABLE threads(id uuid PRIMARY KEY,owner_id text,archived_at timestamptz);
-      CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text,thread_id uuid,turn_id uuid,role text,text text,created_at timestamptz);
+      CREATE TABLE messages(id uuid PRIMARY KEY,owner_id text,thread_id uuid,turn_id uuid,role text,text text,hidden_at timestamptz,created_at timestamptz);
       CREATE TABLE turns(id uuid PRIMARY KEY,owner_id text,thread_id uuid,prompt text,status text,source text,channel text,created_at timestamptz);
       CREATE TABLE preferences(owner_id text,time_zone text);`);
     const active = randomUUID(),
@@ -1818,15 +1818,16 @@ test(
       text: 'Assistant detail.',
     };
     for (const record of [...records, other, old, assistant]) {
-      await pool.query('INSERT INTO messages VALUES($1,$2,$3,NULL,$4,$5,$6)', [
-        record.id,
-        record.owner,
-        record.thread,
-        record.role,
-        record.text,
-        record.at,
-      ]);
+      await pool.query(
+        'INSERT INTO messages(id,owner_id,thread_id,turn_id,role,text,created_at) VALUES($1,$2,$3,NULL,$4,$5,$6)',
+        [record.id, record.owner, record.thread, record.role, record.text, record.at],
+      );
     }
+    const hiddenId = randomUUID();
+    await pool.query(
+      "INSERT INTO messages(id,owner_id,thread_id,role,text,hidden_at,created_at) VALUES($1,$2,$3,'user','Maple fair cedar elm.',now(),$4)",
+      [hiddenId, 'owner-a', active, new Date(Date.UTC(2026, 0, 1, 0, 19, 30))],
+    );
     const search = createHistorySearch({ pool, ownerId: 'owner-a' });
     for (const order of ['relevance', 'newest']) {
       const found: string[] = [];
@@ -1842,12 +1843,14 @@ test(
         cursor = page.nextCursor;
       }
       assert.equal(found.length, 45);
+      assert.equal(found.includes(hiddenId), false);
       assert.deepEqual(new Set(found), new Set(records.map((record) => record.id)));
     }
     await assert.rejects(search({ query: 'Maple', cursor: other.id }), /cursor/);
     await assert.rejects(search({ query: 'Maple', before: old.id }), /unavailable/);
     await assert.rejects(search({ around: other.id }), /unavailable/);
     await assert.rejects(search({ around: old.id }), /unavailable/);
+    await assert.rejects(search({ around: hiddenId }), /unavailable/);
     const datePage = await search({ from: '2026-01-01', to: '2026-01-01' });
     assert.equal(datePage.totalMatches, 45);
     const scoped = Array.from({ length: 10 }, (_, index) => ({
@@ -1856,14 +1859,10 @@ test(
       at: new Date(Date.UTC(2026, 0, 2, 0, index)),
     }));
     for (const record of scoped)
-      await pool.query('INSERT INTO messages VALUES($1,$2,$3,NULL,$4,$5,$6)', [
-        record.id,
-        'owner-a',
-        active,
-        'user',
-        record.text,
-        record.at,
-      ]);
+      await pool.query(
+        'INSERT INTO messages(id,owner_id,thread_id,turn_id,role,text,created_at) VALUES($1,$2,$3,NULL,$4,$5,$6)',
+        [record.id, 'owner-a', active, 'user', record.text, record.at],
+      );
     for (const before of [undefined, scoped[9].id]) {
       const ranked = await search({
         query: 'quartz cedar elm',
