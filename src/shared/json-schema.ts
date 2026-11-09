@@ -1,4 +1,4 @@
-import { Resolve } from 'typebox/schema';
+import { NextStack, Resolve, Stack } from 'typebox/schema';
 
 const maps = new Set(['properties', '$defs', 'definitions', 'dependentSchemas', 'dependencies']);
 const schemas = new Set([
@@ -27,19 +27,27 @@ function patternDependencies(root: unknown) {
   const detached = new Set<object>();
   const resources = new Map<object, object>();
   const imports: Array<{ from: object; key: string; target: object | boolean }> = [];
-  const references: Array<{ from: object; key: string; ref: string }> = [];
+  const references: Array<{
+    from: object;
+    key: string;
+    ref: string;
+    stack: ReturnType<typeof Stack>;
+  }> = [];
+  const rootStack = Stack({}, root as Parameters<typeof Stack>[1]);
   const visit = (
     value: unknown,
     parent?: object,
     moved = false,
     sameInstance = false,
     resource?: object,
+    stack = rootStack,
   ) => {
     if (Array.isArray(value)) {
-      for (const item of value) visit(item, parent, moved, sameInstance, resource);
+      for (const item of value) visit(item, parent, moved, sameInstance, resource, stack);
       return;
     }
     if (!value || typeof value !== 'object') return;
+    if (value !== root) stack = NextStack(stack, value as Parameters<typeof NextStack>[1]);
     resource = typeof (value as { $id?: unknown }).$id === 'string' ? value : (resource ?? value);
     if (!resources.has(value)) resources.set(value, resource);
     if (moved) detached.add(value);
@@ -54,7 +62,7 @@ function patternDependencies(root: unknown) {
     for (const [key, item] of Object.entries(value)) {
       if (key === 'pattern' || key === 'patternProperties') affected.add(value);
       if (['$ref', '$dynamicRef', '$recursiveRef'].includes(key) && typeof item === 'string')
-        references.push({ from: value, key, ref: item });
+        references.push({ from: value, key, ref: item, stack });
       if ((maps.has(key) || key === 'patternProperties') && item && typeof item === 'object')
         for (const schema of Object.values(item))
           visit(
@@ -63,6 +71,7 @@ function patternDependencies(root: unknown) {
             moved || key === 'patternProperties',
             ['dependentSchemas', 'dependencies'].includes(key),
             resource,
+            stack,
           );
       else if (schemas.has(key))
         visit(
@@ -71,21 +80,19 @@ function patternDependencies(root: unknown) {
           moved || ['oneOf', 'not', 'if'].includes(key),
           ['allOf', 'anyOf', 'oneOf', 'if', 'then', 'else'].includes(key),
           resource,
+          stack,
         );
     }
   };
   visit(root);
   const primary = new Set(visited);
-  for (const { from, key, ref } of references) {
+  for (const { from, key, ref, stack } of references) {
     try {
-      const schema = root as Parameters<typeof Resolve.Ref>[1];
-      let base = Resolve.Base(schema, Resolve.DefaultBase, from) ?? Resolve.DefaultBase;
-      const ownId = (from as { $id?: unknown }).$id;
-      if (typeof ownId === 'string') base = new URL(ownId, base).href;
-      const target = Resolve.Ref({}, schema, Resolve.DefaultBase, new URL(ref, base).href, false);
+      const resolved = Resolve.Ref(stack, { $ref: ref });
+      const target = resolved.schema;
       if (target && typeof target === 'object' && !Array.isArray(target)) {
         const moved = !primary.has(target) || detached.has(target);
-        visit(target, from, moved, true, resources.get(from));
+        visit(target, from, moved, true, resources.get(from), resolved.stack);
         if (moved) imports.push({ from, key, target });
       } else if (
         typeof target === 'boolean' &&
