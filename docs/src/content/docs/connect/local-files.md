@@ -11,7 +11,7 @@ Local files lets Nod work with folders on the computer it runs on, for example t
 
 Open **Apps** and select **Add folder** on **Local files**. In the desktop app, choose the folder in the folder picker. In a source install, enter the folder's absolute path. Nod checks that it can open the folder before it saves it.
 
-You can share folders inside your home folder, such as Downloads, or on an external drive (under `/Volumes` on macOS, or a drive other than the system drive on Windows). Nod refuses:
+You can share folders inside your home folder, such as Downloads, or on an external drive or other mounted volume (under `/Volumes` on macOS, or a drive other than the system drive on Windows), but not a whole drive. Nod refuses:
 
 - your whole disk, your home folder itself and any folder above it;
 - `Library` on macOS and `AppData` on Windows;
@@ -36,7 +36,7 @@ On macOS, the first time Nod opens a protected folder, such as Downloads, Docume
 | Move          | Moves or renames up to 200 items at once, and never overwrites.                                                                 |
 | Trash         | Moves up to 200 items to the Trash or Recycle Bin, where you can restore them.                                                  |
 
-Nod never deletes a file outright. When it replaces or edits a file, the previous version goes to the Trash. Without a Trash Nod can use, it doesn't trash, replace or edit anything. The desktop app uses the system Trash or Recycle Bin; a source install on macOS needs the `trash` command that comes with macOS 15 and later, and a source install on Linux or Windows has none. The previous version goes to the Trash from its own place, so **Put Back** returns it there; if the Trash step fails, nothing changes. On macOS, Nod marks files it writes, edits or copies from its workspace as downloaded, so macOS checks them before they open.
+Nod never deletes a file outright. When it replaces or edits a file, the previous version goes to the Trash. Without a Trash Nod can use, it doesn't trash, replace or edit anything. The desktop app uses the system Trash or Recycle Bin; a source install on macOS needs the `trash` command that comes with macOS 15 and later, and a source install on Linux or Windows has none. The previous version goes to the Trash from its own place, so **Put Back** returns it there; if the Trash step fails, nothing changes. On macOS, Nod marks files it writes, edits or copies from its workspace as downloaded when macOS allows it, so macOS checks them before they open.
 
 Each action goes through the same [trust check](/trust/approvals/) as an app action, with the real paths after links are followed. Listing, reading and copying to Nod are reads, so they run without asking. Because Nod's workspace can reach the internet, Nod copies a file into it only in work you started with a message, never in schedules or work it starts on its own. Nod asks before it writes, moves or trashes files your words don't cover.
 

@@ -51,64 +51,70 @@ export function LocalFilesCard({
   const folders = state.folders;
 
   return (
-    <>
-      <IntegrationCard
-        id="local-files"
-        name="Local files"
-        logo={<Folder aria-hidden="true" />}
-        description={
-          folders.length
-            ? 'Nod can work with files in these folders on the computer it runs on. Read-only folders can be listed and read, not changed.'
-            : 'Share folders on the computer Nod runs on, such as Downloads, so Nod can tidy them.'
-        }
-        detail={folders.map((folder) => (
-          <div key={folder.path} className="local-files-folder">
-            <Tooltip content={folder.path}>
-              <span>{folder.path}</span>
-            </Tooltip>
-            <label className="local-files-read-only">
-              Read-only
-              <Switch
-                checked={folder.readOnly}
+    <IntegrationCard
+      id="local-files"
+      name="Local files"
+      logo={<Folder aria-hidden="true" />}
+      description={
+        folders.length
+          ? 'Nod can work with files in these folders on the computer it runs on. Read-only folders can be listed and read, not changed.'
+          : 'Share folders on the computer Nod runs on, such as Downloads, so Nod can tidy them.'
+      }
+      detail={
+        (folders.length > 0 || error) && [
+          ...folders.map((folder) => (
+            <div key={folder.path} className="local-files-folder">
+              <Tooltip content={folder.path}>
+                <span>{folder.path}</span>
+              </Tooltip>
+              <label className="local-files-read-only">
+                Read-only
+                <Switch
+                  checked={folder.readOnly}
+                  disabled={busy}
+                  aria-label={`Share ${folder.path} read-only`}
+                  onCheckedChange={(readOnly) => void change('POST', folder.path, readOnly)}
+                />
+              </label>
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label={`Stop sharing ${folder.path}`}
                 disabled={busy}
-                aria-label={`Share ${folder.path} read-only`}
-                onCheckedChange={(readOnly) => void change('POST', folder.path, readOnly)}
-              />
-            </label>
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-label={`Stop sharing ${folder.path}`}
-              disabled={busy}
-              onClick={() => void change('DELETE', folder.path)}
-            >
-              <X size={14} aria-hidden="true" />
-            </Button>
-          </div>
-        ))}
-        actions={
-          <>
-            {!picker && (
-              <Input
-                aria-label="Folder path on the computer Nod runs on"
-                placeholder="/Users/you/Downloads"
-                value={path}
-                onChange={(event) => setPath(event.target.value)}
-              />
-            )}
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busy || (!picker && !path.trim())}
-              onClick={() => void add()}
-            >
-              <Plus size={16} aria-hidden="true" />
-              Add folder
-            </Button>
-          </>
-        }
-      />
-      {error && <Notice onDismiss={() => setError('')}>{error}</Notice>}
-    </>
+                onClick={() => void change('DELETE', folder.path)}
+              >
+                <X size={14} aria-hidden="true" />
+              </Button>
+            </div>
+          )),
+          error && (
+            <Notice key="error" onDismiss={() => setError('')}>
+              {error}
+            </Notice>
+          ),
+        ]
+      }
+      actions={
+        <>
+          {!picker && (
+            <Input
+              aria-label="Folder path on the computer Nod runs on"
+              placeholder="/Users/you/Downloads"
+              value={path}
+              onChange={(event) => setPath(event.target.value)}
+            />
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy || (!picker && !path.trim())}
+            onClick={() => void add()}
+          >
+            <Plus size={16} aria-hidden="true" />
+            Add folder
+          </Button>
+        </>
+      }
+    />
   );
 }

@@ -11,10 +11,12 @@ import {
   mkdtemp,
   open,
   readdir,
+  readlink,
   realpath,
   rename,
   rm,
   rmdir,
+  symlink,
   stat,
   writeFile,
 } from 'node:fs/promises';
@@ -158,6 +160,7 @@ export function localFileRules(
       const anchor = inside(home, real) ? home : volume(real);
       return (
         !anchor ||
+        inside(real, anchor) ||
         inside(real, home) ||
         inside(real, dataRoot) ||
         inside(dataRoot, real) ||
@@ -395,17 +398,31 @@ export function createLocalFiles(
           await rmdir(target).catch(() => undefined);
           throw error;
         }
-        await cp(source, target, {
-          recursive: true,
-          errorOnExist: true,
-          force: false,
-          verbatimSymlinks: true,
-          preserveTimestamps: true,
-        });
+        try {
+          for (const name of await readdir(source))
+            await cp(nodePath.join(source, name), nodePath.join(target, name), {
+              recursive: true,
+              errorOnExist: true,
+              force: false,
+              verbatimSymlinks: true,
+              preserveTimestamps: true,
+            });
+        } catch (copy) {
+          await rm(target, { recursive: true, force: true });
+          throw copy;
+        }
         await rm(source, { recursive: true });
       });
     }
-    await absent(target);
+    if (info.isSymbolicLink()) {
+      await symlink(await readlink(source), target).catch(fail);
+      return rm(source).catch(async (error) => {
+        await rm(target, { force: true });
+        throw error;
+      });
+    }
+    if (process.platform !== 'win32')
+      throw new IntegrationError(`${source} is not a file, folder or link.`);
     await rename(source, target);
   }
 
@@ -424,6 +441,8 @@ export function createLocalFiles(
     roots: LocalFolder[],
     signal?: AbortSignal,
   ) {
+    if (typeof data === 'string' && Buffer.byteLength(data) > writeBytes)
+      throw new IntegrationError('The file text must be at most 1 MB. Nothing was changed.');
     if (previous) await trashReady();
     const folder = nodePath.dirname(path);
     const temporary = nodePath.join(folder, `.nod-${randomUUID()}.tmp`);
@@ -541,6 +560,7 @@ export function createLocalFiles(
   ) {
     const { signal } = context;
     const input = validate(action, args) as Input;
+    signal?.throwIfAborted();
     const roots = await folders();
     const rule = await rules;
     const resolve = resolver(action, roots);
@@ -654,8 +674,6 @@ export function createLocalFiles(
           );
         text = text.slice(0, at) + newText + text.slice(at + oldText.length);
       }
-      if (Buffer.byteLength(text) > writeBytes)
-        throw new IntegrationError('The edited file would be over 1 MB. Nothing was changed.');
       const previousVersion = await replace(path, text, info, roots, signal);
       await quarantine(path);
       return { edited: path, previousVersion };
@@ -664,8 +682,9 @@ export function createLocalFiles(
       const { done, failed } = await each(
         input.moves,
         async ({ from, to }) => {
-          const source = bound(await present(from, roots), from);
+          bound(await present(from, roots), from);
           const moved = await destination(to);
+          const source = bound(await present(from, roots), from);
           await place(source, moved, roots);
           return { from: source, to: moved };
         },
@@ -719,8 +738,13 @@ export function createLocalFiles(
       ...Object.keys(schemas).map((action) => action.toLowerCase()),
       ...shared.map((folder) => nodePath.basename(folder.path).toLowerCase()),
     ]);
-    const terms = query.toLowerCase().split(/[^\p{L}\p{N}_]+/u);
-    if (!terms.some((term) => vocabulary.has(term))) return {};
+    const lowered = query.toLowerCase();
+    const terms = lowered.split(/[^\p{L}\p{N}_]+/u);
+    if (
+      !terms.some((term) => vocabulary.has(term)) &&
+      !shared.some((folder) => lowered.includes(nodePath.basename(folder.path).toLowerCase()))
+    )
+      return {};
     const where = `Only inside the owner's shared folders: ${shared
       .map((folder) => `${folder.path}${folder.readOnly ? ' (read-only)' : ''}`)
       .join(', ')}.`;

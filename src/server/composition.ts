@@ -2080,11 +2080,12 @@ async function initializeApplication(
         const verdict = await trust.check(turn, action, resolved ?? args, options.signal);
         await options.admit?.(verdict.confirm);
         const prepared = resolved ?? (await prepare());
-        const account = verdict.confirm
-          ? (await integrations.list(ownerId, { refresh: false })).find(
-              (item) => item.connectionId === prepared.connectionId,
-            )
-          : undefined;
+        const account =
+          verdict.confirm && typeof prepared.connectionId === 'string'
+            ? (await integrations.list(ownerId, { refresh: false })).find(
+                (item) => item.connectionId === prepared.connectionId,
+              )
+            : undefined;
         const path = account?.accessPaths?.find((item) => item.id === prepared.pathId);
         const result = await approvals.request(turn, action, prepared, {
           allowed: !verdict.confirm,

@@ -579,14 +579,10 @@ test('local file rules match each platform', () => {
     'c:\\users\\ada\\appdata',
     'C:\\Users\\Ada\\Projects\\.secrets',
     '\\\\server\\share\\docs',
+    'D:\\',
   ])
     assert.equal(windows.privateFolder(path), true, path);
-  for (const path of [
-    'C:\\Users\\Ada\\Downloads',
-    'c:\\USERS\\ada\\Documents\\Tax',
-    'D:\\',
-    'E:\\Photos',
-  ])
+  for (const path of ['C:\\Users\\Ada\\Downloads', 'c:\\USERS\\ada\\Documents\\Tax', 'E:\\Photos'])
     assert.equal(windows.privateFolder(path), false, path);
   assert.equal(windows.hiddenBelow('D:\\Photos', 'D:\\Photos\\Thumbs.db'), true);
   assert.equal(windows.executable('C:\\Users\\Ada\\Downloads\\setup.EXE', 0o644), true);
@@ -604,9 +600,10 @@ test('local file rules match each platform', () => {
     '/etc',
     '/Volumes',
     '/Users/ada/Projects/.git',
+    '/Volumes/Stick',
   ])
     assert.equal(mac.privateFolder(path), true, path);
-  for (const path of ['/Users/ada/Downloads', '/Volumes/Stick', '/Volumes/Stick/Photos'])
+  for (const path of ['/Users/ada/Downloads', '/Volumes/Stick/Photos'])
     assert.equal(mac.privateFolder(path), false, path);
   assert.equal(mac.privateFolder('/Volumes/Stick/.Spotlight-V100'), true);
   const linux = localFileRules('linux', '/home/ada', '/home/ada/nod/.local');
@@ -657,7 +654,7 @@ test('local files stay inside the shared folders and never overwrite', async () 
       /outside the folders/,
     );
     assert.deepEqual(
-      await files.prepare('LOCAL_FILES_READ', { path: join(shared, 'sorted', '..', 'a.txt') }),
+      await files.prepare('LOCAL_FILES_READ', { path: `${shared}/sorted/../a.txt` }),
       { path: join(shared, 'a.txt') },
     );
     for (const path of [outside, join(shared, '..', 'outside'), join(shared, 'escape')])
@@ -768,6 +765,35 @@ test('local files stay inside the shared folders and never overwrite', async () 
       ),
       /exists/,
     );
+    await assert.rejects(
+      files.execute(
+        'LOCAL_FILES_WRITE',
+        { path: join(shared, 'stopped.txt'), text: 'x' },
+        { signal: AbortSignal.abort() },
+      ),
+    );
+    assert.equal(existsSync(join(shared, 'stopped.txt')), false);
+    await assert.rejects(
+      files.execute('LOCAL_FILES_WRITE', {
+        path: join(shared, 'big.txt'),
+        text: 'é'.repeat(600_000),
+      }),
+      /at most 1 MB/,
+    );
+    assert.ok(
+      'LOCAL_FILES_LIST' in
+        files.tools(
+          [{ path: join(base, 'Client Archive'), readOnly: false }],
+          'tidy the client archive',
+        ),
+    );
+    await writeFile(join(shared, 'taken.txt'), 'taken');
+    await symlink(join(shared, 'a-target.txt'), join(shared, 'pointer'));
+    const linkMove = (await files.execute('LOCAL_FILES_MOVE', {
+      moves: [{ from: join(shared, 'pointer'), to: join(shared, 'taken.txt') }],
+    })) as { failed: Array<{ error: string }> };
+    assert.match(linkMove.failed[0]!.error, /already exists/);
+    assert.equal(await readFile(join(shared, 'taken.txt'), 'utf8'), 'taken');
     for (const path of [join(shared, 'run.sh'), join(shared, 'sorted', 'tool.sh')])
       await assert.rejects(
         files.execute('LOCAL_FILES_WRITE', { path, text: 'echo hi' }),

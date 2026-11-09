@@ -1558,6 +1558,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
   ) {
     if (isLocalFilesAction(action)) {
       assertOwner(ownerId);
+      signal?.throwIfAborted();
       const localFiles = options.localFiles;
       if (!localFiles) throw new IntegrationError('Local files are unavailable.', 503);
       if (action === 'LOCAL_FILES_IMPORT') await assertOwnerRequested(turn);
