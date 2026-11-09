@@ -76,6 +76,7 @@ import {
 } from '../providers/discovered/remote.ts';
 import { createDiscoveredOAuth } from '../providers/discovered/oauth.ts';
 import { createDiscoveredConnections } from './discovered-connections.ts';
+import { createLocalFiles, isLocalFilesAction } from './local-files.ts';
 import { createAppGrantVault } from './vault-app-grants.ts';
 import { createDockerWorkspace } from '../providers/docker/index.ts';
 import { createEnvironmentKeyStore } from '../providers/environment/key-store.ts';
@@ -1022,7 +1023,9 @@ async function initializeApplication(
   let browserConnections!: Awaited<ReturnType<typeof createBrowserConnections>>;
   const previews = adapters.linkPreviews;
   const icon = previews ? cachedIcons((origin) => previews.icon(origin)) : undefined;
+  const localFiles = createLocalFiles(pool, ownerId, { dataRoot });
   const integrations = await createIntegrations(pool, {
+    localFiles,
     mailCheck,
     paused: async () => (await speechPreferences.get()).proactivePaused,
     analytics: captureAnalytics,
@@ -2044,13 +2047,18 @@ async function initializeApplication(
           const result = await integrations.execute(ownerId, action, args, turn, options.signal);
           return result;
         }
-        const verdict = await trust.check(turn, action, args, options.signal);
+        const resolved = isLocalFilesAction(action)
+          ? await integrations.prepare(ownerId, action, args)
+          : undefined;
+        const verdict = await trust.check(turn, action, resolved ?? args, options.signal);
         await options.admit?.(verdict.confirm);
-        const prepared = hasWorkspaceFiles(args)
-          ? await withTurnLock(turn.turnId, (client) =>
-              integrations.prepare(ownerId, action, args, turn, options.signal, true, client),
-            )
-          : await integrations.prepare(ownerId, action, args);
+        const prepared = resolved
+          ? resolved
+          : hasWorkspaceFiles(args)
+            ? await withTurnLock(turn.turnId, (client) =>
+                integrations.prepare(ownerId, action, args, turn, options.signal, true, client),
+              )
+            : await integrations.prepare(ownerId, action, args);
         const account = verdict.confirm
           ? (await integrations.list(ownerId, { refresh: false })).find(
               (item) => item.connectionId === prepared.connectionId,
@@ -2188,6 +2196,7 @@ async function initializeApplication(
   browserConnections.registerRoutes(app);
   adapters.integrationBrowser?.registerRoutes(app);
   integrations.registerRoutes(app);
+  localFiles.registerRoutes(app);
   personal.registerRoutes(app);
   onboardingSuggestions.registerRoutes(app);
   onboardingProfile.registerRoutes(app);

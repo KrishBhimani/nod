@@ -14,6 +14,11 @@ export function actionTitle(action: string) {
   if (action === 'CONNECTED_HTTP') return { app: '', label: 'Call a connected API' };
   if (action === 'CONNECTED_MCP_CALL') return { app: '', label: 'Run a tool on a connected app' };
   if (action === 'CONNECTED_CLI') return { app: '', label: 'Run a connected command line tool' };
+  if (action.startsWith('LOCAL_FILES_'))
+    return {
+      app: 'Local files',
+      label: action.slice('LOCAL_FILES_'.length).replaceAll('_', ' ').toLowerCase(),
+    };
   const [app, ...words] = action.split('_');
   return {
     app: apps[app!] ?? `${app![0]}${app!.slice(1).toLowerCase()}`,

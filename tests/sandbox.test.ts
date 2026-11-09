@@ -16,7 +16,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import type { WorkspaceSession } from '../src/ports/computer.ts';
@@ -37,6 +37,8 @@ import {
 } from '../src/providers/docker/index.ts';
 import { runProcess, serviceEnvironment } from '../src/providers/process.ts';
 import { prepareLocalDirectories } from '../scripts/local-database.ts';
+import { createLocalFiles } from '../src/server/local-files.ts';
+import type { Pool } from 'pg';
 
 test('local startup protects data through its private root and preserves workspace mount traversal', async () => {
   const parent = await mkdtemp(join(tmpdir(), 'nod-local-directories-'));
@@ -555,5 +557,130 @@ test('self-hosted runtime limits Docker access to unprivileged execution in its 
       new Promise<void>((resolve) => engine.close(() => resolve())),
     ]);
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('local files stay inside the shared folders and never overwrite', async () => {
+  const base = await realpath(await mkdtemp(join(tmpdir(), 'nod-local-files-')));
+  const shared = join(base, 'shared');
+  const outside = join(base, 'outside');
+  const trash = join(base, 'trash');
+  await mkdir(join(shared, 'sorted'), { recursive: true });
+  await mkdir(outside);
+  await writeFile(join(shared, 'a.txt'), 'a');
+  await writeFile(join(shared, 'sorted', 'a.txt'), 'kept');
+  await writeFile(join(outside, 'secret.txt'), 'secret');
+  await symlink(outside, join(shared, 'escape'));
+  const data = join(base, 'data');
+  await mkdir(join(data, 'keys'), { recursive: true });
+  let folders = [shared];
+  const pool = {
+    query: async () => ({ rows: [{ local_folders: folders }] }),
+  } as unknown as Pool;
+  const files = createLocalFiles(pool, 'owner', { dataRoot: data, home: base, trashFolder: trash });
+  try {
+    for (const path of [base, dirname(base), data, join(data, 'keys'), '/etc', tmpdir()])
+      await assert.rejects(files.add(path), /Choose a specific folder/);
+    await assert.rejects(
+      files.prepare('LOCAL_FILES_TRASH', {
+        paths: [join(shared, 'a.txt'), join(outside, 'secret.txt')],
+      }),
+      /outside the folders/,
+    );
+    assert.deepEqual(
+      await files.prepare('LOCAL_FILES_READ', { path: join(shared, 'sorted', '..', 'a.txt') }),
+      { path: join(shared, 'a.txt') },
+    );
+    for (const path of [outside, join(shared, '..', 'outside'), join(shared, 'escape')])
+      await assert.rejects(files.execute('LOCAL_FILES_LIST', { path }), /outside the folders/);
+    await assert.rejects(
+      files.execute('LOCAL_FILES_READ', { path: join(shared, 'escape', 'secret.txt') }),
+      /outside the folders/,
+    );
+    const moved = await files.execute('LOCAL_FILES_MOVE', {
+      moves: [
+        { from: join(shared, 'a.txt'), to: join(shared, 'sorted', 'a.txt') },
+        { from: join(shared, 'a.txt'), to: join(shared, 'escape', 'a.txt') },
+        { from: join(outside, 'secret.txt'), to: join(shared, 'secret.txt') },
+        { from: shared, to: join(shared, 'sorted', 'inner') },
+      ],
+    });
+    assert.deepEqual((moved as { moved: unknown[] }).moved, []);
+    assert.equal((moved as { failed: unknown[] }).failed.length, 4);
+    assert.equal(await readFile(join(shared, 'sorted', 'a.txt'), 'utf8'), 'kept');
+    assert.equal(await readFile(join(outside, 'secret.txt'), 'utf8'), 'secret');
+    const trashed = await files.execute('LOCAL_FILES_TRASH', {
+      paths: [join(shared, 'escape'), join(outside, 'secret.txt')],
+    });
+    assert.equal((trashed as { failed: unknown[] }).failed.length, 1);
+    assert.ok(existsSync(join(outside, 'secret.txt')));
+    assert.ok(!existsSync(join(shared, 'escape')));
+    await symlink(join(outside, 'secret.txt'), join(shared, 'link.txt'));
+    for (const path of [join(shared, 'link.txt'), join(shared, '..', 'outside', 'new.txt')])
+      await assert.rejects(
+        files.execute('LOCAL_FILES_WRITE', { path, text: 'x', overwrite: true }),
+      );
+    await assert.rejects(
+      files.execute('LOCAL_FILES_EDIT', {
+        path: join(shared, 'link.txt'),
+        edits: [{ oldText: 'secret', newText: 'x' }],
+      }),
+    );
+    assert.equal(await readFile(join(outside, 'secret.txt'), 'utf8'), 'secret');
+    const note = join(shared, 'note.txt');
+    await files.execute('LOCAL_FILES_WRITE', { path: note, text: 'one two two' });
+    await assert.rejects(
+      files.execute('LOCAL_FILES_WRITE', { path: note, text: 'lost' }),
+      /exists/,
+    );
+    await assert.rejects(
+      files.execute('LOCAL_FILES_EDIT', { path: note, edits: [{ oldText: 'two', newText: '2' }] }),
+      /exactly once/,
+    );
+    await files.execute('LOCAL_FILES_EDIT', {
+      path: note,
+      edits: [{ oldText: 'one', newText: '1' }],
+    });
+    assert.equal(await readFile(note, 'utf8'), '1 two two');
+    assert.equal(await readFile(join(trash, 'note.txt'), 'utf8'), 'one two two');
+    const latin = join(shared, 'latin.txt');
+    await writeFile(latin, Buffer.from([0x63, 0x61, 0x66, 0xe9]));
+    await assert.rejects(
+      files.execute('LOCAL_FILES_EDIT', { path: latin, edits: [{ oldText: 'caf', newText: 'x' }] }),
+      /UTF-8/,
+    );
+    assert.deepEqual([...(await readFile(latin))], [0x63, 0x61, 0x66, 0xe9]);
+    await mkdir(join(shared, 'app', '.git', 'hooks'), { recursive: true });
+    await writeFile(join(shared, '.env'), 'TOKEN=x');
+    const hook = join(shared, 'app', '.git', 'hooks', 'pre-commit');
+    await assert.rejects(
+      files.execute('LOCAL_FILES_READ', { path: join(shared, '.env') }),
+      /hidden/,
+    );
+    await assert.rejects(files.execute('LOCAL_FILES_WRITE', { path: hook, text: 'x' }), /hidden/);
+    const hidden = (await files.execute('LOCAL_FILES_MOVE', {
+      moves: [{ from: note, to: join(shared, '.note') }],
+    })) as { failed: Array<{ error: string }> };
+    assert.match(hidden.failed[0]!.error, /hidden/);
+    const listed = (await files.execute('LOCAL_FILES_LIST', { path: shared })) as {
+      entries: Array<{ name: string }>;
+    };
+    assert.ok(!listed.entries.some((item) => item.name.startsWith('.')));
+    const script = join(shared, 'deploy.sh');
+    await writeFile(script, 'echo ok', { mode: 0o755 });
+    await assert.rejects(
+      files.execute('LOCAL_FILES_EDIT', { path: script, edits: [{ oldText: 'ok', newText: 'x' }] }),
+      /executable/,
+    );
+    assert.equal(await readFile(script, 'utf8'), 'echo ok');
+    await symlink(outside, join(shared, 'away'));
+    await assert.rejects(
+      files.execute('LOCAL_FILES_READ', { path: join(shared, 'away', 'secret.txt') }),
+      (error: Error) => !error.message.includes(outside),
+    );
+    folders = [];
+    await assert.rejects(files.execute('LOCAL_FILES_READ', { path: note }), /outside the folders/);
+  } finally {
+    await rm(base, { recursive: true, force: true });
   }
 });

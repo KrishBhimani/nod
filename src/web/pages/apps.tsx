@@ -9,6 +9,7 @@ import { AppConnectionDialog, type AppSignIn } from '../components/app-connectio
 import { AppDiscoveryDialog } from '../components/app-discovery-dialog';
 import { ManualMcpDialog } from '../components/manual-mcp-dialog';
 import { IntegrationCard } from '../components/integration-card';
+import { LocalFilesCard } from '../components/local-files-card';
 import { SearchPicker } from '../components/search-picker';
 import { Tabs } from '../components/tabs';
 import { Tooltip } from '../components/tooltip';
@@ -731,6 +732,11 @@ export function Apps({
                   Retry
                 </Button>
               </Notice>
+            )}
+            {view === 'all' && !hasFilters && (
+              <section className="apps-group" aria-label="Local files">
+                <LocalFilesCard />
+              </section>
             )}
             {connected.length > 0 && (
               <section className="apps-group" aria-label="Connected apps">

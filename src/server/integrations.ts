@@ -58,6 +58,7 @@ import {
   type EmailCodeRequest,
 } from './email-code.ts';
 import { logFailure } from './failure-log.ts';
+import { isLocalFilesAction, type LocalFiles } from './local-files.ts';
 
 const unverifiedAccount =
   "Nod can't confirm this is the same account, so it can't reconnect it in place. Connect the app again as a new connection; the old one stays in Apps until you remove it.";
@@ -170,6 +171,7 @@ type IntegrationOptions = {
   callbackReturnTo?: 'window';
   refresh?(): void;
   discovered?: Awaited<ReturnType<typeof createDiscoveredConnections>>;
+  localFiles?: LocalFiles;
   browserAccounts?: (client?: PoolClient) => Promise<VaultLoginEntry[]>;
   browserConnections?: (client?: PoolClient) => Promise<Connection[]>;
   icon?: (origin: string) => Promise<SiteIcon | null>;
@@ -765,6 +767,25 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
   }
 
   async function connectedApps(ownerId = configuredOwner, withAccount = false) {
+    const [folders, connected] = await Promise.all([
+      ownerId === configuredOwner ? options.localFiles?.folders() : undefined,
+      apps(ownerId, withAccount),
+    ]);
+    const local: Array<ConnectedApp & { accountId?: string }> = folders?.length
+      ? [
+          {
+            slug: 'local_files',
+            name: 'Local files',
+            status: 'connected',
+            triggersEnabled: false,
+            access: ['api'],
+          },
+        ]
+      : [];
+    return [...local, ...connected];
+  }
+
+  async function apps(ownerId: string, withAccount: boolean) {
     return (await list(ownerId, { refresh: false }))
       .filter((connection) => connection.status === 'connected' && !connection.savedLogin)
       .map((connection): ConnectedApp & { accountId?: string } => ({
@@ -1493,6 +1514,11 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     signal?: AbortSignal,
     expectedBinding?: string,
   ) {
+    if (isLocalFilesAction(action)) {
+      assertOwner(ownerId);
+      if (!options.localFiles) throw new IntegrationError('Local files are unavailable.', 503);
+      return options.localFiles.execute(action, args, signal);
+    }
     if (
       action === 'CONNECTED_HTTP' ||
       action === 'CONNECTED_MCP_CALL' ||
@@ -1572,7 +1598,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         };
       const { query, connectionId } = input.data;
       try {
-        const inventory = await connectedApps(ownerId);
+        const inventory = await apps(ownerId, false);
         if (
           connectionId &&
           !inventory.some((connection) => connection.connectionId === connectionId)
@@ -1628,7 +1654,13 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
             accountEmail,
           }));
         const discovered = await options.discovered?.search(query, connectionId, signal);
-        if (!searched && !discovered?.accounts.length && (failed || !options.discovered))
+        const localFolders = (await options.localFiles?.folders()) ?? [];
+        if (
+          !searched &&
+          !discovered?.accounts.length &&
+          !localFolders.length &&
+          (failed || !options.discovered)
+        )
           throw failed ?? new Error('No app tool catalog is available.');
         if (discovered?.accounts.length) {
           Object.assign(tools, {
@@ -1662,6 +1694,15 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
             },
           });
         }
+        if (
+          !connectionId &&
+          localFolders.length &&
+          (/\b(local|files?|folders?)\b|LOCAL_FILES/i.test(query) ||
+            localFolders.some((folder) =>
+              query.toLowerCase().includes(basename(folder).toLowerCase()),
+            ))
+        )
+          Object.assign(tools, options.localFiles?.tools(localFolders));
         const catalog = Object.entries(search.tools);
         const requested = new Set(query.toLowerCase().split(/[\s,]+/));
         const exact = catalog.filter(([name]) => requested.has(name.toLowerCase()));
@@ -1727,6 +1768,10 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
   ) {
     assertOwner(ownerId);
     signal?.throwIfAborted();
+    if (isLocalFilesAction(action)) {
+      if (!options.localFiles) throw new IntegrationError('Local files are unavailable.', 503);
+      return (await options.localFiles.prepare(action, args)) as Record<string, unknown>;
+    }
     if (['CONNECTED_HTTP', 'CONNECTED_MCP_CALL', 'CONNECTED_CLI'].includes(action)) {
       if (!options.discovered)
         throw new IntegrationError('Discovered connections are unavailable.', 503);

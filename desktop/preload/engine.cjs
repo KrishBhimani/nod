@@ -62,6 +62,7 @@ contextBridge.exposeInMainWorld('nodDesktop', {
     return () => ipcRenderer.removeListener('nod:updates:status', receive);
   },
   openSettings: (section = 'general') => invoke('nod:settings:open', section),
+  chooseFolder: () => invoke('nod:folder:choose'),
   onNavigate: (listener) => {
     if (typeof listener !== 'function') throw new TypeError('A navigation listener is required.');
     navigationListeners.add(listener);

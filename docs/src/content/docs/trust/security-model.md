@@ -67,6 +67,7 @@ Only the server holds keys and decides what runs. The model, the workspace and a
 
 - The workspace runs as an unprivileged user with no host home folder, Docker socket, provider keys, access key or browser profiles.
 - A connected command-line tool's token reaches only a sealed install of its declared source, run as its own user with a clean environment, apart from other tools.
+- [Local files](/connect/local-files/) run in the server process, only inside folders the owner shared, after links are followed. Only folders inside the home folder, or on an external drive on macOS, can be shared, never the home folder itself, Library, hidden folders in home or any folder that holds or sits inside Nod's own data. Inside a shared folder, Nod never reaches hidden files and never changes executable files. Each action goes through the trust check, and nothing is deleted outright.
 - Every query and route is scoped to one owner.
 - File previews never run a file in Nod's own page. HTML runs in a sandboxed frame inside a second sandboxed frame. The outer frame blocks navigation requests from the inner frame before they leave. Its content policy also blocks external resources. It runs Nod's handlers even when scripts in the file are disabled. Interactive HTML can run local scripts, but forms and pop-ups are blocked. When file scripts are disabled, links you select can open a new window outside the preview. The preview closes after a blocked navigation. Other formats are read as data. Files that can run code get no local preview before they upload.
 
@@ -117,6 +118,7 @@ The team aims to acknowledge your report within 3 business days and to share a f
 | Vault and one use           | [`vault-access.ts`](https://github.com/n8n-io/nod/blob/main/src/server/vault-access.ts), [`vault-use.ts`](https://github.com/n8n-io/nod/blob/main/src/server/vault-use.ts)                                |
 | Browser entry and proxy     | [`agent-browser`](https://github.com/n8n-io/nod/tree/main/src/providers/agent-browser)                                                                                                                    |
 | Client access               | [`access.ts`](https://github.com/n8n-io/nod/blob/main/src/server/access.ts), [`network.ts`](https://github.com/n8n-io/nod/blob/main/src/server/network.ts)                                                |
+| Local files                 | [`local-files.ts`](https://github.com/n8n-io/nod/blob/main/src/server/local-files.ts)                                                                                                                     |
 | File previews               | [`attachment-frame.tsx`](https://github.com/n8n-io/nod/blob/main/src/web/components/attachment-frame.tsx), [`attachment-kind.ts`](https://github.com/n8n-io/nod/blob/main/src/web/lib/attachment-kind.ts) |
 
 ## Related resources
