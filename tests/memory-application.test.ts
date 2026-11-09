@@ -1997,7 +1997,7 @@ test(
   },
 );
 
-test('onboarding answers update memory and profile analytics while research contact requires consent', async () => {
+test('onboarding answers update memory and profile analytics while the updates email requires consent', async () => {
   const memory = createMemoryService({
     pool: {
       query: async (sql: string) => ({
@@ -2015,7 +2015,7 @@ test('onboarding answers update memory and profile analytics while research cont
   let accepted = true;
   let disableDuringSubmit = false;
   let disableProfileDuringSubmit = false;
-  const researchContact = {
+  const updatesEmail = {
     enabled: () => enabled,
     submit: async (email: string) => {
       sent.push(email);
@@ -2034,7 +2034,7 @@ test('onboarding answers update memory and profile analytics while research cont
     },
   };
   const app = Fastify();
-  createOnboardingProfile({ memory, profileAnalytics, researchContact }).registerRoutes(app);
+  createOnboardingProfile({ memory, profileAnalytics, updatesEmail }).registerRoutes(app);
   const unconfigured = Fastify();
   createOnboardingProfile({ memory }).registerRoutes(unconfigured);
   const notes = async () =>
@@ -2212,7 +2212,7 @@ test('onboarding answers update memory and profile analytics while research cont
     (
       await unconfigured.inject({
         method: 'POST',
-        url: '/api/onboarding/research-contact',
+        url: '/api/onboarding/updates-email',
         payload: { email: 'owner@example.test', consent: true },
       })
     ).statusCode,
@@ -2226,7 +2226,7 @@ test('onboarding answers update memory and profile analytics while research cont
   ]) {
     const rejected = await app.inject({
       method: 'POST',
-      url: '/api/onboarding/research-contact',
+      url: '/api/onboarding/updates-email',
       payload,
     });
     assert.notEqual(rejected.statusCode, 200);
@@ -2235,7 +2235,7 @@ test('onboarding answers update memory and profile analytics while research cont
   enabled = false;
   const optedOut = await app.inject({
     method: 'POST',
-    url: '/api/onboarding/research-contact',
+    url: '/api/onboarding/updates-email',
     payload: { email: 'owner@example.test', consent: true },
   });
   assert.equal(optedOut.statusCode, 403);
@@ -2243,7 +2243,7 @@ test('onboarding answers update memory and profile analytics while research cont
   enabled = true;
   const subscribed = await app.inject({
     method: 'POST',
-    url: '/api/onboarding/research-contact',
+    url: '/api/onboarding/updates-email',
     payload: { email: 'owner@example.test', consent: true },
   });
   assert.equal(subscribed.statusCode, 200);
@@ -2252,7 +2252,7 @@ test('onboarding answers update memory and profile analytics while research cont
   disableDuringSubmit = true;
   const revokedDuringSubmit = await app.inject({
     method: 'POST',
-    url: '/api/onboarding/research-contact',
+    url: '/api/onboarding/updates-email',
     payload: { email: 'owner@example.test', consent: true },
   });
   assert.equal(revokedDuringSubmit.statusCode, 409);
@@ -2263,7 +2263,7 @@ test('onboarding answers update memory and profile analytics while research cont
   accepted = false;
   const failed = await app.inject({
     method: 'POST',
-    url: '/api/onboarding/research-contact',
+    url: '/api/onboarding/updates-email',
     payload: { email: 'owner@example.test', consent: true },
   });
   assert.equal(failed.statusCode, 502);
@@ -2272,7 +2272,7 @@ test('onboarding answers update memory and profile analytics while research cont
     (
       await app.inject({
         method: 'POST',
-        url: '/api/onboarding/research-contact',
+        url: '/api/onboarding/updates-email',
         payload: { email: 'not an address', consent: true },
       })
     ).statusCode,

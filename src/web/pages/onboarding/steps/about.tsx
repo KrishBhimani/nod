@@ -457,20 +457,20 @@ export function About({ arrived, quiet, onNext, onBack, usageShared }: StepProps
                   Can you tell me a bit about yourself? The more I know about you, the more useful I
                   can be from day one.
                 </Bubble>,
-                ...(usageShared
-                  ? [
-                      <Bubble>
-                        With Share usage data on, the Nod team can see the fixed choices you pick
-                        here in analytics. What you type in Something else isn’t included.
-                      </Bubble>,
-                    ]
-                  : []),
               ]
             : []),
           <Bubble>
             <strong>{prompts[question]}</strong>
             {(question === 'roles' || question === 'jobs') && ' Pick as many as you like.'}
           </Bubble>,
+          ...(first && usageShared
+            ? [
+                <Bubble>
+                  Your answers also reach the Nod team as usage data to help improve the onboarding
+                  experience. You can turn that off any time in Settings.
+                </Bubble>,
+              ]
+            : []),
         ]}
       />,
     );
