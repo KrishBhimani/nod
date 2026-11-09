@@ -524,9 +524,10 @@ export function Apps({
     button?.focus({ preventScroll: true });
   }
 
-  function cards(items: typeof groups, catalogCards = false) {
+  function cards(items: typeof groups, catalogCards = false, leading?: React.ReactNode) {
     return (
       <div className={catalogCards ? 'app-grid app-catalog-grid' : 'app-grid'}>
+        {leading}
         {items.map(({ key, service, accounts }) => {
           const addAccount =
             accounts.find(
@@ -754,15 +755,13 @@ export function Apps({
             {(connected.length > 0 || localConnected) && (
               <section className="apps-group" aria-label="Connected apps">
                 {view === 'all' && <h2 id="apps-connected">Connected</h2>}
-                {localConnected && localCard}
-                {cards(connected)}
+                {cards(connected, false, localConnected && localCard)}
               </section>
             )}
             {view === 'all' && (available.length > 0 || localAvailable) && (
               <section className="apps-group" aria-labelledby="apps-available">
                 <h2 id="apps-available">More</h2>
-                {localAvailable && localCard}
-                {cards(available.slice(0, visibleCount), true)}
+                {cards(available.slice(0, visibleCount), true, localAvailable && localCard)}
                 {available.length > visibleCount && (
                   <div className="app-catalog-end" ref={catalogEnd} aria-hidden="true" />
                 )}
