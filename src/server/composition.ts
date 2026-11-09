@@ -43,6 +43,8 @@ import { privateEmailResult } from './integration-result.ts';
 import { createMailCheck } from './mail-check.ts';
 import type { CredentialKeyStore } from '../ports/key-store.ts';
 import type { PasswordManager } from '../ports/password-manager.ts';
+import type { Trash } from '../ports/trash.ts';
+import { commandTrash, desktopTrash } from '../providers/trash.ts';
 import type { MemoryCurator } from '../ports/memory-curator.ts';
 import type { DecisionModel, ModelReview } from '../ports/decisions.ts';
 import { createDecisionModel, createOpenRouterDecisionCatalog } from '../providers/decisions.ts';
@@ -133,7 +135,14 @@ import { createChannels } from './channels.ts';
 import { createChannelSettings, managedChannelEnvironment } from './channel-settings.ts';
 import { createChannelMedia } from './channel-media.ts';
 import { createChannelSessionStore } from './channel-session.ts';
-import { configuration, dataRoot, desktopMode, ownerId, publicOrigin } from './config.ts';
+import {
+  authToken,
+  configuration,
+  dataRoot,
+  desktopMode,
+  ownerId,
+  publicOrigin,
+} from './config.ts';
 import { createAccountStore } from './account-store.ts';
 import { createModelTraces, type ModelTraceGate } from './traces.ts';
 import { runtimeAccount } from './account-profile.ts';
@@ -205,6 +214,7 @@ export interface ApplicationAdapters {
   observations?: ObservationProvider[];
   keyStore: CredentialKeyStore;
   passwordManager?: PasswordManager;
+  trash?: Trash;
   memoryCurator?: MemoryCurator;
   classificationCurator?: MemoryCurator;
   imageCurator?: MemoryCurator;
@@ -467,6 +477,11 @@ export function createDefaultAdapters(
     passwordManager: createOnePassword({
       open: desktopMode ? desktopOnePassword() : forkedOnePassword(env.NOD_APP_VERSION || 'source'),
     }),
+    trash: desktopMode
+      ? desktopTrash()
+      : process.platform === 'darwin'
+        ? commandTrash()
+        : undefined,
     workspace: createDockerWorkspace({
       container: env.WORKSPACE_CONTAINER || 'nod-workspace',
       workspaceRoot: join(dataRoot, 'workspaces'),
@@ -1023,7 +1038,12 @@ async function initializeApplication(
   let browserConnections!: Awaited<ReturnType<typeof createBrowserConnections>>;
   const previews = adapters.linkPreviews;
   const icon = previews ? cachedIcons((origin) => previews.icon(origin)) : undefined;
-  const localFiles = createLocalFiles(pool, ownerId, { dataRoot });
+  const localFiles = createLocalFiles(pool, ownerId, {
+    dataRoot,
+    trash: adapters.trash,
+    available: !authToken,
+    analytics: captureAnalytics,
+  });
   const integrations = await createIntegrations(pool, {
     localFiles,
     mailCheck,
@@ -2047,18 +2067,16 @@ async function initializeApplication(
           const result = await integrations.execute(ownerId, action, args, turn, options.signal);
           return result;
         }
-        const resolved = isLocalFilesAction(action)
-          ? await integrations.prepare(ownerId, action, args)
-          : undefined;
-        const verdict = await trust.check(turn, action, resolved ?? args, options.signal);
-        await options.admit?.(verdict.confirm);
-        const prepared = resolved
-          ? resolved
-          : hasWorkspaceFiles(args)
-            ? await withTurnLock(turn.turnId, (client) =>
+        const prepare = () =>
+          hasWorkspaceFiles(args)
+            ? withTurnLock(turn.turnId, (client) =>
                 integrations.prepare(ownerId, action, args, turn, options.signal, true, client),
               )
-            : await integrations.prepare(ownerId, action, args);
+            : integrations.prepare(ownerId, action, args);
+        const resolved = isLocalFilesAction(action) ? await prepare() : undefined;
+        const verdict = await trust.check(turn, action, resolved ?? args, options.signal);
+        await options.admit?.(verdict.confirm);
+        const prepared = resolved ?? (await prepare());
         const account = verdict.confirm
           ? (await integrations.list(ownerId, { refresh: false })).find(
               (item) => item.connectionId === prepared.connectionId,

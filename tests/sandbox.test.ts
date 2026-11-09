@@ -10,13 +10,14 @@ import {
   mkdtemp,
   readFile,
   realpath,
+  rename,
   rm,
   symlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import type { WorkspaceSession } from '../src/ports/computer.ts';
@@ -37,7 +38,7 @@ import {
 } from '../src/providers/docker/index.ts';
 import { runProcess, serviceEnvironment } from '../src/providers/process.ts';
 import { prepareLocalDirectories } from '../scripts/local-database.ts';
-import { createLocalFiles } from '../src/server/local-files.ts';
+import { createLocalFiles, localFileRules } from '../src/server/local-files.ts';
 import type { Pool } from 'pg';
 
 test('local startup protects data through its private root and preserves workspace mount traversal', async () => {
@@ -560,6 +561,59 @@ test('self-hosted runtime limits Docker access to unprivileged execution in its 
   }
 });
 
+test('local file rules match each platform', () => {
+  const windows = localFileRules(
+    'win32',
+    'C:\\Users\\Ada',
+    'C:\\Users\\Ada\\AppData\\Roaming\\nod',
+    'C:',
+  );
+  for (const path of [
+    'C:\\',
+    'C:\\Windows\\System32',
+    'C:\\Program Files',
+    'C:\\Users\\Ada',
+    'C:\\Users',
+    'C:\\Users\\Ada\\AppData\\Local\\Temp',
+    'c:\\users\\ada\\appdata',
+    'C:\\Users\\Ada\\Projects\\.secrets',
+    '\\\\server\\share\\docs',
+  ])
+    assert.equal(windows.privateFolder(path), true, path);
+  for (const path of [
+    'C:\\Users\\Ada\\Downloads',
+    'c:\\USERS\\ada\\Documents\\Tax',
+    'D:\\',
+    'E:\\Photos',
+  ])
+    assert.equal(windows.privateFolder(path), false, path);
+  assert.equal(windows.hiddenBelow('D:\\Photos', 'D:\\Photos\\Thumbs.db'), true);
+  assert.equal(windows.executable('C:\\Users\\Ada\\Downloads\\setup.EXE', 0o644), true);
+  assert.equal(windows.executable('C:\\Users\\Ada\\Downloads\\notes.txt', 0o777), false);
+  assert.equal(
+    windows.inside('C:\\Users\\Ada\\Downloads', 'c:\\users\\ada\\downloads\\a.pdf'),
+    true,
+  );
+  const mac = localFileRules('darwin', '/Users/ada', '/Users/ada/Library/Application Support/nod');
+  for (const path of [
+    '/',
+    '/Users',
+    '/Users/ada',
+    '/Users/ada/Library',
+    '/etc',
+    '/Volumes',
+    '/Users/ada/Projects/.git',
+  ])
+    assert.equal(mac.privateFolder(path), true, path);
+  for (const path of ['/Users/ada/Downloads', '/Volumes/Stick', '/Volumes/Stick/Photos'])
+    assert.equal(mac.privateFolder(path), false, path);
+  assert.equal(mac.privateFolder('/Volumes/Stick/.Spotlight-V100'), true);
+  const linux = localFileRules('linux', '/home/ada', '/home/ada/nod/.local');
+  assert.equal(linux.privateFolder('/home/ada/Downloads'), false);
+  assert.equal(linux.privateFolder('/media/ada/Stick'), true);
+  assert.equal(linux.privateFolder('/home/ada/nod'), true);
+});
+
 test('local files stay inside the shared folders and never overwrite', async () => {
   const base = await realpath(await mkdtemp(join(tmpdir(), 'nod-local-files-')));
   const shared = join(base, 'shared');
@@ -574,10 +628,23 @@ test('local files stay inside the shared folders and never overwrite', async () 
   const data = join(base, 'data');
   await mkdir(join(data, 'keys'), { recursive: true });
   let folders = [shared];
+  let readOnly: string[] = [];
   const pool = {
-    query: async () => ({ rows: [{ local_folders: folders }] }),
+    query: async () => ({
+      rows: [{ local_folders: folders, local_folders_read_only: readOnly }],
+    }),
   } as unknown as Pool;
-  const files = createLocalFiles(pool, 'owner', { dataRoot: data, home: base, trashFolder: trash });
+  const files = createLocalFiles(pool, 'owner', {
+    dataRoot: data,
+    home: base,
+    trash: {
+      ready: async () => true,
+      put: async (path) => {
+        await mkdir(trash, { recursive: true });
+        await rename(path, join(trash, basename(path)));
+      },
+    },
+  });
   try {
     for (const path of [base, dirname(base), data, join(data, 'keys'), '/etc', tmpdir()])
       await assert.rejects(files.add(path), /Choose a specific folder/);
@@ -678,6 +745,40 @@ test('local files stay inside the shared folders and never overwrite', async () 
       files.execute('LOCAL_FILES_READ', { path: join(shared, 'away', 'secret.txt') }),
       (error: Error) => !error.message.includes(outside),
     );
+    const imported = (await files.execute('LOCAL_FILES_IMPORT', { path: latin })) as {
+      file: { name: string; bytes: Uint8Array };
+    };
+    assert.equal(imported.file.name, 'latin.txt');
+    assert.deepEqual([...imported.file.bytes], [0x63, 0x61, 0x66, 0xe9]);
+    const exported = join(shared, 'report.pdf');
+    const file = { workspaceFile: '/workspace/report.pdf', mimeType: 'application/pdf' };
+    await files.execute(
+      'LOCAL_FILES_EXPORT',
+      { file, path: exported },
+      { read: async () => new Uint8Array([1, 2, 3]) },
+    );
+    assert.deepEqual([...(await readFile(exported))], [1, 2, 3]);
+    await assert.rejects(
+      files.execute(
+        'LOCAL_FILES_EXPORT',
+        { file, path: exported },
+        { read: async () => new Uint8Array([4]) },
+      ),
+      /exists/,
+    );
+    readOnly = [shared];
+    await assert.rejects(files.prepare('LOCAL_FILES_TRASH', { paths: [exported] }), /read-only/);
+    await assert.rejects(
+      files.execute('LOCAL_FILES_WRITE', { path: join(shared, 'new.txt'), text: 'x' }),
+      /read-only/,
+    );
+    assert.equal(
+      ((await files.execute('LOCAL_FILES_READ', { path: note })) as { text: string }).text,
+      '1 two two',
+    );
+    assert.ok(!('LOCAL_FILES_TRASH' in files.tools(await files.folders(), 'clean up my files')));
+    assert.deepEqual(files.tools(await files.folders(), 'weather tomorrow'), {});
+    readOnly = [];
     folders = [];
     await assert.rejects(files.execute('LOCAL_FILES_READ', { path: note }), /outside the folders/);
   } finally {

@@ -255,6 +255,10 @@ export function nativeFileMenu(id: string, image: boolean): Promise<string | nul
   ).nodDesktop.fileMenu(id, image);
 }
 
+export function desktopRemote() {
+  return Boolean((window as DesktopWindow).nodDesktop?.remote);
+}
+
 export function desktopFolderPicker() {
   const bridge = (window as DesktopWindow).nodDesktop;
   return bridge?.remote ? undefined : bridge?.chooseFolder;

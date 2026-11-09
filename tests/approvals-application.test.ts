@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
@@ -2294,6 +2295,83 @@ test(
             'waiting',
           );
           assert.equal(await pending(), 1);
+        },
+      );
+      await t.test(
+        'local file actions show the checker real paths and stop when the folder is unshared',
+        async () => {
+          const shared = await realpath(await mkdtemp(join(homedir(), 'nod-local-files-')));
+          t.after(() => rm(shared, { recursive: true, force: true }));
+          await mkdir(join(shared, 'sorted'));
+          await writeFile(join(shared, 'a.txt'), 'a');
+          assert.equal(
+            (
+              await application.app.inject({
+                method: 'GET',
+                url: '/api/local-files',
+                headers: { host: headers.host },
+              })
+            ).statusCode,
+            401,
+          );
+          assert.equal(
+            (
+              await application.app.inject({
+                method: 'POST',
+                url: '/api/local-files',
+                headers: { ...headers, origin: 'https://elsewhere.example' },
+                payload: { path: shared },
+              })
+            ).statusCode,
+            403,
+          );
+          const added = await request('POST', '/api/local-files', { path: shared });
+          assert.equal(added.statusCode, 200, added.body);
+          assert.deepEqual(added.json().folders, [{ path: shared, readOnly: false }]);
+          const checked = fallbackChecks.length;
+          const held = await propose(
+            'LOCAL_FILES_MOVE',
+            {
+              moves: [
+                {
+                  from: join(shared, 'sorted', '..', 'a.txt'),
+                  to: join(shared, 'sorted', 'a.txt'),
+                },
+              ],
+            },
+            'apps',
+          );
+          const moves = [{ from: join(shared, 'a.txt'), to: join(shared, 'sorted', 'a.txt') }];
+          assert.ok(
+            (
+              fallbackChecks.slice(checked) as Array<{
+                action?: { name?: string; arguments?: { moves?: unknown } };
+              }>
+            ).some(
+              (input) =>
+                input.action?.name === 'LOCAL_FILES_MOVE' &&
+                JSON.stringify(input.action.arguments?.moves) === JSON.stringify(moves),
+            ),
+          );
+          const [card] = await approvalsFor(held);
+          assert.equal(card.status, 'pending');
+          assert.deepEqual(card.args.moves, moves);
+          const removed = await application.app.inject({
+            method: 'DELETE',
+            url: '/api/local-files',
+            headers,
+            payload: { path: shared },
+          });
+          assert.deepEqual(removed.json().folders, []);
+          const reply = await request('POST', '/api/messages', {
+            text: 'Yes',
+            replyToMessageId: card.confirmation_message_id,
+            clientMessageId: randomUUID(),
+          });
+          await waitFor(reply.json().turnId, 'succeeded|failed');
+          assert.notEqual((await approvalsFor(held))[0].status, 'completed');
+          assert.equal(await readFile(join(shared, 'a.txt'), 'utf8'), 'a');
+          assert.equal(existsSync(join(shared, 'sorted', 'a.txt')), false);
         },
       );
       await t.test('shutdown saves usage from the last provider before it returns', async () => {

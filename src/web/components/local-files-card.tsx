@@ -2,14 +2,15 @@ import { useEffect, useState } from 'react';
 import { IntegrationCard } from './integration-card';
 import { Tooltip } from './tooltip';
 import { Folder, Plus, X } from './icons';
-import { Button, Input, Notice } from './ui';
+import { Button, Input, Notice, Switch } from './ui';
 import { api, errorMessage } from '../lib/api';
-import { desktopFolderPicker } from '../lib/desktop';
+import { desktopFolderPicker, desktopRemote } from '../lib/desktop';
 
-type Folders = { folders: string[] };
+type LocalFolder = { path: string; readOnly: boolean };
+type Folders = { available: boolean; folders: LocalFolder[] };
 
 export function LocalFilesCard() {
-  const [folders, setFolders] = useState<string[]>();
+  const [state, setState] = useState<Folders>();
   const [path, setPath] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -17,19 +18,20 @@ export function LocalFilesCard() {
 
   useEffect(() => {
     api<Folders>('/api/local-files')
-      .then((result) => setFolders(result.folders))
+      .then(setState)
       .catch((failure) => setError(errorMessage(failure)));
   }, []);
 
-  async function change(method: 'POST' | 'DELETE', value: string) {
+  async function change(method: 'POST' | 'DELETE', value: string, readOnly?: boolean) {
     setBusy(true);
     setError('');
     try {
-      const result = await api<Folders>('/api/local-files', {
-        method,
-        body: JSON.stringify({ path: value }),
-      });
-      setFolders(result.folders);
+      setState(
+        await api<Folders>('/api/local-files', {
+          method,
+          body: JSON.stringify({ path: value, ...(readOnly === undefined ? {} : { readOnly }) }),
+        }),
+      );
       setPath('');
     } catch (failure) {
       setError(errorMessage(failure));
@@ -47,6 +49,9 @@ export function LocalFilesCard() {
     if (chosen) await change('POST', chosen);
   }
 
+  if (desktopRemote() || state?.available === false) return null;
+  const folders = state?.folders;
+
   return (
     <>
       <IntegrationCard
@@ -55,20 +60,29 @@ export function LocalFilesCard() {
         logo={<Folder aria-hidden="true" />}
         description={
           folders?.length
-            ? 'Nod can list, read, write, edit, move and trash files in these folders.'
-            : 'Share folders on this computer, such as Downloads, so Nod can tidy them.'
+            ? 'Nod can work with files in these folders on the computer it runs on. Read-only folders can be listed and read, not changed.'
+            : 'Share folders on the computer Nod runs on, such as Downloads, so Nod can tidy them.'
         }
         detail={folders?.map((folder) => (
-          <div key={folder} className="local-files-folder">
-            <Tooltip content={folder}>
-              <span>{folder}</span>
+          <div key={folder.path} className="local-files-folder">
+            <Tooltip content={folder.path}>
+              <span>{folder.path}</span>
             </Tooltip>
+            <label className="local-files-read-only">
+              Read-only
+              <Switch
+                checked={folder.readOnly}
+                disabled={busy}
+                aria-label={`Share ${folder.path} read-only`}
+                onCheckedChange={(readOnly) => void change('POST', folder.path, readOnly)}
+              />
+            </label>
             <Button
               variant="ghost"
               size="sm"
-              aria-label={`Stop sharing ${folder}`}
+              aria-label={`Stop sharing ${folder.path}`}
               disabled={busy}
-              onClick={() => void change('DELETE', folder)}
+              onClick={() => void change('DELETE', folder.path)}
             >
               <X size={14} aria-hidden="true" />
             </Button>
@@ -78,7 +92,7 @@ export function LocalFilesCard() {
           <>
             {!picker && (
               <Input
-                aria-label="Folder path"
+                aria-label="Folder path on the computer Nod runs on"
                 placeholder="/Users/you/Downloads"
                 value={path}
                 onChange={(event) => setPath(event.target.value)}

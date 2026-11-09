@@ -285,6 +285,8 @@ jobs:
             --test-reporter=spec --test-reporter-destination=stdout `
             --test-reporter=junit --test-reporter-destination=.local/windows-setup/desktop.xml `
             desktop/test/settings.test.mjs
+      - name: Check local file rules on Windows
+        run: pnpm exec tsx --test --test-name-pattern="local file rules" tests/sandbox.test.ts
       - name: Execute the PowerShell installer fixtures
         shell: pwsh
         run: >-

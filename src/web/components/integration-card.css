@@ -83,6 +83,15 @@
   gap: 4px;
 }
 .local-files-folder > span {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.local-files-read-only {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8125rem;
+  color: var(--muted-foreground);
 }

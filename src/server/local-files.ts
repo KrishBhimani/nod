@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { constants, type Stats } from 'node:fs';
 import {
-  access,
   chmod,
   copyFile,
   cp,
@@ -17,26 +17,40 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { promisify } from 'node:util';
 import { homedir } from 'node:os';
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { constants, type Stats } from 'node:fs';
+import nodePath from 'node:path';
+import { promisify } from 'node:util';
 import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import { z } from 'zod';
+import type { IntegrationFile } from '../ports/integrations.ts';
+import type { Trash } from '../ports/trash.ts';
+import { fileBytes, fileMimeType } from '../shared/files.ts';
+import type { CaptureAnalytics } from './analytics.ts';
+import { captureConnection } from './analytics-connections.ts';
+import { workspaceFileReference } from './integration-files.ts';
 import { IntegrationError } from './integration-connection.ts';
 
 const readBytes = 256 * 1024;
 const writeBytes = 1024 * 1024;
 const listLimit = 500;
 const batchLimit = 200;
-const systemTrash = '/usr/bin/trash';
 const statBatch = 100;
-const absolute = z.string().min(1).max(4096).refine(isAbsolute, 'Use an absolute path.');
+const noFollow = constants.O_NOFOLLOW ?? 0;
+const noBlock = constants.O_NONBLOCK ?? 0;
+const absolute = z
+  .string()
+  .min(1)
+  .max(4096)
+  .refine(
+    (value) => nodePath.posix.isAbsolute(value) || nodePath.win32.isAbsolute(value),
+    'Use an absolute path.',
+  );
 const onePath = z.object({ path: absolute }).strict();
 const schemas = {
   LOCAL_FILES_LIST: onePath,
   LOCAL_FILES_READ: onePath,
+  LOCAL_FILES_IMPORT: onePath,
   LOCAL_FILES_CREATE_FOLDER: onePath,
   LOCAL_FILES_MOVE: z
     .object({
@@ -59,8 +73,25 @@ const schemas = {
         .max(50),
     })
     .strict(),
+  LOCAL_FILES_EXPORT: z
+    .object({ file: workspaceFileReference, path: absolute, overwrite: z.boolean().optional() })
+    .strict(),
 };
 type Action = keyof typeof schemas;
+const reads = new Set<Action>(['LOCAL_FILES_LIST', 'LOCAL_FILES_READ', 'LOCAL_FILES_IMPORT']);
+const windowsHidden = new Set([
+  'desktop.ini',
+  'thumbs.db',
+  '$recycle.bin',
+  'system volume information',
+]);
+const windowsExecutable =
+  /\.(exe|com|bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|msi|msp|lnk|scr|cpl|hta|reg|dll|url|appref-ms)$/i;
+const run = promisify(execFile);
+const maybeLstat = (path: string) => lstat(path).catch(() => undefined);
+
+export type LocalFolder = { path: string; readOnly: boolean };
+export type WorkspaceRead = (input: z.infer<typeof workspaceFileReference>) => Promise<Uint8Array>;
 
 function denied(error: unknown) {
   const code = (error as NodeJS.ErrnoException).code;
@@ -77,48 +108,103 @@ export function isLocalFilesAction(action: string): action is Action {
   return Object.hasOwn(schemas, action);
 }
 
-const run = promisify(execFile);
-const maybeLstat = (path: string) => lstat(path).catch(() => undefined);
-
-function inside(root: string, path: string) {
-  const rel = relative(root, path);
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+export function localFileRules(
+  platform: NodeJS.Platform,
+  home: string,
+  dataRoot: string,
+  systemDrive = 'C:',
+) {
+  const path = platform === 'win32' ? nodePath.win32 : nodePath.posix;
+  const key = (value: string) => (platform === 'win32' ? value.toLowerCase() : value);
+  function inside(root: string, target: string) {
+    const rel = path.relative(key(root), key(target));
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  }
+  function hiddenName(name: string) {
+    return name.startsWith('.') || (platform === 'win32' && windowsHidden.has(name.toLowerCase()));
+  }
+  function hiddenBelow(root: string, target: string) {
+    return path.relative(root, target).split(path.sep).filter(Boolean).some(hiddenName);
+  }
+  function volume(target: string) {
+    if (platform === 'darwin' && target !== '/Volumes' && inside('/Volumes', target))
+      return path.join('/Volumes', path.relative('/Volumes', target).split(path.sep)[0]!);
+    if (
+      platform === 'win32' &&
+      /^[a-z]:\\/i.test(target) &&
+      key(target.slice(0, 2)) !== key(systemDrive)
+    )
+      return target.slice(0, 3);
+  }
+  const library =
+    platform === 'darwin'
+      ? path.join(home, 'Library')
+      : platform === 'win32'
+        ? path.join(home, 'AppData')
+        : undefined;
+  return {
+    inside,
+    same: (left: string, right: string) => key(path.resolve(left)) === key(path.resolve(right)),
+    hiddenName,
+    hiddenBelow,
+    privateFolder(real: string) {
+      const anchor = inside(home, real) ? home : volume(real);
+      return (
+        !anchor ||
+        inside(real, home) ||
+        inside(real, dataRoot) ||
+        inside(dataRoot, real) ||
+        (library !== undefined && inside(library, real)) ||
+        hiddenBelow(anchor, real)
+      );
+    },
+    executable: (name: string, mode: number) =>
+      platform === 'win32' ? windowsExecutable.test(name) : (mode & 0o111) !== 0,
+  };
 }
 
 export function createLocalFiles(
   pool: Pool,
   ownerId: string,
-  {
-    dataRoot,
-    home: homeFolder = homedir(),
-    trashFolder,
-  }: { dataRoot: string; home?: string; trashFolder?: string },
+  options: {
+    dataRoot: string;
+    home?: string;
+    trash?: Trash;
+    available?: boolean;
+    analytics?: CaptureAnalytics;
+  },
 ) {
-  const data = realpath(dataRoot).catch(() => dataRoot);
-  const homeReal = realpath(homeFolder).catch(() => homeFolder);
-  async function privatePath(real: string) {
-    const [nodData, home] = await Promise.all([data, homeReal]);
-    const inHome = inside(home, real);
-    const volume = process.platform === 'darwin' && real !== '/Volumes' && inside('/Volumes', real);
-    return (
-      !(volume || inHome) ||
-      inside(real, home) ||
-      inside(real, nodData) ||
-      inside(nodData, real) ||
-      inside(join(home, 'Library'), real) ||
-      (inHome && relative(home, real).startsWith('.'))
-    );
+  const available = options.available ?? true;
+  const home = options.home ?? homedir();
+  const rules = Promise.all([
+    realpath(home).catch(() => home),
+    realpath(options.dataRoot).catch(() => options.dataRoot),
+  ]).then(([realHome, realData]) =>
+    localFileRules(process.platform, realHome, realData, process.env.SystemDrive),
+  );
+
+  function shaped(row?: { local_folders: string[]; local_folders_read_only: string[] }) {
+    return (row?.local_folders ?? []).map((path) => ({
+      path,
+      readOnly: row!.local_folders_read_only.includes(path),
+    }));
   }
 
-  async function folders() {
-    const { rows } = await pool.query<{ local_folders: string[] }>(
-      'SELECT local_folders FROM preferences WHERE owner_id=$1',
+  async function folders(): Promise<LocalFolder[]> {
+    if (!available) return [];
+    const { rows } = await pool.query(
+      'SELECT local_folders,local_folders_read_only FROM preferences WHERE owner_id=$1',
       [ownerId],
     );
-    return rows[0]?.local_folders ?? [];
+    return shaped(rows[0]);
   }
 
-  async function add(path: string) {
+  async function add(path: string, readOnly = false) {
+    if (!available)
+      throw new IntegrationError(
+        'Local files work only when Nod runs on your own computer, not on a hosted server.',
+        503,
+      );
     const input = absolute.safeParse(path.trim());
     if (!input.success) throw new IntegrationError('Enter the absolute path of a folder.');
     let real: string;
@@ -131,50 +217,69 @@ export function createLocalFiles(
       if (denied(error)) throw new IntegrationError(permissionMessage(input.data), 403);
       throw new IntegrationError('This folder does not exist.', 404);
     }
-    if (await privatePath(real))
+    if ((await rules).privateFolder(real))
       throw new IntegrationError(
-        "Choose a specific folder. Nod can't share your whole disk, home folder, Library, hidden folders or its own data.",
+        "Choose a specific folder in your home folder or on an external drive. Nod can't share your whole disk, home folder, Library, hidden folders or its own data.",
       );
-    const { rows } = await pool.query<{ local_folders: string[] }>(
-      `INSERT INTO preferences(owner_id,local_folders) VALUES($1,ARRAY[$2]::text[])
-       ON CONFLICT(owner_id) DO UPDATE SET local_folders=
-         CASE WHEN $2=ANY(preferences.local_folders) THEN preferences.local_folders
-           ELSE array_append(preferences.local_folders,$2) END
-       RETURNING local_folders`,
-      [ownerId, real],
+    const { rows } = await pool.query(
+      `INSERT INTO preferences(owner_id,local_folders,local_folders_read_only)
+       VALUES($1,ARRAY[$2]::text[],CASE WHEN $3::boolean THEN ARRAY[$2]::text[] ELSE '{}'::text[] END)
+       ON CONFLICT(owner_id) DO UPDATE SET
+         local_folders=CASE WHEN $2=ANY(preferences.local_folders) THEN preferences.local_folders
+           ELSE array_append(preferences.local_folders,$2) END,
+         local_folders_read_only=CASE WHEN $3::boolean
+           THEN array_append(array_remove(preferences.local_folders_read_only,$2),$2)
+           ELSE array_remove(preferences.local_folders_read_only,$2) END
+       RETURNING local_folders,local_folders_read_only`,
+      [ownerId, real, readOnly],
     );
-    return rows[0]!.local_folders;
+    captureConnection(options.analytics, { connection_method: 'local' }, 'connected');
+    return shaped(rows[0]);
   }
 
   async function remove(path: string) {
-    const { rows } = await pool.query<{ local_folders: string[] }>(
-      `UPDATE preferences SET local_folders=array_remove(local_folders,$2) WHERE owner_id=$1
-       RETURNING local_folders`,
+    const { rows } = await pool.query(
+      `UPDATE preferences SET local_folders=array_remove(local_folders,$2),
+         local_folders_read_only=array_remove(local_folders_read_only,$2)
+       WHERE owner_id=$1 RETURNING local_folders,local_folders_read_only`,
       [ownerId, path],
     );
-    return rows[0]?.local_folders ?? [];
+    captureConnection(options.analytics, { connection_method: 'local' }, 'disconnected');
+    return shaped(rows[0]);
   }
 
-  async function contained(real: string, roots: string[], allowRoot: boolean, shown: string) {
-    if (!(await privatePath(real)))
-      for (const root of roots)
-        if (
-          inside(root, real) &&
-          (allowRoot || root !== real) &&
-          !relative(root, real)
-            .split(sep)
-            .some((part) => part.startsWith('.'))
-        )
-          return real;
-    throw new IntegrationError(
-      `${shown} is outside the folders the owner shared with Nod, or is hidden.`,
-      403,
-    );
+  async function contained(
+    real: string,
+    roots: LocalFolder[],
+    allowRoot: boolean,
+    shown: string,
+    write: boolean,
+  ) {
+    const rule = await rules;
+    const matches = rule.privateFolder(real)
+      ? []
+      : roots.filter(
+          (root) =>
+            rule.inside(root.path, real) &&
+            (allowRoot || !rule.same(root.path, real)) &&
+            !rule.hiddenBelow(root.path, real),
+        );
+    if (!matches.length)
+      throw new IntegrationError(
+        `${shown} is outside the folders the owner shared with Nod, or is hidden.`,
+        403,
+      );
+    if (write && matches.some((root) => root.readOnly))
+      throw new IntegrationError(
+        `${shown} is in a folder the owner shared read-only. Nothing was changed.`,
+        403,
+      );
+    return real;
   }
 
-  async function existing(path: string, roots: string[], allowRoot = true) {
+  async function existing(path: string, roots: LocalFolder[], allowRoot: boolean, write: boolean) {
     try {
-      return await contained(await realpath(path), roots, allowRoot, path);
+      return await contained(await realpath(path), roots, allowRoot, path, write);
     } catch (error) {
       if (error instanceof IntegrationError) throw error;
       if (denied(error)) throw new IntegrationError(permissionMessage(path), 403);
@@ -182,25 +287,31 @@ export function createLocalFiles(
     }
   }
 
-  async function entry(path: string, roots: string[]) {
-    const parent = await existing(dirname(resolve(path)), roots);
-    return contained(join(parent, basename(resolve(path))), roots, false, path);
+  async function entry(path: string, roots: LocalFolder[]) {
+    const parent = await existing(nodePath.dirname(nodePath.resolve(path)), roots, true, true);
+    return contained(
+      nodePath.join(parent, nodePath.basename(nodePath.resolve(path))),
+      roots,
+      false,
+      path,
+      true,
+    );
   }
 
-  function resolver(action: Action, roots: string[]) {
-    if (action === 'LOCAL_FILES_LIST') return (path: string) => existing(path, roots);
-    if (action === 'LOCAL_FILES_READ') return (path: string) => existing(path, roots, false);
+  function resolver(action: Action, roots: LocalFolder[]) {
+    if (action === 'LOCAL_FILES_LIST') return (path: string) => existing(path, roots, true, false);
+    if (reads.has(action)) return (path: string) => existing(path, roots, false, false);
     return (path: string) => entry(path, roots);
   }
 
-  async function present(path: string, roots: string[]) {
+  async function present(path: string, roots: LocalFolder[]) {
     const source = await entry(path, roots);
     if (!(await maybeLstat(source))) throw new IntegrationError(`${path} does not exist.`, 404);
     return source;
   }
 
-  async function unchanged(target: string, roots: string[]) {
-    if ((await entry(target, roots)) !== target)
+  async function unchanged(target: string, roots: LocalFolder[]) {
+    if (!(await rules).same(await entry(target, roots), target))
       throw new IntegrationError(`The folder of ${target} changed. Nothing was changed.`, 409);
   }
 
@@ -208,34 +319,20 @@ export function createLocalFiles(
     if (await maybeLstat(path)) throw new IntegrationError(`${path} already exists.`, 409);
   }
 
-  async function freeTrashName(folder: string, name: string) {
-    const extension = extname(name);
-    const stem = name.slice(0, name.length - extension.length);
-    for (let index = 0; ; index++) {
-      const candidate = join(folder, index ? `${stem} ${index}${extension}` : name);
-      if (!(await maybeLstat(candidate))) return candidate;
-    }
-  }
-
   async function trashReady() {
-    if (!trashFolder)
-      await access(systemTrash).catch(() => {
-        throw new IntegrationError(
-          "This computer has no Trash Nod can use, so it didn't trash, replace or edit anything.",
-          503,
-        );
-      });
+    if (!(await options.trash?.ready()))
+      throw new IntegrationError(
+        "This computer has no Trash Nod can use, so it didn't trash, replace or edit anything.",
+        503,
+      );
   }
 
   async function toTrash(source: string, signal?: AbortSignal) {
     await trashReady();
-    if (trashFolder) {
-      await mkdir(trashFolder, { recursive: true });
-      await rename(source, await freeTrashName(trashFolder, basename(source)));
-    } else await run(systemTrash, [source], { signal });
+    await options.trash!.put(source, signal);
   }
 
-  async function place(source: string, target: string, roots: string[]) {
+  async function place(source: string, target: string, roots: LocalFolder[]) {
     await unchanged(target, roots);
     if ((await lstat(source)).isFile()) {
       const linked = await link(source, target).then(
@@ -268,23 +365,22 @@ export function createLocalFiles(
   async function regularFile(path: string) {
     const info = await maybeLstat(path);
     if (info && !info.isFile()) throw new IntegrationError(`${path} is not a regular file.`);
-    if (info && info.mode & 0o111)
+    if (info && (await rules).executable(path, info.mode))
       throw new IntegrationError(`${path} is executable. Nod only changes plain files.`);
     return info;
   }
 
   async function replace(
     path: string,
-    text: string,
+    data: string | Uint8Array,
     previous: Stats | undefined,
-    roots: string[],
+    roots: LocalFolder[],
     signal?: AbortSignal,
   ) {
-    if (Buffer.byteLength(text) > writeBytes)
-      throw new IntegrationError('The file text must be at most 1 MB.');
     if (previous) await trashReady();
-    const temporary = join(dirname(path), `.nod-${randomUUID()}.tmp`);
-    await writeFile(temporary, text, { flag: 'wx' });
+    const folder = nodePath.dirname(path);
+    const temporary = nodePath.join(folder, `.nod-${randomUUID()}.tmp`);
+    await writeFile(temporary, data, { flag: 'wx' });
     if (!previous)
       return place(temporary, path, roots).catch(async (error) => {
         await rm(temporary, { force: true });
@@ -292,11 +388,10 @@ export function createLocalFiles(
       });
     let backupFolder = '';
     try {
-      backupFolder = await mkdtemp(join(dirname(path), '.nod-'));
+      backupFolder = await mkdtemp(nodePath.join(folder, '.nod-'));
+      const kept = nodePath.join(backupFolder, nodePath.basename(path));
       await chmod(temporary, previous.mode & 0o7777);
-      await link(path, join(backupFolder, basename(path))).catch(() =>
-        copyFile(path, join(backupFolder, basename(path))),
-      );
+      await link(path, kept).catch(() => copyFile(path, kept));
       await unchanged(path, roots);
       await rename(temporary, path);
     } catch (error) {
@@ -304,13 +399,34 @@ export function createLocalFiles(
       if (backupFolder) await rm(backupFolder, { recursive: true, force: true });
       throw error;
     }
-    const backup = join(backupFolder, basename(path));
+    const backup = nodePath.join(backupFolder, nodePath.basename(path));
     try {
       await toTrash(backup, signal);
       await rm(backupFolder, { recursive: true });
       return 'moved to the Trash';
     } catch {
       return `kept at ${backup}`;
+    }
+  }
+
+  async function quarantine(path: string) {
+    if (process.platform !== 'darwin') return;
+    const stamp = Math.floor(Date.now() / 1000).toString(16);
+    await run('/usr/bin/xattr', ['-w', 'com.apple.quarantine', `0081;${stamp};Nod;`, path]).catch(
+      () => undefined,
+    );
+  }
+
+  async function readFile(path: string, limit: number) {
+    if (!(await maybeLstat(path))?.isFile()) throw new IntegrationError(`${path} is not a file.`);
+    const file = await open(path, constants.O_RDONLY | noFollow | noBlock);
+    try {
+      const size = (await file.stat()).size;
+      const length = Math.min(size, limit);
+      const { buffer, bytesRead } = await file.read(Buffer.alloc(length), 0, length, 0);
+      return { size, bytes: buffer.subarray(0, bytesRead) };
+    } finally {
+      await file.close();
     }
   }
 
@@ -335,6 +451,7 @@ export function createLocalFiles(
     text: string;
     overwrite?: boolean;
     edits: Array<{ oldText: string; newText: string }>;
+    file: z.infer<typeof workspaceFileReference>;
   };
 
   function validate(action: Action, args: Record<string, unknown>) {
@@ -348,8 +465,7 @@ export function createLocalFiles(
 
   async function prepare(action: Action, args: Record<string, unknown>) {
     const input = validate(action, args);
-    const roots = await folders();
-    const real = resolver(action, roots);
+    const real = resolver(action, await folders());
     if (input.moves)
       return {
         moves: await Promise.all(
@@ -360,14 +476,20 @@ export function createLocalFiles(
     return { ...input, path: await real(input.path!) };
   }
 
-  async function execute(action: Action, args: Record<string, unknown>, signal?: AbortSignal) {
+  async function execute(
+    action: Action,
+    args: Record<string, unknown>,
+    context: { signal?: AbortSignal; read?: WorkspaceRead } = {},
+  ) {
+    const { signal } = context;
     const input = validate(action, args) as Input;
     const roots = await folders();
     const target = resolver(action, roots);
     if (action === 'LOCAL_FILES_LIST') {
       const path = await target(input.path);
+      const rule = await rules;
       const names = (await readdir(path, { withFileTypes: true })).filter(
-        (item) => !item.name.startsWith('.'),
+        (item) => !rule.hiddenName(item.name),
       );
       const entries = [];
       for (let start = 0; start < names.length; start += statBatch) {
@@ -375,7 +497,7 @@ export function createLocalFiles(
         entries.push(
           ...(await Promise.all(
             names.slice(start, start + statBatch).map(async (item) => {
-              const info = await maybeLstat(join(path, item.name));
+              const info = await maybeLstat(nodePath.join(path, item.name));
               return {
                 name: item.name,
                 kind: item.isDirectory() ? 'folder' : item.isSymbolicLink() ? 'link' : 'file',
@@ -396,27 +518,24 @@ export function createLocalFiles(
     }
     if (action === 'LOCAL_FILES_READ') {
       const path = await target(input.path);
-      if (!(await maybeLstat(path))?.isFile()) throw new IntegrationError(`${path} is not a file.`);
-      const file = await open(
+      const { size, bytes } = await readFile(path, readBytes);
+      const truncated = size > readBytes;
+      if (bytes.includes(0)) return { path, size, binary: true };
+      return {
         path,
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-      );
-      try {
-        const info = await file.stat();
-        if (!info.isFile()) throw new IntegrationError(`${path} is not a file.`);
-        const { buffer, bytesRead } = await file.read(Buffer.alloc(readBytes), 0, readBytes, 0);
-        const bytes = buffer.subarray(0, bytesRead);
-        const truncated = info.size > readBytes;
-        if (bytes.includes(0)) return { path, size: info.size, binary: true };
-        return {
-          path,
-          size: info.size,
-          text: new TextDecoder().decode(bytes, { stream: truncated }),
-          ...(truncated ? { truncated } : {}),
-        };
-      } finally {
-        await file.close();
-      }
+        size,
+        text: new TextDecoder().decode(bytes, { stream: truncated }),
+        ...(truncated ? { truncated } : {}),
+      };
+    }
+    if (action === 'LOCAL_FILES_IMPORT') {
+      const path = await target(input.path);
+      const { size, bytes } = await readFile(path, fileBytes + 1);
+      if (size > fileBytes)
+        throw new IntegrationError(`Files up to ${fileBytes / 1024 / 1024} MB can be copied.`);
+      const name = nodePath.basename(path);
+      const file: IntegrationFile = { name, mimeType: fileMimeType(name), bytes };
+      return { path, size, file };
     }
     if (action === 'LOCAL_FILES_CREATE_FOLDER') {
       const path = await target(input.path);
@@ -424,12 +543,18 @@ export function createLocalFiles(
       await mkdir(path);
       return { created: path };
     }
-    if (action === 'LOCAL_FILES_WRITE') {
+    if (action === 'LOCAL_FILES_WRITE' || action === 'LOCAL_FILES_EXPORT') {
       const path = await target(input.path);
       const previous = await regularFile(path);
       if (previous && !input.overwrite)
         throw new IntegrationError(`${path} already exists. Set overwrite to replace it.`, 409);
-      const previousVersion = await replace(path, input.text, previous, roots, signal);
+      let data: string | Uint8Array = input.text;
+      if (action === 'LOCAL_FILES_EXPORT') {
+        if (!context.read) throw new IntegrationError('Workspace files are unavailable.', 503);
+        data = await context.read(input.file);
+      }
+      const previousVersion = await replace(path, data, previous, roots, signal);
+      if (action === 'LOCAL_FILES_EXPORT') await quarantine(path);
       return { written: path, ...(previousVersion ? { previousVersion } : {}) };
     }
     if (action === 'LOCAL_FILES_EDIT') {
@@ -438,8 +563,7 @@ export function createLocalFiles(
       if (!info) throw new IntegrationError(`${path} does not exist.`, 404);
       if (info.size > writeBytes)
         throw new IntegrationError('Only files up to 1 MB can be edited.');
-      const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-      const bytes = await handle.readFile().finally(() => handle.close());
+      const { bytes } = await readFile(path, writeBytes);
       let text: string;
       try {
         if (bytes.includes(0)) throw new Error();
@@ -482,60 +606,72 @@ export function createLocalFiles(
     return { trashed: done, failed };
   }
 
-  function tools(shared: string[]) {
+  const descriptions: Record<Action, string> = {
+    LOCAL_FILES_LIST:
+      "List a folder on the owner's computer, newest first. Hidden files are left out.",
+    LOCAL_FILES_READ: "Read up to 256 KB of a text file on the owner's computer.",
+    LOCAL_FILES_IMPORT: `Copy a file of up to ${fileBytes / 1024 / 1024} MB, such as a PDF or image, from the owner's computer into the workspace to work with it there.`,
+    LOCAL_FILES_CREATE_FOLDER: 'Create one folder; its parent must exist.',
+    LOCAL_FILES_MOVE: `Move or rename up to ${batchLimit} files or folders. Never overwrites.`,
+    LOCAL_FILES_WRITE:
+      'Create a text file of up to 1 MB, or replace one with overwrite:true; the replaced version goes to the Trash.',
+    LOCAL_FILES_EDIT:
+      'Replace exact text in a text file of up to 1 MB; each oldText must appear exactly once. The previous version goes to the Trash.',
+    LOCAL_FILES_EXPORT:
+      "Copy a workspace file to the owner's computer. Set overwrite:true to replace a file; the replaced version goes to the Trash.",
+    LOCAL_FILES_TRASH: `Move up to ${batchLimit} files or folders to the Trash, where the owner can restore them.`,
+  };
+
+  function tools(shared: LocalFolder[], query: string) {
     if (!shared.length) return {};
-    const where = `Only inside the owner's shared folders: ${shared.join(', ')}.`;
-    return {
-      LOCAL_FILES_LIST: {
-        description: `List a folder on the owner's computer, newest first. ${where}`,
-        parameters: { path: 'Absolute folder path.' },
-      },
-      LOCAL_FILES_READ: {
-        description: `Read up to 256 KB of a text file on the owner's computer. ${where}`,
-        parameters: { path: 'Absolute file path.' },
-      },
-      LOCAL_FILES_CREATE_FOLDER: {
-        description: `Create one folder. ${where}`,
-        parameters: { path: 'Absolute path of the new folder; its parent must exist.' },
-      },
-      LOCAL_FILES_MOVE: {
-        description: `Move or rename up to ${batchLimit} files or folders. Never overwrites. ${where}`,
-        parameters: { moves: 'Array of {from, to} absolute paths.' },
-      },
-      LOCAL_FILES_WRITE: {
-        description: `Create a text file, or replace one with overwrite:true; the replaced version goes to the Trash. Up to 1 MB. ${where}`,
-        parameters: {
-          path: 'Absolute file path; its folder must exist.',
-          text: 'Complete file contents.',
-          overwrite: 'Optional. true replaces an existing file.',
-        },
-      },
-      LOCAL_FILES_EDIT: {
-        description: `Replace exact text in a text file of up to 1 MB; each oldText must appear exactly once. The previous version goes to the Trash. ${where}`,
-        parameters: {
-          path: 'Absolute file path.',
-          edits: 'Array of {oldText, newText}, applied in order.',
-        },
-      },
-      LOCAL_FILES_TRASH: {
-        description: `Move up to ${batchLimit} files or folders to the Trash, where the owner can restore them. ${where}`,
-        parameters: { paths: 'Array of absolute paths.' },
-      },
-    };
+    const vocabulary = new Set([
+      'local',
+      'file',
+      'files',
+      'folder',
+      'folders',
+      'computer',
+      'disk',
+      'drive',
+      'trash',
+      'desktop',
+      'downloads',
+      'documents',
+      ...Object.keys(schemas).map((action) => action.toLowerCase()),
+      ...shared.map((folder) => nodePath.basename(folder.path).toLowerCase()),
+    ]);
+    const terms = query.toLowerCase().split(/[^\p{L}\p{N}_]+/u);
+    if (!terms.some((term) => vocabulary.has(term))) return {};
+    const where = `Only inside the owner's shared folders: ${shared
+      .map((folder) => `${folder.path}${folder.readOnly ? ' (read-only)' : ''}`)
+      .join(', ')}.`;
+    return Object.fromEntries(
+      (Object.keys(schemas) as Action[])
+        .filter((action) => reads.has(action) || shared.some((folder) => !folder.readOnly))
+        .map((action) => [
+          action,
+          {
+            description: `${descriptions[action]} ${where}`,
+            inputSchema: z.toJSONSchema(schemas[action]),
+          },
+        ]),
+    );
   }
 
   function registerRoutes(app: FastifyInstance) {
-    const body = z.object({ path: z.string() }).strict();
-    app.get('/api/local-files', async () => ({ folders: await folders() }));
-    app.post('/api/local-files', async (request) => ({
-      folders: await add(body.parse(request.body).path),
-    }));
+    const body = z.object({ path: z.string(), readOnly: z.boolean().optional() }).strict();
+    app.get('/api/local-files', async () => ({ available, folders: await folders() }));
+    app.post('/api/local-files', async (request) => {
+      const input = body.parse(request.body);
+      return { available, folders: await add(input.path, input.readOnly) };
+    });
     app.delete('/api/local-files', async (request) => ({
+      available,
       folders: await remove(body.parse(request.body).path),
     }));
   }
 
-  return { folders, add, prepare, execute, tools, registerRoutes };
+  return { available, folders, add, prepare, execute, tools, registerRoutes };
 }
 
 export type LocalFiles = ReturnType<typeof createLocalFiles>;

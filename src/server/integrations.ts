@@ -1506,6 +1506,30 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     return row;
   }
 
+  async function workspaceBytes(
+    turn: TurnRef | undefined,
+    input: { workspaceFile: string; size?: number; sha256?: string },
+    signal?: AbortSignal,
+  ) {
+    signal?.throwIfAborted();
+    if (!turn || !options.readWorkspaceFile)
+      throw new IntegrationError('Workspace files are unavailable.', 503);
+    const bytes = await options.readWorkspaceFile(turn, input.workspaceFile, fileBytes);
+    if (!bytes.byteLength || bytes.byteLength > fileBytes)
+      throw new IntegrationError(
+        `The file must be between 1 byte and ${fileBytes / 1024 / 1024} MB.`,
+      );
+    if (
+      input.sha256 !== undefined &&
+      (bytes.byteLength !== input.size || fileDigest(bytes) !== input.sha256)
+    )
+      throw new IntegrationError(
+        `${input.workspaceFile} changed after this action was confirmed, so nothing was written.`,
+        409,
+      );
+    return bytes;
+  }
+
   async function executeApproved(
     ownerId: string,
     action: string,
@@ -1516,8 +1540,18 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
   ) {
     if (isLocalFilesAction(action)) {
       assertOwner(ownerId);
-      if (!options.localFiles) throw new IntegrationError('Local files are unavailable.', 503);
-      return options.localFiles.execute(action, args, signal);
+      const localFiles = options.localFiles;
+      if (!localFiles) throw new IntegrationError('Local files are unavailable.', 503);
+      return withServiceAnalytics(
+        options.analytics,
+        { connection_method: 'local', consentRevision: options.analyticsConsent?.().revision },
+        () =>
+          localFiles.execute(action, args, {
+            signal,
+            read: (input) => workspaceBytes(turn, input, signal),
+          }),
+        signal,
+      );
     }
     if (
       action === 'CONNECTED_HTTP' ||
@@ -1694,15 +1728,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
             },
           });
         }
-        if (
-          !connectionId &&
-          localFolders.length &&
-          (/\b(local|files?|folders?)\b|LOCAL_FILES/i.test(query) ||
-            localFolders.some((folder) =>
-              query.toLowerCase().includes(basename(folder).toLowerCase()),
-            ))
-        )
-          Object.assign(tools, options.localFiles?.tools(localFolders));
+        if (!connectionId) Object.assign(tools, options.localFiles?.tools(localFolders, query));
         const catalog = Object.entries(search.tools);
         const requested = new Set(query.toLowerCase().split(/[\s,]+/));
         const exact = catalog.filter(([name]) => requested.has(name.toLowerCase()));
@@ -1770,7 +1796,11 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     signal?.throwIfAborted();
     if (isLocalFilesAction(action)) {
       if (!options.localFiles) throw new IntegrationError('Local files are unavailable.', 503);
-      return (await options.localFiles.prepare(action, args)) as Record<string, unknown>;
+      const prepared = (await options.localFiles.prepare(action, args)) as Record<string, unknown>;
+      if (!hasWorkspaceFiles(prepared)) return prepared;
+      return (await pinWorkspaceFiles(prepared, (input) =>
+        workspaceBytes(turn, input, signal),
+      )) as Record<string, unknown>;
     }
     if (['CONNECTED_HTTP', 'CONNECTED_MCP_CALL', 'CONNECTED_CLI'].includes(action)) {
       if (!options.discovered)
@@ -2938,7 +2968,19 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
                 .replace(/[^\p{L}\p{N}]+/gu, ' ')} `.includes(` ${site} `);
             })
           : logins.slice(0, 20);
+        const localFolders = (await options.localFiles?.folders()) ?? [];
         return [
+          ...(localFolders.length
+            ? [
+                {
+                  slug: 'local_files',
+                  name: 'Local files',
+                  status: 'connected',
+                  folders: localFolders,
+                  note: 'Use apps SEARCH_TOOLS with "local files" for its tools.',
+                } as unknown as (typeof connections)[number],
+              ]
+            : []),
           ...connections.filter((connection) => !connection.savedLogin),
           ...matching,
           ...(matching.length < logins.length && !site
