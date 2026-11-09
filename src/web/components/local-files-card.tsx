@@ -1,33 +1,32 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { IntegrationCard } from './integration-card';
 import { Tooltip } from './tooltip';
 import { Folder, Plus, X } from './icons';
 import { Button, Input, Notice, Switch } from './ui';
 import { api, errorMessage } from '../lib/api';
-import { desktopFolderPicker, desktopRemote } from '../lib/desktop';
+import { desktopFolderPicker } from '../lib/desktop';
 
 type LocalFolder = { path: string; readOnly: boolean };
-type Folders = { available: boolean; folders: LocalFolder[] };
+export type LocalFilesState = { available: boolean; folders: LocalFolder[] };
 
-export function LocalFilesCard() {
-  const [state, setState] = useState<Folders>();
+export function LocalFilesCard({
+  state,
+  onChange,
+}: {
+  state: LocalFilesState;
+  onChange(state: LocalFilesState): void;
+}) {
   const [path, setPath] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const picker = desktopFolderPicker();
 
-  useEffect(() => {
-    api<Folders>('/api/local-files')
-      .then(setState)
-      .catch((failure) => setError(errorMessage(failure)));
-  }, []);
-
   async function change(method: 'POST' | 'DELETE', value: string, readOnly?: boolean) {
     setBusy(true);
     setError('');
     try {
-      setState(
-        await api<Folders>('/api/local-files', {
+      onChange(
+        await api<LocalFilesState>('/api/local-files', {
           method,
           body: JSON.stringify({ path: value, ...(readOnly === undefined ? {} : { readOnly }) }),
         }),
@@ -49,8 +48,7 @@ export function LocalFilesCard() {
     if (chosen) await change('POST', chosen);
   }
 
-  if (desktopRemote() || state?.available === false) return null;
-  const folders = state?.folders;
+  const folders = state.folders;
 
   return (
     <>
@@ -59,11 +57,11 @@ export function LocalFilesCard() {
         name="Local files"
         logo={<Folder aria-hidden="true" />}
         description={
-          folders?.length
+          folders.length
             ? 'Nod can work with files in these folders on the computer it runs on. Read-only folders can be listed and read, not changed.'
             : 'Share folders on the computer Nod runs on, such as Downloads, so Nod can tidy them.'
         }
-        detail={folders?.map((folder) => (
+        detail={folders.map((folder) => (
           <div key={folder.path} className="local-files-folder">
             <Tooltip content={folder.path}>
               <span>{folder.path}</span>
