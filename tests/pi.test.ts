@@ -3661,16 +3661,17 @@ test('full 32k Pi sessions distinguish context exhaustion from output truncation
       attempt.usage.some((usage) => usage.inputTokens === 32_750 && usage.outputTokens === 17),
     );
   for (const attempt of exhausted) {
+    assert.ok(attempt.outcome.failure);
     assert.notDeepEqual(
       attempt.outcome,
       outputLimit.outcome,
       'A full context must not offer the same unchanged-context retry as an output-limit cutoff.',
     );
-    assert.notDeepEqual(
-      attempt.ending,
-      outputLimit.ending,
-      'A full context must be distinguished from an ordinary output-limit cutoff.',
-    );
+    assert.deepEqual(attempt.ending, {
+      type: 'message_end',
+      status: 'incomplete',
+      contextExhausted: true,
+    });
   }
 });
 
