@@ -62,6 +62,8 @@ CI also runs Gitleaks on all fetched Git refs and the checkout. It downloads the
 
 Windows CI downloads Electron through the authenticated GitHub API. The download, cached archives, native fixtures and release build use the checksums shipped with the pinned Electron package. The download token is scoped to its preparation step and is not passed to the test apps.
 
+Native Mac update fixtures also use the checksums shipped with the pinned Electron package. They verify the archive without a separate checksum download.
+
 Check dependency advisories in each package:
 
 ```sh
