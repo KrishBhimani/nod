@@ -231,10 +231,9 @@ export function About({ arrived, quiet, onNext, onBack, usageShared }: StepProps
   const timer = useRef<number | undefined>(undefined);
   const end = useRef<HTMLDivElement>(null);
   const moved = useRef(false);
-  const intro = useReveal(
-    [{ typing: 450 }, { wait: 200 }, ...(usageShared ? [{ wait: 200 }] : []), { wait: 200 }],
-    { enabled: arrived === 'forward' && !quiet && !restored },
-  );
+  const intro = useReveal([{ typing: 450 }, { wait: 200 }, { wait: 200 }], {
+    enabled: arrived === 'forward' && !quiet && !restored,
+  });
   const { profile, current, editing } = state;
   const list = questions(profile);
   const has = (job: ProfileJob) => profile.jobs.includes(job);
@@ -454,8 +453,9 @@ export function About({ arrived, quiet, onNext, onBack, usageShared }: StepProps
           ...(first
             ? [
                 <Bubble>
-                  Can you tell me a bit about yourself? The more I know about you, the more useful I
-                  can be from day one.
+                  <strong>Tell me a bit about yourself so I can help from day one.</strong>
+                  {usageShared &&
+                    ' I also share your answers with the Nod team to improve onboarding. You can turn that off in Settings.'}
                 </Bubble>,
               ]
             : []),
@@ -463,14 +463,6 @@ export function About({ arrived, quiet, onNext, onBack, usageShared }: StepProps
             <strong>{prompts[question]}</strong>
             {(question === 'roles' || question === 'jobs') && ' Pick as many as you like.'}
           </Bubble>,
-          ...(first && usageShared
-            ? [
-                <Bubble>
-                  Your answers also reach the Nod team as usage data to help improve the onboarding
-                  experience. You can turn that off any time in Settings.
-                </Bubble>,
-              ]
-            : []),
         ]}
       />,
     );

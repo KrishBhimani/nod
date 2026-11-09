@@ -13,7 +13,7 @@ Messages, generated content, connected-app results, and credentials are excluded
 
 ## Turn usage sharing on or off
 
-Change **Share usage data** in **Settings → Privacy & data**. Existing owners keep their saved choice. The welcome screen, the first About you question and onboarding's privacy step say that usage data is shared; the native Welcome window sends no events.
+Change **Share usage data** in **Settings → Privacy & data**. Existing owners keep their saved choice. The welcome screen, About you's opening message and onboarding's privacy step say that usage data is shared; the native Welcome window sends no events.
 
 The deployment must also allow collection. `NOD_ANALYTICS_ENABLED=false` always disables it.
 
