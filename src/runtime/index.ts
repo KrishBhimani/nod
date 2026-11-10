@@ -355,6 +355,7 @@ export function createAgentRuntime(dependencies: {
         args?: { connectionId?: unknown };
       };
       if (typeof action !== 'string' || action === 'SEARCH_TOOLS') return undefined;
+      if (action.startsWith('LOCAL_FILES_')) return 'Handling local files';
       const apps = context.connectedApps ?? [];
       return (
         apps.find((app) => app.connectionId && app.connectionId === args?.connectionId) ??
