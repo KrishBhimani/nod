@@ -522,6 +522,52 @@ export const toolDefinitions = {
     }),
     true,
   ),
+  files: defineTool(
+    'files',
+    "Work with files on the owner's computer, in their home folder and drives. Hidden files, secrets such as keys and password exports, Library and AppData, and folders the owner keeps Nod out of are refused. Use absolute paths. list {path} lists a folder, newest first; read {path} reads up to 256 KB of a text file; import {path} copies a file of up to 90 MB, such as a PDF, into the workspace; create_folder {path}; move {moves:[{from,to}]} moves or renames up to 200 items and never overwrites; trash {paths} moves up to 200 items to the Trash; write {path,text,overwrite?} writes a text file of up to 1 MB; edit {path,edits:[{oldText,newText}]} replaces text that appears exactly once; export {file,path,overwrite?} copies a workspace file {workspaceFile,mimeType,name?} to the computer. Replaced versions go to the Trash. keep_out {path} adds a folder the owner tells you never to touch; only the owner can remove it again, in Settings.",
+    Type.Object({
+      action: literals([
+        'list',
+        'read',
+        'import',
+        'create_folder',
+        'move',
+        'trash',
+        'write',
+        'edit',
+        'export',
+        'keep_out',
+      ]),
+      path: Type.Optional(Type.String()),
+      moves: Type.Optional(
+        Type.Array(
+          Type.Object({ from: Type.String(), to: Type.String() }, { additionalProperties: false }),
+        ),
+      ),
+      paths: Type.Optional(Type.Array(Type.String())),
+      text: Type.Optional(Type.String()),
+      overwrite: Type.Optional(Type.Boolean()),
+      edits: Type.Optional(
+        Type.Array(
+          Type.Object(
+            { oldText: Type.String(), newText: Type.String() },
+            { additionalProperties: false },
+          ),
+        ),
+      ),
+      file: Type.Optional(
+        Type.Object(
+          {
+            workspaceFile: Type.String(),
+            mimeType: Type.String(),
+            name: Type.Optional(Type.String()),
+          },
+          { additionalProperties: false },
+        ),
+      ),
+    }),
+    true,
+  ),
   manage_apps: defineTool(
     'manage_apps',
     'list {query?} reads accounts and paths; use a service query for exact-origin saved logins and browser profiles. discover {query?} finds integrations; connect {service} uses a returned slug and pauses for private sign-in. Reconnect only with the saved connectionId and canReconnect:true. For canReconnect:false managed accounts, direct the owner to Apps, that app, Add account for the saved identity; explain it adds a separate connection. Ask if identity is unclear. Do not use this fallback for not_configured, disconnectPending, browser or Vault entries. newAccount:true requires an explicit request for another account. propose {service,proposal} offers an official MCP, HTTP or CLI path through private setup. A CLI needs its declared npm, pypi or HTTPS release source and actual credential env names. Never request keys in chat. Deliver completed work before a required sign-in.',
@@ -1104,7 +1150,30 @@ export function nodTools(turn: Turn, skills?: SkillLibrary): NodTool[] {
       }
       return result;
     }),
+    ...(context.localFiles
+      ? [
+          bind(toolDefinitions.files, async ({ action, ...args }) => {
+            const result = await context.integration(
+              `LOCAL_FILES_${action.toUpperCase()}`,
+              args,
+              signal,
+              turn.execution.parentRunId
+                ? async (asks) => {
+                    if (asks)
+                      throw new Error(
+                        "This file action needs the owner's yes, and a subagent cannot ask. Stop and return it to the parent agent with the paths and what it would change.",
+                      );
+                  }
+                : undefined,
+            );
+            signal.throwIfAborted();
+            return confirm(result);
+          }),
+        ]
+      : []),
     bind(toolDefinitions.apps, async (p) => {
+      if (p.action.startsWith('LOCAL_FILES_'))
+        throw new Error('Use the files tool for local files.');
       const result = await context.integration(p.action, p.args, signal);
       signal.throwIfAborted();
       return confirm(result);

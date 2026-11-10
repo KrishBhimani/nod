@@ -80,7 +80,6 @@ type DesktopWindow = Window & {
     ): () => void;
     getChatReadCursor?(ownerId: string, threadId: string): Promise<ChatReadCursor | null>;
     setChatReadCursor?(ownerId: string, threadId: string, cursor: ChatReadCursor): Promise<void>;
-    chooseFolder?(): Promise<string | null>;
   };
 };
 
@@ -253,13 +252,4 @@ export function nativeFileMenu(id: string, image: boolean): Promise<string | nul
       nodDesktop: { fileMenu(id: string, image: boolean): Promise<string | null> };
     }
   ).nodDesktop.fileMenu(id, image);
-}
-
-export function desktopRemote() {
-  return Boolean((window as DesktopWindow).nodDesktop?.remote);
-}
-
-export function desktopFolderPicker() {
-  const bridge = (window as DesktopWindow).nodDesktop;
-  return bridge?.remote ? undefined : bridge?.chooseFolder;
 }

@@ -273,7 +273,9 @@ test(
                     .execute(
                       plan.tool === 'read_source'
                         ? plan.args
-                        : plan.tool === 'browser' || plan.tool === 'sign_in'
+                        : plan.tool === 'browser' ||
+                            plan.tool === 'sign_in' ||
+                            plan.tool === 'files'
                           ? { action: plan.action, ...plan.args }
                           : { action: plan.action, args: plan.args },
                     );
@@ -287,6 +289,10 @@ test(
           dispose() {
             if (recordClosingUsage) reportClosingUsage();
           },
+        },
+        trash: {
+          ready: async () => true,
+          put: (path: string) => rm(path, { recursive: true }),
         },
         computer: fakeComputer({
           signInMethods: async (_browser, origin, methods) => {
@@ -2298,91 +2304,116 @@ test(
         },
       );
       await t.test(
-        'local file actions show the checker real paths and stop when the folder is unshared',
+        'local files open only in work the owner started, and opening needs their words',
         async () => {
-          const shared = await realpath(await mkdtemp(join(homedir(), 'nod-local-files-')));
-          t.after(() => rm(shared, { recursive: true, force: true }));
-          await mkdir(join(shared, 'sorted'));
-          await writeFile(join(shared, 'a.txt'), 'a');
+          const folder = await realpath(await mkdtemp(join(homedir(), 'nod-local-files-')));
+          t.after(() => rm(folder, { recursive: true, force: true }));
+          await mkdir(join(folder, 'sorted'));
+          await writeFile(join(folder, 'a.txt'), 'a');
+          await writeFile(join(folder, 'contract.txt'), 'Synthetic contract');
+          const text = (id: string) => JSON.stringify(results.get(id));
+          const eventPrompt = `Synthetic event ${randomUUID()}`;
+          plans.set(eventPrompt, { tool: 'files', action: 'list', args: { path: folder } });
+          const event = await enqueueTurn(eventPrompt, { source: 'event', background: true });
+          await waitFor(event, 'succeeded|failed');
+          assert.match(
+            text(event) ??
+              (await pool.query('SELECT error FROM turns WHERE id=$1', [event])).rows[0].error,
+            /work the owner started/,
+          );
+          assert.deepEqual(await approvalsFor(event), []);
+          const listText = `List the synthetic folder ${randomUUID()}`;
+          asked.add(listText);
+          const listed = await propose('list', { path: folder }, 'files', listText);
+          assert.deepEqual(await approvalsFor(listed), []);
+          assert.match(text(listed), /contract\.txt/);
+          const unnamed = await propose(
+            'read',
+            { path: `${folder}/sorted/../contract.txt` },
+            'files',
+          );
+          const [held] = await approvalsFor(unnamed);
+          assert.equal(held.status, 'pending');
+          assert.equal(held.action, 'LOCAL_FILES_READ');
+          assert.deepEqual(held.args, { path: join(folder, 'contract.txt') });
+          const readText = `Summarize contract.txt ${randomUUID()}`;
+          asked.add(readText);
+          const opened = await propose(
+            'read',
+            { path: join(folder, 'contract.txt') },
+            'files',
+            readText,
+          );
+          assert.deepEqual(await approvalsFor(opened), []);
+          assert.match(text(opened), /Synthetic contract/);
+          const schedule = await reminder();
+          const scheduledPrompt = `Synthetic scheduled listing ${randomUUID()}`;
+          plans.set(scheduledPrompt, { tool: 'files', action: 'list', args: { path: folder } });
+          const scheduled = await transaction(async (client) => {
+            const turnId = await enqueueTurn(scheduledPrompt, {
+              source: 'schedule',
+              sourceId: `schedule-fixture:${randomUUID()}`,
+              background: true,
+              client,
+            });
+            await client.query(
+              `INSERT INTO schedule_runs(id,owner_id,schedule_id,schedule_revision,job_id,title,turn_id,scheduled_for,time_zone,authority_instruction)
+               VALUES($1,$2,$3,0,$4,$5,$6,$7,'UTC',$8)`,
+              [
+                randomUUID(),
+                ownerId,
+                schedule.id,
+                randomUUID(),
+                'Synthetic listing',
+                turnId,
+                new Date().toISOString(),
+                'List the synthetic folder.',
+              ],
+            );
+            return turnId;
+          }, pool);
+          await waitFor(scheduled, 'waiting|succeeded');
+          assert.doesNotMatch(text(scheduled), /work the owner started/);
+          const keepText = `Never touch the sorted folder ${randomUUID()}`;
+          const keptOut = await propose(
+            'keep_out',
+            { path: join(folder, 'sorted') },
+            'files',
+            keepText,
+          );
+          assert.deepEqual(await approvalsFor(keptOut), []);
+          const moveText = `Move a.txt into sorted ${randomUUID()}`;
+          asked.add(moveText);
+          plans.set(moveText, {
+            tool: 'files',
+            action: 'move',
+            args: { moves: [{ from: join(folder, 'a.txt'), to: join(folder, 'sorted', 'a.txt') }] },
+          });
+          const moved = (await request('POST', '/api/messages', { text: moveText })).json()
+            .turnId as string;
+          await waitFor(moved, 'succeeded|failed');
+          assert.match(
+            text(moved) ??
+              (await pool.query('SELECT error FROM turns WHERE id=$1', [moved])).rows[0].error,
+            /keep out of .*sorted/,
+          );
+          assert.equal(await readFile(join(folder, 'a.txt'), 'utf8'), 'a');
           assert.equal(
             (
               await application.app.inject({
-                method: 'GET',
-                url: '/api/local-files',
+                method: 'DELETE',
+                url: '/api/local-files/keep-out',
                 headers: { host: headers.host },
+                payload: { path: join(folder, 'sorted') },
               })
             ).statusCode,
             401,
           );
-          assert.equal(
-            (
-              await application.app.inject({
-                method: 'POST',
-                url: '/api/local-files',
-                headers: { ...headers, origin: 'https://elsewhere.example' },
-                payload: { path: shared },
-              })
-            ).statusCode,
-            403,
-          );
-          const added = await request('POST', '/api/local-files', { path: shared });
-          assert.equal(added.statusCode, 200, added.body);
-          assert.deepEqual(added.json().folders, [{ path: shared, readOnly: false }]);
-          await writeFile(join(shared, 'scan.pdf'), '%PDF-synthetic');
-          const importText = `Copy the synthetic scan ${randomUUID()}`;
-          asked.add(importText);
-          const imported = await propose(
-            'LOCAL_FILES_IMPORT',
-            { path: join(shared, 'scan.pdf') },
-            'apps',
-            importText,
-          );
-          assert.deepEqual(await approvalsFor(imported), []);
-          assert.match(JSON.stringify(results.get(imported)), /workspaceFile/);
-          const checked = fallbackChecks.length;
-          const held = await propose(
-            'LOCAL_FILES_MOVE',
-            {
-              moves: [
-                {
-                  from: join(shared, 'sorted', '..', 'a.txt'),
-                  to: join(shared, 'sorted', 'a.txt'),
-                },
-              ],
-            },
-            'apps',
-          );
-          const moves = [{ from: join(shared, 'a.txt'), to: join(shared, 'sorted', 'a.txt') }];
-          assert.ok(
-            (
-              fallbackChecks.slice(checked) as Array<{
-                action?: { name?: string; arguments?: { moves?: unknown } };
-              }>
-            ).some(
-              (input) =>
-                input.action?.name === 'LOCAL_FILES_MOVE' &&
-                JSON.stringify(input.action.arguments?.moves) === JSON.stringify(moves),
-            ),
-          );
-          const [card] = await approvalsFor(held);
-          assert.equal(card.status, 'pending');
-          assert.deepEqual(card.args.moves, moves);
-          const removed = await application.app.inject({
-            method: 'DELETE',
-            url: '/api/local-files',
-            headers,
-            payload: { path: shared },
+          const letIn = await request('DELETE', '/api/local-files/keep-out', {
+            path: join(folder, 'sorted'),
           });
-          assert.deepEqual(removed.json().folders, []);
-          const reply = await request('POST', '/api/messages', {
-            text: 'Yes',
-            replyToMessageId: card.confirmation_message_id,
-            clientMessageId: randomUUID(),
-          });
-          await waitFor(reply.json().turnId, 'succeeded|failed');
-          assert.notEqual((await approvalsFor(held))[0].status, 'completed');
-          assert.equal(await readFile(join(shared, 'a.txt'), 'utf8'), 'a');
-          assert.equal(existsSync(join(shared, 'sorted', 'a.txt')), false);
+          assert.equal(letIn.statusCode, 200, letIn.body);
+          assert.ok(!letIn.json().paths.includes(join(folder, 'sorted')));
         },
       );
       await t.test('shutdown saves usage from the last provider before it returns', async () => {

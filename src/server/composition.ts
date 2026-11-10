@@ -44,7 +44,7 @@ import { createMailCheck } from './mail-check.ts';
 import type { CredentialKeyStore } from '../ports/key-store.ts';
 import type { PasswordManager } from '../ports/password-manager.ts';
 import type { Trash } from '../ports/trash.ts';
-import { commandTrash, desktopTrash } from '../providers/trash.ts';
+import { desktopTrash } from '../providers/trash.ts';
 import type { MemoryCurator } from '../ports/memory-curator.ts';
 import type { DecisionModel, ModelReview } from '../ports/decisions.ts';
 import { createDecisionModel, createOpenRouterDecisionCatalog } from '../providers/decisions.ts';
@@ -135,14 +135,7 @@ import { createChannels } from './channels.ts';
 import { createChannelSettings, managedChannelEnvironment } from './channel-settings.ts';
 import { createChannelMedia } from './channel-media.ts';
 import { createChannelSessionStore } from './channel-session.ts';
-import {
-  authToken,
-  configuration,
-  dataRoot,
-  desktopMode,
-  ownerId,
-  publicOrigin,
-} from './config.ts';
+import { configuration, dataRoot, desktopMode, ownerId, publicOrigin } from './config.ts';
 import { createAccountStore } from './account-store.ts';
 import { createModelTraces, type ModelTraceGate } from './traces.ts';
 import { runtimeAccount } from './account-profile.ts';
@@ -477,11 +470,7 @@ export function createDefaultAdapters(
     passwordManager: createOnePassword({
       open: desktopMode ? desktopOnePassword() : forkedOnePassword(env.NOD_APP_VERSION || 'source'),
     }),
-    trash: desktopMode
-      ? desktopTrash()
-      : process.platform === 'darwin'
-        ? commandTrash()
-        : undefined,
+    trash: desktopMode ? desktopTrash() : undefined,
     workspace: createDockerWorkspace({
       container: env.WORKSPACE_CONTAINER || 'nod-workspace',
       workspaceRoot: join(dataRoot, 'workspaces'),
@@ -1041,9 +1030,7 @@ async function initializeApplication(
   const localFiles = createLocalFiles(pool, ownerId, {
     dataRoot,
     trash: adapters.trash,
-    available: !authToken,
-    analytics: captureAnalytics,
-    consentRevision: () => analyticsConsent().revision,
+    available: Boolean(adapters.trash),
   });
   const integrations = await createIntegrations(pool, {
     localFiles,
@@ -2062,7 +2049,12 @@ async function initializeApplication(
         }
         return vault.request(turn, ownerId, request);
       },
+      localFiles: localFiles.available,
       integration: async (turn, action, args, options) => {
+        if (action === 'LOCAL_FILES_KEEP_OUT') {
+          await options.admit?.(false);
+          return { keptOut: await localFiles.keepOut(String(args.path ?? '')) };
+        }
         if (action === 'SEARCH_TOOLS') {
           await options.admit?.(false);
           const result = await integrations.execute(ownerId, action, args, turn, options.signal);

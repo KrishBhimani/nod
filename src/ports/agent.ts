@@ -128,6 +128,7 @@ export interface RuntimeContext {
   quietHours?: boolean;
   account?: RuntimeAccount;
   connectedApps?: ConnectedApp[];
+  localFiles?: boolean;
   mcpServers?: ConnectedMcpServer[];
   currentMessageId?: string;
   speech?: { mode: SpeechReplyMode; available: boolean };

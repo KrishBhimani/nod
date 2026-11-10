@@ -42,6 +42,7 @@ const tools: Record<string, string> = {
   pay: 'Entered a card',
   'browser session': 'Opened a saved session',
   apps: 'Used a connected app',
+  files: 'Handled local files',
   'manage apps': 'Checked connected apps',
   'manage personal context': 'Checked schedules or memory',
   skills: 'Used a skill',

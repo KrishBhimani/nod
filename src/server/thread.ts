@@ -161,6 +161,7 @@ export interface ThreadDependencies {
   skipTurn?: (sourceId: string) => Promise<boolean>;
   accountProfile?: () => Promise<RuntimeContext['account']>;
   connectedApps?: () => Promise<NonNullable<RuntimeContext['connectedApps']>>;
+  localFiles?: boolean;
   mcpServers?: () => Promise<NonNullable<RuntimeContext['mcpServers']>>;
   memoryContext?: () => Promise<RuntimeContext['memory']>;
   recall?: (
@@ -1374,6 +1375,7 @@ async function loadTurnContext(turn: any, dependencies: ThreadDependencies) {
       ...(related.length ? { relatedConversation: related } : {}),
       ...(learnedSkills?.length ? { learnedSkills } : {}),
       ...(connectedApps ? { connectedApps } : {}),
+      ...(dependencies.localFiles ? { localFiles: true } : {}),
       ...(mcpServers?.length ? { mcpServers } : {}),
     },
   };

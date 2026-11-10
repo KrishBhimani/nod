@@ -240,8 +240,9 @@ export async function checkJevTrust(
   const ownSettings = settings.has(action?.name ?? '');
   const signIn = signIns.has(action?.name ?? '');
   const upload =
-    action?.name === 'NOD_browser' &&
-    (action.arguments?.step === 'upload' || action.arguments?.command?.action === 'upload');
+    (action?.name === 'NOD_browser' &&
+      (action.arguments?.step === 'upload' || action.arguments?.command?.action === 'upload')) ||
+    ['LOCAL_FILES_READ', 'LOCAL_FILES_IMPORT'].includes(action?.name ?? '');
   const effect = first.additional.effect?.choice;
   if (typeof effect !== 'string' || !(effect in jevPolicy.effect.choices))
     throw new Error('The trust effects are incomplete.');

@@ -1,29 +1,12 @@
-import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { access } from 'node:fs/promises';
-import { promisify } from 'node:util';
 import type { Trash } from '../ports/trash.ts';
 
-const run = promisify(execFile);
 const answerMs = 60_000;
 
 type Parent = {
   on(event: 'message', listener: (event: { data: unknown }) => void): void;
   postMessage(message: unknown): void;
 };
-
-export function commandTrash(command = '/usr/bin/trash'): Trash {
-  return {
-    ready: () =>
-      access(command).then(
-        () => true,
-        () => false,
-      ),
-    put: async (path, signal) => {
-      await run(command, [path], { signal });
-    },
-  };
-}
 
 export function desktopTrash(): Trash {
   const parent = (process as NodeJS.Process & { parentPort?: Parent }).parentPort;

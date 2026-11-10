@@ -9,7 +9,6 @@ import { AppConnectionDialog, type AppSignIn } from '../components/app-connectio
 import { AppDiscoveryDialog } from '../components/app-discovery-dialog';
 import { ManualMcpDialog } from '../components/manual-mcp-dialog';
 import { IntegrationCard } from '../components/integration-card';
-import { LocalFilesCard, type LocalFilesState } from '../components/local-files-card';
 import { SearchPicker } from '../components/search-picker';
 import { Tabs } from '../components/tabs';
 import { Tooltip } from '../components/tooltip';
@@ -17,7 +16,7 @@ import { AppAccountManager } from '../components/app-account-manager';
 import { api, ApiError, errorMessage } from '../lib/api';
 import { connectionUrl, setupLinkHash } from '../lib/connection-url';
 import { searchApps } from '../lib/app-search';
-import { desktopLinksAvailable, desktopRemote, openConnection } from '../lib/desktop';
+import { desktopLinksAvailable, openConnection } from '../lib/desktop';
 import {
   connectionGroups,
   connectionIdentity,
@@ -98,13 +97,6 @@ export function Apps({
       captureAnalytics('ui_error', { area: 'apps', action: 'load' });
   }, [loadError, catalogError, catalogStatus]);
   const [query, setQuery] = useState('');
-  const [localFiles, setLocalFiles] = useState<LocalFilesState>();
-  useEffect(() => {
-    if (desktopRemote()) return;
-    api<LocalFilesState>('/api/local-files')
-      .then(setLocalFiles)
-      .catch(() => undefined);
-  }, []);
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [visibleCount, setVisibleCount] = useState(24);
   const [error, setError] = useState('');
@@ -167,23 +159,12 @@ export function Apps({
         selectedCategories.includes(categoryKey(category)),
       ),
   );
-  const connected = filtered.filter((group) => group.accounts.length);
-  const available = filtered.filter((group) => !group.accounts.length);
-  const localShared = Boolean(localFiles?.folders.length);
-  const localVisible =
-    Boolean(localFiles?.available) &&
-    !selectedCategories.length &&
-    'local files folders computer downloads'.includes(search);
-  const localConnected = localVisible && localShared;
-  const localAvailable = localVisible && !localShared && view === 'all';
-  const localCard = localFiles && <LocalFilesCard state={localFiles} onChange={setLocalFiles} />;
-  const connectedCount =
-    groups.filter((group) => group.accounts.length).length + (localShared ? 1 : 0);
+  const connected = filtered.filter(hasCurrentAccount);
+  const available = filtered.filter((group) => !hasCurrentAccount(group));
+  const connectedCount = groups.filter(hasCurrentAccount).length;
   const hasFilters = Boolean(search || selectedCategories.length);
   const empty =
-    view === 'connected'
-      ? !connected.length && !localConnected
-      : !filtered.length && !localVisible && !catalogLoading && !catalogError;
+    view === 'connected' ? !connected.length : !filtered.length && !catalogLoading && !catalogError;
   function toggleCategory(category: string) {
     setSelectedCategories((current) =>
       current.includes(category)
@@ -524,10 +505,9 @@ export function Apps({
     button?.focus({ preventScroll: true });
   }
 
-  function cards(items: typeof groups, catalogCards = false, leading?: React.ReactNode) {
+  function cards(items: typeof groups, catalogCards = false) {
     return (
       <div className={catalogCards ? 'app-grid app-catalog-grid' : 'app-grid'}>
-        {leading}
         {items.map(({ key, service, accounts }) => {
           const addAccount =
             accounts.find(
@@ -752,16 +732,16 @@ export function Apps({
                 </Button>
               </Notice>
             )}
-            {(connected.length > 0 || localConnected) && (
+            {connected.length > 0 && (
               <section className="apps-group" aria-label="Connected apps">
                 {view === 'all' && <h2 id="apps-connected">Connected</h2>}
-                {cards(connected, false, localConnected && localCard)}
+                {cards(connected)}
               </section>
             )}
-            {view === 'all' && (available.length > 0 || localAvailable) && (
+            {view === 'all' && available.length > 0 && (
               <section className="apps-group" aria-labelledby="apps-available">
                 <h2 id="apps-available">More</h2>
-                {cards(available.slice(0, visibleCount), true, localAvailable && localCard)}
+                {cards(available.slice(0, visibleCount), true)}
                 {available.length > visibleCount && (
                   <div className="app-catalog-end" ref={catalogEnd} aria-hidden="true" />
                 )}

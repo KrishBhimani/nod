@@ -48,6 +48,7 @@ const tools = [
   'browser_session',
   'create_audio',
   'delegate',
+  'files',
   'follow_up',
   'manage_apps',
   'manage_personal_context',

@@ -2440,17 +2440,6 @@ else {
         if (!isEngine(event)) throw new Error('This action is unavailable.');
         return removeAllData();
       });
-      ipcMain.handle('nod:folder:choose', async (event) => {
-        if (!isEngine(event) || remoteConnection) throw new Error('This action is unavailable.');
-        const window = BrowserWindow.fromWebContents(event.sender);
-        const chosen = await dialog.showOpenDialog(window, {
-          title: 'Share a folder with Nod',
-          buttonLabel: 'Share folder',
-          defaultPath: app.getPath('downloads'),
-          properties: ['openDirectory', 'createDirectory'],
-        });
-        return chosen.canceled ? null : (chosen.filePaths[0] ?? null);
-      });
       ipcMain.handle('nod:settings:open', (event, section = 'general') => {
         if (!isEngine(event)) throw new Error('This action is unavailable.');
         if (!['general', 'models', 'preferences'].includes(section))

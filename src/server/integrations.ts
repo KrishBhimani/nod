@@ -767,25 +767,6 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
   }
 
   async function connectedApps(ownerId = configuredOwner, withAccount = false) {
-    const [folders, connected] = await Promise.all([
-      ownerId === configuredOwner ? options.localFiles?.folders() : undefined,
-      apps(ownerId, withAccount),
-    ]);
-    const local: Array<ConnectedApp & { accountId?: string }> = folders?.length
-      ? [
-          {
-            slug: 'local_files',
-            name: 'Local files',
-            status: 'connected',
-            triggersEnabled: false,
-            access: ['api'],
-          },
-        ]
-      : [];
-    return [...local, ...connected];
-  }
-
-  async function apps(ownerId: string, withAccount: boolean) {
     return (await list(ownerId, { refresh: false }))
       .filter((connection) => connection.status === 'connected' && !connection.savedLogin)
       .map((connection): ConnectedApp & { accountId?: string } => ({
@@ -1506,20 +1487,36 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     return row;
   }
 
-  async function assertOwnerRequested(turn?: TurnRef) {
-    const root = turn
-      ? await pool.query<{ source: string; message_id: string | null }>(
+  async function assertStartedByOwner(turn?: TurnRef) {
+    const { rows } = turn
+      ? await pool.query<{
+          id: string;
+          source: string;
+          message_id: string | null;
+          proactive: boolean;
+        }>(
           `WITH RECURSIVE lineage AS (
-            SELECT id,parent_turn_id,source,message_id,0 AS depth FROM turns WHERE id=$1 AND owner_id=$2 AND thread_id=$3
-            UNION ALL SELECT p.id,p.parent_turn_id,p.source,p.message_id,c.depth+1 FROM turns p JOIN lineage c ON c.parent_turn_id=p.id WHERE p.owner_id=$2 AND c.depth<100
-          ) SELECT source,message_id FROM lineage ORDER BY depth DESC LIMIT 1`,
+            SELECT id,parent_turn_id,source,message_id,proactive,0 AS depth FROM turns WHERE id=$1 AND owner_id=$2 AND thread_id=$3
+            UNION ALL SELECT p.id,p.parent_turn_id,p.source,p.message_id,p.proactive,c.depth+1 FROM turns p JOIN lineage c ON c.parent_turn_id=p.id WHERE p.owner_id=$2 AND p.thread_id=$3 AND c.depth<100
+          ) SELECT id,source,message_id,bool_or(proactive) OVER () AS proactive FROM lineage ORDER BY depth DESC LIMIT 1`,
           [turn.turnId, configuredOwner, turn.threadId],
         )
-      : undefined;
-    const origin = root?.rows[0];
-    if (origin?.source !== 'user' || !origin.message_id)
+      : { rows: [] };
+    const root = rows[0];
+    const owned =
+      root &&
+      !root.proactive &&
+      ((root.source === 'user' && root.message_id) ||
+        (root.source === 'schedule' &&
+          (
+            await pool.query(
+              'SELECT 1 FROM schedule_runs WHERE turn_id=$1 AND owner_id=$2 AND authority_instruction IS NOT NULL',
+              [root.id, configuredOwner],
+            )
+          ).rowCount));
+    if (!owned)
       throw new IntegrationError(
-        "Nod copies files from the owner's computer into its workspace only in work the owner asked for.",
+        "Local files only open in work the owner started: a message, or a schedule the owner set up. Nod didn't touch any file.",
         403,
       );
   }
@@ -1561,7 +1558,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       signal?.throwIfAborted();
       const localFiles = options.localFiles;
       if (!localFiles) throw new IntegrationError('Local files are unavailable.', 503);
-      if (action === 'LOCAL_FILES_IMPORT') await assertOwnerRequested(turn);
+      await assertStartedByOwner(turn);
       return withServiceAnalytics(
         options.analytics,
         { connection_method: 'local', consentRevision: options.analyticsConsent?.().revision },
@@ -1653,7 +1650,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
         };
       const { query, connectionId } = input.data;
       try {
-        const inventory = await apps(ownerId, false);
+        const inventory = await connectedApps(ownerId);
         if (
           connectionId &&
           !inventory.some((connection) => connection.connectionId === connectionId)
@@ -1709,13 +1706,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
             accountEmail,
           }));
         const discovered = await options.discovered?.search(query, connectionId, signal);
-        const localFolders = (await options.localFiles?.folders()) ?? [];
-        if (
-          !searched &&
-          !discovered?.accounts.length &&
-          !localFolders.length &&
-          (failed || !options.discovered)
-        )
+        if (!searched && !discovered?.accounts.length && (failed || !options.discovered))
           throw failed ?? new Error('No app tool catalog is available.');
         if (discovered?.accounts.length) {
           Object.assign(tools, {
@@ -1749,7 +1740,6 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
             },
           });
         }
-        if (!connectionId) Object.assign(tools, options.localFiles?.tools(localFolders, query));
         const catalog = Object.entries(search.tools);
         const requested = new Set(query.toLowerCase().split(/[\s,]+/));
         const exact = catalog.filter(([name]) => requested.has(name.toLowerCase()));
@@ -1817,7 +1807,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     signal?.throwIfAborted();
     if (isLocalFilesAction(action)) {
       if (!options.localFiles) throw new IntegrationError('Local files are unavailable.', 503);
-      if (action === 'LOCAL_FILES_IMPORT' && turn) await assertOwnerRequested(turn);
+      if (turn) await assertStartedByOwner(turn);
       const prepared = (await options.localFiles.prepare(action, args)) as Record<string, unknown>;
       if (!hasWorkspaceFiles(prepared)) return prepared;
       return (await pinWorkspaceFiles(prepared, (input) =>
@@ -2990,19 +2980,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
                 .replace(/[^\p{L}\p{N}]+/gu, ' ')} `.includes(` ${site} `);
             })
           : logins.slice(0, 20);
-        const localFolders = (await options.localFiles?.folders()) ?? [];
         return [
-          ...(localFolders.length
-            ? [
-                {
-                  slug: 'local_files',
-                  name: 'Local files',
-                  status: 'connected',
-                  folders: localFolders,
-                  note: 'Use apps SEARCH_TOOLS with "local files" for its tools.',
-                } as unknown as (typeof connections)[number],
-              ]
-            : []),
           ...connections.filter((connection) => !connection.savedLogin),
           ...matching,
           ...(matching.length < logins.length && !site
