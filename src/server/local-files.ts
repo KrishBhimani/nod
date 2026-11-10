@@ -495,10 +495,14 @@ export function createLocalFiles(
   }
 
   async function readFile(path: string, limit: number) {
-    if (!(await maybeLstat(path))?.isFile()) throw new IntegrationError(`${path} is not a file.`);
+    const checked = await maybeLstat(path);
+    if (!checked?.isFile()) throw new IntegrationError(`${path} is not a file.`);
     const file = await open(path, constants.O_RDONLY | noFollow | noBlock);
     try {
-      const size = (await file.stat()).size;
+      const opened = await file.stat();
+      if (opened.dev !== checked.dev || opened.ino !== checked.ino)
+        throw new IntegrationError(`${path} changed while Nod was opening it.`);
+      const size = opened.size;
       const length = Math.min(size, limit);
       const { buffer, bytesRead } = await file.read(Buffer.alloc(length), 0, length, 0);
       return { size, bytes: buffer.subarray(0, bytesRead) };

@@ -88,6 +88,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.local-files-card .notice {
+  white-space: normal;
+}
 .local-files-read-only {
   display: flex;
   align-items: center;

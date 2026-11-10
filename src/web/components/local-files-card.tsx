@@ -53,6 +53,7 @@ export function LocalFilesCard({
   return (
     <IntegrationCard
       id="local-files"
+      className="local-files-card"
       name="Local files"
       logo={<Folder aria-hidden="true" />}
       description={

@@ -11,7 +11,7 @@ Local files lets Nod work with folders on the computer it runs on, for example t
 
 Open **Apps** and select **Add folder** on **Local files**. In the desktop app, choose the folder in the folder picker. In a source install, enter the folder's absolute path. Nod checks that it can open the folder before it saves it.
 
-You can share folders inside your home folder, such as Downloads, or on an external drive or other mounted volume (under `/Volumes` on macOS, or a drive other than the system drive on Windows), but not a whole drive. Nod refuses:
+You can share folders inside your home folder, such as Downloads, or on an external drive under `/Volumes` on macOS or on a drive other than the system drive on Windows, but not a whole drive. On Linux, only folders inside your home folder can be shared. Nod refuses:
 
 - your whole disk, your home folder itself and any folder above it;
 - `Library` on macOS and `AppData` on Windows;
