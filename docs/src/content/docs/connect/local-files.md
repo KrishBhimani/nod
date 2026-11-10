@@ -23,7 +23,7 @@ On macOS, the first time Nod opens a protected folder, such as Downloads, Docume
 
 ## Keep Nod out of a folder
 
-Tell Nod, for example "never touch my Taxes folder". Nod adds it to a list it always refuses, without any judgment call: it doesn't list, open or change anything there, and doesn't move or trash a folder that contains it. Only you can take a folder off the list again, in **Settings**, **Privacy & data**, **Kept out of local files**. Nod can't remove one.
+Tell Nod, for example "never touch my Taxes folder", in a chat or a task you started. Nod adds it to a list of up to 100 folders it always refuses, without any judgment call: it doesn't list, open or change anything there, and doesn't move or trash a folder that contains it. Only you can take a folder off the list again, in **Settings**, **Privacy & data**, **Kept out of local files**. Nod can't remove one.
 
 ## Only work you started
 
@@ -51,7 +51,7 @@ Nod never deletes a file outright. When it replaces or edits a file, the previou
 
 - On Windows, `desktop.ini`, `Thumbs.db` and the Recycle Bin count as hidden; Nod doesn't read Windows' hidden attribute.
 - The list of secret files is by name. A secret in an ordinary file, such as a password in `notes.txt`, isn't recognized; keep such folders out of Nod.
-- Nod doesn't create programs or shortcuts, such as `.exe`, `.bat`, `.lnk` or `.url` files on Windows or `.command`, `.app`, `.pkg` or `.sh` files on macOS, and doesn't rename files into them. It can move an installer that already is one, keeping its kind. It doesn't change executable files either: on macOS files marked executable, on Windows programs and scripts such as `.exe`, `.bat`, `.ps1` or `.lnk`. Drives formatted as FAT or exFAT, such as many USB sticks, mark every file as executable on macOS, so Nod can list, read, move and trash files there but not write or edit them.
-- Links are followed, but the resolved path must still be allowed, so a link can't reach a refused place.
+- Nod doesn't create programs or shortcuts, such as `.exe`, `.bat`, `.lnk` or `.url` files on Windows or `.command`, `.app`, `.pkg`, `.dmg` or `.sh` files on macOS, and doesn't rename files into them. It can move an installer that already is one, as long as it keeps its extension. It doesn't change executable files either: on macOS files marked executable, on Windows programs and scripts such as `.exe`, `.bat`, `.ps1` or `.lnk`. Drives formatted as FAT or exFAT, such as many USB sticks, mark every file as executable on macOS, so Nod can list, read, move and trash files there but not write or edit them.
+- Links are followed, but the resolved path must still be allowed, so a link can't reach a refused place. A link with a relative target can be renamed but not moved to another folder, because it would point somewhere else there.
 - Commands Nod runs in its workspace can't see your files. Files reach the workspace only when Nod copies them there, and only through this check.
 - When you [share conversation traces](/trust/conversation-traces/), the text of files Nod reads is part of them, like any other tool result.

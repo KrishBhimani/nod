@@ -1487,40 +1487,6 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     return row;
   }
 
-  async function assertStartedByOwner(turn?: TurnRef) {
-    const { rows } = turn
-      ? await pool.query<{
-          id: string;
-          source: string;
-          message_id: string | null;
-          proactive: boolean;
-        }>(
-          `WITH RECURSIVE lineage AS (
-            SELECT id,parent_turn_id,source,message_id,proactive,0 AS depth FROM turns WHERE id=$1 AND owner_id=$2 AND thread_id=$3
-            UNION ALL SELECT p.id,p.parent_turn_id,p.source,p.message_id,p.proactive,c.depth+1 FROM turns p JOIN lineage c ON c.parent_turn_id=p.id WHERE p.owner_id=$2 AND p.thread_id=$3 AND c.depth<100
-          ) SELECT id,source,message_id,bool_or(proactive) OVER () AS proactive FROM lineage ORDER BY depth DESC LIMIT 1`,
-          [turn.turnId, configuredOwner, turn.threadId],
-        )
-      : { rows: [] };
-    const root = rows[0];
-    const owned =
-      root &&
-      !root.proactive &&
-      ((root.source === 'user' && root.message_id) ||
-        (root.source === 'schedule' &&
-          (
-            await pool.query(
-              'SELECT 1 FROM schedule_runs WHERE turn_id=$1 AND owner_id=$2 AND authority_instruction IS NOT NULL',
-              [root.id, configuredOwner],
-            )
-          ).rowCount));
-    if (!owned)
-      throw new IntegrationError(
-        "Local files only open in work the owner started: a message, or a schedule the owner set up. Nod didn't touch any file.",
-        403,
-      );
-  }
-
   async function workspaceBytes(
     turn: TurnRef | undefined,
     input: { workspaceFile: string; size?: number; sha256?: string },
@@ -1558,7 +1524,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       signal?.throwIfAborted();
       const localFiles = options.localFiles;
       if (!localFiles) throw new IntegrationError('Local files are unavailable.', 503);
-      await assertStartedByOwner(turn);
+      await localFiles.assertStartedByOwner(turn);
       return withServiceAnalytics(
         options.analytics,
         { connection_method: 'local', consentRevision: options.analyticsConsent?.().revision },
@@ -1807,7 +1773,7 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     signal?.throwIfAborted();
     if (isLocalFilesAction(action)) {
       if (!options.localFiles) throw new IntegrationError('Local files are unavailable.', 503);
-      if (turn) await assertStartedByOwner(turn);
+      if (turn) await options.localFiles.assertStartedByOwner(turn);
       const prepared = (await options.localFiles.prepare(action, args)) as Record<string, unknown>;
       if (!hasWorkspaceFiles(prepared)) return prepared;
       return (await pinWorkspaceFiles(prepared, (input) =>

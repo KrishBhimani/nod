@@ -208,6 +208,7 @@ export interface ApplicationAdapters {
   keyStore: CredentialKeyStore;
   passwordManager?: PasswordManager;
   trash?: Trash;
+  localFilesHome?: string;
   memoryCurator?: MemoryCurator;
   classificationCurator?: MemoryCurator;
   imageCurator?: MemoryCurator;
@@ -1029,6 +1030,7 @@ async function initializeApplication(
   const icon = previews ? cachedIcons((origin) => previews.icon(origin)) : undefined;
   const localFiles = createLocalFiles(pool, ownerId, {
     dataRoot,
+    home: adapters.localFilesHome,
     trash: adapters.trash,
     available: Boolean(adapters.trash),
   });
@@ -2053,7 +2055,9 @@ async function initializeApplication(
       integration: async (turn, action, args, options) => {
         if (action === 'LOCAL_FILES_KEEP_OUT') {
           await options.admit?.(false);
-          return { keptOut: await localFiles.keepOut(String(args.path ?? '')) };
+          return withTurnLock({ turnId: turn.turnId, signal: options.signal }, async (client) => ({
+            keptOut: await localFiles.keepOut(turn, String(args.path ?? ''), client),
+          }));
         }
         if (action === 'SEARCH_TOOLS') {
           await options.admit?.(false);

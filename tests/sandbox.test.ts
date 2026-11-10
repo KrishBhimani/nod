@@ -652,6 +652,8 @@ test('local files stay in home, skip secrets and kept-out folders, and never ove
   const keep: string[] = [];
   const pool = {
     query: async (sql: string, values: string[]) => {
+      if (sql.startsWith('WITH RECURSIVE'))
+        return { rows: [{ id: values[0], source: 'user', message_id: 'm', proactive: false }] };
       if (sql.startsWith('INSERT') && !keep.includes(values[1]!)) keep.push(values[1]!);
       return { rows: [{ local_keep_out: [...keep] }] };
     },
@@ -665,9 +667,11 @@ test('local files stay in home, skip secrets and kept-out folders, and never ove
         if (basename(path) === 'stuck.txt') throw new Error('Synthetic Trash failure');
         await mkdir(trash, { recursive: true });
         await rename(path, join(trash, basename(path)));
+        if (basename(path) === 'late.txt') throw new Error('The Trash did not answer.');
       },
     },
   });
+  const turn = { turnId: 'turn', threadId: 'thread' };
   try {
     assert.ok(
       ((await files.execute('LOCAL_FILES_LIST', { path: home })) as { entries: unknown[] }).entries
@@ -879,7 +883,7 @@ test('local files stay in home, skip secrets and kept-out folders, and never ove
         /secret/,
       );
     const sorted = join(shared, 'sorted');
-    await files.keepOut(`${sorted}/`);
+    await files.keepOut(turn, `${sorted}/`, pool);
     assert.deepEqual(keep, [sorted]);
     const shown = (await files.execute('LOCAL_FILES_LIST', { path: shared })) as {
       entries: Array<{ name: string }>;
@@ -913,6 +917,47 @@ test('local files stay in home, skip secrets and kept-out folders, and never ove
       ((await files.execute('LOCAL_FILES_READ', { path: note })) as { text: string }).text,
       '1 two two',
     );
+    await files.keepOut(turn, join(shared, 'Later', 'New'), pool);
+    assert.equal(keep.at(-1), join(shared, 'Later', 'New'));
+    const replaced = (await files.execute('LOCAL_FILES_WRITE', {
+      path: note,
+      text: 'fresh',
+      overwrite: true,
+    })) as { previousVersion?: string };
+    assert.equal(replaced.previousVersion, 'moved to the Trash');
+    assert.equal(await readFile(note, 'utf8'), 'fresh');
+    assert.equal(await readFile(join(trash, 'note.txt'), 'utf8'), '1 two two');
+    const late = join(shared, 'late.txt');
+    await writeFile(late, 'old');
+    await assert.rejects(
+      files.execute('LOCAL_FILES_EDIT', {
+        path: late,
+        edits: [{ oldText: 'old', newText: 'new' }],
+      }),
+      /is unchanged/,
+    );
+    assert.equal(await readFile(late, 'utf8'), 'old');
+    assert.deepEqual(
+      (await readdir(shared)).filter((name) => name.startsWith('.nod-')),
+      [],
+    );
+    await writeFile(join(shared, 'tool.sh'), 'echo hi');
+    const kinds = (await files.execute('LOCAL_FILES_MOVE', {
+      moves: [{ from: join(shared, 'tool.sh'), to: join(shared, 'tool.bash') }],
+    })) as { failed: Array<{ error: string }> };
+    assert.match(kinds.failed[0]?.error ?? '', /program or shortcut/);
+    await symlink('a-target.txt', join(shared, 'relative'));
+    const relative = (await files.execute('LOCAL_FILES_MOVE', {
+      moves: [
+        { from: join(shared, 'relative'), to: join(shared, 'Installers', 'relative') },
+        { from: join(shared, 'relative'), to: join(shared, 'renamed') },
+      ],
+    })) as { moved: unknown[]; failed: Array<{ error: string }> };
+    assert.match(relative.failed[0]!.error, /relative link/);
+    assert.equal(relative.moved.length, 1);
+    const off = createLocalFiles(pool, 'owner', { dataRoot: data, home, available: false });
+    await assert.rejects(off.prepare('LOCAL_FILES_LIST', { path: shared }), /desktop app/);
+    await assert.rejects(off.execute('LOCAL_FILES_READ', { path: note }), /desktop app/);
   } finally {
     await rm(base, { recursive: true, force: true });
   }

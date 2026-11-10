@@ -239,7 +239,7 @@ export async function checkJevTrust(
   const action = input.action;
   const ownSettings = settings.has(action?.name ?? '');
   const signIn = signIns.has(action?.name ?? '');
-  const upload =
+  const opensContent =
     (action?.name === 'NOD_browser' &&
       (action.arguments?.step === 'upload' || action.arguments?.command?.action === 'upload')) ||
     ['LOCAL_FILES_READ', 'LOCAL_FILES_IMPORT'].includes(action?.name ?? '');
@@ -248,7 +248,7 @@ export async function checkJevTrust(
     throw new Error('The trust effects are incomplete.');
   let kind = ownSettings ? 'settings' : signIn ? 'sign_in' : effect;
   if (action?.name === 'NOD_browser' && scores.unclear_read_step >= 0.5) kind = 'unknown';
-  if (upload) kind = 'update';
+  if (opensContent) kind = 'update';
   let read = false;
   const distribution = first.additional.effect.probabilities;
   const uncertainPrivate =
@@ -257,7 +257,7 @@ export async function checkJevTrust(
   const readCandidate =
     !ownSettings &&
     !signIn &&
-    !upload &&
+    !opensContent &&
     (effect === 'read' ||
       effect === 'prepare' ||
       uncertainPrivate ||

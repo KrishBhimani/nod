@@ -98,14 +98,17 @@ const secretNames = [
 ];
 const programs: Partial<Record<NodeJS.Platform, RegExp>> = {
   win32:
-    /\.(exe|com|bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|msi|msp|msc|lnk|pif|scr|cpl|hta|reg|dll|url|appref-ms|jar|chm|scf|library-ms|searchconnector-ms|settingcontent-ms)$/i,
+    /\.(exe|com|bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|msi|msp|msc|msix|msixbundle|appx|appxbundle|appinstaller|application|lnk|pif|scr|cpl|hta|reg|dll|xll|inf|sct|url|appref-ms|jar|chm|scf|iso|img|vhd|vhdx|library-ms|searchconnector-ms|settingcontent-ms)$/i,
   darwin:
-    /\.(command|tool|terminal|app|pkg|mpkg|workflow|scpt|scptd|applescript|sh|bash|zsh|jar|webloc|inetloc|fileloc)$/i,
+    /\.(command|tool|terminal|app|pkg|mpkg|dmg|mobileconfig|workflow|scpt|scptd|applescript|sh|bash|zsh|jar|webloc|inetloc|fileloc)$/i,
   linux: /\.(sh|bash|desktop|run|appimage|jar)$/i,
 };
 const run = promisify(execFile);
 const maybeLstat = (path: string) => lstat(path).catch(() => undefined);
+const keepOutLimit = 100;
 
+type Turn = { turnId: string; threadId: string };
+type Query = Pick<Pool, 'query'>;
 export type WorkspaceRead = (input: z.infer<typeof workspaceFileReference>) => Promise<Uint8Array>;
 
 function denied(error: unknown) {
@@ -194,22 +197,72 @@ export function createLocalFiles(
     localFileRules(process.platform, realHome, realData, process.env.SystemDrive),
   );
 
-  async function keptOut(): Promise<string[]> {
-    if (!available) return [];
-    const { rows } = await pool.query<{ local_keep_out: string[] }>(
+  async function keptOut(database: Query = pool): Promise<string[]> {
+    const { rows } = await database.query<{ local_keep_out: string[] }>(
       'SELECT local_keep_out FROM preferences WHERE owner_id=$1',
       [ownerId],
     );
     return rows[0]?.local_keep_out ?? [];
   }
 
-  async function keepOut(path: string) {
+  async function assertStartedByOwner(turn: Turn | undefined, database: Query = pool) {
+    const { rows } = turn
+      ? await database.query<{
+          id: string;
+          source: string;
+          message_id: string | null;
+          proactive: boolean;
+        }>(
+          `WITH RECURSIVE lineage AS (
+            SELECT id,parent_turn_id,source,message_id,proactive,0 AS depth FROM turns WHERE id=$1 AND owner_id=$2 AND thread_id=$3
+            UNION ALL SELECT p.id,p.parent_turn_id,p.source,p.message_id,p.proactive,c.depth+1 FROM turns p JOIN lineage c ON c.parent_turn_id=p.id WHERE p.owner_id=$2 AND p.thread_id=$3 AND c.depth<100
+          ) SELECT id,source,message_id,bool_or(proactive) OVER () AS proactive FROM lineage ORDER BY depth DESC LIMIT 1`,
+          [turn.turnId, ownerId, turn.threadId],
+        )
+      : { rows: [] };
+    const root = rows[0];
+    const owned =
+      root &&
+      !root.proactive &&
+      ((root.source === 'user' && root.message_id) ||
+        (root.source === 'schedule' &&
+          (
+            await database.query(
+              'SELECT 1 FROM schedule_runs WHERE turn_id=$1 AND owner_id=$2 AND authority_instruction IS NOT NULL',
+              [root.id, ownerId],
+            )
+          ).rowCount));
+    if (!owned)
+      throw new IntegrationError(
+        "Local files only open in work the owner started: a message, or a schedule the owner set up. Nod didn't touch any file.",
+        403,
+      );
+  }
+
+  async function resolvedAsFarAsItExists(path: string) {
+    const missing: string[] = [];
+    for (let current = path; ; current = nodePath.dirname(current)) {
+      const real = await realpath(current).catch(() => undefined);
+      if (real) return nodePath.join(real, ...missing.reverse());
+      if (nodePath.dirname(current) === current) return path;
+      missing.push(nodePath.basename(current));
+    }
+  }
+
+  async function keepOut(turn: Turn, path: string, database: Query) {
     if (!available) throw unavailable();
+    await assertStartedByOwner(turn, database);
     const input = absolute.safeParse(path.trim());
     if (!input.success) throw new IntegrationError('Name the absolute path to keep Nod out of.');
-    const resolved = nodePath.resolve(input.data);
-    const real = await realpath(resolved).catch(() => resolved);
-    const { rows } = await pool.query<{ local_keep_out: string[] }>(
+    const real = await resolvedAsFarAsItExists(nodePath.resolve(input.data));
+    const current = await keptOut(database);
+    if (current.includes(real)) return current;
+    if (current.length >= keepOutLimit)
+      throw new IntegrationError(
+        `The keep-out list already has ${keepOutLimit} folders. The owner can remove some in Settings.`,
+        409,
+      );
+    const { rows } = await database.query<{ local_keep_out: string[] }>(
       `INSERT INTO preferences(owner_id,local_keep_out) VALUES($1,ARRAY[$2]::text[])
        ON CONFLICT(owner_id) DO UPDATE SET local_keep_out=CASE WHEN $2=ANY(preferences.local_keep_out)
          THEN preferences.local_keep_out ELSE array_append(preferences.local_keep_out,$2) END
@@ -319,10 +372,6 @@ export function createLocalFiles(
       throw new IntegrationError(`The folder of ${target} changed. Nothing was changed.`, 409);
   }
 
-  async function absent(path: string) {
-    if (await maybeLstat(path)) throw new IntegrationError(`${path} already exists.`, 409);
-  }
-
   async function trashReady() {
     if (!(await options.trash?.ready()))
       throw new IntegrationError(
@@ -344,7 +393,17 @@ export function createLocalFiles(
     await unchanged(target, keep);
     const info = await lstat(source);
     const current = await maybeLstat(target);
-    if (current?.ino === info.ino && current.dev === info.dev) return rename(source, target);
+    if (
+      current &&
+      info.ino &&
+      current.ino === info.ino &&
+      current.dev === info.dev &&
+      process.platform !== 'linux' &&
+      source !== target &&
+      source.toLowerCase() === target.toLowerCase()
+    )
+      return rename(source, target);
+    if (current) throw taken(target);
     const fail = (error: NodeJS.ErrnoException) => {
       throw error.code === 'EEXIST' ? taken(target) : error;
     };
@@ -383,7 +442,12 @@ export function createLocalFiles(
       });
     }
     if (info.isSymbolicLink()) {
-      await symlink(await readlink(source), target).catch(fail);
+      const pointer = await readlink(source);
+      if (!nodePath.isAbsolute(pointer) && nodePath.dirname(source) !== nodePath.dirname(target))
+        throw new IntegrationError(
+          `${source} is a relative link, so moving it to another folder would change where it points.`,
+        );
+      await symlink(pointer, target).catch(fail);
       return rm(source).catch(async (error) => {
         await rm(target, { force: true });
         throw error;
@@ -431,7 +495,22 @@ export function createLocalFiles(
       await toTrash(path, signal);
     } catch (error) {
       await rm(temporary, { force: true });
+      const lost =
+        Boolean(backup) && !(await maybeLstat(path)) && Boolean(await maybeLstat(backup));
+      const restored =
+        lost &&
+        (await place(backup, path, keep).then(
+          () => true,
+          () => false,
+        ));
       if (backupFolder) await rm(backupFolder, { recursive: true, force: true });
+      if (lost)
+        throw new IntegrationError(
+          restored
+            ? `${path} is unchanged. The Trash answered too late, so a copy of it may also be in the Trash.`
+            : `${path} went to the Trash, but its new version wasn't saved. It can be restored from the Trash.`,
+          409,
+        );
       throw error;
     }
     try {
@@ -442,7 +521,7 @@ export function createLocalFiles(
         () => true,
         () => false,
       );
-      if (restored) await rm(backupFolder, { recursive: true, force: true });
+      await rm(backupFolder, { recursive: true, force: true });
       throw new IntegrationError(
         restored
           ? `${path} was not replaced and is unchanged. A copy of it is in the Trash.`
@@ -517,6 +596,7 @@ export function createLocalFiles(
   }
 
   async function prepare(action: Action, args: Record<string, unknown>) {
+    if (!available) throw unavailable();
     const input = validate(action, args);
     const real = resolver(action, await keptOut());
     if (input.moves)
@@ -534,6 +614,7 @@ export function createLocalFiles(
     args: Record<string, unknown>,
     context: { signal?: AbortSignal; read?: WorkspaceRead } = {},
   ) {
+    if (!available) throw unavailable();
     const { signal } = context;
     const input = validate(action, args) as Input;
     signal?.throwIfAborted();
@@ -552,7 +633,11 @@ export function createLocalFiles(
     const destination = async (path: string, source?: string) => {
       const resolved = await target(path);
       if (
-        (rule.program(resolved) && !(source && rule.program(source))) ||
+        (rule.program(resolved) &&
+          !(
+            source &&
+            nodePath.extname(source).toLowerCase() === nodePath.extname(resolved).toLowerCase()
+          )) ||
         (process.platform === 'win32' && /[. ]$/.test(resolved))
       )
         throw new IntegrationError(
@@ -576,7 +661,11 @@ export function createLocalFiles(
               const info = await maybeLstat(nodePath.join(path, item.name));
               return {
                 name: item.name,
-                kind: item.isDirectory() ? 'folder' : item.isSymbolicLink() ? 'link' : 'file',
+                kind: (info ?? item).isDirectory()
+                  ? 'folder'
+                  : (info ?? item).isSymbolicLink()
+                    ? 'link'
+                    : 'file',
                 size: info?.size,
                 modified: info?.mtime.toISOString(),
               };
@@ -615,8 +704,9 @@ export function createLocalFiles(
     }
     if (action === 'LOCAL_FILES_CREATE_FOLDER') {
       const path = await destination(input.path);
-      await absent(path);
-      await mkdir(path);
+      await mkdir(path).catch((error: NodeJS.ErrnoException) => {
+        throw error.code === 'EEXIST' ? taken(path) : error;
+      });
       return { created: path };
     }
     if (action === 'LOCAL_FILES_WRITE' || action === 'LOCAL_FILES_EXPORT') {
@@ -686,14 +776,31 @@ export function createLocalFiles(
   }
 
   function registerRoutes(app: FastifyInstance) {
-    app.get('/api/local-files/keep-out', async () => ({ available, paths: await keptOut() }));
-    app.delete('/api/local-files/keep-out', async (request) => ({
+    app.get('/api/local-files/keep-out', async () => ({
       available,
-      paths: await letIn(z.object({ path: z.string() }).strict().parse(request.body).path),
+      paths: available ? await keptOut() : [],
     }));
+    app.delete('/api/local-files/keep-out', async (request, reply) => {
+      if (!available) return reply.code(503).send({ error: unavailable().message });
+      const input = z
+        .object({ path: z.string().max(4096) })
+        .strict()
+        .safeParse(request.body);
+      if (!input.success)
+        return reply.code(400).send({ error: 'Name the folder to let Nod into.' });
+      return { available, paths: await letIn(input.data.path) };
+    });
   }
 
-  return { available, keptOut, keepOut, prepare, execute, registerRoutes };
+  return {
+    available,
+    keptOut,
+    keepOut,
+    assertStartedByOwner,
+    prepare,
+    execute,
+    registerRoutes,
+  };
 }
 
 export type LocalFiles = ReturnType<typeof createLocalFiles>;

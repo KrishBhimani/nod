@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
@@ -44,6 +44,8 @@ test(
     const runtimeRoot = await mkdtemp(join(tmpdir(), 'nod-test-runtime-'));
     t.after(() => rm(runtimeRoot, { recursive: true, force: true }));
     process.env.NOD_DATA_ROOT = runtimeRoot;
+    const localHome = await realpath(await mkdtemp(join(tmpdir(), 'nod-test-home-')));
+    t.after(() => rm(localHome, { recursive: true, force: true }));
     const { createApplication } = await import('../src/server/composition.ts');
     const { pool } = await import('../src/server/db.ts');
     const { dataRoot, ownerId, port } = await import('../src/server/config.ts');
@@ -290,6 +292,7 @@ test(
             if (recordClosingUsage) reportClosingUsage();
           },
         },
+        localFilesHome: localHome,
         trash: {
           ready: async () => true,
           put: (path: string) => rm(path, { recursive: true }),
@@ -2306,8 +2309,7 @@ test(
       await t.test(
         'local files open only in work the owner started, and opening needs their words',
         async () => {
-          const folder = await realpath(await mkdtemp(join(homedir(), 'nod-local-files-')));
-          t.after(() => rm(folder, { recursive: true, force: true }));
+          const folder = await mkdtemp(join(localHome, 'files-'));
           await mkdir(join(folder, 'sorted'));
           await writeFile(join(folder, 'a.txt'), 'a');
           await writeFile(join(folder, 'contract.txt'), 'Synthetic contract');
@@ -2322,6 +2324,26 @@ test(
             /work the owner started/,
           );
           assert.deepEqual(await approvalsFor(event), []);
+          const observer = await enqueueTurn(`Synthetic observer ${randomUUID()}`, {
+            source: 'event',
+            background: true,
+            proactive: true,
+          });
+          await waitFor(observer, 'succeeded|failed');
+          const taskPrompt = `Synthetic observer task ${randomUUID()}`;
+          plans.set(taskPrompt, { tool: 'files', action: 'list', args: { path: folder } });
+          const task = await enqueueTurn(taskPrompt, {
+            source: 'task',
+            background: true,
+            parentTurnId: observer,
+            proactive: false,
+          });
+          await waitFor(task, 'succeeded|failed');
+          assert.match(
+            text(task) ??
+              (await pool.query('SELECT error FROM turns WHERE id=$1', [task])).rows[0].error,
+            /work the owner started/,
+          );
           const listText = `List the synthetic folder ${randomUUID()}`;
           asked.add(listText);
           const listed = await propose('list', { path: folder }, 'files', listText);
