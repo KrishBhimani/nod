@@ -1775,7 +1775,8 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
       if (!options.localFiles) throw new IntegrationError('Local files are unavailable.', 503);
       if (turn) await options.localFiles.assertStartedByOwner(turn);
       const prepared = (await options.localFiles.prepare(action, args)) as Record<string, unknown>;
-      if (!hasWorkspaceFiles(prepared)) return prepared;
+      if (!hasWorkspaceFiles(prepared) || (!turn && !pin && pinnedWorkspaceFiles(prepared)))
+        return prepared;
       return (await pinWorkspaceFiles(prepared, (input) =>
         workspaceBytes(turn, input, signal),
       )) as Record<string, unknown>;

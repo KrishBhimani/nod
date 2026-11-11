@@ -353,6 +353,9 @@ test(
           },
         }),
         workspace: fakeWorkspace({
+          writeArtifact: async (_threadId, path, bytes) => {
+            workspaceFiles.set(path, bytes);
+          },
           readArtifact: async (_threadId, path) => {
             const bytes = workspaceFiles.get(path);
             if (!bytes) throw new Error('The workspace file is unavailable.');
@@ -2517,6 +2520,42 @@ test(
           });
           assert.equal(letIn.statusCode, 200, letIn.body);
           assert.ok(!letIn.json().paths.includes(join(folder, 'sorted')));
+        },
+      );
+      await t.test(
+        'local files export imported workspace files and refuse changed approved bytes',
+        async () => {
+          const folder = await mkdtemp(join(localHome, 'exports-'));
+          const source = join(folder, 'source.txt');
+          await writeFile(source, 'Synthetic local report');
+          const before = new Set(workspaceFiles.keys());
+          const importText = `Import the synthetic local report ${randomUUID()}`;
+          asked.add(importText);
+          await propose('import', { path: source }, 'files', importText);
+          const workspaceFile = [...workspaceFiles.keys()].find((path) => !before.has(path));
+          assert.ok(workspaceFile);
+          const file = { workspaceFile, mimeType: 'text/plain' };
+          const path = join(folder, 'exported.txt');
+          const exportText = `Save the synthetic local report ${randomUUID()}`;
+          asked.add(exportText);
+          const exported = await propose('export', { file, path }, 'files', exportText);
+          assert.deepEqual(await approvalsFor(exported), []);
+          assert.equal(await readFile(path, 'utf8'), 'Synthetic local report');
+
+          const heldPath = join(folder, 'held.txt');
+          const held = await propose('export', { file, path: heldPath }, 'files');
+          const [approval] = await approvalsFor(held);
+          assert.equal(approval.status, 'pending');
+          workspaceFiles.set(workspaceFile, Buffer.from('Changed synthetic local report'));
+          const response = await request('POST', '/api/messages', {
+            text: 'Yes',
+            replyToMessageId: approval.confirmation_message_id,
+            clientMessageId: randomUUID(),
+          });
+          await waitFor(response.json().turnId, 'succeeded');
+          assert.equal((await approvalsFor(held))[0].status, 'expired');
+          assert.equal(existsSync(heldPath), false);
+          assert.equal(await readFile(source, 'utf8'), 'Synthetic local report');
         },
       );
       await t.test('shutdown saves usage from the last provider before it returns', async () => {
