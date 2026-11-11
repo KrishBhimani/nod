@@ -104,7 +104,7 @@ In Nod chat, audio has an inline player with a waveform, play and pause, seek, e
 
 A sticker is a conversation message, not a request to review a file. Static and animated WebP stickers, Telegram TGS animations and WebM video stickers play inline. Animations pause outside the visible chat or when the app is hidden. The reduced-motion setting stops automatic playback. TGS playback uses a local canvas in a sandbox with no network access. Invalid or oversized animations keep their original download. Telegram's thumbnail can still help the model read a sticker; it does not appear as a second message card. A sticker sent as a reply stays linked to that message.
 
-A file message sent before model setup gets a setup notice without a media download or transcription. If a chat model is connected but speech is not set up, Nod directs you to **Settings → General → Voice** to connect a voice service or download free voices.
+A file message sent before model setup gets a setup notice without a media download or transcription. If a chat model is connected but speech is not set up, Nod directs you to **Settings → Voice & audio** to connect a voice service or download free voices.
 
 With Telegram or the WhatsApp QR connection, send an image, document, video or audio file with your message. Captions stay with the file. Reply directly to a task message or its file to continue that task. A reply to a pending question goes to the session that asked it.
 
@@ -126,7 +126,7 @@ Voice input reuses a connected OpenAI, OpenRouter or ElevenLabs account, or down
 
 Use text to approve an action. A file or voice attachment does not approve it.
 
-Ask Nod for a voice reply to get a native voice note. Choose a voice in **Settings → General → Voice**, using a connected OpenAI, OpenRouter or ElevenLabs account, or downloaded free voices. `TTS_MODEL` and `TTS_VOICE` set the default OpenAI speech model and voice. Speech calls use the spending-limit check and have usage records. OpenRouter reports the transcription cost. Where OpenAI returns supported usage, Nod calculates an API-price estimate. A speech response without a known price shows **No price** in Usage.
+Ask Nod for a voice reply to get a native voice note. Choose a voice in **Settings → Voice & audio**, using a connected OpenAI, OpenRouter or ElevenLabs account, or downloaded free voices. `TTS_MODEL` and `TTS_VOICE` set the default OpenAI speech model and voice. Speech calls use the spending-limit check and have usage records. OpenRouter reports the transcription cost. Where OpenAI returns supported usage, Nod calculates an API-price estimate. A speech response without a known price shows **No price** in Usage.
 
 Nod sends files up to 50 MB each. Large or unavailable files stay available in Nod. Long replies are split into messages. Nod shows typing status while work runs.
 
