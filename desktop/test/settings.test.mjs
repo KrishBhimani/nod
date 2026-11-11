@@ -1004,6 +1004,7 @@ test('fresh packaged Welcome captures one bounded opening and preserves an uncer
         assert.equal(event.properties.surface, 'desktop');
         assert.equal(event.properties.app_version, '0.1.17');
         assert.equal(event.properties.entry, 'native_setup');
+        assert.equal(event.properties.server_connection_telemetry_available, true);
         assert.equal(event.properties.$geoip_disable, true);
         assert.equal(event.properties.$process_person_profile, false);
         assert.deepEqual(
@@ -1019,6 +1020,7 @@ test('fresh packaged Welcome captures one bounded opening and preserves an uncer
             'entry',
             'environment',
             'route',
+            'server_connection_telemetry_available',
             'surface',
           ].sort(),
         );
@@ -1074,11 +1076,13 @@ test('fresh packaged Welcome captures one bounded opening and preserves an uncer
           assert.equal(opening.uuid, event.uuid);
           assert.equal(opening.openedAt, new Date(event.timestamp).getTime());
           assert.equal(opening.entry, 'native_setup');
+          assert.equal(opening.serverConnectionTelemetryAvailable, true);
           assert.deepEqual(await take(engineEvent, true, event.distinct_id), opening);
           await take(engineEvent, false, null);
           const enabledAt = Date.now();
           const resumed = await take(engineEvent, true, event.distinct_id);
           assert.equal(resumed.entry, 'app_ui');
+          assert.equal(resumed.serverConnectionTelemetryAvailable, undefined);
           assert.ok(resumed.openedAt >= enabledAt);
           assert.notEqual(resumed.uuid, event.uuid);
         }
@@ -4021,6 +4025,214 @@ test('a fresh desktop connects to a server without creating a local Vault, owner
     assert.equal(preparations, 0);
   } finally {
     await f.close();
+  }
+});
+
+test('verified server connections use the desktop ID and require both sharing gates', async (t) => {
+  for (const scenario of [
+    { name: 'sharing enabled', usageData: true, serverAnalytics: true, expected: true },
+    { name: 'server opt-out', usageData: false, serverAnalytics: true, expected: false },
+    {
+      name: 'older server without consent revision',
+      usageData: true,
+      serverAnalytics: true,
+      olderServer: true,
+      expected: false,
+    },
+    {
+      name: 'server collection disabled',
+      usageData: true,
+      serverAnalytics: false,
+      expected: false,
+    },
+    {
+      name: 'local Welcome opt-out',
+      usageData: true,
+      serverAnalytics: true,
+      localOptOut: true,
+      expected: false,
+    },
+  ]) {
+    await t.test(scenario.name, async (t) => {
+      const url = 'https://assistant.example.test';
+      const token = randomBytes(32).toString('base64url');
+      const f = await runningDesktop(
+        t,
+        async () =>
+          Response.json({
+            user: { id: 'server-owner' },
+            settings: {
+              onboardingCompleted: true,
+              usageData: scenario.usageData,
+              ...(scenario.olderServer ? {} : { usageDataRevision: '1' }),
+            },
+            analytics: { enabled: scenario.serverAnalytics },
+          }),
+        {
+          initialState: 'fresh',
+          packaged: true,
+          buildMetadata: { release: true },
+          version: '0.1.17',
+          prepareRuntime: () => assert.fail('A remote client must not prepare a local runtime.'),
+        },
+      );
+      try {
+        await f.launch();
+        const opening = await waitFor(
+          () => {
+            const events = f.nativeAnalytics.filter((item) => item.event === 'app_opened');
+            assert.equal(events.length, 1);
+            return events[0];
+          },
+          { attempts: 40, interval: 10 },
+        );
+        await f.checkRemoteConnection({ url, token });
+        assert.equal(
+          f.nativeAnalytics.filter((item) => item.event === 'server_connection_verified').length,
+          0,
+        );
+        if (scenario.localOptOut) {
+          const setup = f.windows[0];
+          await f.handlers.get('nod:settings:save')(
+            { sender: setup.webContents, senderFrame: setup.webContents.mainFrame },
+            { welcome: { usageData: false, continued: false } },
+          );
+        }
+        await f.storage.store.saveConnection({ url, token });
+        assert.equal((await f.prepare()).phase, 'ready');
+        if (scenario.expected)
+          await waitFor(
+            () => {
+              assert.equal(
+                f.nativeAnalytics.filter((item) => item.event === 'server_connection_verified')
+                  .length,
+                1,
+              );
+              return true;
+            },
+            { attempts: 40, interval: 10 },
+          );
+        else await new Promise((resolve) => setTimeout(resolve, 50));
+        const verified = f.nativeAnalytics.filter(
+          (item) => item.event === 'server_connection_verified',
+        );
+        assert.equal(verified.length, scenario.expected ? 1 : 0);
+        if (!scenario.expected) return;
+        assert.equal(verified[0].api_key, posthogHost.key);
+        assert.equal(verified[0].distinct_id, opening.distinct_id);
+        assert.match(verified[0].distinct_id, /^local:[0-9a-f-]{36}$/);
+        assert.match(
+          verified[0].uuid,
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        );
+        assert.ok(new Date(verified[0].timestamp) >= new Date(opening.timestamp));
+        assert.deepEqual(Object.keys(verified[0]).sort(), [
+          'api_key',
+          'distinct_id',
+          'event',
+          'properties',
+          'timestamp',
+          'uuid',
+        ]);
+        assert.deepEqual(verified[0].properties, {
+          analytics_schema: posthogHost.schemaVersion,
+          environment: 'production',
+          surface: 'desktop',
+          app_version: '0.1.17',
+          route: '/server',
+          $current_url: 'https://app.example/server',
+          $pathname: '/server',
+          $host: 'app.example',
+          $process_person_profile: false,
+          $geoip_disable: true,
+        });
+      } finally {
+        await f.close();
+      }
+    });
+  }
+});
+
+test('server consent changes during native capture suppress a verified connection', async (t) => {
+  for (const scenario of [
+    { name: 'opt-out', finalSharing: false, finalRevision: '2' },
+    { name: 'opt-out then opt-in', finalSharing: true, finalRevision: '3' },
+  ]) {
+    await t.test(scenario.name, { timeout: 15_000 }, async (t) => {
+      const url = 'https://assistant.example.test';
+      const token = randomBytes(32).toString('base64url');
+      const loading = deferred();
+      const metadata = deferred();
+      let capturePending = false;
+      let serverSharing = true;
+      let usageDataRevision = '1';
+      const observedSessions = [];
+      const f = await runningDesktop(
+        t,
+        async (resource) => {
+          if (String(resource) === `${url}/api/session`)
+            observedSessions.push({ usageData: serverSharing, revision: usageDataRevision });
+          return Response.json({
+            user: { id: 'server-owner' },
+            settings: {
+              onboardingCompleted: true,
+              usageData: serverSharing,
+              usageDataRevision,
+            },
+            analytics: { enabled: true },
+          });
+        },
+        {
+          initialState: 'fresh',
+          packaged: true,
+          buildMetadata: { release: true },
+          version: '0.1.17',
+          prepareRuntime: () => assert.fail('A remote client must not prepare a local runtime.'),
+          nativeMetadataRead: () => {
+            if (!capturePending) return;
+            loading.resolve();
+            return metadata.promise;
+          },
+        },
+      );
+      try {
+        await f.launch();
+        await waitFor(
+          () => {
+            assert.equal(f.nativeAnalytics.filter((item) => item.event === 'app_opened').length, 1);
+            return true;
+          },
+          { attempts: 40, interval: 10 },
+        );
+        capturePending = true;
+        await f.storage.store.saveConnection({ url, token });
+        assert.equal((await f.prepare()).phase, 'ready');
+        await loading.promise;
+        assert.deepEqual(observedSessions, [{ usageData: true, revision: '1' }]);
+        serverSharing = scenario.finalSharing;
+        usageDataRevision = scenario.finalRevision;
+        metadata.resolve();
+        await waitFor(
+          () => {
+            assert.equal(observedSessions.length, 2);
+            return true;
+          },
+          { attempts: 40, interval: 10 },
+        );
+        assert.deepEqual(observedSessions[1], {
+          usageData: scenario.finalSharing,
+          revision: scenario.finalRevision,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        assert.equal(
+          f.nativeAnalytics.filter((item) => item.event === 'server_connection_verified').length,
+          0,
+        );
+      } finally {
+        metadata.resolve();
+        await f.close();
+      }
+    });
   }
 });
 
