@@ -18,7 +18,7 @@ const serviceFailureReason = z.enum([
 ]);
 const connectionProperties = z.object({
   app: z.string().regex(/^[a-z][a-z0-9_-]{0,79}$/),
-  connection_method: z.enum(['managed_app', 'browser', 'http', 'mcp', 'cli']),
+  connection_method: z.enum(['managed_app', 'browser', 'http', 'mcp', 'cli', 'local']),
 });
 const duration = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 export const taskType = z.enum([
@@ -44,6 +44,7 @@ export const analyticsTool = z.enum([
   'browser_session',
   'create_audio',
   'delegate',
+  'files',
   'manage_apps',
   'manage_personal_context',
   'pay',

@@ -26,16 +26,16 @@ The switch is separate from **Share usage data**, and you can turn either on wit
 
 While the switch is on, each request Nod makes to your model becomes one trace, from chats, tasks, helpers and background checks.
 
-| Sent, after scrubbing                                                     | Never sent                                                                              |
-| ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| The messages and tool results the model saw for that request              | Your account, installation or device identifier                                         |
-| Nod's instructions, without your saved memory, learned skills and formats | Images, which become `[image]`                                                          |
-| The names of the tools the model could use                                | Saved passwords, codes and cards, which Nod's model never sees                          |
-| The model's reply                                                         | Checks of emails that may give access to an account                                     |
-| The model name, token counts and cost                                     | Requests to decision services                                                           |
-|                                                                           | Separate requests to the models that write your memory, writing style or learned skills |
-|                                                                           | Its attention and review tasks, and any codemode step                                   |
-| Whether it came from chat, a task, a helper or a background check         | Your usage analytics, which have their own switch                                       |
+| Sent, after scrubbing                                                                                                           | Never sent                                                                              |
+| ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| The messages and tool results the model saw for that request, including text Nod read from [local files](/connect/local-files/) | Your account, installation or device identifier                                         |
+| Nod's instructions, without your saved memory, learned skills and formats                                                       | Images, which become `[image]`                                                          |
+| The names of the tools the model could use                                                                                      | Saved passwords, codes and cards, which Nod's model never sees                          |
+| The model's reply                                                                                                               | Checks of emails that may give access to an account                                     |
+| The model name, token counts and cost                                                                                           | Requests to decision services                                                           |
+|                                                                                                                                 | Separate requests to the models that write your memory, writing style or learned skills |
+|                                                                                                                                 | Its attention and review tasks, and any codemode step                                   |
+| Whether it came from chat, a task, a helper or a background check                                                               | Your usage analytics, which have their own switch                                       |
 
 n8n's service sees the sending machine's IP address when it receives a trace. For a self-hosted assistant, that is the server's address. It doesn't add the address to the trace.
 

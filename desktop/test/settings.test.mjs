@@ -471,6 +471,7 @@ async function runningDesktop(
   const notifications = [];
   const appEvents = new EventEmitter();
   const externalURLs = [];
+  const trashed = [];
   const updateMenu = {};
   const restartMenu = {};
   const ipc = Object.assign(new EventEmitter(), {
@@ -569,6 +570,10 @@ async function runningDesktop(
       }),
     },
     shell: {
+      trashItem: async (path) => {
+        if (path.includes('locked')) throw new Error('Synthetic locked file');
+        trashed.push(path);
+      },
       showItemInFolder: reveal,
       openExternal: async (url) => {
         externalURLs.push(url);
@@ -887,6 +892,7 @@ async function runningDesktop(
     handlers,
     notifications,
     externalURLs,
+    trashed,
     rendererReady,
     updateMenu,
     restartMenu,
@@ -3872,6 +3878,30 @@ test('the engine reaches 1Password only through a separate helper that may load 
   ]);
   engine.emit('exit', 1);
   assert.equal(helper.killed, true);
+});
+
+test('the engine moves only absolute paths to the system Trash and hears the result', async (t) => {
+  const f = await runningDesktop(t, async () => Response.json({ ok: true }), { allowStart: true });
+  f.crash();
+  assert.equal((await f.prepare()).phase, 'ready');
+  const [engine] = f.children;
+  const replies = () =>
+    JSON.parse(
+      JSON.stringify(engine.sent.filter((message) => message?.type === 'nod-trash-result')),
+    );
+  engine.emit('message', {
+    type: 'nod-trash',
+    id: 'a',
+    path: '/Users/synthetic/Downloads/old.zip',
+  });
+  engine.emit('message', { type: 'nod-trash', id: 'b', path: 'relative/old.zip' });
+  engine.emit('message', { type: 'nod-trash', id: 'c', path: '/Users/synthetic/locked.txt' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(f.trashed, ['/Users/synthetic/Downloads/old.zip']);
+  assert.deepEqual(replies(), [
+    { type: 'nod-trash-result', id: 'a' },
+    { type: 'nod-trash-result', id: 'c', error: 'The item could not be moved to the Trash.' },
+  ]);
 });
 
 test('a stale engine cannot open a 1Password helper', async (t) => {

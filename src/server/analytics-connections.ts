@@ -15,12 +15,14 @@ export type AnalyticsConnection = {
 
 function properties(connection: AnalyticsConnection) {
   const app =
-    connection.connection_method === 'managed_app' &&
-    connection.publicApp &&
-    connection.app &&
-    /^[a-z][a-z0-9_-]{0,79}$/.test(connection.app)
-      ? connection.app
-      : 'custom';
+    connection.connection_method === 'local'
+      ? 'local_files'
+      : connection.connection_method === 'managed_app' &&
+          connection.publicApp &&
+          connection.app &&
+          /^[a-z][a-z0-9_-]{0,79}$/.test(connection.app)
+        ? connection.app
+        : 'custom';
   return { app, connection_method: connection.connection_method };
 }
 

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -43,6 +44,8 @@ test(
     const runtimeRoot = await mkdtemp(join(tmpdir(), 'nod-test-runtime-'));
     t.after(() => rm(runtimeRoot, { recursive: true, force: true }));
     process.env.NOD_DATA_ROOT = runtimeRoot;
+    const localHome = await realpath(await mkdtemp(join(tmpdir(), 'nod-test-home-')));
+    t.after(() => rm(localHome, { recursive: true, force: true }));
     const { createApplication } = await import('../src/server/composition.ts');
     const { pool } = await import('../src/server/db.ts');
     const { dataRoot, ownerId, port } = await import('../src/server/config.ts');
@@ -272,7 +275,9 @@ test(
                     .execute(
                       plan.tool === 'read_source'
                         ? plan.args
-                        : plan.tool === 'browser' || plan.tool === 'sign_in'
+                        : plan.tool === 'browser' ||
+                            plan.tool === 'sign_in' ||
+                            plan.tool === 'files'
                           ? { action: plan.action, ...plan.args }
                           : { action: plan.action, args: plan.args },
                     );
@@ -286,6 +291,11 @@ test(
           dispose() {
             if (recordClosingUsage) reportClosingUsage();
           },
+        },
+        localFilesHome: localHome,
+        trash: {
+          ready: async () => true,
+          put: (path: string) => rm(path, { recursive: true }),
         },
         computer: fakeComputer({
           signInMethods: async (_browser, origin, methods) => {
@@ -343,6 +353,9 @@ test(
           },
         }),
         workspace: fakeWorkspace({
+          writeArtifact: async (_threadId, path, bytes) => {
+            workspaceFiles.set(path, bytes);
+          },
           readArtifact: async (_threadId, path) => {
             const bytes = workspaceFiles.get(path);
             if (!bytes) throw new Error('The workspace file is unavailable.');
@@ -2375,6 +2388,174 @@ test(
             'waiting',
           );
           assert.equal(await pending(), 1);
+        },
+      );
+      await t.test(
+        'local files open only in work the owner started, and opening needs their words',
+        async () => {
+          const folder = await mkdtemp(join(localHome, 'files-'));
+          await mkdir(join(folder, 'sorted'));
+          await writeFile(join(folder, 'a.txt'), 'a');
+          await writeFile(join(folder, 'contract.txt'), 'Synthetic contract');
+          const text = (id: string) => JSON.stringify(results.get(id));
+          const eventPrompt = `Synthetic event ${randomUUID()}`;
+          plans.set(eventPrompt, { tool: 'files', action: 'list', args: { path: folder } });
+          const event = await enqueueTurn(eventPrompt, { source: 'event', background: true });
+          await waitFor(event, 'succeeded|failed');
+          assert.match(
+            text(event) ??
+              (await pool.query('SELECT error FROM turns WHERE id=$1', [event])).rows[0].error,
+            /work the owner started/,
+          );
+          assert.deepEqual(await approvalsFor(event), []);
+          const observer = await enqueueTurn(`Synthetic observer ${randomUUID()}`, {
+            source: 'event',
+            background: true,
+            proactive: true,
+          });
+          await waitFor(observer, 'succeeded|failed');
+          const taskPrompt = `Synthetic observer task ${randomUUID()}`;
+          plans.set(taskPrompt, { tool: 'files', action: 'list', args: { path: folder } });
+          const task = await enqueueTurn(taskPrompt, {
+            source: 'task',
+            background: true,
+            parentTurnId: observer,
+            proactive: false,
+          });
+          await waitFor(task, 'succeeded|failed');
+          assert.match(
+            text(task) ??
+              (await pool.query('SELECT error FROM turns WHERE id=$1', [task])).rows[0].error,
+            /work the owner started/,
+          );
+          const listText = `List the synthetic folder ${randomUUID()}`;
+          asked.add(listText);
+          const listed = await propose('list', { path: folder }, 'files', listText);
+          assert.deepEqual(await approvalsFor(listed), []);
+          assert.match(text(listed), /contract\.txt/);
+          const unnamed = await propose(
+            'read',
+            { path: `${folder}/sorted/../contract.txt` },
+            'files',
+          );
+          const [held] = await approvalsFor(unnamed);
+          assert.equal(held.status, 'pending');
+          assert.equal(held.action, 'LOCAL_FILES_READ');
+          assert.deepEqual(held.args, { path: join(folder, 'contract.txt') });
+          const readText = `Summarize contract.txt ${randomUUID()}`;
+          asked.add(readText);
+          const opened = await propose(
+            'read',
+            { path: join(folder, 'contract.txt') },
+            'files',
+            readText,
+          );
+          assert.deepEqual(await approvalsFor(opened), []);
+          assert.match(text(opened), /Synthetic contract/);
+          const schedule = await reminder();
+          const scheduledPrompt = `Synthetic scheduled listing ${randomUUID()}`;
+          plans.set(scheduledPrompt, { tool: 'files', action: 'list', args: { path: folder } });
+          const scheduled = await transaction(async (client) => {
+            const turnId = await enqueueTurn(scheduledPrompt, {
+              source: 'schedule',
+              sourceId: `schedule-fixture:${randomUUID()}`,
+              background: true,
+              client,
+            });
+            await client.query(
+              `INSERT INTO schedule_runs(id,owner_id,schedule_id,schedule_revision,job_id,title,turn_id,scheduled_for,time_zone,authority_instruction)
+               VALUES($1,$2,$3,0,$4,$5,$6,$7,'UTC',$8)`,
+              [
+                randomUUID(),
+                ownerId,
+                schedule.id,
+                randomUUID(),
+                'Synthetic listing',
+                turnId,
+                new Date().toISOString(),
+                'List the synthetic folder.',
+              ],
+            );
+            return turnId;
+          }, pool);
+          await waitFor(scheduled, 'waiting|succeeded');
+          assert.doesNotMatch(text(scheduled), /work the owner started/);
+          const keepText = `Never touch the sorted folder ${randomUUID()}`;
+          const keptOut = await propose(
+            'keep_out',
+            { path: join(folder, 'sorted') },
+            'files',
+            keepText,
+          );
+          assert.deepEqual(await approvalsFor(keptOut), []);
+          const moveText = `Move a.txt into sorted ${randomUUID()}`;
+          asked.add(moveText);
+          plans.set(moveText, {
+            tool: 'files',
+            action: 'move',
+            args: { moves: [{ from: join(folder, 'a.txt'), to: join(folder, 'sorted', 'a.txt') }] },
+          });
+          const moved = (await request('POST', '/api/messages', { text: moveText })).json()
+            .turnId as string;
+          await waitFor(moved, 'succeeded|failed');
+          assert.match(
+            text(moved) ??
+              (await pool.query('SELECT error FROM turns WHERE id=$1', [moved])).rows[0].error,
+            /keep out of .*sorted/,
+          );
+          assert.equal(await readFile(join(folder, 'a.txt'), 'utf8'), 'a');
+          assert.equal(
+            (
+              await application.app.inject({
+                method: 'DELETE',
+                url: '/api/local-files/keep-out',
+                headers: { host: headers.host },
+                payload: { path: join(folder, 'sorted') },
+              })
+            ).statusCode,
+            401,
+          );
+          const letIn = await request('DELETE', '/api/local-files/keep-out', {
+            path: join(folder, 'sorted'),
+          });
+          assert.equal(letIn.statusCode, 200, letIn.body);
+          assert.ok(!letIn.json().paths.includes(join(folder, 'sorted')));
+        },
+      );
+      await t.test(
+        'local files export imported workspace files and refuse changed approved bytes',
+        async () => {
+          const folder = await mkdtemp(join(localHome, 'exports-'));
+          const source = join(folder, 'source.txt');
+          await writeFile(source, 'Synthetic local report');
+          const before = new Set(workspaceFiles.keys());
+          const importText = `Import the synthetic local report ${randomUUID()}`;
+          asked.add(importText);
+          await propose('import', { path: source }, 'files', importText);
+          const workspaceFile = [...workspaceFiles.keys()].find((path) => !before.has(path));
+          assert.ok(workspaceFile);
+          const file = { workspaceFile, mimeType: 'text/plain' };
+          const path = join(folder, 'exported.txt');
+          const exportText = `Save the synthetic local report ${randomUUID()}`;
+          asked.add(exportText);
+          const exported = await propose('export', { file, path }, 'files', exportText);
+          assert.deepEqual(await approvalsFor(exported), []);
+          assert.equal(await readFile(path, 'utf8'), 'Synthetic local report');
+
+          const heldPath = join(folder, 'held.txt');
+          const held = await propose('export', { file, path: heldPath }, 'files');
+          const [approval] = await approvalsFor(held);
+          assert.equal(approval.status, 'pending');
+          workspaceFiles.set(workspaceFile, Buffer.from('Changed synthetic local report'));
+          const response = await request('POST', '/api/messages', {
+            text: 'Yes',
+            replyToMessageId: approval.confirmation_message_id,
+            clientMessageId: randomUUID(),
+          });
+          await waitFor(response.json().turnId, 'succeeded');
+          assert.equal((await approvalsFor(held))[0].status, 'expired');
+          assert.equal(existsSync(heldPath), false);
+          assert.equal(await readFile(source, 'utf8'), 'Synthetic local report');
         },
       );
       await t.test('shutdown saves usage from the last provider before it returns', async () => {

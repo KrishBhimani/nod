@@ -65,6 +65,7 @@ const parallelTools = new Set([
 ]);
 const orderedTools = new Set([
   'apps',
+  'files',
   'manage_personal_context',
   'skills',
   'read_source',
@@ -83,6 +84,7 @@ const delimitedTools = new Set([
   'read_source',
   'proactive_issue',
   'apps',
+  'files',
   'delegate',
   'browser',
   'browser_session',
@@ -349,6 +351,7 @@ export function createAgentRuntime(dependencies: {
     );
     const appName = (name: string, params: unknown) => {
       if (name.startsWith('mcp__')) return servers.get(name.split('__')[1]);
+      if (name === 'files') return 'Handling local files';
       if (name !== 'apps') return undefined;
       const { action, args } = (params ?? {}) as {
         action?: unknown;
@@ -693,8 +696,25 @@ export function createAgentRuntime(dependencies: {
       const shared = {
         context: {
           ...context,
-          integration: (action: string, args: Record<string, unknown>, callSignal?: AbortSignal) =>
-            context.integration(action, args, callSignal, admissions.getStore()?.admit),
+          integration: (
+            action: string,
+            args: Record<string, unknown>,
+            callSignal?: AbortSignal,
+            admit?: (asks: boolean) => Promise<void>,
+          ) => {
+            const gate = admissions.getStore()?.admit;
+            return context.integration(
+              action,
+              args,
+              callSignal,
+              admit
+                ? async (asks: boolean) => {
+                    await admit(asks);
+                    await gate?.(asks);
+                  }
+                : gate,
+            );
+          },
           manage: async (action: string, args: Record<string, unknown>) => {
             const result = await context.manage(action, args, admissions.getStore()?.admit);
             signal.throwIfAborted();

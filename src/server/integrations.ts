@@ -58,6 +58,7 @@ import {
   type EmailCodeRequest,
 } from './email-code.ts';
 import { logFailure } from './failure-log.ts';
+import { isLocalFilesAction, type LocalFiles } from './local-files.ts';
 
 const unverifiedAccount =
   "Nod can't confirm this is the same account, so it can't reconnect it in place. Connect the app again as a new connection; the old one stays in Apps until you remove it.";
@@ -170,6 +171,7 @@ type IntegrationOptions = {
   callbackReturnTo?: 'window';
   refresh?(): void;
   discovered?: Awaited<ReturnType<typeof createDiscoveredConnections>>;
+  localFiles?: LocalFiles;
   browserAccounts?: (client?: PoolClient) => Promise<VaultLoginEntry[]>;
   browserConnections?: (client?: PoolClient) => Promise<Connection[]>;
   icon?: (origin: string) => Promise<SiteIcon | null>;
@@ -1485,6 +1487,30 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     return row;
   }
 
+  async function workspaceBytes(
+    turn: TurnRef | undefined,
+    input: { workspaceFile: string; size?: number; sha256?: string },
+    signal?: AbortSignal,
+  ) {
+    signal?.throwIfAborted();
+    if (!turn || !options.readWorkspaceFile)
+      throw new IntegrationError('Workspace files are unavailable.', 503);
+    const bytes = await options.readWorkspaceFile(turn, input.workspaceFile, fileBytes);
+    if (!bytes.byteLength || bytes.byteLength > fileBytes)
+      throw new IntegrationError(
+        `The file must be between 1 byte and ${fileBytes / 1024 / 1024} MB.`,
+      );
+    if (
+      input.sha256 !== undefined &&
+      (bytes.byteLength !== input.size || fileDigest(bytes) !== input.sha256)
+    )
+      throw new IntegrationError(
+        `${input.workspaceFile} changed after this action was confirmed, so nothing was written.`,
+        409,
+      );
+    return bytes;
+  }
+
   async function executeApproved(
     ownerId: string,
     action: string,
@@ -1493,6 +1519,24 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
     signal?: AbortSignal,
     expectedBinding?: string,
   ) {
+    if (isLocalFilesAction(action)) {
+      assertOwner(ownerId);
+      signal?.throwIfAborted();
+      const localFiles = options.localFiles;
+      if (!localFiles) throw new IntegrationError('Local files are unavailable.', 503);
+      await localFiles.assertStartedByOwner(turn);
+      return withServiceAnalytics(
+        options.analytics,
+        { connection_method: 'local', consentRevision: options.analyticsConsent?.().revision },
+        () =>
+          localFiles.execute(action, args, {
+            signal,
+            read: (input) => workspaceBytes(turn, input, signal),
+          }),
+        signal,
+        (result) => !(result as { failed?: unknown[] }).failed?.length,
+      );
+    }
     if (
       action === 'CONNECTED_HTTP' ||
       action === 'CONNECTED_MCP_CALL' ||
@@ -1727,6 +1771,16 @@ export async function createIntegrations(pool: Pool, options: IntegrationOptions
   ) {
     assertOwner(ownerId);
     signal?.throwIfAborted();
+    if (isLocalFilesAction(action)) {
+      if (!options.localFiles) throw new IntegrationError('Local files are unavailable.', 503);
+      if (turn) await options.localFiles.assertStartedByOwner(turn);
+      const prepared = (await options.localFiles.prepare(action, args)) as Record<string, unknown>;
+      if (!hasWorkspaceFiles(prepared) || (!turn && !pin && pinnedWorkspaceFiles(prepared)))
+        return prepared;
+      return (await pinWorkspaceFiles(prepared, (input) =>
+        workspaceBytes(turn, input, signal),
+      )) as Record<string, unknown>;
+    }
     if (['CONNECTED_HTTP', 'CONNECTED_MCP_CALL', 'CONNECTED_CLI'].includes(action)) {
       if (!options.discovered)
         throw new IntegrationError('Discovered connections are unavailable.', 503);

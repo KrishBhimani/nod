@@ -5,7 +5,7 @@ import { IntegrationDownload, type IntegrationFile } from '../ports/integrations
 
 const viewableImages = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 
-const workspaceFileInput = z
+export const workspaceFileInput = z
   .object({
     workspaceFile: z.string().min(1).max(4096),
     mimeType: z.string().regex(/^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/),
@@ -19,7 +19,7 @@ const workspaceFileInput = z
   })
   .strict();
 
-const workspaceFileReference = workspaceFileInput.extend({
+export const workspaceFileReference = workspaceFileInput.extend({
   sha256: z
     .string()
     .regex(/^[0-9a-f]{64}$/)

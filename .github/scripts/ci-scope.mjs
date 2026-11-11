@@ -58,7 +58,8 @@ else {
     }
     if (/^(src|public|tests)\//.test(path)) {
       core();
-      if (path === 'src/server/vault-crypto.ts') scope.windows = true;
+      if (path === 'src/server/vault-crypto.ts' || path === 'src/server/local-files.ts')
+        scope.windows = true;
       continue;
     }
     if (path.startsWith('desktop/')) {

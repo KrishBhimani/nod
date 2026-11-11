@@ -1064,6 +1064,16 @@ function openOnePassword(owner) {
   owner.once('exit', () => helper.kill());
 }
 
+async function moveToTrash(child, { id, path }) {
+  if (typeof id !== 'string' || typeof path !== 'string' || !isAbsolute(path)) return;
+  const error = await shell.trashItem(path).then(
+    () => undefined,
+    () => 'The item could not be moved to the Trash.',
+  );
+  if (engine === child)
+    child.postMessage({ type: 'nod-trash-result', id, ...(error ? { error } : {}) });
+}
+
 async function profileOwner() {
   const path = join(profileRoot, 'profile.json');
   async function published() {
@@ -1995,6 +2005,7 @@ async function startEngine({ runtime, signal, pending = false }) {
       engineBound = true;
     }
     if (engine === child && message?.type === 'nod-1password-open') openOnePassword(child);
+    if (engine === child && message?.type === 'nod-trash') void moveToTrash(child, message);
   });
   child.stdout?.resume();
   let diagnostics = '';

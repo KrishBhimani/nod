@@ -6,7 +6,7 @@ import { pool } from './db.ts';
 import { dataRoot, ownerId } from './config.ts';
 import { transaction } from './transaction.ts';
 import type { Artifact } from '../shared/contracts.ts';
-import { fileBytes, fileName } from '../shared/files.ts';
+import { fileBytes, fileMimeType, fileName } from '../shared/files.ts';
 import type { MessagingAttachment } from '../ports/messaging.ts';
 import { z } from 'zod';
 import type { Pool, PoolClient } from 'pg';
@@ -48,35 +48,6 @@ export function replyFileReferences(text: string) {
   return references.sort((a, b) => a.start - b.start);
 }
 
-const mimeTypes: Record<string, string> = {
-  '.txt': 'text/plain',
-  '.md': 'text/markdown',
-  '.csv': 'text/csv',
-  '.json': 'application/json',
-  '.vcf': 'text/vcard',
-  '.pdf': 'application/pdf',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp',
-  '.gif': 'image/gif',
-  '.avif': 'image/avif',
-  '.bmp': 'image/bmp',
-  '.svg': 'image/svg+xml',
-  '.mp3': 'audio/mpeg',
-  '.wav': 'audio/wav',
-  '.webm': 'audio/webm',
-  '.ogg': 'audio/ogg',
-  '.m4a': 'audio/mp4',
-  '.aac': 'audio/aac',
-  '.flac': 'audio/flac',
-  '.mp4': 'video/mp4',
-  '.ogv': 'video/ogg',
-  '.html': 'text/html',
-  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-};
 export function artifactView(row: Record<string, any>): Artifact {
   return {
     id: row.id,
@@ -316,7 +287,7 @@ export function createArtifactService(options: {
       name && !name.toLowerCase().endsWith(suffix.toLowerCase())
         ? `${name}${suffix}`
         : name || file,
-      mimeTypes[extname(actual).toLowerCase()] || 'application/octet-stream',
+      fileMimeType(actual),
       threadId,
       database,
       onCreated,

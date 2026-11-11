@@ -46,6 +46,8 @@ import { privateEmailResult } from './integration-result.ts';
 import { createMailCheck } from './mail-check.ts';
 import type { CredentialKeyStore } from '../ports/key-store.ts';
 import type { PasswordManager } from '../ports/password-manager.ts';
+import type { Trash } from '../ports/trash.ts';
+import { desktopTrash } from '../providers/trash.ts';
 import type { MemoryCurator } from '../ports/memory-curator.ts';
 import type { DecisionModel, ModelReview } from '../ports/decisions.ts';
 import { createDecisionModel, createOpenRouterDecisionCatalog } from '../providers/decisions.ts';
@@ -79,6 +81,7 @@ import {
 } from '../providers/discovered/remote.ts';
 import { createDiscoveredOAuth } from '../providers/discovered/oauth.ts';
 import { createDiscoveredConnections } from './discovered-connections.ts';
+import { createLocalFiles, isLocalFilesAction } from './local-files.ts';
 import { createAppGrantVault } from './vault-app-grants.ts';
 import { createDockerWorkspace } from '../providers/docker/index.ts';
 import { createEnvironmentKeyStore } from '../providers/environment/key-store.ts';
@@ -208,6 +211,8 @@ export interface ApplicationAdapters {
   observations?: ObservationProvider[];
   keyStore: CredentialKeyStore;
   passwordManager?: PasswordManager;
+  trash?: Trash;
+  localFilesHome?: string;
   memoryCurator?: MemoryCurator;
   classificationCurator?: MemoryCurator;
   imageCurator?: MemoryCurator;
@@ -470,6 +475,7 @@ export function createDefaultAdapters(
     passwordManager: createOnePassword({
       open: desktopMode ? desktopOnePassword() : forkedOnePassword(env.NOD_APP_VERSION || 'source'),
     }),
+    trash: desktopMode ? desktopTrash() : undefined,
     workspace: createDockerWorkspace({
       container: env.WORKSPACE_CONTAINER || 'nod-workspace',
       workspaceRoot: join(dataRoot, 'workspaces'),
@@ -1064,7 +1070,14 @@ async function initializeApplication(
   let browserConnections!: Awaited<ReturnType<typeof createBrowserConnections>>;
   const previews = adapters.linkPreviews;
   const icon = previews ? cachedIcons((origin) => previews.icon(origin)) : undefined;
+  const localFiles = createLocalFiles(pool, ownerId, {
+    dataRoot,
+    home: adapters.localFilesHome,
+    trash: adapters.trash,
+    available: Boolean(adapters.trash),
+  });
   const integrations = await createIntegrations(pool, {
+    localFiles,
     mailCheck,
     paused: async () => (await speechPreferences.get()).proactivePaused,
     analytics: captureAnalytics,
@@ -2099,24 +2112,37 @@ async function initializeApplication(
         }
         return vault.request(turn, ownerId, request);
       },
+      localFiles: localFiles.available,
       integration: async (turn, action, args, options) => {
+        if (action === 'LOCAL_FILES_KEEP_OUT') {
+          await options.admit?.(false);
+          return withTurnLock({ turnId: turn.turnId, signal: options.signal }, async (client) => ({
+            keptOut: await localFiles.keepOut(turn, String(args.path ?? ''), client),
+          }));
+        }
         if (action === 'SEARCH_TOOLS') {
           await options.admit?.(false);
           const result = await integrations.execute(ownerId, action, args, turn, options.signal);
           return result;
         }
-        const verdict = await trust.check(turn, action, args, options.signal);
+        const prepare = () =>
+          hasWorkspaceFiles(args)
+            ? withTurnLock(turn.turnId, (client) =>
+                integrations.prepare(ownerId, action, args, turn, options.signal, true, client),
+              )
+            : isLocalFilesAction(action)
+              ? integrations.prepare(ownerId, action, args, turn, options.signal)
+              : integrations.prepare(ownerId, action, args);
+        const resolved = isLocalFilesAction(action) ? await prepare() : undefined;
+        const verdict = await trust.check(turn, action, resolved ?? args, options.signal);
         await options.admit?.(verdict.confirm);
-        const prepared = hasWorkspaceFiles(args)
-          ? await withTurnLock(turn.turnId, (client) =>
-              integrations.prepare(ownerId, action, args, turn, options.signal, true, client),
-            )
-          : await integrations.prepare(ownerId, action, args);
-        const account = verdict.confirm
-          ? (await integrations.list(ownerId, { refresh: false })).find(
-              (item) => item.connectionId === prepared.connectionId,
-            )
-          : undefined;
+        const prepared = resolved ?? (await prepare());
+        const account =
+          verdict.confirm && typeof prepared.connectionId === 'string'
+            ? (await integrations.list(ownerId, { refresh: false })).find(
+                (item) => item.connectionId === prepared.connectionId,
+              )
+            : undefined;
         const path = account?.accessPaths?.find((item) => item.id === prepared.pathId);
         const result = await approvals.request(turn, action, prepared, {
           allowed: !verdict.confirm,
@@ -2249,6 +2275,7 @@ async function initializeApplication(
   browserConnections.registerRoutes(app);
   adapters.integrationBrowser?.registerRoutes(app);
   integrations.registerRoutes(app);
+  localFiles.registerRoutes(app);
   personal.registerRoutes(app);
   onboardingSuggestions.registerRoutes(app);
   onboardingProfile.registerRoutes(app);
