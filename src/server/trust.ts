@@ -3,6 +3,7 @@ import type { Pool } from 'pg';
 import type { DecisionModel, DecisionQuestion, ModelReview } from '../ports/decisions.ts';
 import { withTurnLock, type TurnRef } from './thread.ts';
 import { turnOrigin } from './approvals.ts';
+import { withdrawnSql } from './turn-chain.ts';
 import { trustBasis, type TrustBasis, type TrustWords } from './trust-basis.ts';
 
 import { createTrustReview } from './trust-review.ts';
@@ -55,6 +56,7 @@ export function createTrust(options: {
              NOT EXISTS (SELECT 1 FROM turns u WHERE u.owner_id=$1 AND (u.message_id=messages.id OR u.id=messages.turn_id)
                AND to_jsonb(u)->>'task_id' IS NOT NULL) AS chat
            FROM messages WHERE owner_id=$1 AND thread_id=$2 AND role='user' AND text<>''
+             AND NOT ${withdrawnSql('messages')}
              AND (created_at>$5 OR id=ANY($3::uuid[])) AND text NOT IN (
              SELECT task->>'title' FROM messages offer, jsonb_array_elements(offer.suggestions->'tasks') task
              WHERE offer.owner_id=$1 AND offer.thread_id=$2 AND task->>'title' IS NOT NULL)),
@@ -76,21 +78,22 @@ export function createTrust(options: {
         ? await pool.query<{ text: string }>(
             `WITH latest AS (SELECT m.id,m.created_at,m.reply_to_message_id,u.channel FROM messages m
                JOIN turns u ON u.id=m.turn_id AND u.owner_id=m.owner_id WHERE m.id=$3 AND m.owner_id=$1),
-             answered AS (SELECT a.id,a.text,a.turn_id FROM messages a, latest
+             answered AS (SELECT a.id,a.owner_id,a.text,a.turn_id FROM messages a, latest
                WHERE a.owner_id=$1 AND a.thread_id=$2 AND a.role='assistant' AND a.text<>'' AND a.hidden_at IS NULL
                  AND a.created_at>$5 AND (a.created_at,a.id)<(latest.created_at,latest.id)
                  AND (a.id=latest.reply_to_message_id OR (latest.reply_to_message_id IS NULL
                    AND EXISTS (SELECT 1 FROM turns c WHERE c.id=a.turn_id AND c.owner_id=$1 AND c.channel=latest.channel)))
                ORDER BY a.created_at DESC,a.id DESC LIMIT 1)
-             SELECT text FROM answered WHERE EXISTS (SELECT 1 FROM turns u WHERE u.owner_id=$1 AND u.id=answered.turn_id AND to_jsonb(u)->>'task_id'=$4::text)
-               OR EXISTS (SELECT 1 FROM tasks t WHERE t.id=$4::uuid AND t.owner_id=$1 AND t.message_id=answered.id)`,
+             SELECT text FROM answered WHERE NOT ${withdrawnSql('answered')}
+               AND (EXISTS (SELECT 1 FROM turns u WHERE u.owner_id=$1 AND u.id=answered.turn_id AND to_jsonb(u)->>'task_id'=$4::text)
+                 OR EXISTS (SELECT 1 FROM tasks t WHERE t.id=$4::uuid AND t.owner_id=$1 AND t.message_id=answered.id))`,
             [ownerId, threadId, latest.id, taskId, since],
           )
         : await pool.query<{ text: string }>(
-            `SELECT text FROM messages WHERE owner_id=$1 AND thread_id=$2 AND role='assistant' AND text<>'' AND hidden_at IS NULL
+            `SELECT text FROM (SELECT id,owner_id,turn_id,text FROM messages WHERE owner_id=$1 AND thread_id=$2 AND role='assistant' AND text<>'' AND hidden_at IS NULL
              AND created_at>$5 AND (created_at,id)<($3,$4)
              AND turn_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM turns u WHERE u.owner_id=$1 AND u.id=messages.turn_id AND to_jsonb(u)->>'task_id' IS NOT NULL)
-             ORDER BY created_at DESC,id DESC LIMIT 1`,
+             ORDER BY created_at DESC,id DESC LIMIT 1) answered WHERE NOT ${withdrawnSql('answered')}`,
             [ownerId, threadId, latest.created_at, latest.id, since],
           )
     ).rows[0];
