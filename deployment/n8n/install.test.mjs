@@ -490,12 +490,15 @@ function Start-Process { param($FilePath, $ArgumentList, $WorkingDirectory, [swi
   const result = spawnSync(command, ['-NoProfile', '-NonInteractive', '-File', runner], {
     encoding: 'utf8',
     env: {
-      ...process.env,
+      ...Object.fromEntries(
+        Object.entries(process.env).filter(([name]) => name.toLowerCase() !== 'psmodulepath'),
+      ),
       NOD_FIXTURE: fixture,
       NOD_LOG: log,
       NOD_SCRIPT: script,
       LOCALAPPDATA: localAppData,
       TMPDIR: temporary,
+      TMP: temporary,
       TEMP: temporary,
       NO_COLOR: '1',
     },
