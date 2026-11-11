@@ -24,7 +24,7 @@ import { snapshotAnalytics, type CaptureAnalytics } from './analytics.ts';
 import { createPreferencesStore, deliveryTime, isQuietTime } from './preferences.ts';
 import { personalSecret } from './memory-tree.ts';
 import { texts as codeTexts } from './chat-verification.ts';
-import { withdrawnSql } from './turn-chain.ts';
+import { supersededSql, withdrawnSql } from './turn-chain.ts';
 
 const now = z.string().trim().min(1);
 const waits = z.array(
@@ -524,7 +524,8 @@ export function createTasks(options: {
          AND (t.activity_key IS NULL OR NOT EXISTS (SELECT 1 FROM preferences p WHERE p.owner_id=t.owner_id AND p.proactive_paused))
          AND EXISTS (SELECT 1 FROM turns u WHERE u.owner_id=t.owner_id AND u.session_id=t.session_id AND u.thread_id=$2)
          AND NOT EXISTS (SELECT 1 FROM turns u WHERE u.owner_id=t.owner_id AND u.session_id=t.session_id
-           AND u.status IN ('queued','running','waiting'))`,
+           AND (u.status IN ('queued','running')
+             OR (u.status='waiting' AND NOT ${supersededSql('u', 'newer.started_at>=u.started_at')})))`,
       [ownerId, threadId],
     );
     for (const row of rows)

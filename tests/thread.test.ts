@@ -2000,9 +2000,14 @@ test(
       await t.test('a task resumes its own session when its next check is due', async (t) => {
         const id = randomUUID();
         const turnId = randomUUID();
+        const answered = randomUUID();
         await db.pool.query(
-          "INSERT INTO turns(id,owner_id,thread_id,session_id,source,prompt,status,background) VALUES($1,$2,$3,$4,'task','Synthetic tracked work','running',true)",
-          [turnId, ownerId, threadId, id],
+          "INSERT INTO turns(id,owner_id,thread_id,session_id,source,prompt,status,waiting_reason,background,created_at,started_at) VALUES($1,$2,$3,$4,'task','Synthetic tracked work','waiting','approval',true,now()-interval '2 minutes',now()-interval '2 minutes')",
+          [answered, ownerId, threadId, id],
+        );
+        await db.pool.query(
+          "INSERT INTO turns(id,owner_id,thread_id,session_id,parent_turn_id,source,prompt,status,background,started_at) VALUES($1,$2,$3,$4,$5,'task','Synthetic tracked work','running',true,now())",
+          [turnId, ownerId, threadId, id, answered],
         );
         await db.pool.query(
           "INSERT INTO tasks(id,owner_id,turn_id,session_id,title,done_when,now_text,applied_revision) VALUES($1,$2,$3,$1,'Synthetic tracked work','Synthetic reply arrived','Waiting',1)",
@@ -2010,6 +2015,10 @@ test(
         );
         await db.pool.query('UPDATE turns SET task_id=$2 WHERE id=$1', [turnId, id]);
         t.after(async () => {
+          await db.pool.query(
+            "UPDATE turns SET status='cancelled',finished_at=now() WHERE id=$1 AND status='waiting'",
+            [answered],
+          );
           await db.pool.query('UPDATE turns SET task_id=NULL WHERE session_id=$1', [id]);
           await db.pool.query('DELETE FROM tasks WHERE id=$1', [id]);
         });
