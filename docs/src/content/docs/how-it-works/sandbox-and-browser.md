@@ -123,7 +123,7 @@ sequenceDiagram
 - An init script makes every passkey request fail at once and reports no passkey support, so a sign-in doesn't open a passkey prompt that the live view can't show.
 
 :::caution[Limits]
-In a source install or self-hosted server, the workspace has internet access through normal Docker routing. There is no egress firewall, so a command can reach any address the host network can. The desktop app's local runtime blocks workspace traffic to private and reserved address ranges. Connecting a desktop client to a server does not add that firewall to the server. The browser reaches only public addresses. Inside the browser container, Chromium runs with its own sandbox turned off; the container is the boundary.
+The workspace can reach public internet addresses. Source installs and self-hosted servers use a separate firewall container. It blocks private and reserved IPv4 addresses, including cloud metadata services, and all external IPv6 traffic. The workspace starts only after the firewall is ready and has no permission to change its rules. Local workspace services remain available through loopback. The desktop app's local runtime also blocks private and reserved addresses. The browser reaches only public addresses. Inside the browser container, Chromium runs with its own sandbox turned off; the container is the boundary.
 :::
 
 ## Related resources

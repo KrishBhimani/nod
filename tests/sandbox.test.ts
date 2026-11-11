@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
@@ -21,6 +21,8 @@ import { PassThrough } from 'node:stream';
 import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
+import { promisify } from 'node:util';
+import { parse } from 'yaml';
 import type { WorkspaceSession } from '../src/ports/computer.ts';
 import { threadIdentity } from '../src/ports/thread-identity.ts';
 import { isPublicAddress, publicUrl } from '../src/providers/agent-browser/network.ts';
@@ -41,6 +43,191 @@ import { runProcess, serviceEnvironment } from '../src/providers/process.ts';
 import { prepareLocalDirectories } from '../scripts/local-database.ts';
 import { createLocalFiles, localFileRules } from '../src/server/local-files.ts';
 import type { Pool } from 'pg';
+
+if (process.env.NOD_TEST_WORKSPACE_IMAGE)
+  test(
+    'workspace egress blocks private and metadata sockets in both Compose deployments',
+    { timeout: 120_000 },
+    async (t) => {
+      const image = process.env.NOD_TEST_WORKSPACE_IMAGE!;
+      const root = await mkdtemp(join(tmpdir(), 'nod-workspace-network-'));
+      const name = `nod-egress-${randomUUID()}`;
+      const docker = async (...args: string[]) =>
+        (await promisify(execFile)('docker', args, { timeout: 30_000 })).stdout.trim();
+      const networks = ['private', 'metadata', 'public'].map((kind) => `${name}-${kind}`);
+      const fixture = `${name}-fixture`;
+      const segment = Math.floor(Math.random() * 200) + 20;
+      const privateAddress = `10.71.${segment}.2`;
+      const ipv6Address = `fd71:${segment}::2`;
+      const publicIpv6Address = `2606:4700:71:${segment}::2`;
+      const publicAddress = '93.184.216.34';
+      const metadataAddress = '169.254.169.254';
+      const config = join(root, 'compose.json');
+      const compose = (...args: string[]) => docker('compose', '-p', name, '-f', config, ...args);
+      t.after(async () => {
+        await compose('down', '--volumes', '--remove-orphans').catch(() => {});
+        await docker('rm', '-f', fixture).catch(() => {});
+        for (const network of networks) await docker('network', 'rm', network).catch(() => {});
+        await rm(root, { recursive: true, force: true });
+      });
+      await docker(
+        'network',
+        'create',
+        '--internal',
+        '--subnet',
+        `10.71.${segment}.0/24`,
+        '--ipv6',
+        '--subnet',
+        `fd71:${segment}::/64`,
+        networks[0]!,
+      );
+      await docker('network', 'create', '--internal', '--subnet', '169.254.0.0/16', networks[1]!);
+      await docker(
+        'network',
+        'create',
+        '--internal',
+        '--subnet',
+        '93.184.216.0/24',
+        '--ipv6',
+        '--subnet',
+        `2606:4700:71:${segment}::/64`,
+        networks[2]!,
+      );
+      await docker(
+        'run',
+        '-d',
+        '--name',
+        fixture,
+        '--network',
+        networks[0]!,
+        '--ip',
+        privateAddress,
+        '--ip6',
+        ipv6Address,
+        '--network-alias',
+        'private-fixture',
+        '--cap-drop',
+        'ALL',
+        '--entrypoint',
+        'python3',
+        image,
+        '-u',
+        '-c',
+        `
+import socket
+from http.server import HTTPServer, BaseHTTPRequestHandler
+class Server(HTTPServer):
+    address_family = socket.AF_INET6
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(302 if self.path == '/redirect' else 200)
+        if self.path == '/redirect':
+            self.send_header('Location', 'http://${metadataAddress}:8080/')
+        self.end_headers()
+        self.wfile.write(b'synthetic network fixture')
+Server(('::', 8080), Handler).serve_forever()
+`,
+      );
+      await docker('network', 'connect', '--ip', metadataAddress, networks[1]!, fixture);
+      await docker(
+        'network',
+        'connect',
+        '--ip',
+        publicAddress,
+        '--ip6',
+        publicIpv6Address,
+        '--alias',
+        'public-fixture',
+        networks[2]!,
+        fixture,
+      );
+      const read = (address: string, path = '/') =>
+        `const response=await fetch('http://${address}:8080${path}',{signal:AbortSignal.timeout(1500)});if(response.status!==200)throw new Error('Fixture failed');console.log(await response.text());`;
+      for (const [network, address] of [
+        [networks[0]!, privateAddress],
+        [networks[0]!, `[${ipv6Address}]`],
+        [networks[1]!, metadataAddress],
+        [networks[2]!, publicAddress],
+        [networks[2]!, `[${publicIpv6Address}]`],
+      ])
+        assert.equal(
+          await docker(
+            'run',
+            '--rm',
+            '--network',
+            network,
+            '--entrypoint',
+            'node',
+            image,
+            '-e',
+            read(address),
+          ),
+          'synthetic network fixture',
+        );
+      for (const file of ['../compose.yaml', '../deployment/self-host/compose.yaml']) {
+        const source = parse(await readFile(new URL(file, import.meta.url), 'utf8'));
+        const workspace = {
+          ...source.services.workspace,
+          image,
+          container_name: `${name}-workspace`,
+          volumes: [],
+        };
+        delete workspace.build;
+        const guard = {
+          ...source.services['workspace-network'],
+          image,
+          container_name: `${name}-network`,
+          networks: ['private', 'metadata', 'public'],
+        };
+        const deployment = {
+          services: { workspace, 'workspace-network': guard },
+          networks: Object.fromEntries(
+            ['private', 'metadata', 'public'].map((kind, index) => [
+              kind,
+              { external: true, name: networks[index] },
+            ]),
+          ),
+        };
+        await writeFile(config, JSON.stringify(deployment));
+        await compose('up', '-d', '--no-build', '--wait', '--wait-timeout', '15');
+        const request = (address: string, path = '/') =>
+          compose('exec', '-T', 'workspace', 'node', '-e', read(address, path));
+        assert.equal(await request(publicAddress), 'synthetic network fixture');
+        assert.equal(await request('public-fixture'), 'synthetic network fixture');
+        await compose(
+          'exec',
+          '-T',
+          'workspace',
+          'node',
+          '-e',
+          `const {createServer}=await import('node:http');const server=createServer((_,response)=>response.end('synthetic loopback'));await new Promise(resolve=>server.listen(8080,'127.0.0.1',resolve));try{if(await(await fetch('http://127.0.0.1:8080')).text()!=='synthetic loopback')throw new Error('Loopback failed')}finally{server.closeAllConnections();server.close()}`,
+        );
+        for (const address of [
+          privateAddress,
+          metadataAddress,
+          'private-fixture',
+          `[${ipv6Address}]`,
+          `[${publicIpv6Address}]`,
+        ])
+          await assert.rejects(request(address), /fetch failed|TimeoutError/);
+        await assert.rejects(request(publicAddress, '/redirect'), /fetch failed|TimeoutError/);
+        await assert.rejects(
+          compose('exec', '-T', '--user', 'root', 'workspace', 'iptables', '-F', 'OUTPUT'),
+          /Permission denied|Operation not permitted/,
+        );
+        await compose('restart', 'workspace-network');
+        assert.equal(await request(publicAddress), 'synthetic network fixture');
+        await assert.rejects(request(metadataAddress), /fetch failed|TimeoutError/);
+        await compose('down');
+        guard.entrypoint = ['sh', '-c', 'exit 1'];
+        guard.restart = 'no';
+        await writeFile(config, JSON.stringify(deployment));
+        await assert.rejects(compose('up', '-d', '--no-build', '--wait', '--wait-timeout', '5'));
+        assert.equal(await compose('ps', '--status', 'running', '--quiet', 'workspace'), '');
+        await compose('down');
+      }
+    },
+  );
 
 test('local startup protects data through its private root and preserves workspace mount traversal', async () => {
   const parent = await mkdtemp(join(tmpdir(), 'nod-local-directories-'));

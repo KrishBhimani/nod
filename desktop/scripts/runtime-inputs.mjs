@@ -27,6 +27,7 @@ const inputs = [
   'src/providers/docker/install-rtk.sh',
   'src/providers/docker/save-video.py',
   'src/providers/docker/workspace-artifacts.txt',
+  'src/providers/docker/workspace-network.sh',
   'src/providers/docker/workspace-video.txt',
 ];
 const windowsInputs = [

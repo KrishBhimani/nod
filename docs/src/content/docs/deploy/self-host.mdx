@@ -5,11 +5,18 @@ sidebar:
   order: 1
 ---
 
-import { Steps } from '@astrojs/starlight/components';
+import { Aside, Steps } from '@astrojs/starlight/components';
 
 Run Nod on a Linux server or Mac mini, then use the same assistant from your other devices.
 
 One server belongs to one person. Its access token grants full access to that person's assistant and connected accounts. There is no registration or multi-user setup.
+
+<Aside type="caution" title="Cloud hosting">
+  Cloud VM metadata services can provide cloud credentials to workspace commands. Keep Nod's
+  workspace firewall enabled and configure your provider's metadata access controls, such as [AWS
+  instance metadata
+  options](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-options.html).
+</Aside>
 
 ## What you need
 
@@ -187,6 +194,8 @@ flowchart LR
 ```
 
 The database, workspace, and browser stay private. Model keys and saved credentials stay with the server, outside the workspace and browser containers.
+
+The workspace uses a separate firewall container. It blocks private and reserved IPv4 destinations, including cloud metadata services, and external IPv6 traffic. The workspace starts only after this firewall is ready. Keep the `workspace-network` service and its network settings when you change the Compose file. Its DNS requests use public resolvers at `1.1.1.1` and `8.8.8.8`. These rules do not change the server's own connections to models or apps.
 
 The stack uses named volumes for its persistent data. Recreating a container keeps those volumes. Deleting the volumes removes your data.
 

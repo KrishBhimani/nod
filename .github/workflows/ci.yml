@@ -165,6 +165,11 @@ jobs:
           docker buildx build --load --platform linux/amd64 --file deployment/self-host/Dockerfile --tag nod-server:ci .
           docker tag nod-ci-browser nod-browser:ci
           docker tag nod-ci-workspace nod-workspace:ci
+      - name: Check workspace egress in source and self-host deployments
+        if: needs.scope.outputs.images == 'true'
+        env:
+          NOD_TEST_WORKSPACE_IMAGE: nod-ci-workspace
+        run: pnpm exec tsx --test --test-name-pattern='workspace egress' tests/sandbox.test.ts
       - name: Verify the single-user server deployment and token rotation
         if: needs.scope.outputs.images == 'true'
         env:

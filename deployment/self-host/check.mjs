@@ -221,7 +221,7 @@ try {
       ].join('\n'),
       { mode: 0o600 },
     );
-    for (const service of ['server', 'workspace', 'browser'])
+    for (const service of ['server', 'workspace', 'browser', 'workspace-network'])
       await compose(
         'run',
         '--rm',

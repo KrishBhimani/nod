@@ -49,6 +49,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.workspace
+    image: nod-local-workspace
     container_name: nod-workspace
     init: true
     cap_drop: [ALL]
@@ -59,7 +60,32 @@ services:
     volumes:
       - ${NOD_DATA_ROOT:-./.local}/workspaces:/workspace
       - workspace-tools:/home/node
+    network_mode: service:workspace-network
+    depends_on:
+      workspace-network:
+        condition: service_healthy
+        restart: true
     command: ['sleep', 'infinity']
+  workspace-network:
+    image: nod-local-workspace
+    pull_policy: never
+    dns: [1.1.1.1, 8.8.8.8]
+    user: root
+    init: true
+    entrypoint: /usr/local/bin/nod-workspace-network
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs:
+      - /tmp:size=1m
+    pids_limit: 32
+    mem_limit: 64m
+    healthcheck:
+      test: ['CMD', 'test', '-f', '/tmp/network-ready']
+      interval: 2s
+      timeout: 3s
+      retries: 10
 volumes:
   postgres-data:
   workspace-tools:

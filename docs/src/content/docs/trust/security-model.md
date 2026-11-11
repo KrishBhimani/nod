@@ -97,7 +97,7 @@ Only the server holds keys and decides what runs. The model, the workspace and a
 - Nod writes [learned skills](/how-it-works/memory/#learned-skills) from what it did and read, so a page or an email can shape one, and a skill can steer later tasks. A skill never grants permission, and the trust check never sees it.
 - A standing instruction runs for any new email or update that matches it, including one that only claims to come from the sender you named. Your rules apply in every kind of work, so background work started by such an email can do what a rule to go ahead covers.
 - The checker quotes your words, or says "read", to run an action. The server verifies that the words exist, not that they really ask for the action; that judgment is still the checker's.
-- Reads, drafts and links Nod opens or fetches aren't checked. In a source install the workspace has no outbound firewall; the desktop app blocks private and reserved addresses.
+- Browser snapshots and typing without submitting do not need an action check. Source installs and self-hosted servers block private and reserved workspace addresses. The desktop runtime does too. Public internet access can still send data outside Nod.
 - A saved card can't make the issuer enforce the amount, and card support isn't a PCI DSS compliance claim.
 - HTML that you download and open outside Nod does not have Nod's preview protections.
 - Tests cover known failure cases. They don't prove that every injection or browser exploit is blocked.

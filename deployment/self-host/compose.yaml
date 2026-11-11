@@ -133,8 +133,35 @@ services:
     volumes:
       - workspace-data:/workspace
       - workspace-tools:/home/node
-    networks: [workspace]
+    network_mode: service:workspace-network
+    depends_on:
+      workspace-network:
+        condition: service_healthy
+        restart: true
     command: ['sleep', 'infinity']
+
+  workspace-network:
+    image: nod-workspace:${NOD_IMAGE_TAG:-local}
+    pull_policy: never
+    dns: [1.1.1.1, 8.8.8.8]
+    user: root
+    restart: unless-stopped
+    init: true
+    entrypoint: /usr/local/bin/nod-workspace-network
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs:
+      - /tmp:size=1m
+    pids_limit: 32
+    mem_limit: 64m
+    networks: [workspace]
+    healthcheck:
+      test: ['CMD', 'test', '-f', '/tmp/network-ready']
+      interval: 2s
+      timeout: 3s
+      retries: 10
 
   https:
     image: caddy:2.11.7-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f

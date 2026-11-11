@@ -52,6 +52,8 @@ for (const image of images) {
   compose.services[image.service].pull_policy = 'never';
   await run('docker', ['tag', image.id, image.reference]);
 }
+compose.services['workspace-network'].image = compose.services.workspace.image;
+compose.services['workspace-network'].pull_policy = 'never';
 await writeFile(join(bundle, 'compose.yaml'), stringify(compose));
 const files = [
   '.env.example',
