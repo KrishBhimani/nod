@@ -4376,6 +4376,20 @@ test(
         ],
       );
       assert.ok(!telegramMethods.includes('sendRichMessage'));
+      await transport.post({
+        channelId: 'telegram',
+        accountId: '987',
+        threadId: 'telegram:123456',
+        replyToMessageId: '123456:10',
+        text: 'Invoice https://example.com/canary?k=NS-1042',
+      });
+      const telegramTexts = sent.filter(
+        ({ provider, body }) => provider === 'telegram' && 'text' in body,
+      );
+      assert.ok(telegramTexts.some(({ body }) => body.reply_parameters));
+      assert.ok(telegramTexts.some(({ body }) => !body.parse_mode));
+      for (const { body } of telegramTexts)
+        assert.deepEqual(body.link_preview_options, { is_disabled: true });
 
       await pool.query("UPDATE channel_inbox SET received_at=now() WHERE provider='whatsapp'");
       const beforeFormattedWhatsApp = sent.length;

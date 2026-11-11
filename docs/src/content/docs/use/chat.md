@@ -219,7 +219,7 @@ In Telegram and WhatsApp, a screen link opens a public page. Select **Open in No
 
 You can also ask Nod to change supported settings from any channel. For example, ask it to use a connected model, set quiet hours, change the time zone or clock format, or set a spending limit. Nod uses its tools and reports the saved result. It asks when your request does not identify the target or value. Model sign-in and device settings, such as launch at login, still need the app.
 
-Links stay inline in the reply. Hover over a link, or focus it with the keyboard, to see its full address. Select a link, or press Enter while it is focused, to open its page. Telegram and WhatsApp control their own link previews.
+Links stay inline in the reply. Hover over a link, or focus it with the keyboard, to see its full address. Select a link, or press Enter while it is focused, to open its page. Nod sends Telegram and WhatsApp replies with link previews turned off.
 
 ## Replies go back where you wrote
 

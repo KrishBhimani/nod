@@ -55,6 +55,20 @@ class Telegram extends TelegramAdapter {
     Reflect.set(this, 'richMessagesAvailable', false);
   }
 
+  protected override telegramFetch<TResult>(
+    method: string,
+    payload?: Record<string, unknown> | FormData,
+    request?: { signal?: AbortSignal },
+  ) {
+    return super.telegramFetch<TResult>(
+      method,
+      payload && !(payload instanceof FormData) && 'text' in payload
+        ? { ...payload, link_preview_options: { is_disabled: true } }
+        : payload,
+      request,
+    );
+  }
+
   fits(text: string, limit: number) {
     return [
       text,
@@ -109,7 +123,6 @@ class Telegram extends TelegramAdapter {
           message_id: messageId,
           text: convertEmojiPlaceholders(this.formatConverter.fromMarkdown(markdown), 'gchat'),
           parse_mode: 'MarkdownV2',
-          link_preview_options: { is_disabled: true },
         },
         { signal: input.signal },
       );
