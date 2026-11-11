@@ -341,9 +341,14 @@ test('CLI-INSTALL: Intel metadata, installer and executable use the same archite
   }
 });
 
-const powershell = spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).status === 0;
+const powershellCommands = process.platform === 'win32' ? ['pwsh', 'powershell.exe'] : ['pwsh'];
+const powershell = powershellCommands.every(
+  (command) => spawnSync(command, ['-NoProfile', '-Command', 'exit 0']).status === 0,
+);
 if (process.platform === 'win32' && !powershell) {
-  throw new Error('PowerShell 7 is required to validate the Windows installer.');
+  throw new Error(
+    'Windows PowerShell 5.1 and PowerShell 7 are required to test the Windows installer.',
+  );
 }
 
 async function windowsInstall(options = {}) {
@@ -405,7 +410,7 @@ async function windowsInstall(options = {}) {
       wrongTarget: Boolean(options.wrongTarget),
       launchFailure: Boolean(options.launchFailure),
       badSignature: Boolean(options.badSignature),
-      ps7Redirect: Boolean(options.ps7Redirect),
+      ps7Redirect: Boolean(options.ps7Redirect && options.powershell !== 'powershell.exe'),
       arrayRedirect: Boolean(options.arrayRedirect),
       legacyUpdateSource: options.legacyUpdateSource ? base : null,
       source,
@@ -420,22 +425,24 @@ async function windowsInstall(options = {}) {
     }),
   );
   const mocks = String.raw`
+Add-Type -AssemblyName System.Net.Http
 $fixture = Get-Content -Raw $env:NOD_FIXTURE | ConvertFrom-Json
 function Get-ItemProperty { param($Path, $ErrorAction)
   if ($Path -like 'HKLM:*') { [pscustomobject]@{ CurrentBuildNumber = $fixture.build } }
   elseif ($fixture.existing -or $script:installed) { [pscustomobject]@{ InstallDir = $(if ($script:installed -and $fixture.wrongTarget) { Join-Path $fixture.target 'other' } else { $fixture.target }) } } }
 function Get-Process { param($Name, $ErrorAction) if ($fixture.running) { [pscustomobject]@{ Name = $Name } } }
-function Invoke-WebRequest { param($Uri, $OutFile, [switch]$UseBasicParsing, $MaximumRedirection, $ErrorAction)
+function Invoke-WebRequest { [CmdletBinding()] param($Uri, $OutFile, [switch]$UseBasicParsing, $MaximumRedirection)
   Add-Content $env:NOD_LOG "download $Uri"
   if ($MaximumRedirection -eq 0) {
     if ($fixture.ps7Redirect) {
       $response = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]::Found)
       $response.Headers.Location = [Uri]$fixture.redirects.$Uri
-      return $response
+      throw [Microsoft.PowerShell.Commands.HttpResponseException]::new('Synthetic redirect', $response)
     }
-    if ($ErrorAction -ne 'SilentlyContinue') { throw [InvalidOperationException]::new('The maximum redirection count has been exceeded.') }
-    if ($fixture.arrayRedirect) { return [pscustomobject]@{ StatusCode = 302; Headers = @{ Location = [string[]]@($fixture.redirects.$Uri) } } }
-    return [pscustomobject]@{ StatusCode = 302; Headers = @{ Location = $fixture.redirects.$Uri } }
+    if ($fixture.arrayRedirect) { [pscustomobject]@{ StatusCode = 302; Headers = @{ Location = [string[]]@($fixture.redirects.$Uri) } } }
+    else { [pscustomobject]@{ StatusCode = 302; Headers = @{ Location = $fixture.redirects.$Uri } } }
+    $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new('Maximum redirection count exceeded.'), 'MaximumRedirectExceeded', [System.Management.Automation.ErrorCategory]::InvalidOperation, $null))
+    return
   }
   $value = [Convert]::FromBase64String($fixture.files.$Uri)
   if ($OutFile) { [IO.File]::WriteAllBytes($OutFile, $value) } else { [pscustomobject]@{ RawContentStream = [IO.MemoryStream]::new($value) } } }
@@ -474,7 +481,8 @@ function Start-Process { param($FilePath, $ArgumentList, $WorkingDirectory, [swi
   assert.equal(scriptSource.split(elevated).length, 2);
   await writeFile(script, scriptSource.replace(elevated, '$fixture.elevated'));
   await writeFile(runner, `${mocks}\nInvoke-Expression (Get-Content -Raw $env:NOD_SCRIPT)\n`);
-  const result = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-File', runner], {
+  const command = options.powershell || 'pwsh';
+  const result = spawnSync(command, ['-NoProfile', '-NonInteractive', '-File', runner], {
     encoding: 'utf8',
     env: {
       ...process.env,
@@ -504,7 +512,7 @@ test(
       { legacyUpdateSource: true },
       { ps7Redirect: true },
       { arrayRedirect: true },
-    ]) {
+    ].flatMap((options) => powershellCommands.map((powershell) => ({ ...options, powershell })))) {
       const installed = await windowsInstall(options);
       assert.equal(installed.result.status, 0, installed.output);
       assert.deepEqual(
@@ -542,7 +550,7 @@ test(
       { running: true },
       { elevated: true },
       { build: '19045' },
-    ]) {
+    ].flatMap((options) => powershellCommands.map((powershell) => ({ ...options, powershell })))) {
       const rejected = await windowsInstall(options);
       assert(!rejected.calls.some((call) => /^(install|launch)/.test(call)));
       assert.deepEqual(rejected.staged, []);
@@ -558,7 +566,11 @@ test(
   'CLI-INSTALL: Windows refuses to launch incomplete or unexpected installed targets',
   { skip: !powershell && 'pwsh is unavailable' },
   async () => {
-    for (const options of [{ missingApp: true }, { wrongVersion: true }, { wrongTarget: true }]) {
+    for (const options of [
+      { missingApp: true },
+      { wrongVersion: true },
+      { wrongTarget: true },
+    ].flatMap((options) => powershellCommands.map((powershell) => ({ ...options, powershell })))) {
       const rejected = await windowsInstall(options);
       assert.match(rejected.output, /installed app|installation destination/);
       assert(!rejected.calls.some((call) => call.startsWith('launch')));
