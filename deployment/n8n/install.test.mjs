@@ -425,7 +425,6 @@ async function windowsInstall(options = {}) {
     }),
   );
   const mocks = String.raw`
-Add-Type -AssemblyName System.Net.Http
 $fixture = Get-Content -Raw $env:NOD_FIXTURE | ConvertFrom-Json
 function Get-ItemProperty { param($Path, $ErrorAction)
   if ($Path -like 'HKLM:*') { [pscustomobject]@{ CurrentBuildNumber = $fixture.build } }
