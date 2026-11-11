@@ -9865,7 +9865,7 @@ test('Composio inbox polling rejects cancellation and invalid metadata after par
     return deadline.signal;
   });
   let external = new AbortController();
-  let failure: 'cancel' | 'invalid' | 'identity' | 'none' = 'cancel';
+  let failure: 'cancel' | 'invalid' | 'identity' | 'unlabeled' | 'none' = 'cancel';
   const poll = inboxPollFixture(t, (input, signal) => {
     if (input.endpoint.endsWith('/history'))
       return {
@@ -9887,7 +9887,7 @@ test('Composio inbox polling rejects cancellation and invalid metadata after par
         id: id === 'm1' && failure === 'identity' ? 'other-message' : id,
         threadId: `thread-${id}`,
         internalDate: id === 'm1' && failure === 'invalid' ? 'invalid' : '1790769600000',
-        labelIds: ['INBOX'],
+        ...(id === 'm1' && failure === 'unlabeled' ? {} : { labelIds: ['INBOX'] }),
         payload: { headers: [] },
       },
     };
@@ -9907,6 +9907,14 @@ test('Composio inbox polling rejects cancellation and invalid metadata after par
   );
   assert.equal(recovered.hasMore, false);
   assert.equal(JSON.parse(recovered.cursor).historyId, '200');
+  failure = 'unlabeled';
+  const unlabeled = await poll('inbox-account', cursor, external.signal);
+  assert.deepEqual(
+    unlabeled.messages.map(({ id }) => id),
+    ['m0'],
+  );
+  assert.equal(unlabeled.hasMore, false);
+  assert.equal(JSON.parse(unlabeled.cursor).historyId, '200');
 });
 
 test('Composio inbox failure diagnostics keep private provider detail out of logs', async (t) => {
