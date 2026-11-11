@@ -79,6 +79,36 @@ function conflict(message = 'This confirmation is expired, already handled, or i
   return Object.assign(new Error(message), { statusCode: 409 });
 }
 
+function confirmedOutcome(
+  action: string,
+  { status, result, error }: { status: string; result?: unknown; error?: unknown },
+  resumed = false,
+) {
+  if (status === 'completed') {
+    const legacyPause = action === 'NOD_schedule_cancel';
+    const schedule = legacyPause
+      ? (result as {
+          kind?: string;
+          enabled?: boolean;
+          runAt?: string | null;
+          lastRun?: { scheduledFor?: string } | null;
+        })
+      : null;
+    const paused =
+      schedule?.enabled === false &&
+      (schedule.kind === 'recurring' ||
+        (schedule.kind === 'once' && schedule.lastRun?.scheduledFor !== schedule.runAt));
+    return `The exact action confirmed by the user was executed once by the trusted worker. Do not repeat it.${resumed ? ' Continue from its result.' : ''}${paused ? ' The schedule is paused, remains in Scheduled, and can be resumed.' : ''}\n${untrustedBlock(`${legacyPause ? 'NOD_schedule_pause' : action} result`, JSON.stringify(result))}`;
+  }
+  const failure =
+    error === undefined
+      ? ''
+      : `\n${untrustedBlock(`${action} error`, error instanceof Error ? error.message : String(error))}`;
+  return status === 'uncertain' || status === 'executing'
+    ? `The action the user confirmed failed or was interrupted and will not be retried. Its outcome is uncertain, so check the app before trying it again. Do not report it as done.${failure}`
+    : `The action the user confirmed did not run, so nothing was done. Do not report it as done.${failure}`;
+}
+
 async function turnRow(client: PoolClient, turnId: string) {
   return (
     await client.query<TurnRow>(
@@ -656,34 +686,24 @@ export async function createApprovals(
       approval.turn_source,
     );
     signal.throwIfAborted();
-    if (outcome.status === 'completed') {
-      const legacyPause = approval.action === 'NOD_schedule_cancel';
-      const schedule = legacyPause
-        ? (outcome.result as {
-            kind?: string;
-            enabled?: boolean;
-            runAt?: string | null;
-            lastRun?: { scheduledFor?: string } | null;
-          })
-        : null;
-      const paused =
-        schedule?.enabled === false &&
-        (schedule.kind === 'recurring' ||
-          (schedule.kind === 'once' && schedule.lastRun?.scheduledFor !== schedule.runAt));
-      return {
-        prompt: `The exact action confirmed by the user was executed once by the trusted worker. Do not repeat it. Continue from its result.${paused ? ' The schedule is paused, remains in Scheduled, and can be resumed.' : ''}\n${untrustedBlock(`${legacyPause ? 'NOD_schedule_pause' : approval.action} result`, JSON.stringify(outcome.result))}`,
-      };
-    }
-    const failure = untrustedBlock(
-      `${approval.action} error`,
-      outcome.error instanceof Error ? outcome.error.message : String(outcome.error),
+    return { prompt: confirmedOutcome(approval.action, outcome, true) };
+  }
+
+  async function stoppedOutcomes(turnId: string) {
+    const { rows } = await pool.query<{ action: string; status: string; result: unknown }>(
+      `WITH t AS (SELECT session_id,created_at,id FROM turns WHERE id=$1 AND owner_id=$2),
+       finished AS (SELECT d.created_at,d.id FROM turns d JOIN t ON d.session_id=t.session_id
+         WHERE d.owner_id=$2 AND d.status IN ('succeeded','waiting') AND (d.created_at,d.id)<(t.created_at,t.id)
+         ORDER BY d.created_at DESC,d.id DESC LIMIT 1)
+       SELECT a.action,a.status,a.result FROM t
+       JOIN turns e ON e.owner_id=$2 AND e.session_id=t.session_id AND e.status IN ('cancelled','failed')
+         AND (e.created_at,e.id)<(t.created_at,t.id)
+         AND NOT EXISTS (SELECT 1 FROM finished f WHERE (f.created_at,f.id)>(e.created_at,e.id))
+       JOIN approvals a ON a.owner_id=$2 AND a.execution_turn_id=e.id AND a.status<>'declined'
+       ORDER BY e.created_at,e.id`,
+      [turnId, ownerId],
     );
-    return {
-      prompt:
-        outcome.status === 'expired'
-          ? `The action the user confirmed did not run, so nothing was done. Do not report it as done.\n${failure}`
-          : `The action the user confirmed failed and will not be retried. Its outcome is uncertain, so check the app before trying it again. Do not report it as done.\n${failure}`,
-    };
+    return rows.map(({ action, ...outcome }) => confirmedOutcome(action, outcome));
   }
 
   async function retireScheduleConfirmationsInTransaction(
@@ -814,6 +834,7 @@ export async function createApprovals(
     request,
     chat: { answer: answerChat, accept: acceptChat },
     executeConfirmed,
+    stoppedOutcomes,
     retireScheduleConfirmations,
     isRetirableScheduleConfirmation,
   };
