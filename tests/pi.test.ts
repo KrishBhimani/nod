@@ -676,6 +676,109 @@ test('codemode app calls keep untrusted output and stop after an approval', asyn
     });
 });
 
+test('a new Pi request follows refreshed owner context after an approval pause', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'nod-pi-approval-next-'));
+  const requests: string[] = [];
+  const replies: string[] = [];
+  let round = 0;
+  const runtime = createAgentRuntime({
+    agent: createPiAgent({
+      provider: 'openai',
+      apiKey: 'fixture-key',
+      sessionRoot: join(directory, 'sessions'),
+      createSession: async (options) => {
+        const result = await createAgentSession(options);
+        result.session.agent.streamFunction = (_model, request) => {
+          requests.push(JSON.stringify(request.messages));
+          const first = round++ === 0;
+          const message = fauxAssistantMessage(
+            first
+              ? [
+                  {
+                    type: 'toolCall',
+                    id: 'approval-call',
+                    name: 'codemode',
+                    arguments: {
+                      code: 'await tools.apps({action:"SYNTHETIC_SEND",args:{}});',
+                    },
+                  },
+                ]
+              : `Answer ${round - 1}.`,
+            { stopReason: first ? 'toolUse' : 'stop' },
+          );
+          const stream = createAssistantMessageEventStream();
+          stream.push({ type: 'start', partial: message });
+          stream.push({ type: 'done', reason: first ? 'toolUse' : 'stop', message });
+          return stream;
+        };
+        return result;
+      },
+    }),
+    computer: fakeComputer(),
+    workspace: fakeWorkspace(),
+  });
+  const initial: RuntimeContext = {
+    ...context(directory),
+    turnId: randomUUID(),
+    prompt: 'Send the synthetic item.',
+    memory: 'Initial synthetic owner context.',
+    integration: async () => ({ [appConfirmation]: 'Synthetic approval question.' }),
+    reply: async (text) => {
+      replies.push(text);
+    },
+  };
+  try {
+    const paused = await runtime.runTurn(initial);
+    assert.equal(paused.status, 'waiting_user');
+    assert.equal(paused.waitingFor, 'approval');
+    assert.equal(requests.length, 1);
+    const batches = [
+      [{ id: randomUUID(), text: 'First separate fixture question.', attachments: [] }],
+      [{ id: randomUUID(), text: 'Second separate fixture question.', attachments: [] }],
+    ];
+    const next = await runtime.runTurn({
+      ...initial,
+      turnId: randomUUID(),
+      prompt: 'Answer a new fixture question.',
+      memory: 'Refreshed synthetic owner context.',
+      takeMessages: async () => batches.shift() ?? [],
+    });
+    assert.equal(next.status, 'succeeded');
+    assert.equal(requests.length, 4);
+    assert.ok(requests[1]!.includes('Send the synthetic item.'));
+    assert.ok(requests[1]!.includes('Initial synthetic owner context.'));
+    assert.ok(requests[1]!.includes('Answer a new fixture question.'));
+    assert.ok(requests[1]!.includes('Refreshed synthetic owner context.'));
+    const replay = JSON.parse(requests[1]!) as Array<{
+      role: string;
+      content: unknown;
+      toolCallId?: string;
+    }>;
+    assert.ok(
+      replay.some(
+        (message) => message.role === 'toolResult' && message.toolCallId === 'approval-call',
+      ),
+    );
+    assert.equal(replay.at(-1)?.role, 'user');
+    assert.ok(JSON.stringify(replay.at(-1)?.content).includes('Answer a new fixture question.'));
+    assert.ok(
+      requests[1]!.lastIndexOf('Initial synthetic owner context.') <
+        requests[1]!.lastIndexOf('Refreshed synthetic owner context.'),
+    );
+    assert.ok(
+      requests[1]!.lastIndexOf('Refreshed synthetic owner context.') <
+        requests[1]!.lastIndexOf('Answer a new fixture question.'),
+    );
+    assert.ok(requests[2]!.includes('First separate fixture question.'));
+    assert.equal(requests[2]!.includes('Second separate fixture question.'), false);
+    assert.ok(requests[3]!.includes('Second separate fixture question.'));
+    assert.deepEqual(replies, ['Answer 1.', 'Answer 2.', 'Answer 3.']);
+  } finally {
+    await runtime.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('real Pi sessions persist a credential pause and resume without replaying chat history', async (t) => {
   for (const kind of ['chat', 'background', 'task'] as const)
     await t.test(`${kind} session`, async () => {
@@ -1045,15 +1148,13 @@ test('a restarted proactive check within the hour reads its stable context from 
   }
 });
 
-test('messages taken after a Pi turn reach the next request together and not after a question', async () => {
+test('messages taken after a Pi turn each reach a new request and not after a question', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'nod-pi-steer-'));
   const requests: string[] = [];
   const replies: string[] = [];
   const batches = [
-    [
-      { id: randomUUID(), text: 'Also check the second fixture', attachments: [] },
-      { id: randomUUID(), text: 'And the third fixture', attachments: [] },
-    ],
+    [{ id: randomUUID(), text: 'Also check the second fixture', attachments: [] }],
+    [{ id: randomUUID(), text: 'And the third fixture', attachments: [] }],
   ];
   let takes = 0;
   let question = false;
@@ -1138,23 +1239,23 @@ test('messages taken after a Pi turn reach the next request together and not aft
   });
   try {
     assert.equal((await runtime.runTurn(context)).status, 'succeeded');
-    assert.equal(requests.length, 2);
-    assert.equal(takes, 2);
+    assert.equal(requests.length, 3);
+    assert.equal(takes, 3);
     assert.equal(requests[0].includes('second fixture'), false);
-    const later = requests[1];
-    assert.ok(later.indexOf('Answer 1.') < later.indexOf('Also check the second fixture'));
-    assert.ok(
-      later.indexOf('Also check the second fixture') < later.indexOf('And the third fixture'),
-    );
-    assert.deepEqual(replies, ['Answer 1.', 'Answer 2.']);
+    const second = requests[1];
+    assert.ok(second.indexOf('Answer 1.') < second.indexOf('Also check the second fixture'));
+    assert.equal(second.includes('And the third fixture'), false);
+    const later = requests[2];
+    assert.ok(later.indexOf('Answer 2.') < later.indexOf('And the third fixture'));
+    assert.deepEqual(replies, ['Answer 1.', 'Answer 2.', 'Answer 3.']);
 
     question = true;
     batches.push([{ id: randomUUID(), text: 'Sent while asking', attachments: [] }]);
     const asked = await runtime.runTurn({ ...context, turnId: randomUUID(), prompt: 'Ask me' });
     assert.equal(asked.status, 'waiting_user');
     assert.equal(asked.message, 'Which fixture?');
-    assert.deepEqual(replies, ['Answer 1.', 'Answer 2.']);
-    assert.equal(takes, 2);
+    assert.deepEqual(replies, ['Answer 1.', 'Answer 2.', 'Answer 3.']);
+    assert.equal(takes, 3);
     assert.equal(batches.length, 1);
   } finally {
     await runtime.dispose();
@@ -3484,6 +3585,10 @@ test('owner context stays out of the system prompt and compaction summaries and 
   promptTokens = 100;
   const six = await turn(forgotten, 6);
   assert.equal(copies(six), 1);
+  assert.ok(
+    JSON.stringify(six.messages).lastIndexOf(header) <
+      JSON.stringify(six.messages).lastIndexOf('Synthetic request 6'),
+  );
   assert.ok(!JSON.stringify(six).includes('Jordi Fixture'));
 
   assert.ok(recorded.length >= 6);

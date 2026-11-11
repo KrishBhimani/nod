@@ -1053,7 +1053,7 @@ export function createPiAgent(options: {
           if (owner && (copy as { content?: unknown } | undefined)?.content !== owner)
             await session.sendCustomMessage(
               { customType: ownerContextType, content: owner, display: false },
-              input.restartable && prior.length ? undefined : { deliverAs: 'nextTurn' },
+              prior.length ? undefined : { deliverAs: 'nextTurn' },
             );
           if (audio && readsNativeAudio(model))
             await session.sendCustomMessage(audioMessage(text, images, audio), {

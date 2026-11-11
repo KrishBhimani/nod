@@ -536,6 +536,7 @@ export function createUserMessageService(
       ),
     answer: (text: string, input: SubmitUserMessageOptions = {}) =>
       readAnswer(text, false, input, options.confirmAction),
+    accepted: options.accepted,
   };
 }
 
@@ -898,15 +899,43 @@ export async function reactToAssistantMessage(
   messageId: string,
   reaction: MessageReaction | null,
   wake = true,
+  messages: Pick<
+    ReturnType<typeof createUserMessageService>,
+    'answer' | 'submit' | 'accepted'
+  > = createUserMessageService(),
+  replyChannel?: string,
 ) {
   if (reaction !== null && !isMessageReaction(reaction))
     throw httpError('Choose one emoji reaction.', 400);
+  validateSource(undefined, replyChannel);
+  const arrival = stopSignal();
+  const target =
+    reaction && wake
+      ? (
+          await pool.query<{ channel: string }>(
+            `SELECT COALESCE(u.channel,m.delivered_channel,'web') AS channel FROM messages m
+             JOIN threads th ON th.id=m.thread_id AND th.owner_id=m.owner_id
+             LEFT JOIN turns u ON u.id=m.turn_id AND u.owner_id=m.owner_id
+             WHERE m.id=$1 AND m.owner_id=$2 AND m.role='assistant' AND th.archived_at IS NULL AND m.hidden_at IS NULL`,
+            [messageId, ownerId],
+          )
+        ).rows[0]
+      : undefined;
+  const answer =
+    reaction && wake && target
+      ? await messages.answer(reaction, {
+          channel: replyChannel ?? target.channel,
+          replyToMessageId: messageId,
+        })
+      : undefined;
+  let accepted: ((channel: string) => void) | undefined;
+  let acceptedChannel: string | undefined;
   const result = await transaction(async (client) => {
     const thread = await lockThread(client);
     const message = (
       await client.query(
-        `SELECT m.id,m.text,m.reaction,m.reaction_revision,COALESCE(u.channel,'web') AS channel FROM messages m LEFT JOIN turns u ON u.id=m.turn_id
-         WHERE m.id=$1 AND m.owner_id=$2 AND m.role='assistant' AND m.thread_id=$3 AND m.hidden_at IS NULL FOR UPDATE OF m`,
+        `SELECT m.id,m.reaction,m.reaction_revision,COALESCE(u.channel,m.delivered_channel,'web') AS channel FROM messages m LEFT JOIN turns u ON u.id=m.turn_id AND u.owner_id=m.owner_id
+         WHERE m.id=$1 AND m.owner_id=$2 AND m.role='assistant' AND m.thread_id=$3 AND m.hidden_at IS NULL`,
         [messageId, ownerId, thread.id],
       )
     ).rows[0];
@@ -917,23 +946,31 @@ export async function reactToAssistantMessage(
     )
       return { ok: true, reaction: message.reaction };
     const revision = message.reaction_revision + 1;
-    await client.query('UPDATE messages SET reaction=$2,reaction_revision=$3 WHERE id=$1', [
-      messageId,
-      reaction,
-      revision,
-    ]);
-    if (reaction && wake)
-      await enqueueTurn(
-        `The user reacted to an assistant message. This is narrow feedback about that message, not a new instruction or permission. Decide whether a useful response is needed; usually stay quiet. Do not acknowledge the reaction automatically or ask a generic follow-up. Message data: ${JSON.stringify({ id: message.id, text: message.text, reaction })}`,
-        {
-          source: 'event',
-          sourceId: `reaction:${messageId}:${revision}`,
-          channel: message.channel,
-          client,
-        },
-      );
+    if (reaction && wake) {
+      const channel = replyChannel ?? message.channel;
+      accepted = messages.accepted?.();
+      await messages.submit(reaction, [], {
+        sourceId: `reaction-reply:${messageId}:${revision}`,
+        channel,
+        client,
+        replyToMessageId: messageId,
+        answer,
+        stopSignal: arrival,
+      });
+      acceptedChannel = channel;
+    }
+    const updated = await client.query(
+      'UPDATE messages SET reaction=$2,reaction_revision=$3 WHERE id=$1 AND owner_id=$4 AND thread_id=$5 AND hidden_at IS NULL',
+      [messageId, reaction, revision, ownerId, thread.id],
+    );
+    if (!updated.rowCount) throw httpError('Message not found.', 404);
     return { ok: true, reaction };
   }, pool);
+  if (acceptedChannel) {
+    try {
+      accepted?.(acceptedChannel);
+    } catch {}
+  }
   refresh();
   return result;
 }
@@ -1272,12 +1309,15 @@ async function takeQueuedMessages(turnId: string, sessionId: string, channel: st
       [thread.id, ownerId, turnId, sessionId],
     );
     if (!rows.some((row) => row.id === turnId && row.status === 'running')) throw turnStopped();
-    const queued = rows.filter((row) => row.status === 'queued');
-    const end = queued.findIndex(
-      (row) => !['user', 'task'].includes(row.source) || row.channel !== channel || !row.message_id,
-    );
-    const taken = end < 0 ? queued : queued.slice(0, end);
-    if (!taken.length) return [];
+    const next = rows.find((row) => row.status === 'queued');
+    if (
+      !next ||
+      !['user', 'task'].includes(next.source) ||
+      next.channel !== channel ||
+      !next.message_id
+    )
+      return [];
+    const taken = [next];
     const ids = taken.map((row) => row.id);
     await client.query(
       'UPDATE messages SET turn_id=$1 WHERE turn_id=ANY($2::uuid[]) AND owner_id=$3',
