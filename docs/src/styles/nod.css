@@ -289,7 +289,7 @@ body.lp {
   display: inline-block;
   width: 0.6em;
   height: 0.6em;
-  margin: 0 -0.025em 0 0.01em;
+  margin: 0 -0.042em 0 0.03em;
   overflow: visible;
   vertical-align: baseline;
 }
@@ -497,6 +497,9 @@ body.lp {
   line-height: 1.15;
   text-wrap: balance;
 }
+.lp-benchmark-intro h2 span {
+  display: block;
+}
 .lp-benchmark-intro p {
   margin: 0;
   font-size: 18px;
@@ -504,11 +507,10 @@ body.lp {
   text-wrap: pretty;
 }
 .lp-memory-evidence {
-  max-width: 640px;
+  max-width: 960px;
   margin: 0;
-  font-size: 16px;
   line-height: 1.5;
-  text-align: center;
+  text-wrap: balance;
 }
 .lp-trust-stats-grid {
   display: flex;
@@ -567,6 +569,9 @@ body.lp {
   line-height: 1.4;
   color: var(--black);
   margin: 0;
+}
+.lp-trust-stat-desc span {
+  white-space: nowrap;
 }
 .lp-trust-stats-footnote {
   font-size: 14px;

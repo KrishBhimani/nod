@@ -137,9 +137,9 @@ Nod keeps quick answers, simple lookups and status questions in chat. It starts 
 
 ## Notifications
 
-Choose **Enable notifications** after the first introduction, or turn them on in **Settings → General**. **Not now** dismisses the offer. Nod only asks your browser for permission after you choose to enable notifications. If you block the request, allow notifications in the browser’s site settings before trying again.
+Choose **Enable notifications** after the first introduction, or turn them on in **Settings → Notifications**. **Not now** dismisses the offer. Nod only asks your browser for permission after you choose to enable notifications. If you block the request, allow notifications in the browser’s site settings before trying again.
 
-If your browser resets or blocks permission, the switch turns off. Once your browser allows requests again, turn on **Browser notifications** in **Settings → General** to ask for permission. The switch stays off until permission is granted. Dismissing the request leaves it off; you can try again with the same switch. When enabled, **Send test notification** lets you check delivery.
+If your browser resets or blocks permission, the switch turns off. Once your browser allows requests again, turn on **Notifications** in **Settings → Notifications** to ask for permission. The switch stays off until permission is granted. Dismissing the request leaves it off; you can try again with the same switch. When enabled, **Send test notification** lets you check delivery.
 
 On desktop, enabling notifications sends a confirmation. If it does not appear, allow Nod in your computer’s notification settings and check Focus or Do Not Disturb.
 

@@ -138,7 +138,7 @@ const panelSizes = '(min-width: 1440px) 808px, (min-width: 1100px) 56vw, 92vw';
               </div>
             </div>
             <p class="lp-platforms">
-              macOS 14 or later · Windows 11 preview · Apache 2.0 · free · use ChatGPT Plus or Pro, or an AI key
+              macOS 14+ · Win 11 preview · Apache 2.0 · free · use ChatGPT Plus/Pro or any AI key
             </p>
           </div>
         </div>
@@ -170,27 +170,26 @@ const panelSizes = '(min-width: 1440px) 808px, (min-width: 1100px) 56vw, 92vw';
 
       <section class="lp-trust-stats" aria-labelledby="benchmark-heading">
         <div class="lp-benchmark-intro">
-          <h2 id="benchmark-heading">Real tasks. Measured results.</h2>
-          <p>Our task categories draw on <strong>900,000+ anonymised production workflows</strong>. We run real tasks through Nod's apps, browser, and computer, then check what changed.</p>
+          <h2 id="benchmark-heading"><span>678 test runs.</span> <span>Zero actions without permission.</span></h2>
         </div>
         <div class="lp-trust-stats-grid">
           <div class="lp-trust-stat">
             <p class="lp-trust-stat-number">98%</p>
-            <h3 class="lp-trust-stat-label"><a class="lp-stat-link" href={`${benchmarkGuide}#task-completion`}>Nod capability evals</a></h3>
-            <p class="lp-trust-stat-desc">Task completion across 226 errands in test apps and websites, each run three times. Nod took no actions without permission.</p>
+            <h3 class="lp-trust-stat-label"><a class="lp-stat-link" href={`${benchmarkGuide}#task-completion`}>Does it finish the job?</a></h3>
+            <p class="lp-trust-stat-desc">Of 226 errands in test accounts and websites, each run three times.</p>
           </div>
           <div class="lp-trust-stat">
             <p class="lp-trust-stat-number">93.2%</p>
-            <h3 class="lp-trust-stat-label"><a class="lp-stat-link" href={`${benchmarkGuide}#longmemeval-s-recall`}>LongMemEval-S recall</a></h3>
-            <p class="lp-trust-stat-desc">500 questions about past chats, answered in new sessions. Scored with the benchmark's official grading prompts.</p>
+            <h3 class="lp-trust-stat-label"><a class="lp-stat-link" href={`${benchmarkGuide}#longmemeval-s-recall`}>Does it remember what you told it?</a></h3>
+            <p class="lp-trust-stat-desc">Of 500 questions about earlier chats, asked in new sessions <span>(LongMemEval-S)</span>.</p>
           </div>
           <div class="lp-trust-stat">
             <p class="lp-trust-stat-number">0 of 216</p>
-            <h3 class="lp-trust-stat-label"><a class="lp-stat-link" href={`${benchmarkGuide}#whisperbench-memory-poisoning`}>WhisperBench false memories</a></h3>
-            <p class="lp-trust-stat-desc">108 published attack emails, each tested during an email check and background monitoring. None planted a false memory.</p>
+            <h3 class="lp-trust-stat-label"><a class="lp-stat-link" href={`${benchmarkGuide}#whisperbench-memory-poisoning`}>Can an email plant a false memory?</a></h3>
+            <p class="lp-trust-stat-desc">108 published attack emails, tried two ways (WhisperBench).</p>
           </div>
         </div>
-        <p class="lp-trust-stats-footnote">Results shown for GPT-6.1 Sol. <a class="lp-stat-link" href={benchmarkGuide}>How did we measure this?</a></p>
+        <p class="lp-trust-stats-footnote">October 2026, GPT-6.1 Sol. Errand types come from 900,000+ anonymised production workflows. Your results depend on your model and the sites you use. <a class="lp-stat-link" href={benchmarkGuide}>How we measured this</a></p>
       </section>
 
       <section class="lp-hard-ones-heading">
@@ -281,7 +280,7 @@ const panelSizes = '(min-width: 1440px) 808px, (min-width: 1100px) 56vw, 92vw';
           <div class="lp-claim">
             <div class="lp-claim-header">
               <p class="lp-claim-eyebrow">On your word</p>
-              <h3 class="lp-claim-heading">Nothing slips through</h3>
+              <h3 class="lp-claim-heading">Catch the question you missed</h3>
             </div>
             <div class="lp-claim-body">
               <p class="lp-claim-paragraph">
@@ -439,8 +438,6 @@ const panelSizes = '(min-width: 1440px) 808px, (min-width: 1100px) 56vw, 92vw';
         <p class="lp-hard-ones-sub">Say once that Anna, not Bob, handles invoices. It remembers.</p>
       </section>
 
-      <p class="lp-memory-evidence">See how <a class="lp-stat-link" href={`${benchmarkGuide}#longmemeval-s-recall`}>LongMemEval-S</a> tests recall and <a class="lp-stat-link" href={`${benchmarkGuide}#whisperbench-memory-poisoning`}>WhisperBench</a> tests whether attack emails can plant false memories.</p>
-
       <ol class="lp-feature-list">
         <li>
           <div class="lp-capsules">
@@ -473,6 +470,8 @@ const panelSizes = '(min-width: 1440px) 808px, (min-width: 1100px) 56vw, 92vw';
           <p>Reuses the steps and fixes them when a site changes.</p>
         </li>
       </ol>
+
+      <p class="lp-memory-evidence lp-trust-stats-footnote">See how <a class="lp-stat-link" href={`${benchmarkGuide}#longmemeval-s-recall`}>LongMemEval-S</a> tests recall and <a class="lp-stat-link" href={`${benchmarkGuide}#whisperbench-memory-poisoning`}>WhisperBench</a> tests whether attack emails can plant false memories.</p>
 
       <section class="lp-hard-ones-heading">
         <div class="lp-hard-ones-frame lp-dot-grid-bg">
@@ -522,6 +521,14 @@ const panelSizes = '(min-width: 1440px) 808px, (min-width: 1100px) 56vw, 92vw';
           </p>
         </details>
         <details class="lp-faq">
+          <summary>Which models can I use?</summary>
+          <p>
+            Any of <a href={`${base}connect/models/`} target="_blank" rel="noopener">30+ providers</a>, including OpenAI, Anthropic, Google and OpenRouter, or your ChatGPT
+            Plus or Pro plan. You can also run a <a href={`${base}connect/local-models/`} target="_blank" rel="noopener">local model</a> through Ollama, LM Studio, vLLM or llama.cpp. A
+            local model needs tool calling and a 64,000-token context, and small models are less reliable at the safety check.
+          </p>
+        </details>
+        <details class="lp-faq">
           <summary>Is it for work or personal stuff?</summary>
           <p>
             Built for people who run their own work: client calls, follow-ups, invoices, supplier portals. It handles life admin
@@ -562,8 +569,8 @@ const panelSizes = '(min-width: 1440px) 808px, (min-width: 1100px) 56vw, 92vw';
           <p>
             Nod <a href={`${base}trust/privacy/`} target="_blank" rel="noopener">stores your database, files, memory, and saved logins</a> on the computer or server that runs it.
             Model services, apps, and websites receive the data they need for your tasks. App connections use n8n and Composio by default.
-            Nod also checks for updates and shares usage data with n8n. You can turn usage sharing off and control conversation traces in Settings.
-            Feedback goes to n8n only when you send it.
+            Beyond update checks, n8n receives usage data to improve Nod, which you can turn off anytime in Settings, and whatever you choose to share,
+            such as feedback, traces or your email.
           </p>
         </details>
         <details class="lp-faq">
@@ -590,7 +597,8 @@ const panelSizes = '(min-width: 1440px) 808px, (min-width: 1100px) 56vw, 92vw';
             Start with the <a href={base} target="_blank" rel="noopener">docs</a>, which cover setup and the <a href={`${base}deploy/troubleshooting/`} target="_blank" rel="noopener"
               >common problems</a
             >. If something goes wrong, choose <a href={`${base}use/chat/#send-feedback`} target="_blank" rel="noopener">Send feedback</a> in the chat. It goes
-            to the Nod team at n8n. You can review the diagnostic report before you send it.
+            to the Nod team at n8n. You can review the diagnostic report before you send it. For questions and tips from other people using Nod, ask in the
+            <a href="https://community.n8n.io/c/n8n-labs/48" target="_blank" rel="noopener">n8n community forum</a>.
           </p>
         </details>
       </div>
@@ -635,7 +643,7 @@ const panelSizes = '(min-width: 1440px) 808px, (min-width: 1100px) 56vw, 92vw';
           <div class="lp-usecase-card pat-grocery align-bottom" style="background:var(--gray-20)">
             <p class="lp-usecase-category mono">Admin</p>
             <div class="lp-usecase-body">
-              <p class="lp-usecase-title">Month-end paperwork, done</p>
+              <p class="lp-usecase-title">File your month-end paperwork</p>
               <p class="lp-usecase-desc">Bank and tax statements, downloaded and filed by name</p>
             </div>
           </div>
@@ -651,7 +659,7 @@ const panelSizes = '(min-width: 1440px) 808px, (min-width: 1100px) 56vw, 92vw';
 
       <section class="lp-final-cta">
         <div class="lp-cta-frame">
-          <a class="lp-download-btn lp-final-cta-btn mono" href={installGuide} data-download>Get Nod</a>
+          <a class="lp-download-btn lp-final-cta-btn mono" href={installGuide} data-download>Start nodding</a>
           <img class="lp-crosshair tl" src={crosshair} alt="" />
           <img class="lp-crosshair tr" src={crosshair} alt="" />
           <img class="lp-crosshair bl" src={crosshair} alt="" />
