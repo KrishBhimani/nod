@@ -1,6 +1,7 @@
 import { defineConfig } from 'astro/config';
 import { satteri } from '@astrojs/markdown-satteri';
 import { defineHastPlugin, defineMdastPlugin } from 'satteri';
+import sitemap from '@astrojs/sitemap';
 import starlight from '@astrojs/starlight';
 import mermaid from 'astro-mermaid';
 import starlightLinksValidator from 'starlight-links-validator';
@@ -70,6 +71,10 @@ export default defineConfig({
   },
   vite: { server: { fs: { allow: ['.', '../public/fonts', '../public/logos'] } } },
   integrations: [
+    sitemap({
+      filter: (page) => !/\/docs\/(next|open)\/$/.test(page),
+      customPages: [`${site}/`],
+    }),
     mermaid({
       theme: 'base',
       autoTheme: false,

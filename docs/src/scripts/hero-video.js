@@ -1,84 +1,16 @@
 const VIDEO_ID = 'cjEK7V9GucQ';
-const UNMUTE_VISIBLE_MS = 5000;
 
 export function startHeroVideo() {
-  const frame = document.getElementById('heroVideoFrame');
-  const mount = document.getElementById('heroYT');
-  const unmute = document.getElementById('heroUnmuteBtn');
-  if (!frame || !mount || !unmute) return;
+  const play = document.getElementById('heroPlayBtn');
+  if (!play) return;
 
-  let player = null;
-  let ready = false;
-  let inView = false;
-  let started = false;
-
-  const hideUnmute = () => unmute.classList.add('hidden');
-
-  const play = () => {
-    if (started || !ready || !inView) return;
-    started = true;
-    player.playVideo();
-  };
-
-  const create = () => {
-    player = new window.YT.Player(mount, {
-      host: 'https://www.youtube-nocookie.com',
-      videoId: VIDEO_ID,
-      playerVars: {
-        mute: 1,
-        controls: 1,
-        rel: 0,
-        playsinline: 1,
-        loop: 1,
-        playlist: VIDEO_ID,
-        iv_load_policy: 3,
-      },
-      events: {
-        onReady: () => {
-          ready = true;
-          play();
-          const watch = setInterval(() => {
-            if (player.isMuted()) return;
-            clearInterval(watch);
-            hideUnmute();
-          }, 1000);
-        },
-        onStateChange: ({ data }) => {
-          if (data === window.YT.PlayerState.PLAYING) setTimeout(hideUnmute, UNMUTE_VISIBLE_MS);
-        },
-      },
-    });
-  };
-
-  const observer = new IntersectionObserver(
-    (entries) => {
-      if (!entries.some((entry) => entry.isIntersecting)) return;
-      observer.disconnect();
-      inView = true;
-      play();
-    },
-    { threshold: 0.5 },
-  );
-  observer.observe(frame);
-
-  if (window.YT?.Player) {
-    create();
-  } else {
-    const previous = window.onYouTubeIframeAPIReady;
-    window.onYouTubeIframeAPIReady = () => {
-      previous?.();
-      create();
-    };
-    const script = document.createElement('script');
-    script.src = 'https://www.youtube.com/iframe_api';
-    document.head.appendChild(script);
-  }
-
-  unmute.addEventListener('click', () => {
-    if (!ready) return;
-    player.seekTo(0, true);
-    player.unMute();
-    player.playVideo();
-    hideUnmute();
+  play.addEventListener('click', () => {
+    const player = document.createElement('iframe');
+    player.src = `https://www.youtube-nocookie.com/embed/${VIDEO_ID}?autoplay=1&rel=0&playsinline=1`;
+    player.title = 'Nod video';
+    player.allow = 'autoplay; encrypted-media; picture-in-picture; fullscreen';
+    player.allowFullscreen = true;
+    play.replaceWith(player);
+    player.focus();
   });
 }

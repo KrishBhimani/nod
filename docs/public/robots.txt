@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://nod.n8n.io/docs/sitemap-index.xml
