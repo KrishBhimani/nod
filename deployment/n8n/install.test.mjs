@@ -410,6 +410,7 @@ async function windowsInstall(options = {}) {
       wrongTarget: Boolean(options.wrongTarget),
       launchFailure: Boolean(options.launchFailure),
       badSignature: Boolean(options.badSignature),
+      lookupFailure: Boolean(options.lookupFailure),
       ps7Redirect: Boolean(options.ps7Redirect && options.powershell !== 'powershell.exe'),
       arrayRedirect: Boolean(options.arrayRedirect),
       legacyUpdateSource: options.legacyUpdateSource ? base : null,
@@ -425,6 +426,7 @@ async function windowsInstall(options = {}) {
     }),
   );
   const mocks = String.raw`
+$ErrorActionPreference = 'Stop'
 $fixture = Get-Content -Raw $env:NOD_FIXTURE | ConvertFrom-Json
 function Get-ItemProperty { param($Path, $ErrorAction)
   if ($Path -like 'HKLM:*') { [pscustomobject]@{ CurrentBuildNumber = $fixture.build } }
@@ -433,6 +435,10 @@ function Get-Process { param($Name, $ErrorAction) if ($fixture.running) { [pscus
 function Invoke-WebRequest { [CmdletBinding()] param($Uri, $OutFile, [switch]$UseBasicParsing, $MaximumRedirection)
   Add-Content $env:NOD_LOG "download $Uri"
   if ($MaximumRedirection -eq 0) {
+    if ($fixture.lookupFailure) {
+      $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new([System.Net.WebException]::new('Synthetic connection failure.'), 'WebCmdletWebResponseException', [System.Management.Automation.ErrorCategory]::InvalidOperation, $null))
+      return
+    }
     if ($fixture.ps7Redirect) {
       $response = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]::Found)
       $response.Headers.Location = [Uri]$fixture.redirects.$Uri
@@ -534,6 +540,7 @@ test(
     for (const options of [
       { installer: Buffer.from('tampered Windows installer!') },
       { badTag: true },
+      { lookupFailure: true },
       { offRepoRedirect: true },
       { offRepoRedirect: true, ps7Redirect: true },
       { badUpdateSource: true },
@@ -551,6 +558,8 @@ test(
       { build: '19045' },
     ].flatMap((options) => powershellCommands.map((powershell) => ({ ...options, powershell })))) {
       const rejected = await windowsInstall(options);
+      if (options.lookupFailure)
+        assert.match(rejected.output, /The latest Nod release is unavailable/);
       assert(!rejected.calls.some((call) => /^(install|launch)/.test(call)));
       assert.deepEqual(rejected.staged, []);
     }

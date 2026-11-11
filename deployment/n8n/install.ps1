@@ -20,9 +20,9 @@
     $redirect = Invoke-WebRequest -Uri "$releases/latest/download/release-win32-x64.json" -MaximumRedirection 0 -UseBasicParsing -ErrorAction SilentlyContinue
   } catch {
     $redirect = $_.Exception.Response
-    if (-not $redirect) { throw 'The latest Nod release is unavailable.' }
   }
-  $location = if ($redirect -is [System.Net.Http.HttpResponseMessage]) { $redirect.Headers.Location } else { $redirect.Headers['Location'] }
+  if (-not $redirect) { throw 'The latest Nod release is unavailable.' }
+  $location = if ($PSVersionTable.PSEdition -eq 'Core' -and $redirect -is [System.Net.Http.HttpResponseMessage]) { $redirect.Headers.Location } else { $redirect.Headers['Location'] }
   $locations = @($location)
   if ($locations.Count -ne 1 -or -not $locations[0]) { throw 'The Nod release metadata is invalid.' }
   $targetUrl = [Uri]$locations[0]
