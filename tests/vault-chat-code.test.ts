@@ -7,12 +7,21 @@ import test from 'node:test';
 import pg from 'pg';
 import { accessCookie, accessKey } from '../src/server/access.ts';
 
-test('a verification code attached to any wording is intercepted in any language', async () => {
+test('a verification code is held back in any wording or language and is the code only by itself', async () => {
   const { classifyVerificationReply, securityCodeIn } =
     await import('../src/shared/verification-code.ts');
-  for (const text of ['1234', 'Your code is 1234', '验证码1234', 'رمز1234', 'otp1234', 'code:1234'])
+  for (const text of ['1234', '12 34', ' 1234. '])
     assert.deepEqual(classifyVerificationReply(text), { kind: 'code', code: '1234' });
-  for (const text of ['1234 is the code', 'Send 12 34 as the code', 'otp 1234 now'])
+  for (const text of [
+    'Your code is 1234',
+    '验证码1234',
+    'رمز1234',
+    'otp1234',
+    'code:1234',
+    'oh and while ur in there whats the status of invoice NS-1042',
+  ])
+    assert.deepEqual(classifyVerificationReply(text), { kind: 'wrapped' });
+  for (const text of ['1234 is the code', 'Send 12 34 as the code', 'otp 1234 now', '+1234'])
     assert.deepEqual(classifyVerificationReply(text), { kind: 'invalid' });
   for (const text of ['MP3', 'meeting at 10:30', 'abc123def', 'no numbers here'])
     assert.deepEqual(classifyVerificationReply(text), { kind: 'ordinary' });
@@ -581,7 +590,7 @@ test(
           const entering = new Promise<void>((resolve) => {
             started = resolve;
           });
-          const first = send('The code is 834 725', { clientMessageId });
+          const first = send('834 725', { clientMessageId });
           await Promise.race([
             entering,
             first.then(() => assert.fail('Expected private verification injection.')),
@@ -592,7 +601,7 @@ test(
           assert.equal(injected.length, 1);
           release();
           assert.equal((await first).statusCode, 200);
-          const after = await send('Código: 834725', {
+          const after = await send('834725.', {
             clientMessageId,
             verificationRequestId: request.requestId,
           });
@@ -610,8 +619,11 @@ test(
         'ambiguous explicit code replies stay private while a challenge is registered',
         async () => {
           await reset();
-          await seed();
+          const question = await seed();
           for (const text of [
+            'oh and while ur in there whats the status of invoice NS-1042',
+            'Your code is 482913',
+            '验证码482913',
             'Code: +123456',
             'Code: +351912345678',
             'Code: 123456 or 654321',
@@ -621,11 +633,12 @@ test(
             'Code: 123',
             'Code: 123456789',
             'Code: 2026-09-29',
-          ]) {
-            const response = await send(text);
-            assert.equal(response.statusCode, 409);
-            assert.ok(!response.body.includes(text));
-          }
+          ])
+            for (const reply of [{}, { replyToMessageId: question.messageId }]) {
+              const response = await send(text, reply);
+              assert.equal(response.statusCode, 409, text);
+              assert.ok(!response.body.includes(text));
+            }
           assert.deepEqual(ordinary, []);
           assert.equal(injected.length, 0);
           assert.equal(
@@ -636,6 +649,16 @@ test(
             (await db.pool.query('SELECT * FROM chat_verification_submissions')).rowCount,
             0,
           );
+          assert.equal((await send('482913')).json().verificationStatus, 'submitted');
+          assert.deepEqual(
+            injected.map(({ code }) => code),
+            ['482913'],
+          );
+          await reset();
+          await seed({ superseded: true });
+          assert.equal((await send('Your code is 482913')).statusCode, 409);
+          assert.deepEqual(ordinary, []);
+          assert.equal(injected.length, 0);
         },
       );
       await t.test(

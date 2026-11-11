@@ -58,7 +58,7 @@ export function writeChatDraft(key: string, draft: ChatDraft | null, privateRepl
       !draft ||
       (!draft.text && !draft.reply && !draft.attachments.length && !draft.missing.length) ||
       (privateReply && classifyVerificationReply(draft.text).kind !== 'ordinary') ||
-      /^\s*\d{4,8}\s*[.!]?\s*$/.test(draft.text) ||
+      classifyVerificationReply(draft.text).kind === 'code' ||
       securityCodeIn(draft.text)
     )
       localStorage.removeItem(key);

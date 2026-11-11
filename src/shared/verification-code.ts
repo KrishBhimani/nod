@@ -1,5 +1,5 @@
 type VerificationReply =
-  { kind: 'code'; code: string } | { kind: 'invalid' } | { kind: 'ordinary' };
+  { kind: 'code'; code: string } | { kind: 'wrapped' } | { kind: 'invalid' } | { kind: 'ordinary' };
 
 export function classifyVerificationReply(text: string): VerificationReply {
   const value = text.trim().replace(/[.!]$/, '').trimEnd();
@@ -12,11 +12,15 @@ export function classifyVerificationReply(text: string): VerificationReply {
   if (!numbers.length) return { kind: 'ordinary' };
   const [only] = numbers;
   const code = only[0].replace(/[\p{Zs}\t]/gu, '');
-  return numbers.length === 1 &&
-    only.index + only[0].length === value.length &&
-    /^\d{4,8}$/.test(code)
-    ? { kind: 'code', code }
-    : { kind: 'invalid' };
+  if (
+    numbers.length !== 1 ||
+    only.index + only[0].length !== value.length ||
+    !/^\d{4,8}$/.test(code)
+  )
+    return { kind: 'invalid' };
+  return /[\p{L}\p{N}]/u.test(value.slice(0, only.index))
+    ? { kind: 'wrapped' }
+    : { kind: 'code', code };
 }
 
 export function securityCodeIn(text: string) {

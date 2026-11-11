@@ -267,7 +267,7 @@ export async function createChatVerification(
               Boolean(codes.payment),
               reply.kind !== 'ordinary',
               turnId ?? null,
-              Boolean(codes.otp ?? codes.payment),
+              reply.kind === 'code' || reply.kind === 'wrapped' || Boolean(codes.payment),
             ],
           )
         ).rows[0];
@@ -300,7 +300,7 @@ export async function createChatVerification(
         throw conflict(
           request.kind === 'payment'
             ? 'Send just the card’s security code.'
-            : 'Send one verification code using 4 to 8 digits.',
+            : 'Send the code by itself, using 4 to 8 digits.',
         );
       const codeFingerprint = await fingerprint(code, input);
       input.signal?.throwIfAborted();
