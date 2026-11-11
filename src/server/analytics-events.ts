@@ -94,6 +94,29 @@ export const analyticsEvent = z.discriminatedUnion('event', [
     .strict(),
   z
     .object({
+      event: z.literal('model_setup_completed'),
+      properties: z.object({ provider: analyticsModelProvider, model: analyticsModel }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      event: z.literal('owner_message_accepted'),
+      properties: z.object({ channel: z.enum(['web', 'telegram', 'whatsapp', 'other']) }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      event: z.literal('channel_connection_observed'),
+      properties: z
+        .object({
+          channel: z.enum(['telegram', 'whatsapp']),
+          state: z.enum(['disabled', 'setup_pending', 'connected', 'configured_unverified']),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
       event: z.literal('output_created'),
       properties: z.union([
         z
@@ -325,6 +348,22 @@ export const analyticsEvent = z.discriminatedUnion('event', [
     .object({
       event: z.literal('connection_observed'),
       properties: connectionProperties.strict(),
+    })
+    .strict(),
+  z
+    .object({
+      event: z.literal('connection_inventory_observed'),
+      properties: z
+        .object({
+          connected_app_types: z.array(connectionProperties.shape.app).max(1000),
+          connected_app_type_count: z.number().int().nonnegative().max(1000),
+        })
+        .strict()
+        .refine(
+          ({ connected_app_types, connected_app_type_count }) =>
+            connected_app_type_count === connected_app_types.length &&
+            new Set(connected_app_types).size === connected_app_types.length,
+        ),
     })
     .strict(),
   z

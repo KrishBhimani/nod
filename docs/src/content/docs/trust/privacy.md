@@ -11,7 +11,7 @@ Nod keeps your data on your computer, or on your server if you self-host. This p
 
 Nod can share two kinds of data with the Nod team at n8n. Both help the team find where Nod gets stuck.
 
-- **Usage data** is on by default. It records the screens and features you use, and your onboarding and survey answers. Onboarding answers are your fixed About you choices, never what you type under **Something else**. They also appear on an installation profile so the team can filter events by those answers. It excludes your messages to Nod and Nod's replies. If you give your email in onboarding and tick its consent box, it is linked to the same profile.
+- **Usage data** is on by default. It records the screens and features you use, and your onboarding and survey answers. Onboarding answers are your fixed About you choices, never what you type under **Something else**. They also appear on a PostHog profile tied to a pseudonymous analytics ID so the team can filter events by those answers. It excludes your messages to Nod and Nod's replies. If you give your email in onboarding and tick its consent box, it is linked to the same profile.
 - **Conversation traces** are off by default. They include the conversation, with personal details removed on your computer first.
 
 ### Example: one request
@@ -34,7 +34,7 @@ turn_completed    outcome: succeeded, duration_ms: 9800
 task_classified   task_type: communication
 ```
 
-Each event also carries a random installation ID and the app version. The task label comes from a small model on your own model connection. Only the label, here `communication`, reaches n8n. When you submit About you while sharing usage, Nod stores its fixed choices on a PostHog person profile under the installation ID. The team can filter later events by those choices and use PostHog's current person properties to filter earlier events. If you give your email in onboarding and tick its consent box, the address joins that profile.
+Each event also carries a pseudonymous analytics ID. Nod includes its release version or source revision when available. The task label comes from a small model on your own model connection. Only the label, here `communication`, reaches n8n. When you submit About you while sharing usage, Nod stores its fixed choices on a PostHog person profile under that analytics ID. The team can filter later events by those choices and use PostHog's current person properties to filter earlier events. If you give your email in onboarding and tick its consent box, the address joins that profile.
 
 **A conversation trace** includes the conversation. Nod replaces the personal details it recognizes before the trace leaves your computer. This is the scrubber's real output for this request:
 
@@ -75,7 +75,9 @@ The trace also includes Nod's instructions, the model name, token counts, and co
 | Switch         | **Share conversation traces**                                                                           |
 | Details        | [Conversation traces](/trust/conversation-traces/)                                                      |
 
-Both switches are in **Settings → Privacy & data**. Turning one off stops new sends at once. It does not delete data already sent, including About you answers and a consented email. To request deletion, use **Send feedback**. A server operator can turn either switch off for everyone.
+Both switches are in **Settings → Privacy & data**. Turning one off stops subsequent sends, though a send already in flight may finish. It does not delete data already sent, including About you answers and a consented email. To request deletion, use **Send feedback**. A server operator can turn either switch off for everyone.
+
+On a fresh packaged desktop profile, the default-on usage setting can send the first native setup-window open before you reach this switch. Turning sharing off later stops new sends but cannot recall that opening event.
 
 Select **How Nod uses your data** next to the **Privacy & data** heading to see this summary in Nod.
 

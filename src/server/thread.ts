@@ -115,6 +115,7 @@ interface SubmitUserMessageOptions {
   answer?: ChatConfirmationInput['answer'];
   prepareAttachments?: (client: PoolClient, threadId: string) => Promise<Artifact[]>;
   persistSubmission?: (client: PoolClient, result: SubmitUserMessageResult) => Promise<void>;
+  onInserted?: () => void;
 }
 export interface SubmitUserMessageResult {
   threadId: string;
@@ -123,7 +124,11 @@ export interface SubmitUserMessageResult {
 }
 type ConfirmAction = {
   answer(input: ChatConfirmationInput): Promise<ChatConfirmationInput['answer']>;
-  accept(client: PoolClient, input: ChatConfirmationInput): Promise<ChatConfirmationResult>;
+  accept(
+    client: PoolClient,
+    input: ChatConfirmationInput,
+    onInserted?: () => void,
+  ): Promise<ChatConfirmationResult>;
 };
 
 export interface ThreadDependencies {
@@ -508,11 +513,22 @@ export async function enqueueTurn(prompt: string, options: EnqueueTurnOptions) {
 }
 
 export function createUserMessageService(
-  options: { confirmAction?: ConfirmAction; taskReply?: TaskReply } = {},
+  options: {
+    confirmAction?: ConfirmAction;
+    taskReply?: TaskReply;
+    accepted?: () => (channel: string) => void;
+  } = {},
 ) {
   return {
     submit: (text: string, attachments: Artifact[] = [], input: SubmitUserMessageOptions = {}) =>
-      submitUserMessage(text, attachments, input, options.confirmAction, options.taskReply),
+      submitUserMessage(
+        text,
+        attachments,
+        input,
+        options.confirmAction,
+        options.taskReply,
+        options.accepted?.(),
+      ),
     answer: (text: string, input: SubmitUserMessageOptions = {}) =>
       readAnswer(text, false, input, options.confirmAction),
   };
@@ -549,6 +565,7 @@ export async function submitUserMessage(
   options: SubmitUserMessageOptions = {},
   confirmAction?: ConfirmAction,
   taskReply?: TaskReply,
+  onAccepted?: (channel: string) => void,
 ): Promise<SubmitUserMessageResult> {
   validateSource(options.sourceId, options.channel);
   const channel = options.channel ?? 'web';
@@ -567,6 +584,11 @@ export async function submitUserMessage(
     : options.client
       ? options.answer
       : await readAnswer(text, confirmation.hasAttachments, options, confirmAction);
+  let inserted = false;
+  const markInserted = () => {
+    inserted = true;
+    options.onInserted?.();
+  };
   const submit = async (client: PoolClient): Promise<SubmitUserMessageResult> => {
     const thread = await lockThread(client);
     if (options.threadId !== undefined && options.threadId !== thread.id)
@@ -649,11 +671,15 @@ export async function submitUserMessage(
       throw httpError('Select a passage of 4,000 characters or fewer.');
     const confirmed = options.questionAnswer
       ? undefined
-      : await confirmAction?.accept(client, {
-          ...confirmation,
-          threadId: thread.id,
-          answer,
-        });
+      : await confirmAction?.accept(
+          client,
+          {
+            ...confirmation,
+            threadId: thread.id,
+            answer,
+          },
+          markInserted,
+        );
     await assertReplyTarget(client, thread.id, options.replyToMessageId, true);
     if (confirmed && 'turnId' in confirmed) return confirmed;
     await localArtifacts.retainArtifacts(
@@ -714,6 +740,7 @@ export async function submitUserMessage(
       ],
     );
     await sendDrain(client, thread.id);
+    markInserted();
     return { threadId: thread.id, turnId, messageId };
   };
   let result: SubmitUserMessageResult;
@@ -729,6 +756,11 @@ export async function submitUserMessage(
     if (options.clientMessageId && code === '23505' && constraint === 'messages_pkey')
       throw messageIdInUse();
     throw error;
+  }
+  if (!options.client && inserted) {
+    try {
+      onAccepted?.(channel);
+    } catch {}
   }
   if (!options.client) refresh();
   return result;

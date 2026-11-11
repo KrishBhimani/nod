@@ -56,6 +56,11 @@ const engineRoot = app.isPackaged
   : resolve(desktopRoot, '..');
 const notificationIcon = join(engineRoot, app.isPackaged ? 'dist/web' : 'public', 'nod-logo.png');
 const appPages = JSON.parse(readFileSync(join(engineRoot, 'src/shared/app-pages.json'), 'utf8'));
+const posthogConfig = JSON.parse(
+  readFileSync(join(engineRoot, 'src/shared/posthog-host.json'), 'utf8'),
+);
+const posthogHost = posthogConfig.host;
+const appContentPolicy = desktopContentPolicy(posthogHost);
 let pendingAppPath = process.argv.map((value) => appOpenPath(value, appPages)).find(Boolean);
 let appLinksReady = false;
 app.on('open-url', (event, value) => {
@@ -103,6 +108,10 @@ app.setPath(
   developmentDataRoot || join(app.getPath('appData'), testInstall ? 'nod Setup Test' : 'nod'),
 );
 const profileRoot = join(app.getPath('userData'), 'profiles', 'local');
+const freshLocalProfile = await stat(profileRoot).then(
+  () => false,
+  (error) => error.code === 'ENOENT',
+);
 const resumePath = join(profileRoot, 'update-resume.json');
 const resumeRead = readFile(resumePath, 'utf8').catch(() => undefined);
 const windowsUpdates = join(process.env.LOCALAPPDATA || app.getPath('temp'), 'nod', 'updates');
@@ -114,7 +123,21 @@ const settings = createSettingsStore(
 );
 const analyticsConfiguration = createDesktopAnalytics(join(profileRoot, 'analytics-id'), {
   packaged: app.isPackaged,
+  env: process.env,
 });
+let appOpeningAt;
+let freshAppOpening;
+let freshAppOpenCapture;
+let appOpeningDeferred = false;
+let appOpeningConsentVersion = 0;
+const claimedAppOpens = new Set();
+const appUIOpenings = new Map();
+function deferAppOpening() {
+  appOpeningDeferred = true;
+  appOpeningConsentVersion++;
+  freshAppOpening = undefined;
+  appUIOpenings.clear();
+}
 let setupWindow;
 let setupWindowLoaded;
 let engineWindow;
@@ -727,6 +750,17 @@ function showSettings(section = 'general', loading = false) {
     () => {
       if ((!quitting || status.phase === 'updating') && !window.isDestroyed()) {
         window.show();
+        if (
+          section === 'general' &&
+          !onboardingCompleted &&
+          !welcomePassed &&
+          !remoteConnection &&
+          !connectionSettingsOpen &&
+          !onboardingSetupOpen
+        ) {
+          appOpeningAt ??= Date.now();
+          captureFreshAppOpen();
+        }
         if (resumed?.maximized) window.maximize();
       }
       presented();
@@ -1085,6 +1119,129 @@ function analyticsEnvironment(metadata) {
     : 'development';
 }
 
+async function captureNativeAnalytics({ event, distinctId, openedAt, uuid, properties }) {
+  try {
+    const { nodBuild } = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
+    const saved = await settings.get();
+    if (saved.welcome?.usageData === false) deferAppOpening();
+    if (appOpeningDeferred) return false;
+    const response = await fetch(`${posthogConfig.host}/i/v0/e/`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      redirect: 'error',
+      signal: AbortSignal.timeout(3_000),
+      body: JSON.stringify({
+        api_key: posthogConfig.key,
+        event,
+        distinct_id: distinctId,
+        uuid,
+        timestamp: new Date(openedAt).toISOString(),
+        properties: {
+          analytics_schema: posthogConfig.schemaVersion,
+          environment: analyticsEnvironment(nodBuild),
+          surface: 'desktop',
+          app_version: app.getVersion(),
+          ...properties,
+          route: '/onboarding',
+          $current_url: 'https://app.example/onboarding',
+          $pathname: '/onboarding',
+          $host: 'app.example',
+          $process_person_profile: false,
+          $geoip_disable: true,
+        },
+      }),
+    });
+    if (response.status !== 200) {
+      void response.body?.cancel().catch(() => {});
+      return false;
+    }
+    const result = await response.json();
+    const limited = result?.quota_limited;
+    const accepted =
+      result?.status === 'Ok' &&
+      (limited == null ||
+        limited === '' ||
+        (Array.isArray(limited) && limited.length === 0) ||
+        (typeof limited === 'object' && Object.keys(limited).length === 0));
+    return accepted;
+  } catch {
+    return false;
+  }
+}
+
+function captureFreshAppOpen() {
+  if (
+    !freshLocalProfile ||
+    !app.isPackaged ||
+    testInstall ||
+    process.env.NOD_ANALYTICS_ENABLED === 'false' ||
+    process.env.NOD_ANALYTICS_ID ||
+    freshAppOpenCapture
+  )
+    return;
+  freshAppOpenCapture = (async () => {
+    const saved = await settings.get().catch(() => null);
+    if (
+      !saved ||
+      saved.serverUrl ||
+      saved.onboardingCompleted ||
+      saved.welcome ||
+      remoteConnection ||
+      onboardingCompleted ||
+      welcomePassed ||
+      connectionSettingsOpen ||
+      onboardingSetupOpen
+    )
+      return false;
+    const analytics = await analyticsConfiguration().catch(() => null);
+    if (!analytics?.enabled || !analytics.distinctId) return false;
+    const openedAt = appOpeningAt ?? Date.now();
+    const uuid = randomUUID();
+    freshAppOpening = { distinctId: analytics.distinctId, openedAt, uuid };
+    const accepted = await captureNativeAnalytics({
+      event: 'app_opened',
+      distinctId: analytics.distinctId,
+      openedAt,
+      uuid,
+      properties: { entry: 'native_setup' },
+    });
+    if (accepted) claimedAppOpens.add(analytics.distinctId);
+    return accepted;
+  })().catch(() => false);
+}
+
+function captureStartupPath(path) {
+  if (appOpeningDeferred || onboardingCompleted || welcomePassed || remoteConnection) return;
+  const openedAt = Date.now();
+  return Promise.resolve(freshAppOpenCapture)
+    .then(async () => {
+      if (appOpeningDeferred) return;
+      const saved = await settings.get();
+      if (
+        appOpeningDeferred ||
+        saved.welcome?.usageData === false ||
+        saved.welcome?.continued === true
+      )
+        return;
+      if (
+        saved.welcome?.usageData !== true &&
+        !(freshLocalProfile && freshAppOpening && !saved.welcome)
+      )
+        return;
+      const analytics = await analyticsConfiguration();
+      if (!analytics.enabled || !analytics.distinctId) return;
+      if (freshAppOpening && freshAppOpening.distinctId !== analytics.distinctId) return;
+      return captureNativeAnalytics({
+        event: 'startup_path_selected',
+        distinctId: analytics.distinctId,
+        openedAt,
+        uuid: randomUUID(),
+        properties: { path },
+      });
+    })
+    .catch(() => {});
+}
+
 async function engineRequest(path, options = {}) {
   if (!engineBound) throw new Error('Nod is not ready.');
   return fetch(`${engineOrigin}${path}`, {
@@ -1110,7 +1267,7 @@ function configureAppSession() {
       const name =
         Object.keys(headers).find((key) => key.toLowerCase() === 'content-security-policy') ??
         'Content-Security-Policy';
-      headers[name] = [...(headers[name] ?? []), desktopContentPolicy];
+      headers[name] = [...(headers[name] ?? []), appContentPolicy];
       callback({ responseHeaders: headers });
     });
   appSession.setPermissionCheckHandler((sender, permission, origin, details) => {
@@ -1160,6 +1317,7 @@ function configureAppSession() {
 function showConnectionSettings() {
   if (quitting) return;
   const returnToOnboarding = onboardingSetupOpen;
+  captureStartupPath('remote');
   if (setupWindow && !setupWindow.isDestroyed()) setupWindow.destroy();
   connectionReturnsToOnboarding = returnToOnboarding;
   connectionSettingsOpen = true;
@@ -2247,6 +2405,7 @@ else {
       ipcMain.handle('nod:connection:close', (event) => {
         allowSetup(event);
         const returnToOnboarding = connectionSettingsOpen && connectionReturnsToOnboarding;
+        captureStartupPath('welcome');
         setupWindow.destroy();
         if (returnToOnboarding) replayOnboarding();
         else showEngine();
@@ -2265,6 +2424,43 @@ else {
       ipcMain.handle('nod:feedback:capture', (event) => {
         if (!isEngine(event)) throw new Error('This action is unavailable.');
         return captureFeedbackScreenshot(event).catch(() => null);
+      });
+      ipcMain.handle('nod:analytics:opening', async (event, consented, distinctId) => {
+        if (
+          !isEngine(event) ||
+          event.sender !== engineWindow?.webContents ||
+          typeof consented !== 'boolean'
+        )
+          throw new Error('This action is unavailable.');
+        if (!consented) {
+          deferAppOpening();
+          return null;
+        }
+        if (
+          typeof distinctId !== 'string' ||
+          !/^local:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+            distinctId,
+          )
+        )
+          throw new Error('The analytics installation ID is invalid.');
+        const consentVersion = appOpeningConsentVersion;
+        await freshAppOpenCapture;
+        if (consentVersion !== appOpeningConsentVersion) return null;
+        if (claimedAppOpens.has(distinctId)) return null;
+        const native =
+          !remoteConnection && !appOpeningDeferred && freshAppOpening?.distinctId === distinctId
+            ? freshAppOpening
+            : null;
+        let opening = appUIOpenings.get(distinctId);
+        if (!opening) {
+          opening = {
+            openedAt: native?.openedAt ?? Date.now(),
+            uuid: native?.uuid ?? randomUUID(),
+            entry: native ? 'native_setup' : 'app_ui',
+          };
+          appUIOpenings.set(distinctId, opening);
+        }
+        return opening;
       });
       ipcMain.handle('nod:preferences:get', (event) => {
         if (!isSetup(event) && !isEngine(event)) throw new Error('This action is unavailable.');
@@ -2348,6 +2544,8 @@ else {
           }
           throw error;
         }
+        if (value.welcome?.usageData === false) deferAppOpening();
+        if (value.welcome?.continued === false) captureStartupPath('local');
         onboardingCompleted = remoteConnection ? true : saved.onboardingCompleted;
         if (onboardingCompleted) nativePreferencesPending = false;
         const confirmNotifications = value.notifications === true && !preferences.notifications;
