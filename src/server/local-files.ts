@@ -346,13 +346,14 @@ export function createLocalFiles(
       false,
       path,
     );
-    return contained(
-      nodePath.join(parent, nodePath.basename(nodePath.resolve(path))),
-      keep,
-      false,
-      path,
-      true,
-    );
+    const name = nodePath.basename(nodePath.resolve(path));
+    if (
+      process.platform === 'win32' &&
+      (await maybeLstat(nodePath.join(parent, name))) &&
+      !(await readdir(parent)).some((listed) => listed.toLowerCase() === name.toLowerCase())
+    )
+      throw outside(path);
+    return contained(nodePath.join(parent, name), keep, false, path, true);
   }
 
   function resolver(action: Action, keep: string[]) {
