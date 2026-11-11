@@ -2068,6 +2068,33 @@ test(
         ]);
         await tasks.resumeDue(threadId);
         await waitFor(async () => (await followUps()) === 1, 20_000);
+        const asking = randomUUID();
+        const askingTurn = randomUUID();
+        await db.pool.query(
+          "INSERT INTO turns(id,owner_id,thread_id,session_id,source,prompt,status,waiting_reason,background,started_at) VALUES($1,$2,$3,$4,'task','Synthetic waiting work','waiting','approval',true,now())",
+          [askingTurn, ownerId, threadId, asking],
+        );
+        await db.pool.query(
+          "INSERT INTO tasks(id,owner_id,turn_id,session_id,title,done_when,now_text,applied_revision,next_check) VALUES($1,$2,$3,$1,'Synthetic waiting work','Synthetic reply arrived','Waiting',1,date_trunc('milliseconds',now())-interval '1 minute')",
+          [asking, ownerId, askingTurn],
+        );
+        t.after(async () => {
+          await db.pool.query(
+            "UPDATE turns SET status='cancelled',finished_at=now() WHERE id=$1 AND status='waiting'",
+            [askingTurn],
+          );
+          await db.pool.query('DELETE FROM tasks WHERE id=$1', [asking]);
+        });
+        await tasks.resumeDue(threadId);
+        assert.equal(
+          (
+            await db.pool.query(
+              "SELECT count(*)::int AS n FROM turns WHERE session_id=$1 AND source='resume'",
+              [asking],
+            )
+          ).rows[0].n,
+          0,
+        );
       });
 
       await t.test('consecutive messages run as turns on the same thread', async (t) => {
