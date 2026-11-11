@@ -19,10 +19,13 @@ import {
 } from '../shared/models.ts';
 import type { ProductAnalytics } from '../ports/analytics.ts';
 import { createPostHogAnalytics } from '../providers/posthog/analytics.ts';
+import type { OnboardingEmailDelivery } from '../ports/onboarding-email.ts';
+import { createN8nOnboardingEmail } from '../providers/n8n/onboarding-email.ts';
 import {
   analyticsEnabled,
   analyticsEnvironment,
   createAnalytics,
+  snapshotAnalytics,
   toolUsed,
   type CaptureAnalytics,
 } from './analytics.ts';
@@ -193,6 +196,7 @@ import { BrowserConnectionError, createBrowserConnections } from './browser-conn
 import { cachedIcons, registerLinkOpened } from './link-previews.ts';
 export interface ApplicationAdapters {
   analytics?: ProductAnalytics;
+  onboardingEmail?: OnboardingEmailDelivery;
   initialize?(): Promise<void>;
   observe?(turnId: string, event: RuntimeObservation): void;
   models?: ReturnType<typeof createModelService>;
@@ -619,6 +623,11 @@ export function createDefaultAdapters(
       },
     },
     linkPreviews: createPublicLinkPreviewProvider(),
+    onboardingEmail: createN8nOnboardingEmail({
+      url:
+        env.NOD_ONBOARDING_EMAIL_URL ??
+        'https://internal.users.n8n.cloud/webhook/nod/onboarding-updates',
+    }),
     feedback: createN8nFeedback({
       enabled: feedbackEnabled,
       url: feedbackUrl,
@@ -684,6 +693,7 @@ async function initializeApplication(
     appVersion: process.env.NOD_APP_VERSION,
   });
   let observeConnections: ((only?: 'apps' | 'models') => Promise<void>) | undefined;
+  let observeChannels: (() => Promise<void>) | undefined;
   const feedbackActivity = createFeedbackActivity('runtime');
   const captureAnalytics: CaptureAnalytics = (event, delivery) => {
     feedbackActivity.record(event.event, 'properties' in event ? event.properties : undefined);
@@ -707,6 +717,8 @@ async function initializeApplication(
       (event.event === 'settings_updated' && event.properties.section === 'models')
     )
       void observeConnections?.('models');
+    if (event.event === 'settings_updated' && event.properties.section === 'channels')
+      void observeChannels?.();
   };
   captureAnalytics.snapshot = () => {
     const consent = analytics.consent(ownerId);
@@ -890,15 +902,45 @@ async function initializeApplication(
     profileAnalytics: analytics.personProfileAvailable
       ? {
           enabled: () => analytics.consent(ownerId).enabled,
+          version: () => analytics.consent(ownerId).version,
           submit: (profile) => analytics.setOnboardingProfileAnswers(ownerId, profile),
         }
       : undefined,
-    updatesEmail: analytics.personProfileAvailable
-      ? {
-          enabled: () => analytics.consent(ownerId).enabled,
-          submit: (email) => analytics.setUpdatesEmail(ownerId, email),
-        }
-      : undefined,
+    updatesEmail:
+      analytics.personProfileAvailable && adapters.onboardingEmail?.configured
+        ? {
+            enabled: () => analytics.consent(ownerId).enabled,
+            submit: async (email, profile) => {
+              const consent = analytics.consent(ownerId);
+              if (!consent.enabled) return false;
+              const currentConsent = () => {
+                const current = analytics.consent(ownerId);
+                return (
+                  current.enabled &&
+                  !consent.signal.aborted &&
+                  current.signal === consent.signal &&
+                  current.version === consent.version &&
+                  current.revision === consent.revision
+                );
+              };
+              if (profile) {
+                const shared = await analytics.setOnboardingProfileProperties(
+                  ownerId,
+                  profile,
+                  consent,
+                );
+                if (!shared || !currentConsent()) return false;
+              }
+              const consentAt = new Date().toISOString();
+              const saved = await analytics.setUpdatesEmail(ownerId, email, consentAt, consent);
+              if (!saved || !currentConsent()) return false;
+              return adapters.onboardingEmail!.submit(
+                { email, ...(profile ? { profile } : {}) },
+                consent.signal,
+              );
+            },
+          }
+        : undefined,
   });
   const memoryRecall = createMemoryRecall({ pool, ownerId, memory, curator });
   const writingStyle = createWritingStyleLearning({ memory, curator });
@@ -1234,6 +1276,7 @@ async function initializeApplication(
         ? { turnId: provenance.turnId, signal: provenance.signal }
         : provenance.turnId;
       const scheduleWrite = [
+        'NOD_schedule_pause',
         'NOD_schedule_cancel',
         'NOD_schedule_create',
         'NOD_schedule_update',
@@ -1302,7 +1345,7 @@ async function initializeApplication(
       if (action === 'NOD_limits_update') limitsInput.parse(args);
       else if (action.startsWith('NOD_')) {
         if (
-          ['NOD_schedule_update', 'NOD_schedule_cancel'].includes(action) &&
+          ['NOD_schedule_update', 'NOD_schedule_pause', 'NOD_schedule_cancel'].includes(action) &&
           expectedRevision === undefined
         )
           throw Object.assign(new Error('This schedule needs a fresh approval.'), {
@@ -1501,11 +1544,15 @@ async function initializeApplication(
                   ])
                 ).flat(),
           () => (only === 'apps' ? [] : (adapters.models?.analyticsConnections() ?? [])),
+          only !== 'models',
         ),
       )
       .catch(() => {}));
   const stopConnectionInventory = analytics.subscribe(ownerId, (enabled) => {
-    if (enabled) void observeConnections?.();
+    if (enabled) {
+      void observeConnections?.();
+      void observeChannels?.();
+    }
   });
   void observeConnections();
   await clearConversationAnalytics(pool, ownerId);
@@ -1640,9 +1687,23 @@ async function initializeApplication(
     resume: resumeAfterPayment,
     record: (turn, entry, client) => vaultAccess.record(turn, entry, client),
   });
+  const ownerMessageAccepted = () => {
+    const capture = snapshotAnalytics(captureAnalytics);
+    return (channel: string) => {
+      const source = channel.split(':')[0];
+      capture?.({
+        event: 'owner_message_accepted',
+        properties: {
+          channel:
+            source === 'web' || source === 'telegram' || source === 'whatsapp' ? source : 'other',
+        },
+      });
+    };
+  };
   const submittedMessages = createUserMessageService({
     confirmAction: approvals.chat,
     taskReply: tasks.resolveReply,
+    accepted: ownerMessageAccepted,
   });
   const userMessages = {
     ...submittedMessages,
@@ -1842,7 +1903,7 @@ async function initializeApplication(
             'model_select',
             'schedule_create',
             'schedule_update',
-            'schedule_cancel',
+            'schedule_pause',
           ].includes(action)
         ) {
           if (
@@ -1854,10 +1915,10 @@ async function initializeApplication(
             );
           const input = await personal.validateReview(action, args);
           const schedule =
-            action === 'schedule_cancel' || action === 'schedule_update'
+            action === 'schedule_pause' || action === 'schedule_update'
               ? await personal.getSchedule(String(input.id))
               : undefined;
-          if (action === 'schedule_cancel' && schedule && !schedule.enabled) return schedule;
+          if (action === 'schedule_pause' && schedule && !schedule.enabled) return schedule;
           const current = schedule
             ? {
                 title: schedule.title,
@@ -2221,6 +2282,7 @@ async function initializeApplication(
   tasks.registerRoutes(app);
   triage.registerRoutes(app);
   let channelSettings: Awaited<ReturnType<typeof createChannelSettings>> | undefined;
+  let lastChannelObservation: { consentVersion: number; signature: string } | undefined;
   if (options.channels !== false && (adapters.messaging || adapters.messagingSetup)) {
     const setup = adapters.messagingSetup;
     if (setup) {
@@ -2245,6 +2307,29 @@ async function initializeApplication(
         paired: async (candidate, client) => {
           if (!channels) throw new Error('Messaging is not ready.');
           return channels.announcePairing(candidate, client);
+        },
+        observed: () => {
+          const consent = analytics.consent(ownerId);
+          return (states) => {
+            if (
+              !consent.enabled ||
+              consent.signal.aborted ||
+              consent.version !== analytics.consent(ownerId).version
+            )
+              return;
+            const signature = JSON.stringify(states);
+            if (
+              lastChannelObservation?.consentVersion === consent.version &&
+              lastChannelObservation.signature === signature
+            )
+              return;
+            for (const properties of states)
+              captureAnalytics(
+                { event: 'channel_connection_observed', properties },
+                { consentRevision: consent.revision },
+              );
+            lastChannelObservation = { consentVersion: consent.version, signature };
+          };
         },
       });
       channelSettings.registerRoutes(app);
@@ -2334,6 +2419,7 @@ async function initializeApplication(
         answer,
         replyToMessageId,
         attachments,
+        onInserted,
       ) =>
         (
           await userMessages.submit(text, attachments, {
@@ -2343,13 +2429,22 @@ async function initializeApplication(
             clientMessageId: messageId,
             replyToMessageId,
             answer,
+            onInserted,
           })
         ).turnId,
+      messageAccepted: ownerMessageAccepted,
       answer: (text, channel, replyToMessageId) =>
         userMessages.answer(text, { channel, replyToMessageId }),
     });
     channels.registerRoutes(app);
     await channelSettings?.recover();
+    if (channelSettings) {
+      const settings = channelSettings;
+      observeChannels = async () => {
+        await settings.status().catch(() => {});
+      };
+      void observeChannels();
+    }
   }
   await onboardingSuggestions.initialize();
   if (adapters.model.configured)

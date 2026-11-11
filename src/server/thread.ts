@@ -104,6 +104,7 @@ interface SubmitUserMessageOptions {
   sourceId?: string;
   channel?: string;
   client?: PoolClient;
+  displayText?: string;
   replyToMessageId?: string;
   replyQuote?: string;
   seenMessageId?: string;
@@ -114,6 +115,7 @@ interface SubmitUserMessageOptions {
   answer?: ChatConfirmationInput['answer'];
   prepareAttachments?: (client: PoolClient, threadId: string) => Promise<Artifact[]>;
   persistSubmission?: (client: PoolClient, result: SubmitUserMessageResult) => Promise<void>;
+  onInserted?: () => void;
 }
 export interface SubmitUserMessageResult {
   threadId: string;
@@ -122,7 +124,11 @@ export interface SubmitUserMessageResult {
 }
 type ConfirmAction = {
   answer(input: ChatConfirmationInput): Promise<ChatConfirmationInput['answer']>;
-  accept(client: PoolClient, input: ChatConfirmationInput): Promise<ChatConfirmationResult>;
+  accept(
+    client: PoolClient,
+    input: ChatConfirmationInput,
+    onInserted?: () => void,
+  ): Promise<ChatConfirmationResult>;
 };
 
 export interface ThreadDependencies {
@@ -508,11 +514,22 @@ export async function enqueueTurn(prompt: string, options: EnqueueTurnOptions) {
 }
 
 export function createUserMessageService(
-  options: { confirmAction?: ConfirmAction; taskReply?: TaskReply } = {},
+  options: {
+    confirmAction?: ConfirmAction;
+    taskReply?: TaskReply;
+    accepted?: () => (channel: string) => void;
+  } = {},
 ) {
   return {
     submit: (text: string, attachments: Artifact[] = [], input: SubmitUserMessageOptions = {}) =>
-      submitUserMessage(text, attachments, input, options.confirmAction, options.taskReply),
+      submitUserMessage(
+        text,
+        attachments,
+        input,
+        options.confirmAction,
+        options.taskReply,
+        options.accepted?.(),
+      ),
     answer: (text: string, input: SubmitUserMessageOptions = {}) =>
       readAnswer(text, false, input, options.confirmAction),
   };
@@ -549,11 +566,13 @@ export async function submitUserMessage(
   options: SubmitUserMessageOptions = {},
   confirmAction?: ConfirmAction,
   taskReply?: TaskReply,
+  onAccepted?: (channel: string) => void,
 ): Promise<SubmitUserMessageResult> {
   validateSource(options.sourceId, options.channel);
   const channel = options.channel ?? 'web';
   const confirmation = {
     text,
+    displayText: options.displayText,
     channel,
     replyToMessageId: options.replyToMessageId,
     seenMessageId: options.seenMessageId,
@@ -566,6 +585,11 @@ export async function submitUserMessage(
     : options.client
       ? options.answer
       : await readAnswer(text, confirmation.hasAttachments, options, confirmAction);
+  let inserted = false;
+  const markInserted = () => {
+    inserted = true;
+    options.onInserted?.();
+  };
   const submit = async (client: PoolClient): Promise<SubmitUserMessageResult> => {
     const thread = await lockThread(client);
     if (options.threadId !== undefined && options.threadId !== thread.id)
@@ -573,7 +597,7 @@ export async function submitUserMessage(
     if (options.clientMessageId) {
       const previous = (
         await client.query(
-          'SELECT id,owner_id,role,text,audio_caption,thread_id,turn_id,attachments,reply_to_message_id,reply_quote,question_answer FROM messages WHERE id=$1',
+          'SELECT id,owner_id,role,text,display_text,audio_caption,thread_id,turn_id,attachments,reply_to_message_id,reply_quote,question_answer FROM messages WHERE id=$1',
           [options.clientMessageId],
         )
       ).rows[0];
@@ -583,6 +607,7 @@ export async function submitUserMessage(
           previous.role !== 'user' ||
           previous.thread_id !== thread.id ||
           previous.text !== text ||
+          previous.display_text !== (options.displayText ?? null) ||
           previous.audio_caption !== (options.audioCaption ?? null) ||
           previous.reply_to_message_id !== (options.replyToMessageId ?? null) ||
           previous.reply_quote !== (options.replyQuote ?? null) ||
@@ -647,11 +672,15 @@ export async function submitUserMessage(
       throw httpError('Select a passage of 4,000 characters or fewer.');
     const confirmed = options.questionAnswer
       ? undefined
-      : await confirmAction?.accept(client, {
-          ...confirmation,
-          threadId: thread.id,
-          answer,
-        });
+      : await confirmAction?.accept(
+          client,
+          {
+            ...confirmation,
+            threadId: thread.id,
+            answer,
+          },
+          markInserted,
+        );
     await assertReplyTarget(client, thread.id, options.replyToMessageId, true);
     if (confirmed && 'turnId' in confirmed) return confirmed;
     await localArtifacts.retainArtifacts(
@@ -696,11 +725,12 @@ export async function submitUserMessage(
     if (taskTarget) await taskTarget.record(turnId);
     const prepared = (await options.prepareAttachments?.(client, thread.id)) ?? [];
     await client.query(
-      "INSERT INTO messages(id,owner_id,role,text,thread_id,turn_id,attachments,reply_to_message_id,reply_quote,audio_caption,question_answer) VALUES($1,$2,'user',$3,$4,$5,$6,$7,$8,$9,$10)",
+      "INSERT INTO messages(id,owner_id,role,text,display_text,thread_id,turn_id,attachments,reply_to_message_id,reply_quote,audio_caption,question_answer) VALUES($1,$2,'user',$3,$4,$5,$6,$7,$8,$9,$10,$11)",
       [
         messageId,
         ownerId,
         text,
+        options.displayText ?? null,
         thread.id,
         turnId,
         JSON.stringify([...attachments, ...prepared]),
@@ -711,6 +741,7 @@ export async function submitUserMessage(
       ],
     );
     await sendDrain(client, thread.id);
+    markInserted();
     return { threadId: thread.id, turnId, messageId };
   };
   let result: SubmitUserMessageResult;
@@ -726,6 +757,11 @@ export async function submitUserMessage(
     if (options.clientMessageId && code === '23505' && constraint === 'messages_pkey')
       throw messageIdInUse();
     throw error;
+  }
+  if (!options.client && inserted) {
+    try {
+      onAccepted?.(channel);
+    } catch {}
   }
   if (!options.client) refresh();
   return result;

@@ -3,7 +3,7 @@ import { gunzipSync } from 'node:zlib';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createServer as createViteServer } from 'vite';
 
 const port = Number(process.env.NOD_ANALYTICS_FIXTURE_PORT ?? '0');
@@ -20,6 +20,9 @@ let remoteConfigurationRequests = 0;
 const surveyFlagRequests: { query: string; body: unknown }[] = [];
 let surveyDefinitionRequests = 0;
 let surveysEnabled = false;
+let profileSubmissions = 0;
+let modelSetupChecks = 0;
+let updatesEmailSubmissions = 0;
 const survey = {
   id: '0190c1a2-0000-7000-8000-000000000001',
   name: 'Synthetic Nod survey',
@@ -108,7 +111,7 @@ const session = () => ({
     usageData,
     traces,
   },
-  capabilities: { developer: true, traces: true },
+  capabilities: { developer: true, traces: true, updatesEmail: true },
   analytics: {
     enabled: usageData,
     distinctId: usageData ? `local:${user}` : null,
@@ -157,10 +160,28 @@ const vite = await createViteServer({
       name: 'synthetic-analytics-destination',
       enforce: 'pre',
       transform(code, id) {
-        if (!id.endsWith('/src/shared/analytics.ts')) return;
-        return code
-          .replace(/phc_[A-Za-z0-9]+/, 'phc_synthetic_fixture')
-          .replace('https://eu.i.posthog.com', origin);
+        if (id.endsWith('/src/web/lib/analytics.ts')) {
+          const target = '      api_host: posthogConfig.host,\n';
+          if (code.split(target).length !== 2)
+            throw new Error('The synthetic browser capture override could not be verified.');
+          return code.replace(target, `${target}      opt_out_useragent_filter: true,\n`);
+        }
+        if (!id.endsWith('/src/shared/posthog-host.json')) return;
+        const config = JSON.parse(code);
+        if (
+          config.host !== 'https://eu.i.posthog.com' ||
+          typeof config.key !== 'string' ||
+          createHash('sha256').update(config.key).digest('hex') !==
+            '2e3bc72156d3973a771353bf9e39fcda57fcc9641b2d59ca579d3718b14dc6e0' ||
+          config.schemaVersion !== 'v4' ||
+          Object.keys(config).length !== 3
+        )
+          throw new Error('The synthetic analytics destination could not be verified.');
+        return JSON.stringify({
+          host: origin,
+          key: 'phc_synthetic_fixture',
+          schemaVersion: config.schemaVersion,
+        });
       },
     },
   ],
@@ -268,6 +289,9 @@ const server = createServer(async (request, response) => {
       remoteConfigurationRequests,
       surveyFlagRequests,
       surveyDefinitionRequests,
+      profileSubmissions,
+      modelSetupChecks,
+      updatesEmailSubmissions,
       privateDataLeaked: serialized.includes(privateText),
       generatedContentLeaked: hasGeneratedNode(decoded),
       ...(url.searchParams.get('compact') === '1' ? {} : { events: decoded }),
@@ -332,7 +356,21 @@ const server = createServer(async (request, response) => {
     if (typeof body.traces === 'boolean') traces = body.traces;
     json(session());
   } else if (url.pathname === '/api/account/prepare') json({ ok: true });
-  else if (url.pathname === '/api/account/welcome') json({ ok: true });
+  else if (url.pathname === '/api/account/model-setup' && request.method === 'POST') {
+    modelSetupChecks++;
+    json({ ok: true });
+  } else if (url.pathname === '/api/onboarding/profile' && request.method === 'POST') {
+    profileSubmissions++;
+    json({ ok: true, shared: false });
+  } else if (url.pathname === '/api/onboarding/updates-email' && request.method === 'POST') {
+    if (!usageData) {
+      response.statusCode = 403;
+      json({ error: 'Turn on Share usage data before signing up for updates.' });
+    } else {
+      updatesEmailSubmissions++;
+      json({ ok: true });
+    }
+  } else if (url.pathname === '/api/account/welcome') json({ ok: true });
   else if (url.pathname === '/api/onboarding/suggestions' && request.method === 'POST') {
     response.statusCode = 202;
     json({ ok: true });

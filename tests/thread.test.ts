@@ -44,7 +44,7 @@ import { createMemoryLearning } from '../src/server/memory-learning.ts';
 import { createMemoryService } from '../src/server/memory.ts';
 import { memoryObjectStore } from './fixtures/object-store.ts';
 import type { ProductAnalytics } from '../src/ports/analytics.ts';
-import { createAnalytics } from '../src/server/analytics.ts';
+import { createAnalytics, snapshotAnalytics } from '../src/server/analytics.ts';
 import { accessCookie, accessKey } from '../src/server/access.ts';
 import { suggestedTaskStatus } from '../src/web/lib/chat-messages.ts';
 
@@ -733,6 +733,128 @@ test(
       let firstUserTurnId = '';
       const firstClientMessageId = randomUUID();
 
+      await t.test('web message limits apply after access and only to text and audio', async () => {
+        const isolated = await createApp();
+        const textAttempt = () =>
+          isolated.inject({ method: 'POST', url: '/api/messages', headers, payload: { text: '' } });
+        const audioAttempt = () =>
+          isolated.inject({ method: 'POST', url: '/api/messages/audio', headers, payload: '' });
+        try {
+          assert.equal(
+            (
+              await isolated.inject({
+                method: 'POST',
+                url: '/api/messages',
+                headers: { host: headers.host, origin: headers.origin },
+                payload: { text: '' },
+              })
+            ).statusCode,
+            401,
+          );
+          for (let attempt = 0; attempt < 120; attempt++)
+            assert.equal((await textAttempt()).statusCode, 400);
+          const textExceeded = await textAttempt();
+          assert.equal(textExceeded.statusCode, 429);
+          assert.ok(Number(textExceeded.headers['retry-after']) > 0);
+          assert.equal(
+            (
+              await isolated.inject({
+                method: 'POST',
+                url: '/api/messages',
+                headers: { ...headers, 'content-type': 'application/json' },
+                payload: 'x'.repeat(8 * 1024 * 1024 + 1),
+              })
+            ).statusCode,
+            429,
+          );
+          for (let attempt = 0; attempt < 120; attempt++)
+            assert.equal((await audioAttempt()).statusCode, 406);
+          assert.equal((await audioAttempt()).statusCode, 429);
+          assert.equal(
+            (await isolated.inject({ url: '/api/configuration', headers })).statusCode,
+            200,
+          );
+          assert.equal(
+            (
+              await isolated.inject({
+                method: 'POST',
+                url: '/api/messages',
+                headers: { host: headers.host, origin: headers.origin },
+                payload: { text: '' },
+              })
+            ).statusCode,
+            401,
+          );
+        } finally {
+          await isolated.close();
+        }
+      });
+
+      await t.test('large literal messages pass web transport limits', async () => {
+        const isolated = await createApp();
+        const text = '\t\n'.repeat(49_999) + 'x\n';
+        const displayText = '<span>\t</span><br>'.repeat(49_999) + 'x<br>\n';
+        const message = JSON.stringify({ text, displayText, verificationRequestId: randomUUID() });
+        const boundary = 'synthetic-message-size-boundary';
+        const audioField = (value: string) =>
+          Buffer.from(
+            `--${boundary}\r\nContent-Disposition: form-data; name="message"\r\n\r\n${value}\r\n--${boundary}--\r\n`,
+          );
+        try {
+          assert.equal(text.length, 100_000);
+          assert.ok(displayText.length > 700_000);
+          assert.ok(Buffer.byteLength(message) > 1024 * 1024);
+          assert.equal(
+            (
+              await isolated.inject({
+                method: 'POST',
+                url: '/api/messages',
+                headers: { ...headers, 'content-type': 'application/json' },
+                payload: message,
+              })
+            ).statusCode,
+            409,
+          );
+          const audio = await isolated.inject({
+            method: 'POST',
+            url: '/api/messages/audio',
+            headers: { ...headers, 'content-type': `multipart/form-data; boundary=${boundary}` },
+            payload: audioField(message),
+          });
+          assert.equal(audio.statusCode, 400);
+          assert.equal(audio.json().error, 'Choose an audio recording.');
+          const overDisplay = await isolated.inject({
+            method: 'POST',
+            url: '/api/messages',
+            headers: { ...headers, 'content-type': 'application/json' },
+            payload: JSON.stringify({ text: 'x', displayText: 'y'.repeat(1_000_001) }),
+          });
+          assert.equal(overDisplay.statusCode, 400);
+          const oversized = JSON.stringify({ text: 'x', displayText: 'y'.repeat(8 * 1024 * 1024) });
+          assert.equal(
+            (
+              await isolated.inject({
+                method: 'POST',
+                url: '/api/messages',
+                headers: { ...headers, 'content-type': 'application/json' },
+                payload: oversized,
+              })
+            ).statusCode,
+            413,
+          );
+          const overAudio = await isolated.inject({
+            method: 'POST',
+            url: '/api/messages/audio',
+            headers: { ...headers, 'content-type': `multipart/form-data; boundary=${boundary}` },
+            payload: audioField(oversized),
+          });
+          assert.equal(overAudio.statusCode, 400);
+          assert.equal(overAudio.json().error, 'Check the voice message details.');
+        } finally {
+          await isolated.close();
+        }
+      });
+
       await t.test(
         'declared task outcomes follow committed transitions and caller consent',
         async (t) => {
@@ -1259,15 +1381,34 @@ test(
           background: false,
           thread_id: threadId,
         });
+        const before = analyticsEvents.length;
+        const accepted = thread.createUserMessageService({
+          accepted: () => {
+            const capture = snapshotAnalytics(captureAnalytics);
+            return () =>
+              capture?.({ event: 'owner_message_accepted', properties: { channel: 'web' } });
+          },
+        });
+        const clientMessageId = randomUUID();
         const results = await Promise.all(
           Array.from({ length: 3 }, () =>
-            thread.submitUserMessage('Approved fixture result', [], {
+            accepted.submit('Approved fixture result', [], {
               sourceId: 'approval:fixture',
+              clientMessageId,
             }),
           ),
         );
+        assert.equal(
+          (await accepted.submit('Approved fixture result', [], { clientMessageId })).turnId,
+          results[0]!.turnId,
+        );
         assert.equal(new Set(results.map((result) => result.turnId)).size, 1);
         assert.equal(new Set(results.map((result) => result.messageId)).size, 1);
+        assert.equal(
+          analyticsEvents.slice(before).filter((event) => event.event === 'owner_message_accepted')
+            .length,
+          1,
+        );
         firstUserTurnId = results[0]!.turnId;
         assert.equal(
           (
@@ -1275,6 +1416,30 @@ test(
               "SELECT id FROM messages WHERE role='user' AND text='Approved fixture result'",
             )
           ).rowCount,
+          1,
+        );
+        let entered!: () => void;
+        const waiting = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        let release!: () => void;
+        const proceed = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const stale = accepted.submit('Stale sharing fixture', [], {
+          persistSubmission: async () => {
+            entered();
+            await proceed;
+          },
+        });
+        await waiting;
+        analytics.setUsageData(ownerId, false);
+        analytics.setUsageData(ownerId, true);
+        release();
+        await stale;
+        assert.equal(
+          analyticsEvents.slice(before).filter((event) => event.event === 'owner_message_accepted')
+            .length,
           1,
         );
       });
@@ -1518,23 +1683,27 @@ test(
           const message = {
             threadId,
             clientMessageId: randomUUID(),
-            text: 'Context for the recording',
+            text: '  Context for [the] _recording_  ',
+            displayText: '  Context for \\[the\\] \\_recording\\_  ',
           };
           const before = transcriptions.length;
           const accepted = await sendAudio(message);
           assert.equal(accepted.statusCode, 200, accepted.body);
           const receipt = accepted.json<SubmitMessageResponse>();
           assert.equal(receipt.audioCaption, message.text);
+          assert.equal(receipt.displayText, message.displayText);
           const visible = (await request('GET', '/api/state'))
             .json()
             .messages.find((entry: { id: string }) => entry.id === receipt.messageId);
           assert.equal(visible.audioCaption, message.text);
+          assert.equal(visible.displayText, message.displayText);
           const stored = (
-            await db.pool.query('SELECT text,attachments FROM messages WHERE id=$1', [
+            await db.pool.query('SELECT text,display_text,attachments FROM messages WHERE id=$1', [
               receipt.messageId,
             ])
           ).rows[0];
-          assert.equal(stored.text, 'Context for the recording\n\nSynthetic spoken request');
+          assert.equal(stored.text, `${message.text}\n\nSynthetic spoken request`);
+          assert.equal(stored.display_text, message.displayText);
           assert.equal(stored.attachments.length, 1);
           assert.deepEqual(
             await localArtifacts.readArtifact(stored.attachments[0].id),
@@ -1787,6 +1956,47 @@ test(
         },
       );
 
+      await t.test('web paste keeps model text separate from display Markdown', async () => {
+        const text = [
+          '  [',
+          '  {"email":"ada@example.test","notes":"__init__ _legacy_ # call <after>"}',
+          ']  ',
+        ].join('\n');
+        const displayText = [
+          '  \\[\\',
+          '<span>  </span>{"email":"ada\\@example.test","notes":"\\_\\_init\\_\\_ \\_legacy\\_ # call \\<after>"}\\',
+          ']  ',
+        ].join('\n');
+        const payload = { clientMessageId: randomUUID(), text, displayText };
+        const response = await sendJson(payload);
+        assert.equal(response.statusCode, 200, response.body);
+        const receipt = response.json<SubmitMessageResponse>();
+        assert.equal(receipt.displayText, displayText);
+        const saved = (
+          await db.pool.query(
+            `SELECT m.text,m.display_text,t.prompt FROM messages m
+             JOIN turns t ON t.id=m.turn_id WHERE m.id=$1 AND m.owner_id=$2`,
+            [receipt.messageId, ownerId],
+          )
+        ).rows[0];
+        assert.deepEqual(saved, { text, display_text: displayText, prompt: text });
+        const visible = (await request('GET', '/api/state'))
+          .json<{ messages: Array<{ id: string; text: string; displayText?: string }> }>()
+          .messages.find((message) => message.id === receipt.messageId);
+        assert.equal(visible?.text, text);
+        assert.equal(visible?.displayText, displayText);
+        await waitFor(settled(receipt.turnId));
+        assert.equal(await turnStatus(receipt.turnId), 'succeeded');
+        assert.equal(ran(receipt.turnId)?.prompt, text);
+        assert.deepEqual((await sendJson(payload)).json(), receipt);
+        assert.equal(
+          (await sendJson({ ...payload, displayText: `${displayText} changed` })).statusCode,
+          409,
+        );
+        assert.equal((await sendJson({ text: ' \n\t ' })).statusCode, 400);
+        assert.equal((await sendJson({ text: ` ${'x'.repeat(100_000)}` })).statusCode, 400);
+      });
+
       await t.test('a task resumes its own session when its next check is due', async (t) => {
         const id = randomUUID();
         const turnId = randomUUID();
@@ -1997,13 +2207,15 @@ test(
           const previousObserver = inspectObserver;
           const previousConfirmation = dependencies.executeConfirmation;
           let confirmedActions = 0;
+          const confirmationText = 'Yes, preserve __init__ and <after>';
+          const confirmationDisplayText = 'Yes, preserve \\_\\_init\\_\\_ and \\<after>';
           const analyticsApprovals = await createApprovals(
             async () => {
               confirmedActions++;
               return {};
             },
             undefined,
-            async (reply) => (reply === 'Yes' ? true : undefined),
+            async (reply) => (reply === confirmationText ? true : undefined),
             async () => 'Confirm the synthetic action?',
           );
           const confirmingMessages = thread.createUserMessageService({
@@ -2074,10 +2286,44 @@ test(
               [waitingApproval],
             )
           ).rows[0]!;
-          const confirmed = await confirmingMessages.submit('Yes', [], {
+          const confirmationInput = {
             replyToMessageId: confirmation.confirmation_message_id,
-          });
+            clientMessageId: randomUUID(),
+            displayText: confirmationDisplayText,
+          };
+          const confirmed = await confirmingMessages.submit(
+            confirmationText,
+            [],
+            confirmationInput,
+          );
           await completed(confirmed.turnId, 'background', true);
+          assert.equal(confirmedActions, 1);
+          assert.deepEqual(
+            (
+              await db.pool.query('SELECT text,display_text FROM messages WHERE id=$1', [
+                confirmed.messageId,
+              ])
+            ).rows[0],
+            { text: confirmationText, display_text: confirmationDisplayText },
+          );
+          const visibleConfirmation = (
+            await request('GET', `/api/messages/around/${confirmed.messageId}`)
+          )
+            .json<Array<{ id: string; text: string; displayText?: string }>>()
+            .find((message) => message.id === confirmed.messageId);
+          assert.equal(visibleConfirmation?.text, confirmationText);
+          assert.equal(visibleConfirmation?.displayText, confirmationDisplayText);
+          assert.deepEqual(
+            await confirmingMessages.submit(confirmationText, [], confirmationInput),
+            confirmed,
+          );
+          await assert.rejects(
+            confirmingMessages.submit(confirmationText, [], {
+              ...confirmationInput,
+              displayText: `${confirmationDisplayText} changed`,
+            }),
+            (error: unknown) => (error as { statusCode?: number }).statusCode === 409,
+          );
           assert.equal(confirmedActions, 1);
           assert.equal(
             (await db.pool.query('SELECT source FROM turns WHERE id=$1', [confirmed.turnId]))
@@ -6671,6 +6917,7 @@ test(
                 let rotateSource = false;
                 let allowed = true;
                 let stopAfterCheck = false;
+                let checkedEvents = '';
                 let failRecord = false;
                 const notificationRule = (await preferences.get()).notificationRule;
                 const screening = createProactivity({
@@ -6706,6 +6953,7 @@ test(
                     configured: true,
                     curate: async ({ input }) => {
                       checks++;
+                      checkedEvents = (input as { events?: string }).events ?? '';
                       if (fail) throw new Error('Synthetic failed check');
                       if (stopAfterCheck) allowed = false;
                       return 'quietEnd' in (input as object) ? { urgent } : { attention: verdict };
@@ -6792,8 +7040,28 @@ test(
                   }
                   return [quiet, dirty];
                 };
-                await transaction((client) => engine.signal(sourceId, client), db.pool);
+                await transaction(
+                  (client) => engine.signal(sourceId, client, 'Meeting moved from 10:00 to 09:00.'),
+                  db.pool,
+                );
                 assert.deepEqual(await screen(), [true, false]);
+                assert.ok(checkedEvents.includes('Meeting moved from 10:00 to 09:00.'));
+                assert.ok(checkedEvents.includes('<untrusted_tool_result'));
+                checkedEvents = '';
+                await transaction(
+                  (client) =>
+                    engine.signal(sourceId, client, 'Meeting now overlaps another event.'),
+                  db.pool,
+                );
+                assert.deepEqual(await screen(), [true, false]);
+                assert.ok(checkedEvents.includes('Meeting now overlaps another event.'));
+                assert.ok(!checkedEvents.includes('Meeting moved from 10:00 to 09:00.'));
+                await transaction(
+                  (client) =>
+                    engine.signal(sourceId, client, 'A change not present in the record.'),
+                  db.pool,
+                );
+                assert.deepEqual(await screen(false, false, 'succeeded'), ['handed', false]);
                 const firstChecks = checks;
                 verdict = true;
                 assert.deepEqual(await screen(false), [true, false]);
@@ -6919,6 +7187,87 @@ test(
                 assert.deepEqual(await screen(), ['handed', false]);
                 await preferences.update({ quietHoursEnabled: false });
                 screening.release(turnId);
+              },
+            );
+            await t.test(
+              'screening leaves a report received during a read due for the next turn',
+              async () => {
+                for (const quietHours of [false, true]) {
+                  await reset();
+                  const clock = (offset: number) =>
+                    new Date(Date.now() + offset).toISOString().slice(11, 16);
+                  await preferences.update({
+                    quietHoursEnabled: quietHours,
+                    quietStart: clock(-60_000),
+                    quietEnd: clock(3_600_000),
+                  });
+                  changeToken = 'stable-source-token';
+                  const report = 'Meeting moved from 10:00 to 09:00 during the source read.';
+                  const screening = createProactivity({
+                    ...options,
+                    curator: {
+                      id: 'report-race',
+                      configured: true,
+                      curate: async ({ input }) =>
+                        'quietEnd' in (input as object)
+                          ? { urgent: (input as { events: string }).events.includes(report) }
+                          : { attention: quietHours },
+                    },
+                  });
+                  await transaction((client) => engine.signal(sourceId, client), db.pool);
+                  await db.pool.query(
+                    'UPDATE proactive_sources SET claimed_turn=$3,claimed_signal=signal_version WHERE owner_id=$1 AND source_id=$2',
+                    [ownerId, sourceId, turnId],
+                  );
+                  afterRead = async () => {
+                    afterRead = async () => {};
+                    await transaction((client) => engine.signal(sourceId, client, report), db.pool);
+                  };
+                  let handed = false;
+                  try {
+                    const context = (await screening.context(ref))!;
+                    assert.equal(await context.screen!({}, new AbortController().signal), true);
+                    const pending = (
+                      await db.pool.query(
+                        'SELECT events,next_poll,signal_version>inspected_signal AS dirty FROM proactive_sources WHERE owner_id=$1 AND source_id=$2',
+                        [ownerId, sourceId],
+                      )
+                    ).rows[0];
+                    assert.equal(pending.dirty, true);
+                    assert.deepEqual(
+                      pending.events.map((event: { summary: string }) => event.summary),
+                      [report],
+                    );
+                    assert.ok(pending.next_poll.getTime() <= Date.now());
+                    await db.pool.query("UPDATE turns SET status='succeeded' WHERE id=$1", [
+                      turnId,
+                    ]);
+                    inspectObserver = async (next) => {
+                      if (!next.prompt.startsWith('Assess the due sources')) return;
+                      assert.ok(next.prompt.includes(report));
+                      const scoped = (await screening.context({
+                        turnId: next.turnId,
+                        threadId: next.threadId,
+                      }))!;
+                      const result = await scoped.screen!({}, next.signal);
+                      handed = Array.isArray(result);
+                      if (Array.isArray(result))
+                        assert.deepEqual(
+                          (result[0] as { result: { events: string[] } }).result.events,
+                          [report],
+                        );
+                      return { status: 'succeeded' };
+                    };
+                    const next = await engine.due();
+                    assert.ok(next && next !== turnId);
+                    await waitFor(settled(next));
+                    assert.equal(handed, true);
+                  } finally {
+                    afterRead = async () => {};
+                    inspectObserver = undefined;
+                    screening.release(turnId);
+                  }
+                }
               },
             );
             await t.test(

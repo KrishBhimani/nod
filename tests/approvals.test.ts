@@ -17,6 +17,8 @@ import { join } from 'node:path';
 import test from 'node:test';
 import Fastify from 'fastify';
 import pg from 'pg';
+import type { ProductAnalytics } from '../src/ports/analytics.ts';
+import { createAnalytics, snapshotAnalytics } from '../src/server/analytics.ts';
 import {
   accessCookie,
   accessKey,
@@ -1734,14 +1736,14 @@ test(
           ]);
           const before = calls.length;
           const results = await Promise.all(
-            turns.map((turn) => approvals.request(turn, 'NOD_schedule_cancel', args)),
+            turns.map((turn) => approvals.request(turn, 'NOD_schedule_pause', args)),
           );
           for (const result of results) assert.ok(result[appConfirmation]);
           assert.equal(results[0][appConfirmation], results[1][appConfirmation]);
           const records = (
             await db.pool.query(
               'SELECT * FROM approvals WHERE owner_id=$1 AND thread_id=$2 AND action=$3 AND args=$4::jsonb',
-              [ownerId, turns[0]!.threadId, 'NOD_schedule_cancel', args],
+              [ownerId, turns[0]!.threadId, 'NOD_schedule_pause', args],
             )
           ).rows;
           assert.equal(records.length, 1);
@@ -1753,11 +1755,11 @@ test(
             1,
           );
           const original = turns.find((turn) => turn.turnId === records[0].turn_id)!;
-          await assert.rejects(approvals.request(original, 'NOD_schedule_cancel', args), {
+          await assert.rejects(approvals.request(original, 'NOD_schedule_pause', args), {
             statusCode: 409,
           });
           const other = await begin('A different schedule needs a pause.', { source: 'event' });
-          await propose(other, 'NOD_schedule_cancel', { id: randomUUID() });
+          await propose(other, 'NOD_schedule_pause', { id: randomUUID() });
           assert.equal(await assistantMessages(other.turnId), 1);
           assert.equal(calls.length, before);
         },
@@ -1787,6 +1789,29 @@ test(
       await t.test(
         'a channel confirmation preserves the exact snapshot and client retries do not execute twice',
         async (t) => {
+          const analyticsEvents: Parameters<ProductAnalytics['capture']>[0][] = [];
+          const analytics = await createAnalytics({
+            provider: { capture: (event) => analyticsEvents.push(event), shutdown: async () => {} },
+            environment: 'development',
+            dataRoot,
+            installationId: randomUUID(),
+          });
+          t.after(() => analytics.shutdown());
+          analytics.setUsageData(ownerId, true);
+          const capture = analytics.forOwner(ownerId);
+          const observedMessages = thread.createUserMessageService({
+            confirmAction: approvals.chat,
+            accepted: () => {
+              const snapshot = snapshotAnalytics(capture);
+              return (channel) =>
+                snapshot?.({
+                  event: 'owner_message_accepted',
+                  properties: { channel: channel === 'web' ? 'web' : 'telegram' },
+                });
+            },
+          });
+          const acceptedEvents = () =>
+            analyticsEvents.filter((event) => event.event === 'owner_message_accepted');
           const channel = 'telegram:fixture';
           const turn = await begin('Synthetic channel fixture', { channel });
           const turnIds = [turn.turnId];
@@ -1843,11 +1868,45 @@ test(
             channel,
             replyToMessageId: statusMessageId,
             clientMessageId,
+            sourceId: `channel:telegram:fixture:${randomUUID()}`,
           };
-          const accepted = await messages.submit('Yes.', [], reply);
+          await assert.rejects(
+            observedMessages.submit('Yes.', [], {
+              ...reply,
+              persistSubmission: async () => {
+                throw new Error('Synthetic confirmation rollback.');
+              },
+            }),
+            /Synthetic confirmation rollback/,
+          );
+          assert.equal((await proposal(turn.turnId)).status, 'pending');
+          assert.deepEqual(acceptedEvents(), []);
+          let insertions = 0;
+          const accepted = await observedMessages.submit('Yes.', [], {
+            ...reply,
+            onInserted: () => {
+              insertions++;
+            },
+          });
           turnIds.push(accepted.turnId);
           assert.notEqual(accepted.turnId, turn.turnId);
-          assert.deepEqual(await messages.submit('Yes.', [], reply), accepted);
+          assert.deepEqual(
+            await observedMessages.submit('Yes.', [], { ...reply, onInserted: () => insertions++ }),
+            accepted,
+          );
+          assert.deepEqual(
+            await observedMessages.submit('Yes.', [], {
+              ...reply,
+              clientMessageId: randomUUID(),
+              onInserted: () => insertions++,
+            }),
+            accepted,
+          );
+          assert.equal(insertions, 1);
+          assert.deepEqual(
+            acceptedEvents().map((event) => event.properties.channel),
+            ['telegram'],
+          );
           const confirmed = await proposal(turn.turnId);
           assert.equal(confirmed.status, 'confirmed');
           assert.equal(confirmed.execution_turn_id, accepted.turnId);
@@ -1873,6 +1932,39 @@ test(
           );
           assert.equal((await proposal(turn.turnId)).status, 'completed');
           await finish(accepted.turnId, 'succeeded');
+
+          const declinedTurn = await begin('Synthetic declined confirmation', { channel: 'web' });
+          turnIds.push(declinedTurn.turnId);
+          await approvals.request(declinedTurn, 'NOD_notification_preferences_update', {
+            notificationRule: 'Synthetic declined',
+          });
+          await finish(declinedTurn.turnId);
+          const declinedReply = {
+            channel: 'web',
+            replyToMessageId: (await proposal(declinedTurn.turnId)).confirmation_message_id,
+            clientMessageId: randomUUID(),
+          };
+          let declinedInsertions = 0;
+          const declined = await observedMessages.submit('No.', [], {
+            ...declinedReply,
+            onInserted: () => {
+              declinedInsertions++;
+            },
+          });
+          turnIds.push(declined.turnId);
+          assert.equal((await proposal(declinedTurn.turnId)).status, 'declined');
+          assert.deepEqual(
+            await observedMessages.submit('No.', [], {
+              ...declinedReply,
+              onInserted: () => declinedInsertions++,
+            }),
+            declined,
+          );
+          assert.equal(declinedInsertions, 1);
+          assert.deepEqual(
+            acceptedEvents().map((event) => event.properties.channel),
+            ['telegram', 'web'],
+          );
         },
       );
 

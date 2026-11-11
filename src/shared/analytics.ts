@@ -1,7 +1,9 @@
+import posthogHost from './posthog-host.json' with { type: 'json' };
+
 export const posthogConfig = {
-  key: 'phc_tLmmvBasQMKWVJ2BiwhEzVVDD3Rh9qDq2VTmw3qTm6EV',
-  host: 'https://eu.i.posthog.com',
-  schemaVersion: 'v4',
+  key: posthogHost.key,
+  host: posthogHost.host,
+  schemaVersion: posthogHost.schemaVersion,
 } as const;
 
 export interface AnalyticsConfiguration {

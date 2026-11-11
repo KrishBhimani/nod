@@ -102,6 +102,204 @@ test('decision selection uses the LLM only when no decision connection is availa
   assert.equal(llm, 1);
 });
 
+test('About records only confirmed shared choices and clears them on failure', async (t) => {
+  const { JSDOM } = await import('jsdom');
+  const { act, createElement } = await import('react');
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', {
+    url: 'https://nod.example.test/onboarding',
+  });
+  dom.window.HTMLElement.prototype.scrollIntoView = () => {};
+  const globals = {
+    window: dom.window,
+    document: dom.window.document,
+    HTMLElement: dom.window.HTMLElement,
+    Element: dom.window.Element,
+    Node: dom.window.Node,
+    Event: dom.window.Event,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  };
+  const originals = new Map(
+    Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
+  );
+  for (const [key, value] of Object.entries(globals))
+    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  const { createRoot } = await import('react-dom/client');
+  const root = createRoot(dom.window.document.getElementById('root')!);
+  t.after(async () => {
+    await act(async () => root.unmount());
+    dom.window.close();
+    for (const [key, value] of originals)
+      if (value) Object.defineProperty(globalThis, key, value);
+      else Reflect.deleteProperty(globalThis, key);
+  });
+  const { About } = await import('../src/web/pages/onboarding/steps/about.tsx');
+  const { readStored, writeStored } = await import('../src/web/pages/onboarding/storage.ts');
+  const profile = {
+    scope: 'work',
+    roles: ['engineering'],
+    companySize: '11_100',
+    jobs: ['research'],
+  };
+  writeStored('about', {
+    current: 'done',
+    seen: ['scope', 'roles', 'size', 'jobs'],
+    profile,
+    editing: null,
+  });
+  let status = 200;
+  let shared = true;
+  t.mock.method(globalThis, 'fetch', async (path: RequestInfo | URL) => {
+    assert.equal(String(path), '/api/onboarding/profile');
+    return Response.json(
+      status === 200 ? { ok: true, shared } : { error: 'Could not share your choices.' },
+      { status },
+    );
+  });
+  let completed = 0;
+  await act(async () =>
+    root.render(
+      createElement(About, {
+        arrived: 'back',
+        quiet: true,
+        onNext: () => completed++,
+        onBack() {},
+        usageShared: true,
+      }),
+    ),
+  );
+  const next = dom.window.document.querySelector<HTMLButtonElement>('.ob-next');
+  assert.ok(next);
+  await act(async () => next.click());
+  assert.equal(completed, 1);
+  assert.deepEqual(readStored('about-shared'), {
+    onboarding_profile_completed: true,
+    onboarding_scope: 'work',
+    onboarding_roles: ['engineering'],
+    onboarding_who_for: 'not_asked',
+    onboarding_company_size: '11_100',
+    onboarding_jobs: ['research'],
+  });
+  shared = false;
+  await act(async () => next.click());
+  assert.equal(readStored('about-shared'), null);
+  assert.equal(completed, 2);
+  status = 502;
+  await act(async () => next.click());
+  assert.equal(readStored('about-shared'), null);
+  const continueAnyway = dom.window.document.querySelector<HTMLButtonElement>(
+    '.ob-footer-end button:not(.ob-next)',
+  );
+  assert.ok(continueAnyway);
+  await act(async () => continueAnyway.click());
+  assert.equal(readStored('about-shared'), null);
+  assert.equal(completed, 3);
+});
+
+test('Join sends fixed answers only with a matching confirmed share', async (t) => {
+  const { JSDOM } = await import('jsdom');
+  const { act, createElement } = await import('react');
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', {
+    url: 'https://nod.example.test/onboarding',
+  });
+  const globals = {
+    window: dom.window,
+    document: dom.window.document,
+    HTMLElement: dom.window.HTMLElement,
+    HTMLInputElement: dom.window.HTMLInputElement,
+    Element: dom.window.Element,
+    Node: dom.window.Node,
+    Event: dom.window.Event,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  };
+  const originals = new Map(
+    Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
+  );
+  for (const [key, value] of Object.entries(globals))
+    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  const { createRoot } = await import('react-dom/client');
+  const root = createRoot(dom.window.document.getElementById('root')!);
+  t.after(async () => {
+    await act(async () => root.unmount());
+    dom.window.close();
+    for (const [key, value] of originals)
+      if (value) Object.defineProperty(globalThis, key, value);
+      else Reflect.deleteProperty(globalThis, key);
+  });
+  const { Join } = await import('../src/web/pages/onboarding/steps/join.tsx');
+  const { writeStored } = await import('../src/web/pages/onboarding/storage.ts');
+  const profile = {
+    scope: 'work',
+    roles: ['engineering'],
+    roleText: 'Private synthetic role',
+    companySize: '11_100',
+    jobs: ['research'],
+    jobsText: 'Private synthetic task',
+  };
+  writeStored('about', { current: 'done', profile });
+  const fixed = {
+    onboarding_profile_completed: true,
+    onboarding_scope: 'work',
+    onboarding_roles: ['engineering', 'other'],
+    onboarding_who_for: 'not_asked',
+    onboarding_company_size: '11_100',
+    onboarding_jobs: ['research', 'other'],
+  };
+  const posted: unknown[] = [];
+  t.mock.method(globalThis, 'fetch', async (path: RequestInfo | URL, options?: RequestInit) => {
+    assert.equal(String(path), '/api/onboarding/updates-email');
+    assert.equal(options?.method, 'POST');
+    posted.push(JSON.parse(String(options?.body)));
+    return Response.json({ ok: true });
+  });
+  let completed = 0;
+  const render = (usageShared: boolean) =>
+    act(async () =>
+      root.render(
+        createElement(Join, {
+          arrived: 'forward',
+          onNext: () => completed++,
+          onBack() {},
+          updatesEmail: true,
+          usageShared,
+        }),
+      ),
+    );
+  await render(false);
+  assert.equal(dom.window.document.querySelector('#ob-join-email'), null);
+  await render(true);
+  const email = dom.window.document.querySelector<HTMLInputElement>('#ob-join-email');
+  const consent = dom.window.document.querySelector<HTMLInputElement>('.ob-join-consent input');
+  const next = dom.window.document.querySelector<HTMLButtonElement>('.ob-next');
+  assert.ok(email);
+  assert.ok(consent);
+  assert.ok(next);
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(
+      email,
+      'owner@example.test',
+    );
+    email.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  });
+  await act(async () => next.click());
+  assert.deepEqual(posted, []);
+  assert.equal(completed, 0);
+  await act(async () => consent.click());
+  await act(async () => next.click());
+  assert.deepEqual(posted[0], { email: 'owner@example.test', consent: true });
+  writeStored('about-shared', fixed);
+  await act(async () => next.click());
+  assert.deepEqual(posted[1], { email: 'owner@example.test', consent: true, profile: fixed });
+  assert.equal(JSON.stringify(posted).includes('Private synthetic'), false);
+  assert.equal(completed, 2);
+  writeStored('about', { current: 'roles', profile });
+  await act(async () => next.click());
+  assert.deepEqual(posted[2], { email: 'owner@example.test', consent: true });
+  writeStored('about', { current: 'done', profile: { ...profile, jobs: ['email'] } });
+  await act(async () => next.click());
+  assert.deepEqual(posted[3], { email: 'owner@example.test', consent: true });
+  assert.equal(completed, 4);
+});
+
 test('decision catalog filters native text decisions, expires and refuses failed lookups', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: 1_000 });
   let calls = 0;
@@ -1323,12 +1521,24 @@ describe('account routes', () => {
         installationId: randomUUID(),
       });
       t.after(() => analytics.shutdown());
-      const f = await fixture(analytics, undefined, undefined, undefined, () => ({
+      const model = {
         provider,
         name: 'PRIVATE_MODEL_CANARY',
-        configured: true,
-      }));
+        configured: false,
+      };
+      const f = await fixture(analytics, undefined, undefined, undefined, () => model);
       t.after(() => f.app.close());
+      assert.equal(
+        (
+          await f.app.inject({
+            method: 'POST',
+            url: '/api/account/model-setup',
+            headers: { origin },
+          })
+        ).statusCode,
+        409,
+      );
+      model.configured = true;
       const complete = () =>
         f.app.inject({
           method: 'PATCH',
@@ -1343,8 +1553,70 @@ describe('account routes', () => {
       assert.equal(events[0].properties.provider, expected);
       assert.equal(Object.hasOwn(events[0].properties, 'model_provider'), false);
       assert.equal(Object.hasOwn(events[0].properties, 'model'), false);
+      const setup = captured.filter(({ event }) => event === 'model_setup_completed');
+      assert.equal(setup.length, 1);
+      assert.equal(setup[0].properties.provider, expected);
+      assert.equal(setup[0].properties.model, 'custom');
       assert.doesNotMatch(JSON.stringify(captured), /PRIVATE_/);
     }
+  });
+
+  test('model setup records a usable selected model before onboarding completion with consent', async (t) => {
+    const captured: Parameters<ProductAnalytics['capture']>[0][] = [];
+    const analytics = await createAnalytics({
+      provider: { capture: (event) => captured.push(event), shutdown: async () => {} },
+      environment: 'development',
+      dataRoot: '.',
+      installationId: randomUUID(),
+    });
+    t.after(() => analytics.shutdown());
+    const selected = {
+      provider: 'openai',
+      name: 'openai/gpt-6-luna-decisions',
+      configured: false,
+    };
+    const f = await fixture(analytics, undefined, undefined, undefined, () => selected);
+    t.after(() => f.app.close());
+    const completeModelSetup = () =>
+      f.app.inject({ method: 'POST', url: '/api/account/model-setup', headers: { origin } });
+    const update = (payload: object) =>
+      f.app.inject({ method: 'PATCH', url: '/api/account', headers: { origin }, payload });
+
+    assert.equal((await completeModelSetup()).statusCode, 409);
+    selected.configured = true;
+    assert.equal((await completeModelSetup()).statusCode, 200);
+    assert.equal(captured.filter(({ event }) => event === 'model_setup_completed').length, 0);
+
+    assert.equal((await update({ usageData: true })).statusCode, 200);
+    assert.equal((await completeModelSetup()).statusCode, 200);
+    let setup = captured.filter(({ event }) => event === 'model_setup_completed');
+    assert.equal(setup.length, 1);
+    assert.equal(setup[0].properties.provider, 'openai');
+    assert.equal(setup[0].properties.model, 'openai/gpt-6-luna-decisions');
+    assert.equal(
+      captured.some(({ event }) => event === 'onboarding_completed'),
+      false,
+    );
+
+    selected.provider = 'compatible';
+    selected.name = 'https://private-model.example.test/account';
+    assert.equal((await completeModelSetup()).statusCode, 200);
+    setup = captured.filter(({ event }) => event === 'model_setup_completed');
+    assert.equal(setup.length, 2);
+    assert.equal(setup[1].properties.provider, 'compatible');
+    assert.equal(setup[1].properties.model, 'custom');
+    assert.doesNotMatch(JSON.stringify(captured), /private-model/);
+
+    assert.equal((await update({ onboardingCompleted: true })).statusCode, 200);
+    assert.equal((await completeModelSetup()).statusCode, 409);
+    setup = captured.filter(({ event }) => event === 'model_setup_completed');
+    assert.equal(setup.length, 3);
+    assert.equal(setup[2].properties.provider, 'compatible');
+    assert.equal(setup[2].properties.model, 'custom');
+    assert.deepEqual(
+      captured.slice(-2).map(({ event }) => event),
+      ['model_setup_completed', 'onboarding_completed'],
+    );
   });
 
   test('conversation traces stay off until the owner opts in, stop at once and leave without personal data', async (t) => {
@@ -3377,6 +3649,7 @@ describe('model connections', { skip: !process.env.TEST_DATABASE_URL }, () => {
       'fixture-owner',
       async () => [],
       () => owner.analyticsConnections(),
+      false,
     );
     assert.deepEqual(
       captured.map(({ event, properties }) => {

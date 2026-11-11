@@ -7,6 +7,16 @@ sidebar:
 
 Local files lets Nod work with files on your computer, for example to tidy your Downloads folder, rename invoices by their content or save a report it made next to your other documents. It works in the desktop app on macOS and Windows, with nothing to set up. A source install or a self-hosted server doesn't offer it.
 
+## Start with a request
+
+Open chat in the desktop app and tell Nod what to do. You do not need to add a folder in **Apps**.
+
+- "List the files in my Downloads folder."
+- "Read invoice.pdf in Downloads and summarize it."
+- "Save this report as report.md in Documents."
+
+If Nod asks for confirmation, review the file path and proposed action before you approve it.
+
 ## Where Nod can work
 
 Nod can work anywhere in your home folder and on external drives (under `/Volumes` on macOS, or a drive other than the system drive on Windows). It refuses, for every action:
@@ -55,3 +65,9 @@ Nod never deletes a file outright. When it replaces or edits a file, the previou
 - Links are followed, but the resolved path must still be allowed, so a link can't reach a refused place. A link with a relative target can be renamed but not moved to another folder, because it would point somewhere else there.
 - Commands Nod runs in its workspace can't see your files. Files reach the workspace only when Nod copies them there, and only through this check.
 - When you [share conversation traces](/trust/conversation-traces/), the text of files Nod reads is part of them, like any other tool result.
+
+## Related resources
+
+- [Connect apps](/connect/apps/)
+- [Approvals and the trust check](/trust/approvals/)
+- [Your data and privacy](/trust/privacy/)
