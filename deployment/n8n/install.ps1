@@ -17,7 +17,7 @@
   }
 
   try {
-    $redirect = Invoke-WebRequest -Uri "$releases/latest/download/release-win32-x64.json" -MaximumRedirection 0 -UseBasicParsing
+    $redirect = Invoke-WebRequest -Uri "$releases/latest/download/release-win32-x64.json" -MaximumRedirection 0 -UseBasicParsing -ErrorAction SilentlyContinue
   } catch {
     $redirect = $_.Exception.Response
     if (-not $redirect) { throw 'The latest Nod release is unavailable.' }

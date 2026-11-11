@@ -425,7 +425,7 @@ function Get-ItemProperty { param($Path, $ErrorAction)
   if ($Path -like 'HKLM:*') { [pscustomobject]@{ CurrentBuildNumber = $fixture.build } }
   elseif ($fixture.existing -or $script:installed) { [pscustomobject]@{ InstallDir = $(if ($script:installed -and $fixture.wrongTarget) { Join-Path $fixture.target 'other' } else { $fixture.target }) } } }
 function Get-Process { param($Name, $ErrorAction) if ($fixture.running) { [pscustomobject]@{ Name = $Name } } }
-function Invoke-WebRequest { param($Uri, $OutFile, [switch]$UseBasicParsing, $MaximumRedirection)
+function Invoke-WebRequest { param($Uri, $OutFile, [switch]$UseBasicParsing, $MaximumRedirection, $ErrorAction)
   Add-Content $env:NOD_LOG "download $Uri"
   if ($MaximumRedirection -eq 0) {
     if ($fixture.ps7Redirect) {
@@ -433,6 +433,7 @@ function Invoke-WebRequest { param($Uri, $OutFile, [switch]$UseBasicParsing, $Ma
       $response.Headers.Location = [Uri]$fixture.redirects.$Uri
       return $response
     }
+    if ($ErrorAction -ne 'SilentlyContinue') { throw [InvalidOperationException]::new('The maximum redirection count has been exceeded.') }
     if ($fixture.arrayRedirect) { return [pscustomobject]@{ StatusCode = 302; Headers = @{ Location = [string[]]@($fixture.redirects.$Uri) } } }
     return [pscustomobject]@{ StatusCode = 302; Headers = @{ Location = $fixture.redirects.$Uri } }
   }
