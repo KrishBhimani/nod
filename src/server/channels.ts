@@ -87,7 +87,9 @@ interface ChannelOptions {
     replyToMessageId?: string,
     attachments?: Artifact[],
     onInserted?: () => void,
+    stopSignal?: AbortSignal,
   ) => Promise<string>;
+  stopSignal?: () => AbortSignal;
   messageAccepted?: () => (channel: string) => void;
   answer?: (
     text: string,
@@ -947,6 +949,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
       )
     ).rows[0];
     if (!pending) return false;
+    const stopSignal = options.stopSignal?.();
     const messageAccepted = options.messageAccepted?.();
     const channel = conversationChannel(pending);
     if (closed || replacing) return false;
@@ -1070,6 +1073,7 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
         () => {
           inserted = true;
         },
+        stopSignal,
       );
       await options.attributeMediaUsage?.(client, row.media_usage_ids ?? [], turnId);
       await client.query(
