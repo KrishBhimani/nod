@@ -763,7 +763,7 @@ export function createComposioProvider(options: {
               id,
               threadId: id,
               internalDate: z.string().regex(/^\d{1,16}$/),
-              labelIds: z.array(z.string().max(200)).max(100),
+              labelIds: z.array(z.string().max(200)).max(100).default([]),
               payload: z.object({
                 headers: z.array(mailHeader).max(200).default([]),
               }),
