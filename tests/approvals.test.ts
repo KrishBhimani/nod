@@ -609,8 +609,10 @@ test(
       let duringReview: () => Promise<void> = async () => {};
       let duringReply: () => Promise<void> = async () => {};
       let aligned:
-        boolean | string | ((input: Record<string, any>) => boolean | Record<string, unknown>) =
-        false;
+        | boolean
+        | string
+        | null
+        | ((input: Record<string, any>) => boolean | Record<string, unknown>) = false;
       let ruled = false;
       const cite = (input: Record<string, any>) =>
         input.userMessages?.at(-1)?.text ??
@@ -658,6 +660,7 @@ test(
           await duringReview();
           const yes =
             typeof aligned === 'function' ? aligned(input as Record<string, any>) : aligned;
+          if (yes === null) return null;
           if (yes && typeof yes === 'object') return yes;
           return {
             run: yes,
@@ -855,6 +858,56 @@ test(
           await finish(superseded.turnId, 'cancelled');
         },
       );
+
+      await t.test('an unusable trust check answer is logged with its cause', async () => {
+        const { withFailureLog } = await import('../src/server/failure-log.ts');
+        const logged: Array<{ event: string; error: unknown }> = [];
+        const sink = (event: string, error: unknown) => {
+          logged.push({ event, error });
+        };
+        const unusable = () =>
+          logged.filter(({ event }) => event === 'trust_check_unusable').map(({ error }) => error);
+        const checkWith = async (turn: Awaited<ReturnType<typeof begin>>) => {
+          logged.length = 0;
+          const verdict = await withFailureLog(sink, () =>
+            trust.check(turn, 'GMAIL_SEND_EMAIL', email('ana@example.test')),
+          );
+          assert.deepEqual(
+            { confirm: verdict.confirm, reason: (verdict as any).reason },
+            {
+              confirm: true,
+              reason: 'unrequested',
+            },
+          );
+        };
+
+        const empty = await begin('Email Ana the synthetic invoice.');
+        aligned = null;
+        await checkWith(empty);
+        assert.deepEqual(unusable(), [{ name: 'TrustCheckUnusable', code: 'no_answer' }]);
+        await finish(empty.turnId, 'cancelled');
+
+        const invented = await begin('Email Ana the synthetic invoice.');
+        aligned = () => ({ run: true, because: 'Send it to everyone.' });
+        await checkWith(invented);
+        assert.deepEqual(unusable(), [{ name: 'TrustCheckUnusable', code: 'basis_rejected' }]);
+        await finish(invented.turnId, 'cancelled');
+
+        const requestText = 'Email Ana the synthetic invoice.';
+        const stale = await begin(requestText);
+        const correction = await thread.submitUserMessage('Correction: do not send that invoice.');
+        await finish(correction.turnId, 'cancelled');
+        aligned = () => ({ run: true, because: requestText });
+        await checkWith(stale);
+        assert.deepEqual(unusable(), [{ name: 'TrustCheckUnusable', code: 'superseded' }]);
+        await finish(stale.turnId, 'cancelled');
+
+        const declined = await begin('Email Ana the synthetic invoice.');
+        aligned = false;
+        await checkWith(declined);
+        assert.deepEqual(unusable(), []);
+        await finish(declined.turnId, 'cancelled');
+      });
 
       await t.test('a newer chat correction before action handoff prevents the write', async () => {
         aligned = true;

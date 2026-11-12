@@ -284,7 +284,9 @@ export function createTrust(options: {
       rules || 'currentRules' in args
         ? `${checkInstructions}\n${rulesInstructions}`
         : checkInstructions;
+    let failed = false;
     const answer = await review(instructions, input, signal).catch((error: unknown) => {
+      failed = true;
       logFailure('trust_check_failed', error);
       return undefined;
     });
@@ -302,6 +304,12 @@ export function createTrust(options: {
       reviewedBasis?.kind !== 'read'
         ? undefined
         : reviewedBasis;
+    const verdict = (answer as { run?: unknown } | undefined)?.run;
+    if (!basis && !failed && verdict !== false)
+      logFailure('trust_check_unusable', {
+        name: 'TrustCheckUnusable',
+        code: reviewedBasis ? 'superseded' : verdict === true ? 'basis_rejected' : 'no_answer',
+      });
     if (basis) {
       const latest = await context();
       await withTurnLock(turn.turnId, async () => undefined);
