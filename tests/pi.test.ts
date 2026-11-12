@@ -3719,6 +3719,108 @@ test('a turn that crosses the compaction line answers first, then compacts at th
   assert.ok(answered >= 0 && answered < compactions[0]);
 });
 
+test('model requests repair incomplete assistant blocks for both OpenRouter APIs', async (t) => {
+  const { createPiModelRuntime } = await import('../src/providers/pi/models.ts');
+  for (const api of ['anthropic-messages', 'openai-completions'] as const)
+    for (const type of ['text', 'thinking'] as const)
+      await t.test(`${api}: ${type}`, async () => {
+        const access = smallContextAccess('openrouter', 'fixture-recovery', 200_000);
+        access.definition.spec = { ...access.definition.spec, api };
+        const { runtime, model } = await createPiModelRuntime(access);
+        const previous = {
+          ...fauxAssistantMessage('Earlier answer.'),
+          provider: model.provider,
+          api: model.api,
+          model: model.id,
+          stopReason: 'toolUse' as const,
+          usage: { ...fauxAssistantMessage('').usage, input: 10, totalTokens: 10 },
+          content: [
+            { type: 'text', text: 'Earlier answer.' },
+            { type, ...(type === 'thinking' ? { thinkingSignature: 'incomplete-signature' } : {}) },
+            { type: 'toolCall', id: 'inspect', name: 'inspect_fixture', arguments: {} },
+          ] as AssistantMessage['content'],
+        };
+        const original = structuredClone(previous);
+        const bodies: unknown[] = [];
+        const result = await runtime.completeSimple(
+          model,
+          {
+            messages: [
+              { role: 'user', content: 'Inspect the fixture.', timestamp: 1 },
+              previous,
+              {
+                role: 'toolResult',
+                toolCallId: 'inspect',
+                toolName: 'inspect_fixture',
+                content: [{ type: 'text', text: 'Inspected.' }],
+                isError: false,
+                timestamp: 2,
+              },
+            ],
+            tools: [
+              {
+                name: 'inspect_fixture',
+                description: 'Inspect a fixture.',
+                parameters: Type.Object({}),
+              },
+            ],
+          },
+          {
+            fetch: async (_input, init) => {
+              bodies.push(JSON.parse(String(init?.body)));
+              const events =
+                api === 'anthropic-messages'
+                  ? [
+                      {
+                        type: 'message_start',
+                        message: {
+                          id: 'recovered',
+                          type: 'message',
+                          role: 'assistant',
+                          model: model.id,
+                          content: [],
+                          usage: { input_tokens: 10, output_tokens: 0 },
+                        },
+                      },
+                      {
+                        type: 'content_block_start',
+                        index: 0,
+                        content_block: { type: 'text', text: '' },
+                      },
+                      {
+                        type: 'content_block_delta',
+                        index: 0,
+                        delta: { type: 'text_delta', text: 'Recovered.' },
+                      },
+                      { type: 'content_block_stop', index: 0 },
+                      {
+                        type: 'message_delta',
+                        delta: { stop_reason: 'end_turn', stop_sequence: null },
+                        usage: { output_tokens: 2 },
+                      },
+                      { type: 'message_stop' },
+                    ]
+                      .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+                      .join('')
+                  : `data: ${JSON.stringify({ id: 'recovered', choices: [{ index: 0, delta: { role: 'assistant', content: 'Recovered.' }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 2 } })}\n\ndata: [DONE]\n\n`;
+              return new Response(events, { headers: { 'content-type': 'text/event-stream' } });
+            },
+          },
+        );
+        assert.equal(result.stopReason, 'stop', result.errorMessage);
+        assert.equal(bodies.length, 1);
+        assert.deepEqual(result.content, [{ type: 'text', text: 'Recovered.' }]);
+        const sent = JSON.stringify(bodies[0]);
+        assert.ok(
+          sent.includes('Earlier answer.') &&
+            sent.includes('inspect_fixture') &&
+            sent.includes('Inspected.'),
+        );
+        assert.ok(!sent.includes('incomplete-signature'));
+        assert.deepEqual(previous, original);
+      });
+});
+
 test('Pi repairs assistant blocks before post-turn compaction', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'nod-pi-complete-blocks-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

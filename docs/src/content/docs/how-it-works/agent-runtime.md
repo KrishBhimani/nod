@@ -53,6 +53,8 @@ Owner replies and corrections steer unfinished work until the owner cancels or r
 
 Recent chat history goes into the prompt only when Pi has no saved session. A resumed session gets new background messages since its previous turn started. Neither includes owner messages of a [withdrawn turn](/how-it-works/threads-and-turns/#stop-and-failures); the session's next turn gets `withdrawnRequest` instead, so the model doesn't continue that request unless the owner asks again.
 
+Nod repairs incomplete assistant text and thinking blocks when it restores or saves a session and before each model request. This also covers tool continuations and summary requests. The repair keeps valid text and tool calls and does not repeat an action.
+
 Pi validates tool arguments as JSON Schema with `@earendil-works/pi-schema`. It can convert a numeric string to a number or a single value to an array. This also applies to MCP tools. TypeBox refinements and custom TypeBox formats do not run. Nod's tool checks, turn guard, and trust check still apply before an action runs.
 
 When a clarification has a few known answers, Nod uses `ask_user` with clickable choices instead of listing them in prose. This includes choosing an account in chat. Open-ended questions need no choices. The runtime assigns each option an ID; labels and descriptions contain its full meaning, with no hidden action payload. The owner can select one or several options when offered, or write their own answer. Sign-in method selection and credentials use the private sign-in flow. Choices never replace action approvals or browser handoffs. Channels, speech and rebuilt history retain the option text.

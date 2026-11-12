@@ -34,6 +34,7 @@ import type { AgentSessionOptions } from '../../ports/agent.ts';
 import type { ProviderUsageEvent } from '../../ports/provider-usage.ts';
 import { piUsageMetrics } from './usage.ts';
 import { audioUsage, nativeAudioRequest, readsNativeAudio } from './audio.ts';
+import { completeAssistantMessage } from './checkpoint.ts';
 import {
   antLingModel,
   nativeAudioModel,
@@ -1141,6 +1142,12 @@ export async function createPiModelRuntime(
     throw new Error('The text companion is unavailable. Refresh the model list.');
   const stream = runtime.streamSimple.bind(runtime);
   runtime.streamSimple = (model, context, options) => {
+    context = {
+      ...context,
+      messages: context.messages.map((message) =>
+        message.role === 'assistant' ? completeAssistantMessage(message) : message,
+      ),
+    };
     const audio = readsNativeAudio(model) ? nativeAudioRequest(context, readAudio) : undefined;
     const target = audio && !audio.active && textModel ? textModel : model;
     const usage = audio?.active ? audioUsage() : undefined;
