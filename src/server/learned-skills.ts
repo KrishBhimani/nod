@@ -117,6 +117,10 @@ export function createLearnedSkills(options: {
     const tree = await memory.load();
     if (!tree.enabled) throw new Error('Memory is turned off, so skills are not saved.');
     const current = tree.skills.find((skill) => skill.name === input.name);
+    if (current?.edited)
+      throw new Error(
+        'The owner edited this skill, so you cannot change it. Ask the owner before changing it.',
+      );
     let draft = { name: input.name, description: '', body: '' };
     if (input.action === 'patch') {
       if (!current) throw new Error('No learned skill has this name. Use save to create it.');

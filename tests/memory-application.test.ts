@@ -412,14 +412,21 @@ test(
       });
       assert.equal(edited.statusCode, 200, edited.body);
       await ask('Export my synthetic statement once more.', [
-        skill({
-          action: 'save',
-          name: 'synthetic-portal-statement',
-          description: 'Use when exporting a statement from the synthetic portal.',
-          body: `1. ${marker}.`,
-        }),
+        skill(
+          {
+            action: 'save',
+            name: 'synthetic-portal-statement',
+            description: 'Use when exporting a statement from the synthetic portal.',
+            body: `1. ${marker}.`,
+          },
+          true,
+        ),
       ]);
       assert.ok((await view()).skills[0].edited);
+      assert.equal(
+        (await view()).skills[0].description,
+        'Use when exporting the synthetic portal statement.',
+      );
 
       const routineStart = 'Every weekday I review my synthetic project notes before lunch.';
       const startTurn = await ask(routineStart, [], '');
@@ -460,6 +467,22 @@ test(
       assert.ok(reviews.some((input) => input.includes('memory_forget')));
       assert.ok(reviews.every((input) => !input.includes(marker)));
       assert.ok(reviews.every((input) => !input.includes('synthetic-portal-statement')));
+
+      const dropped = await application.app.inject({
+        method: 'DELETE',
+        url: '/api/memory/skills/synthetic-portal-statement',
+        headers,
+      });
+      assert.equal(dropped.statusCode, 200);
+      await ask('Export my synthetic statement a third time.', [
+        skill({
+          action: 'save',
+          name: 'synthetic-portal-statement',
+          description: 'Use when exporting a statement from the synthetic portal.',
+          body: `1. ${marker}.`,
+        }),
+      ]);
+      assert.ok(!(await view()).skills[0].edited);
 
       whilePreparing = async () => {
         whilePreparing = undefined;
@@ -1037,6 +1060,64 @@ test('skill learning cannot commit across a memory clear', async () => {
     status: 'saved',
     name: 'synthetic-flow',
   });
+});
+
+test('an agent cannot overwrite a skill the owner edited', async () => {
+  const memory = createMemoryService({
+    pool: {
+      query: async () => ({ rows: [{ now: new Date().toISOString() }] }),
+    } as unknown as pg.Pool,
+    ownerId: 'skill-owner',
+    store: memoryObjectStore(),
+  });
+  let preparations = 0;
+  const curator: MemoryCurator = {
+    id: 'fixture',
+    configured: true,
+    curate: async (request) => {
+      preparations++;
+      const draft = (request.input as { draft: { description: string; body: string } }).draft;
+      return { skill: { description: draft.description, body: draft.body } };
+    },
+  };
+  const skills = createLearnedSkills({ memory, curator, builtIn: [], redact: (text) => text });
+  const save = (name: string, body: string) =>
+    skills.learn(
+      { action: 'save', name, description: 'Use when testing synthetic flows.', body },
+      randomUUID(),
+    );
+  const body = async (name: string) =>
+    (await memory.load()).skills.find((skill) => skill.name === name)?.body;
+
+  await save('owner-flow', 'Agent steps.');
+  await save('agent-flow', 'Agent steps.');
+  await skills.change('owner-flow', { body: 'Owner steps.' });
+  const prepared = preparations;
+
+  await assert.rejects(save('owner-flow', 'Agent rewrite.'), /owner edited/);
+  await assert.rejects(
+    skills.learn({ action: 'patch', name: 'owner-flow', old: 'Owner', new: 'Agent' }, randomUUID()),
+    /owner edited/,
+  );
+  assert.equal(preparations, prepared);
+  assert.equal(await body('owner-flow'), 'Owner steps.');
+  assert.ok((await memory.load()).skills.find((skill) => skill.name === 'owner-flow')?.edited);
+
+  assert.deepEqual(await save('agent-flow', 'Agent rewrite.'), {
+    status: 'updated',
+    name: 'agent-flow',
+  });
+  assert.deepEqual(
+    await skills.learn(
+      { action: 'patch', name: 'agent-flow', old: 'rewrite', new: 'patch' },
+      randomUUID(),
+    ),
+    { status: 'updated', name: 'agent-flow' },
+  );
+  assert.equal(await body('agent-flow'), 'Agent patch.');
+
+  await skills.change('owner-flow', { body: 'Owner steps again.' });
+  assert.equal(await body('owner-flow'), 'Owner steps again.');
 });
 
 test(
