@@ -3070,7 +3070,7 @@ test('each model call yields one chat-format trace without image data', async ()
       effort: 'low',
       read: async () => ({ type: 'api_key', key: 'fixture-router-key' }),
     },
-    (call) => calls.push(call),
+    { trace: (call) => calls.push(call) },
   );
   const image = Buffer.from('synthetic-image-bytes').toString('base64');
   const chunk = (value: object) => `data: ${JSON.stringify(value)}\n\n`;
@@ -3467,9 +3467,9 @@ test('a long tool call does not send model requests without usage records', asyn
       );
       if (outcome === 'succeeded' && !changeContext) {
         const cancelled: import('../src/ports/provider-usage.ts').ProviderUsageEvent[] = [];
-        const { runtime, model } = await createPiModelRuntime(access, undefined, undefined, (row) =>
-          cancelled.push(row),
-        );
+        const { runtime, model } = await createPiModelRuntime(access, {
+          reportCacheUsage: (row) => cancelled.push(row),
+        });
         holdRefresh = true;
         const received = new Promise<void>((resolve) => {
           refreshStarted = resolve;
@@ -4304,7 +4304,11 @@ test('the live line shows a model retry and the text before a tool call while th
         );
       }
       response.writeHead(200, { 'content-type': 'text/event-stream' });
-      if (requests > 2) {
+      if (requests === 3) {
+        send({ role: 'assistant', content: 'Partial synthetic update.' });
+        return response.end();
+      }
+      if (requests > 3) {
         send({ role: 'assistant', content: 'The synthetic notes are read.' });
         send({}, 'stop');
         return response.end('data: [DONE]\n\n');
@@ -4372,7 +4376,8 @@ test('the live line shows a model retry and the text before a tool call while th
     },
   });
   assert.equal(released, 'step');
-  assert.ok(scripts.some((script) => script.includes('fixture-read-notes')));
+  assert.equal(scripts.filter((script) => script.includes('fixture-read-notes')).length, 1);
+  assert.equal(requests, 4);
   assert.ok(emitted.find(([type]) => type === 'retry')?.[1].includes(definition.choice.name));
 });
 
@@ -5014,6 +5019,7 @@ test('native account catalogs never send a provider key to a different service o
     ['moonshotai', 'https://api.moonshot.ai/v1/models'],
     ['moonshotai-cn', 'https://api.moonshot.cn/v1/models'],
     ['together', 'https://api.together.xyz/v1/models'],
+    ['nvidia', 'https://integrate.api.nvidia.com/v1/models'],
   ] as const;
   for (const [provider, destination] of cases) {
     let status = 200;
@@ -5023,7 +5029,17 @@ test('native account catalogs never send a provider key to a different service o
         assert.equal(String(input), destination);
         assert.equal(new Headers(init?.headers).get('authorization'), `Bearer ${key}`);
         assert.equal(init?.redirect, 'error');
-        if (status !== 200) return Response.json({ message: `Synthetic ${key}` }, { status });
+        if (status !== 200)
+          return Response.json(
+            { message: `Synthetic ${key}` },
+            {
+              status,
+              headers: {
+                'content-type':
+                  status === 503 ? 'application/problem+json' : 'Application/JSON; charset=utf-8',
+              },
+            },
+          );
         const [allowed, unavailable] = await backend.catalog(provider, 'api_key');
         const data = [
           { id: allowed.choice.id },
@@ -5039,7 +5055,12 @@ test('native account catalogs never send a provider key to a different service o
     for (status of [401, 403, 429, 503, 307]) {
       await assert.rejects(
         backend.catalog(provider, 'api_key', { type: 'api_key', key }),
-        (error: Error) => !error.message.includes(key),
+        (error: Error) => {
+          assert.ok(!error.message.includes(key));
+          assert.ok(error.message.includes(`HTTP ${status}`));
+          assert.match(error.message, /Synthetic \[redacted\]/);
+          return true;
+        },
       );
     }
   }
@@ -5923,7 +5944,7 @@ test('action review failures identify the task, model, provider, and bounded pro
       return true;
     },
   );
-  assert.equal(calls, 3);
+  assert.equal(calls, 1);
   assert.ok(sessions[0]);
   assert.equal(new Set(sessions).size, 1);
 });
@@ -5988,7 +6009,11 @@ test('image analysis passes image blocks to Pi and does not retry a failed charg
 });
 
 test('failed model requests keep unknown costs and remain separate from their retries', async () => {
-  const failed = { ...fauxAssistantMessage(''), stopReason: 'error' as const };
+  const failed = {
+    ...fauxAssistantMessage(''),
+    stopReason: 'error' as const,
+    errorMessage: 'Synthetic service is unavailable (HTTP 503).',
+  };
   const succeeded = {
     ...fauxAssistantMessage('{"saved":true}'),
     usage: {
@@ -7285,6 +7310,44 @@ function reply(content: Record<string, unknown>, finish = 'stop') {
     { headers: { 'content-type': 'text/event-stream' } },
   );
 }
+
+test('model requests refuse oversized payloads before dispatch and retain transport causes', async (t) => {
+  const original = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    throw new TypeError('fetch failed', {
+      cause: Object.assign(new Error('Synthetic socket closed.'), { code: 'ECONNRESET' }),
+    });
+  };
+  for (const window of [8192, 131072]) {
+    const { runtime, model, requestFacts } = await createPiModelRuntime(
+      smallContextAccess('compatible', 'fixture-payload-limit', window),
+    );
+    const oversized = await runtime.completeSimple(model, {
+      messages: [{ role: 'user', content: 'Synthetic text '.repeat(window), timestamp: 1 }],
+    });
+    assert.equal(oversized.stopReason, 'error');
+    assert.match(oversized.errorMessage ?? '', new RegExp(`${window}-token context`));
+    assert.equal(calls, 0);
+    assert.equal(requestFacts(oversized)!.requestPhase, 'prepare');
+  }
+  for (const [index, provider] of (['compatible', 'openrouter'] as const).entries()) {
+    const { runtime, model } = await createPiModelRuntime(
+      smallContextAccess(provider, 'fixture-disconnect', 131072),
+    );
+    const failed = await runtime.completeSimple(model, {
+      messages: [{ role: 'user', content: 'Read synthetic data.', timestamp: 1 }],
+    });
+    assert.equal(failed.stopReason, 'error');
+    assert.equal(calls, index + 1);
+    assert.match(failed.errorMessage ?? '', /transport cause: ECONNRESET/);
+    assert.match(failed.errorMessage ?? '', /request phase: request/);
+  }
+});
 
 test('Groq Qwen finishes a task through a tool call with supported message roles', async (t) => {
   const original = globalThis.fetch;

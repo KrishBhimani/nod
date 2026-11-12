@@ -323,6 +323,7 @@ export interface AgentAudioInput {
   fallback: string;
 }
 export interface AgentSessionOptions extends ExecutionScope {
+  automatic?: boolean;
   restricted?: boolean;
   ephemeral?: boolean;
   restartable?: boolean;

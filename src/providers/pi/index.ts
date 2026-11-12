@@ -367,6 +367,7 @@ export function createPiAgent(options: {
     async open(input) {
       if (disposed) throw new Error('The agent service has stopped.');
       const access = await options.resolve?.();
+      if (input.automatic) await access?.prepareRequest?.(access.definition.choice.id, true);
       if (!access && !options.apiKey)
         throw new Error('Configure the selected model provider to enable the assistant.');
       if (access?.method === 'subscription') {
@@ -403,9 +404,10 @@ export function createPiAgent(options: {
       await mkdir(directory, { recursive: true, mode: 0o700 });
       const traces = options.traces;
       const connection = access
-        ? await createPiModelRuntime(
-            access,
-            traces &&
+        ? await createPiModelRuntime(access, {
+            automatic: input.automatic,
+            trace:
+              traces &&
               ((call) => {
                 if (traces.active())
                   traces.record(
@@ -422,13 +424,13 @@ export function createPiAgent(options: {
                     ),
                   );
               }),
-            input.readAudio,
-            (usage) =>
+            readAudio: input.readAudio,
+            reportCacheUsage: (usage) =>
               input.onEvent({
                 type: 'provider_usage',
                 usage: { ...usage, turnId: input.turnId },
               }),
-          )
+          })
         : undefined;
       const runtime = connection
         ? connection.runtime
@@ -478,7 +480,7 @@ export function createPiAgent(options: {
         nested = false,
       ) => {
         const result = await run();
-        if (!budget.compact || nested) return result;
+        if (nested) return result;
         const text = result.content
           .filter((part) => part.type === 'text')
           .map((part) => part.text)
@@ -724,11 +726,16 @@ export function createPiAgent(options: {
               };
             }),
           (pi: ExtensionAPI) =>
-            pi.on('cache_warming_decision', async () =>
-              idle && !(await input.keepWarm?.().catch(() => false))
+            pi.on('cache_warming_decision', async () => {
+              try {
+                await access?.prepareRequest?.(connection?.textModel?.id ?? model.id, true);
+              } catch {
+                return { action: 'stop' as const };
+              }
+              return idle && !(await input.keepWarm?.().catch(() => false))
                 ? { action: 'stop' as const }
-                : undefined,
-            ),
+                : undefined;
+            }),
           completeAssistantMessages,
         ],
         noExtensions: true,

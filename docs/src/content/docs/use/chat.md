@@ -187,6 +187,8 @@ You can also tell Nod in the main chat, from any app, for example "stop everythi
 
 When a run you started stops on an error or on your spending limit, Nod tells you what failed in the main chat or as a reply to the affected task. For a failed agent model request, Nod shows the provider and model that handled it, the service's specific reason and status, and useful details after removing secrets.
 
+The failure links to **Settings > Models**. You can check the connection or choose another model there. A connection or stream failure also keeps the available cause and request phase. It does not establish whether a provider outage or your network caused the failure. After a known Google daily or zero quota, automatic work on that model pauses on that connection. You can still start a new request yourself. See [Models](/connect/models/) for recovery details.
+
 If the service reports an oversized tokens-per-minute request, the error keeps its requested and allowed token counts and suggests shortening the conversation or choosing a model with a higher limit. If a daily quota error includes a retry delay, Nod gives you an approximate wait time. For an account or workspace usage cap, wait for the limit to reset or check its settings; a workspace admin may need to raise it. Nod's next turn knows what went wrong.
 
 If Nod restarts during a run you started, that run fails and Nod posts an interruption notice. Nod never repeats failed or interrupted work on its own. Saved tasks and waiting questions survive a restart.

@@ -783,6 +783,7 @@ export function createAgentRuntime(dependencies: {
         try {
           child = await agent.open({
             ...source,
+            automatic: !context.currentMessageId,
             ephemeral: true,
             systemPrompt: system,
             ownerContext: ownerContext(context),
@@ -949,6 +950,7 @@ export function createAgentRuntime(dependencies: {
       await context.emit('agent_start', 'Main agent', { execution });
       const opening = agent.open({
         ...execution,
+        automatic: !context.currentMessageId,
         ...(context.proactivity ? { restricted: true, restartable: !context.resumed } : {}),
         ...(sessionId === threadId && !context.proactivity && dependencies.keepWarm
           ? { keepWarm: () => dependencies.keepWarm!(threadId) }

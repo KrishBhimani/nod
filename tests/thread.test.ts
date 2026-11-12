@@ -9009,6 +9009,13 @@ test(
                 /retry delay is about 24 hours\. Check its daily limit or choose another model\./,
             },
             {
+              prompt: 'model-daily-quota-message-fixture',
+              error: prefix + 'HTTP 429: Daily quota exceeded; retryDelay: 30s',
+              reason: /Daily quota exceeded/,
+              advice:
+                /retry delay is about 30 seconds\. Check its daily limit or choose another model\./,
+            },
+            {
               prompt: 'model-rate-limit-code-fixture',
               error: prefix + 'rate_limit_error',
               reason: /rate_limit_error/,
@@ -9187,7 +9194,7 @@ test(
                   text,
                   /synthetic-private-provider-detail|synthetic-fixture-secret|usage limits and billing/,
                 );
-              if (!item.error.includes('{')) assert.equal(turn.error, item.error);
+              if (!item.error.includes('{') && !item.advice) assert.equal(turn.error, item.error);
             }
           } finally {
             for (const item of cases) modelErrors.delete(item.prompt);

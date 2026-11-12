@@ -1633,6 +1633,8 @@ async function initializeApplication(
     pool,
     ownerId,
     analytics: captureAnalytics,
+    modelAvailable: () =>
+      adapters.models?.automaticRequestsAllowed() ?? Promise.resolve(adapters.model.configured),
     redact: createTextRedactor(secrets),
     sources: (client) => observations.sources(client),
     read: async (turn, input, signal) => {
@@ -1769,6 +1771,7 @@ async function initializeApplication(
           context.turnId,
           () => runtime.runTurn(context).finally(() => proactivity.release(context.turnId)),
           Boolean(context.spendingLimitReached),
+          !context.currentMessageId,
         ),
       spendingLimit: ledger.reachedLimit,
       checkIn: ledger.checkIn,
