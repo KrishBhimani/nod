@@ -82,7 +82,7 @@ type AnalyticsEvents = {
   chat_message_sent: {
     has_attachments: boolean;
     is_reply: boolean;
-    source: 'composer' | 'task_card' | 'ask_nod' | 'task_reply' | 'answer_choice';
+    source: 'composer' | 'task_card' | 'ask_nod' | 'task_reply' | 'answer_choice' | 'approval_card';
     input: 'text' | 'voice';
   };
   chat_stop_requested: undefined;
@@ -218,7 +218,7 @@ const eventProperties: Record<keyof AnalyticsEvents, Record<string, readonly unk
   chat_message_sent: {
     has_attachments: [true, false],
     is_reply: [true, false],
-    source: ['composer', 'task_card', 'ask_nod', 'task_reply', 'answer_choice'],
+    source: ['composer', 'task_card', 'ask_nod', 'task_reply', 'answer_choice', 'approval_card'],
     input: ['text', 'voice'],
   },
   chat_stop_requested: {},

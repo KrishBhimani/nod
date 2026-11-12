@@ -119,7 +119,7 @@ Model events use one `provider` property. Onboarding completion and execution st
 | `settings_viewed`, `tab_viewed`                   | Fixed settings section or Apps page tab.                                                                                                            |
 | `local_setting_changed`                           | Changed, persisted local theme, launch-at-login, or notification choice with a fixed value.                                                         |
 | `notification_opened`                             | Clicked browser reply notification, without its content. Native notification clicks aren't observed.                                                |
-| `chat_message_sent`                               | Attachment/reply booleans, text/voice input, and composer/task-card/ask-Nod/task-reply/answer-choice source.                                        |
+| `chat_message_sent`                               | Attachment/reply booleans, text/voice input, and composer/task-card/ask-Nod/task-reply/answer-choice/approval-card source.                          |
 | `owner_message_accepted`                          | Newly committed owner message by bounded channel. Excludes duplicates, commands, private verification, message text, and private message/turn IDs.  |
 | `chat_stop_requested`                             | Stop requested in the app.                                                                                                                          |
 | `task_card_started`, `task_action`                | Card kind and bounded position, or fixed task control.                                                                                              |
@@ -249,7 +249,7 @@ Presentation open means expanding the native presentation into its drawer; copy 
 
 `open` and `reveal` follow native API success. `reuse_requested` means the app dispatched a reuse request, not that an attachment was accepted or sent. Reuse locations also cover the command palette (`commands`) and internal file drops (`composer`); artifact views remain limited to message and drawer locations.
 
-Answer-choice views count once per question in a sharing period, while the choices are in the viewport and the app is visible. Selections follow a server-accepted answer. Option toggles, custom composer answers, and failed, rejected, or unavailable submissions are not selections. Accepted choices also emit `chat_message_sent` with `source=answer_choice` and `input=text`. Question and option IDs, labels, selected text, and response content are excluded.
+Answer-choice views count once per question in a sharing period, while the choices are in the viewport and the app is visible. Selections follow a server-accepted answer. Option toggles, answers with only typed text, and failed, rejected, or unavailable submissions are not selections; typed text sent with choices counts only the choices. Accepted choices also emit `chat_message_sent` with `source=answer_choice` and `input=text`. Question and option IDs, labels, selected text, and response content are excluded. An accepted approval-card answer emits `chat_message_sent` with `source=approval_card` and `input=text`; the server's `confirmation_changed` event records whether it approved or declined.
 
 ### Surveys
 

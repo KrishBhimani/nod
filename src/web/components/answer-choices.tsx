@@ -1,41 +1,71 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import {
   choiceAnswerText,
   type AnswerChoices as AnswerChoicesValue,
   type QuestionAnswer,
 } from '../../shared/answer-choices';
+import type { Message } from '../../shared/contracts';
 import { errorMessage } from '../lib/api';
 import { analyticsForCurrentSession, observeAnalyticsView } from '../lib/analytics';
-import { Check, PenLine } from './icons';
-import { Button } from './ui';
+import { ArrowUp, Check, PenLine } from './icons';
 
 export interface AnswerChoicesProps {
   choices: AnswerChoicesValue;
   question: { id: string; text: string };
+  title: ReactNode;
   disabled?: boolean;
   onAnswer(text: string, answer: QuestionAnswer): Promise<boolean | 'unavailable'>;
-  onWriteAnswer(text: string): void;
+}
+
+type GivenAnswer = NonNullable<Message['choiceAnswer']>;
+
+export function ChoiceBadge({
+  index,
+  on = false,
+  children,
+}: {
+  index?: number;
+  on?: boolean;
+  children?: ReactNode;
+}) {
+  return (
+    <span className="choice-card-badge" data-on={on || undefined} aria-hidden="true">
+      {children ?? (index === undefined ? null : String.fromCharCode(65 + index))}
+    </span>
+  );
+}
+
+export function ChoiceCopy({ label }: { label: string }) {
+  return (
+    <span className="choice-card-copy" title={label}>
+      {label}
+    </span>
+  );
 }
 
 export function AnswerChoices({
   choices,
   question,
+  title,
   disabled = false,
   onAnswer,
-  onWriteAnswer,
 }: AnswerChoicesProps) {
   const id = useId();
-  const root = useRef<HTMLDivElement>(null);
+  const root = useRef<HTMLElement>(null);
   const mounted = useRef(true);
   const pending = useRef(false);
   const unavailable = useRef(disabled);
   unavailable.current = disabled;
+  const [text, setText] = useState('');
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
+  const [submitted, setSubmitted] = useState<GivenAnswer | 'unavailable' | null>(null);
   const [error, setError] = useState('');
+  const { multiple, options } = choices;
   const locked = disabled || busy;
-  const selectedOptions = choices.options.filter((option) => selected.includes(option.id));
+  const typed = text.trim();
+  const picked = options.filter((option) => selected.includes(option.id));
+  const count = picked.length + (typed ? 1 : 0);
 
   useEffect(() => {
     mounted.current = true;
@@ -47,30 +77,37 @@ export function AnswerChoices({
   useEffect(() => {
     if (submitted || !root.current) return;
     return observeAnalyticsView(root.current, question.id, 'answer_choices_viewed', {
-      multiple: choices.multiple,
-      option_count: choices.options.length,
+      multiple,
+      option_count: options.length,
     });
-  }, [choices.multiple, choices.options.length, question.id, submitted]);
+  }, [multiple, options.length, question.id, submitted]);
 
-  async function answer(value: string, selection: QuestionAnswer) {
-    if (!mounted.current || unavailable.current || pending.current || !value.trim()) return;
+  async function answer(chosen: typeof options, written: string) {
+    if (!mounted.current || unavailable.current || pending.current) return;
+    if (!chosen.length && !written) return;
+    const choiceIds = chosen.map((option) => option.id);
+    const selection: QuestionAnswer = !chosen.length
+      ? { custom: true }
+      : written
+        ? { choiceIds, custom: true }
+        : { choiceIds };
+    const value = [...(chosen.length ? [choiceAnswerText(chosen)] : []), written]
+      .filter(Boolean)
+      .join('\n');
     const capture = analyticsForCurrentSession();
-    const properties =
-      'choiceIds' in selection
-        ? {
-            multiple: choices.multiple,
-            option_count: choices.options.length,
-            selected_count: selection.choiceIds.length,
-          }
-        : undefined;
     pending.current = true;
     setBusy(true);
     setError('');
     const focused = document.activeElement;
     const message = root.current?.closest<HTMLElement>('[data-message-id]');
     try {
-      const outcome = await onAnswer(value.trim(), selection);
-      if (outcome === true && properties) capture('answer_choices_selected', properties);
+      const outcome = await onAnswer(value, selection);
+      if (outcome === true && chosen.length)
+        capture('answer_choices_selected', {
+          multiple,
+          option_count: options.length,
+          selected_count: chosen.length,
+        });
       if (outcome === true || outcome === 'unavailable') {
         if (
           message?.isConnected &&
@@ -78,7 +115,12 @@ export function AnswerChoices({
             (document.activeElement === document.body && focused && !focused.isConnected))
         )
           message.focus({ preventScroll: true });
-        if (mounted.current) setSubmitted(true);
+        if (mounted.current)
+          setSubmitted(
+            outcome === 'unavailable'
+              ? 'unavailable'
+              : { choiceIds, ...(written ? { text: written } : {}) },
+          );
         return;
       }
       if (mounted.current) setError('Your answer could not be sent. Try again.');
@@ -89,114 +131,151 @@ export function AnswerChoices({
     if (mounted.current) setBusy(false);
   }
 
-  if (submitted || !choices.options.length) return null;
+  function finish() {
+    void answer(multiple ? picked : [], typed);
+  }
+
+  if (submitted === 'unavailable' || !options.length) return <>{title}</>;
+  if (submitted) return <ChoiceAnswer choices={choices} answer={submitted} title={title} />;
 
   return (
-    <div
+    <section
       ref={root}
-      className="answer-choices"
+      className="action-card answer-choices choice-card"
       data-analytics-private
       data-question-id={question.id}
-      role="group"
       aria-labelledby={`${id}-question`}
-      aria-describedby={choices.multiple ? `${id}-instructions` : undefined}
       aria-busy={busy}
     >
-      <span id={`${id}-question`} className="sr-only">
-        Answer: {question.text}
-      </span>
-      {choices.multiple && (
-        <span id={`${id}-instructions`} className="sr-only">
-          Choose one or more answers, then send. Use Add your own to edit your selections and add
-          options in the message composer.
-        </span>
-      )}
-      <div className="answer-choices-options">
-        {choices.options.map((option) => (
-          <Button
-            key={option.id}
-            type="button"
-            variant="outline"
-            className={`answer-choice${option.description ? ' has-description' : ''}`}
-            aria-pressed={choices.multiple ? selected.includes(option.id) : undefined}
-            aria-disabled={locked}
-            onClick={() => {
-              if (unavailable.current || pending.current) return;
-              setError('');
-              if (choices.multiple)
-                setSelected((current) =>
-                  current.includes(option.id)
-                    ? current.filter((value) => value !== option.id)
-                    : [...current, option.id],
-                );
-              else void answer(choiceAnswerText([option]), { choiceIds: [option.id] });
-            }}
-          >
-            {choices.multiple && (
-              <span className="answer-choice-check" aria-hidden="true">
-                {selected.includes(option.id) && <Check size={12} />}
-              </span>
-            )}
-            <span className="answer-choice-copy">
-              <span className="answer-choice-label">{option.label}</span>
-              {option.description && (
-                <span className="answer-choice-description">{option.description}</span>
-              )}
-            </span>
-          </Button>
-        ))}
-        <Button
-          type="button"
-          variant="ghost"
-          className="answer-choices-write"
-          aria-disabled={locked}
-          onClick={() => {
-            if (unavailable.current || pending.current) return;
-            setError('');
-            onWriteAnswer(choiceAnswerText(selectedOptions));
-          }}
-        >
-          <PenLine size={14} aria-hidden="true" />
-          {choices.multiple ? 'Add your own' : 'Write an answer'}
-        </Button>
+      <div className="choice-card-heading">
+        <div id={`${id}-question`} className="choice-card-title">
+          {title}
+        </div>
+        {multiple && (
+          <p className="choice-card-count" aria-live="polite">
+            {count ? `${count} selected` : 'Pick one or more'}
+          </p>
+        )}
       </div>
-      {choices.multiple && (
-        <div className="answer-choices-actions">
-          <Button
-            type="button"
-            size="sm"
-            className="answer-choices-send"
-            aria-disabled={locked || !selectedOptions.length}
-            onClick={() => {
-              if (!selectedOptions.length) return;
-              void answer(choiceAnswerText(selectedOptions), {
-                choiceIds: selectedOptions.map((option) => option.id),
-              });
-            }}
-          >
-            Send
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="answer-choices-secondary"
-            aria-disabled={locked || !selected.length}
-            onClick={() => {
-              if (unavailable.current || pending.current) return;
-              setSelected([]);
+      <div className="choice-card-list" role="group" aria-labelledby={`${id}-question`}>
+        {options.map((option, index) => {
+          const on = selected.includes(option.id);
+          return (
+            <button
+              key={option.id}
+              type="button"
+              className="answer-choice choice-card-row"
+              aria-pressed={multiple ? on : undefined}
+              aria-disabled={locked}
+              onClick={() => {
+                if (unavailable.current || pending.current) return;
+                setError('');
+                if (!multiple) return void answer([option], '');
+                setSelected((current) =>
+                  on ? current.filter((value) => value !== option.id) : [...current, option.id],
+                );
+              }}
+            >
+              <ChoiceBadge index={index} on={on}>
+                {on ? <Check size={14} /> : undefined}
+              </ChoiceBadge>
+              <ChoiceCopy label={choiceAnswerText([option])} />
+            </button>
+          );
+        })}
+        <div className="choice-card-row choice-card-input">
+          <ChoiceBadge on={multiple && Boolean(typed)}>
+            <PenLine size={14} />
+          </ChoiceBadge>
+          <input
+            className="answer-choices-write"
+            value={text}
+            maxLength={4000}
+            placeholder="Type your own answer"
+            aria-label="Type your own answer"
+            readOnly={locked}
+            onChange={(event) => {
+              setText(event.target.value);
               setError('');
             }}
-          >
-            Clear
-          </Button>
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' || event.nativeEvent.isComposing) return;
+              event.preventDefault();
+              finish();
+            }}
+          />
+          {!multiple && (
+            <button
+              type="button"
+              className="answer-choices-send choice-card-send"
+              aria-label="Send answer"
+              aria-hidden={!typed || undefined}
+              tabIndex={typed ? undefined : -1}
+              data-idle={!typed || undefined}
+              aria-disabled={locked}
+              onClick={finish}
+            >
+              <ArrowUp size={16} />
+            </button>
+          )}
+        </div>
+      </div>
+      {(multiple || error) && (
+        <div className="choice-card-footer">
+          {error && (
+            <p className="choice-card-error" role="alert">
+              {error}
+            </p>
+          )}
+          {multiple && (
+            <button
+              type="button"
+              className="answer-choices-done choice-card-done"
+              aria-disabled={locked || !count}
+              onClick={finish}
+            >
+              Done
+            </button>
+          )}
         </div>
       )}
-      {error && (
-        <p id={`${id}-error`} className="answer-choices-error" role="alert">
-          {error}
-        </p>
-      )}
-    </div>
+    </section>
+  );
+}
+
+export function ChoiceAnswer({
+  choices,
+  answer,
+  title,
+}: {
+  choices: AnswerChoicesValue;
+  answer: GivenAnswer;
+  title: ReactNode;
+}) {
+  return (
+    <section className="action-card action-card-settled choice-card" data-analytics-private>
+      <div className="choice-card-heading">
+        <div className="choice-card-title">{title}</div>
+      </div>
+      <div className="choice-card-list" role="group" aria-label="Your answer">
+        {choices.options.map(
+          (option, index) =>
+            answer.choiceIds.includes(option.id) && (
+              <div key={option.id} className="choice-card-row choice-card-chosen">
+                <ChoiceBadge index={index} on />
+                <ChoiceCopy label={choiceAnswerText([option])} />
+              </div>
+            ),
+        )}
+        {answer.text && (
+          <div className="choice-card-row choice-card-chosen">
+            <ChoiceBadge on>
+              <PenLine size={14} />
+            </ChoiceBadge>
+            <span className="choice-card-written">{answer.text}</span>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }

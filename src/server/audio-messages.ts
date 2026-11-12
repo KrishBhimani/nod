@@ -27,6 +27,7 @@ export const messageInput = z
     attachmentIds: z.array(z.uuid()).default([]),
     replyToMessageId: z.uuid().optional(),
     questionAnswer: questionAnswerSchema.optional(),
+    approvalAnswer: z.object({ approvalId: z.uuid(), approved: z.boolean() }).strict().optional(),
     replyQuote: z.string().trim().min(1).max(4000).optional(),
     seenMessageId: z.uuid().optional(),
     clientMessageId: z.uuid().optional(),
@@ -115,10 +116,11 @@ export function registerAudioMessages(app: FastifyInstance, dependencies: AppDep
       if (!recording) throw invalid('Choose an audio recording.');
       const input = messageInput
         .extend({ clientMessageId: z.uuid(), threadId: z.uuid() })
+        .refine((value) => !value.approvalAnswer)
         .refine(
           (value) =>
             !value.questionAnswer ||
-            ('custom' in value.questionAnswer &&
+            (!('choiceIds' in value.questionAnswer) &&
               Boolean(value.replyToMessageId) &&
               !value.verificationRequestId),
         )

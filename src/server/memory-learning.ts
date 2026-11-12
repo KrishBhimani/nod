@@ -21,7 +21,7 @@ const utc = (column: string) =>
   `to_char(${column} AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
 
 const ownerText = `SELECT m.id,m.text,${utc('m.created_at')} AS at,(SELECT time_zone FROM preferences p WHERE p.owner_id=m.owner_id) AS zone FROM messages m
-  WHERE m.owner_id=$1 AND m.role='user' AND length(m.text)<=4000 AND NOT EXISTS (
+  WHERE m.owner_id=$1 AND m.role='user' AND m.approval_answer IS NULL AND length(m.text)<=4000 AND NOT EXISTS (
     SELECT 1 FROM messages offer, jsonb_array_elements(offer.suggestions->'tasks') task
     WHERE offer.owner_id=m.owner_id AND offer.thread_id=m.thread_id AND task->>'title'=m.text)`;
 type OwnerText = { id: string; text: string; at: string; zone: string | null };
@@ -153,7 +153,17 @@ export function createMemoryLearning(options: {
       [options.ownerId, required, sourceMessageId],
     );
     const messages: OwnerText[] = rows.filter((row) => !unsafe(row.text));
-    if (!required.every((id) => messages.some((message) => message.id === id)))
+    const clicked = await options.pool.query(
+      'SELECT 1 FROM messages WHERE id=$2 AND owner_id=$1 AND approval_answer IS NOT NULL',
+      [options.ownerId, sourceMessageId],
+    );
+    if (
+      !required.every(
+        (id) =>
+          (id === sourceMessageId && clicked.rowCount) ||
+          messages.some((message) => message.id === id),
+      )
+    )
       throw new Error(
         'Only the owner’s own messages can be remembered, each up to 4,000 characters and without passwords, codes or card numbers. Nothing was saved.',
       );

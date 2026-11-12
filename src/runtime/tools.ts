@@ -328,7 +328,7 @@ export const toolDefinitions = {
   ),
   ask_user: defineTool(
     'ask_user',
-    'Ask one necessary question and pause. For a finite decision, supply known choices instead of a prose list, normally two to four. Add descriptions only to distinguish options. The owner can write another answer. Never use choices for action approvals or secrets.',
+    'Ask one necessary question and pause. For a finite decision, supply known choices instead of a prose list, normally two to four. Each label is one short line that names the option with the detail that tells it apart. The owner can write another answer. Never use choices for action approvals or secrets.',
     Type.Object({
       question: Type.String(),
       choices: Type.Optional(
@@ -336,7 +336,6 @@ export const toolDefinitions = {
           Type.Object(
             {
               label: Type.String({ minLength: 1, maxLength: 120 }),
-              description: Type.Optional(Type.String({ minLength: 1, maxLength: 400 })),
             },
             { additionalProperties: false },
           ),

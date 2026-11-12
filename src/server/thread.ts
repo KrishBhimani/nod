@@ -7,6 +7,7 @@ import {
 import {
   answerChoicesSchema,
   choiceAnswerText,
+  writtenAnswer,
   questionAnswerSchema,
   questionWithChoices,
   type AnswerChoices,
@@ -112,6 +113,7 @@ interface SubmitUserMessageOptions {
   seenMessageId?: string;
   clientMessageId?: string;
   questionAnswer?: QuestionAnswer;
+  approvalAnswer?: { approvalId: string; approved: boolean };
   audioCaption?: string;
   prompt?: string;
   answer?: ChatConfirmationInput['answer'];
@@ -586,11 +588,21 @@ export async function submitUserMessage(
     sourceId: options.sourceId,
     hasAttachments: attachments.length > 0 || Boolean(options.prepareAttachments),
   };
+  if (
+    options.approvalAnswer &&
+    (options.questionAnswer ||
+      !options.replyToMessageId ||
+      !text.trim() ||
+      confirmation.hasAttachments)
+  )
+    throw httpError('Answer the approval with the button you chose.', 400);
   const answer = options.questionAnswer
     ? undefined
-    : options.client
-      ? options.answer
-      : await readAnswer(text, confirmation.hasAttachments, options, confirmAction);
+    : options.approvalAnswer
+      ? options.approvalAnswer
+      : options.client
+        ? options.answer
+        : await readAnswer(text, confirmation.hasAttachments, options, confirmAction);
   let inserted = false;
   const markInserted = () => {
     inserted = true;
@@ -603,7 +615,7 @@ export async function submitUserMessage(
     if (options.clientMessageId) {
       const previous = (
         await client.query(
-          'SELECT id,owner_id,role,text,display_text,audio_caption,thread_id,turn_id,attachments,reply_to_message_id,reply_quote,question_answer FROM messages WHERE id=$1',
+          'SELECT id,owner_id,role,text,display_text,audio_caption,thread_id,turn_id,attachments,reply_to_message_id,reply_quote,question_answer,approval_answer,(SELECT a.id FROM approvals a WHERE a.execution_turn_id=messages.turn_id AND a.owner_id=messages.owner_id LIMIT 1) AS approval_id FROM messages WHERE id=$1',
           [options.clientMessageId],
         )
       ).rows[0];
@@ -619,6 +631,8 @@ export async function submitUserMessage(
           previous.reply_quote !== (options.replyQuote ?? null) ||
           JSON.stringify(previous.question_answer) !==
             JSON.stringify(options.questionAnswer ?? null) ||
+          previous.approval_answer !== (options.approvalAnswer?.approved ?? null) ||
+          (options.approvalAnswer && previous.approval_id !== options.approvalAnswer.approvalId) ||
           JSON.stringify((previous.attachments as Artifact[]).map((item) => item.id)) !==
             JSON.stringify(attachments.map((item) => item.id))
         )
@@ -664,8 +678,8 @@ export async function submitUserMessage(
         if (
           ids.size !== submitted.choiceIds.length ||
           selected.length !== ids.size ||
-          (!choices.multiple && selected.length !== 1) ||
-          text !== choiceAnswerText(selected)
+          (!choices.multiple && (selected.length !== 1 || submitted.custom)) ||
+          (submitted.custom ? !writtenAnswer(selected, text) : text !== choiceAnswerText(selected))
         )
           throw httpError('Choose an available answer or write your own.', 400);
       }
@@ -686,11 +700,16 @@ export async function submitUserMessage(
               ...confirmation,
               threadId: thread.id,
               answer,
+              ...(options.approvalAnswer ? { clicked: true } : {}),
             },
             markInserted,
           );
     await assertReplyTarget(client, thread.id, options.replyToMessageId, true);
     if (confirmed && 'turnId' in confirmed) return confirmed;
+    if (options.approvalAnswer)
+      throw Object.assign(httpError('This approval is no longer waiting for an answer.', 409), {
+        code: 'approval_unavailable',
+      });
     await localArtifacts.retainArtifacts(
       attachments.map((attachment) => attachment.id),
       client,
@@ -1501,7 +1520,7 @@ async function loadTurnContext(turn: any, dependencies: ThreadDependencies) {
        FROM messages m CROSS JOIN seen CROSS JOIN boundary
        LEFT JOIN turns u ON u.id=m.turn_id AND u.owner_id=m.owner_id
        WHERE m.owner_id=$1 AND m.thread_id=$2 AND m.hidden_at IS NULL AND m.id IS DISTINCT FROM $3::uuid
-       AND NOT (m.role='user' AND ${withdrawnSql('m')})
+       AND m.approval_answer IS NULL AND NOT (m.role='user' AND ${withdrawnSql('m')})
        AND (NOT $5::boolean OR (m.created_at<=boundary.at AND
          (u.id IS NULL OR u.session_id=$6
           OR (u.status IN ('succeeded','failed','cancelled') AND u.finished_at<=boundary.at))))

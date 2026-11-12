@@ -74,6 +74,7 @@ test(
     const ids: string[] = [];
     const asked = new Set<string>();
     const cleared = new Set<string>();
+    const ownerWords: string[] = [];
     const confirmationText = 'Proceed with the saved synthetic action?';
     let confirmationValid = true;
     let beforeConfirmation = async () => {};
@@ -163,6 +164,7 @@ test(
                   userMessages?: Array<{ text: string }>;
                   action?: { name?: string; arguments?: { recipient_email?: unknown } };
                 };
+                ownerWords.push(...(words.userMessages ?? []).map((message) => message.text));
                 const run =
                   (allowMethodBrowser && words.action?.name === 'NOD_browser') ||
                   asked.has(words.userMessages?.at(-1)?.text ?? '') ||
@@ -601,6 +603,64 @@ test(
           await waitFor(declined.json().turnId, 'succeeded');
           assert.equal((await approvalsFor(held))[0].status, 'declined');
           assert.equal(sends(), 0);
+
+          const clicked = await propose('GMAIL_SEND_EMAIL', email('click@example.test'), 'apps');
+          const [clickCard] = await approvalsFor(clicked);
+          const listed = async (id: string) =>
+            (await request('GET', `/api/messages/around/${id}`))
+              .json()
+              .find((message: { id: string }) => message.id === id);
+          assert.deepEqual((await listed(clickCard.confirmation_message_id)).approval, {
+            id: clickCard.id,
+            state: 'pending',
+            title: 'Send email',
+            app: 'Gmail',
+            slug: 'gmail',
+            fields: [
+              { label: 'To', value: 'click@example.test' },
+              { label: 'Subject', value: 'Synthetic invoices' },
+            ],
+            body: 'Synthetic forwarded content.',
+          });
+          const click = (approvalId: string) =>
+            request('POST', '/api/messages', {
+              text: 'Send',
+              replyToMessageId: clickCard.confirmation_message_id,
+              clientMessageId: randomUUID(),
+              approvalAnswer: { approvalId, approved: true },
+            });
+          const stale = await click(randomUUID());
+          assert.equal(stale.statusCode, 409, stale.body);
+          assert.equal((await approvalsFor(clicked))[0].status, 'pending');
+          assert.equal(sends(), 0);
+          const accepted = await click(clickCard.id);
+          assert.equal(accepted.statusCode, 200, accepted.body);
+          await waitFor(accepted.json().turnId, 'succeeded');
+          assert.equal((await approvalsFor(clicked))[0].status, 'completed');
+          assert.equal(sends(), 1);
+          const answer = await pool.query(
+            'SELECT approval_answer FROM messages WHERE id=$1 AND owner_id=$2',
+            [accepted.json().messageId, ownerId],
+          );
+          assert.equal(answer.rows[0]?.approval_answer, true);
+          assert.equal((await listed(accepted.json().messageId)).cardAnswer, true);
+          ownerWords.length = 0;
+          const afterClick = await propose(
+            'GMAIL_SEND_EMAIL',
+            email('after-click@example.test'),
+            'apps',
+          );
+          assert.doesNotMatch(prompts.get(afterClick) ?? '', /"role":"user","text":"Send"/);
+          assert.ok(
+            !(await application.personal.recall('Send', undefined, null)).some(
+              (message) => message.id === accepted.json().messageId,
+            ),
+          );
+          assert.ok(ownerWords.length > 0);
+          assert.ok(!ownerWords.includes('Send'));
+          const again = await click(clickCard.id);
+          assert.equal(again.statusCode, 409, again.body);
+          assert.equal(sends(), 1);
         },
       );
 

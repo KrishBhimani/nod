@@ -119,12 +119,30 @@ export async function initializeDatabase() {
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS presentation jsonb;
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS answer_choices jsonb;
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS question_answer jsonb;
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS approval_answer boolean;
+    CREATE INDEX IF NOT EXISTS messages_question_answer_reply ON messages(reply_to_message_id) WHERE question_answer IS NOT NULL;
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS delivered_channel text;
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS hidden_at timestamptz;
     ALTER TABLE turns ADD COLUMN IF NOT EXISTS handoff_browser_id text;
     DROP INDEX IF EXISTS messages_hidden_thread;
     CREATE INDEX IF NOT EXISTS messages_hidden_thread_recent ON messages(owner_id,thread_id,hidden_at DESC,id DESC) WHERE hidden_at IS NOT NULL;
     CREATE INDEX IF NOT EXISTS messages_owner_agent_reaction_time ON messages(owner_id,assistant_reacted_at DESC) WHERE assistant_reacted_at IS NOT NULL;
+    CREATE TABLE IF NOT EXISTS approvals (
+      id uuid PRIMARY KEY, owner_id text NOT NULL, thread_id uuid REFERENCES threads(id),
+      turn_id uuid REFERENCES turns(id), execution_turn_id uuid REFERENCES turns(id),
+      action text NOT NULL, args jsonb NOT NULL, status text NOT NULL DEFAULT 'pending',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      source_message_id uuid REFERENCES messages(id) ON DELETE SET NULL,
+      confirmation_message_id uuid REFERENCES messages(id) ON DELETE SET NULL,
+      result jsonb
+    );
+    ALTER TABLE approvals ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+      ADD COLUMN IF NOT EXISTS expected_revision integer,
+      ADD COLUMN IF NOT EXISTS details jsonb;
+    CREATE INDEX IF NOT EXISTS approvals_turn ON approvals(turn_id);
+    CREATE INDEX IF NOT EXISTS approvals_execution_turn ON approvals(execution_turn_id);
+    CREATE INDEX IF NOT EXISTS approvals_confirmation_message ON approvals(confirmation_message_id);
+    CREATE INDEX IF NOT EXISTS approvals_memory_save ON approvals(owner_id,source_message_id) WHERE action='NOD_memory_save';
     CREATE TABLE IF NOT EXISTS artifacts (
       id uuid PRIMARY KEY, owner_id text NOT NULL, thread_id uuid REFERENCES threads(id), name text NOT NULL,
       mime_type text NOT NULL, size integer NOT NULL, storage_path text NOT NULL,

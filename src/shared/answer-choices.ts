@@ -21,7 +21,9 @@ export const answerChoicesSchema = z
   );
 
 export const questionAnswerSchema = z.union([
-  z.object({ choiceIds: z.array(z.uuid()).min(1).max(6) }).strict(),
+  z
+    .object({ choiceIds: z.array(z.uuid()).min(1).max(6), custom: z.literal(true).optional() })
+    .strict(),
   z.object({ custom: z.literal(true) }).strict(),
 ]);
 
@@ -40,6 +42,11 @@ export function choiceAnswerText(options: AnswerChoice[]) {
     .join('\n');
 }
 
+export function writtenAnswer(options: AnswerChoice[], text: string) {
+  const chosen = `${choiceAnswerText(options)}\n`;
+  return text.startsWith(chosen) ? text.slice(chosen.length).trim() : '';
+}
+
 export function questionWithChoices(question: string, choices: AnswerChoices) {
   return [
     question,
@@ -47,4 +54,20 @@ export function questionWithChoices(question: string, choices: AnswerChoices) {
       .map((option, index) => `${index + 1}. ${choiceAnswerText([option])}`)
       .join('\n'),
   ].join('\n\n');
+}
+
+export function splitQuestion(text: string) {
+  const whole = text.trim();
+  const question = whole
+    .split(/\n[ \t]*\n/)
+    .at(-1)!
+    .trim();
+  const lead = whole.slice(0, whole.length - question.length).trimEnd();
+  return lead &&
+    !question.includes('\n') &&
+    /[?？؟][*_"'”’)\]]*$/.test(question) &&
+    !/^(```|~~~|[-*+] |\d+[.)] |[|>#])/.test(question) &&
+    (lead.match(/^[ \t]*(```|~~~)/gm)?.length ?? 0) % 2 === 0
+    ? { lead, question }
+    : { lead: '', question: whole };
 }

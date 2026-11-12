@@ -1,3 +1,5 @@
+import { parseFragment, type DefaultTreeAdapterMap } from 'parse5';
+
 const apps: Record<string, string> = {
   GMAIL: 'Gmail',
   GOOGLECALENDAR: 'Google Calendar',
@@ -23,6 +25,142 @@ export function actionTitle(action: string) {
   return {
     app: apps[app!] ?? `${app![0]}${app!.slice(1).toLowerCase()}`,
     label: words.join(' ').toLowerCase(),
+  };
+}
+
+const nodActions: Array<[string, string]> = [
+  ['NOD_browser', 'Continue in the browser'],
+  ['NOD_vault_allow', 'Use a saved sign-in'],
+  ['NOD_limits_update', 'Change spending limits'],
+  ['NOD_model_select', 'Change the model'],
+  ['NOD_notification_preferences_update', 'Change notifications'],
+  ['NOD_schedule_', 'Change a schedule'],
+  ['NOD_memory_', 'Change memory'],
+  ['NOD_rules', 'Change your rules'],
+  ['NOD_', 'Change a Nod setting'],
+];
+
+export function approvalTitle(action: string) {
+  const nod = nodActions.find(([prefix]) => action.startsWith(prefix));
+  if (nod) return { title: nod[1], app: '', slug: '' };
+  const mcp = action.startsWith('mcp__');
+  const { app, label } = mcp
+    ? {
+        app: '',
+        label: action
+          .split('__')
+          .slice(2)
+          .join(' ')
+          .replace(/[_\s]+/g, ' ')
+          .trim(),
+      }
+    : actionTitle(action);
+  const title = label ? `${label[0]!.toUpperCase()}${label.slice(1)}` : 'Run an action';
+  if (mcp || action.startsWith('CONNECTED_')) return { title, app: '', slug: '' };
+  return { title, app, slug: action.split('_')[0]!.toLowerCase() };
+}
+
+const fieldKeys: Array<[string, string[]]> = [
+  ['To', ['recipient_email', 'to', 'extra_recipients']],
+  ['Cc', ['cc']],
+  ['Bcc', ['bcc']],
+  ['Channel', ['channel']],
+  ['Subject', ['subject']],
+];
+const bodyKeys = ['body', 'message_body', 'text', 'markdown_text'];
+
+function words(value: unknown): string[] {
+  if (typeof value === 'string') return value.trim() ? [value.trim()] : [];
+  return Array.isArray(value) ? value.flatMap(words) : [];
+}
+
+function listed(values: string[]) {
+  const kept: string[] = [];
+  let length = 0;
+  for (const value of values) {
+    if (kept.length && length + value.length > 500) break;
+    kept.push(value);
+    length += value.length + 2;
+  }
+  const rest = values.length - kept.length;
+  const text = kept.join(', ');
+  return rest ? `${text} and ${rest} more` : text;
+}
+
+function plainText(html: string) {
+  const bounded = html.length > 20_000;
+  let cut = bounded;
+  const document = parseFragment(html.slice(0, 20_000), {
+    sourceCodeLocationInfo: true,
+    scriptingEnabled: false,
+  });
+  function read(nodes: DefaultTreeAdapterMap['node'][], links: boolean): string {
+    const pending: Array<DefaultTreeAdapterMap['node'] | string> = [...nodes].reverse();
+    let text = '';
+    while (pending.length) {
+      const node = pending.pop()!;
+      if (typeof node === 'string') text += node;
+      else if ('value' in node) text += node.value;
+      else if (
+        'tagName' in node &&
+        ['style', 'script', 'head', 'title', 'template'].includes(node.tagName)
+      )
+        continue;
+      else if ('tagName' in node && node.tagName === 'a' && links) {
+        if (bounded && !node.sourceCodeLocation?.endTag) continue;
+        const address = node.attrs.find((attribute) => attribute.name === 'href')?.value.trim();
+        const shown = read(node.childNodes, false).trim();
+        const link =
+          !address || shown === address ? shown || address || '' : `${shown} (${address})`;
+        if (text.length + link.length > 4000) {
+          cut = true;
+          break;
+        }
+        text += link;
+      } else if ('childNodes' in node) {
+        if ('tagName' in node && /^(br|p|div|li|tr|h[1-6])$/.test(node.tagName)) pending.push('\n');
+        for (let index = node.childNodes.length - 1; index >= 0; index--)
+          pending.push(node.childNodes[index]!);
+      }
+      if (links && text.length > 4000) {
+        cut = true;
+        break;
+      }
+    }
+    return text;
+  }
+  return { text: read(document.childNodes, true).replace(/\n{3,}/g, '\n\n'), cut };
+}
+
+export function approvalContent(
+  action: string,
+  args: unknown,
+): { fields?: Array<{ label: string; value: string }>; body?: string; bodyCut?: true } {
+  if (
+    /^(NOD_|CONNECTED_|mcp__)/.test(action) ||
+    !args ||
+    typeof args !== 'object' ||
+    Array.isArray(args)
+  )
+    return {};
+  const input = args as Record<string, unknown>;
+  const fields = fieldKeys.flatMap(([label, keys]) => {
+    const value = listed(keys.flatMap((key) => words(input[key])));
+    return value ? [{ label, value }] : [];
+  });
+  if (!fields.length) return {};
+  const raw = bodyKeys
+    .map((key) => input[key])
+    .find((value) => typeof value === 'string' && value.trim());
+  if (typeof raw !== 'string') return { fields };
+  const html = input.is_html === true;
+  const preview = html ? plainText(raw) : { text: raw, cut: false };
+  const text = preview.text.trim();
+  const cut = preview.cut || text.length > 4000;
+  return {
+    fields,
+    ...(text ? { body: text.slice(0, 4000) } : {}),
+    ...(cut ? { bodyCut: true as const } : {}),
   };
 }
 

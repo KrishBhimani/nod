@@ -115,7 +115,7 @@ export function createTrust(options: {
                  AND to_jsonb(u)->>'task_id'=$4::text) OR (NOT EXISTS (
                SELECT 1 FROM turns r WHERE r.owner_id=$1 AND r.message_id=messages.id
                  AND r.source_id LIKE 'reaction-reply:%')))
-             AND NOT ${withdrawnSql('messages')}
+             AND approval_answer IS NULL AND NOT ${withdrawnSql('messages')}
              AND (created_at>$5 OR id=ANY($3::uuid[])) AND text NOT IN (
              SELECT task->>'title' FROM messages offer, jsonb_array_elements(offer.suggestions->'tasks') task
              WHERE offer.owner_id=$1 AND offer.thread_id=$2 AND task->>'title' IS NOT NULL)),

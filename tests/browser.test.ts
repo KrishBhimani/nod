@@ -3742,7 +3742,7 @@ test('UI analytics keep answer choices, the survey card and survey flag requests
       consent(true);
       const container = document.querySelector('#root');
       const root = createRoot(container);
-      const pending = [], custom = [];
+      const pending = [];
       const mount = async (id, multiple = false, count = 2) => {
         const choices = {
           multiple,
@@ -3754,8 +3754,8 @@ test('UI analytics keep answer choices, the survey card and survey flag requests
         };
         await act(() => root.render(createElement(AnswerChoices, {
           key: id, choices, question: { id: 'PRIVATE_QUESTION_' + id, text: 'PRIVATE_QUESTION_TEXT' },
+          title: 'PRIVATE_QUESTION_TEXT',
           onAnswer: (text, selection) => new Promise((resolve, reject) => pending.push({ text, selection, resolve, reject })),
-          onWriteAnswer: text => custom.push(text),
         })));
       };
       const events = name => sent.filter(item => item.event === name);
@@ -3817,20 +3817,39 @@ test('UI analytics keep answer choices, the survey card and survey flag requests
       assert.equal(document.querySelector('.answer-choices'), null);
       await mount('multiple', true, 6);
       await intersect(true);
-      await click('.answer-choice:nth-child(1)');
+      const type = async value => {
+        const field = document.querySelector('.answer-choices-write');
+        await act(() => {
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(field, value);
+          field.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+      };
+      const asked = pending.length;
+      await click('.answer-choices-done');
       await click('.answer-choice:nth-child(2)');
-      await click('.answer-choice:nth-child(2)');
-      await click('.answer-choices-write');
-      assert.equal(custom.length, 1);
-      assert.equal(selected().length, 1);
-      await click('.answer-choice:nth-child(3)');
-      await click('.answer-choices-send');
+      await click('.answer-choice:nth-child(4)');
+      await click('.answer-choice:nth-child(4)');
+      assert.equal(pending.length, asked);
+      await type(' PRIVATE_ADDED ');
+      await click('.answer-choices-done');
+      assert.equal(pending.length, asked + 1);
+      assert.deepEqual(pending.at(-1).selection, { choiceIds: ['PRIVATE_OPTION_1'], custom: true });
+      assert.ok(pending.at(-1).text.endsWith('\nPRIVATE_ADDED'));
       assert.equal(selected().length, 1);
       await finish(true);
       assert.equal(selected().length, 2);
       assert.equal(selected().at(-1).properties.multiple, true);
       assert.equal(selected().at(-1).properties.option_count, 6);
-      assert.equal(selected().at(-1).properties.selected_count, 2);
+      assert.equal(selected().at(-1).properties.selected_count, 1);
+      await mount('typed');
+      assert.ok(document.querySelector('.answer-choices-send').hasAttribute('data-idle'));
+      await type(' PRIVATE_TYPED ');
+      await click('.answer-choices-send');
+      assert.deepEqual(pending.at(-1).selection, { custom: true });
+      assert.equal(pending.at(-1).text, 'PRIVATE_TYPED');
+      await finish(true);
+      assert.equal(selected().length, 2);
+      assert.equal(document.querySelector('.answer-choices'), null);
       for (const [index, outcome] of ['unavailable', false, new Error('Synthetic rejection')].entries()) {
         await mount('rejected-' + index);
         await click('.answer-choice');

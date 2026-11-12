@@ -1,6 +1,7 @@
 import type { Presentation } from '../src/shared/presentation.ts';
 import {
   choiceAnswerText,
+  splitQuestion,
   questionWithChoices,
   type AnswerChoices,
 } from '../src/shared/answer-choices.ts';
@@ -4342,6 +4343,16 @@ test(
             return { running, asked };
           };
           try {
+            assert.deepEqual(splitQuestion('I found two.\n\nWhich mailbox should I use?'), {
+              lead: 'I found two.',
+              question: 'Which mailbox should I use?',
+            });
+            for (const whole of [
+              'Which mailbox should I use?\n\nI found two of them.',
+              'Which one?\n\n- Work\n- Personal?',
+              'Run this:\n\n```\nls\n\nready?\n```',
+            ])
+              assert.deepEqual(splitQuestion(whole), { lead: '', question: whole });
             const { asked } = await askWithAbsorbedFollowUp();
             const selectedChoice = spokenChoices.options[0]!;
             const selectedAnswer = await sendJson({
@@ -4651,6 +4662,35 @@ test(
             assert.equal(both.statusCode, 200);
             created.push(both.json().turnId);
             await waitFor(settled(both.json().turnId));
+            const combined = await addQuestion(undefined, true);
+            const picked = [combined.answerChoices.options[0]!];
+            const written = {
+              ...payload(combined),
+              questionAnswer: { choiceIds: [picked[0]!.id], custom: true },
+            };
+            for (const text of [choiceAnswerText(picked), `${choiceAnswerText(picked)}\n `, 'Own'])
+              assert.equal((await sendJson({ ...written, text })).statusCode, 400);
+            const added = await sendJson({
+              ...written,
+              text: `${choiceAnswerText(picked)}\nSynthetic addition`,
+            });
+            assert.equal(added.statusCode, 200);
+            created.push(added.json().turnId);
+            await waitFor(settled(added.json().turnId));
+            assert.equal((await shown(added.json().messageId)).cardAnswer, true);
+            assert.deepEqual((await shown(combined.id)).choiceAnswer, {
+              choiceIds: [picked[0]!.id],
+              text: 'Synthetic addition',
+            });
+            await db.pool.query(
+              `UPDATE messages SET attachments='[{"id":"synthetic","name":"synthetic.txt","contentType":"text/plain","size":1}]' WHERE id=$1`,
+              [added.json().messageId],
+            );
+            assert.equal((await shown(added.json().messageId)).cardAnswer, undefined);
+            assert.equal((await shown(combined.id)).choiceAnswer, undefined);
+            await db.pool.query(`UPDATE messages SET attachments='[]' WHERE id=$1`, [
+              added.json().messageId,
+            ]);
             const superseded = await addQuestion();
             const replacement = await addQuestion(superseded.sessionId);
             assert.equal((await shown(superseded.id)).answerChoicesPending, false);
@@ -9252,7 +9292,7 @@ const memoryFixture = async (tables: string[] = []) => {
   url.searchParams.set('options', `-c search_path=${schema}`);
   const pool = new pg.Pool({ connectionString: url.href });
   await pool.query(
-    "CREATE TABLE threads (id uuid PRIMARY KEY, owner_id text NOT NULL, archived_at timestamptz); CREATE TABLE messages (id uuid PRIMARY KEY, owner_id text NOT NULL, role text NOT NULL, text text NOT NULL, turn_id uuid, thread_id uuid, suggestions jsonb, attachments jsonb NOT NULL DEFAULT '[]', created_at timestamptz NOT NULL DEFAULT now()); CREATE TABLE turns (id uuid PRIMARY KEY, owner_id text NOT NULL, channel text, message_id uuid, withdrawn boolean NOT NULL DEFAULT false); CREATE TABLE preferences (owner_id text PRIMARY KEY, time_zone text)",
+    "CREATE TABLE threads (id uuid PRIMARY KEY, owner_id text NOT NULL, archived_at timestamptz); CREATE TABLE messages (id uuid PRIMARY KEY, owner_id text NOT NULL, role text NOT NULL, text text NOT NULL, turn_id uuid, thread_id uuid, suggestions jsonb, approval_answer boolean, attachments jsonb NOT NULL DEFAULT '[]', created_at timestamptz NOT NULL DEFAULT now()); CREATE TABLE turns (id uuid PRIMARY KEY, owner_id text NOT NULL, channel text, message_id uuid, withdrawn boolean NOT NULL DEFAULT false); CREATE TABLE preferences (owner_id text PRIMARY KEY, time_zone text)",
   );
   for (const table of tables) await pool.query(table);
   const ownerId = 'memory-fixture-owner';

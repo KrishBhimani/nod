@@ -34,7 +34,7 @@ Select **Search chat** to search stored messages in the current conversation. Se
 
 Nod loads earlier messages automatically as you scroll toward the top and keeps your reading position. Select **Back to latest** above the message box to return to the newest message.
 
-Action confirmations show the question without extra status labels. [Usage](/use/spending/) shows the recorded action results.
+Action confirmation cards show the action status after you answer. [Usage](/use/spending/) shows the recorded action results.
 
 ## Send an audio message
 
@@ -162,9 +162,11 @@ macOS controls whether badges appear. In **System Settings > Notifications > Nod
 
 When a task needs a decision, an approval or your help in its browser, it asks and waits. Reply to its question to continue the session that asked. Other tasks can keep working. For actions that need a yes or no, see [Approvals](/trust/approvals/).
 
-For a question with a few useful answers, Nod can show compact choices below its message. Descriptions help distinguish accounts or other similar answers. Select a choice to send it as a reply to that question, even when a newer question appears below it. If you can choose several, select them and then **Send**.
+For a question with a few useful answers, Nod shows the question as a card with its choices, each marked A, B, C, one line each. Select a choice to send it as a reply to that question, even when a newer question appears below it. When Nod says you can pick one or more, select every choice that fits, add your own in **Type your own answer** if you like, then select **Done** or press Enter.
 
-Select **Write an answer** to open a reply to that question in the message box. For multiple choices, **Add your own** brings your selected answers into the message box so you can add other options or explain a preference. If you already have an unrelated draft, finish or clear it first; Nod keeps its text and files intact. After your answer is sent, the choices disappear. The question and your reply stay in the conversation. Stopped or replaced questions no longer offer choices. Telegram and WhatsApp show the choices as text, which you can reply to normally.
+To answer in your own words, type in **Type your own answer** at the bottom of the card, then press Enter or the send arrow that appears; on a card where you can pick several, press Enter or select **Done**. To attach files or write at length, reply to the question from the message box instead. After your answer is sent, the card keeps only what you chose or wrote, in place of a separate reply. An answer with a file or a voice recording appears as your own message below the question instead. Stopped or replaced questions no longer offer choices. Telegram and WhatsApp show the choices as text, which you can reply to normally.
+
+An action that needs your approval appears as a card with Nod's question and two choices: the action and **Cancel**. An email or message shows the app, the recipients, subject or channel and the text instead, with **Cancel** and the action as buttons below it. Once you answer, the card stays in the conversation, greyed out, with what you chose and what happened. While a sign-in waits for a verification code, a card under Nod's message asks you to send the code by itself in the message box. In Nod web and desktop, a payment that waits for your card's security code shows the same card; the code is the only card detail Nod takes there, and [Approve payment](/trust/payments/) takes it too.
 
 Nod doesn't ask for passwords or card numbers in chat. It uses a saved login or a private form instead. See [Vault](/trust/vault/).
 

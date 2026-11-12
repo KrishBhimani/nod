@@ -11,7 +11,7 @@ import './components/dialog.css';
 import './styles.css';
 import './components/tabs.css';
 import './components/message-actions.css';
-import './components/answer-choices.css';
+import './components/action-card.css';
 import './components/telegram-chat-link.css';
 import './components/private-entry.css';
 import './components/app-discovery-dialog.css';
