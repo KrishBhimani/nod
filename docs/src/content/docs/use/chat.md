@@ -103,10 +103,11 @@ The message box stays open while Nod works, so you can send another message at a
 | The line says                                  | What it means                                                                                                                                                             |
 | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | A rotating word, such as **Joining the dots…** | Nod is working but hasn't named a step yet. It appears the moment you send; Nod may be preparing your request or waiting on your model. Screen readers hear **Working…**. |
-| A step, such as "Comparing flight prices"      | What Nod is doing now. A website or app after it, such as **· skyscanner.net**, is where it's working.                                                                    |
+| A step, such as "Comparing flight prices"      | What Nod is doing now. A label after it, such as **· skyscanner.net**, names the app, website, MCP server, or local files involved.                                       |
+| **Using Gmail** or **Using Slack**             | A tool is active without a more specific step. Nod names the app, website, MCP server, or local files it is using.                                                        |
 | **· 3 min** at the end                         | Nothing new has happened for that long. Slow models and websites can take minutes; **Stop** ends it.                                                                      |
 
-The line describes the work, never tool names. It never counts seconds or guesses when Nod will finish. When Nod answers, the answer takes its place. It clears when Nod asks you something or stops, and hides while the app reconnects. A failed send clears the line and shows an error. Steps come from Nod's own short descriptions and, when your model shares a summary of its reasoning, from that summary's heading, such as "Researching Málaga travel ideas".
+The line describes the work instead of showing internal tool names. Its **Using ...** fallback shows the active tool's label when Nod hasn't named a step. It never counts seconds or guesses when Nod will finish. When Nod answers, the answer takes its place. It clears when Nod asks you something or stops, and hides while the app reconnects. A failed send clears the line and shows an error. Steps come from Nod's own short descriptions and, when your model shares a summary of its reasoning, from that summary's heading, such as "Researching Málaga travel ideas".
 
 The line follows only the work on your messages. A task shows its progress on its own card, so a step never appears twice. While anything works, the message box says **Send another message to Nod…**. While a task works, a small dot pulses just above the top-right corner of the message box. A task that needs your answer shows a slightly larger pink dot with a question mark. Hover over a dot or focus it to see which task it is. Select it to open the task's card with a soft highlight: if the card is already on screen, the chat stays where it is; otherwise the chat scrolls to it.
 
@@ -126,7 +127,7 @@ In the sidebar, the Chat item shows a moving dot while Nod works and a solid dot
 
 - **typing…** shows while Nod works on something you asked for, and stays on during slow steps.
 - A message you send while Nod works gets a 👀 reaction until Nod reads it.
-- Telegram also shows a quoted progress section in your language when its first message [supports live updates](/use/channels/#while-nod-works). A longer request has one short opening message so the progress has a place to update; a saved task uses its start message.
+- Telegram also shows a quoted progress section when its first message [supports live updates](/use/channels/#while-nod-works). Named steps use your conversation language; the **Using** fallback is in English. A longer request has one short opening message so the progress has a place to update; a saved task uses its start message.
 - WhatsApp Business Cloud connections stop typing when the 24-hour reply window closes. QR connections have no such limit.
 
 None of these send a notification. See [Message cadence](/how-it-works/agent-runtime/#message-cadence). A file Nod shares is attached to its next answer, or sent on its own when none follows.
