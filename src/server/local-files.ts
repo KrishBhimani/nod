@@ -158,6 +158,11 @@ export function localFileRules(
       key(target.slice(0, 2)) !== key(systemDrive)
     )
       return target.slice(0, 3);
+    if (platform === 'linux')
+      for (const mounts of ['/media', '/run/media']) {
+        const [user, drive] = path.relative(mounts, target).split(path.sep);
+        if (inside(mounts, target) && user && drive) return path.join(mounts, user, drive);
+      }
   }
   return {
     inside,

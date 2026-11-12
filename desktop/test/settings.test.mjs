@@ -828,9 +828,13 @@ async function runningDesktop(
   )
     .replace(/^import[\s\S]*?;\n/gm, '')
     .replace('export function', 'function');
+  const loginItem = (await readFile(new URL('../main/login-item.mjs', import.meta.url), 'utf8'))
+    .replace(/^import[\s\S]*?;\n/gm, '')
+    .replaceAll('export function', 'function');
   await runInNewContext(
     `(async () => {
     ${artifactHandlers}
+    ${loginItem}
     ${source}
     appLinksReady = true;
     engine = {};

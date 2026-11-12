@@ -3007,6 +3007,41 @@ async function macRuntimePrepare(home, assets, overrides = {}) {
   );
 }
 
+test('Linux guests run under QEMU for the host architecture with only the read-only asset mount', async () => {
+  const { guestConfiguration } = await import('../runtime/guest-config.mjs');
+  for (const [hostArch, guestArch] of [
+    ['x64', 'x86_64'],
+    ['arm64', 'aarch64'],
+  ]) {
+    const config = guestConfiguration({
+      assets: '/app/nod/resources/engine/runtime-assets',
+      imageDigest: '1'.repeat(64),
+      port: 54329,
+      memory: 4,
+      cpus: 2,
+      arch: hostArch === 'x64' ? 'x86_64' : 'aarch64',
+      platform: 'linux',
+    });
+    assert.equal(config.vmType, 'qemu');
+    assert.equal(config.arch, guestArch);
+    assert.equal(config.images[0].arch, guestArch);
+    assert.deepEqual(config.mounts, [
+      {
+        location: '/app/nod/resources/engine/runtime-assets',
+        mountPoint: '/opt/nod-assets',
+        writable: false,
+      },
+    ]);
+    assert.deepEqual(config.portForwards.at(-1), { guestPortRange: [1, 65535], ignore: true });
+  }
+  if (process.arch === 'x64')
+    assert.equal(
+      guestConfiguration({ assets: '/a', imageDigest: '1'.repeat(64), port: 1, memory: 3, cpus: 2 })
+        .arch,
+      'x86_64',
+    );
+});
+
 test('Mac startup repairs existing guests before Docker and refuses failed or stopped protection', async (t) => {
   const { protectGuest } = await import('../runtime/guest-config.mjs');
   for (const outcome of ['ready', 'failed', 'aborted']) {
@@ -4961,8 +4996,8 @@ test(
             },
           }),
         },
+        setOpenAtLogin() {},
         app: {
-          setLoginItemSettings() {},
           relaunch() {
             assert.equal(storageCleared && cacheCleared, true);
             assert.equal(existsSync(profiles[0]), false);
