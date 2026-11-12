@@ -87,6 +87,8 @@ On Windows, the message reads "Nod needs more free disk space to prepare its pri
 
 Retry first. Do not delete the profile, VM, database, or runtime cache by hand to fix it. If it still fails, [send feedback](#send-feedback-with-a-diagnostic-report). If the chat cannot open, select **Show startup log** on the error screen. Send that log with a screenshot of the error. When a setup command fails, the message includes the last lines of its output.
 
+If the background service does not respond within two minutes, the startup log records the elapsed wait and the last health check failure. It also records whether the service reported its port. An unexpected service exit has a separate log entry.
+
 On a Mac, setup keeps runtime files that passed their checks, even if a later download fails. **Try again** checks and reuses those files. It does not remove a verified image while the private computer loads it.
 
 On Windows, database errors show whether PostgreSQL stopped, reached a memory limit, or failed its TCP check inside WSL. If PostgreSQL answers inside WSL, the error names the Windows connection that failed. Open **Technical details** to read the original error, its code, its stack, and available native command output. These details also appear in the startup log. Saved secrets are removed.

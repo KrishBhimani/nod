@@ -421,6 +421,7 @@ async function runningDesktop(
   {
     allowStart = false,
     reportReady = true,
+    now = Date.now,
     initialState = 'running',
     storedProfile,
     prepareRuntime,
@@ -613,7 +614,7 @@ async function runningDesktop(
     createServer,
     AbortController,
     AbortSignal,
-    Date,
+    Date: Object.assign(class extends Date {}, { now }),
     setTimeout,
     clearTimeout,
     fetch: (resource, options) => {
@@ -3772,6 +3773,91 @@ test('the engine token waits for the engine Nod started to report its port', asy
   f.children[0].emit('exit', 1);
   assert.equal((await prepared).phase, 'error');
   assert.deepEqual(requests, []);
+});
+
+test('a background service health timeout records the last failure without private detail', async (t) => {
+  for (const scenario of [
+    { failure: 'Error', reportReady: false, request: () => Response.json({ ok: true }) },
+    { failure: 'HTTP 503', request: () => new Response(null, { status: 503 }) },
+    { failure: 'unexpected response', request: () => Response.json({ ok: false }) },
+    {
+      failure: 'ECONNREFUSED',
+      request: () => {
+        throw Object.assign(new TypeError('synthetic-private-detail'), {
+          cause: { code: 'ECONNREFUSED' },
+        });
+      },
+    },
+    {
+      failure: 'TimeoutError',
+      request: () => {
+        throw new DOMException('synthetic-private-detail', 'TimeoutError');
+      },
+    },
+  ]) {
+    await t.test(scenario.failure, async (t) => {
+      let clock = Date.now();
+      const f = await runningDesktop(
+        t,
+        async () => {
+          clock += 120_001;
+          return scenario.request();
+        },
+        { allowStart: true, reportReady: scenario.reportReady ?? true, now: () => clock },
+      );
+      f.crash();
+      const prepared = f.prepare();
+      if (scenario.reportReady === false) {
+        await waitFor(() => assert.equal(f.children.length, 1), { attempts: 100, interval: 5 });
+        clock += 120_001;
+      }
+      const status = await prepared;
+      assert.equal(status.phase, 'error');
+      assert.match(status.error, /did not respond/);
+      const log = await readFile(join(f.profileRoot, 'logs/startup.log'), 'utf8');
+      assert.equal(log.match(/Background service health check timed out/g)?.length, 1);
+      assert.ok(
+        log.includes(
+          `Last health check: ${scenario.failure}. Engine reported its port: ${scenario.reportReady === false ? 'no' : 'yes'}.`,
+        ),
+        log,
+      );
+      assert.doesNotMatch(log, /synthetic-private-detail/);
+    });
+  }
+});
+
+test('a successful health check, engine exit or shutdown does not log a timeout', async (t) => {
+  for (const ending of ['healthy', 'exit', 'shutdown']) {
+    await t.test(ending, async (t) => {
+      let clock = Date.now();
+      let closing;
+      const f = await runningDesktop(
+        t,
+        async () => {
+          clock += 120_001;
+          if (ending === 'healthy') return Response.json({ ok: true });
+          if (ending === 'exit') f.children[0].emit('exit', 1);
+          else closing = f.close();
+          throw new Error('Synthetic health request ended.');
+        },
+        { allowStart: true, now: () => clock },
+      );
+      f.crash();
+      const status = await f.prepare();
+      await closing;
+      if (ending === 'healthy') {
+        assert.equal(status.phase, 'ready');
+        await f.close();
+      }
+      const log = await readFile(join(f.profileRoot, 'logs/startup.log'), 'utf8').catch((error) => {
+        if (error.code !== 'ENOENT') throw error;
+        return '';
+      });
+      assert.doesNotMatch(log, /Background service health check timed out/);
+      if (ending === 'exit') assert.match(log, /Engine exited with code 1/);
+    });
+  }
 });
 
 test('a failed backend launch preserves saved setup and one retry starts one replacement', async (t) => {

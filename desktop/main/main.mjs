@@ -2100,8 +2100,10 @@ async function startEngine({ runtime, signal, pending = false }) {
       showSettings('general', true);
     }
   });
-  const deadline = Date.now() + 120_000;
+  const started = Date.now();
+  const deadline = started + 120_000;
   let ready = false;
+  let lastFailure = 'none';
   while (Date.now() < deadline && engine === child && !signal.aborted) {
     try {
       const response = await engineRequest('/api/health');
@@ -2109,8 +2111,20 @@ async function startEngine({ runtime, signal, pending = false }) {
         ready = true;
         break;
       }
-    } catch {}
+      lastFailure = response.ok ? 'unexpected response' : `HTTP ${response.status}`;
+    } catch (error) {
+      lastFailure =
+        [error?.cause?.code, error?.code].find((code) => typeof code === 'string') ||
+        error?.name ||
+        'error';
+    }
     await new Promise((accept) => setTimeout(accept, 300));
+  }
+  if (!ready && engine === child && !signal.aborted && Date.now() >= deadline) {
+    const waited = ((Date.now() - started) / 1000).toFixed(1);
+    await writeDiagnostic(
+      `Background service health check timed out after ${waited}s. Engine process still running: yes. Last health check: ${lastFailure}. Engine reported its port: ${engineBound ? 'yes' : 'no'}.`,
+    ).catch(() => {});
   }
   if (!ready || engine !== child || signal.aborted) {
     await stopEngine();
