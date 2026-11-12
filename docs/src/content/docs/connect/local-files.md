@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-Local files lets Nod work with files on your computer, for example to tidy your Downloads folder, rename invoices by their content or save a report it made next to your other documents. It works in the desktop app on macOS and Windows, with nothing to set up. A source install or a self-hosted server doesn't offer it.
+Local files lets Nod work with files on your computer, for example to tidy your Downloads folder, rename invoices by their content or save a report it made next to your other documents. It works in the desktop app on macOS and Windows, and in the Linux Flatpak preview, with nothing to set up. A source install or a self-hosted server doesn't offer it.
 
 ## Start with a request
 
@@ -19,7 +19,7 @@ If Nod asks for confirmation, review the file path and proposed action before yo
 
 ## Where Nod can work
 
-Nod can work anywhere in your home folder and on external drives (under `/Volumes` on macOS, or a drive other than the system drive on Windows). It refuses, for every action:
+Nod can work anywhere in your home folder and on external drives (under `/Volumes` on macOS, a drive other than the system drive on Windows, or `/media/<user>` or `/run/media/<user>` on Linux). It refuses, for every action:
 
 - anything outside your home folder and those drives, and Nod's own data;
 - hidden files and folders, such as `.ssh`, `.config` or `.env`;

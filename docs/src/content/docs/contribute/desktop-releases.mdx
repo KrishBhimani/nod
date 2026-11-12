@@ -247,6 +247,25 @@ Test profiles live under `~/Library/Application Support/nod Setup Test/test-prof
 
 This is an ad-hoc signed local app, not a release. It reuses the cached workspace and browser images; it doesn't verify a newly built runtime image or release signing.
 
+## Build a Linux Flatpak (preview)
+
+The Linux app is a Flatpak with the runtime pack inside it. It isn't built by CI or published yet. Build it on a 64-bit Linux computer with Docker, `flatpak-builder` and access to `/dev/kvm`:
+
+```sh title="Terminal"
+flatpak install --user flathub org.freedesktop.Sdk//25.08 org.electronjs.Electron2.BaseApp//25.08
+pnpm install --frozen-lockfile
+pnpm --dir desktop install --frozen-lockfile
+pnpm run build
+pnpm run desktop:prepare
+pnpm run desktop:linux:build
+flatpak-builder --user --install --force-clean .local/flatpak-build desktop/flatpak/io.n8n.Nod.yml
+flatpak run io.n8n.Nod
+```
+
+`desktop:prepare` builds the workspace and browser images and downloads the pinned Lima, Docker and Ubuntu files. `desktop:linux:build` packages the app in `dist/desktop/Nod-linux-<arch>`, and the manifest builds QEMU, libslirp and the OpenSSH client that Lima needs.
+
+The Flatpak gets KVM, network, display, audio, notification, tray and Secret Service access, and your home folder and external drives under `/media` and `/run/media` for Local files and downloads, as the Mac and Windows apps have. The VM lives in `~/.nod-desktop`, as on a Mac.
+
 ## Signing limits
 
 Mac builds are signed with n8n's Developer ID and notarized by Apple. Windows builds are signed by n8n GmbH with Artifact Signing. SmartScreen can still warn about a new release until Windows trusts its reputation.

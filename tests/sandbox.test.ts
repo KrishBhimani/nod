@@ -817,7 +817,18 @@ test('local file rules match each platform', () => {
   assert.equal(mac.holdsData('/Users/ada/Downloads'), false);
   const linux = localFileRules('linux', '/home/ada', '/home/ada/nod/.local');
   assert.equal(linux.privatePath('/home/ada/Downloads'), false);
-  assert.equal(linux.privatePath('/media/ada/Stick'), true);
+  for (const path of [
+    '/media',
+    '/media/ada',
+    '/run/media/ada',
+    '/mnt/Stick',
+    '/media/ada/Stick/.Trash-1000',
+  ])
+    assert.equal(linux.privatePath(path), true, path);
+  for (const path of ['/media/ada/Stick', '/media/ada/Stick/Photos', '/run/media/ada/Stick'])
+    assert.equal(linux.privatePath(path), false, path);
+  assert.equal(linux.root('/media/ada/Stick'), true);
+  assert.equal(linux.root('/run/media/ada/Stick/Photos'), false);
   assert.equal(linux.privatePath('/home/ada/nod/.local/keys'), true);
   assert.equal(linux.holdsData('/home/ada/nod'), true);
 });

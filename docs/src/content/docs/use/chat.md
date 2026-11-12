@@ -112,7 +112,7 @@ The line follows only the work on your messages. A task shows its progress on it
 
 ### Send more while Nod works
 
-When you send a message while Nod works, a second line says **Got your message. I'll read it after this step.** Nod reads it before its next step and answers it. If other messages come between your message and the answer, the answer quotes the message it answers.
+When you send a message while Nod works, a second line says **Got your message. I'll read it after this step.** Nod reads it before its next step and answers it. If you send several messages, Nod reads them one at a time so each gets its own answer. If other messages come between your message and the answer, the answer quotes the message it answers.
 
 ![Nod's status line reads "Comparing flight prices · skyscanner.net · 2 min", with "Got your message. I'll read it after this step." below it, after a follow-up message.](../../../assets/screens/chat-live-line.png)
 
@@ -197,7 +197,7 @@ In the desktop app, hold Command on a Mac or Ctrl on Windows and Linux to reveal
 
 ## React to messages
 
-To react to one of Nod's replies, hover over the bubble and select its reaction icon, or hold or right-click the bubble and choose **React**. Pick a quick reaction, or choose **More emoji** to search and scroll through the full picker. Your reaction appears at the bottom of the bubble. Select it to remove it. Nod takes a reaction as feedback on that reply, never as an answer to a question or an approval.
+To react to one of Nod's replies, hover over the bubble and select its reaction icon, or hold or right-click the bubble and choose **React**. Pick a quick reaction, or choose **More emoji** to search and scroll through the full picker. Your reaction appears at the bottom of the bubble and is sent as a reply to that message for Nod to interpret. A thumbs-up can answer a question. On an action confirmation, 👍 or 👎 confirms or declines the exact action Nod asked about. For other reactions, Nod asks for confirmation before acting outside chat. Select the reaction to remove it from the bubble. Removing or changing it does not undo a reply or action already sent.
 
 Nod sometimes reacts to your messages too, such as ✅ when you say yes to something it offered or ❤️ when you thank it. It reacts only now and then, and a reaction never replaces its reply.
 
