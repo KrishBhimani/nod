@@ -654,7 +654,7 @@ export function createComposioProvider(options: {
       const id = z.string().regex(/^[a-zA-Z0-9_-]{1,200}$/);
       const historyId = z.string().regex(/^\d{1,32}$/);
       const addedMessage = z.object({ message: z.object({ id }) });
-      const mailHeader = z.object({ name: z.string().max(100), value: z.string().max(8192) });
+      const mailHeader = z.object({ name: z.string(), value: z.string() });
       const stateSchema = z.object({
         accountId: z.string().min(1).max(200),
         historyId,
@@ -765,7 +765,7 @@ export function createComposioProvider(options: {
               internalDate: z.string().regex(/^\d{1,16}$/),
               labelIds: z.array(z.string().max(200)).max(100).default([]),
               payload: z.object({
-                headers: z.array(mailHeader).max(200).default([]),
+                headers: z.array(mailHeader).default([]),
               }),
             })
             .parse(response);

@@ -10132,6 +10132,64 @@ test('Composio inbox polling rejects cancellation and invalid metadata after par
   assert.equal(JSON.parse(unlabeled.cursor).historyId, '200');
 });
 
+test('Composio inbox polling reads past a message with a very long or very large header set', async (t) => {
+  const recipients = Array.from({ length: 400 }, (_, index) => `person${index}@example.test`);
+  const received = Array.from({ length: 230 }, (_, index) => ({
+    name: 'Received',
+    value: `from relay${index}.example.test by relay${index + 1}.example.test`,
+  }));
+  const shapes = {
+    long: [
+      { name: 'To', value: recipients.join(', ') },
+      { name: 'From', value: 'Sender <sender@example.test>' },
+      { name: 'Subject', value: 'Long recipient list' },
+    ],
+    many: [
+      ...received,
+      { name: 'From', value: 'Sender <sender@example.test>' },
+      { name: 'Subject', value: 'Long relay chain' },
+    ],
+  };
+  for (const [shape, headers] of Object.entries(shapes)) {
+    const poll = inboxPollFixture(t, (input) => {
+      if (input.endpoint.endsWith('/history'))
+        return {
+          status: 200,
+          data: {
+            historyId: '200',
+            history: [{ messagesAdded: ['m0', 'm1', 'm2'].map((id) => ({ message: { id } })) }],
+          },
+        };
+      const id = input.endpoint.split('/').at(-1)!;
+      return {
+        status: 200,
+        data: {
+          id,
+          threadId: `thread-${id}`,
+          internalDate: '1790769600000',
+          labelIds: ['INBOX'],
+          payload: {
+            headers: id === 'm1' ? headers : [{ name: 'Subject', value: `Plain ${id}` }],
+          },
+        },
+      };
+    });
+    const cursor = JSON.stringify({ accountId: 'inbox-account', historyId: '100' });
+    const result = await poll('inbox-account', cursor, new AbortController().signal);
+    assert.deepEqual(
+      result.messages.map(({ id, subject }) => [id, subject]),
+      [
+        ['m0', 'Plain m0'],
+        ['m1', headers.at(-1)!.value],
+        ['m2', 'Plain m2'],
+      ],
+      shape,
+    );
+    assert.equal(result.hasMore, false, shape);
+    assert.equal(JSON.parse(result.cursor).historyId, '200', shape);
+  }
+});
+
 test('Composio inbox failure diagnostics keep private provider detail out of logs', async (t) => {
   const diagnostics: Array<Record<string, unknown>> = [];
   t.mock.method(console, 'warn', (value: string) => {
@@ -10163,7 +10221,7 @@ test('Composio inbox failure diagnostics keep private provider detail out of log
       internalDate: '1790769600000',
       labelIds: ['INBOX'],
       payload: {
-        headers: [{ name: 'private-header-name', value: 'private-header-value'.repeat(1000) }],
+        headers: [{ name: 'private-header-name', value: { detail: 'private-header-value' } }],
       },
     },
   };
