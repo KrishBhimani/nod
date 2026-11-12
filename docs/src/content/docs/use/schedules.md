@@ -93,7 +93,7 @@ A local desktop assistant runs schedules and background work only while Nod is o
 
 For a local assistant, closing the window keeps Nod running in the menu bar or tray. **Quit Nod** stops it. **Open at login** is on after setup; keep it on in **Settings → General** if you rely on schedules.
 
-If a run comes due while the assistant is stopped, it runs once when Nod is running again.
+If a run comes due while the assistant is stopped, it runs once when Nod is running again. If a run starts more than 10 minutes late, its instructions include the due time and start time. If later runs of a recurring schedule were skipped, the instructions also include that count. Counts of 100 or more are shown as "100 or more".
 
 ## Related resources
 

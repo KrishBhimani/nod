@@ -20,6 +20,8 @@ import { logFailure } from './failure-log.ts';
 import { lockKey } from './locks.ts';
 
 const queue = 'scheduled-task';
+const lateAfterMs = 10 * 60_000;
+const skippedCountLimit = 100;
 const timingSchema = z.object({
   kind: z.enum(['once', 'recurring']).default('recurring'),
   cron: z.string().trim().min(1).nullable().optional(),
@@ -230,6 +232,36 @@ export function createSchedules(dependencies: ScheduleDependencies) {
     })[0]!;
   }
 
+  function lateNote(schedule: ScheduleRow) {
+    const due = schedule.nextRun!;
+    const started = now();
+    if (started.getTime() - due.getTime() <= lateAfterMs) return '';
+    const format = new Intl.DateTimeFormat('en-GB', {
+      timeZone: schedule.timeZone,
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+      timeZoneName: 'short',
+    });
+    let skipped = 0;
+    if (schedule.kind === 'recurring') {
+      for (
+        let next = nextOccurrence(schedule, due)!;
+        next <= started && skipped < skippedCountLimit;
+        next = nextOccurrence(schedule, next)!
+      )
+        skipped++;
+    }
+    const gap = skipped
+      ? ` ${skipped >= skippedCountLimit ? `${skippedCountLimit} or more` : skipped} later ${skipped === 1 ? 'run was' : 'runs were'} skipped.`
+      : '';
+    return `\nThis run was due at ${format.format(due)} and started at ${format.format(started)}.${gap}`;
+  }
+
   async function enqueue(client: PoolClient, schedule: ScheduleRow, due: Date | null) {
     let jobId: string | null = null;
     if (due) {
@@ -338,7 +370,7 @@ export function createSchedules(dependencies: ScheduleDependencies) {
         ]);
       }
       const turnId = await enqueueTurn(
-        `Scheduled task: ${row.title}\n${row.prompt}\nDeliver what this schedule asks for in this run, even when an earlier message covered the same ground. When it asks for nothing to be sent, message the owner only about a useful result, a problem or a necessary question.`,
+        `Scheduled task: ${row.title}\n${row.prompt}\nDeliver what this schedule asks for in this run, even when an earlier message covered the same ground. When it asks for nothing to be sent, message the owner only about a useful result, a problem or a necessary question.${lateNote(row)}`,
         {
           sourceId: `schedule:${row.id}:${row.revision}:${job.data.scheduledFor}`,
           source: 'schedule',

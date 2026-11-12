@@ -802,7 +802,40 @@ test(
           await deliver([job]);
           assert.deepEqual(await runs(schedule.id), []);
           await deliver([replacement]);
-          assert.equal((await runs(schedule.id)).length, 1);
+          const lateRuns = await runs(schedule.id);
+          assert.equal(lateRuns.length, 1);
+          assert.match(
+            (await db.pool.query('SELECT prompt FROM turns WHERE id=$1', [lateRuns[0]!.turnId]))
+              .rows[0].prompt,
+            /\nThis run was due at Tue,? 6 Nov 2035, 10:00 WET and started at Wed,? 7 Nov 2035, 10:00 WET\.$/,
+          );
+        },
+      );
+      await t.test(
+        'a late recurring run says when it was due, when it started and what was skipped',
+        async () => {
+          const before = clock;
+          clock = new Date('2035-11-07T10:00:00.000Z');
+          const promptOf = async (id: string) => {
+            const [run] = await runs(id);
+            return (await db.pool.query('SELECT prompt FROM turns WHERE id=$1', [run!.turnId]))
+              .rows[0].prompt as string;
+          };
+          const onTime = await create({ cron: '0 8 * * *' });
+          clock = new Date(onTime.nextRun!);
+          await deliver([await jobFor(onTime.id)]);
+          const base = await promptOf(onTime.id);
+          assert.doesNotMatch(base, /This run was due/);
+          const late = await create({ cron: '0 8 * * *' });
+          clock = new Date(new Date(late.nextRun!).getTime() + 2 * 86_400_000 + 36_720_000);
+          await deliver([await jobFor(late.id)]);
+          const prompt = await promptOf(late.id);
+          assert.match(
+            prompt,
+            /This run was due at Fri,? 9 Nov 2035, 08:00 WET and started at Sun,? 11 Nov 2035, 18:12 WET\. 2 later runs were skipped\.$/,
+          );
+          assert.equal(prompt.replace(/\nThis run was due.*$/, ''), base);
+          clock = before;
         },
       );
       channels = await connect();
