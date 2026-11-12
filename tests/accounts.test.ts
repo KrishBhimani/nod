@@ -102,6 +102,38 @@ test('decision selection uses the LLM only when no decision connection is availa
   assert.equal(llm, 1);
 });
 
+test('OpenAI decision failures keep the region and provider reason without exposing the key', async () => {
+  const key = 'fixture-decision-"key';
+  let calls = 0;
+  const decisions = createDecisionModel({
+    resolve: async () => ({ provider: 'openai', key, region: 'eu' }),
+    fetch: async (input, init) => {
+      calls++;
+      assert.equal(String(input), 'https://eu.api.openai.com/v1/decisions');
+      assert.equal(new Headers(init?.headers).get('authorization'), `Bearer ${key}`);
+      return Response.json(
+        { error: { message: `Synthetic project geography EU error ${key}` } },
+        { status: 401 },
+      );
+    },
+  });
+  await assert.rejects(
+    decisions.check({
+      instructions: 'Apply the synthetic rule.',
+      input: {},
+      question: { name: 'answer', choices: [{ value: false, description: 'Ask.' }] },
+    }),
+    (error: Error) => {
+      assert.match(error.message, /401/);
+      assert.match(error.message, /project geography EU/);
+      assert.ok(!error.message.includes(key));
+      assert.ok(!error.message.includes(JSON.stringify(key).slice(1, -1)));
+      return true;
+    },
+  );
+  assert.equal(calls, 1);
+});
+
 test('About records only confirmed shared choices and clears them on failure', async (t) => {
   const { JSDOM } = await import('jsdom');
   const { act, createElement } = await import('react');
@@ -2326,6 +2358,8 @@ test('server model credentials reject invalid destinations and cloud accounts be
   const { modelEnvironment } = await import('../src/server/composition.ts');
   const key = 'fixture-environment-key';
   const invalid: Record<string, string>[] = [
+    { OPENAI_API_KEY: key, OPENAI_API_REGION: 'eu.example.test' },
+    { OPENAI_API_KEY: key, OPENAI_API_REGION: '__proto__' },
     { AWS_BEARER_TOKEN_BEDROCK: key },
     { AWS_BEARER_TOKEN_BEDROCK: key, AWS_REGION: 'eu-west-1.example.test/path' },
     { AZURE_OPENAI_API_KEY: key },
@@ -2439,6 +2473,72 @@ describe('model connections', { skip: !process.env.TEST_DATABASE_URL }, () => {
       idToken: 'fixture-id-token',
     };
   }
+
+  test('OpenAI connections keep their regions through selection, refresh and restart', async (t) => {
+    const f = await fixture(t);
+    const { createPiModelBackend } = await import('../src/providers/pi/models.ts');
+    const { keyConnection, noKeySettings } = await import('../src/web/hooks/use-models.ts');
+    const key = 'fixture-regional-openai-key';
+    const requests: string[] = [];
+    const backend = createPiModelBackend({
+      fetch: async (input, init) => {
+        requests.push(String(input));
+        assert.equal(new Headers(init?.headers).get('authorization'), `Bearer ${key}`);
+        return Response.json({
+          data: ['gpt-6.1-sol', 'gpt-6-luna', 'gpt-audio-1.5'].map((id) => ({ id })),
+        });
+      },
+    });
+    const owner = await f.create('fixture-openai-region-owner', backend);
+    const app = Fastify();
+    owner.register(app);
+    t.after(() => app.close());
+    for (const region of ['global', 'eu']) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/models/keys',
+        payload: keyConnection('openai', key, { ...noKeySettings, region }),
+      });
+      assert.equal(response.statusCode, 200, response.body);
+      assert.ok(!response.body.includes(key));
+    }
+    assert.equal(owner.view().connections.length, 2);
+    const eu = owner.view().connections.find((row) => row.label.includes('Europe'))!;
+    assert.ok(eu);
+    await owner.select({ connectionId: eu.id, modelId: 'gpt-6.1-sol', effort: 'high' });
+    assert.equal((await owner.resolve()).definition.spec.baseUrl, 'https://eu.api.openai.com/v1');
+    assert.equal(
+      (await owner.resolve(true)).definition.spec.baseUrl,
+      'https://eu.api.openai.com/v1',
+    );
+    assert.deepEqual(await owner.apiCredential('openai'), { type: 'api_key', key, region: 'eu' });
+    await owner.refreshCatalog(eu.id);
+    await owner.select({ connectionId: eu.id, modelId: 'gpt-audio-1.5', effort: 'off' });
+    const audio = await owner.resolve();
+    assert.equal(audio.textModel?.definition.spec.baseUrl, 'https://eu.api.openai.com/v1');
+    const restored = await f.create('fixture-openai-region-owner', backend);
+    assert.deepEqual(await restored.apiCredential('openai'), {
+      type: 'api_key',
+      key,
+      region: 'eu',
+    });
+    assert.equal(
+      (await restored.resolve()).definition.spec.baseUrl,
+      'https://eu.api.openai.com/v1',
+    );
+    await restored.addKey('openai', key, { region: 'eu' });
+    assert.equal(restored.view().connections.length, 2);
+    const other = await f.create('fixture-openai-other-owner', backend);
+    assert.equal(await other.apiCredential('openai'), undefined);
+    const rows = (await f.database.query('SELECT * FROM model_connections')).rows;
+    assert.ok(!JSON.stringify(rows).includes(key));
+    assert.deepEqual(requests, [
+      'https://api.openai.com/v1/models',
+      'https://eu.api.openai.com/v1/models',
+      'https://eu.api.openai.com/v1/models',
+      'https://eu.api.openai.com/v1/models',
+    ]);
+  });
 
   function stubSignIn(
     exchange: () => Promise<import('../src/ports/models.ts').ModelCredential>,
