@@ -5208,7 +5208,10 @@ test('OpenAI-compatible servers get tool models, a system message and one attemp
   const calls = replayed.flatMap(({ tool_calls }) => tool_calls?.map(({ id }) => id) ?? []);
   assert.match(calls[0], /^[A-Za-z0-9]{9}$/);
   assert.equal(calls[1], 'functions.read_fixture:13');
-  assert.deepEqual(replayed.flatMap(({ tool_call_id }) => tool_call_id ?? []), calls);
+  assert.deepEqual(
+    replayed.flatMap(({ tool_call_id }) => tool_call_id ?? []),
+    calls,
+  );
 });
 
 test('LM Studio servers list tool-trained chat models with their loaded context and vision', async (t) => {
