@@ -1773,7 +1773,10 @@ async function initializeApplication(
       runTurn: (context) =>
         ledger.withTurn(
           context.turnId,
-          () => runtime.runTurn(context).finally(() => proactivity.release(context.turnId)),
+          () =>
+            runtime
+              .runTurn({ ...context, runtimeHost: desktopMode ? 'desktop' : 'server' })
+              .finally(() => proactivity.release(context.turnId)),
           Boolean(context.spendingLimitReached),
           !context.currentMessageId,
         ),

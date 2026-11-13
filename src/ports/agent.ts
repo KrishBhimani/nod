@@ -120,6 +120,7 @@ export interface RuntimeContext {
   audioCaption?: string;
   background?: boolean;
   channel?: string;
+  runtimeHost?: 'desktop' | 'server';
   timeZone?: string;
   locale?: string;
   hourCycle?: 'auto' | 'h12' | 'h23';
